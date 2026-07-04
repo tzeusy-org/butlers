@@ -1,0 +1,39 @@
+// ---------------------------------------------------------------------------
+// send-error-utils.ts — non-component send-error classification (bu-o0ab2)
+//
+// Split from send-error.tsx to satisfy react-refresh/only-export-components:
+// fast-refresh requires component-only files; the type + classifier live
+// here, the <SendErrorBanner> component lives in send-error.tsx.
+//
+// Extracted from FloatingChatWidget.tsx so the butler-detail ChatPanel can
+// classify SSE send errors identically instead of rendering an inert
+// assistant-bubble error message. See the design doc's Error handling
+// section (docs/plans/2026-07-03-dashboard-chat-widget-design.md) for the
+// two recoverable states this distinguishes:
+//   - `SWITCHBOARD_UNAVAILABLE` (or any unclassified code) -> a retryable
+//     "offline" banner that re-sends the same failed text.
+//   - `SESSION_TIMEOUT` -> a graceful "no reply yet" banner with a
+//     `/sessions/{id}` inspect link (no retry — the session may still be
+//     working).
+// ---------------------------------------------------------------------------
+
+import type { ConversationSseErrorData } from "@/api/types.ts";
+
+export type SendError =
+  | { kind: "offline"; message: string; failedText: string }
+  | { kind: "timeout"; message: string; sessionId: string | null }
+  | { kind: "generic"; message: string; failedText: string };
+
+export function classifySendError(data: unknown, failedText: string): SendError {
+  const errData = (typeof data === "object" && data !== null ? data : {}) as ConversationSseErrorData;
+  const message =
+    errData.message ?? (typeof data === "string" ? data : "Something went wrong.");
+
+  if (errData.code === "SESSION_TIMEOUT") {
+    return { kind: "timeout", message, sessionId: errData.session_id ?? null };
+  }
+  if (errData.code === "SWITCHBOARD_UNAVAILABLE") {
+    return { kind: "offline", message, failedText };
+  }
+  return { kind: "generic", message, failedText };
+}

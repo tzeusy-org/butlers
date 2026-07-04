@@ -274,3 +274,98 @@ describe("ChatContent — conversation_created SSE handling", () => {
     expect(sendMessageMock.mock.calls[0][1]).toBe("conv-new-1");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Send-error classification parity with FloatingChatWidget (bu-o0ab2)
+// ---------------------------------------------------------------------------
+
+describe("ChatContent — send-error classification", () => {
+  it("shows a retryable offline banner on SWITCHBOARD_UNAVAILABLE instead of an inert error bubble", async () => {
+    sendMessageMock.mockResolvedValue({ ok: true } as Response);
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      {
+        event: "error",
+        data: { code: "SWITCHBOARD_UNAVAILABLE", message: "Switchboard offline — retry" },
+      },
+      { event: "done", data: {} },
+    ];
+
+    renderChatContent();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "hello switchboard" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-widget-error-banner")).toBeDefined();
+    expect(screen.getByTestId("chat-widget-error-banner").textContent).toContain(
+      "Switchboard offline",
+    );
+    // No inert assistant-bubble error message rendered alongside the banner.
+    expect(screen.queryByText("Unknown error")).toBeNull();
+
+    // Retry re-sends the exact same failed text through the same submit path.
+    createConversationMock.mockClear();
+    scriptedEvents = [{ event: "done", data: {} }];
+    await act(async () => {
+      fireEvent.click(screen.getByText("Retry"));
+    });
+    expect(createConversationMock).toHaveBeenCalledTimes(1);
+    expect(createConversationMock.mock.calls[0][1]).toEqual({ message: "hello switchboard" });
+  });
+
+  it("shows an inspect-session banner with a session link on SESSION_TIMEOUT", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      {
+        event: "error",
+        data: {
+          code: "SESSION_TIMEOUT",
+          message: "No reply yet — inspect the session for details.",
+          session_id: "session-abc-123",
+        },
+      },
+      { event: "done", data: {} },
+    ];
+
+    renderChatContent();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "report a bug" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    const banner = screen.getByTestId("chat-widget-timeout-banner");
+    expect(banner.textContent).toContain("No reply yet");
+    const link = screen.getByTestId(
+      "chat-widget-timeout-session-link",
+    ) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/sessions/session-abc-123");
+  });
+
+  it("dismissing the offline banner clears it without resending", async () => {
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [
+      { event: "error", data: { code: "SWITCHBOARD_UNAVAILABLE", message: "offline" } },
+      { event: "done", data: {} },
+    ];
+
+    renderChatContent();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "hello" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(screen.getByTestId("chat-widget-error-banner")).toBeDefined();
+    createConversationMock.mockClear();
+    fireEvent.click(screen.getByLabelText("Dismiss"));
+    expect(screen.queryByTestId("chat-widget-error-banner")).toBeNull();
+    expect(createConversationMock).not.toHaveBeenCalled();
+  });
+});

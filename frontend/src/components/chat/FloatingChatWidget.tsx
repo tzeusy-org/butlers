@@ -18,8 +18,9 @@
  *     ConversationSseErrorData) into distinct recoverable states — a
  *     retryable "Switchboard offline" banner vs. a graceful "no reply —
  *     inspect session" timeout banner — per the design doc's Error handling
- *     section. ChatPanel.tsx does not yet make this distinction; see the
- *     PR description for a follow-up on aligning it.
+ *     section. The classification + banner rendering live in `./send-error.tsx`
+ *     and are shared with ChatPanel.tsx (bu-o0ab2), so both surfaces behave
+ *     identically on send failure.
  *
  * Lifecycle: the panel's content only mounts while `open` (mirrors
  * ChatPanel's `{open && <ChatContent/>}` gate), so every reopen re-fetches
@@ -41,11 +42,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeftIcon,
-  ExternalLinkIcon,
   HistoryIcon,
   MessageCircleIcon,
   PlusIcon,
-  RefreshCwIcon,
   XIcon,
 } from "lucide-react";
 
@@ -53,7 +52,6 @@ import { Button } from "@/components/ui/button";
 import { createConversation, sendMessage } from "@/api/index.ts";
 import { fetchPricingMap } from "@/api/client.ts";
 import type {
-  ConversationSseErrorData,
   ConversationSummary,
   CreateConversationRequest,
   Message,
@@ -66,6 +64,8 @@ import { ConversationHeader } from "./ConversationHeader.tsx";
 import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
+import { SendErrorBanner } from "./send-error.tsx";
+import { classifySendError, type SendError } from "./send-error-utils.ts";
 import {
   conversationKeys,
   useConversations,
@@ -97,93 +97,6 @@ const WIDGET_BUTLER = "switchboard";
  */
 function buildMessagePayload(message: string, pageContext: PageContext): CreateConversationRequest {
   return { message, page_context: pageContext };
-}
-
-// ---------------------------------------------------------------------------
-// Send-error classification (design doc § Error handling)
-// ---------------------------------------------------------------------------
-
-type SendError =
-  | { kind: "offline"; message: string; failedText: string }
-  | { kind: "timeout"; message: string; sessionId: string | null }
-  | { kind: "generic"; message: string; failedText: string };
-
-function classifySendError(data: unknown, failedText: string): SendError {
-  const errData = (typeof data === "object" && data !== null ? data : {}) as ConversationSseErrorData;
-  const message =
-    errData.message ?? (typeof data === "string" ? data : "Something went wrong.");
-
-  if (errData.code === "SESSION_TIMEOUT") {
-    return { kind: "timeout", message, sessionId: errData.session_id ?? null };
-  }
-  if (errData.code === "SWITCHBOARD_UNAVAILABLE") {
-    return { kind: "offline", message, failedText };
-  }
-  return { kind: "generic", message, failedText };
-}
-
-// ---------------------------------------------------------------------------
-// Send-error banner
-// ---------------------------------------------------------------------------
-
-interface SendErrorBannerProps {
-  error: SendError;
-  onRetry: (text: string) => void;
-  onCheckAgain: () => void;
-  onDismiss: () => void;
-}
-
-function SendErrorBanner({ error, onRetry, onCheckAgain, onDismiss }: SendErrorBannerProps) {
-  if (error.kind === "timeout") {
-    return (
-      <div
-        className="flex items-center justify-between gap-2 border-t bg-muted/40 px-3 py-2 text-xs"
-        data-testid="chat-widget-timeout-banner"
-      >
-        <span className="text-muted-foreground">{error.message}</span>
-        <div className="flex shrink-0 items-center gap-2">
-          {error.sessionId && (
-            <a
-              href={`/sessions/${error.sessionId}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-primary underline-offset-2 hover:underline"
-              data-testid="chat-widget-timeout-session-link"
-            >
-              Inspect session
-              <ExternalLinkIcon className="size-3" />
-            </a>
-          )}
-          <Button size="xs" variant="outline" onClick={onCheckAgain}>
-            <RefreshCwIcon className="size-3" />
-            Check again
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="flex items-center justify-between gap-2 border-t bg-muted/40 px-3 py-2 text-xs"
-      data-testid="chat-widget-error-banner"
-    >
-      <span className="text-destructive">{error.message}</span>
-      <div className="flex shrink-0 items-center gap-2">
-        <Button size="xs" variant="outline" onClick={() => onRetry(error.failedText)}>
-          Retry
-        </Button>
-        <button
-          type="button"
-          onClick={onDismiss}
-          aria-label="Dismiss"
-          className="text-muted-foreground hover:text-foreground"
-        >
-          <XIcon className="size-3" />
-        </button>
-      </div>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------

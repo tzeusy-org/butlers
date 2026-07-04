@@ -8,7 +8,9 @@
  * Features:
  * - SSE stream consumption with AbortController cancellation
  * - Keyboard shortcuts: Ctrl+Shift+Up/Down for conversation quick-switch
- * - Error rendering and interrupted stream indicator
+ * - Classified send-error banners (offline+retry / timeout+inspect-session),
+ *   shared with FloatingChatWidget.tsx via ./send-error.tsx (bu-o0ab2) —
+ *   see that module for the design doc's Error handling contract.
  * - Loading skeleton while messages fetch
  */
 
@@ -33,6 +35,8 @@ import { ConversationHeader } from "./ConversationHeader.tsx";
 import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
+import { SendErrorBanner } from "./send-error.tsx";
+import { classifySendError, type SendError } from "./send-error-utils.ts";
 import {
   conversationKeys,
   useConversations,
@@ -57,6 +61,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const [streaming, setStreaming] = useState<StreamingState | null>(null);
   // Local messages during / after stream (committed messages from cache)
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
+  // Classified SSE/transport send error (offline / timeout / generic) —
+  // mirrors FloatingChatWidget's sendError seam, see ./send-error.tsx.
+  const [sendError, setSendError] = useState<SendError | null>(null);
 
   // Pricing map for cost estimation
   const [pricingMap, setPricingMap] = useState<PricingMap | null>(null);
@@ -164,6 +171,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     setActiveConversationId(null);
     setLocalMessages([]);
     setStreaming(null);
+    setSendError(null);
   }, [butlerName]);
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
@@ -173,162 +181,138 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // SSE stream handler
   // ---------------------------------------------------------------------------
 
-  const handleSend = useCallback(async () => {
+  const sendText = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+
+      setSendError(null);
+      const isNew = activeConversationId == null;
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      // Optimistic user message
+      const userMessage: Message = {
+        id: `optimistic-user-${Date.now()}`,
+        conversation_id: activeConversationId ?? "",
+        role: "user",
+        content: trimmed,
+        tool_calls: null,
+        error: null,
+        model: null,
+        input_tokens: null,
+        output_tokens: null,
+        duration_ms: null,
+        session_id: null,
+        request_id: null,
+        created_at: new Date().toISOString(),
+      };
+      setLocalMessages((prev) => [...prev, userMessage]);
+
+      let currentConversationId = activeConversationId;
+
+      setStreaming({
+        conversationId: currentConversationId ?? "pending",
+        content: "",
+        pending: true,
+        interrupted: false,
+      });
+
+      try {
+        const response = isNew
+          ? await createConversation(butlerName, { message: trimmed }, controller.signal)
+          : await sendMessage(
+              butlerName,
+              activeConversationId!,
+              { message: trimmed },
+              controller.signal,
+            );
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        await consumeSseStream(response, (event) => {
+          switch (event.event) {
+            case "conversation_created": {
+              // Backend emits `conversation_id` (see routers/conversations.py
+              // _stream_conversation_response) — NOT `id`.
+              const data = event.data as { conversation_id: string; title?: string | null };
+              currentConversationId = data.conversation_id;
+              setActiveConversationId(data.conversation_id);
+              setStreaming((prev) =>
+                prev ? { ...prev, conversationId: data.conversation_id } : null,
+              );
+              // Update optimistic user message with real conversation_id
+              setLocalMessages((prev) =>
+                prev.map((m) =>
+                  m.id === userMessage.id ? { ...m, conversation_id: data.conversation_id } : m,
+                ),
+              );
+              break;
+            }
+            case "token": {
+              const token =
+                typeof event.data === "string"
+                  ? event.data
+                  : (event.data as { content?: string })?.content ?? "";
+              setStreaming((prev) =>
+                prev ? { ...prev, content: prev.content + token, pending: false } : null,
+              );
+              break;
+            }
+            case "message_complete": {
+              // Invalidate queries to fetch committed messages
+              const cid = currentConversationId;
+              if (cid) {
+                void queryClient.invalidateQueries({
+                  queryKey: conversationKeys.all(butlerName),
+                });
+                void queryClient.invalidateQueries({
+                  queryKey: conversationKeys.messages(butlerName, cid),
+                });
+              }
+              setStreaming(null);
+              break;
+            }
+            case "error": {
+              setSendError(classifySendError(event.data, trimmed));
+              setStreaming(null);
+              break;
+            }
+            case "done":
+              setStreaming(null);
+              break;
+          }
+        });
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          // User cancelled — mark as interrupted
+          setStreaming((prev) =>
+            prev ? { ...prev, interrupted: true, pending: false } : null,
+          );
+          setTimeout(() => setStreaming(null), 1500);
+        } else {
+          // Non-abort error before or during streaming: clear streaming state
+          // and surface the same classified banner FloatingChatWidget shows.
+          setStreaming(null);
+          setSendError({
+            kind: "generic",
+            message: "There was a problem sending your message. Please try again.",
+            failedText: trimmed,
+          });
+        }
+      }
+    },
+    [activeConversationId, butlerName, queryClient],
+  );
+
+  function handleSend() {
     const text = inputValue.trim();
     if (!text) return;
-
     setInputValue("");
-
-    const isNew = activeConversationId == null;
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    // Optimistic user message
-    const userMessage: Message = {
-      id: `optimistic-user-${Date.now()}`,
-      conversation_id: activeConversationId ?? "",
-      role: "user",
-      content: text,
-      tool_calls: null,
-      error: null,
-      model: null,
-      input_tokens: null,
-      output_tokens: null,
-      duration_ms: null,
-      session_id: null,
-      request_id: null,
-      created_at: new Date().toISOString(),
-    };
-    setLocalMessages((prev) => [...prev, userMessage]);
-
-    let currentConversationId = activeConversationId;
-
-    setStreaming({
-      conversationId: currentConversationId ?? "pending",
-      content: "",
-      pending: true,
-      interrupted: false,
-    });
-
-    try {
-      const response = isNew
-        ? await createConversation(butlerName, { message: text }, controller.signal)
-        : await sendMessage(
-            butlerName,
-            activeConversationId!,
-            { message: text },
-            controller.signal,
-          );
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      await consumeSseStream(response, (event) => {
-        switch (event.event) {
-          case "conversation_created": {
-            // Backend emits `conversation_id` (see routers/conversations.py
-            // _stream_conversation_response) — NOT `id`.
-            const data = event.data as { conversation_id: string; title?: string | null };
-            currentConversationId = data.conversation_id;
-            setActiveConversationId(data.conversation_id);
-            setStreaming((prev) =>
-              prev ? { ...prev, conversationId: data.conversation_id } : null,
-            );
-            // Update optimistic user message with real conversation_id
-            setLocalMessages((prev) =>
-              prev.map((m) =>
-                m.id === userMessage.id ? { ...m, conversation_id: data.conversation_id } : m,
-              ),
-            );
-            break;
-          }
-          case "token": {
-            const token =
-              typeof event.data === "string"
-                ? event.data
-                : (event.data as { content?: string })?.content ?? "";
-            setStreaming((prev) =>
-              prev ? { ...prev, content: prev.content + token, pending: false } : null,
-            );
-            break;
-          }
-          case "message_complete": {
-            // Invalidate queries to fetch committed messages
-            const cid = currentConversationId;
-            if (cid) {
-              void queryClient.invalidateQueries({
-                queryKey: conversationKeys.all(butlerName),
-              });
-              void queryClient.invalidateQueries({
-                queryKey: conversationKeys.messages(butlerName, cid),
-              });
-            }
-            setStreaming(null);
-            break;
-          }
-          case "error": {
-            const errMsg =
-              typeof event.data === "string"
-                ? event.data
-                : (event.data as { message?: string })?.message ?? "Unknown error";
-            // Append error assistant message locally
-            const errAssistant: Message = {
-              id: `optimistic-err-${Date.now()}`,
-              conversation_id: currentConversationId ?? "",
-              role: "assistant",
-              content: "",
-              tool_calls: null,
-              error: errMsg,
-              model: null,
-              input_tokens: null,
-              output_tokens: null,
-              duration_ms: null,
-              session_id: null,
-              request_id: null,
-              created_at: new Date().toISOString(),
-            };
-            setLocalMessages((prev) => [...prev, errAssistant]);
-            setStreaming(null);
-            break;
-          }
-          case "done":
-            setStreaming(null);
-            break;
-        }
-      });
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        // User cancelled — mark as interrupted
-        setStreaming((prev) =>
-          prev ? { ...prev, interrupted: true, pending: false } : null,
-        );
-        setTimeout(() => setStreaming(null), 1500);
-      } else {
-        // Non-abort error before or during streaming: clear streaming state
-        // and append a local assistant error message so the user sees a failure.
-        setStreaming(null);
-
-        const errorMessage: Message = {
-          id: `local-error-${Date.now()}`,
-          conversation_id: currentConversationId ?? "",
-          role: "assistant",
-          content: "There was a problem sending your message. Please try again in a moment.",
-          tool_calls: null,
-          error: err instanceof Error ? err.message : "Unknown error",
-          model: null,
-          input_tokens: null,
-          output_tokens: null,
-          duration_ms: null,
-          session_id: null,
-          request_id: null,
-          created_at: new Date().toISOString(),
-        };
-
-        setLocalMessages((prev) => [...prev, errorMessage]);
-      }
-    }
-  }, [inputValue, activeConversationId, butlerName, queryClient]);
+    void sendText(text);
+  }
 
   function handleStop() {
     abortRef.current?.abort();
@@ -338,6 +322,16 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     setActiveConversationId(null);
     setLocalMessages([]);
     setStreaming(null);
+    setSendError(null);
+  }
+
+  function handleCheckAgain() {
+    setSendError(null);
+    if (activeConversationId) {
+      void queryClient.invalidateQueries({
+        queryKey: conversationKeys.messages(butlerName, activeConversationId),
+      });
+    }
   }
 
   return (
@@ -349,6 +343,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         onSelectConversation={(id) => {
           setActiveConversationId(id);
           setStreaming(null);
+          setSendError(null);
         }}
         onNewConversation={handleNewConversation}
       />
@@ -370,6 +365,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
             streaming={streaming}
             pricingMap={pricingMap}
             conversationId={activeConversationId}
+          />
+        )}
+
+        {sendError && (
+          <SendErrorBanner
+            error={sendError}
+            onRetry={(text) => void sendText(text)}
+            onCheckAgain={handleCheckAgain}
+            onDismiss={() => setSendError(null)}
           />
         )}
 
