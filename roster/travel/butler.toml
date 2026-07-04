@@ -25,6 +25,10 @@ groups = ["core", "butler_events"]
 [modules.calendar.conflicts]
 policy = "suggest"
 
+# Maintenance schedules (memory_decay_sweep, memory_consolidation,
+# memory_episode_cleanup, memory_purge_superseded, memory_consolidation_backfill)
+# are module defaults self-registered by MemoryModule.on_startup — no
+# [[butler.schedule]] block needed here. Add one only to override cadence.
 [modules.memory]
 groups = ["core", "entity"]
 

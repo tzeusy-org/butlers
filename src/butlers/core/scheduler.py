@@ -848,6 +848,74 @@ async def sync_schedules(
             logger.info("Disabled removed TOML schedule: %s", name)
 
 
+async def ensure_module_default_schedule(
+    pool: asyncpg.Pool,
+    *,
+    name: str,
+    cron: str,
+    job_name: str,
+    job_args: dict[str, Any] | None = None,
+    complexity: str = _DEFAULT_COMPLEXITY,
+) -> None:
+    """Idempotently ensure a module-default deterministic job schedule exists.
+
+    Intended for modules (e.g. the memory module) that self-register default
+    maintenance schedules from ``on_startup`` — which runs *before*
+    :func:`sync_schedules` syncs ``[[butler.schedule]]`` TOML entries (see
+    ``lifecycle.py`` steps 9 and 11). Safe to call on every daemon boot:
+
+    - **First boot** (no row named *name* exists): inserts a new
+      ``source='db'`` row with a freshly computed ``next_run_at`` in UTC —
+      the schedule becomes live on the very next tick. (``tick()``
+      recomputes ``next_run_at`` in the owner's effective timezone after the
+      first dispatch, so a UTC bootstrap value is only ever used once.)
+    - **Later boots** (row already exists): a no-op beyond a possible
+      ``source`` flip (see below) — cron, job_args, enabled, and
+      next_run_at are left untouched so this never clobbers an operator's
+      DB-level cadence customization (e.g. via the ``schedule_update`` tool)
+      or a cadence already computed by an earlier startup.
+    - **Reclaiming from a deleted TOML block**: if the row exists with
+      ``source='toml'`` (created by a ``[[butler.schedule]]`` block that has
+      since been removed from ``butler.toml``), this flips it to
+      ``source='db'``. Because this runs before ``sync_schedules()``, that
+      function's "disable schedules removed from TOML" pass — which only
+      targets ``source='toml'`` rows — no longer sees this row as an
+      orphaned TOML schedule, so it stays enabled at its last-known cadence
+      instead of being silently disabled.
+    - **Operator keeps the TOML block**: if a ``[[butler.schedule]]`` entry
+      of the same *name* still exists in TOML, the subsequent
+      ``sync_schedules()`` call reclaims the row back to ``source='toml'``
+      and applies the TOML cron — i.e. "TOML overrides cadence, not
+      existence."
+
+    Raises ``ValueError`` for an invalid cron expression. Does not validate
+    or touch the cron of a pre-existing row — cron validation only applies
+    to the fresh-insert path.
+    """
+    if not croniter.is_valid(cron):
+        raise ValueError(f"ensure_module_default_schedule: invalid cron {cron!r} for {name!r}")
+
+    next_run_at = _next_run(cron)
+    await pool.execute(
+        """
+        INSERT INTO scheduled_tasks (
+            name, cron, dispatch_mode, job_name, job_args, complexity,
+            source, enabled, next_run_at
+        )
+        VALUES ($1, $2, 'job', $3, $4, $5, 'db', true, $6)
+        ON CONFLICT (name) DO UPDATE
+            SET source = 'db'
+            WHERE scheduled_tasks.source = 'toml'
+        """,
+        name,
+        cron,
+        job_name,
+        _dict_to_jsonb(job_args),
+        complexity,
+        next_run_at,
+    )
+
+
 async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
     """Return True if *column* exists in *table* within the pool's current schema.
 

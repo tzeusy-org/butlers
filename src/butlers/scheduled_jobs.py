@@ -206,11 +206,70 @@ async def _run_memory_consolidation_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run memory consolidation directly without spawning an LLM runtime session."""
-    del job_args
-    from butlers.modules.memory.consolidation import run_consolidation
+    """Run memory consolidation directly without spawning an LLM runtime session.
 
-    return await run_consolidation(pool=pool, embedding_engine=None, cc_spawner=None)
+    ``job_args.batch_size`` optionally overrides ``run_consolidation``'s
+    default batch size (``DEFAULT_BATCH_SIZE``). This lets a single handler
+    serve both the steady-state ``memory_consolidation`` schedule (default
+    batch size, slower cadence) and a ``memory_consolidation_backfill``
+    schedule (larger batch size, tighter cadence) registered against the same
+    ``job_name`` — see ``MemoryModule.on_startup``'s default schedules.
+
+    NOTE: ``cc_spawner=None`` means this only claims/groups pending episodes
+    (via ``FOR UPDATE SKIP LOCKED``) — it does **not** spawn an LLM session to
+    actually parse and promote episodes to facts/rules (see
+    ``run_consolidation``'s ``cc_spawner`` branch). Both this job and the
+    backfill schedule therefore only report grouping stats
+    (``episodes_processed``, ``groups``); ``episodes_consolidated``,
+    ``facts_created``, etc. stay at 0 until a real ``Spawner`` is wired into
+    this deterministic path (tracked as a separate follow-up).
+    """
+    from butlers.modules.memory.consolidation import DEFAULT_BATCH_SIZE, run_consolidation
+
+    batch_size = DEFAULT_BATCH_SIZE
+    if job_args is not None:
+        unknown_args = sorted(set(job_args) - {"batch_size"})
+        if unknown_args:
+            raise RuntimeError(
+                "memory_consolidation job only supports job_args.batch_size; "
+                f"received unsupported keys: {unknown_args}"
+            )
+        if "batch_size" in job_args:
+            raw_batch_size = job_args["batch_size"]
+            if (
+                not isinstance(raw_batch_size, int)
+                or isinstance(raw_batch_size, bool)
+                or raw_batch_size <= 0
+            ):
+                raise RuntimeError(
+                    "memory_consolidation job_args.batch_size must be a positive integer"
+                )
+            batch_size = raw_batch_size
+
+    return await run_consolidation(
+        pool=pool, embedding_engine=None, cc_spawner=None, batch_size=batch_size
+    )
+
+
+async def _run_memory_decay_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the confidence decay sweep directly (no job_args accepted).
+
+    Wraps ``run_decay_sweep`` — previously defined but never wired to any
+    scheduled-job handler or schedule (see docs/redesigns/2026-07-04-jarvis-
+    pursuit.md #3). Fades/expires low-confidence facts and rules per
+    ``memory_policies`` thresholds so displayed confidence values reflect
+    actual decay rather than an un-decayed write-time number.
+    """
+    if job_args:
+        raise RuntimeError(
+            f"memory_decay_sweep job does not accept job_args; received: {sorted(job_args)}"
+        )
+    from butlers.modules.memory.storage import run_decay_sweep
+
+    return await run_decay_sweep(pool)
 
 
 async def _fetch_retention_policy(pool: asyncpg.Pool, kind: str) -> dict[str, Any]:
@@ -378,6 +437,7 @@ _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "memory_consolidation": _run_memory_consolidation_job,
     "memory_episode_cleanup": _run_memory_episode_cleanup_job,
     "memory_purge_superseded": _run_memory_purge_superseded_job,
+    "memory_decay_sweep": _run_memory_decay_sweep_job,
 }
 
 
@@ -1242,6 +1302,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "finance": {
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_finance_briefing_contribution_job,
             "calendar_overlay_contribution": _run_finance_calendar_overlay_contribution_job,
             "insight_scan": _run_finance_insight_scan_job,
@@ -1263,6 +1324,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "travel": {
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "daily_briefing_contribution": _run_travel_briefing_contribution_job,
             "calendar_overlay_contribution": _run_travel_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_travel_calendar_prep_contribution_job,
@@ -1274,6 +1336,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "education": {
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
             "mind_map_staleness_abandonment": _run_education_mind_map_staleness_job,
             "daily_briefing_contribution": _run_education_briefing_contribution_job,

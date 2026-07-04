@@ -67,18 +67,6 @@ If no contacts are overdue, send: "All your key relationships are up to date —
 """
 
 [[butler.schedule]]
-name = "memory_consolidation"
-cron = "0 */6 * * *"
-dispatch_mode = "job"
-job_name = "memory_consolidation"
-
-[[butler.schedule]]
-name = "memory_episode_cleanup"
-cron = "0 4 * * *"
-dispatch_mode = "job"
-job_name = "memory_episode_cleanup"
-
-[[butler.schedule]]
 name = "daily_briefing_contribution"
 cron = "55 6 * * *"
 dispatch_mode = "job"
@@ -159,6 +147,10 @@ run_on_startup = true
 interval_minutes = 15
 full_sync_interval_days = 6
 
+# Maintenance schedules (memory_decay_sweep, memory_consolidation,
+# memory_episode_cleanup, memory_purge_superseded, memory_consolidation_backfill)
+# are module defaults self-registered by MemoryModule.on_startup — no
+# [[butler.schedule]] block needed here. Add one only to override cadence.
 [modules.memory]
 groups = ["core", "feedback", "entity", "admin"]
 

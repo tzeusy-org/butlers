@@ -17,24 +17,6 @@ schema = "lifestyle"
 url = "http://localhost:41100/mcp"
 
 [[butler.schedule]]
-name = "memory_consolidation"
-cron = "0 */6 * * *"
-dispatch_mode = "job"
-job_name = "memory_consolidation"
-
-[[butler.schedule]]
-name = "memory_episode_cleanup"
-cron = "0 4 * * *"
-dispatch_mode = "job"
-job_name = "memory_episode_cleanup"
-
-[[butler.schedule]]
-name = "memory_purge_superseded"
-cron = "10 4 * * *"
-dispatch_mode = "job"
-job_name = "memory_purge_superseded"
-
-[[butler.schedule]]
 name = "daily_briefing_contribution"
 cron = "55 6 * * *"
 dispatch_mode = "job"
@@ -57,6 +39,10 @@ Deliver the digest via notify(channel="telegram", intent="send", message=<digest
 If there are no notable highlights this week, exit silently without sending.
 """
 
+# Maintenance schedules (memory_decay_sweep, memory_consolidation,
+# memory_episode_cleanup, memory_purge_superseded, memory_consolidation_backfill)
+# are module defaults self-registered by MemoryModule.on_startup — no
+# [[butler.schedule]] block needed here. Add one only to override cadence.
 [modules.memory]
 groups = ["core", "preferences", "entity"]
 

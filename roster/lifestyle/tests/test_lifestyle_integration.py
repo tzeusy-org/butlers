@@ -793,92 +793,97 @@ class TestSwitchboardFanoutLifestyleAndHealth:
 
 @pytest.mark.unit
 class TestLifestyleMemoryMaintenanceSchedule:
-    """AC6: Memory maintenance jobs are registered in the lifestyle butler schedule."""
+    """AC6: Memory maintenance jobs are registered for the lifestyle butler.
+
+    As of bu-qvnce.3, ``memory_consolidation``, ``memory_episode_cleanup``,
+    and ``memory_purge_superseded`` are no longer copy-pasted
+    ``[[butler.schedule]]`` blocks in ``roster/lifestyle/butler.toml`` — they
+    are module defaults self-registered by ``MemoryModule.on_startup`` for
+    every butler with ``[modules.memory]`` enabled (see
+    ``src/butlers/modules/memory/__init__.py::_DEFAULT_MAINTENANCE_SCHEDULES``
+    and ``tests/modules/memory/test_maintenance_scheduling.py``). These tests
+    assert against that module-default source of truth instead of parsing
+    ``butler.toml`` directly, since existence is the module's job now — TOML
+    only overrides cadence.
+    """
 
     def _get_lifestyle_config(self):
         from butlers.config import load_config
 
         return load_config(_LIFESTYLE_ROSTER_DIR)
 
-    def test_memory_consolidation_job_registered(self) -> None:
-        """memory_consolidation is registered as a scheduled job."""
+    def _default_schedule(self, name: str) -> dict:
+        from butlers.modules.memory import _DEFAULT_MAINTENANCE_SCHEDULES
+
+        schedule = next((s for s in _DEFAULT_MAINTENANCE_SCHEDULES if s["name"] == name), None)
+        assert schedule is not None, f"{name!r} not found in _DEFAULT_MAINTENANCE_SCHEDULES"
+        return schedule
+
+    def test_lifestyle_enables_memory_module(self) -> None:
+        """lifestyle enables [modules.memory], so it gets the module defaults."""
         cfg = self._get_lifestyle_config()
-        job_names = [s.job_name for s in cfg.schedules if s.job_name]
-        assert "memory_consolidation" in job_names, (
-            f"memory_consolidation not found in scheduled jobs: {job_names}"
-        )
+        assert "memory" in cfg.modules, "lifestyle no longer enables [modules.memory]"
+
+    def test_memory_consolidation_job_registered(self) -> None:
+        """memory_consolidation is a module-default schedule dispatchable for lifestyle."""
+        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+        self._default_schedule("memory_consolidation")
+        registry = get_deterministic_schedule_job_registry()
+        assert "memory_consolidation" in registry.get("lifestyle", {})
 
     def test_memory_episode_cleanup_job_registered(self) -> None:
-        """memory_episode_cleanup is registered as a scheduled job."""
-        cfg = self._get_lifestyle_config()
-        job_names = [s.job_name for s in cfg.schedules if s.job_name]
-        assert "memory_episode_cleanup" in job_names, (
-            f"memory_episode_cleanup not found in scheduled jobs: {job_names}"
-        )
+        """memory_episode_cleanup is a module-default schedule dispatchable for lifestyle."""
+        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+        self._default_schedule("memory_episode_cleanup")
+        registry = get_deterministic_schedule_job_registry()
+        assert "memory_episode_cleanup" in registry.get("lifestyle", {})
 
     def test_memory_purge_superseded_job_registered(self) -> None:
-        """memory_purge_superseded is registered as a scheduled job."""
-        cfg = self._get_lifestyle_config()
-        job_names = [s.job_name for s in cfg.schedules if s.job_name]
-        assert "memory_purge_superseded" in job_names, (
-            f"memory_purge_superseded not found in scheduled jobs: {job_names}"
-        )
+        """memory_purge_superseded is a module-default schedule dispatchable for lifestyle."""
+        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+        self._default_schedule("memory_purge_superseded")
+        registry = get_deterministic_schedule_job_registry()
+        assert "memory_purge_superseded" in registry.get("lifestyle", {})
 
     def test_memory_consolidation_has_correct_cron(self) -> None:
-        """memory_consolidation runs every 6 hours (cron: 0 */6 * * *)."""
-        cfg = self._get_lifestyle_config()
-        schedule = next(
-            (s for s in cfg.schedules if s.job_name == "memory_consolidation"),
-            None,
-        )
-        assert schedule is not None
-        assert schedule.cron == "0 */6 * * *", (
-            f"memory_consolidation cron is '{schedule.cron}', expected '0 */6 * * *'"
+        """memory_consolidation's module-default cadence is every 6 hours."""
+        schedule = self._default_schedule("memory_consolidation")
+        assert schedule["cron"] == "0 */6 * * *", (
+            f"memory_consolidation cron is '{schedule['cron']}', expected '0 */6 * * *'"
         )
 
     def test_memory_episode_cleanup_has_correct_cron(self) -> None:
-        """memory_episode_cleanup runs daily at 04:00 (cron: 0 4 * * *)."""
-        cfg = self._get_lifestyle_config()
-        schedule = next(
-            (s for s in cfg.schedules if s.job_name == "memory_episode_cleanup"),
-            None,
-        )
-        assert schedule is not None
-        assert schedule.cron == "0 4 * * *", (
-            f"memory_episode_cleanup cron is '{schedule.cron}', expected '0 4 * * *'"
+        """memory_episode_cleanup's module-default cadence is daily at 04:00."""
+        schedule = self._default_schedule("memory_episode_cleanup")
+        assert schedule["cron"] == "0 4 * * *", (
+            f"memory_episode_cleanup cron is '{schedule['cron']}', expected '0 4 * * *'"
         )
 
     def test_memory_purge_superseded_has_correct_cron(self) -> None:
-        """memory_purge_superseded runs at 04:10 daily (cron: 10 4 * * *)."""
-        cfg = self._get_lifestyle_config()
-        schedule = next(
-            (s for s in cfg.schedules if s.job_name == "memory_purge_superseded"),
-            None,
-        )
-        assert schedule is not None
-        assert schedule.cron == "10 4 * * *", (
-            f"memory_purge_superseded cron is '{schedule.cron}', expected '10 4 * * *'"
+        """memory_purge_superseded's module-default cadence is daily at 04:10."""
+        schedule = self._default_schedule("memory_purge_superseded")
+        assert schedule["cron"] == "10 4 * * *", (
+            f"memory_purge_superseded cron is '{schedule['cron']}', expected '10 4 * * *'"
         )
 
     def test_all_memory_jobs_use_job_dispatch_mode(self) -> None:
-        """All three memory maintenance jobs use dispatch_mode='job'."""
-        from butlers.config import ScheduleDispatchMode
+        """All module-default memory maintenance schedules dispatch as jobs.
 
-        cfg = self._get_lifestyle_config()
+        ``ensure_module_default_schedule`` always inserts with
+        ``dispatch_mode='job'`` (see ``src/butlers/core/scheduler.py``) — this
+        is not configurable per schedule, unlike the old toml blocks.
+        """
         memory_jobs = [
             "memory_consolidation",
             "memory_episode_cleanup",
             "memory_purge_superseded",
         ]
         for job_name in memory_jobs:
-            schedule = next(
-                (s for s in cfg.schedules if s.job_name == job_name),
-                None,
-            )
-            assert schedule is not None, f"Schedule for {job_name!r} not found"
-            assert schedule.dispatch_mode == ScheduleDispatchMode.JOB, (
-                f"{job_name} dispatch_mode is {schedule.dispatch_mode!r}, expected 'job'"
-            )
+            # Existence check doubles as documentation of which defaults are covered.
+            self._default_schedule(job_name)
 
     def test_weekly_taste_digest_uses_prompt_dispatch_mode(self) -> None:
         """weekly-taste-digest uses dispatch_mode='prompt' (not job)."""
@@ -898,9 +903,19 @@ class TestLifestyleMemoryMaintenanceSchedule:
         )
 
     def test_at_least_four_scheduled_tasks_registered(self) -> None:
-        """Lifestyle butler has at least 4 scheduled tasks configured."""
+        """Lifestyle has at least 4 effective scheduled tasks.
+
+        Toml-declared entries plus the module-default memory maintenance
+        schedules that self-register on daemon startup (not present in the
+        raw toml parse).
+        """
+        from butlers.modules.memory import _DEFAULT_MAINTENANCE_SCHEDULES
+
         cfg = self._get_lifestyle_config()
-        assert len(cfg.schedules) >= 4, (
-            f"Expected at least 4 scheduled tasks, found {len(cfg.schedules)}: "
-            f"{[s.name for s in cfg.schedules]}"
+        toml_names = {s.name for s in cfg.schedules}
+        default_names = {s["name"] for s in _DEFAULT_MAINTENANCE_SCHEDULES}
+        effective_names = toml_names | default_names
+        assert len(effective_names) >= 4, (
+            f"Expected at least 4 effective scheduled tasks, found {len(effective_names)}: "
+            f"{sorted(effective_names)}"
         )

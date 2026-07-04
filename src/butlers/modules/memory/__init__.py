@@ -37,6 +37,47 @@ def _coerce_json_list(v: Any) -> Any:
 
 logger = logging.getLogger(__name__)
 
+# Module-default maintenance schedules, self-registered idempotently in
+# on_startup() for every butler with the memory module enabled (see
+# docs/redesigns/2026-07-04-jarvis-pursuit.md #3). `butler.toml` may still add
+# a `[[butler.schedule]]` block reusing the same `name` to override cadence;
+# TOML wins on cadence but is no longer required for the job to exist.
+#
+# `memory_consolidation_backfill` reuses the `memory_consolidation` job_name
+# with a larger `job_args.batch_size` on a tighter cadence — a bounded,
+# incremental catch-up pass for the pending-episode backlog (see
+# `_run_memory_consolidation_job` for the batch_size override and the
+# cc_spawner=None caveat: this claims/groups episodes but does not yet spawn
+# an LLM session to promote them to facts/rules).
+_DEFAULT_MAINTENANCE_SCHEDULES: tuple[dict[str, Any], ...] = (
+    {
+        "name": "memory_decay_sweep",
+        "cron": "15 3 * * *",
+        "job_name": "memory_decay_sweep",
+    },
+    {
+        "name": "memory_consolidation",
+        "cron": "0 */6 * * *",
+        "job_name": "memory_consolidation",
+    },
+    {
+        "name": "memory_episode_cleanup",
+        "cron": "0 4 * * *",
+        "job_name": "memory_episode_cleanup",
+    },
+    {
+        "name": "memory_purge_superseded",
+        "cron": "10 4 * * *",
+        "job_name": "memory_purge_superseded",
+    },
+    {
+        "name": "memory_consolidation_backfill",
+        "cron": "*/10 * * * *",
+        "job_name": "memory_consolidation",
+        "job_args": {"batch_size": 500},
+    },
+)
+
 
 def _infer_recovery_steps(exc: ValueError) -> str:
     """Infer actionable recovery steps from a memory tool ValueError.
@@ -277,6 +318,50 @@ class MemoryModule(Module):
         register_memory_context(_context_hook)
         register_memory_store_episode(_store_episode_hook)
         register_memory_forget(_memory_forget)
+
+        await self._register_default_maintenance_schedules(db)
+
+    async def _register_default_maintenance_schedules(self, db: Any) -> None:
+        """Self-register default memory maintenance schedules (module-default).
+
+        Called on every daemon boot for every butler with the memory module
+        enabled, so decay/consolidation/cleanup/purge/backfill jobs exist
+        without requiring a copy-pasted `[[butler.schedule]]` block in each
+        `roster/*/butler.toml` (see docs/redesigns/2026-07-04-jarvis-pursuit.md
+        #3: only 5 of 9 memory-enabled butlers had any of these scheduled, and
+        none had `memory_decay_sweep` — it had no handler at all).
+
+        This runs *before* `sync_schedules()` syncs TOML (lifecycle.py steps 9
+        vs. 11): TOML may still declare a `[[butler.schedule]]` block reusing
+        one of these names to override cadence, and TOML sync reclaims that
+        row afterwards — existence is the module's job, cadence is TOML's to
+        override. See `ensure_module_default_schedule` for the exact
+        idempotency/reclaim semantics.
+
+        Best-effort per schedule: a failure (e.g. `scheduled_tasks` not yet
+        migrated in some harness) is logged and does not fail module startup
+        or disable the module's MCP tools.
+        """
+        if db is None:
+            return
+        from butlers.core.scheduler import ensure_module_default_schedule
+
+        for entry in _DEFAULT_MAINTENANCE_SCHEDULES:
+            try:
+                await ensure_module_default_schedule(
+                    db.pool,
+                    name=entry["name"],
+                    cron=entry["cron"],
+                    job_name=entry["job_name"],
+                    job_args=entry.get("job_args"),
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to register default memory maintenance schedule %r; "
+                    "it may need to be scheduled manually via butler.toml",
+                    entry["name"],
+                    exc_info=True,
+                )
 
     async def on_shutdown(self) -> None:
         """Clear state references."""
