@@ -28,7 +28,7 @@ import DashboardPage from "@/pages/DashboardPage";
 // ---------------------------------------------------------------------------
 
 vi.mock("@/hooks/use-briefing", () => ({ useBriefing: vi.fn() }));
-vi.mock("@/hooks/use-butlers", () => ({ useButlers: vi.fn() }));
+vi.mock("@/hooks/use-butlers", () => ({ useButlersBoard: vi.fn() }));
 vi.mock("@/hooks/use-spend", () => ({
   useSpendSummary: vi.fn(),
   useTopSessions: vi.fn(),
@@ -41,8 +41,8 @@ vi.mock("@/hooks/use-approvals", () => ({
 }));
 vi.mock("@/hooks/use-approval-decisions.ts", () => ({
   useApprovalDecisionMutations: vi.fn(),
+  UNDO_WINDOW_MS: 5_000,
 }));
-vi.mock("@/hooks/use-system", () => ({ useButlerHeartbeats: vi.fn() }));
 vi.mock("@/hooks/use-notifications", () => ({ useNotificationStats: vi.fn() }));
 vi.mock("@/hooks/use-qa", () => ({ useQaSummary: vi.fn() }));
 vi.mock("@/hooks/use-timeline", () => ({ useTimeline: vi.fn() }));
@@ -52,18 +52,87 @@ vi.mock("@/hooks/use-timeline", () => ({ useTimeline: vi.fn() }));
 // ---------------------------------------------------------------------------
 
 import { useBriefing } from "@/hooks/use-briefing";
-import { useButlers } from "@/hooks/use-butlers";
+import { useButlersBoard } from "@/hooks/use-butlers";
 import { useSpendSummary, useTopSessions, useDailySpend } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics, usePendingApprovalsFlat } from "@/hooks/use-approvals";
 import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions.ts";
-import { useButlerHeartbeats } from "@/hooks/use-system";
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
 import { useTimeline } from "@/hooks/use-timeline";
+import type { BoardRow } from "@/api/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
+
+/**
+ * A GET /api/butlers/board row -- the canonical, cadence-aware liveness
+ * verdict (bu-qvnce.4). Defaults to "idle" (a fine, no-attention-needed
+ * butler) so overrides only need to set what a given test cares about.
+ */
+function boardRow(overrides: Partial<BoardRow> = {}): BoardRow {
+  return {
+    name: "general",
+    type: "butler",
+    description: null,
+    status: "ok",
+    activity: "idle",
+    cell_tone: "green",
+    eligibility: "active",
+    quarantine_reason: null,
+    quarantined_at: null,
+    sessions_24h: 0,
+    cost_today: null,
+    load_pct: null,
+    max_concurrent: null,
+    active_session_count: 0,
+    last_session_at: null,
+    last_heartbeat_at: null,
+    heartbeat_age_seconds: null,
+    heartbeat_unavailable: false,
+    schema_unreachable: false,
+    hourly_stripe: [],
+    hourly_total: 0,
+    cadence_seconds: null,
+    cadence_label: null,
+    silence_seconds: null,
+    cadence_status: "on_schedule",
+    ...overrides,
+  };
+}
+
+/**
+ * The default two-butler board fixture: "general" is actively running
+ * (healthy, no attention needed), "health" is cadence-overdue (needsAttention
+ * -- surfaces both in the attention list AND depresses the Healthy KPI, since
+ * bu-qvnce.4 derives both from this exact same per-row verdict).
+ */
+function defaultBoardRows(): BoardRow[] {
+  return [
+    boardRow({
+      name: "general",
+      sessions_24h: 3,
+      cost_today: 0.3,
+      activity: "running",
+      active_session_count: 1,
+      last_session_at: "2026-05-14T11:55:00.000Z",
+      last_heartbeat_at: "2026-05-14T11:59:00.000Z",
+      heartbeat_age_seconds: 30,
+    }),
+    boardRow({
+      name: "health",
+      sessions_24h: 2,
+      cost_today: 0.12,
+      activity: "overdue",
+      active_session_count: 0,
+      last_session_at: "2026-05-14T11:30:00.000Z",
+      last_heartbeat_at: "2026-05-14T11:40:00.000Z",
+      heartbeat_age_seconds: 1_200,
+      silence_seconds: 1_200,
+      cadence_status: "overdue",
+    }),
+  ];
+}
 
 /** A briefing for a given state_class. */
 function makeBriefing(
@@ -87,19 +156,9 @@ function makeBriefing(
 
 function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.") {
   vi.mocked(useBriefing).mockReturnValue(makeBriefing(stateClass, "llm", headline) as AnyMock);
-  vi.mocked(useButlers).mockReturnValue({
+  vi.mocked(useButlersBoard).mockReturnValue({
     data: {
-      data: [
-        { name: "general", status: "ok", port: 40101, type: "butler", sessions_24h: 3 },
-        {
-          name: "health",
-          status: "ok",
-          port: 40102,
-          type: "butler",
-          sessions_24h: 2,
-          last_session_started_at: null,
-        },
-      ],
+      data: { rows: defaultBoardRows(), aggregates: {}, generated_at: "2026-05-14T12:00:00.000Z" },
       meta: {},
     },
     isLoading: false,
@@ -160,36 +219,21 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
     isError: false,
     error: null,
   } as AnyMock);
+  // scheduleDecision defaults to firing `run()` synchronously (mirrors the
+  // real hook's behavior when `undoWindow` isn't opted into) so existing
+  // "calls the mutation with the row's id" assertions below stay a click ->
+  // immediate-call check; the shared undo-window contract itself is covered
+  // by its own describe block further down with the REAL hook.
   vi.mocked(useApprovalDecisionMutations).mockReturnValue({
     approveMut: { mutate: vi.fn(), isPending: false, variables: undefined },
     denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
     deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
-  } as AnyMock);
-  vi.mocked(useButlerHeartbeats).mockReturnValue({
-    data: {
-      data: {
-        butlers: [
-          {
-            name: "general",
-            last_heartbeat_at: "2026-05-14T11:59:00.000Z",
-            last_session_at: "2026-05-14T11:55:00.000Z",
-            active_session_count: 1,
-            heartbeat_age_seconds: 30,
-          },
-          {
-            name: "health",
-            last_heartbeat_at: "2026-05-14T11:40:00.000Z",
-            last_session_at: "2026-05-14T11:30:00.000Z",
-            active_session_count: 0,
-            heartbeat_age_seconds: 1_200,
-          },
-        ],
-      },
-      meta: {},
-    },
-    isLoading: false,
-    isError: false,
-    error: null,
+    scheduledDecisions: new Map(),
+    scheduleDecision: vi.fn((_id: string, _verb: string, run: () => void) => {
+      run();
+      return true;
+    }),
+    cancelDecision: vi.fn(),
   } as AnyMock);
   vi.mocked(useNotificationStats).mockReturnValue({
     data: { data: { total: 0, sent: 0, failed: 0, by_channel: {}, by_butler: {} }, meta: {} },
@@ -352,25 +396,15 @@ describe("DashboardPage -- AttentionList", () => {
   });
 
   it("renders 'Nothing waiting.' when there are no current attention rows", () => {
-    vi.mocked(useButlerHeartbeats).mockReturnValue({
+    vi.mocked(useButlersBoard).mockReturnValue({
       data: {
         data: {
-          butlers: [
-            {
-              name: "general",
-              last_heartbeat_at: "2026-05-14T11:59:00.000Z",
-              last_session_at: "2026-05-14T11:55:00.000Z",
-              active_session_count: 1,
-              heartbeat_age_seconds: 30,
-            },
-            {
-              name: "health",
-              last_heartbeat_at: "2026-05-14T11:59:00.000Z",
-              last_session_at: "2026-05-14T11:30:00.000Z",
-              active_session_count: 0,
-              heartbeat_age_seconds: 30,
-            },
+          rows: [
+            boardRow({ name: "general", activity: "running", active_session_count: 1 }),
+            boardRow({ name: "health", activity: "idle" }),
           ],
+          aggregates: {},
+          generated_at: "2026-05-14T12:00:00.000Z",
         },
         meta: {},
       },
@@ -480,10 +514,15 @@ describe("DashboardPage -- RuntimeSummaryKpi", () => {
     expect(html).toContain(">2<");
   });
 
-  it("renders Healthy KPI cell", () => {
+  it("renders Healthy KPI cell derived from the SAME board verdict as the attention list (bu-qvnce.4)", () => {
+    // "health" is cadence-overdue in the default fixture (it also shows up
+    // in the "Needs attention" list below, per the next test) -- Healthy
+    // must therefore read 1, not 2. Before bu-qvnce.4 this KPI was computed
+    // from the butler's raw `status` field independently of the attention
+    // list's own verdict, so it could -- and did -- disagree with it.
     const html = renderPage();
     expect(html).toContain("Healthy");
-    expect(html).toContain(">2<");
+    expect(html).toContain(">1<");
   });
 
   it("renders Sessions · 24h KPI cell", () => {
@@ -764,9 +803,9 @@ describe("DashboardPage -- OperationsNowList", () => {
 // ---------------------------------------------------------------------------
 // Butler-health source failure (bu-k5d8c)
 //
-// Regression guard: a failing GET /api/butlers must NOT render as a serene,
-// healthy-looking empty page ("No butlers active."). It must surface a
-// degraded state — both in the ButlerIndex empty slot and as a named Now
+// Regression guard: a failing GET /api/butlers/board must NOT render as a
+// serene, healthy-looking empty page ("No butlers active."). It must surface
+// a degraded state — both in the ButlerIndex empty slot and as a named Now
 // error row — mirroring how the sibling sources surface their failures.
 // ---------------------------------------------------------------------------
 
@@ -774,15 +813,10 @@ describe("DashboardPage -- butler-health source failure", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     setDefaultData();
-    // Heartbeats also depend on the same dead source in practice; clear them
-    // so the page genuinely has no butler rows to fall back on.
-    vi.mocked(useButlerHeartbeats).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: true,
-      error: new Error("Network error"),
-    } as AnyMock);
-    vi.mocked(useButlers).mockReturnValue({
+    // The board is the single source for both the index rows AND the runtime
+    // KPIs/attention list now (bu-qvnce.4) -- one query failing means no
+    // butler rows to fall back on anywhere.
+    vi.mocked(useButlersBoard).mockReturnValue({
       data: undefined,
       isLoading: false,
       isError: true,
@@ -884,6 +918,12 @@ describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-8
       approveMut: { mutate: approveMutate, isPending: false, variables: undefined },
       denyMut: { mutate: denyMutate, isPending: false, variables: undefined },
       deferMut: { mutate: deferMutate, isPending: false, variables: undefined },
+      scheduledDecisions: new Map(),
+      scheduleDecision: (_id: string, _verb: string, run: () => void) => {
+        run();
+        return true;
+      },
+      cancelDecision: vi.fn(),
     } as AnyMock);
     vi.mocked(usePendingApprovalsFlat).mockReturnValue({
       data: {
@@ -932,5 +972,139 @@ describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-8
     const html = renderPage();
     expect(html).toContain("3 pending approvals");
     expect(html).not.toContain(">Approve<");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared undo-window contract wiring (bu-qvnce.4): a decision made from the
+// dashboard's one-click attention list must be just as undoable as one made
+// on /approvals -- clicking Approve/Deny/Defer schedules the decision
+// (through the shared useApprovalDecisionMutations hook) rather than firing
+// the mutation immediately, and the row shows an inline pending/undo state
+// while it's outstanding. The hook's own timer/undo mechanics are unit-tested
+// directly in use-approval-decisions.test.tsx; this only verifies DashboardPage
+// wires scheduleDecision/scheduledDecisions/cancelDecision correctly.
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- shared undo-window contract (bu-qvnce.4)", () => {
+  let container: HTMLDivElement | undefined;
+  let root: Root | undefined;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+    vi.mocked(usePendingApprovalsFlat).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: "a1",
+            butler: "general",
+            tool_name: "send_email",
+            status: "pending",
+            created_at: "2026-05-14T10:00:00Z",
+            expires_at: null,
+            why: null,
+          },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root!.unmount();
+      });
+    }
+    container?.remove();
+    container = undefined;
+    root = undefined;
+  });
+
+  function renderLive() {
+    const queryClient = new QueryClient();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const r = root;
+    act(() => {
+      r.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <DashboardPage />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  function findButton(label: string): HTMLButtonElement | undefined {
+    return Array.from(container!.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === label,
+    );
+  }
+
+  it("clicking Approve schedules the decision instead of calling the mutation directly", () => {
+    const approveMutate = vi.fn();
+    const scheduleDecision = vi.fn();
+    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+      approveMut: { mutate: approveMutate, isPending: false, variables: undefined },
+      denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      scheduledDecisions: new Map(),
+      scheduleDecision,
+      cancelDecision: vi.fn(),
+    } as AnyMock);
+
+    renderLive();
+    act(() => {
+      findButton("Approve")!.click();
+    });
+
+    expect(scheduleDecision).toHaveBeenCalledWith("a1", "approve", expect.any(Function));
+    // The mutation itself must NOT fire on click -- only scheduleDecision's
+    // own timer (verified in use-approval-decisions.test.tsx) invokes it.
+    expect(approveMutate).not.toHaveBeenCalled();
+  });
+
+  it("renders the inline 'Approving in 5s · Undo' state once a decision is scheduled, replacing the verb buttons", () => {
+    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+      approveMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      scheduledDecisions: new Map([["a1", { verb: "approve", timeoutId: 0 }]]),
+      scheduleDecision: vi.fn(),
+      cancelDecision: vi.fn(),
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("Approving in 5s");
+    expect(html).toContain(">Undo<");
+    expect(html).not.toContain(">Approve<");
+    expect(html).not.toContain(">Deny<");
+    expect(html).not.toContain(">Defer<");
+  });
+
+  it("clicking Undo on a scheduled row calls cancelDecision with the row's id", () => {
+    const cancelDecision = vi.fn();
+    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+      approveMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      scheduledDecisions: new Map([["a1", { verb: "approve", timeoutId: 0 }]]),
+      scheduleDecision: vi.fn(),
+      cancelDecision,
+    } as AnyMock);
+
+    renderLive();
+    act(() => {
+      findButton("Undo")!.click();
+    });
+
+    expect(cancelDecision).toHaveBeenCalledWith("a1");
   });
 });

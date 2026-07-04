@@ -1,15 +1,13 @@
 import type {
   ApprovalMetrics,
   ApprovalSummary,
-  ButlerHeartbeat,
-  ButlerSummary,
-  SpendSummary,
-  HeartbeatFacts,
+  BoardRow,
   Issue,
   NotificationStats,
   QaSummary,
   TimelineEvent,
 } from "@/api/types";
+import { NEEDS_YOU_ACTIVITIES } from "@/hooks/use-butler-status-board";
 
 export type OverviewSeverity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -24,7 +22,6 @@ export type OverviewAttentionKind =
 export interface OverviewDerivationOptions {
   now?: Date;
   recentIssueHours?: number;
-  staleHeartbeatSeconds?: number;
   includeOldIssueRows?: boolean;
   maxRecentIssueRows?: number;
   maxTimelineRows?: number;
@@ -33,12 +30,18 @@ export interface OverviewDerivationOptions {
 }
 
 export interface OverviewDerivationInput {
-  butlers?: ButlerSummary[];
+  /**
+   * Rows from GET /api/butlers/board -- the SAME canonical, cadence-aware
+   * liveness verdict the /butlers status board renders (bu-qvnce.4). The
+   * Overview no longer derives its own status/threshold classification from
+   * a raw butler list + heartbeat facts; `row.activity` is the single source
+   * of truth for whether a butler needs attention (see NEEDS_YOU_ACTIVITIES).
+   */
+  boardRows?: BoardRow[];
+  /** True when GET /api/butlers/board failed to load. */
   butlersError?: boolean;
-  costs?: SpendSummary | null;
   issues?: Issue[];
   issuesError?: boolean;
-  heartbeats?: HeartbeatFacts | null;
   approvalMetrics?: ApprovalMetrics | null;
   /**
    * Individual pending approvals (top few, any order) -- when present, the
@@ -143,14 +146,9 @@ export interface OverviewTriageModel {
 }
 
 const DEFAULT_RECENT_ISSUE_HOURS = 24;
-const DEFAULT_STALE_HEARTBEAT_SECONDS = 5 * 60;
 const DEFAULT_MAX_RECENT_ISSUE_ROWS = 5;
 const DEFAULT_MAX_TIMELINE_ROWS = 2;
 const DEFAULT_MAX_ATTENTION_APPROVAL_ROWS = 3;
-
-const HEALTHY_STATUSES = new Set(["ok", "online", "healthy"]);
-const DEGRADED_STATUSES = new Set(["degraded", "waiting", "paused", "error", "failed"]);
-const OFFLINE_STATUSES = new Set(["offline", "down", "unavailable"]);
 
 export function deriveOverviewTriageModel(
   input: OverviewDerivationInput,
@@ -158,27 +156,13 @@ export function deriveOverviewTriageModel(
 ): OverviewTriageModel {
   const now = options.now ?? new Date();
   const recentIssueHours = options.recentIssueHours ?? DEFAULT_RECENT_ISSUE_HOURS;
-  const staleHeartbeatSeconds =
-    options.staleHeartbeatSeconds ?? DEFAULT_STALE_HEARTBEAT_SECONDS;
   const maxRecentIssueRows = options.maxRecentIssueRows ?? DEFAULT_MAX_RECENT_ISSUE_ROWS;
   const maxTimelineRows = options.maxTimelineRows ?? DEFAULT_MAX_TIMELINE_ROWS;
   const maxAttentionApprovalRows =
     options.maxAttentionApprovalRows ?? DEFAULT_MAX_ATTENTION_APPROVAL_ROWS;
 
-  const butlers = (input.butlers ?? []).filter((butler) => butler.type === "butler");
-  const heartbeatByName = new Map<string, ButlerHeartbeat>(
-    (input.heartbeats?.butlers ?? []).map((heartbeat) => [heartbeat.name, heartbeat]),
-  );
-
-  const operationsRows = butlers.map((butler) =>
-    deriveButlerIndexRow(
-      butler,
-      heartbeatByName.get(butler.name) ?? null,
-      input.costs?.by_butler?.[butler.name] ?? 0,
-      staleHeartbeatSeconds,
-      input.heartbeats != null,
-    ),
-  );
+  const butlerRows = (input.boardRows ?? []).filter((row) => row.type === "butler");
+  const operationsRows = butlerRows.map(deriveButlerIndexRow);
 
   const issueBuckets = bucketIssues(input.issues ?? [], now, recentIssueHours);
   const runtimeRows = operationsRows
@@ -254,9 +238,13 @@ export function deriveOverviewTriageModel(
 
   return {
     kpis: {
-      totalButlers: butlers.length,
-      healthyButlers: butlers.filter((butler) => isHealthyStatus(butler.status)).length,
-      sessions24h: butlers.reduce((sum, butler) => sum + (butler.sessions_24h ?? 0), 0),
+      totalButlers: butlerRows.length,
+      // "Healthy" now counts exactly the rows the attention list does NOT
+      // flag (the inverse of needsAttention below) -- the KPI and the
+      // attention list are derived from the identical per-row classification,
+      // so they can never disagree about which butlers are fine (bu-qvnce.4).
+      healthyButlers: operationsRows.filter((row) => !row.needsAttention).length,
+      sessions24h: butlerRows.reduce((sum, row) => sum + (row.sessions_24h ?? 0), 0),
       pendingApprovals: input.approvalMetrics?.total_pending ?? 0,
     },
     attentionRows,
@@ -268,45 +256,37 @@ export function deriveOverviewTriageModel(
   };
 }
 
-function deriveButlerIndexRow(
-  butler: ButlerSummary,
-  heartbeat: ButlerHeartbeat | null,
-  costUsd: number,
-  staleHeartbeatSeconds: number,
-  heartbeatSourceLoaded: boolean,
-): OverviewButlerIndexRow {
-  const heartbeatAgeSeconds = heartbeat?.heartbeat_age_seconds ?? null;
-  const status = butler.status.toLowerCase();
-  const isMissingHeartbeat = heartbeatSourceLoaded && heartbeat == null;
-  const isStaleHeartbeat =
-    heartbeatAgeSeconds != null && heartbeatAgeSeconds > staleHeartbeatSeconds;
-
-  let runtimeState: OverviewRuntimeState = "unknown";
-  if (OFFLINE_STATUSES.has(status) || isMissingHeartbeat) {
-    runtimeState = "offline";
-  } else if (DEGRADED_STATUSES.has(status)) {
-    runtimeState = "degraded";
-  } else if (isStaleHeartbeat) {
-    runtimeState = "stale";
-  } else if ((heartbeat?.active_session_count ?? 0) > 0) {
-    runtimeState = "active";
-  } else if (isHealthyStatus(status)) {
-    runtimeState = "healthy";
+/** Maps the board's canonical activity verb onto the Overview's own runtime-state vocabulary. */
+function runtimeStateForActivity(activity: BoardRow["activity"]): OverviewRuntimeState {
+  switch (activity) {
+    case "running":
+      return "active";
+    case "idle":
+      return "healthy";
+    case "overdue":
+      return "stale";
+    case "offline":
+      return "offline";
+    case "quarantined":
+      return "degraded";
+    case "unknown":
+      return "unknown";
   }
+}
 
+function deriveButlerIndexRow(row: BoardRow): OverviewButlerIndexRow {
   return {
-    name: butler.name,
-    status: butler.status,
-    sessions24h: butler.sessions_24h ?? 0,
-    costUsd,
-    lastSessionAt: heartbeat?.last_session_at ?? butler.last_session_started_at ?? null,
-    activeSessionCount: heartbeat?.active_session_count ?? 0,
-    heartbeatAgeSeconds,
-    runtimeState,
-    needsAttention:
-      runtimeState === "offline" ||
-      runtimeState === "degraded" ||
-      runtimeState === "stale",
+    name: row.name,
+    status: row.status,
+    sessions24h: row.sessions_24h,
+    costUsd: row.cost_today ?? 0,
+    lastSessionAt: row.last_session_at,
+    activeSessionCount: row.active_session_count,
+    heartbeatAgeSeconds: row.heartbeat_age_seconds,
+    runtimeState: runtimeStateForActivity(row.activity),
+    // Same set the /butlers status board's needsYou strip uses (bu-qvnce.1) --
+    // one canonical "does this need a look" verdict shared by both surfaces.
+    needsAttention: NEEDS_YOU_ACTIVITIES.has(row.activity),
   };
 }
 
@@ -680,10 +660,6 @@ function normalizeIssueSeverity(severity: string): OverviewSeverity {
     default:
       return "info";
   }
-}
-
-function isHealthyStatus(status: string): boolean {
-  return HEALTHY_STATUSES.has(status.toLowerCase());
 }
 
 function issueRecencyDetail(issue: Issue, now: Date): string | null {

@@ -30,7 +30,7 @@
  * bu-86c4c.12 — One Trust Console: Autonomy panel, /approvals/:id, ranking
  */
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -51,7 +51,11 @@ import {
   useConfirmAutonomySuggestion,
   useDismissAutonomySuggestion,
 } from "@/hooks/use-approvals.ts";
-import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions.ts";
+import {
+  useApprovalDecisionMutations,
+  UNDO_WINDOW_MS,
+  type DecisionVerb,
+} from "@/hooks/use-approval-decisions.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
@@ -64,67 +68,23 @@ import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
 
 const PENDING_PAGE_SIZE = 100;
 
-// Keyboard-triage decision types + timing (bu-86c4c.14 — Act loop / hot
-// queue). Keyboard verbs (a/d/x) are the fast, blind-fire path — a slip of
-// the key is cheap to make during rapid triage — so they route through a
-// short delay-then-fire window with an undo toast rather than calling the
-// mutation immediately. Mouse clicks on the dossier's own Approve/Deny/Defer
-// buttons stay instant (bu-approvals-fast-deny's one-click design), since
-// those are deliberate, already-read-the-dossier actions.
-type DecisionVerb = "approve" | "deny" | "defer";
-const UNDO_WINDOW_MS = 5_000;
+// Keyboard-triage decision timing (bu-86c4c.14 — Act loop / hot queue).
+// Keyboard verbs (a/d/x) are the fast, blind-fire path — a slip of the key is
+// cheap to make during rapid triage — so they route through a short
+// delay-then-fire window with an undo toast rather than calling the mutation
+// immediately. Mouse clicks on the dossier's own Approve/Deny/Defer buttons
+// stay instant (bu-approvals-fast-deny's one-click design), since those are
+// deliberate, already-read-the-dossier actions.
+//
+// The scheduling machinery itself (DecisionVerb, UNDO_WINDOW_MS, the
+// module-scoped scheduled-decisions store, scheduleDecision/cancelDecision)
+// now lives in useApprovalDecisionMutations (bu-qvnce.4) so DashboardPage's
+// one-click attention-list rows share the IDENTICAL undo-window contract
+// instead of firing irreversibly.
+//
 // Keyboard defer has no UI to pick an hour count -- match the dossier's own
 // default (see Dossier's deferHours state below).
 const KEYBOARD_DEFER_HOURS = 24;
-
-interface ScheduledDecision {
-  verb: DecisionVerb;
-  timeoutId: number;
-}
-
-// ---------------------------------------------------------------------------
-// Scheduled-decision store -- MODULE SCOPE, not component state.
-//
-// A decision scheduled via a/d/x must survive ApprovalsPage unmounting mid
-// undo-window: navigating away from /approvals and back within 5s is a
-// normal part of fast triage, not an edge case. If this lived in a `useState`
-// on the page component, a remount would start from an empty map -- the
-// original `window.setTimeout` from the unmounted instance keeps ticking
-// unseen, and the fresh instance would happily schedule a SECOND, independent
-// decision for the same id. Both timers eventually fire and the mutation
-// double-submits (confirmed: denyApproval called twice for one id). Keeping
-// the map here, outside any component instance, makes "is this id already
-// scheduled" and "cancel this id's timer" globally consistent regardless of
-// how many times the page mounts while the window is open.
-// ---------------------------------------------------------------------------
-let scheduledDecisionsSnapshot: ReadonlyMap<string, ScheduledDecision> = new Map();
-const scheduledDecisionsListeners = new Set<() => void>();
-
-function setScheduledDecisionsSnapshot(next: Map<string, ScheduledDecision>) {
-  scheduledDecisionsSnapshot = next;
-  for (const listener of scheduledDecisionsListeners) listener();
-}
-
-function subscribeScheduledDecisions(onStoreChange: () => void) {
-  scheduledDecisionsListeners.add(onStoreChange);
-  return () => {
-    scheduledDecisionsListeners.delete(onStoreChange);
-  };
-}
-
-function getScheduledDecisionsSnapshot() {
-  return scheduledDecisionsSnapshot;
-}
-
-/** Cancel and clear an id's scheduled decision, if one exists. */
-function cancelScheduledDecision(id: string) {
-  const entry = scheduledDecisionsSnapshot.get(id);
-  if (!entry) return;
-  window.clearTimeout(entry.timeoutId);
-  const next = new Map(scheduledDecisionsSnapshot);
-  next.delete(id);
-  setScheduledDecisionsSnapshot(next);
-}
 
 // ---------------------------------------------------------------------------
 // Query keys
@@ -1232,38 +1192,13 @@ export default function ApprovalsPage() {
   );
   const pending = rankedPending;
 
-  // Keyboard-triage scheduled decisions (bu-86c4c.14 -- undo window). An id
-  // maps to the verb chosen via a/d/x while its real mutation waits out
-  // UNDO_WINDOW_MS; the item stays visible -- dimmed, verb-labeled, per-item
-  // pending state -- in the rail/dossier until the window elapses or the
-  // owner hits undo. Dossier mouse clicks below bypass this map entirely and
-  // fire instantly (bu-approvals-fast-deny's one-click design).
-  //
-  // Backed by the module-scoped store above (not useState) so a remount
-  // mid-window picks up the already-scheduled state instead of double
-  // scheduling -- see the store's doc comment.
-  const scheduledDecisions = useSyncExternalStore(
-    subscribeScheduledDecisions,
-    getScheduledDecisionsSnapshot,
-  );
-
-  // The implicit default selection (no :id in the URL) must skip scheduled
-  // items -- otherwise triaging the top-ranked item via keyboard would keep
-  // re-selecting the very item just decided until its undo window elapses.
-  const actionablePending = useMemo(
-    () => rankedPending.filter((a) => !scheduledDecisions.has(a.id)),
-    [rankedPending, scheduledDecisions],
-  );
-  const firstId = actionablePending[0]?.id;
-  const effectiveSelected = routeId ?? firstId ?? null;
-  // Show "Load more" only when the last response was full (may be more results).
-  const hasMore = pending.length === pendingLimit;
-
   // Advance the URL selection past a just-decided item, skipping any ids in
   // `skipIds` (other items already scheduled mid-triage). Shared by the
   // instant dossier-button path (via onDecided below) and the keyboard
   // schedule path (called immediately at schedule time, since the real
   // mutation -- and its own onDecided call -- doesn't fire until later).
+  // (Function declaration -- hoisted, so it's safe to reference from the
+  // useApprovalDecisionMutations() call below before this textual point.)
   function advanceSelectionPast(id: string, skipIds: Set<string> = new Set()) {
     if (routeId !== id) return;
     const idx = rankedPending.findIndex((a) => a.id === id);
@@ -1281,10 +1216,32 @@ export default function ApprovalsPage() {
   // row from every "waiting" cache immediately, with rollback-on-error --
   // shared with DashboardPage's inline attention-list actions via
   // useApprovalDecisionMutations (bu-86c4c.14, built on useOptimisticMutation
-  // from bu-86c4c.13).
-  const { approveMut, denyMut, deferMut } = useApprovalDecisionMutations({
+  // from bu-86c4c.13). `undoWindow: true` also gives this page the shared
+  // scheduleDecision/cancelDecision/scheduledDecisions undo-window contract
+  // (bu-qvnce.4) instead of a page-local copy of the same machinery.
+  const {
+    approveMut,
+    denyMut,
+    deferMut,
+    scheduledDecisions,
+    scheduleDecision: scheduleHookDecision,
+    cancelDecision,
+  } = useApprovalDecisionMutations({
     onDecided: (id) => advanceSelectionPast(id),
+    undoWindow: true,
   });
+
+  // The implicit default selection (no :id in the URL) must skip scheduled
+  // items -- otherwise triaging the top-ranked item via keyboard would keep
+  // re-selecting the very item just decided until its undo window elapses.
+  const actionablePending = useMemo(
+    () => rankedPending.filter((a) => !scheduledDecisions.has(a.id)),
+    [rankedPending, scheduledDecisions],
+  );
+  const firstId = actionablePending[0]?.id;
+  const effectiveSelected = routeId ?? firstId ?? null;
+  // Show "Load more" only when the last response was full (may be more results).
+  const hasMore = pending.length === pendingLimit;
 
   // ---------------------------------------------------------------------
   // Keyboard-triage scheduling (bu-86c4c.14 -- a/d/x, undo-toast)
@@ -1300,22 +1257,15 @@ export default function ApprovalsPage() {
     return summary ? summary.tool_name.replace(/_/g, " ") : "approval";
   }
 
-  // Thin wrapper kept local so JSX callbacks read naturally as "cancel the
-  // decision for this page's selection" -- the actual bookkeeping lives in
-  // the module-scoped store (see cancelScheduledDecision above).
-  const cancelDecision = cancelScheduledDecision;
-
+  // Page-specific wrapper around the hook's shared scheduleDecision: adds
+  // this page's own toast-with-undo-action + URL-selection-advance behavior.
+  // (DashboardPage's rows render their own inline "Approving in 5s" state via
+  // AttentionList instead of a toast -- same underlying schedule, different
+  // page-level presentation.)
   function scheduleDecision(id: string, verb: DecisionVerb, run: () => void) {
-    if (scheduledDecisions.has(id)) return; // already scheduled -- ignore repeat verbs
+    const scheduled = scheduleHookDecision(id, verb, run);
+    if (!scheduled) return; // already scheduled -- ignore repeat verbs
 
-    const timeoutId = window.setTimeout(() => {
-      const next = new Map(scheduledDecisionsSnapshot);
-      next.delete(id);
-      setScheduledDecisionsSnapshot(next);
-      run();
-    }, UNDO_WINDOW_MS);
-
-    setScheduledDecisionsSnapshot(new Map(scheduledDecisions).set(id, { verb, timeoutId }));
     advanceSelectionPast(id, new Set(scheduledDecisions.keys()));
 
     toast(`${pendingVerbLabel(verb)} ${summaryLabel(id)}`, {

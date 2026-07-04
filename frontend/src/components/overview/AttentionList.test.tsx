@@ -284,6 +284,89 @@ describe("AttentionList -- inline approve/deny/defer verbs (bu-86c4c.14)", () =>
 });
 
 // ---------------------------------------------------------------------------
+// Scheduled-decision undo state (bu-qvnce.4 -- shared grace-window contract):
+// while a row's decision is scheduled but not yet fired, it shows an inline
+// "Verb in Ns" label + Undo control instead of its verb buttons.
+// ---------------------------------------------------------------------------
+
+describe("AttentionList -- scheduled-decision undo state (bu-qvnce.4)", () => {
+  let container: HTMLElement | undefined;
+  let root: Root | undefined;
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root!.unmount();
+      });
+    }
+    container?.remove();
+    container = undefined;
+    root = undefined;
+  });
+
+  function renderLive(items: AttentionListItem[]) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const r = root;
+    act(() => {
+      r.render(
+        <MemoryRouter>
+          <AttentionList items={items} />
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  function findButton(label: string): HTMLButtonElement | undefined {
+    return Array.from(container!.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === label,
+    );
+  }
+
+  it("renders the pending-decision label and Undo instead of verb buttons while scheduled", () => {
+    const html = render([
+      {
+        id: "approvals:a1",
+        severity: "medium",
+        title: "send email",
+        href: "/approvals/a1",
+        onApprove: () => {},
+        onDeny: () => {},
+        onDefer: () => {},
+        pendingDecisionLabel: "Approving in 5s",
+        onUndoDecision: () => {},
+      },
+    ]);
+    expect(html).toContain("Approving in 5s");
+    expect(html).toContain(">Undo<");
+    expect(html).not.toContain(">Approve<");
+    expect(html).not.toContain(">Deny<");
+    expect(html).not.toContain(">Defer<");
+    // The drill-down link still survives alongside the pending state.
+    expect(html).toContain('href="/approvals/a1"');
+  });
+
+  it("calls onUndoDecision when Undo is clicked", () => {
+    const onUndoDecision = vi.fn();
+    renderLive([
+      {
+        id: "approvals:a1",
+        severity: "medium",
+        title: "send email",
+        pendingDecisionLabel: "Denying in 5s",
+        onUndoDecision,
+      },
+    ]);
+
+    act(() => {
+      findButton("Undo")!.click();
+    });
+    expect(onUndoDecision).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Full-row drill-down (bu-86c4c.4 -- JARVIS audit move 2b): a row without its
 // own inline actions is a real <a> covering the whole row, not just the 16px
 // trailing arrow glyph -- cmd/middle-click and screen-reader "link"

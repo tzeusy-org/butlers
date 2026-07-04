@@ -15,13 +15,16 @@
  * Data sources (no backend aggregation endpoint required):
  *   useBriefing()           -- DateEyebrow, BriefingStatus, Headline, Elaboration
  *   useIssues()             -- AttentionList (client-side stale/severity ordering)
- *   useButlers()            -- ButlerIndex, RuntimeSummaryKpi
- *   useSpendSummary("today") -- ButlerIndex per-butler cost
+ *   GET /api/butlers/board  -- ButlerIndex, RuntimeSummaryKpi, runtime attention
+ *                              rows -- the SAME canonical, cadence-aware
+ *                              liveness verdict the /butlers status board
+ *                              renders (bu-qvnce.4 -- one liveness model,
+ *                              not two independently-maintained ones).
+ *   useSpendSummary("today") -- CostWidget aggregate + top-butler breakdown
  *   useApprovalMetrics()    -- KPI "approvals" cell, OperationsNowList approvals row
  *   usePendingApprovalsFlat() -- individual pending approvals for the inline
  *                                approve/deny/defer rows below (falls back to
  *                                the useApprovalMetrics aggregate row on error)
- *   useButlerHeartbeats()   -- RuntimeSummaryKpi runtime state, stale detection
  *   useNotificationStats()  -- OperationsNowList notification pressure row
  *   useQaSummary()          -- OperationsNowList QA state row
  *   useTimeline()           -- OperationsNowList recent activity rows
@@ -34,18 +37,25 @@
  * bu-tn1po.6   -- Compose all surfaces into this triage cockpit page.
  * bu-86c4c.14  -- Act loop / hot queue: inline approve/deny/defer on the
  *                 Needs-attention list's actionable approval rows.
+ * bu-qvnce.4   -- Dashboard coherence: the KPI strip and the attention list
+ *                 now derive from the identical board verdict, so they can
+ *                 never contradict each other; dashboard approve/deny/defer
+ *                 rows share the same undo-window grace contract as /approvals.
  */
 
 import { useMemo } from "react";
 
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
-import { useButlers } from "@/hooks/use-butlers";
+import { useButlersBoard } from "@/hooks/use-butlers";
 import { useSpendSummary, useTopSessions, useDailySpend } from "@/hooks/use-spend";
 import { useIssues } from "@/hooks/use-issues";
 import { useApprovalMetrics, usePendingApprovalsFlat } from "@/hooks/use-approvals";
-import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions.ts";
-import { useButlerHeartbeats } from "@/hooks/use-system";
+import {
+  useApprovalDecisionMutations,
+  UNDO_WINDOW_MS,
+  type DecisionVerb,
+} from "@/hooks/use-approval-decisions.ts";
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
 import { useTimeline } from "@/hooks/use-timeline";
@@ -74,7 +84,16 @@ export default function DashboardPage() {
   } = useBriefing();
 
   // Supporting data
-  const butlersQuery = useButlers();
+  //
+  // Board rows are the SAME canonical liveness verdict the /butlers status
+  // board renders (GET /api/butlers/board, bu-qvnce.4) -- the Overview no
+  // longer maintains its own butlers-list + heartbeats-facts pair with its
+  // own stale-threshold classification. useButlersBoard() shares its
+  // queryKey with the board page's useButlerStatusBoard(), so react-query
+  // dedupes the request AND the event bus's session-patch
+  // (event-cache-registry.ts's sessionPatch, which already invalidates
+  // ["butlers","board"]) live-refreshes this page too, not just /butlers.
+  const boardQuery = useButlersBoard();
   const costQuery = useSpendSummary("today");
   const issuesQuery = useIssues();
   const approvalMetricsQuery = useApprovalMetrics();
@@ -82,8 +101,12 @@ export default function DashboardPage() {
   // (bu-86c4c.14). Small cap -- this is a "what needs a look" preview, not
   // the full triage queue (that's /approvals).
   const pendingApprovalsQuery = usePendingApprovalsFlat(3);
-  const { approveMut, denyMut, deferMut } = useApprovalDecisionMutations();
-  const heartbeatQuery = useButlerHeartbeats();
+  // undoWindow: true opts these rows into the SAME grace-window contract
+  // /approvals' keyboard triage uses (bu-qvnce.4) -- a decision made from the
+  // dashboard's one-click attention list is just as undoable as one made on
+  // the full Trust Console, instead of firing irreversibly on click.
+  const { approveMut, denyMut, deferMut, scheduledDecisions, scheduleDecision, cancelDecision } =
+    useApprovalDecisionMutations({ undoWindow: true });
   const notificationStatsQuery = useNotificationStats();
   const qaSummaryQuery = useQaSummary();
   const timelineQuery = useTimeline({ limit: 5 });
@@ -95,12 +118,10 @@ export default function DashboardPage() {
 
   // Derived values
   const model = deriveOverviewTriageModel({
-    butlers: butlersQuery.isError ? [] : (butlersQuery.data?.data ?? []),
-    butlersError: butlersQuery.isError,
-    costs: costQuery.isError ? null : costQuery.data?.data,
+    boardRows: boardQuery.isError ? [] : (boardQuery.data?.data.rows ?? []),
+    butlersError: boardQuery.isError,
     issues: issuesQuery.isError ? [] : (issuesQuery.data?.data ?? []),
     issuesError: issuesQuery.isError,
-    heartbeats: heartbeatQuery.isError ? null : heartbeatQuery.data?.data,
     approvalMetrics: approvalMetricsQuery.isError ? null : approvalMetricsQuery.data?.data,
     approvals: pendingApprovalsQuery.isError ? null : pendingApprovalsQuery.data?.data,
     notificationStats: notificationStatsQuery.isError ? null : notificationStatsQuery.data?.data,
@@ -129,22 +150,45 @@ export default function DashboardPage() {
   // model itself stays a pure function, so the mutations are attached here
   // (bu-86c4c.14: approve/deny/defer executable from the dashboard's
   // attention list without leaving the pane).
+  //
+  // Every verb click goes through scheduleDecision rather than calling
+  // .mutate() directly (bu-qvnce.4): the decision is undoable for
+  // UNDO_WINDOW_MS, same as /approvals' keyboard triage, instead of firing
+  // irreversibly the instant the row is clicked. While scheduled, the row
+  // shows the inline "Approving in 5s · Undo" state instead of its verb
+  // buttons (see AttentionList's pendingDecisionLabel).
   const attentionRows: AttentionListItem[] = useMemo(
     () =>
       model.attentionRows.map((row) => {
         if (!row.approvalId) return row;
         const id = row.approvalId;
+        const scheduled = scheduledDecisions.get(id);
+        if (scheduled) {
+          return {
+            ...row,
+            pendingDecisionLabel: `${verbGerund(scheduled.verb)} in ${Math.round(UNDO_WINDOW_MS / 1000)}s`,
+            onUndoDecision: () => cancelDecision(id),
+          };
+        }
         return {
           ...row,
-          onApprove: () => approveMut.mutate(id),
-          onDeny: () => denyMut.mutate({ id }),
-          onDefer: () => deferMut.mutate({ id, hours: 24 }),
+          onApprove: () => scheduleDecision(id, "approve", () => approveMut.mutate(id)),
+          onDeny: () => scheduleDecision(id, "deny", () => denyMut.mutate({ id })),
+          onDefer: () => scheduleDecision(id, "defer", () => deferMut.mutate({ id, hours: 24 })),
           approvePending: approveMut.isPending && approveMut.variables === id,
           denyPending: denyMut.isPending && denyMut.variables?.id === id,
           deferPending: deferMut.isPending && deferMut.variables?.id === id,
         };
       }),
-    [model.attentionRows, approveMut, denyMut, deferMut],
+    [
+      model.attentionRows,
+      scheduledDecisions,
+      scheduleDecision,
+      cancelDecision,
+      approveMut,
+      denyMut,
+      deferMut,
+    ],
   );
 
   // Briefing headline and greet with safe fallbacks. A failed briefing fetch
@@ -202,7 +246,7 @@ export default function DashboardPage() {
 
           <RuntimeSummaryKpi
             kpis={model.kpis}
-            isLoading={butlersQuery.isLoading}
+            isLoading={boardQuery.isLoading}
             isError={model.butlersError}
             pendingApprovalsAvailable={!approvalMetricsQuery.isError && approvalMetricsQuery.data != null}
           />
@@ -242,4 +286,16 @@ export default function DashboardPage() {
       </div>
     </Page>
   );
+}
+
+/** Present-tense verb for the inline "Verb in Ns · Undo" scheduled-decision state. */
+function verbGerund(verb: DecisionVerb): string {
+  switch (verb) {
+    case "approve":
+      return "Approving";
+    case "deny":
+      return "Denying";
+    case "defer":
+      return "Deferring";
+  }
 }

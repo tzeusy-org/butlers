@@ -49,6 +49,18 @@ export interface AttentionListItem {
   approvePending?: boolean;
   denyPending?: boolean;
   deferPending?: boolean;
+  /**
+   * Present while this row's approve/deny/defer decision is scheduled but
+   * not yet fired -- the same grace-window contract /approvals' keyboard
+   * triage (a/d/x) uses, shared via useApprovalDecisionMutations' undoWindow
+   * option (bu-qvnce.4 -- a decision fired from the dashboard's one-click
+   * attention list must be just as undoable as one made on /approvals).
+   * e.g. "Approving in 5s". When set, replaces the verb buttons with this
+   * text + an Undo control instead of firing the mutation immediately.
+   */
+  pendingDecisionLabel?: string | null;
+  /** Cancels the scheduled decision described by `pendingDecisionLabel`. */
+  onUndoDecision?: () => void;
 }
 
 interface AttentionListProps {
@@ -114,7 +126,9 @@ export function AttentionList({ items }: AttentionListProps) {
         // same constraint). Those rows keep the small trailing arrow link;
         // every other href row becomes a full-row RowLink (bu-86c4c.4 --
         // drill-down sweep: the entire row is the target, not a 16px glyph).
-        const hasInlineActions = Boolean(item.onApprove || item.onDeny || item.onDefer);
+        const hasInlineActions = Boolean(
+          item.onApprove || item.onDeny || item.onDefer || item.pendingDecisionLabel,
+        );
         const rowGridStyle: CSSProperties = {
           display: "grid",
           gridTemplateColumns: "24px 1fr auto",
@@ -178,35 +192,63 @@ export function AttentionList({ items }: AttentionListProps) {
                 spacer */}
             {hasInlineActions ? (
               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                {item.onApprove && (
-                  <button
-                    type="button"
-                    onClick={item.onApprove}
-                    disabled={item.approvePending}
-                    style={inlineVerbButtonStyle}
-                  >
-                    {item.approvePending ? "Approving…" : "Approve"}
-                  </button>
-                )}
-                {item.onDeny && (
-                  <button
-                    type="button"
-                    onClick={item.onDeny}
-                    disabled={item.denyPending}
-                    style={inlineVerbButtonStyle}
-                  >
-                    {item.denyPending ? "Denying…" : "Deny"}
-                  </button>
-                )}
-                {item.onDefer && (
-                  <button
-                    type="button"
-                    onClick={item.onDefer}
-                    disabled={item.deferPending}
-                    style={inlineVerbButtonStyle}
-                  >
-                    {item.deferPending ? "Deferring…" : "Defer"}
-                  </button>
+                {item.pendingDecisionLabel ? (
+                  <>
+                    <span
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: "11px",
+                        color: "var(--muted-foreground)",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {item.pendingDecisionLabel}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={item.onUndoDecision}
+                      style={{
+                        ...inlineVerbButtonStyle,
+                        textDecoration: "underline",
+                        textUnderlineOffset: "2px",
+                      }}
+                    >
+                      Undo
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {item.onApprove && (
+                      <button
+                        type="button"
+                        onClick={item.onApprove}
+                        disabled={item.approvePending}
+                        style={inlineVerbButtonStyle}
+                      >
+                        {item.approvePending ? "Approving…" : "Approve"}
+                      </button>
+                    )}
+                    {item.onDeny && (
+                      <button
+                        type="button"
+                        onClick={item.onDeny}
+                        disabled={item.denyPending}
+                        style={inlineVerbButtonStyle}
+                      >
+                        {item.denyPending ? "Denying…" : "Deny"}
+                      </button>
+                    )}
+                    {item.onDefer && (
+                      <button
+                        type="button"
+                        onClick={item.onDefer}
+                        disabled={item.deferPending}
+                        style={inlineVerbButtonStyle}
+                      >
+                        {item.deferPending ? "Deferring…" : "Defer"}
+                      </button>
+                    )}
+                  </>
                 )}
                 {item.href && (
                   <Link

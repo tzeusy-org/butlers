@@ -15,9 +15,8 @@
 // ---------------------------------------------------------------------------
 
 import { useMemo } from "react"
-import { useQuery } from "@tanstack/react-query"
 
-import { getButlersBoard } from "@/api/index.ts"
+import { useButlersBoard } from "@/hooks/use-butlers.ts"
 import type { BoardRow } from "@/api/types"
 
 // ---------------------------------------------------------------------------
@@ -179,7 +178,13 @@ function mapRow(row: BoardRow): StatusBoardRow {
 
 // "unknown" (heartbeat_unavailable) belongs here too -- an unknowable
 // liveness must never be folded into a calm "All N healthy" line (bu-qvnce.1).
-const NEEDS_YOU_ACTIVITIES: ReadonlySet<ActivityVerb> = new Set([
+//
+// Exported so every consumer of the canonical board verdict -- this page's
+// needsYou strip AND the Overview's KPI/attention-list derivation
+// (components/overview/model.ts, bu-qvnce.4) -- classifies "needs attention"
+// from the exact same set. Two independently-maintained copies of this list
+// is exactly the "one instrument built by one hand" defect this move fixes.
+export const NEEDS_YOU_ACTIVITIES: ReadonlySet<ActivityVerb> = new Set([
   "offline",
   "quarantined",
   "overdue",
@@ -198,11 +203,10 @@ const NEEDS_YOU_ACTIVITIES: ReadonlySet<ActivityVerb> = new Set([
  * roster order -- never re-sorted here.
  */
 export function useButlerStatusBoard(): StatusBoardResult {
-  const boardQuery = useQuery({
-    queryKey: ["butlers", "board"],
-    queryFn: () => getButlersBoard(),
-    refetchInterval: 30_000,
-  })
+  // Same query useButlersBoard() exposes to the Overview page (bu-qvnce.4) --
+  // one query definition, not two independently-maintained copies of the
+  // same queryKey/queryFn/refetchInterval.
+  const boardQuery = useButlersBoard()
 
   const rows = useMemo(() => {
     const data = boardQuery.data?.data

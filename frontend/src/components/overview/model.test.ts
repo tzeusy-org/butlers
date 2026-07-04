@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type {
   ApprovalMetrics,
   ApprovalSummary,
-  ButlerSummary,
+  BoardRow,
   Issue,
   NotificationStats,
   QaSummary,
@@ -12,14 +12,40 @@ import { deriveOverviewTriageModel } from "./model";
 
 const NOW = new Date("2026-05-14T12:00:00.000Z");
 
-function butler(overrides: Partial<ButlerSummary> = {}): ButlerSummary {
+/**
+ * A GET /api/butlers/board row -- the canonical, cadence-aware liveness
+ * verdict (bu-qvnce.4). `activity` is the single source of truth the model
+ * derives runtimeState/needsAttention from; defaults to "idle" (a fine,
+ * no-attention-needed butler) so tests only need to override what they care
+ * about.
+ */
+function boardRow(overrides: Partial<BoardRow> = {}): BoardRow {
   return {
     name: "general",
-    status: "ok",
-    port: 40101,
     type: "butler",
+    description: null,
+    status: "ok",
+    activity: "idle",
+    cell_tone: "green",
+    eligibility: "active",
+    quarantine_reason: null,
+    quarantined_at: null,
     sessions_24h: 0,
-    last_session_started_at: null,
+    cost_today: null,
+    load_pct: null,
+    max_concurrent: null,
+    active_session_count: 0,
+    last_session_at: null,
+    last_heartbeat_at: null,
+    heartbeat_age_seconds: null,
+    heartbeat_unavailable: false,
+    schema_unreachable: false,
+    hourly_stripe: [],
+    hourly_total: 0,
+    cadence_seconds: null,
+    cadence_label: null,
+    silence_seconds: null,
+    cadence_status: "on_schedule",
     ...overrides,
   };
 }
@@ -139,18 +165,7 @@ describe("deriveOverviewTriageModel", () => {
   it("sorts needs-attention rows by actionability", () => {
     const model = deriveOverviewTriageModel(
       {
-        butlers: [butler({ name: "general" })],
-        heartbeats: {
-          butlers: [
-            {
-              name: "general",
-              last_heartbeat_at: "2026-05-14T11:50:00.000Z",
-              last_session_at: null,
-              active_session_count: 0,
-              heartbeat_age_seconds: 900,
-            },
-          ],
-        },
+        boardRows: [boardRow({ name: "general", activity: "overdue" })],
         issues: [
           issue({
             severity: "medium",
@@ -451,38 +466,22 @@ describe("deriveOverviewTriageModel", () => {
     });
   });
 
-  it("derives stale heartbeat attention and enriched butler index metadata", () => {
-    const model = deriveOverviewTriageModel(
-      {
-        butlers: [
-          butler({
-            name: "health",
-            sessions_24h: 7,
-            last_session_started_at: "2026-05-14T08:30:00.000Z",
-          }),
-        ],
-        costs: {
-          total_cost_usd: 1.2,
-          total_sessions: 7,
-          total_input_tokens: 10,
-          total_output_tokens: 20,
-          by_butler: { health: 0.123 },
-          by_model: {},
-        },
-        heartbeats: {
-          butlers: [
-            {
-              name: "health",
-              last_heartbeat_at: "2026-05-14T11:40:00.000Z",
-              last_session_at: "2026-05-14T11:30:00.000Z",
-              active_session_count: 0,
-              heartbeat_age_seconds: 1_200,
-            },
-          ],
-        },
-      },
-      { staleHeartbeatSeconds: 300 },
-    );
+  it("derives overdue-cadence attention and enriched butler index metadata from the board's own verdict", () => {
+    // The board's `activity: "overdue"` is the canonical cadence-aware
+    // verdict (bu-qvnce.4) -- the model no longer runs its own stale-
+    // heartbeat threshold against a raw heartbeat_age_seconds number.
+    const model = deriveOverviewTriageModel({
+      boardRows: [
+        boardRow({
+          name: "health",
+          sessions_24h: 7,
+          cost_today: 0.123,
+          last_session_at: "2026-05-14T11:30:00.000Z",
+          heartbeat_age_seconds: 1_200,
+          activity: "overdue",
+        }),
+      ],
+    });
 
     expect(model.operationsRows).toEqual([
       expect.objectContaining({
@@ -505,30 +504,18 @@ describe("deriveOverviewTriageModel", () => {
     });
   });
 
-  it("maps healthy statuses to KPIs and active heartbeat metadata to the index", () => {
+  it("maps running/idle board activity to KPIs and active-session metadata to the index", () => {
     const model = deriveOverviewTriageModel({
-      butlers: [
-        butler({ name: "general", status: "ok", sessions_24h: 3 }),
-        butler({ name: "health", status: "ok", sessions_24h: 4 }),
+      boardRows: [
+        boardRow({
+          name: "general",
+          sessions_24h: 3,
+          activity: "running",
+          active_session_count: 2,
+          last_session_at: "2026-05-14T11:55:00.000Z",
+        }),
+        boardRow({ name: "health", sessions_24h: 4, activity: "idle" }),
       ],
-      heartbeats: {
-        butlers: [
-          {
-            name: "general",
-            last_heartbeat_at: "2026-05-14T11:59:00.000Z",
-            last_session_at: "2026-05-14T11:55:00.000Z",
-            active_session_count: 2,
-            heartbeat_age_seconds: 30,
-          },
-          {
-            name: "health",
-            last_heartbeat_at: "2026-05-14T11:58:00.000Z",
-            last_session_at: null,
-            active_session_count: 0,
-            heartbeat_age_seconds: 60,
-          },
-        ],
-      },
     });
 
     expect(model.kpis).toMatchObject({
@@ -547,18 +534,14 @@ describe("deriveOverviewTriageModel", () => {
 
   it("keeps null last-session fields visible as null instead of inventing activity", () => {
     const model = deriveOverviewTriageModel({
-      butlers: [butler({ name: "relationship", last_session_started_at: null })],
-      heartbeats: {
-        butlers: [
-          {
-            name: "relationship",
-            last_heartbeat_at: "2026-05-14T11:59:00.000Z",
-            last_session_at: null,
-            active_session_count: 0,
-            heartbeat_age_seconds: 30,
-          },
-        ],
-      },
+      boardRows: [
+        boardRow({
+          name: "relationship",
+          activity: "idle",
+          last_session_at: null,
+          heartbeat_age_seconds: 30,
+        }),
+      ],
     });
 
     expect(model.operationsRows[0]).toMatchObject({
@@ -620,14 +603,14 @@ describe("deriveOverviewTriageModel", () => {
 
   it("uses current butlers only for promoted runtime KPIs", () => {
     const model = deriveOverviewTriageModel({
-      butlers: [
-        butler({ name: "general", status: "ok", sessions_24h: 3 }),
-        butler({ name: "health", status: "degraded", sessions_24h: 2 }),
-        butler({
+      boardRows: [
+        boardRow({ name: "general", sessions_24h: 3, activity: "idle" }),
+        boardRow({ name: "health", sessions_24h: 2, activity: "quarantined" }),
+        boardRow({
           name: "switchboard",
-          status: "online",
           type: "staffer",
           sessions_24h: 10,
+          activity: "running",
         }),
       ],
       approvalMetrics: approvalMetrics({ total_pending: 1 }),
@@ -694,7 +677,7 @@ describe("deriveOverviewTriageModel", () => {
 
   it("emits a named error row and sets butlersError when butlersError is true", () => {
     const model = deriveOverviewTriageModel({
-      butlers: [],
+      boardRows: [],
       butlersError: true,
     });
 
@@ -709,7 +692,7 @@ describe("deriveOverviewTriageModel", () => {
   });
 
   it("leaves butlersError false and emits no butler error row by default", () => {
-    const model = deriveOverviewTriageModel({ butlers: [] });
+    const model = deriveOverviewTriageModel({ boardRows: [] });
     expect(model.butlersError).toBe(false);
     expect(model.nowRows.some((row) => row.id === "now:butlers:error")).toBe(false);
   });
@@ -766,6 +749,59 @@ describe("deriveOverviewTriageModel", () => {
 
     expect(model.nowRows.find((row) => row.id === "now:notifications:error")).toBeDefined();
     expect(model.nowRows.some((row) => row.id === "now:notifications")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// KPI / attention-list coherence (bu-qvnce.4): the Healthy KPI and the
+// runtime attention rows must never disagree, because both are derived from
+// the exact same per-row board verdict (row.activity via NEEDS_YOU_ACTIVITIES)
+// rather than two independently-maintained classifications.
+// ---------------------------------------------------------------------------
+
+describe("deriveOverviewTriageModel — KPI/attention-list coherence (bu-qvnce.4)", () => {
+  it.each([
+    ["running", false],
+    ["idle", false],
+    ["overdue", true],
+    ["offline", true],
+    ["quarantined", true],
+    ["unknown", true],
+  ] as const)(
+    "activity=%s needsAttention=%s agrees between the Healthy KPI and the attention list",
+    (activity, expectNeedsAttention) => {
+      const model = deriveOverviewTriageModel({
+        boardRows: [boardRow({ name: "general", activity })],
+      });
+
+      expect(model.operationsRows[0].needsAttention).toBe(expectNeedsAttention);
+      const hasRuntimeRow = model.attentionRows.some(
+        (row) => row.kind === "runtime" && row.butlers?.includes("general"),
+      );
+      expect(hasRuntimeRow).toBe(expectNeedsAttention);
+      // Healthy KPI must be the exact inverse of whether the row appears in
+      // the attention list -- never independently computed.
+      expect(model.kpis.healthyButlers).toBe(expectNeedsAttention ? 0 : 1);
+    },
+  );
+
+  it("mixed fleet: Healthy count and the set of attention-flagged names always agree", () => {
+    const rows = [
+      boardRow({ name: "general", activity: "running" }),
+      boardRow({ name: "health", activity: "overdue" }),
+      boardRow({ name: "finance", activity: "quarantined" }),
+      boardRow({ name: "relationship", activity: "idle" }),
+    ];
+    const model = deriveOverviewTriageModel({ boardRows: rows });
+
+    const flaggedNames = new Set(
+      model.attentionRows
+        .filter((row) => row.kind === "runtime")
+        .flatMap((row) => row.butlers ?? []),
+    );
+    expect(flaggedNames).toEqual(new Set(["health", "finance"]));
+    expect(model.kpis.healthyButlers).toBe(rows.length - flaggedNames.size);
+    expect(model.kpis.totalButlers).toBe(rows.length);
   });
 });
 

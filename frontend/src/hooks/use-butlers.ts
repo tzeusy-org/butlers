@@ -11,6 +11,7 @@ import {
   getButlerModules,
   getButlerSkills,
   getButlers,
+  getButlersBoard,
   getRuntimeConfig,
   patchRuntimeConfig,
 } from "@/api/index.ts";
@@ -23,6 +24,27 @@ export function useButlers() {
     queryFn: () => getButlers(),
     refetchInterval: 30_000,
     staleTime: 30_000,
+  });
+}
+
+/**
+ * Fetch GET /api/butlers/board -- the canonical, cadence-aware liveness
+ * verdict (bu-qvnce.4). Deliberately thin: unlike useButlerStatusBoard (the
+ * /butlers status board's own hook, use-butler-status-board.ts), this
+ * returns the raw wire BoardRow[]/BoardAggregates shape rather than the
+ * board page's camelCase presentation type -- components/overview/model.ts
+ * (the Overview's pure derivation function) consumes BoardRow[] directly.
+ *
+ * Same queryKey the board page's hook uses, so react-query dedupes the
+ * request across pages AND the event bus's session-patch
+ * (event-cache-registry.ts, which already invalidates ["butlers","board"])
+ * live-refreshes both consumers together.
+ */
+export function useButlersBoard() {
+  return useQuery({
+    queryKey: ["butlers", "board"],
+    queryFn: () => getButlersBoard(),
+    refetchInterval: 30_000,
   });
 }
 
