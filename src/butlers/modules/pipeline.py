@@ -52,6 +52,7 @@ def _decomposition_empty_counter() -> metrics.Counter:
 
 
 _ROUTE_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])route_to_butler$", re.IGNORECASE)
+_FILE_BUG_REPORT_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])file_bug_report$", re.IGNORECASE)
 _TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
 _TELEGRAM_CHAT_MESSAGE_RE = re.compile(r"^(?P<chat_id>-?\d+):(?P<message_id>\d+)$")
 
@@ -498,6 +499,155 @@ def _build_routing_prompt(
     return "".join(prompt_parts)
 
 
+def _build_dashboard_lane_prompt(
+    message: str,
+    butlers: list[dict[str, Any]],
+    conversation_history: str = "",
+    attachments: list[dict[str, Any]] | None = None,
+    *,
+    conversation_id: str | None = None,
+    page_context: dict[str, Any] | None = None,
+) -> str:
+    """Build the CC prompt for dashboard chat-widget messages (two lanes).
+
+    Unlike :func:`_build_routing_prompt`, this prompt is used only for the
+    dashboard channel (the owner's floating chat widget). It teaches the
+    classification session to pick one of two lanes instead of always
+    calling ``route_to_butler``:
+
+    - **Lane A (data statement/correction):** call ``route_to_butler`` exactly
+      as usual. The routed domain butler session receives deterministic
+      conversation context (conversation_id, page_context) and instructions
+      to interpret/apply/confirm regardless of what this prompt asks it to
+      do — that injection happens in the ``route_to_butler`` tool itself
+      (see ``core_tools/_switchboard.py``), not here.
+    - **Lane B (bug/system report):** call ``file_bug_report`` instead. Bug
+      reports must NEVER be routed to a domain butler via ``route_to_butler``.
+
+    ``conversation_id``/``page_context`` are surfaced here for the model's
+    own reasoning (e.g. to write a grounded ``prompt``/``context`` for
+    route_to_butler), but the actual propagation into the routed envelope is
+    deterministic and does not depend on the model repeating them correctly.
+    """
+    from butlers.tools.switchboard.routing.classify import _format_capabilities
+
+    butler_list = "\n".join(
+        (
+            f"- {b['name']}: {b.get('description') or 'No description'} "
+            f"(capabilities: {_format_capabilities(b)})"
+        )
+        for b in butlers
+    )
+
+    encoded_message = json.dumps({"message": message}, ensure_ascii=False)
+
+    prompt_parts = [
+        "This message was sent from the owner's dashboard chat widget "
+        "(a floating chat panel available on every dashboard page). Decide "
+        "which of TWO LANES it belongs to, then call exactly one tool:\n\n"
+        "LANE A — data statement or correction (e.g. 'Alice's birthday is "
+        "actually March 3rd', 'mark this receipt as reimbursed'): call the "
+        "`route_to_butler` MCP tool exactly as you would for any other "
+        "channel — pick the specialist butler whose domain owns this fact. "
+        "Do NOT attempt to interpret/apply/confirm the statement yourself; "
+        "the routed butler session receives the conversation context "
+        "automatically and does that.\n\n"
+        "LANE B — bug or system report (e.g. 'the concentration chart is "
+        "empty for child-of', 'this page is broken', 'the numbers on the "
+        "finance dashboard look wrong'): call the `file_bug_report` MCP tool "
+        "with a concise `summary` of the problem. Do NOT call `route_to_butler` "
+        "for a bug/system report — it must never be routed to a domain "
+        "butler.\n\n"
+        "If the message is genuinely ambiguous or you cannot classify it "
+        "into either lane, still call `route_to_butler` with the "
+        "best-guess specialist (or `general`) rather than calling nothing — "
+        "an unrouted dashboard message leaves the owner's chat waiting with "
+        "no reply.\n\n"
+        "IMPORTANT: You MUST call exactly one of `route_to_butler` or "
+        "`file_bug_report` at least once. Do NOT call `notify`.\n\n"
+        "After calling the tool, respond with a brief text summary of your "
+        "decision.\n\n"
+    ]
+
+    if conversation_id:
+        prompt_parts.append(f"Dashboard conversation_id: {conversation_id}\n")
+    if page_context:
+        prompt_parts.append(
+            f"Dashboard page_context (route the owner was viewing): "
+            f"{json.dumps(page_context, ensure_ascii=False)}\n"
+        )
+    if conversation_id or page_context:
+        prompt_parts.append("\n")
+
+    prompt_parts.append(
+        f"Available butlers:\n{butler_list}\n\nUser input JSON:\n{encoded_message}\n\n"
+    )
+
+    if conversation_history:
+        prompt_parts.append(conversation_history)
+        prompt_parts.append("## Current Message\n\n")
+
+    if attachments:
+        attachment_count = len(attachments)
+        attachment_details = []
+        for att in attachments:
+            media_type = att.get("media_type", "unknown")
+            size_bytes = att.get("size_bytes", 0)
+            size_kb = size_bytes / 1024
+            storage_ref = att.get("storage_ref")
+            filename = att.get("filename")
+            label = filename or media_type
+
+            if storage_ref:
+                detail = f"  - {label} ({media_type}, {size_kb:.1f}KB, storage_ref: {storage_ref})"
+            else:
+                detail = f"  - {label} ({media_type}, {size_kb:.1f}KB, pending lazy fetch)"
+
+            attachment_details.append(detail)
+
+        prompt_parts.append(
+            f"## Attachments\n\n"
+            f"This message includes {attachment_count} attachment(s):\n"
+            + "\n".join(attachment_details)
+            + "\n\n"
+        )
+
+    return "".join(prompt_parts)
+
+
+def _extract_bug_report_calls(
+    tool_calls: list[dict[str, Any]],
+) -> tuple[bool, bool, str | None]:
+    """Parse ``file_bug_report`` tool calls out of a spawn result's tool_calls.
+
+    Returns
+    -------
+    tuple
+        ``(attempted, succeeded, case_reference)`` — whether the bug-report
+        lane was engaged at all, whether the (first) call reported success,
+        and the case reference string if the tool returned one.
+    """
+    for call in tool_calls:
+        name = str(call.get("name", "") or "").strip()
+        if not _FILE_BUG_REPORT_TOOL_NAME_RE.search(name):
+            continue
+
+        result = call.get("result")
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (json.JSONDecodeError, ValueError):
+                result = {}
+        if not isinstance(result, dict):
+            result = {}
+
+        succeeded = result.get("status") in ("ok", "accepted")
+        case_reference = result.get("case_reference")
+        return True, succeeded, case_reference if isinstance(case_reference, str) else None
+
+    return False, False, None
+
+
 def _extract_routed_butlers(
     tool_calls: list[dict[str, Any]],
 ) -> tuple[list[str], list[str], list[str]]:
@@ -875,6 +1025,7 @@ class MessagePipeline:
         source_contact_id: str | None = None,
         source_entity_id: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        dashboard_context: dict[str, Any] | None = None,
     ) -> None:
         """Populate the per-task routing context via ContextVar before runtime spawn.
 
@@ -885,6 +1036,12 @@ class MessagePipeline:
         The triage LLM embeds relevant context into the sub-prompt it
         constructs for each route_to_butler call; forwarding the raw
         unfiltered history would bypass that filtering.
+
+        ``dashboard_context`` (``{"conversation_id": ..., "page_context": ...}``)
+        is consumed deterministically by the ``route_to_butler`` and
+        ``file_bug_report`` core tools (see ``core_tools/_switchboard.py``) so
+        the dashboard confirm-loop works regardless of what the classification
+        LLM chose to write into its own ``prompt``/``context`` arguments.
         """
         _routing_ctx_var.set(
             {
@@ -895,6 +1052,7 @@ class MessagePipeline:
                 "source_contact_id": source_contact_id,
                 "source_entity_id": source_entity_id,
                 "attachments": attachments,
+                "dashboard_context": dashboard_context,
             }
         )
 
@@ -975,6 +1133,145 @@ class MessagePipeline:
             return None
 
         return _format_decomp_conversation_history(conversation_messages)
+
+    async def _load_dashboard_context(
+        self,
+        message_inbox_id: Any | None,
+    ) -> dict[str, Any] | None:
+        """Load ``conversation_id``/``page_context`` for a dashboard-channel message.
+
+        Reads ``payload.raw`` from the ``message_inbox`` row created by
+        :func:`butlers.api.conversation_envelope.build_dashboard_envelope`,
+        which embeds ``conversation_id`` (always present for the dashboard
+        channel) and an optional ``page_context`` dict.
+
+        Returns
+        -------
+        dict | None
+            ``{"conversation_id": str, "page_context": dict | None}``, or
+            ``None`` if no ``message_inbox_id`` was given, the row could not
+            be loaded, or it carries no ``conversation_id`` (a malformed or
+            non-dashboard envelope).
+        """
+        if message_inbox_id is None:
+            return None
+
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT raw_payload FROM message_inbox WHERE id = $1",
+                    message_inbox_id,
+                )
+        except Exception:
+            logger.debug(
+                "Failed to load dashboard context from message_inbox",
+                exc_info=True,
+            )
+            return None
+
+        if not row or not row["raw_payload"]:
+            return None
+
+        raw_payload = row["raw_payload"]
+        if isinstance(raw_payload, str):
+            try:
+                raw_payload = json.loads(raw_payload)
+            except (json.JSONDecodeError, TypeError):
+                return None
+
+        payload_section = raw_payload.get("payload", {}) if isinstance(raw_payload, dict) else {}
+        raw_inner = payload_section.get("raw") or {} if isinstance(payload_section, dict) else {}
+        conversation_id = raw_inner.get("conversation_id") if isinstance(raw_inner, dict) else None
+        if not conversation_id:
+            return None
+
+        page_context = raw_inner.get("page_context")
+        return {
+            "conversation_id": str(conversation_id),
+            "page_context": page_context if isinstance(page_context, dict) else None,
+        }
+
+    async def _dead_letter_dashboard_unroutable(
+        self,
+        *,
+        request_id: str,
+        message_text: str,
+        cc_output: str,
+        request_context: dict[str, Any] | None,
+        dashboard_context: dict[str, Any] | None,
+    ) -> RoutingResult:
+        """Capture an unroutable dashboard message to dead-letter + notify the owner.
+
+        Dashboard chat-widget messages must never silently vanish when the
+        classification session calls neither ``route_to_butler`` nor
+        ``file_bug_report`` — the owner would be left staring at a chat that
+        never replies. Every other channel falls back to the generic
+        "general" butler in this situation; the dashboard channel instead
+        captures the request to the existing dead-letter queue (previously
+        unused by any real caller) and always replies in-thread, so the
+        failure is observable rather than silent.
+        """
+        from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
+
+        request_uuid = UUID(request_id)
+
+        dead_letter_id: str | None = None
+        try:
+            async with self._pool.acquire() as conn:
+                dl_id = await capture_to_dead_letter(
+                    conn,
+                    original_request_id=request_uuid,
+                    source_table="message_inbox",
+                    failure_reason=(
+                        "Dashboard message classification produced no lane decision "
+                        "(neither route_to_butler nor file_bug_report was called)"
+                    ),
+                    failure_category="unknown",
+                    retry_count=0,
+                    last_retry_at=None,
+                    original_payload={"message_text": message_text},
+                    request_context=request_context or {},
+                    error_details={"cc_output": cc_output[:500] if cc_output else ""},
+                    replay_eligible=False,
+                )
+            dead_letter_id = str(dl_id)
+        except Exception:
+            logger.exception("Failed to capture unroutable dashboard message to dead_letter_queue")
+
+        conversation_id = dashboard_context.get("conversation_id") if dashboard_context else None
+        if conversation_id:
+            case_note = f" (case ref: {dead_letter_id[:8]})" if dead_letter_id else ""
+            reply_message = (
+                "I wasn't able to figure out how to handle that message — it's been "
+                f"filed for manual review{case_note}. Try rephrasing, or say more "
+                "explicitly what you'd like recorded or reported."
+            )
+            try:
+                from butlers.api.conversations import conversation_reply_create
+
+                await conversation_reply_create(
+                    self._pool,
+                    UUID(conversation_id),
+                    message=reply_message,
+                    request_id=request_uuid,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to post dead-letter conversation_reply for conversation %s",
+                    conversation_id,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "Unroutable dashboard message had no conversation_id — owner not notified "
+                "in-thread (request_id=%s)",
+                request_id,
+            )
+
+        return RoutingResult(
+            target_butler="dead_letter",
+            route_result={"dead_letter_id": dead_letter_id},
+        )
 
     @staticmethod
     def _build_source_metadata(
@@ -1944,6 +2241,13 @@ class MessagePipeline:
                                     exc_info=True,
                                 )
 
+                    # Dashboard channel: load conversation_id/page_context (if any) so
+                    # the two-lane prompt can surface them and route_to_butler /
+                    # file_bug_report can deterministically inject them downstream.
+                    dashboard_context: dict[str, Any] | None = None
+                    if source == "dashboard" and _payload_type != "conversation_history":
+                        dashboard_context = await self._load_dashboard_context(message_inbox_id)
+
                     with tracer.start_as_current_span("butlers.switchboard.routing.build_prompt"):
                         butlers = await _load_available_butlers(self._pool)
                         if _payload_type == "conversation_history":
@@ -1953,6 +2257,27 @@ class MessagePipeline:
                             # tool calls.
                             routing_prompt = _build_decomposition_prompt(
                                 message_text, butlers, conversation_history, attachments
+                            )
+                        elif source == "dashboard":
+                            # Dashboard chat widget: two-lane classification
+                            # (data statement -> route_to_butler; bug/system
+                            # report -> file_bug_report) instead of the
+                            # always-route standard prompt.
+                            routing_prompt = _build_dashboard_lane_prompt(
+                                message_text,
+                                butlers,
+                                conversation_history,
+                                attachments,
+                                conversation_id=(
+                                    dashboard_context.get("conversation_id")
+                                    if dashboard_context
+                                    else None
+                                ),
+                                page_context=(
+                                    dashboard_context.get("page_context")
+                                    if dashboard_context
+                                    else None
+                                ),
                             )
                         else:
                             routing_prompt = _build_routing_prompt(
@@ -1968,6 +2293,7 @@ class MessagePipeline:
                         source_contact_id=source_contact_id,
                         source_entity_id=source_entity_id,
                         attachments=attachments,
+                        dashboard_context=dashboard_context,
                     )
 
                     # Spawn CC — it calls route_to_butler tool(s) directly.
@@ -2198,10 +2524,78 @@ class MessagePipeline:
                             failed_targets=_decomp_failed,
                         )
 
+                    # Dashboard Lane B: bug/system report filed via file_bug_report.
+                    # This is a terminal outcome that must NEVER fall through to
+                    # route_to_butler extraction/fallback below — bug reports are
+                    # never routed to a domain butler.
+                    if source == "dashboard" and _payload_type != "conversation_history":
+                        bug_attempted, bug_succeeded, bug_case_ref = _extract_bug_report_calls(
+                            tool_calls
+                        )
+                        if bug_attempted:
+                            bug_lifecycle = "routed" if bug_succeeded else "errored"
+                            logger.info(
+                                "Dashboard message filed as bug/system report (lane B)",
+                                extra=self._log_fields(
+                                    source=source,
+                                    chat_id=chat_id,
+                                    target_butler="qa",
+                                    latency_ms=spawn_latency_ms,
+                                    request_id=request_id,
+                                    lifecycle_state=bug_lifecycle,
+                                    case_reference=bug_case_ref,
+                                ),
+                            )
+                            if message_inbox_id:
+                                completed_at = datetime.now(UTC)
+                                await self._update_message_inbox_lifecycle(
+                                    message_inbox_id=message_inbox_id,
+                                    decomposition_output={
+                                        "request_id": request_id,
+                                        "lane": "bug_report",
+                                        "case_reference": bug_case_ref,
+                                    },
+                                    dispatch_outcomes={
+                                        "request_id": request_id,
+                                        "acked": ["qa"] if bug_succeeded else [],
+                                        "failed": [] if bug_succeeded else ["qa"],
+                                    },
+                                    response_summary=cc_output[:500] if cc_output else "",
+                                    lifecycle_state=bug_lifecycle,
+                                    classified_at=completed_at,
+                                    classification_duration_ms=spawn_latency_ms,
+                                    final_state_at=completed_at,
+                                )
+                            return RoutingResult(
+                                target_butler="qa",
+                                route_result={
+                                    "lane": "bug_report",
+                                    "case_reference": bug_case_ref,
+                                },
+                                routing_error=(
+                                    None if bug_succeeded else "qa: file_bug_report failed"
+                                ),
+                                routed_targets=[],
+                                acked_targets=["qa"] if bug_succeeded else [],
+                                failed_targets=[] if bug_succeeded else ["qa"],
+                            )
+
                     routed, acked, failed = _extract_routed_butlers(tool_calls)
                     failed_details = [f"{b}: routing failed" for b in failed]
 
                     # Fallback: LLM called no tools → infer from summary text, else general.
+                    if not routed and source == "dashboard":
+                        # Dashboard channel: never silently fall back to "general" —
+                        # an unroutable dashboard message must dead-letter AND notify
+                        # the owner in-thread (see _dead_letter_dashboard_unroutable).
+                        return await self._dead_letter_dashboard_unroutable(
+                            request_id=request_id,
+                            message_text=message_text,
+                            cc_output=cc_output,
+                            request_context=request_context,
+                            dashboard_context=dashboard_context,
+                        )
+
                     if not routed:
                         fallback_target = (
                             _infer_fallback_target_from_cc_output(cc_output, butlers) or "general"

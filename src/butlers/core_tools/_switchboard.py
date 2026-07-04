@@ -3,16 +3,104 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from butlers.core.permissions import CROSS_BUTLER_PERMISSION, check_permission
 from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
 
 logger = logging.getLogger(__name__)
+
+#: QA staffer butler name — the target of the ``report_finding`` relay used
+#: by ``file_bug_report`` (mirrors ``self_healing``'s QA relay path).
+_QA_BUTLER_NAME = "qa"
+_QA_REPORT_FINDING_TOOL = "report_finding"
+
+#: Maps the ``file_bug_report`` caller-supplied integer severity (0-4) to the
+#: hint string accepted by ``compute_fingerprint_from_report`` — mirrors
+#: ``butlers.modules.qa._SEVERITY_INT_TO_HINT``.
+_BUG_REPORT_SEVERITY_HINT: dict[int, str] = {
+    0: "critical",
+    1: "high",
+    2: "medium",
+    3: "low",
+    4: "info",
+}
+
+
+def _build_dashboard_confirm_block(
+    *,
+    conversation_id: str,
+    page_context: dict[str, Any] | None,
+) -> str:
+    """Build the deterministic dashboard confirm-loop instruction block.
+
+    Appended to the routed envelope's ``input.context`` by ``route_to_butler``
+    whenever the classification session was itself triggered by a dashboard
+    chat-widget message (Lane A — data statement/correction). This is
+    injected in code, not left to the classification LLM's own prose, so the
+    routed session always receives a valid ``conversation_id`` and concrete
+    instructions to interpret, apply, and confirm via ``conversation_reply``
+    — the entire point of the dashboard confirm-loop design.
+    """
+    lines = [
+        "--- DASHBOARD CONVERSATION CONTEXT (deterministic; always present) ---",
+        f"conversation_id: {conversation_id}",
+    ]
+    if page_context:
+        lines.append(f"page_context: {json.dumps(page_context, ensure_ascii=False)}")
+    lines.extend(
+        [
+            "",
+            "This request originated from the owner's dashboard chat widget "
+            "(a statement or correction typed directly by the owner, optionally "
+            "grounded by the page_context above — e.g. the entity or route they "
+            "were viewing).",
+            "1. Interpret the statement against your own domain schema/predicates.",
+            "2. Apply it (write or update the relevant fact/record).",
+            "3. Call the `conversation_reply` MCP tool with "
+            f'conversation_id="{conversation_id}" and a concise message describing '
+            "what you recorded, asking the owner to confirm "
+            '(e.g. "Recorded: Alice child-of Bob — correct?").',
+            "You MUST call `conversation_reply` before finishing this session — the "
+            "owner's dashboard chat is waiting on it and has no other way to see "
+            "your response.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+async def _stamp_routed_butler_best_effort(
+    pool: Any,
+    *,
+    conversation_id: str,
+    routed_butler: str,
+) -> None:
+    """Best-effort sticky-routing stamp after a successful dashboard route.
+
+    A no-op (via ``conversation_set_routed_butler``'s own guard) once
+    ``routed_butler`` is already set. Failures are logged and swallowed —
+    this is a follow-up convenience (enabling sticky pinning for later
+    messages in the same conversation), not required for this turn's reply.
+    """
+    from butlers.api.conversations import conversation_set_routed_butler
+
+    try:
+        await conversation_set_routed_butler(
+            pool, UUID(conversation_id), routed_butler=routed_butler
+        )
+    except Exception:
+        logger.warning(
+            "Failed to stamp routed_butler=%s on conversation %s",
+            routed_butler,
+            conversation_id,
+            exc_info=True,
+        )
 
 
 def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -335,6 +423,10 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         this tool (not a shell command) to route messages. It may also appear
         in your tool list as ``mcp__switchboard__route_to_butler``.
 
+        Dashboard chat-widget bug/system reports (e.g. "this chart is empty",
+        "the page is broken") must NOT be routed here — use ``file_bug_report``
+        instead so they reach QA rather than a domain butler.
+
         Args:
             butler: Target butler name — one of: "finance", "health",
                 "relationship", "travel", "education", "lifestyle", "general".
@@ -437,9 +529,23 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         # butlers know what attachments exist and can fetch on demand.
         _route_attachments = _routing_ctx.get("attachments")
 
+        # Dashboard confirm-loop (bu-p6ey8.2): deterministically append the
+        # conversation_id/page_context + interpret-apply-confirm instructions
+        # regardless of what the classification session itself wrote into
+        # `context` — the routed session must not depend on the classifier's
+        # prose fidelity to learn its conversation_id.
+        _dashboard_context = _routing_ctx.get("dashboard_context")
+        _effective_context = context
+        if isinstance(_dashboard_context, dict) and _dashboard_context.get("conversation_id"):
+            _dashboard_block = _build_dashboard_confirm_block(
+                conversation_id=str(_dashboard_context["conversation_id"]),
+                page_context=_dashboard_context.get("page_context"),
+            )
+            _effective_context = f"{context}\n\n{_dashboard_block}" if context else _dashboard_block
+
         _input: dict[str, Any] = {
             "prompt": effective_prompt,
-            "context": context,
+            "context": _effective_context,
             "complexity": _normalized_complexity,
         }
         if _route_attachments:
@@ -495,6 +601,14 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             inner = result.get("result") if isinstance(result, dict) else None
             if isinstance(inner, dict):
                 if inner.get("status") == "accepted":
+                    if isinstance(_dashboard_context, dict) and _dashboard_context.get(
+                        "conversation_id"
+                    ):
+                        await _stamp_routed_butler_best_effort(
+                            pool,
+                            conversation_id=str(_dashboard_context["conversation_id"]),
+                            routed_butler=butler,
+                        )
                     return {"status": "accepted", "butler": butler}
                 if inner.get("status") == "error":
                     error_detail = inner.get("error", {})
@@ -543,6 +657,116 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 "butler": butler,
                 "error": f"{type(exc).__name__}: {exc}",
             }
+
+    @_core_tool("switchboard_routing")
+    @tool_span("file_bug_report", butler_name=butler_name)
+    async def file_bug_report(
+        summary: str,
+        severity: int = 2,
+    ) -> dict[str, Any]:
+        """BUG/SYSTEM-REPORT TOOL — file a dashboard bug or data-problem report.
+
+        Call this instead of ``route_to_butler`` when a dashboard chat-widget
+        message is a bug or system report (e.g. "the concentration chart is
+        empty for child-of", "this page is broken") rather than a data
+        statement/correction. Bug reports are NEVER routed to a domain
+        butler — this tool files a fingerprinted finding directly with the
+        QA staffer (the same plumbing QA canary injection uses) and replies
+        in-thread with the case reference so the owner sees the report was
+        received.
+
+        Args:
+            summary: Concise description of the bug/problem, in the owner's
+                own words plus any grounding detail (e.g. the page/route).
+            severity: 0=critical, 1=high, 2=medium (default), 3=low, 4=info.
+        """
+        from butlers.core.healing.fingerprint import compute_fingerprint_from_report
+
+        _routing_ctx = _routing_ctx_var.get() or {}
+        if not isinstance(_routing_ctx, dict):
+            _routing_ctx = {}
+        _dashboard_context = _routing_ctx.get("dashboard_context")
+        conversation_id: str | None = None
+        page_route: str | None = None
+        if isinstance(_dashboard_context, dict):
+            _conv_id = _dashboard_context.get("conversation_id")
+            conversation_id = str(_conv_id) if _conv_id else None
+            _page_context = _dashboard_context.get("page_context")
+            if isinstance(_page_context, dict):
+                page_route = _page_context.get("route")
+
+        clamped_severity = max(0, min(4, int(severity) if isinstance(severity, int) else 2))
+        call_site = f"dashboard:{page_route or 'unknown'}"
+
+        fp_result = compute_fingerprint_from_report(
+            error_type="DashboardBugReport",
+            error_message=summary,
+            call_site=call_site,
+            traceback_str=None,
+            severity_hint=_BUG_REPORT_SEVERITY_HINT.get(clamped_severity),
+        )
+        case_reference = fp_result.fingerprint[:12]
+
+        filed = False
+        file_error: str | None = None
+        try:
+            route_result = await _switchboard_route(
+                pool,
+                target_butler=_QA_BUTLER_NAME,
+                tool_name=_QA_REPORT_FINDING_TOOL,
+                args={
+                    "fingerprint": fp_result.fingerprint,
+                    "exception_type": "DashboardBugReport",
+                    "call_site": call_site,
+                    "severity": fp_result.severity,
+                    "event_summary": summary,
+                    "source_butler": "switchboard",
+                    "context": (
+                        f"Filed from dashboard chat widget (conversation_id={conversation_id})"
+                    ),
+                },
+                source_butler="switchboard",
+            )
+            if isinstance(route_result, dict) and route_result.get("error"):
+                file_error = str(route_result["error"])
+            else:
+                filed = True
+        except Exception as exc:
+            logger.warning("file_bug_report: relay to QA staffer failed: %s", exc)
+            file_error = f"{type(exc).__name__}: {exc}"
+
+        if conversation_id:
+            reply_message = (
+                f"Filed as case {case_reference} for QA review."
+                if filed
+                else (
+                    f"I couldn't file that automatically (case {case_reference}) — "
+                    "a human will need to look into this."
+                )
+            )
+            try:
+                from butlers.api.conversations import conversation_reply_create
+
+                await conversation_reply_create(pool, UUID(conversation_id), message=reply_message)
+            except Exception:
+                logger.warning(
+                    "file_bug_report: failed to post conversation_reply for conversation %s",
+                    conversation_id,
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                "file_bug_report: no conversation_id in routing context — owner not "
+                "notified in-thread (case=%s)",
+                case_reference,
+            )
+
+        return {
+            "status": "ok" if filed else "error",
+            "case_reference": case_reference,
+            "filed": filed,
+            **({"error": file_error} if file_error else {}),
+        }
 
     @_core_tool("switchboard_routing", name="connector.heartbeat")
     @tool_span("connector.heartbeat", butler_name=butler_name)

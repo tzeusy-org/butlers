@@ -33,8 +33,10 @@ from butlers.modules.pipeline import (
     PipelineConfig,
     PipelineModule,
     RoutingResult,
+    _build_dashboard_lane_prompt,
     _build_decomposition_prompt,
     _build_routing_prompt,
+    _extract_bug_report_calls,
     _extract_routed_butlers,
     _infer_fallback_target_from_cc_output,
     _normalize_decomp_signal,
@@ -278,6 +280,284 @@ class TestMessagePipelineProcess:
             "input_tokens": 12,
             "output_tokens": 0,
         }
+
+
+# ---------------------------------------------------------------------------
+# Dashboard chat-widget classification lanes [bu-p6ey8.2]
+# ---------------------------------------------------------------------------
+
+
+def _bug_report_call(status: str = "ok", case_reference: str = "abc123def456") -> dict:
+    return {
+        "name": "file_bug_report",
+        "args": {"summary": "the chart is empty"},
+        "result": {"status": status, "case_reference": case_reference, "filed": status == "ok"},
+    }
+
+
+class TestBuildDashboardLanePrompt:
+    def test_mentions_both_lanes(self):
+        prompt = _build_dashboard_lane_prompt("hello", _MOCK_BUTLERS)
+        assert "route_to_butler" in prompt
+        assert "file_bug_report" in prompt
+
+    def test_surfaces_conversation_id_and_page_context(self):
+        prompt = _build_dashboard_lane_prompt(
+            "Alice's birthday is March 3rd",
+            _MOCK_BUTLERS,
+            conversation_id="conv-123",
+            page_context={"route": "/entities/concentration", "query_params": {}},
+        )
+        assert "conv-123" in prompt
+        assert "/entities/concentration" in prompt
+
+    def test_omits_dashboard_context_section_when_absent(self):
+        prompt = _build_dashboard_lane_prompt("hi", _MOCK_BUTLERS)
+        assert "Dashboard conversation_id:" not in prompt
+        assert "Dashboard page_context" not in prompt
+
+
+class TestExtractBugReportCalls:
+    def test_no_bug_report_call(self):
+        attempted, succeeded, case_ref = _extract_bug_report_calls([_route_call("health")])
+        assert attempted is False
+        assert succeeded is False
+        assert case_ref is None
+
+    def test_successful_bug_report_call(self):
+        attempted, succeeded, case_ref = _extract_bug_report_calls([_bug_report_call()])
+        assert attempted is True
+        assert succeeded is True
+        assert case_ref == "abc123def456"
+
+    def test_failed_bug_report_call(self):
+        attempted, succeeded, case_ref = _extract_bug_report_calls(
+            [_bug_report_call(status="error")]
+        )
+        assert attempted is True
+        assert succeeded is False
+
+    def test_empty_tool_calls(self):
+        attempted, succeeded, case_ref = _extract_bug_report_calls([])
+        assert attempted is False
+        assert succeeded is False
+        assert case_ref is None
+
+
+class TestMessagePipelineProcessDashboardLanes:
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_lane_a_data_statement_routes_to_domain_butler(self, mock_load):
+        """Lane A: a route_to_butler call routes normally, same as any channel."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to relationship butler.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {
+                            "butler": "relationship",
+                            "prompt": "Alice's birthday is March 3rd",
+                        },
+                        "result": {"status": "ok", "butler": "relationship"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={
+                "conversation_id": "conv-1",
+                "page_context": {"route": "/entities/concentration"},
+            }
+        )
+
+        result = await pipeline.process(
+            "Alice's birthday is actually March 3rd",
+            tool_args={"source_channel": "dashboard"},
+            message_inbox_id="00000000-0000-0000-0000-000000000002",
+        )
+
+        assert result.target_butler == "relationship"
+        assert result.routed_targets == ["relationship"]
+        assert result.acked_targets == ["relationship"]
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_lane_b_bug_report_never_reaches_route_to_butler_fallback(self, mock_load):
+        """Lane B: file_bug_report short-circuits — never falls into the
+        route_to_butler extraction/fallback-to-general path."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Filed as a bug report.",
+                tool_calls=[_bug_report_call(case_reference="deadbeef0001")],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-2", "page_context": None}
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "The concentration chart is empty for child-of",
+            tool_args={"source_channel": "dashboard"},
+            message_inbox_id="00000000-0000-0000-0000-000000000003",
+        )
+
+        assert result.target_butler == "qa"
+        assert result.routed_targets == []
+        assert result.acked_targets == ["qa"]
+        assert result.failed_targets == []
+        assert result.route_result["case_reference"] == "deadbeef0001"
+        # Never routed to a domain butler.
+        assert "relationship" not in result.acked_targets
+        assert result.target_butler != "general"
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_unroutable_dashboard_message_dead_letters_instead_of_general(self, mock_load):
+        """Dashboard messages that route to neither lane must dead-letter + notify,
+        never silently fall back to 'general' (that fallback is channel-specific)."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output="I'm not sure what to do.", tool_calls=[])
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-3", "page_context": None}
+        )
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock(  # type: ignore[method-assign]
+            return_value=RoutingResult(
+                target_butler="dead_letter", route_result={"dead_letter_id": "dl-1"}
+            )
+        )
+
+        result = await pipeline.process(
+            "asdkfjaslkdfj",
+            tool_args={"source_channel": "dashboard"},
+            message_inbox_id="00000000-0000-0000-0000-000000000004",
+        )
+
+        assert result.target_butler == "dead_letter"
+        assert result.target_butler != "general"
+        pipeline._dead_letter_dashboard_unroutable.assert_awaited_once()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_non_dashboard_channel_still_falls_back_to_general(self, mock_load):
+        """Non-dashboard channels are unaffected — existing fallback-to-general behavior."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output="No routing needed.", tool_calls=[])
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        result = await pipeline.process(
+            "Just browsing", tool_args={"source_channel": "telegram_bot"}
+        )
+
+        assert result.target_butler == "general"
+
+
+class TestDeadLetterDashboardUnroutable:
+    async def test_captures_dead_letter_and_replies_with_case_ref(self, monkeypatch):
+        mock_conn = AsyncMock()
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        # Force a real import so the module object exists (the switchboard
+        # tools namespace is manually injected into sys.modules by
+        # register_all_butler_tools() without setting parent attributes,
+        # which breaks monkeypatch's dotted-string resolution — patch the
+        # imported module object directly instead).
+        import butlers.tools.switchboard.dead_letter.capture as capture_mod
+
+        fake_dead_letter_id = "11111111-2222-3333-4444-555555555555"
+        mock_capture = AsyncMock(return_value=fake_dead_letter_id)
+        monkeypatch.setattr(capture_mod, "capture_to_dead_letter", mock_capture)
+        fake_reply = AsyncMock(return_value={"id": "msg-1"})
+        monkeypatch.setattr(
+            "butlers.api.conversations.conversation_reply_create",
+            fake_reply,
+        )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=mock_pool, dispatch_fn=AsyncMock(), source_butler="switchboard"
+        )
+
+        result = await pipeline._dead_letter_dashboard_unroutable(
+            request_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+            message_text="asdkfjaslkdfj",
+            cc_output="I'm not sure.",
+            request_context=None,
+            dashboard_context={
+                "conversation_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "page_context": None,
+            },
+        )
+
+        assert result.target_butler == "dead_letter"
+        assert result.route_result["dead_letter_id"] == fake_dead_letter_id
+        mock_capture.assert_awaited_once()
+        capture_kwargs = mock_capture.await_args.kwargs
+        assert capture_kwargs["source_table"] == "message_inbox"
+        assert capture_kwargs["replay_eligible"] is False
+
+        fake_reply.assert_awaited_once()
+        assert "11111111" in fake_reply.await_args.kwargs["message"]
+
+    async def test_no_conversation_id_skips_reply_without_raising(self, monkeypatch):
+        mock_conn = AsyncMock()
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        import butlers.tools.switchboard.dead_letter.capture as capture_mod
+
+        monkeypatch.setattr(capture_mod, "capture_to_dead_letter", AsyncMock(return_value="dl-id"))
+        fake_reply = AsyncMock()
+        monkeypatch.setattr(
+            "butlers.api.conversations.conversation_reply_create",
+            fake_reply,
+        )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=mock_pool, dispatch_fn=AsyncMock(), source_butler="switchboard"
+        )
+
+        result = await pipeline._dead_letter_dashboard_unroutable(
+            request_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+            message_text="asdkfjaslkdfj",
+            cc_output="",
+            request_context=None,
+            dashboard_context=None,
+        )
+
+        assert result.target_butler == "dead_letter"
+        fake_reply.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

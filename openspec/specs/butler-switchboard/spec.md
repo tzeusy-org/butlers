@@ -189,3 +189,36 @@ timestamped.
 - **WHEN** a passive source event such as Spotify playback, Steam activity, OwnTracks location, email, or chat metadata enters the system
 - **THEN** Switchboard SHALL NOT route it to Chronicler solely because it contains time evidence
 - **AND** Chronicler SHALL consume compatible evidence later through projection jobs
+
+### Requirement: Dashboard Chat-Widget Classification Lanes
+
+The Switchboard SHALL classify `dashboard` source-channel messages (the
+owner's floating chat widget) into one of two lanes instead of always calling
+`route_to_butler`: Lane A (data statement/correction) or Lane B (bug/system
+report). Bug/system reports SHALL NEVER be routed to a domain butler.
+
+#### Scenario: Lane A — data statement routes with deterministic confirm-loop context
+
+- **WHEN** a dashboard message is classified as a data statement or correction
+- **THEN** the classification session SHALL call `route_to_butler` exactly as for any other channel
+- **AND** the routed envelope's `input.context` SHALL deterministically carry the conversation's `conversation_id`, its `page_context` (if any), and instructions to interpret the statement, apply it, and confirm via `conversation_reply` — appended in code regardless of what the classification session itself wrote into `context` or `prompt`
+
+#### Scenario: Lane A — first successful route stamps sticky routed_butler
+
+- **WHEN** `route_to_butler` for a dashboard-originated message receives an `accepted` status from the target butler
+- **THEN** the Switchboard SHALL stamp `routed_butler` on the conversation (best-effort; a stamping failure SHALL NOT fail the route call)
+
+#### Scenario: Lane B — bug/system report is filed to QA, never routed to a domain butler
+
+- **WHEN** a dashboard message is classified as a bug or system report (e.g. "the concentration chart is empty for child-of")
+- **THEN** the classification session SHALL call `file_bug_report` instead of `route_to_butler`
+- **AND** `file_bug_report` SHALL compute a canonical fingerprint and relay a finding to the QA staffer via the internal `route()` function targeting `report_finding` (the same plumbing QA canary injection uses)
+- **AND** the message SHALL NOT be routed to any domain butler via `route_to_butler`
+- **AND** the tool SHALL post a `conversation_reply` acknowledgment containing the case reference (the fingerprint's first 12 characters), whether or not the QA relay itself succeeded
+
+#### Scenario: Unroutable dashboard message dead-letters and notifies the owner
+
+- **WHEN** a dashboard message's classification session calls neither `route_to_butler` nor `file_bug_report` (e.g. an ambiguous or unclassifiable message)
+- **THEN** the Switchboard SHALL capture the request to the dead-letter queue (`source_table="message_inbox"`)
+- **AND** SHALL post an in-thread `conversation_reply` telling the owner a lane decision could not be made, referencing the dead-letter case id
+- **AND** SHALL NOT silently fall back to routing the message to the `general` butler — that fallback is specific to non-dashboard channels
