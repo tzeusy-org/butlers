@@ -1199,17 +1199,32 @@ class MessagePipeline:
         cc_output: str,
         request_context: dict[str, Any] | None,
         dashboard_context: dict[str, Any] | None,
+        failure_reason: str = (
+            "Dashboard message classification produced no lane decision "
+            "(neither route_to_butler nor file_bug_report was called)"
+        ),
+        failure_category: str = "unknown",
     ) -> RoutingResult:
         """Capture an unroutable dashboard message to dead-letter + notify the owner.
 
-        Dashboard chat-widget messages must never silently vanish when the
-        classification session calls neither ``route_to_butler`` nor
-        ``file_bug_report`` — the owner would be left staring at a chat that
-        never replies. Every other channel falls back to the generic
-        "general" butler in this situation; the dashboard channel instead
-        captures the request to the existing dead-letter queue (previously
-        unused by any real caller) and always replies in-thread, so the
-        failure is observable rather than silent.
+        Dashboard chat-widget messages must never silently vanish. This is the
+        single dashboard "silence is a bug" net, reused by three distinct
+        callers:
+
+        - the LLM called neither ``route_to_butler`` nor ``file_bug_report``
+          (no lane decision at all);
+        - a ``route_to_butler`` call was made but ``route.execute`` failed for
+          every targeted butler (attempted-but-unrouted);
+        - the classification spawn itself raised (model timeout/error).
+
+        Every other channel falls back to the generic "general" butler in
+        these situations; the dashboard channel instead captures the request
+        to the existing dead-letter queue (previously unused by any real
+        caller) and always replies in-thread, so the failure is observable
+        rather than silent. ``failure_reason``/``failure_category`` let callers
+        describe which of the above cases applies; ``failure_category`` must
+        be one of the values allowed by the ``valid_failure_category`` check
+        constraint on ``dead_letter_queue``.
         """
         from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
 
@@ -1222,11 +1237,8 @@ class MessagePipeline:
                     conn,
                     original_request_id=request_uuid,
                     source_table="message_inbox",
-                    failure_reason=(
-                        "Dashboard message classification produced no lane decision "
-                        "(neither route_to_butler nor file_bug_report was called)"
-                    ),
-                    failure_category="unknown",
+                    failure_reason=failure_reason,
+                    failure_category=failure_category,
                     retry_count=0,
                     last_retry_at=None,
                     original_payload={"message_text": message_text},
@@ -2134,6 +2146,10 @@ class MessagePipeline:
                 # Build routing prompt and spawn CC
                 start = time.perf_counter()
                 spawn_start = time.perf_counter()
+                # Bound before the try so the classifier spawn-exception handler
+                # (which may fire before the dashboard_context load below runs)
+                # can always safely reference it without an UnboundLocalError.
+                dashboard_context: dict[str, Any] | None = None
                 try:
                     # Load conversation history — use structured batch data
                     # from the decomposition branch if available, otherwise
@@ -2244,7 +2260,7 @@ class MessagePipeline:
                     # Dashboard channel: load conversation_id/page_context (if any) so
                     # the two-lane prompt can surface them and route_to_butler /
                     # file_bug_report can deterministically inject them downstream.
-                    dashboard_context: dict[str, Any] | None = None
+                    # (already bound to None above the try/except)
                     if source == "dashboard" and _payload_type != "conversation_history":
                         dashboard_context = await self._load_dashboard_context(message_inbox_id)
 
@@ -2584,16 +2600,40 @@ class MessagePipeline:
                     failed_details = [f"{b}: routing failed" for b in failed]
 
                     # Fallback: LLM called no tools → infer from summary text, else general.
-                    if not routed and source == "dashboard":
+                    if not acked and source == "dashboard":
                         # Dashboard channel: never silently fall back to "general" —
                         # an unroutable dashboard message must dead-letter AND notify
                         # the owner in-thread (see _dead_letter_dashboard_unroutable).
+                        #
+                        # Gate on "acked" (routes that actually succeeded), not
+                        # "routed" (routes merely attempted): a route_to_butler
+                        # call whose route.execute failed (target butler down,
+                        # permission denied, quarantined, ...) still lands in
+                        # `routed` but never reached its target, so gating on
+                        # `routed` alone let a failed route silently escape the
+                        # dead-letter net.
+                        if routed:
+                            failure_reason = (
+                                "Dashboard message routed to "
+                                f"{', '.join(sorted(set(routed)))} but route.execute "
+                                "failed for all targets"
+                            )
+                            failure_category = "downstream_failure"
+                        else:
+                            failure_reason = (
+                                "Dashboard message classification produced no lane "
+                                "decision (neither route_to_butler nor "
+                                "file_bug_report was called)"
+                            )
+                            failure_category = "unknown"
                         return await self._dead_letter_dashboard_unroutable(
                             request_id=request_id,
                             message_text=message_text,
                             cc_output=cc_output,
                             request_context=request_context,
                             dashboard_context=dashboard_context,
+                            failure_reason=failure_reason,
+                            failure_category=failure_category,
                         )
 
                     if not routed:
@@ -2789,6 +2829,29 @@ class MessagePipeline:
                                 classification_duration_ms=spawn_latency_ms,
                                 final_state_at=datetime.now(UTC),
                             )
+
+                    if source == "dashboard":
+                        # Dashboard channel: a classification spawn exception
+                        # (model timeout/error/etc.) must never fall back
+                        # silently to "general" like every other channel — the
+                        # owner would be left with nothing beyond the
+                        # live-only SESSION_TIMEOUT window. Dead-letter +
+                        # notify in-thread via the same net used when the LLM
+                        # makes no lane decision at all (see
+                        # _dead_letter_dashboard_unroutable).
+                        return await self._dead_letter_dashboard_unroutable(
+                            request_id=request_id,
+                            message_text=message_text,
+                            cc_output="",
+                            request_context=request_context,
+                            dashboard_context=dashboard_context,
+                            failure_reason=(
+                                f"Dashboard message classification raised an exception: {error_msg}"
+                            ),
+                            failure_category=(
+                                "timeout" if isinstance(exc, TimeoutError) else "unknown"
+                            ),
+                        )
 
                     return RoutingResult(
                         target_butler="general",

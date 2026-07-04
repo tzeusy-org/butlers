@@ -480,6 +480,157 @@ class TestMessagePipelineProcessDashboardLanes:
 
         assert result.target_butler == "general"
 
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_dashboard_classifier_spawn_exception_dead_letters_instead_of_general(
+        self, mock_load
+    ):
+        """(G2) A classifier spawn exception on a dashboard envelope must never
+        silently fall back to 'general' like every other channel — it must
+        route through the same dead-letter + in-thread-reply net as the
+        no-lane-decision case."""
+
+        async def mock_dispatch(**kwargs):
+            raise TimeoutError("classification session timed out")
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-5", "page_context": None}
+        )
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock(  # type: ignore[method-assign]
+            return_value=RoutingResult(
+                target_butler="dead_letter", route_result={"dead_letter_id": "dl-2"}
+            )
+        )
+
+        result = await pipeline.process(
+            "something that will blow up classification",
+            tool_args={"source_channel": "dashboard"},
+            message_inbox_id="00000000-0000-0000-0000-000000000005",
+        )
+
+        assert result.target_butler == "dead_letter"
+        assert result.target_butler != "general"
+        pipeline._dead_letter_dashboard_unroutable.assert_awaited_once()
+        call_kwargs = pipeline._dead_letter_dashboard_unroutable.await_args.kwargs
+        assert "TimeoutError" in call_kwargs["failure_reason"]
+        assert call_kwargs["failure_category"] == "timeout"
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_non_dashboard_spawn_exception_still_falls_back_to_general(self, mock_load):
+        """Regression: a classifier spawn exception on a non-dashboard channel
+        keeps the pre-existing silent 'general' fallback unchanged."""
+
+        async def mock_dispatch(**kwargs):
+            raise RuntimeError("boom")
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        result = await pipeline.process(
+            "Just browsing", tool_args={"source_channel": "telegram_bot"}
+        )
+
+        assert result.target_butler == "general"
+        assert result.classification_error is not None
+        assert "RuntimeError" in result.classification_error
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_dashboard_failed_route_dead_letters_instead_of_returning_routed(self, mock_load):
+        """(G3) route_to_butler was attempted but route.execute failed for the
+        only target — this must dead-letter, not silently return a 'routed
+        but errored' result with no in-thread reply."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to finance butler.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "finance", "prompt": "Log $50 expense"},
+                        "result": {"status": "error", "error": "target butler quarantined"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-6", "page_context": None}
+        )
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock(  # type: ignore[method-assign]
+            return_value=RoutingResult(
+                target_butler="dead_letter", route_result={"dead_letter_id": "dl-3"}
+            )
+        )
+
+        result = await pipeline.process(
+            "Log $50 expense",
+            tool_args={"source_channel": "dashboard"},
+            message_inbox_id="00000000-0000-0000-0000-000000000006",
+        )
+
+        assert result.target_butler == "dead_letter"
+        assert result.target_butler != "finance"
+        pipeline._dead_letter_dashboard_unroutable.assert_awaited_once()
+        call_kwargs = pipeline._dead_letter_dashboard_unroutable.await_args.kwargs
+        assert "finance" in call_kwargs["failure_reason"]
+        assert call_kwargs["failure_category"] == "downstream_failure"
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_dashboard_successful_route_does_not_dead_letter(self, mock_load):
+        """Regression guard for the 'not routed' -> 'not acked' gate change:
+        a fully successful dashboard route must NOT go through the
+        dead-letter path."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to finance butler.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "finance", "prompt": "Log $50 expense"},
+                        "result": {"status": "ok", "butler": "finance"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-7", "page_context": None}
+        )
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "Log $50 expense",
+            tool_args={"source_channel": "dashboard"},
+            message_inbox_id="00000000-0000-0000-0000-000000000007",
+        )
+
+        assert result.target_butler == "finance"
+        assert result.acked_targets == ["finance"]
+        pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
 
 class TestDeadLetterDashboardUnroutable:
     async def test_captures_dead_letter_and_replies_with_case_ref(self, monkeypatch):
