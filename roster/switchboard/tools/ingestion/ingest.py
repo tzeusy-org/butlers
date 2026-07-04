@@ -623,6 +623,25 @@ async def ingest_v1(
         _ingest_metrics.record_ingest_result(source=_source_for_metrics, outcome="validation_error")
         raise ValueError(f"Invalid ingest.v1 envelope: {exc}") from exc
 
+    # Validate explicit pins before any duplicate early return.  The dedupe keys
+    # intentionally ignore control directives, so a repeated payload with a bad
+    # pin must still be rejected instead of accepted as a harmless duplicate.
+    pinned_target = envelope.control.pinned_target
+    if pinned_target is not None:
+        from butlers.tools.switchboard.routing.classify import (
+            _load_available_butlers,
+        )
+
+        available_butlers = await _load_available_butlers(pool)
+        if not any(butler["name"] == pinned_target for butler in available_butlers):
+            _ingest_metrics.record_ingest_result(
+                source=envelope.source.channel, outcome="validation_error"
+            )
+            raise ValueError(
+                f"Invalid ingest.v1 envelope: pinned_target '{pinned_target}' is not "
+                "a registered, routable butler"
+            )
+
     # 2. Compute stable dedupe key
     dedupe_key = _compute_dedupe_key(envelope)
 
@@ -677,24 +696,10 @@ async def ingest_v1(
     if envelope.event.external_thread_id:
         thread_id = str(envelope.event.external_thread_id)
 
-    # 4a. Envelope pin — validated against the live, routable butler registry
-    # (the same candidate set LLM classification uses) so an unknown or
-    # non-routable target is rejected here rather than silently misrouted or
-    # falling through to classification. Bypasses thread-affinity and rule
-    # evaluation entirely when present.
-    pinned_target = envelope.control.pinned_target
+    # 4a. Envelope pin — already validated above against the live, routable
+    # butler registry before any duplicate return.  Bypasses thread-affinity
+    # and rule evaluation entirely when present.
     if pinned_target is not None:
-        from butlers.tools.switchboard.routing.classify import (
-            _load_available_butlers,
-        )
-
-        available_butlers = await _load_available_butlers(pool)
-        if not any(butler["name"] == pinned_target for butler in available_butlers):
-            _ingest_metrics.record_ingest_result(source=source_channel, outcome="validation_error")
-            raise ValueError(
-                f"Invalid ingest.v1 envelope: pinned_target '{pinned_target}' is not "
-                "a registered, routable butler"
-            )
         triage_decision = PolicyDecision(
             action="route_to",
             target_butler=pinned_target,

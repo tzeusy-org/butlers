@@ -14,6 +14,7 @@
 - [x] 3.2 Unit test: pinned routing takes precedence over a matching ingestion-policy rule and over thread-affinity.
 - [x] 3.3 Unit/integration test: unknown/non-routable `pinned_target` is rejected (`ValueError`), no `message_inbox`/`ingestion_events` row is created.
 - [x] 3.4 Regression test: unpinned envelopes behave exactly as before (thread-affinity / rules / classification fallback unchanged).
+- [x] 3.5 Regression test: duplicate-looking submissions validate `pinned_target` before returning `duplicate=true`.
 
 ## 4. Spec
 
@@ -22,5 +23,5 @@
 
 ## 5. Quality gates
 
-- [ ] 5.1 `ruff check` / `ruff format --check` on touched files.
-- [ ] 5.2 Targeted `pytest` for `roster/switchboard/tests/test_triage_ingest_integration.py` and any new pinned-target tests.
+- [x] 5.1 `ruff check` / `ruff format --check` on touched files.
+- [x] 5.2 Targeted `pytest` for `roster/switchboard/tests/test_triage_ingest_integration.py` and any new pinned-target tests.

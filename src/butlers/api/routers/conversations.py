@@ -43,7 +43,14 @@ SSE event types
     ``{message_id, model_name, input_tokens, output_tokens, duration_ms,
     tool_calls}``.
 ``error``
-    Session failure. Data: ``{code, message}``.
+    Session failure. Data: ``{code, message}``. ``code`` is one of
+    ``SWITCHBOARD_UNAVAILABLE`` (MCP unreachable — message already
+    persisted; a retry re-submits the same content and is deduplicated
+    idempotently at the Switchboard ingest boundary), ``INGEST_REJECTED``
+    (deterministic envelope rejection, e.g. an invalid ``pinned_target`` —
+    retrying the same envelope will not help), ``SWITCHBOARD_ERROR``
+    (unexpected submission failure), ``SESSION_TIMEOUT``,
+    ``SESSION_FAILED``, or ``PERSISTENCE_ERROR``.
 ``done``
     Stream terminator — always sent as the last event.
 ``keepalive`` (comment)
@@ -86,6 +93,7 @@ from butlers.api.conversations import (
     message_list,
 )
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.api.models.conversation import (
     ConversationCreateRequest,
@@ -109,6 +117,14 @@ _POLL_INTERVAL_S: float = 0.5
 
 # Maximum wait time for session completion (seconds)
 _SESSION_TIMEOUT_S: float = 300.0
+
+# Timeout for the Switchboard MCP ingest call
+_MCP_DISPATCH_TIMEOUT_S: float = 30.0
+
+# Staffer butler that owns message classification for the dashboard chat
+# widget — conversations addressed to it are never pinned so its own
+# classify -> route pipeline can pick the target butler.
+_SWITCHBOARD_BUTLER: str = "switchboard"
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -142,38 +158,83 @@ def _sse_done() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Mock session runner
+# Switchboard MCP dispatch
 # ---------------------------------------------------------------------------
-# NOTE: Real session dispatch will be wired when the Switchboard ingest
-# call path is integrated (bu-72zr, bu-4m6i). For now, the router builds
-# the envelope correctly and stubs the streaming response so the API shape
-# is correct and testable without a live Switchboard.
+
+
+def _first_json_block(mcp_result: Any) -> Any:
+    """Return the first JSON-decoded text block from an MCP tool result, or None.
+
+    Falls back to ``{"value": <text>}`` for a non-JSON text block. Note the
+    decoded value may be any JSON type, not necessarily a dict — callers that
+    expect an object must ``isinstance``-guard the result.
+    """
+    content = getattr(mcp_result, "content", None)
+    if not content:
+        return None
+    for block in content:
+        if hasattr(block, "text"):
+            try:
+                return json.loads(block.text)
+            except (json.JSONDecodeError, TypeError):
+                return {"value": block.text}
+    return None
 
 
 async def _submit_to_switchboard(
     butler_name: str,
     envelope: dict[str, Any],
     *,
-    db: DatabaseManager,
+    mcp_mgr: MCPClientManager,
 ) -> dict[str, Any] | None:
     """Submit an ingest.v1 envelope to the Switchboard butler via MCP.
 
-    Returns the accepted response dict, or None if the Switchboard is
-    unavailable.  Failures are non-fatal; the caller streams an error event.
+    Returns the accepted response dict (``request_id``, ``status``,
+    ``duplicate``, ``triage_decision``, ``triage_target``), or ``None`` if the
+    Switchboard MCP server is unreachable — a non-fatal, retryable condition
+    the caller surfaces as an SSE error.
+
+    Raises
+    ------
+    ValueError
+        If the Switchboard ingest tool rejected the envelope (e.g. an invalid
+        ``pinned_target``) or returned an unexpected response shape. This is
+        a deterministic rejection, not a connectivity failure, so the caller
+        surfaces it distinctly rather than inviting a retry.
     """
-    # TODO(bu-27mx): Wire to Switchboard MCP ingest tool once bu-4m6i lands.
-    # For now, log the envelope and return a stub response so the API shape
-    # is testable end-to-end without a running Switchboard.
+    try:
+        client = await asyncio.wait_for(
+            mcp_mgr.get_client(_SWITCHBOARD_BUTLER), timeout=_MCP_DISPATCH_TIMEOUT_S
+        )
+        mcp_result = await asyncio.wait_for(
+            client.call_tool("ingest", envelope), timeout=_MCP_DISPATCH_TIMEOUT_S
+        )
+    except (ButlerUnreachableError, TimeoutError, OSError) as exc:
+        logger.warning(
+            "Switchboard unreachable while submitting dashboard envelope for %s: %s",
+            butler_name,
+            exc,
+        )
+        return None
+
+    result = _first_json_block(mcp_result)
+    if mcp_result.is_error or (isinstance(result, dict) and result.get("status") == "error"):
+        error_msg = (
+            result.get("error") if isinstance(result, dict) else None
+        ) or "Switchboard ingest tool returned an error"
+        raise ValueError(error_msg)
+
+    if not isinstance(result, dict) or "request_id" not in result:
+        raise ValueError("Switchboard ingest tool returned an unexpected response shape")
+
     logger.info(
-        "Dashboard envelope queued for %s: conv=%s msg=%s",
+        "Dashboard envelope submitted for %s: conv=%s msg=%s request_id=%s",
         butler_name,
         envelope["source"]["endpoint_identity"],
         envelope["event"]["external_event_id"],
+        result.get("request_id"),
     )
-    return {
-        "request_id": envelope["event"]["external_event_id"],
-        "status": "accepted",
-    }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +250,7 @@ async def _stream_conversation_response(
     message_id: UUID,
     envelope: dict[str, Any],
     db: DatabaseManager,
+    mcp_mgr: MCPClientManager,
     is_new_conversation: bool = False,
     conversation_title: str = "",
 ) -> AsyncGenerator[str, None]:
@@ -211,7 +273,19 @@ async def _stream_conversation_response(
 
     # Step 2: Submit to Switchboard
     try:
-        accepted = await _submit_to_switchboard(butler_name, envelope, db=db)
+        accepted = await _submit_to_switchboard(butler_name, envelope, mcp_mgr=mcp_mgr)
+    except ValueError as exc:
+        # Deterministic envelope rejection (e.g. invalid pinned_target) — a
+        # retry with the same envelope would fail the same way, so this is
+        # surfaced distinctly from a transient connectivity failure.
+        logger.warning(
+            "Switchboard rejected dashboard envelope for conversation %s: %s",
+            conversation_id,
+            exc,
+        )
+        yield _sse_error("INGEST_REJECTED", str(exc))
+        yield _sse_done()
+        return
     except Exception as exc:
         logger.exception(
             "Switchboard submission failed for conversation %s: %s",
@@ -223,7 +297,11 @@ async def _stream_conversation_response(
         return
 
     if accepted is None:
-        yield _sse_error("SWITCHBOARD_UNAVAILABLE", "Switchboard butler is not available")
+        # The user message is already persisted (step 0, before this
+        # generator started) — a client retry re-submits the same message,
+        # which carries the same normalized_text/sender/thread and is
+        # deduplicated idempotently by the Switchboard ingest boundary.
+        yield _sse_error("SWITCHBOARD_UNAVAILABLE", "Switchboard offline — retry")
         yield _sse_done()
         return
 
@@ -351,27 +429,70 @@ async def _poll_session_completion(
     Returns a dict with ``completed=True`` and session metadata when a
     matching session is found; returns ``{"completed": False}`` otherwise.
 
-    NOTE: This stub always returns completed immediately with empty results.
-    Real implementation queries the butler's sessions table filtered by
-    request_id.
+    ``request_id`` is the canonical Switchboard ingest request reference,
+    which the routing pipeline stamps onto the resulting session row
+    (``Spawner.trigger`` -> ``session_create(request_id=...)``). This only
+    finds the session when it landed on ``butler_name``'s own schema —
+    correct for a pinned per-butler conversation, where the target IS
+    ``butler_name``. For a classification-routed conversation (e.g. the
+    Switchboard widget), the session lands on whichever butler was chosen,
+    not ``butler_name`` — resolving that is the reply-channel's concern
+    (bu-p6ey8.1), so such conversations time out gracefully here in the
+    interim.
     """
-    # Stub: return completed immediately.
-    # Real implementation will query:
-    #   SELECT id, result, model, input_tokens, output_tokens, duration_ms,
-    #          tool_calls, success, error
-    #   FROM <butler_schema>.sessions
-    #   WHERE request_id = $1 AND completed_at IS NOT NULL
-    #   LIMIT 1
+    if not request_id:
+        return {"completed": False}
+
+    try:
+        pool = db.pool(butler_name)
+    except KeyError:
+        logger.warning(
+            "No DB pool registered for butler '%s'; cannot poll for session completion",
+            butler_name,
+        )
+        return {
+            "completed": True,
+            "result": "",
+            "model": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "duration_ms": None,
+            "tool_calls": None,
+            "session_id": None,
+            "error": f"Butler '{butler_name}' database is not available",
+        }
+
+    row = await pool.fetchrow(
+        """
+        SELECT id, result, model, input_tokens, output_tokens, duration_ms,
+               tool_calls, error
+        FROM sessions
+        WHERE request_id = $1 AND completed_at IS NOT NULL
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        request_id,
+    )
+    if row is None:
+        return {"completed": False}
+
+    tool_calls = row["tool_calls"]
+    if isinstance(tool_calls, str):
+        try:
+            tool_calls = json.loads(tool_calls)
+        except (json.JSONDecodeError, TypeError):
+            tool_calls = None
+
     return {
         "completed": True,
-        "result": "",
-        "model": None,
-        "input_tokens": None,
-        "output_tokens": None,
-        "duration_ms": None,
-        "tool_calls": None,
-        "session_id": None,
-        "error": None,
+        "result": row["result"] or "",
+        "model": row["model"],
+        "input_tokens": row["input_tokens"],
+        "output_tokens": row["output_tokens"],
+        "duration_ms": row["duration_ms"],
+        "tool_calls": tool_calls,
+        "session_id": row["id"],
+        "error": row["error"],
     }
 
 
@@ -492,6 +613,7 @@ async def create_conversation(
     body: ConversationCreateRequest,
     request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> StreamingResponse:
     """Create a new conversation with the first user message.
 
@@ -501,6 +623,11 @@ async def create_conversation(
 
     Dashboard messages bypass connector discretion evaluation — they are
     always operator-intentional (see ``DISCRETION_BYPASS_CHANNELS``).
+
+    Envelopes addressed to a specific butler (any ``name`` other than the
+    Switchboard staffer itself) carry ``control.pinned_target={name}`` so the
+    message routes there deterministically instead of going through
+    classification.
     """
     try:
         pool = db.credential_shared_pool()
@@ -528,6 +655,8 @@ async def create_conversation(
         message_id=user_msg["id"],
         message_text=body.message,
         conversation_context=None,
+        page_context=body.page_context.model_dump() if body.page_context else None,
+        pinned_target=None if name == _SWITCHBOARD_BUTLER else name,
     )
 
     async def _generate() -> AsyncGenerator[str, None]:
@@ -538,6 +667,7 @@ async def create_conversation(
             message_id=user_msg["id"],
             envelope=envelope,
             db=db,
+            mcp_mgr=mcp_mgr,
             is_new_conversation=True,
             conversation_title=conv["title"],
         ):
@@ -609,6 +739,7 @@ async def send_message(
     body: MessageCreateRequest,
     request: Request,
     db: DatabaseManager = Depends(_get_db_manager),
+    mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> StreamingResponse:
     """Send a follow-up message in an existing conversation.
 
@@ -655,6 +786,8 @@ async def send_message(
         message_id=user_msg["id"],
         message_text=body.message,
         conversation_context=history_rows,
+        page_context=body.page_context.model_dump() if body.page_context else None,
+        pinned_target=None if name == _SWITCHBOARD_BUTLER else name,
     )
 
     async def _generate() -> AsyncGenerator[str, None]:
@@ -665,6 +798,7 @@ async def send_message(
             message_id=user_msg["id"],
             envelope=envelope,
             db=db,
+            mcp_mgr=mcp_mgr,
             is_new_conversation=False,
         ):
             yield chunk

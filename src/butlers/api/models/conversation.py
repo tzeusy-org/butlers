@@ -13,16 +13,39 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 
 
+class PageContext(BaseModel):
+    """Dashboard route/query/entity context captured at message send time.
+
+    Attached to the ingest envelope so a routed butler session receives
+    grounded context for the owner's statement (e.g. which entity page they
+    were viewing when they stated a correction).
+    """
+
+    route: str = Field(..., min_length=1, description="Dashboard route path")
+    query_params: dict[str, str] = Field(
+        default_factory=dict, description="Route query string parameters"
+    )
+    entity_ref: str | None = Field(
+        None, description="Optional entity/subject reference the page exposes"
+    )
+
+
 class ConversationCreateRequest(BaseModel):
     """Request body for creating a new conversation."""
 
     message: str = Field(..., min_length=1, description="First user message to send")
+    page_context: PageContext | None = Field(
+        None, description="Dashboard page context captured at send time"
+    )
 
 
 class MessageCreateRequest(BaseModel):
     """Request body for sending a follow-up message."""
 
     message: str = Field(..., min_length=1, description="User message to send")
+    page_context: PageContext | None = Field(
+        None, description="Dashboard page context captured at send time"
+    )
 
 
 class ConversationUpdateRequest(BaseModel):

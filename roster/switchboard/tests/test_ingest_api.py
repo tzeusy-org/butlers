@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
+from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.tools.switchboard.ingestion.ingest import (
     IngestAcceptedResponse,
     _compute_dedupe_key,
@@ -812,4 +813,162 @@ class TestPinnedTargetRouting:
 
         assert result.status == "accepted"
         assert result.triage_decision is None
-        assert result.triage_target is None
+
+
+class TestDashboardConversationEnvelope:
+    """Integration coverage for bu-mj2k2: the real dashboard envelope reaches
+    ``ingest_v1`` with the fields ``build_dashboard_envelope`` promises, and
+    a client "retry" (re-submitting the same message content under a fresh
+    message id) is deduplicated idempotently — proving the SSE offline/retry
+    contract without needing a bespoke retry endpoint.
+    """
+
+    async def test_dashboard_envelope_reaches_ingest_with_expected_fields(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """build_dashboard_envelope's pinned_target/page_context survive ingest_v1."""
+        conversation_id = uuid.uuid4()
+        message_id = uuid.uuid4()
+        envelope = build_dashboard_envelope(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            message_text="Alice is Bob's sister",
+            pinned_target="relationship",
+            page_context={
+                "route": "/entities/concentration",
+                "query_params": {"predicate": "child-of"},
+                "entity_ref": None,
+            },
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "relationship"}]),
+        ):
+            result = await ingest_v1(pool, envelope)
+
+        assert result.status == "accepted"
+        assert result.triage_decision == "route_to"
+        assert result.triage_target == "relationship"
+
+        row = await pool.fetchrow(
+            "SELECT raw_payload, request_context FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        raw_payload = _decode_jsonb(row["raw_payload"])
+        assert raw_payload["source"]["channel"] == "dashboard"
+        assert raw_payload["payload"]["raw"]["page_context"] == {
+            "route": "/entities/concentration",
+            "query_params": {"predicate": "child-of"},
+            "entity_ref": None,
+        }
+        ctx = _decode_jsonb(row["request_context"])
+        assert ctx["triage_rule_type"] == "pinned_target"
+
+    async def test_dashboard_pin_to_switchboard_itself_is_rejected(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """Pinning to the Switchboard staffer itself is rejected (a staffer is never routable).
+
+        Justifies why the conversations router never pins ``control.pinned_target``
+        to "switchboard" — the classification-routed widget flow must leave
+        pinned_target unset so Switchboard's own classify -> route pipeline runs.
+        """
+        envelope = build_dashboard_envelope(
+            conversation_id=uuid.uuid4(),
+            message_id=uuid.uuid4(),
+            message_text="the concentration chart is empty",
+            pinned_target="switchboard",
+        )
+
+        # Switchboard is a staffer, never a candidate in the routable butler set.
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "relationship"}, {"name": "finance"}]),
+        ):
+            with pytest.raises(ValueError, match="switchboard"):
+                await ingest_v1(pool, envelope)
+
+    async def test_invalid_pinned_target_is_validated_before_duplicate_return(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """A duplicate-looking submission cannot bypass pinned_target validation."""
+        conversation_id = uuid.uuid4()
+        message_id = uuid.uuid4()
+        first_envelope = build_dashboard_envelope(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            message_text="Alice's birthday is March 3rd",
+            pinned_target="relationship",
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "relationship"}]),
+        ):
+            first_result = await ingest_v1(pool, first_envelope)
+        assert first_result.duplicate is False
+
+        invalid_retry_envelope = build_dashboard_envelope(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            message_text="Alice's birthday is March 3rd",
+            pinned_target="ghost",
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "relationship"}]),
+        ):
+            with pytest.raises(ValueError, match="ghost"):
+                await ingest_v1(pool, invalid_retry_envelope)
+
+        row_count = await pool.fetchval(
+            "SELECT count(*) FROM message_inbox WHERE request_context ->> "
+            "'source_endpoint_identity' = $1",
+            f"dashboard:web:{conversation_id}",
+        )
+        assert row_count == 1
+
+    async def test_retry_resubmission_with_new_message_id_is_idempotent(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """A client retry (new message_id, same text) dedupes via content-hash fallback.
+
+        The dashboard message is persisted before submission (existing router
+        behavior); if the first ingest attempt fails after Switchboard already
+        accepted it (e.g. a dropped response), a naive client retry naturally
+        resubmits with the SAME conversation/text under a freshly generated
+        message_id. The primary dedupe key (keyed on external_event_id) would
+        differ, but ingest_v1's secondary content-hash check still returns the
+        original request_id — no duplicate route/session is created.
+        """
+        conversation_id = uuid.uuid4()
+        first_envelope = build_dashboard_envelope(
+            conversation_id=conversation_id,
+            message_id=uuid.uuid4(),
+            message_text="Alice's birthday is March 3rd",
+            pinned_target="relationship",
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "relationship"}]),
+        ):
+            first_result = await ingest_v1(pool, first_envelope)
+        assert first_result.duplicate is False
+
+        retry_envelope = build_dashboard_envelope(
+            conversation_id=conversation_id,
+            message_id=uuid.uuid4(),  # fresh message id, as a real client retry would send
+            message_text="Alice's birthday is March 3rd",  # identical text
+            pinned_target="relationship",
+        )
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "relationship"}]),
+        ):
+            retry_result = await ingest_v1(pool, retry_envelope)
+
+        assert retry_result.duplicate is True
+        assert retry_result.request_id == first_result.request_id

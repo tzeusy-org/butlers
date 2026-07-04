@@ -84,10 +84,10 @@ Starting a new conversation creates a conversation record and sends the first us
 
 #### Scenario: Create conversation with first message
 
-- **WHEN** `POST /api/butlers/{name}/conversations` is called with `{ "message": "Hello butler" }`
+- **WHEN** `POST /api/butlers/{name}/conversations` is called with `{ "message": "Hello butler" }` and an optional `page_context`
 - **THEN** a new conversation row is inserted in `public.dashboard_conversations` with `butler_name = {name}`, `status = 'active'`, and a default title
-- **AND** a user message row is inserted in `public.dashboard_messages`
-- **AND** the message is submitted to the Switchboard as an `ingest.v1` envelope with `source.channel = "dashboard"`, `source.provider = "internal"`, `source.endpoint_identity = "dashboard:web:{conversation_id}"`
+- **AND** a user message row is inserted in `public.dashboard_messages` **before** Switchboard submission is attempted
+- **AND** the message is submitted to the Switchboard's `ingest` MCP tool as an `ingest.v1` envelope with `source.channel = "dashboard"`, `source.provider = "internal"`, `source.endpoint_identity = "dashboard:web:{conversation_id}"`
 - **AND** the response is streamed back via SSE on the same request (see SSE Streaming requirement)
 - **AND** the response includes the `conversation_id` in the initial SSE event
 
@@ -102,9 +102,9 @@ Sending a follow-up message in an existing conversation preserves the thread con
 
 #### Scenario: Send follow-up message
 
-- **WHEN** `POST /api/butlers/{name}/conversations/{conversation_id}/messages` is called with `{ "message": "Follow up question" }`
+- **WHEN** `POST /api/butlers/{name}/conversations/{conversation_id}/messages` is called with `{ "message": "Follow up question" }` and an optional `page_context`
 - **THEN** a user message row is inserted in `public.dashboard_messages`
-- **AND** the message is submitted to the Switchboard as an `ingest.v1` envelope with the same `endpoint_identity` as the original conversation and `event.external_thread_id = {conversation_id}`
+- **AND** the message is submitted to the Switchboard's `ingest` MCP tool as an `ingest.v1` envelope with the same `endpoint_identity` as the original conversation and `event.external_thread_id = {conversation_id}`
 - **AND** the envelope's `payload.normalized_text` includes prior conversation context (last N messages as summarized context, configurable, default last 5 exchange pairs)
 - **AND** the response is streamed back via SSE
 - **AND** `updated_at` and `message_count` on the conversation are updated
@@ -199,6 +199,19 @@ Assistant responses are streamed to the dashboard via Server-Sent Events on the 
 - **AND** the error is recorded in the assistant message row with `error` set
 - **AND** the stream is closed with `event: done`
 
+#### Scenario: Switchboard unreachable during submission
+
+- **WHEN** the Switchboard MCP server cannot be reached while submitting the ingest envelope
+- **THEN** an `event: error` with `data: {"code": "SWITCHBOARD_UNAVAILABLE", "message": "Switchboard offline — retry"}` is sent, followed by `event: done`
+- **AND** the user message row inserted before submission is preserved (not rolled back)
+- **AND** a client retry that resubmits the same message content is deduplicated idempotently at the Switchboard ingest boundary (no duplicate route or session is created)
+
+#### Scenario: Switchboard rejects the envelope
+
+- **WHEN** the Switchboard's `ingest` MCP tool rejects the envelope (e.g. an invalid `pinned_target`)
+- **THEN** an `event: error` with `data: {"code": "INGEST_REJECTED", "message": "..."}` is sent, followed by `event: done`
+- **AND** this is a deterministic rejection distinct from `SWITCHBOARD_UNAVAILABLE`: retrying the identical envelope will fail the same way
+
 #### Scenario: SSE keepalive during processing
 
 - **WHEN** the butler session is processing but no tokens have been emitted for 15 seconds
@@ -206,7 +219,7 @@ Assistant responses are streamed to the dashboard via Server-Sent Events on the 
 
 ### Requirement: Dashboard Ingestion Envelope Construction
 
-Dashboard conversations construct `ingest.v1` envelopes that flow through the standard Switchboard ingestion pipeline.
+Dashboard conversations construct `ingest.v1` envelopes that flow through the standard Switchboard ingestion pipeline, submitted to the Switchboard's `ingest` MCP tool.
 
 #### Scenario: Envelope structure for dashboard messages
 
@@ -221,14 +234,33 @@ Dashboard conversations construct `ingest.v1` envelopes that flow through the st
   - `event.observed_at`: current timestamp
   - `sender.identity`: `"dashboard:operator"`
   - `payload.normalized_text`: the user's message content (with conversation context for follow-ups)
-  - `payload.raw`: `{"source": "dashboard", "conversation_id": "...", "message_id": "...", "message": "..."}`
+  - `payload.raw`: `{"source": "dashboard", "conversation_id": "...", "message_id": "...", "message": "...", "page_context": {...}}` — `page_context` is present only when the client supplied one
   - `control.policy_tier`: `"interactive"`
   - `control.ingestion_tier`: `"full"`
+  - `control.pinned_target`: present per the routing-pin scenario below
 
 #### Scenario: Dashboard messages bypass discretion
 
 - **WHEN** a dashboard message is ingested by the Switchboard
 - **THEN** the `"dashboard"` channel SHALL NOT be subject to discretion evaluation (operator messages are always intentional)
+
+#### Scenario: Per-butler conversation envelope carries a routing pin
+
+- **WHEN** a message is submitted via `POST /api/butlers/{name}/conversations` (or a follow-up on an existing per-butler conversation) and `{name}` is a routable domain butler (not the Switchboard staffer)
+- **THEN** the constructed envelope SHALL set `control.pinned_target` to `{name}`
+- **AND** the Switchboard SHALL route the message to `{name}` deterministically, without LLM classification choosing a different target
+
+#### Scenario: Switchboard-addressed conversations are never pinned
+
+- **WHEN** a message is submitted via `POST /api/butlers/switchboard/conversations` (the dashboard chat widget's classification-routed conversation)
+- **THEN** the constructed envelope SHALL NOT set `control.pinned_target` — the Switchboard staffer is never a registered, routable target
+- **AND** the message proceeds through Switchboard's ordinary classify -> route pipeline
+
+#### Scenario: Optional page context on dashboard messages
+
+- **WHEN** a dashboard message is submitted with a `page_context` object (`route`, `query_params`, optional `entity_ref`) on the request body
+- **THEN** the envelope's `payload.raw.page_context` SHALL carry that object unchanged, grounding the statement for the routed butler
+- **AND** when no `page_context` is provided, `payload.raw` SHALL NOT contain a `page_context` key
 
 ### Requirement: Conversation Aggregate Queries
 

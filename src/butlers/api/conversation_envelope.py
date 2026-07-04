@@ -66,6 +66,8 @@ def build_dashboard_envelope(
     message_text: str,
     conversation_context: list[dict[str, Any]] | None = None,
     max_context_pairs: int = _DEFAULT_CONTEXT_PAIRS,
+    page_context: dict[str, Any] | None = None,
+    pinned_target: str | None = None,
 ) -> dict[str, Any]:
     """Construct a valid ``ingest.v1`` envelope for a dashboard message.
 
@@ -83,6 +85,16 @@ def build_dashboard_envelope(
         follow-up messages.  Pass ``None`` or ``[]`` for new conversations.
     max_context_pairs:
         Number of prior exchange pairs to include in the context preamble.
+    page_context:
+        Optional dashboard route/query/entity context the message was sent
+        from (e.g. ``{"route": "/entities/concentration", "query_params":
+        {...}, "entity_ref": "..."}``).  Carried in ``payload.raw`` so a
+        routed butler session can ground the statement.
+    pinned_target:
+        Optional butler name to deterministically route this envelope to
+        (``control.pinned_target``), bypassing Switchboard classification.
+        Used for per-butler dashboard conversations; omit for the
+        classification-routed Switchboard widget conversation.
 
     Returns
     -------
@@ -102,6 +114,22 @@ def build_dashboard_envelope(
     conv_id_str = str(conversation_id)
     msg_id_str = str(message_id)
 
+    raw: dict[str, Any] = {
+        "source": "dashboard",
+        "conversation_id": conv_id_str,
+        "message_id": msg_id_str,
+        "message": message_text,
+    }
+    if page_context:
+        raw["page_context"] = page_context
+
+    control: dict[str, Any] = {
+        "policy_tier": "interactive",
+        "ingestion_tier": "full",
+    }
+    if pinned_target:
+        control["pinned_target"] = pinned_target
+
     return {
         "schema_version": "ingest.v1",
         "source": {
@@ -119,15 +147,7 @@ def build_dashboard_envelope(
         },
         "payload": {
             "normalized_text": normalized_text,
-            "raw": {
-                "source": "dashboard",
-                "conversation_id": conv_id_str,
-                "message_id": msg_id_str,
-                "message": message_text,
-            },
+            "raw": raw,
         },
-        "control": {
-            "policy_tier": "interactive",
-            "ingestion_tier": "full",
-        },
+        "control": control,
     }
