@@ -2,18 +2,16 @@
 name: ui-maturity-audit
 description: >
   Subskill of butler-relentless-jarvis-pursuit (its QC / verification mode) — routed via the
-  parent SKILL.md, not the global catalog.
-  QC sweep of the Butlers dashboard for UI maturity and feature completeness, organised around
-  end-to-end USER FLOWS: take a goal a user is trying to accomplish (grounded in the project's
-  manifesto/direction), walk the happy-path step by step, and judge whether the experience is
-  pleasant, mature, honest, and backed end to end. Catches dead buttons, controls that persist
-  but change nothing, fake/placeholder data, misleading UI, orphaned routes, and spec-required
-  behaviour never built. Fans out one agent per flow; each traces handler -> API client ->
-  backend route -> data consumer, and drives the flow live when the dev stack is up. Triggers:
-  "QC the dashboard", "is this flow actually wired", "audit UI maturity / feature completeness",
-  "is the X page real or just a skin", "did the redesign actually ship the behaviour", "is this
-  showing fake data", "walk the connect-account flow end to end". Not for pure visual/UX critique
-  (use impeccable) or spec-vs-code drift bead-filing (use reconcile-spec-to-project).
+  parent SKILL.md, not the global catalog. QC sweep of the Butlers dashboard for UI maturity
+  and feature completeness, organised around end-to-end USER FLOWS: walk a user goal's
+  happy path step by step and judge whether the experience is pleasant, mature, honest, and
+  backed end to end. Catches dead buttons, controls that persist but change nothing,
+  fake/placeholder data, misleading UI, orphaned routes, and spec-required behaviour never
+  built. Fans out one agent per flow; each traces handler -> API client -> backend route ->
+  data consumer, and drives the flow live when the dev stack is up. Triggers: "QC the
+  dashboard", "is this flow actually wired", "is the X page real or just a skin", "did the
+  redesign actually ship the behaviour", "is this showing fake data". Not for pure visual/UX
+  critique (impeccable) or spec-vs-code drift bead-filing (reconcile-spec-to-project).
 metadata:
   owner: tze
   authors:

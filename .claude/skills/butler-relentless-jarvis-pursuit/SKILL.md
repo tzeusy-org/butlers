@@ -1,23 +1,17 @@
 ---
 name: butler-relentless-jarvis-pursuit
 description: >
-  Recurring generative audit that pursues a world-class JARVIS-like system across the whole
-  Butlers ecosystem. Two engines run together: (1) a UX pursuit — one subagent per dashboard
-  page surface holding it to the /th-design bar against the heart-and-soul vision, plus
-  cross-cutting sweeps (shell/discoverability, visual language, interaction speed,
-  accessibility); (2) an ecosystem pursuit — ideation lenses over new connectors, the
-  inference/model-routing flow, scalable knowledge-graph growth, cross-butler interaction,
-  and proactivity. Backward compatibility is explicitly waived — agents propose the ideal
-  design. Output: a durable dated dossier under docs/redesigns/, an artifact report, and a
-  gated beads epic the owner releases. Also carries the QC counterpart as a subskill
-  (subskills/ui-maturity-audit): a flow-walking maturity sweep that verifies surfaces are
-  real and wired, not skins over stubs. This skill should be invoked when the owner asks to
-  "run the JARVIS pursuit", "do a deep-dive audit of the frontend ecosystem and UX",
-  "generate new feature ideas for the butler ecosystem", or wants a fresh round of redesign
-  moves and extensions — and for QC asks like "QC the dashboard", "is this flow actually
-  wired", "is the X page real or just a skin", "did the redesign actually ship the
-  behaviour". Not for spec-vs-code drift bead-filing (use reconcile-spec-to-project) or pure
-  visual critique of one component (use impeccable).
+  Recurring generative audit pursuing a world-class JARVIS-like system across the Butlers
+  ecosystem: per-page /th-design UX audits plus ecosystem ideation lenses (new connectors,
+  inference/model-routing flow, knowledge-graph growth, cross-butler interaction,
+  proactivity), grounded in heart-and-soul; backward compatibility waived. Outputs a dated
+  dossier under docs/redesigns/, an artifact report, and a gated beads epic. Also carries
+  the QC counterpart as a subskill (subskills/ui-maturity-audit) verifying surfaces are real
+  and wired, not skins over stubs. Triggers: "run the JARVIS pursuit", "deep-dive audit of
+  the frontend ecosystem and UX", "generate new feature ideas for the butler ecosystem",
+  "QC the dashboard", "is this flow actually wired", "is the X page real or just a skin",
+  "did the redesign actually ship the behaviour". Not for spec-vs-code drift bead-filing
+  (reconcile-spec-to-project) or single-component visual critique (impeccable).
 metadata:
   owner: tze
   authors:
