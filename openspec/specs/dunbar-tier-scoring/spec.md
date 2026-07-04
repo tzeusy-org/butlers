@@ -14,7 +14,7 @@ The system SHALL compute a decay score for each contact by summing exponentially
 - **THEN** the raw decay score MUST be computed as `sum(exp(-lambda * days_since_interaction_i) * direction_weight * type_weight * (1.0 / group_size))` for each interaction fact
 - **AND** `lambda` MUST equal `ln(2) / 30` (30-day half-life)
 - **AND** `days_since_interaction_i` MUST be computed from each interaction's `valid_at` relative to the current timestamp
-- **AND** the final decay score MUST equal `raw_score * min(1.0, engagement_days / 3.0)`, where `engagement_days` is the count of distinct days carrying an active interaction fact with direction `outgoing` or `mutual` in a direct context (effective `group_size <= 2`)
+- **AND** the final decay score MUST equal `raw_score * min(1.0, engagement_days / 3.0)`, where `engagement_days` is the count of distinct days carrying an active interaction fact with direction `outgoing` or `mutual` in a direct context (effective `group_size <= 2`, read from either top-level metadata or `extra_metadata` for facts emitted through `interaction_log`)
 
 #### Scenario: Incoming-only contacts score zero (reciprocity gate)
 - **WHEN** a contact's active interaction facts are all `incoming` (the owner has never engaged them via an `outgoing` or `mutual` interaction in a direct context)
@@ -28,7 +28,7 @@ The system SHALL compute a decay score for each contact by summing exponentially
 
 #### Scenario: Group-derived outgoing facts do not count as engagement
 - **WHEN** counting `engagement_days` for the reciprocal-engagement factor
-- **THEN** `outgoing`/`mutual` facts whose `group_size` metadata exceeds 2 MUST be excluded (owner activity in a shared group chat is not person-to-person engagement)
+- **THEN** `outgoing`/`mutual` facts whose `group_size` metadata exceeds 2 MUST be excluded (owner activity in a shared group chat is not person-to-person engagement); `group_size` MAY be top-level metadata or nested under `metadata.extra_metadata` for facts emitted through `interaction_log`
 - **AND** facts with NULL or absent `group_size` MUST be treated as direct context (group_size 1)
 
 #### Scenario: Direction weighting multipliers
@@ -50,11 +50,11 @@ The system SHALL compute a decay score for each contact by summing exponentially
 - **AND** `facts.metadata->>'type'` contains the substring `group` (e.g. `group_chat`, `telegram_group_chat`)
 - **AND** the fact carries no numeric `group_size` metadata
 - **THEN** the contribution MUST be multiplied by `0.2` in place of the default type multiplier (a group mention without group-size dilution must not score at DM weight)
-- **AND** when numeric `group_size` metadata IS present, the exact group-size divisor applies and the type multiplier MUST NOT be additionally discounted for the `group` substring
+- **AND** when numeric `group_size` metadata IS present, including under `metadata.extra_metadata` for facts emitted through `interaction_log`, the exact group-size divisor applies and the type multiplier MUST NOT be additionally discounted for the `group` substring
 
 #### Scenario: Group size dilution
 - **WHEN** computing the decay contribution of an interaction fact
-- **THEN** the contribution MUST be divided by `group_size` read from `facts.metadata->>'group_size'`
+- **THEN** the contribution MUST be divided by `group_size` read from `facts.metadata->>'group_size'` or, for facts emitted through `interaction_log`, `facts.metadata->'extra_metadata'->>'group_size'`
 - **AND** if `group_size` is NULL or absent, it MUST default to 1.0 (DM weight)
 - **AND** `group_size` MUST be clamped to a minimum of 1.0 to prevent division by zero
 

@@ -1083,6 +1083,37 @@ async def test_group_outgoing_does_not_count_as_engagement(dunbar_pool):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_group_size_in_extra_metadata_does_not_count_as_engagement(dunbar_pool):
+    """interaction_log stores caller metadata under extra_metadata; Dunbar
+    scoring must still treat group_size > 2 as non-direct engagement."""
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    groupmate = await _make_contact(dunbar_pool, "GroupmateExtraMetadata")
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_group_interaction', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{groupmate['entity_id']}",
+        groupmate["entity_id"],
+        occurred_at,
+        {"type": "group_interaction", "direction": "outgoing", "extra_metadata": {"group_size": 8}},
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    row = next(s for s in scores if s["contact_id"] == groupmate["id"])
+
+    assert row["raw_score"] > 0.0
+    assert row["engagement_days"] == 0
+    assert row["reciprocity_factor"] == 0.0
+    assert row["score"] == 0.0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_owner_entity_excluded_from_scoring(dunbar_pool):
     """The owner does not occupy a slot in their own Dunbar circles."""
     from butlers.tools.relationship.dunbar import compute_dunbar_scores

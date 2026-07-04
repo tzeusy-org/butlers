@@ -227,11 +227,12 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     - ``interview`` / ``calendar_event`` / ``email`` → 0.2 (contextual)
     - types containing ``group`` with NO ``group_size`` metadata → 0.2 (a
       group-chat mention without group-size dilution must not score at DM
-      weight; when ``group_size`` is present the exact divisor applies instead)
+      weight; when ``group_size`` is present either top-level or under
+      ``extra_metadata`` the exact divisor applies instead)
     - everything else → 1.0
 
     Group size divisor (RFC 0013, D2):
-    - ``group_size`` in metadata → divided by that value
+    - ``group_size`` in metadata or metadata.extra_metadata → divided by that value
     - NULL ``group_size`` → defaults to 1.0 (DM weight; backward compatible)
     - ``group_size < 1`` is clamped to 1.0 to prevent amplification and division by zero
 
@@ -283,16 +284,24 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                                     ('interview', 'calendar_event', 'email')
                                 THEN $5::float
                                 WHEN f.metadata->>'type' LIKE '%group%'
-                                     AND jsonb_typeof(f.metadata->'group_size')
-                                         IS DISTINCT FROM 'number'
+                                     AND jsonb_typeof(COALESCE(
+                                         f.metadata->'group_size',
+                                         f.metadata->'extra_metadata'->'group_size'
+                                     )) IS DISTINCT FROM 'number'
                                 THEN $5::float
                                 ELSE $6::float
                               END
                             * (1.0 / GREATEST(
                                 COALESCE(
                                     CASE
-                                        WHEN jsonb_typeof(f.metadata->'group_size') = 'number'
-                                        THEN (f.metadata->>'group_size')::float
+                                        WHEN jsonb_typeof(COALESCE(
+                                            f.metadata->'group_size',
+                                            f.metadata->'extra_metadata'->'group_size'
+                                        )) = 'number'
+                                        THEN COALESCE(
+                                            f.metadata->>'group_size',
+                                            f.metadata->'extra_metadata'->>'group_size'
+                                        )::float
                                         ELSE NULL
                                     END,
                                     1.0
@@ -309,8 +318,14 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                       AND GREATEST(
                             COALESCE(
                                 CASE
-                                    WHEN jsonb_typeof(f.metadata->'group_size') = 'number'
-                                    THEN (f.metadata->>'group_size')::float
+                                    WHEN jsonb_typeof(COALESCE(
+                                        f.metadata->'group_size',
+                                        f.metadata->'extra_metadata'->'group_size'
+                                    )) = 'number'
+                                    THEN COALESCE(
+                                        f.metadata->>'group_size',
+                                        f.metadata->'extra_metadata'->>'group_size'
+                                    )::float
                                     ELSE NULL
                                 END,
                                 1.0
