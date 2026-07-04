@@ -77,6 +77,7 @@ class ConversationSummary(BaseModel):
     total_input_tokens: int
     total_output_tokens: int
     total_duration_ms: int
+    routed_butler: str | None = None
 
 
 class ConversationMessage(BaseModel):
@@ -110,6 +111,7 @@ class ConversationSearchResult(BaseModel):
     total_input_tokens: int
     total_output_tokens: int
     total_duration_ms: int
+    routed_butler: str | None = None
     snippet: str
 
 

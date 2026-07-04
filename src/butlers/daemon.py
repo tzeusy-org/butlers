@@ -161,6 +161,10 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         # Added in #1712 and #1714 respectively; always registered on every butler.
         "memory_access",
         "shutdown",
+        # bu-p6ey8.1: dashboard chat confirm-loop reply channel; always
+        # registered on every butler — any butler can be the classification
+        # or pinned-target destination of a dashboard conversation.
+        "conversation_reply",
     }
 )
 

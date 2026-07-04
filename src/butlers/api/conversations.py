@@ -105,6 +105,7 @@ async def conversation_create(
         "total_input_tokens": 0,
         "total_output_tokens": 0,
         "total_duration_ms": 0,
+        "routed_butler": None,
     }
 
 
@@ -118,7 +119,8 @@ async def conversation_get(
     row = await pool.fetchrow(
         """
         SELECT id, butler_name, title, status, created_at, updated_at,
-               message_count, total_input_tokens, total_output_tokens, total_duration_ms
+               message_count, total_input_tokens, total_output_tokens, total_duration_ms,
+               routed_butler
         FROM public.dashboard_conversations
         WHERE id = $1 AND butler_name = $2
         """,
@@ -158,7 +160,8 @@ async def conversation_list(
     rows = await pool.fetch(
         f"""
         SELECT id, butler_name, title, status, created_at, updated_at,
-               message_count, total_input_tokens, total_output_tokens, total_duration_ms
+               message_count, total_input_tokens, total_output_tokens, total_duration_ms,
+               routed_butler
         FROM public.dashboard_conversations
         WHERE {where}
         ORDER BY updated_at DESC
@@ -206,7 +209,8 @@ async def conversation_update(
         SET {", ".join(set_clauses)}
         WHERE id = ${idx} AND butler_name = ${idx + 1}
         RETURNING id, butler_name, title, status, created_at, updated_at,
-                  message_count, total_input_tokens, total_output_tokens, total_duration_ms
+                  message_count, total_input_tokens, total_output_tokens, total_duration_ms,
+                  routed_butler
         """,
         *args,
     )
@@ -231,36 +235,27 @@ async def conversation_unarchive_if_needed(
     )
 
 
-async def conversation_update_aggregates(
+async def conversation_set_routed_butler(
     pool: asyncpg.Pool,
     conversation_id: UUID,
     *,
-    butler_name: str,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    duration_ms: int = 0,
+    routed_butler: str,
 ) -> None:
-    """Increment conversation denormalized aggregate counters.
+    """Stamp the sticky ``routed_butler`` on a conversation's first successful route.
 
-    Scoped by both ``id`` and ``butler_name`` to prevent accidental
-    cross-butler updates if the helper is reused outside the current
-    router's "conversation_get first" pattern.
+    A no-op once ``routed_butler`` is already set, so repeat calls (e.g. from a
+    retried submission) never clobber the original routing decision. Scoped by
+    id only — classification-routed (Switchboard widget) conversations are the
+    only callers, and ``id`` is already a globally unique key.
     """
     await pool.execute(
         """
         UPDATE public.dashboard_conversations
-        SET message_count = message_count + 1,
-            total_input_tokens = total_input_tokens + $3,
-            total_output_tokens = total_output_tokens + $4,
-            total_duration_ms = total_duration_ms + $5,
-            updated_at = now()
-        WHERE id = $1 AND butler_name = $2
+        SET routed_butler = $2, updated_at = now()
+        WHERE id = $1 AND routed_butler IS NULL
         """,
         conversation_id,
-        butler_name,
-        input_tokens,
-        output_tokens,
-        duration_ms,
+        routed_butler,
     )
 
 
@@ -284,11 +279,12 @@ async def conversation_search(
             sub.id, sub.butler_name, sub.title, sub.status,
             sub.created_at, sub.updated_at,
             sub.message_count, sub.total_input_tokens, sub.total_output_tokens,
-            sub.total_duration_ms, sub.snippet, sub.msg_created_at
+            sub.total_duration_ms, sub.routed_butler, sub.snippet, sub.msg_created_at
         FROM (
             SELECT DISTINCT ON (c.id)
                 c.id, c.butler_name, c.title, c.status, c.created_at, c.updated_at,
                 c.message_count, c.total_input_tokens, c.total_output_tokens, c.total_duration_ms,
+                c.routed_butler,
                 substring(m.content, 1, 200) AS snippet,
                 m.created_at AS msg_created_at
             FROM public.dashboard_conversations c
@@ -427,6 +423,45 @@ async def message_create(
     }
 
 
+async def conversation_reply_create(
+    pool: asyncpg.Pool,
+    conversation_id: UUID,
+    *,
+    message: str,
+    request_id: UUID | None = None,
+) -> dict[str, Any] | None:
+    """Persist the ``conversation_reply`` confirm-loop message for a conversation.
+
+    Writes an assistant-role row and bumps the conversation's message count.
+    Returns the created message dict, or ``None`` if ``conversation_id`` does
+    not reference an existing conversation (the caller — the ``conversation_reply``
+    MCP tool — surfaces this as an actionable error to the calling model rather
+    than raising, since a stale/hallucinated id is a model-correctable mistake).
+    """
+    exists = await pool.fetchval(
+        "SELECT 1 FROM public.dashboard_conversations WHERE id = $1", conversation_id
+    )
+    if not exists:
+        return None
+
+    msg = await message_create(
+        pool,
+        conversation_id=conversation_id,
+        role="assistant",
+        content=message,
+        request_id=request_id,
+    )
+    await pool.execute(
+        """
+        UPDATE public.dashboard_conversations
+        SET message_count = message_count + 1, updated_at = now()
+        WHERE id = $1
+        """,
+        conversation_id,
+    )
+    return msg
+
+
 async def message_list(
     pool: asyncpg.Pool,
     conversation_id: UUID,
@@ -473,6 +508,43 @@ async def message_list(
         messages.append(d)
 
     return messages, total
+
+
+async def message_find_reply_since(
+    pool: asyncpg.Pool,
+    conversation_id: UUID,
+    *,
+    since: datetime,
+) -> dict[str, Any] | None:
+    """Find the earliest ``conversation_reply`` assistant message after ``since``.
+
+    Used by the dashboard SSE poller to detect a fresh reply without
+    depending on the routed butler's ``sessions`` row — the whole point of
+    the confirm-loop reply is that it can land well before the spawned
+    session finishes, so polling session completion would miss it.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT id, content, created_at, session_id, model_name,
+               input_tokens, output_tokens, duration_ms, tool_calls, error, request_id
+        FROM public.dashboard_messages
+        WHERE conversation_id = $1 AND role = 'assistant' AND created_at > $2
+        ORDER BY created_at ASC
+        LIMIT 1
+        """,
+        conversation_id,
+        since,
+    )
+    if row is None:
+        return None
+
+    d = dict(row)
+    if isinstance(d.get("tool_calls"), str):
+        try:
+            d["tool_calls"] = json.loads(d["tool_calls"])
+        except (json.JSONDecodeError, TypeError):
+            d["tool_calls"] = None
+    return d
 
 
 async def conversation_message_count_increment(

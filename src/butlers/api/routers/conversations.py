@@ -39,18 +39,23 @@ SSE event types
 ``token``
     Streamed assistant response token. Data: ``{content}``.
 ``message_complete``
-    Final assistant message with attribution. Data:
-    ``{message_id, model_name, input_tokens, output_tokens, duration_ms,
-    tool_calls}``.
+    The routed butler's ``conversation_reply`` message, with attribution.
+    Data: ``{message_id, model_name, input_tokens, output_tokens,
+    duration_ms, tool_calls}``. ``model_name``/token/duration fields are
+    ``null`` — the reply is persisted mid-session, before the spawned
+    session's own accounting is known (see ``_stream_conversation_response``).
 ``error``
-    Session failure. Data: ``{code, message}``. ``code`` is one of
-    ``SWITCHBOARD_UNAVAILABLE`` (MCP unreachable — message already
-    persisted; a retry re-submits the same content and is deduplicated
-    idempotently at the Switchboard ingest boundary), ``INGEST_REJECTED``
-    (deterministic envelope rejection, e.g. an invalid ``pinned_target`` —
-    retrying the same envelope will not help), ``SWITCHBOARD_ERROR``
-    (unexpected submission failure), ``SESSION_TIMEOUT``,
-    ``SESSION_FAILED``, or ``PERSISTENCE_ERROR``.
+    Session failure. Data: ``{code, message}`` (``SESSION_TIMEOUT`` also
+    carries ``session_id``, non-null when the routed session could be
+    identified). ``code`` is one of ``SWITCHBOARD_UNAVAILABLE`` (MCP
+    unreachable — message already persisted; a retry re-submits the same
+    content and is deduplicated idempotently at the Switchboard ingest
+    boundary), ``INGEST_REJECTED`` (deterministic envelope rejection, e.g.
+    an invalid ``pinned_target`` — retrying the same envelope will not
+    help), ``SWITCHBOARD_ERROR`` (unexpected submission failure), or
+    ``SESSION_TIMEOUT`` (no ``conversation_reply`` arrived within the poll
+    window — the routed session may still reply late; the thread stays
+    open and a late reply is visible on next fetch/poll).
 ``done``
     Stream terminator — always sent as the last event.
 ``keepalive`` (comment)
@@ -71,6 +76,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -85,11 +91,12 @@ from butlers.api.conversations import (
     conversation_list,
     conversation_message_count_increment,
     conversation_search,
+    conversation_set_routed_butler,
     conversation_summary,
     conversation_unarchive_if_needed,
     conversation_update,
-    conversation_update_aggregates,
     message_create,
+    message_find_reply_since,
     message_list,
 )
 from butlers.api.db import DatabaseManager
@@ -147,9 +154,12 @@ def _sse_comment(text: str) -> str:
     return f": {text}\n\n"
 
 
-def _sse_error(code: str, message: str) -> str:
-    """Format an SSE error event."""
-    return _sse_event("error", {"code": code, "message": message})
+def _sse_error(code: str, message: str, *, session_id: UUID | None = None) -> str:
+    """Format an SSE error event.  ``session_id`` is included only when given."""
+    data: dict[str, Any] = {"code": code, "message": message}
+    if session_id is not None:
+        data["session_id"] = str(session_id)
+    return _sse_event("error", data)
 
 
 def _sse_done() -> str:
@@ -247,7 +257,7 @@ async def _stream_conversation_response(
     request: Request,
     butler_name: str,
     conversation_id: UUID,
-    message_id: UUID,
+    message_created_at: datetime,
     envelope: dict[str, Any],
     db: DatabaseManager,
     mcp_mgr: MCPClientManager,
@@ -258,11 +268,14 @@ async def _stream_conversation_response(
 
     Lifecycle:
     1. Optionally emit ``conversation_created`` (for new conversations).
-    2. Submit the ingest envelope to the Switchboard.
-    3. Poll for session completion, streaming keepalives every 15 s.
-    4. On completion, persist the assistant message and emit
-       ``message_complete`` + ``done``.
-    5. On error, emit ``error`` + ``done``.
+    2. Submit the ingest envelope to the Switchboard; stamp sticky
+       ``routed_butler`` on first classification route (widget conversations
+       only — pinned conversations are already deterministic).
+    3. Poll for the routed butler's ``conversation_reply`` message, streaming
+       keepalives every 15 s.
+    4. On arrival, emit ``message_complete`` + ``done`` for the (already
+       persisted) reply — no further DB write happens here.
+    5. On error or timeout, emit ``error`` + ``done``.
     """
     # Step 1: conversation_created event (new conversations only)
     if is_new_conversation:
@@ -306,18 +319,42 @@ async def _stream_conversation_response(
         return
 
     request_id_str = accepted.get("request_id")
+    triage_decision = accepted.get("triage_decision")
+    triage_target = accepted.get("triage_target")
+    routed_this_turn = triage_decision == "route_to" and bool(triage_target)
+    shared_pool = db.credential_shared_pool()
 
-    # Step 3: Poll for session completion with keepalive
-    # NOTE: Real streaming tokens would come from the Switchboard MCP stream.
-    # For now, we emit a single placeholder and then message_complete once
-    # the poll succeeds.  The SSE contract is correct; the streaming content
-    # will be filled in when session streaming is wired.
+    # Sticky routing (bu-p6ey8.1): a classification-routed (Switchboard
+    # widget) conversation stamps its first successful route target so
+    # follow-ups can bypass classification entirely (see send_message).
+    # Pinned per-butler conversations are already deterministic and never
+    # reach this branch (butler_name != _SWITCHBOARD_BUTLER there).
+    if butler_name == _SWITCHBOARD_BUTLER and routed_this_turn:
+        try:
+            await conversation_set_routed_butler(
+                shared_pool, conversation_id, routed_butler=triage_target
+            )
+        except Exception:
+            # Non-fatal — sticky routing is a follow-up convenience, not
+            # required for this turn's reply to work.
+            logger.warning(
+                "Failed to stamp routed_butler=%s on conversation %s",
+                triage_target,
+                conversation_id,
+                exc_info=True,
+            )
+
+    # The butler whose `sessions` row we'd consult for a timeout's
+    # "inspect session" link — the classification target when routed this
+    # turn, otherwise the pinned/addressed butler itself.
+    routed_butler = triage_target if routed_this_turn else butler_name
+
+    # Step 3: Poll for the conversation_reply message, with keepalive.
     start_ts = time.monotonic()
     last_keepalive_ts = start_ts
-    session_completed = False
-    session_result: dict[str, Any] = {}
+    reply_row: dict[str, Any] | None = None
 
-    while not session_completed:
+    while reply_row is None:
         # Check client disconnect
         if await request.is_disconnected():
             logger.info("Client disconnected during conversation stream %s", conversation_id)
@@ -329,171 +366,90 @@ async def _stream_conversation_response(
             yield _sse_comment("keepalive")
             last_keepalive_ts = now
 
-        # Timeout guard
+        # Timeout guard — graceful: the thread stays open and a late reply
+        # remains visible on the next history fetch/poll.
         if now - start_ts >= _SESSION_TIMEOUT_S:
-            logger.warning("Session timeout waiting for conversation %s", conversation_id)
-            yield _sse_error("SESSION_TIMEOUT", "Response timed out")
+            timeout_session_id = await _lookup_timed_out_session_id(
+                db=db, routed_butler=routed_butler, request_id=request_id_str
+            )
+            logger.warning(
+                "No conversation_reply for conversation %s within %.0fs (routed_butler=%s)",
+                conversation_id,
+                _SESSION_TIMEOUT_S,
+                routed_butler,
+            )
+            yield _sse_error(
+                "SESSION_TIMEOUT",
+                "No reply yet — inspect the session for details.",
+                session_id=timeout_session_id,
+            )
             yield _sse_done()
             return
 
-        # Poll the DB for a completed session linked to this request_id.
-        # When real SSE streaming is available, this loop is replaced by
-        # direct token streaming from the adapter.
-        session_result = await _poll_session_completion(
-            db=db,
-            butler_name=butler_name,
-            request_id=request_id_str,
+        reply_row = await message_find_reply_since(
+            shared_pool, conversation_id, since=message_created_at
         )
-        if session_result.get("completed"):
-            session_completed = True
-        else:
+        if reply_row is None:
             await asyncio.sleep(_POLL_INTERVAL_S)
 
-    # Step 4: Persist assistant message and emit events
-    pool = db.credential_shared_pool()
-
-    result_text: str = session_result.get("result", "")
-    model_name: str | None = session_result.get("model")
-    input_tokens: int | None = session_result.get("input_tokens")
-    output_tokens: int | None = session_result.get("output_tokens")
-    duration_ms: int | None = session_result.get("duration_ms")
-    tool_calls: list[dict[str, Any]] | None = session_result.get("tool_calls")
-    session_id: UUID | None = session_result.get("session_id")
-    error_text: str | None = session_result.get("error")
-
-    # Emit the result as a token event
-    if result_text:
-        yield _sse_event("token", {"content": result_text})
-
-    # Persist assistant message
-    try:
-        assistant_msg = await message_create(
-            pool,
-            conversation_id=conversation_id,
-            role="assistant",
-            content=result_text or "",
-            session_id=session_id,
-            model_name=model_name,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            duration_ms=duration_ms,
-            tool_calls=tool_calls,
-            error=error_text,
-            request_id=UUID(request_id_str) if request_id_str else None,
-        )
-
-        # Update conversation aggregates
-        await conversation_update_aggregates(
-            pool,
-            conversation_id,
-            butler_name=butler_name,
-            input_tokens=input_tokens or 0,
-            output_tokens=output_tokens or 0,
-            duration_ms=duration_ms or 0,
-        )
-
-        yield _sse_event(
-            "message_complete",
-            {
-                "message_id": str(assistant_msg["id"]),
-                "model_name": model_name,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "duration_ms": duration_ms,
-                "tool_calls": tool_calls or [],
-            },
-        )
-
-        if error_text:
-            yield _sse_error("SESSION_FAILED", error_text)
-
-    except Exception as exc:
-        logger.exception(
-            "Failed to persist assistant message for conversation %s: %s",
-            conversation_id,
-            exc,
-        )
-        yield _sse_error("PERSISTENCE_ERROR", str(exc))
-
+    # Step 4: Emit the already-persisted conversation_reply — no DB write
+    # happens here; conversation_reply_create() did it inside the routed
+    # butler's own session.
+    yield _sse_event("token", {"content": reply_row["content"]})
+    yield _sse_event(
+        "message_complete",
+        {
+            "message_id": str(reply_row["id"]),
+            "model_name": reply_row.get("model_name"),
+            "input_tokens": reply_row.get("input_tokens"),
+            "output_tokens": reply_row.get("output_tokens"),
+            "duration_ms": reply_row.get("duration_ms"),
+            "tool_calls": reply_row.get("tool_calls") or [],
+        },
+    )
     yield _sse_done()
 
 
-async def _poll_session_completion(
+async def _lookup_timed_out_session_id(
     *,
     db: DatabaseManager,
-    butler_name: str,
+    routed_butler: str,
     request_id: str | None,
-) -> dict[str, Any]:
-    """Poll the DB for a completed session linked to a request_id.
-
-    Returns a dict with ``completed=True`` and session metadata when a
-    matching session is found; returns ``{"completed": False}`` otherwise.
+) -> UUID | None:
+    """Best-effort session lookup for the ``SESSION_TIMEOUT`` event's link.
 
     ``request_id`` is the canonical Switchboard ingest request reference,
     which the routing pipeline stamps onto the resulting session row
-    (``Spawner.trigger`` -> ``session_create(request_id=...)``). This only
-    finds the session when it landed on ``butler_name``'s own schema —
-    correct for a pinned per-butler conversation, where the target IS
-    ``butler_name``. For a classification-routed conversation (e.g. the
-    Switchboard widget), the session lands on whichever butler was chosen,
-    not ``butler_name`` — resolving that is the reply-channel's concern
-    (bu-p6ey8.1), so such conversations time out gracefully here in the
-    interim.
+    (``Spawner.trigger`` -> ``session_create(request_id=...)``). Returns
+    ``None`` (never raises) when the butler's pool is unavailable or no
+    session row is found — the timeout event is still emitted either way,
+    just without a session link to inspect.
     """
     if not request_id:
-        return {"completed": False}
+        return None
 
     try:
-        pool = db.pool(butler_name)
+        pool = db.pool(routed_butler)
     except KeyError:
         logger.warning(
-            "No DB pool registered for butler '%s'; cannot poll for session completion",
-            butler_name,
+            "No DB pool registered for butler '%s'; cannot resolve timeout session link",
+            routed_butler,
         )
-        return {
-            "completed": True,
-            "result": "",
-            "model": None,
-            "input_tokens": None,
-            "output_tokens": None,
-            "duration_ms": None,
-            "tool_calls": None,
-            "session_id": None,
-            "error": f"Butler '{butler_name}' database is not available",
-        }
+        return None
 
-    row = await pool.fetchrow(
-        """
-        SELECT id, result, model, input_tokens, output_tokens, duration_ms,
-               tool_calls, error
-        FROM sessions
-        WHERE request_id = $1 AND completed_at IS NOT NULL
-        ORDER BY started_at DESC
-        LIMIT 1
-        """,
-        request_id,
-    )
-    if row is None:
-        return {"completed": False}
-
-    tool_calls = row["tool_calls"]
-    if isinstance(tool_calls, str):
-        try:
-            tool_calls = json.loads(tool_calls)
-        except (json.JSONDecodeError, TypeError):
-            tool_calls = None
-
-    return {
-        "completed": True,
-        "result": row["result"] or "",
-        "model": row["model"],
-        "input_tokens": row["input_tokens"],
-        "output_tokens": row["output_tokens"],
-        "duration_ms": row["duration_ms"],
-        "tool_calls": tool_calls,
-        "session_id": row["id"],
-        "error": row["error"],
-    }
+    try:
+        return await pool.fetchval(
+            "SELECT id FROM sessions WHERE request_id = $1 ORDER BY started_at DESC LIMIT 1",
+            request_id,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to resolve timeout session link (butler=%s, request_id=%s)",
+            routed_butler,
+            request_id,
+            exc_info=True,
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -664,7 +620,7 @@ async def create_conversation(
             request=request,
             butler_name=name,
             conversation_id=conversation_id,
-            message_id=user_msg["id"],
+            message_created_at=user_msg["created_at"],
             envelope=envelope,
             db=db,
             mcp_mgr=mcp_mgr,
@@ -749,6 +705,11 @@ async def send_message(
     If the conversation is archived, it is automatically reactivated.
     Returns 404 when the conversation does not exist or belongs to a
     different butler.
+
+    Sticky routing: once a Switchboard-addressed (classification-routed)
+    conversation has recorded a ``routed_butler`` from its first successful
+    route, follow-ups pin to that butler directly instead of re-running
+    classification.
     """
     try:
         pool = db.credential_shared_pool()
@@ -780,6 +741,15 @@ async def send_message(
     # Increment conversation message count for the user message
     await conversation_message_count_increment(pool, conversation_id, butler_name=name)
 
+    # Sticky routing: a Switchboard-addressed conversation that has already
+    # routed once pins follow-ups directly to that butler; otherwise (not yet
+    # routed, or a bug-lane conversation with no domain-butler target) it
+    # continues through classification as before.
+    if name == _SWITCHBOARD_BUTLER:
+        pinned_target = conv.get("routed_butler")
+    else:
+        pinned_target = name
+
     # Build ingest envelope with conversation context
     envelope = build_dashboard_envelope(
         conversation_id=conversation_id,
@@ -787,7 +757,7 @@ async def send_message(
         message_text=body.message,
         conversation_context=history_rows,
         page_context=body.page_context.model_dump() if body.page_context else None,
-        pinned_target=None if name == _SWITCHBOARD_BUTLER else name,
+        pinned_target=pinned_target,
     )
 
     async def _generate() -> AsyncGenerator[str, None]:
@@ -795,7 +765,7 @@ async def send_message(
             request=request,
             butler_name=name,
             conversation_id=conversation_id,
-            message_id=user_msg["id"],
+            message_created_at=user_msg["created_at"],
             envelope=envelope,
             db=db,
             mcp_mgr=mcp_mgr,
