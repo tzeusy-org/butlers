@@ -35,7 +35,7 @@ Resolution rules (in order, first match wins):
 2. **Canonical match** `pr/overview/SLUG-redesign/`.
 3. **Bare match** `pr/overview/SLUG/`.
 4. **Fuzzy match** — any `pr/overview/` folder containing `SLUG`. Require user confirmation before proceeding.
-5. **No bundle** — a legitimate mode, not an error. Most shipped pages have no bundle (they graduated). Originate from the Dispatch spec (`openspec/specs/dashboard-design-language/spec.md`) + `references/dispatch-kit/` + the live pages, and treat those as the bundle. Run `/butlers-ui-maturity-audit` first — it often reverses the framing (a page may already be real underneath, with the actual gaps in IA or unsurfaced endpoints).
+5. **No bundle** — a legitimate mode, not an error. Most shipped pages have no bundle (they graduated). Originate from the Dispatch spec (`openspec/specs/dashboard-design-language/spec.md`) + `references/dispatch-kit/` + the live pages, and treat those as the bundle. Run the UI-maturity QC sweep first (`/butler-relentless-jarvis-pursuit` → `subskills/ui-maturity-audit/SKILL.md`) — it often reverses the framing (a page may already be real underneath, with the actual gaps in IA or unsurfaced endpoints).
 
 **Toolkit refusal.** If the registry marks the resolved target as `System (refuse)` (e.g. `dispatch-kit/`), stop and tell the user: "This is a design system / portable toolkit, not a redesign of a specific page. The skill cannot process it. Pick a redesign slug instead." Do not run any phase.
 

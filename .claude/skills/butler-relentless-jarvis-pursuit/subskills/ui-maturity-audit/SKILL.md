@@ -1,6 +1,8 @@
 ---
-name: butlers-ui-maturity-audit
+name: ui-maturity-audit
 description: >
+  Subskill of butler-relentless-jarvis-pursuit (its QC / verification mode) — routed via the
+  parent SKILL.md, not the global catalog.
   QC sweep of the Butlers dashboard for UI maturity and feature completeness, organised around
   end-to-end USER FLOWS: take a goal a user is trying to accomplish (grounded in the project's
   manifesto/direction), walk the happy-path step by step, and judge whether the experience is
@@ -115,7 +117,7 @@ what the surface is *for* (`heart-and-soul`, `lay-and-land`), and the intended e
 was *promised* (redesign briefs + openspec). Then enumerate candidate surfaces deterministically:
 
 ```bash
-uv run .claude/skills/butlers-ui-maturity-audit/scripts/scope_surfaces.py
+uv run .claude/skills/butler-relentless-jarvis-pursuit/subskills/ui-maturity-audit/scripts/scope_surfaces.py
 ```
 
 It emits the route→file map, redesign briefs, openspec change dirs, modified `dashboard-*` specs,

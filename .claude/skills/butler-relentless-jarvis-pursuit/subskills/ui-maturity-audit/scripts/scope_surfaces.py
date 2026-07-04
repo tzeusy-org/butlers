@@ -3,7 +3,7 @@
 # requires-python = ">=3.9"
 # dependencies = []
 # ///
-"""Phase-0 surface inventory for the butlers-ui-maturity-audit skill.
+"""Phase-0 surface inventory for the ui-maturity-audit subskill of butler-relentless-jarvis-pursuit.
 
 Deterministically enumerates the dashboard surfaces and the artifacts that define their
 intended end-state, so the orchestrator can cluster them into user flows (clustering is
