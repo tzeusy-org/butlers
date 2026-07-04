@@ -2550,6 +2550,32 @@ class MessagePipeline:
                         )
                         if bug_attempted:
                             bug_lifecycle = "routed" if bug_succeeded else "errored"
+                            # Lane co-occurrence guard (bu-j5jqv): the tool-layer
+                            # guard in route_to_butler/file_bug_report prevents a
+                            # domain butler dispatch from being silently invisible,
+                            # but this pipeline result must independently surface
+                            # any co-occurring route_to_butler call (in either
+                            # order) instead of _extract_bug_report_calls hiding
+                            # it — bug lane always wins, but the conflict must be
+                            # observable in the routing result and logs.
+                            _co_routed, _co_acked, _co_failed = _extract_routed_butlers(tool_calls)
+                            if _co_routed:
+                                logger.warning(
+                                    "Dashboard lane co-occurrence: both file_bug_report "
+                                    "and route_to_butler were called in the same "
+                                    "classification session; bug lane wins "
+                                    "(route targets=%s)",
+                                    sorted(set(_co_routed)),
+                                    extra=self._log_fields(
+                                        source=source,
+                                        chat_id=chat_id,
+                                        target_butler="qa",
+                                        latency_ms=spawn_latency_ms,
+                                        request_id=request_id,
+                                        case_reference=bug_case_ref,
+                                        co_occurring_route_targets=sorted(set(_co_routed)),
+                                    ),
+                                )
                             logger.info(
                                 "Dashboard message filed as bug/system report (lane B)",
                                 extra=self._log_fields(
@@ -2570,6 +2596,11 @@ class MessagePipeline:
                                         "request_id": request_id,
                                         "lane": "bug_report",
                                         "case_reference": bug_case_ref,
+                                        **(
+                                            {"co_occurring_route_targets": sorted(set(_co_routed))}
+                                            if _co_routed
+                                            else {}
+                                        ),
                                     },
                                     dispatch_outcomes={
                                         "request_id": request_id,
@@ -2587,6 +2618,11 @@ class MessagePipeline:
                                 route_result={
                                     "lane": "bug_report",
                                     "case_reference": bug_case_ref,
+                                    **(
+                                        {"co_occurring_route_targets": sorted(set(_co_routed))}
+                                        if _co_routed
+                                        else {}
+                                    ),
                                 },
                                 routing_error=(
                                     None if bug_succeeded else "qa: file_bug_report failed"

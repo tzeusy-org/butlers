@@ -32,6 +32,15 @@ _BUG_REPORT_SEVERITY_HINT: dict[int, str] = {
     4: "info",
 }
 
+#: ``_routing_ctx`` dict keys used to enforce lane exclusivity within a single
+#: dashboard chat-widget classification session (bu-j5jqv gen-1 reconciliation
+#: gap G4). Only meaningful when the session's ``dashboard_context`` carries a
+#: ``conversation_id`` — non-dashboard switchboard flows never read or write
+#: these keys and are unaffected. Bug reports are terminal and always file;
+#: only ``route_to_butler`` can be refused by this guard.
+_DASHBOARD_LANE_CLAIM_KEY = "_dashboard_lane_claimed"
+_DASHBOARD_LANE_TARGET_KEY = "_dashboard_lane_claim_target"
+
 
 def _build_dashboard_confirm_block(
     *,
@@ -467,6 +476,40 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         _routing_ctx = _routing_ctx_var.get() or {}
         if not isinstance(_routing_ctx, dict):
             _routing_ctx = {}
+
+        # Dashboard lane exclusivity guard (bu-j5jqv): once file_bug_report has
+        # claimed this dashboard classification session, route_to_butler must
+        # refuse to dispatch to a domain butler — bug/system reports are never
+        # routed there. Scoped to dashboard-source sessions only (a
+        # dashboard_context with a conversation_id); non-dashboard switchboard
+        # flows never populate this key and are unaffected.
+        _dashboard_context = _routing_ctx.get("dashboard_context")
+        _dashboard_conversation_id = (
+            str(_dashboard_context["conversation_id"])
+            if isinstance(_dashboard_context, dict) and _dashboard_context.get("conversation_id")
+            else None
+        )
+        if _dashboard_conversation_id and _routing_ctx.get(_DASHBOARD_LANE_CLAIM_KEY) == "bug":
+            logger.warning(
+                "Dashboard lane conflict: route_to_butler(butler=%s) refused — "
+                "file_bug_report already claimed conversation_id=%s in this "
+                "classification session; bug reports are never routed to a "
+                "domain butler.",
+                butler,
+                _dashboard_conversation_id,
+            )
+            return {
+                "status": "refused",
+                "butler": butler,
+                "error": (
+                    "This dashboard message was already filed as a bug/system "
+                    "report via file_bug_report — bug reports are never routed "
+                    "to a domain butler. route_to_butler is not permitted for "
+                    "this message."
+                ),
+                "reason": "dashboard_lane_conflict",
+            }
+
         runtime_routing_ctx = get_current_runtime_session_routing_context()
         if isinstance(runtime_routing_ctx, dict):
             if not _routing_ctx:
@@ -534,12 +577,15 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         # regardless of what the classification session itself wrote into
         # `context` — the routed session must not depend on the classifier's
         # prose fidelity to learn its conversation_id.
-        _dashboard_context = _routing_ctx.get("dashboard_context")
         _effective_context = context
-        if isinstance(_dashboard_context, dict) and _dashboard_context.get("conversation_id"):
+        if _dashboard_conversation_id:
             _dashboard_block = _build_dashboard_confirm_block(
-                conversation_id=str(_dashboard_context["conversation_id"]),
-                page_context=_dashboard_context.get("page_context"),
+                conversation_id=_dashboard_conversation_id,
+                page_context=(
+                    _dashboard_context.get("page_context")
+                    if isinstance(_dashboard_context, dict)
+                    else None
+                ),
             )
             _effective_context = f"{context}\n\n{_dashboard_block}" if context else _dashboard_block
 
@@ -581,6 +627,16 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 "attempt": 1,
             },
         }
+
+        # Claim the dashboard lane for this session *before* dispatching — the
+        # domain butler invocation below is the side effect that must never
+        # co-occur invisibly with a bug-report filing (bu-j5jqv). Claiming
+        # happens regardless of the eventual accepted/error outcome, since the
+        # invocation itself (not just its ack) is what a later file_bug_report
+        # call in the same session needs to know about.
+        if _dashboard_conversation_id:
+            _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "route"
+            _routing_ctx[_DASHBOARD_LANE_TARGET_KEY] = butler
 
         try:
             result = await _switchboard_route(
@@ -695,6 +751,29 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             if isinstance(_page_context, dict):
                 page_route = _page_context.get("route")
 
+        # Dashboard lane exclusivity (bu-j5jqv): bug reports are terminal and
+        # always file — never suppressed — but if route_to_butler already
+        # dispatched a domain butler earlier in this same classification
+        # session, that co-occurrence indicates a misclassification and must
+        # be visible (logged + surfaced in the result) rather than silently
+        # absorbed. Scoped to dashboard sessions only (conversation_id set).
+        _prior_lane_claim = _routing_ctx.get(_DASHBOARD_LANE_CLAIM_KEY) if conversation_id else None
+        _prior_route_target = (
+            _routing_ctx.get(_DASHBOARD_LANE_TARGET_KEY) if _prior_lane_claim == "route" else None
+        )
+        if conversation_id and _prior_lane_claim == "route":
+            logger.warning(
+                "Dashboard lane conflict: file_bug_report called after "
+                "route_to_butler already dispatched to %s in this same "
+                "classification session (conversation_id=%s); filing the bug "
+                "report regardless — bug reports are never suppressed — but "
+                "this co-occurrence indicates a misclassification.",
+                _prior_route_target,
+                conversation_id,
+            )
+        if conversation_id:
+            _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "bug"
+
         clamped_severity = max(0, min(4, int(severity) if isinstance(severity, int) else 2))
         call_site = f"dashboard:{page_route or 'unknown'}"
 
@@ -766,6 +845,16 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "case_reference": case_reference,
             "filed": filed,
             **({"error": file_error} if file_error else {}),
+            **(
+                {
+                    "dashboard_lane_conflict": {
+                        "conflicting_lane": "route_to_butler",
+                        "conflicting_target": _prior_route_target,
+                    }
+                }
+                if _prior_route_target
+                else {}
+            ),
         }
 
     @_core_tool("switchboard_routing", name="connector.heartbeat")

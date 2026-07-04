@@ -438,3 +438,134 @@ async def test_file_bug_report_never_calls_route_to_butler_style_dispatch(tmp_pa
 
     assert mock_route.await_count == 1
     assert mock_route.await_args.kwargs["target_butler"] == "qa"
+
+
+# ---------------------------------------------------------------------------
+# Dashboard lane exclusivity guard (bu-j5jqv gen-1 reconciliation gap G4)
+# ---------------------------------------------------------------------------
+
+
+async def test_route_to_butler_refused_after_file_bug_report_claims_lane(
+    tmp_path: Path,
+) -> None:
+    """Bug-then-route: once file_bug_report claims a dashboard session, a
+    later route_to_butler call in the same session must be refused (never
+    dispatch to a domain butler) and the conflict must be logged at WARNING.
+
+    Patches the module logger directly (rather than caplog) since this test
+    boots a full ButlerDaemon whose logging setup is orthogonal to the
+    behavior under test.
+    """
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    bug_fn = tools["file_bug_report"]
+    route_fn = tools["route_to_butler"]
+
+    fake_reply = AsyncMock(return_value={"id": "msg-1"})
+    mock_logger = MagicMock()
+    with (
+        patch("butlers.api.conversations.conversation_reply_create", fake_reply),
+        patch("butlers.core_tools._switchboard.logger", mock_logger),
+    ):
+        _set_dashboard_routing_context()
+        try:
+            bug_result = await bug_fn(summary="The dashboard is broken")
+            route_result = await route_fn(butler="relationship", prompt="hello")
+        finally:
+            _clear_routing_context()
+
+    assert bug_result["status"] == "ok"
+    assert bug_result["filed"] is True
+    assert "dashboard_lane_conflict" not in bug_result
+
+    assert route_result["status"] == "refused"
+    assert route_result["reason"] == "dashboard_lane_conflict"
+    assert "file_bug_report" in route_result["error"]
+
+    # route_to_butler must never have actually dispatched — the only
+    # _switchboard_route call observed is file_bug_report's QA relay.
+    assert mock_route.await_count == 1
+    assert mock_route.await_args.kwargs["target_butler"] == "qa"
+
+    warning_calls = [str(call.args[0]) for call in mock_logger.warning.call_args_list]
+    assert any("Dashboard lane conflict" in msg for msg in warning_calls)
+
+
+async def test_file_bug_report_after_route_to_butler_surfaces_co_occurrence(
+    tmp_path: Path,
+) -> None:
+    """Route-then-bug: route_to_butler dispatches normally (it stands — the
+    domain butler was already invoked), and a later file_bug_report call in
+    the same session still files (bug reports are terminal, never suppressed)
+    but surfaces the co-occurrence in its result and logs a WARNING.
+
+    Patches the module logger directly (rather than caplog) since this test
+    boots a full ButlerDaemon whose logging setup is orthogonal to the
+    behavior under test.
+    """
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    route_fn = tools["route_to_butler"]
+    bug_fn = tools["file_bug_report"]
+
+    fake_reply = AsyncMock(return_value={"id": "msg-1"})
+    mock_logger = MagicMock()
+    with (
+        patch("butlers.api.conversations.conversation_reply_create", fake_reply),
+        patch("butlers.core_tools._switchboard.logger", mock_logger),
+    ):
+        _set_dashboard_routing_context()
+        try:
+            route_result = await route_fn(butler="relationship", prompt="hello")
+            bug_result = await bug_fn(summary="Actually this is a bug")
+        finally:
+            _clear_routing_context()
+
+    assert route_result["status"] == "accepted"
+
+    assert bug_result["status"] == "ok"
+    assert bug_result["filed"] is True
+    assert bug_result["dashboard_lane_conflict"] == {
+        "conflicting_lane": "route_to_butler",
+        "conflicting_target": "relationship",
+    }
+
+    warning_calls = [str(call.args[0]) for call in mock_logger.warning.call_args_list]
+    assert any("Dashboard lane conflict" in msg for msg in warning_calls)
+
+
+async def test_dashboard_lane_guard_does_not_affect_non_dashboard_sessions(
+    tmp_path: Path,
+) -> None:
+    """Regression: without a dashboard conversation_id, calling both
+    file_bug_report and route_to_butler in the same routing context must not
+    trigger the lane-exclusivity guard — non-dashboard switchboard flows are
+    unaffected."""
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+    bug_fn = tools["file_bug_report"]
+    route_fn = tools["route_to_butler"]
+
+    # No dashboard routing context at all (e.g. a non-dashboard MCP caller).
+    bug_result = await bug_fn(summary="Something is broken")
+    route_result = await route_fn(butler="relationship", prompt="hello")
+
+    assert bug_result["status"] == "ok"
+    assert "dashboard_lane_conflict" not in bug_result
+
+    assert route_result["status"] == "accepted"

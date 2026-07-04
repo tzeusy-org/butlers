@@ -216,6 +216,16 @@ report). Bug/system reports SHALL NEVER be routed to a domain butler.
 - **AND** the message SHALL NOT be routed to any domain butler via `route_to_butler`
 - **AND** the tool SHALL post a `conversation_reply` acknowledgment containing the case reference (the fingerprint's first 12 characters), whether or not the QA relay itself succeeded
 
+#### Scenario: Lane exclusivity is enforced at the tool layer, not just the classification prompt
+
+- **WHEN** a dashboard classification session calls `file_bug_report` and then calls `route_to_butler` for the same session (regardless of what the classification prompt instructs)
+- **THEN** `route_to_butler` SHALL refuse to dispatch to a domain butler and SHALL return a structured refusal (`status: "refused"`, `reason: "dashboard_lane_conflict"`) instead of invoking `route.execute`
+- **AND** the refusal SHALL be logged at WARNING with the conversation id and the attempted target butler
+- **WHEN** a dashboard classification session calls `route_to_butler` and then calls `file_bug_report` for the same session
+- **THEN** `file_bug_report` SHALL still file the bug report (bug reports are terminal and are never suppressed)
+- **AND** the co-occurrence SHALL be logged at WARNING with the conversation id and both targets, and SHALL be surfaced in `file_bug_report`'s own result (`dashboard_lane_conflict`) and in the pipeline's `RoutingResult.route_result` (`co_occurring_route_targets`) rather than being hidden by tool-call extraction that stops at the first matching call
+- **AND** this exclusivity guard SHALL be scoped to dashboard-source sessions only (a `dashboard_context` carrying a `conversation_id`) — non-dashboard Switchboard flows (e.g. domain-butler-initiated `route_to_butler` calls, QA canary injection) SHALL be unaffected
+
 #### Scenario: Unroutable dashboard message dead-letters and notifies the owner
 
 - **WHEN** a dashboard message's classification session calls neither `route_to_butler` nor `file_bug_report` (e.g. an ambiguous or unclassifiable message)

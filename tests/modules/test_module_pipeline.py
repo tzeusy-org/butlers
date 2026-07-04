@@ -425,6 +425,104 @@ class TestMessagePipelineProcessDashboardLanes:
         # Never routed to a domain butler.
         assert "relationship" not in result.acked_targets
         assert result.target_butler != "general"
+        # Single-lane flow: no co-occurrence metadata should appear.
+        assert "co_occurring_route_targets" not in result.route_result
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_lane_b_surfaces_co_occurring_route_route_then_bug(self, mock_load, caplog):
+        """Route-then-bug (bu-j5jqv): route_to_butler dispatched first (the
+        tool-layer guard lets an already-dispatched route stand), then
+        file_bug_report claimed the lane in the same session. Bug lane still
+        wins the pipeline result, but the co-occurrence must be visible —
+        never silently hidden by _extract_bug_report_calls returning on the
+        first bug call."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed then filed a bug report.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "relationship", "prompt": "hello"},
+                        "result": {"status": "accepted", "butler": "relationship"},
+                    },
+                    _bug_report_call(case_reference="deadbeef0002"),
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-3", "page_context": None}
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING"):
+            result = await pipeline.process(
+                "Actually this chart is broken",
+                tool_args={"source_channel": "dashboard"},
+                message_inbox_id="00000000-0000-0000-0000-000000000004",
+            )
+
+        assert result.target_butler == "qa"
+        assert result.acked_targets == ["qa"]
+        assert result.route_result["co_occurring_route_targets"] == ["relationship"]
+        assert any("Dashboard lane co-occurrence" in rec.message for rec in caplog.records)
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_lane_b_surfaces_co_occurring_route_bug_then_route_refused(
+        self, mock_load, caplog
+    ):
+        """Bug-then-route (bu-j5jqv): the tool-layer guard refuses the
+        co-occurring route_to_butler call, but the pipeline result must still
+        surface that the LLM attempted it — the refusal itself is visible
+        evidence of the misclassification, not swallowed."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Filed a bug report, then tried to route anyway.",
+                tool_calls=[
+                    _bug_report_call(case_reference="deadbeef0003"),
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "relationship", "prompt": "hello"},
+                        "result": {
+                            "status": "refused",
+                            "butler": "relationship",
+                            "reason": "dashboard_lane_conflict",
+                        },
+                    },
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-4", "page_context": None}
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        with caplog.at_level("WARNING"):
+            result = await pipeline.process(
+                "This is a bug",
+                tool_args={"source_channel": "dashboard"},
+                message_inbox_id="00000000-0000-0000-0000-000000000005",
+            )
+
+        assert result.target_butler == "qa"
+        assert result.acked_targets == ["qa"]
+        assert result.route_result["co_occurring_route_targets"] == ["relationship"]
+        assert any("Dashboard lane co-occurrence" in rec.message for rec in caplog.records)
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
