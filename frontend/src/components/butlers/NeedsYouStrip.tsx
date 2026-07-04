@@ -37,6 +37,9 @@ function reasonFor(row: StatusBoardRow): string {
     const silence = row.silenceSeconds != null ? formatSilenceCompact(row.silenceSeconds) : "unknown"
     return `silent ${silence}, expected ${row.cadenceLabel ?? "regularly"}`
   }
+  // Heartbeat/registry source unavailable for this butler -- liveness is
+  // genuinely unknown, not confidently healthy (bu-qvnce.1).
+  if (row.activity === "unknown") return "liveness unknown, heartbeat unavailable"
   return ""
 }
 

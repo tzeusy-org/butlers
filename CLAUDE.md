@@ -205,3 +205,15 @@ Endpoints that query Prometheus for aggregate metrics (`GET /api/ingestion/pipel
 ```
 
 Never treat a missing or `false` `aggregates_available` field as an error — show a "metrics unavailable" indicator in the UI instead.
+
+**Fleet-wide convention (bu-qvnce.1, 2026-07-04):** every fan-out/aggregation endpoint across the dashboard API follows the same rule — a source that raises or is unreachable must never render as a truthful empty/zero/all-clear result. The concrete shape of the flag varies by endpoint, matched to whatever response envelope it already returns:
+
+- **Bespoke boolean field on the response model**, mirroring `aggregates_available` — e.g. `BoardRow.stripe_source_error` / `BoardAggregates.sessions_source_error` (`GET /api/butlers/board`), `NotificationListResponse.source_available` / `NotificationStats.source_available` (`GET /api/notifications`, `/stats`), `HeaderCounts` fields turning `null` instead of `0` per-field (`GET /api/settings/console`).
+- **`meta.<flag>` on the extensible `ApiMeta`/`PaginationMeta` bag** (both have `model_config = {"extra": "allow"}`) — e.g. `meta.pools_failed` (`GET /api/memory/stats`), `meta.sources_degraded` (`GET /api/approvals`, `/history`), `meta.catalogue_available` (`GET /api/secrets/breaks-catalogue`).
+- **A named list on the payload itself** — e.g. `SpendSummary.unavailable_butlers` / the `/api/spend/breakdown` dict's `unavailable_butlers` key.
+
+`src/butlers/api/degraded.py::DegradedSources` is a small shared tracker for the common "loop over N pools/butlers, one raises" shape: `tracker.mark(name)` inside the `except`, then `tracker.failed` / `tracker.names` at the end of the fan-out. It intentionally does **not** replace per-endpoint field naming — match the flag name to what the endpoint already calls its failure mode.
+
+**Classify before flagging.** A source that is *legitimately* absent (e.g. a butler with no memory tables, a pre-migration table that does not exist yet via `UndefinedTableError`) is not a degraded source — only flag a *genuine* failure (dropped connection, timeout, permission error, unreachable pool). See `memory.py::_is_missing_memory_schema_error` for the reference classifier. Getting this distinction wrong in either direction reintroduces either false alarms or fabricated calm.
+
+Frontend: gate any verdict/all-clear renderer on the relevant flag(s) using the `SourceDegradedNote` vocabulary (`frontend/src/components/ui/query-boundary.tsx`) — name the degraded source inline with an em-dash, never suppress it.

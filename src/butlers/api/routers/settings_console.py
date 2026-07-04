@@ -75,13 +75,21 @@ class AttentionItem(BaseModel):
 
 
 class HeaderCounts(BaseModel):
-    """Aggregate header counts for the console overview."""
+    """Aggregate header counts for the console overview.
 
-    active_butlers: int
-    spend_mtd_usd: float
-    open_approvals: int
-    models_verified: int
-    models_total: int
+    Each field is ``None`` when its subsystem aggregation failed -- a
+    confident ``0`` would otherwise be indistinguishable from a truthful
+    "no active butlers" / "no open approvals" result. The corresponding
+    subsystem failure is always ALSO surfaced as an amber attention item, but
+    a header-only consumer must not have to cross-reference that list to
+    tell "genuinely zero" from "unknown".
+    """
+
+    active_butlers: int | None
+    spend_mtd_usd: float | None
+    open_approvals: int | None
+    models_verified: int | None
+    models_total: int | None
 
 
 class ConsoleResponse(BaseModel):
@@ -478,11 +486,13 @@ async def _build_console_payload(
 
     return {
         "header_counts": {
-            "active_butlers": active_butlers,
-            "spend_mtd_usd": spend_mtd,
-            "open_approvals": open_approvals,
-            "models_verified": models_verified,
-            "models_total": models_total,
+            # None (not a confident 0) when the subsystem aggregation failed
+            # -- see HeaderCounts docstring.
+            "active_butlers": None if butler_err is not None else active_butlers,
+            "spend_mtd_usd": None if spend_err is not None else spend_mtd,
+            "open_approvals": None if approval_err is not None else open_approvals,
+            "models_verified": None if model_count_err is not None else models_verified,
+            "models_total": None if model_count_err is not None else models_total,
         },
         "attention": [item.model_dump() for item in visible],
         "attention_truncated_count": truncated,

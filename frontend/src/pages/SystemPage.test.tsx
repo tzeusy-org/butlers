@@ -85,6 +85,7 @@ const BOARD_AGGREGATES_DEFAULTS = {
   eligibilityUnavailable: 0,
   hasPerEntryErrors: false,
   costSourceError: false,
+  sessionsSourceError: false,
   sourcesPartiallyDegraded: false,
 };
 
@@ -555,6 +556,81 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
     setAllSuccess({ sourcesPartiallyDegraded: true });
     const html = renderPage();
     expect(html).toContain("some fleet data is degraded or unavailable");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces board.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
+    setAllSuccess();
+    vi.mocked(useButlerStatusBoard).mockReturnValue({
+      rows: [],
+      needsYou: [],
+      aggregates: {
+        ...BOARD_AGGREGATES_DEFAULTS,
+        isLoading: false,
+        isError: true,
+        error: null,
+        refetch: vi.fn(),
+      },
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("fleet status unavailable");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces instance.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
+    setAllSuccess();
+    vi.mocked(useInstanceFacts).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("instance facts unavailable");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces backups.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
+    setAllSuccess();
+    vi.mocked(useBackupFacts).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("backup facts unavailable");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces insights.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
+    setAllSuccess();
+    vi.mocked(useInsightDeliveryState).mockReturnValue({
+      data: undefined,
+      isPending: false,
+      isError: true,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("insight delivery status unavailable");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces posture.isError instead of a falsely confident all-clear (bu-qvnce.1)", () => {
+    setAllSuccess();
+    vi.mocked(useHealthPosture).mockReturnValue({
+      data: undefined,
+      isPending: false,
+      isError: true,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("security posture unavailable");
     expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
   });
 });

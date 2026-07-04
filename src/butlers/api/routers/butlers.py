@@ -370,6 +370,9 @@ class BoardRow(BaseModel):
 
     hourly_stripe: list[int]
     hourly_total: int
+    # True when the hourly-activity query failed -- hourly_stripe/hourly_total
+    # above are a fabricated [0]*24/0 in that case, never a truthful empty.
+    stripe_source_error: bool
 
     # --- cron-expectation join ---
     cadence_seconds: float | None
@@ -398,6 +401,9 @@ class BoardAggregates(BaseModel):
     heartbeat_source_error: bool
     registry_source_error: bool
     cost_source_error: bool
+    # True when any row's hourly-activity ("stripe") query failed, meaning
+    # total_sessions_24h below is a partial sum, never a confident total.
+    sessions_source_error: bool
     has_per_entry_errors: bool
     sources_partially_degraded: bool
 
@@ -488,11 +494,15 @@ async def _fetch_enabled_crons(pool: object) -> list[str]:
     return [r["cron"] for r in rows if r["cron"]]
 
 
-async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[int], int]:
-    """Return a 24-slot oldest-first session-count stripe and its total.
+async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[int], int, bool]:
+    """Return a 24-slot oldest-first session-count stripe, its total, and an error flag.
 
     Mirrors GET /api/butlers/{name}/analytics/hourly-activity so the board's
     stripe and SESS·24H figure always match that endpoint's numbers.
+
+    A query failure returns ``([0] * 24, 0, True)`` -- the third element must
+    be surfaced as ``stripe_source_error`` so that all-zero stripe is never
+    read as a truthful "no activity" (degraded-mode doctrine, CLAUDE.md).
     """
     try:
         rows = await asyncio.wait_for(
@@ -500,7 +510,7 @@ async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[int], int]:
             timeout=_STATUS_TIMEOUT_S,
         )
     except Exception:
-        return [0] * 24, 0
+        return [0] * 24, 0, True
 
     # SQL orders newest-first (index 0 = current hour); convert to
     # oldest-first (slot 0 = oldest) for the stripe.
@@ -509,7 +519,7 @@ async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[int], int]:
         slot = 23 - idx
         if 0 <= slot < 24:
             stripe[slot] = int(row["sessions_count"])
-    return stripe, sum(stripe)
+    return stripe, sum(stripe), False
 
 
 async def _fetch_board_max_concurrent(pool: object) -> int | None:
@@ -642,8 +652,8 @@ async def _fetch_board_row(
 
     heartbeat_unavailable = registry_source_error or schema_unreachable
 
-    hourly_stripe, hourly_total = (
-        await _fetch_board_hourly_stripe(pool) if pool is not None else ([0] * 24, 0)
+    hourly_stripe, hourly_total, stripe_source_error = (
+        await _fetch_board_hourly_stripe(pool) if pool is not None else ([0] * 24, 0, True)
     )
     max_concurrent = await _fetch_board_max_concurrent(pool) if pool is not None else None
     cost_today = await _fetch_board_cost_today(pool, pricing) if pool is not None else None
@@ -710,6 +720,7 @@ async def _fetch_board_row(
         schema_unreachable=schema_unreachable,
         hourly_stripe=hourly_stripe,
         hourly_total=hourly_total,
+        stripe_source_error=stripe_source_error,
         cadence_seconds=cadence_seconds,
         cadence_label=cadence_label,
         silence_seconds=silence_seconds,
@@ -737,8 +748,12 @@ def _compute_board_aggregates(
     known_loads = [r.load_pct for r in rows if r.load_pct is not None]
     avg_load_pct = round(sum(known_loads) / len(known_loads)) if known_loads else None
 
+    sessions_source_error = any(r.stripe_source_error for r in rows)
+
     has_per_entry_errors = any(r.schema_unreachable for r in rows)
-    sources_partially_degraded = registry_source_error or cost_source_error or has_per_entry_errors
+    sources_partially_degraded = (
+        registry_source_error or cost_source_error or sessions_source_error or has_per_entry_errors
+    )
 
     return BoardAggregates(
         total=total,
@@ -754,6 +769,7 @@ def _compute_board_aggregates(
         heartbeat_source_error=registry_source_error,
         registry_source_error=registry_source_error,
         cost_source_error=cost_source_error,
+        sessions_source_error=sessions_source_error,
         has_per_entry_errors=has_per_entry_errors,
         sources_partially_degraded=sources_partially_degraded,
     )

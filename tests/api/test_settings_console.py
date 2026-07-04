@@ -286,6 +286,47 @@ async def test_console_partial_failure_subsystem_surfaces_amber():
 
 
 @pytest.mark.asyncio
+async def test_console_partial_failure_nulls_only_the_failed_header_count():
+    """A failed subsystem's header_counts field is None, not a confident 0 --
+    healthy subsystems' fields keep their real value in the same response.
+    """
+    app = _make_app(db=None)
+
+    spend_err_item = console_mod.AttentionItem(
+        tone="amber",
+        kind="subsystem_error",
+        text="Could not fetch spend data — totals may be unavailable.",
+        action_route="/settings/spend",
+    )
+
+    with (
+        patch.object(console_mod, "_count_active_butlers", new=AsyncMock(return_value=(3, None))),
+        patch.object(
+            console_mod,
+            "_get_spend_mtd",
+            new=AsyncMock(return_value=(0.0, None, spend_err_item)),
+        ),
+        patch.object(console_mod, "_count_open_approvals", new=AsyncMock(return_value=(2, None))),
+        patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(1, 1, None))),
+        patch.object(console_mod, "_check_cli_auth", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_model_errors", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_failed_webhooks", new=AsyncMock(return_value=[])),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/settings/console")
+
+    assert resp.status_code == 200, resp.text
+    counts = resp.json()["data"]["header_counts"]
+    assert counts["spend_mtd_usd"] is None
+    # Healthy subsystems keep their real values, never nulled out by a
+    # sibling subsystem's failure.
+    assert counts["active_butlers"] == 3
+    assert counts["open_approvals"] == 2
+    assert counts["models_verified"] == 1
+    assert counts["models_total"] == 1
+
+
+@pytest.mark.asyncio
 async def test_console_attention_truncated_at_five():
     """When more than 5 attention items exist, truncated_count reflects overflow."""
     app = _make_app(db=None)

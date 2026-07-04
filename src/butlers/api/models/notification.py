@@ -11,6 +11,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from butlers.api.models import PaginatedResponse
+
 
 class NotificationSummary(BaseModel):
     """Notification record matching the Switchboard ``notifications`` table schema."""
@@ -29,6 +31,18 @@ class NotificationSummary(BaseModel):
     created_at: datetime
 
 
+class NotificationListResponse(PaginatedResponse[NotificationSummary]):
+    """Paginated notification list, plus a source-availability flag.
+
+    ``source_available=False`` means the Switchboard notifications source
+    was unreachable when this page was computed -- an empty/short page in
+    that case is never a truthful "no notifications match" result (mirrors
+    the repo's ``aggregates_available`` degraded-mode convention).
+    """
+
+    source_available: bool = True
+
+
 class NotificationStats(BaseModel):
     """Aggregated notification statistics for the dashboard overview.
 
@@ -41,6 +55,9 @@ class NotificationStats(BaseModel):
     failed: int
     by_channel: dict[str, int]
     by_butler: dict[str, int]
+    # False when the Switchboard notifications source was unreachable --
+    # all counts above are zeros in that case, never a truthful "no activity".
+    source_available: bool = True
 
 
 class AckFailedResult(BaseModel):

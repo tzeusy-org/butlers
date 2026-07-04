@@ -45,11 +45,14 @@ interface AttentionItem {
 }
 
 interface HeaderCounts {
-  active_butlers: number;
-  spend_mtd_usd: number;
-  open_approvals: number;
-  models_verified: number;
-  models_total: number;
+  // Each field is null when its subsystem aggregation failed -- render "—",
+  // never a confident 0/$0.00 (the corresponding amber attention item names
+  // the failure, but a KPI cell must not fabricate calm on its own).
+  active_butlers: number | null;
+  spend_mtd_usd: number | null;
+  open_approvals: number | null;
+  models_verified: number | null;
+  models_total: number | null;
 }
 
 interface ConsoleData {
@@ -236,24 +239,32 @@ function KpiCell({
 }
 
 function KpiStrip({ counts, loading }: { counts: HeaderCounts | undefined; loading: boolean }) {
-  const openApprovals = counts?.open_approvals ?? 0;
+  const openApprovals = counts?.open_approvals;
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-border/60">
-      <KpiCell label="Active Butlers" value={counts?.active_butlers ?? 0} loading={loading} />
+      <KpiCell
+        label="Active Butlers"
+        value={counts?.active_butlers ?? "—"}
+        loading={loading}
+      />
       <KpiCell
         label="Spend MTD"
-        value={counts ? `$${counts.spend_mtd_usd.toFixed(2)}` : "$0.00"}
+        value={counts?.spend_mtd_usd != null ? `$${counts.spend_mtd_usd.toFixed(2)}` : "—"}
         loading={loading}
       />
       <KpiCell
         label="Open Approvals"
-        value={openApprovals}
-        tone={openApprovals > 0 ? "red" : "fg"}
+        value={openApprovals ?? "—"}
+        tone={openApprovals != null && openApprovals > 0 ? "red" : "fg"}
         loading={loading}
       />
       <KpiCell
         label="Models OK"
-        value={counts ? `${counts.models_verified}/${counts.models_total}` : "—"}
+        value={
+          counts?.models_verified != null && counts?.models_total != null
+            ? `${counts.models_verified}/${counts.models_total}`
+            : "—"
+        }
         loading={loading}
       />
     </div>

@@ -40,11 +40,14 @@ export interface AttentionItem {
 }
 
 export interface HeaderCounts {
-  active_butlers: number;
-  spend_mtd_usd: number;
-  open_approvals: number;
-  models_verified: number;
-  models_total: number;
+  // Each field is null when its subsystem aggregation failed -- never a
+  // confident 0/$0.00 (mirrors src/butlers/api/routers/settings_console.py
+  // HeaderCounts).
+  active_butlers: number | null;
+  spend_mtd_usd: number | null;
+  open_approvals: number | null;
+  models_verified: number | null;
+  models_total: number | null;
 }
 
 export interface ConsoleData {

@@ -365,6 +365,11 @@ class SpendSummary(BaseModel):
     total_output_tokens: int
     by_butler: dict[str, float] = Field(default_factory=dict)
     by_model: dict[str, float] = Field(default_factory=dict)
+    # Butlers whose cost data could not be fetched (both the DB path and the
+    # live MCP fallback failed) -- their contribution is a fabricated $0.00
+    # zero-tuple internally, so totals above are a partial sum, never a
+    # confident fleet-wide total when this list is non-empty.
+    unavailable_butlers: list[str] = Field(default_factory=list)
 
 
 class DailySpend(BaseModel):

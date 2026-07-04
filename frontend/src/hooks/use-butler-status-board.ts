@@ -120,7 +120,13 @@ export interface StatusBoardAggregates {
    * a confident fleet-wide total -- it must never be shown as a bare "$0.00".
    */
   costSourceError: boolean
-  /** True when any secondary source (heartbeat, registry, cost, per-entry errors) has degraded. */
+  /**
+   * True when at least one butler's hourly-activity query has errored.
+   * When true, `totalSessions24h` is a partial sum over rows with a known
+   * stripe, NOT a confident fleet-wide total.
+   */
+  sessionsSourceError: boolean
+  /** True when any secondary source (heartbeat, registry, cost, sessions, per-entry errors) has degraded. */
   sourcesPartiallyDegraded: boolean
 }
 
@@ -161,7 +167,7 @@ function mapRow(row: BoardRow): StatusBoardRow {
     hourlyStripe: row.hourly_stripe,
     hourlyTotal: row.hourly_total,
     hourlyStripeLoading: false,
-    hourlyStripeError: row.schema_unreachable,
+    hourlyStripeError: row.schema_unreachable || (row.stripe_source_error ?? false),
     schemaUnreachable: row.schema_unreachable,
     heartbeatUnavailable: row.heartbeat_unavailable,
     cadenceSeconds: row.cadence_seconds,
@@ -171,7 +177,14 @@ function mapRow(row: BoardRow): StatusBoardRow {
   }
 }
 
-const NEEDS_YOU_ACTIVITIES: ReadonlySet<ActivityVerb> = new Set(["offline", "quarantined", "overdue"])
+// "unknown" (heartbeat_unavailable) belongs here too -- an unknowable
+// liveness must never be folded into a calm "All N healthy" line (bu-qvnce.1).
+const NEEDS_YOU_ACTIVITIES: ReadonlySet<ActivityVerb> = new Set([
+  "offline",
+  "quarantined",
+  "overdue",
+  "unknown",
+])
 
 // ---------------------------------------------------------------------------
 // Main hook
@@ -227,6 +240,7 @@ export function useButlerStatusBoard(): StatusBoardResult {
       eligibilityUnavailable,
       hasPerEntryErrors,
       costSourceError: agg?.cost_source_error ?? false,
+      sessionsSourceError: agg?.sessions_source_error ?? false,
       sourcesPartiallyDegraded: agg?.sources_partially_degraded ?? false,
     }
   }, [

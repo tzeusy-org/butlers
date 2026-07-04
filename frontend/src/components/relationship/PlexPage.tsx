@@ -53,6 +53,7 @@ import { toast } from "sonner";
 import type { DunbarEntry } from "@/api/types";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Page } from "@/components/ui/page";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { ActivitySparkline } from "@/components/relationship/ActivitySparkline";
@@ -1235,11 +1236,13 @@ function AttentionRail({
   onCenter,
   attention,
   attentionLoading,
+  attentionError,
 }: {
   tierCounts: Record<Tier, number> | null;
   onCenter: (id: string) => void;
   attention: AttentionItem[];
   attentionLoading: boolean;
+  attentionError: boolean;
 }) {
   return (
     <>
@@ -1259,12 +1262,15 @@ function AttentionRail({
               <Skeleton className="h-8 w-4/5" />
             </div>
           )}
-          {!attentionLoading && attention.length === 0 && (
+          {!attentionLoading && attentionError && (
+            <SourceDegradedNote label="Worth attention" detail="ranking source unavailable" />
+          )}
+          {!attentionLoading && !attentionError && attention.length === 0 && (
             <p className="font-serif text-sm italic text-muted-foreground">
               No one is owed a call.
             </p>
           )}
-          {!attentionLoading && attention.length > 0 && (
+          {!attentionLoading && !attentionError && attention.length > 0 && (
             <ul className="space-y-2.5">
               {attention.map((item) => (
                 <li
@@ -1305,6 +1311,9 @@ function AttentionRail({
         className="pointer-events-auto absolute right-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
         aria-label="Capacity"
       >
+        {!attentionLoading && attentionError && (
+          <SourceDegradedNote label="Capacity" detail="ranking source unavailable" />
+        )}
         {tierCounts && (
           <section>
             <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--mfg)]">
@@ -2096,10 +2105,11 @@ export default function PlexPage() {
           {/* Owner mode: attention + capacity flanks. */}
           {isOwnerMode && (
             <AttentionRail
-              tierCounts={!rankingLoading ? ownerLayout.tierCounts : null}
+              tierCounts={!rankingLoading && !rankingError ? ownerLayout.tierCounts : null}
               onCenter={handleCenter}
               attention={attention}
               attentionLoading={rankingLoading}
+              attentionError={rankingError}
             />
           )}
 

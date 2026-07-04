@@ -305,6 +305,48 @@ async def test_cost_summary_unreachable_butler_skipped(app):
     data = resp.json()["data"]
     assert data["total_sessions"] == 2
     assert "broken" not in data["by_butler"]
+    # The dropped butler must be named, not silently absorbed into the total
+    # as an unremarkable $0.00 (bu-qvnce.1 -- honest aggregation).
+    assert data["unavailable_butlers"] == ["broken"]
+
+
+async def test_cost_summary_all_reachable_reports_no_unavailable_butlers(app):
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    sw_data = {
+        "total_sessions": 1,
+        "total_input_tokens": 100,
+        "total_output_tokens": 50,
+        "by_model": {},
+    }
+    mgr = _mock_mgr({"sw": _make_tool_result(sw_data)})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend")
+    assert resp.json()["data"]["unavailable_butlers"] == []
+
+
+async def test_cost_breakdown_by_butler_reports_unavailable_butlers(app):
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="broken", port=41101),
+    ]
+    sw_data = {
+        "total_sessions": 2,
+        "total_input_tokens": 1000,
+        "total_output_tokens": 500,
+        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}},
+    }
+    mgr = _mock_mgr({"sw": _make_tool_result(sw_data), "broken": ButlerUnreachableError("broken")})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/breakdown?by=butler")
+    data = resp.json()["data"]
+    assert "broken" not in data["breakdown"]
+    assert data["unavailable_butlers"] == ["broken"]
 
 
 async def test_cost_summary_tiered_pricing(app):

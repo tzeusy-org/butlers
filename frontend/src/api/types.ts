@@ -117,6 +117,8 @@ export interface BoardRow {
   schema_unreachable: boolean;
   hourly_stripe: number[];
   hourly_total: number;
+  /** True when this row's hourly-activity query failed -- hourly_stripe/hourly_total are a fabricated zero-fill in that case. */
+  stripe_source_error?: boolean;
   cadence_seconds: number | null;
   cadence_label: "hourly" | "daily" | "weekly" | "custom" | null;
   silence_seconds: number | null;
@@ -138,6 +140,8 @@ export interface BoardAggregates {
   heartbeat_source_error: boolean;
   registry_source_error: boolean;
   cost_source_error: boolean;
+  /** True when any row's hourly-activity query failed -- total_sessions_24h is a partial sum in that case. */
+  sessions_source_error?: boolean;
   has_per_entry_errors: boolean;
   sources_partially_degraded: boolean;
 }
@@ -349,6 +353,18 @@ export interface NotificationStats {
   failed: number;
   by_channel: Record<string, number>;
   by_butler: Record<string, number>;
+  /** False when the Switchboard notifications source was unreachable -- all counts above are zeros in that case. */
+  source_available?: boolean;
+}
+
+/**
+ * Paginated notification list, plus a source-availability flag.
+ * `source_available === false` means the Switchboard notifications source
+ * was unreachable -- an empty/short page in that case is NOT a truthful
+ * "no notifications match" result.
+ */
+export interface NotificationListResponse extends PaginatedResponse<NotificationSummary> {
+  source_available?: boolean;
 }
 
 /** Query parameters for notification list endpoints. */
@@ -482,6 +498,8 @@ export interface SpendSummary {
   total_output_tokens: number;
   by_butler: Record<string, number>;
   by_model: Record<string, number>;
+  /** Butlers whose cost data could not be fetched -- totals above are a partial sum, never a confident fleet-wide total when non-empty. */
+  unavailable_butlers?: string[];
 }
 
 /** Spend data for a single day. */

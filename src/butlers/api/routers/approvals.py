@@ -26,8 +26,10 @@ import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from butlers.api.db import DatabaseManager
+from butlers.api.degraded import DegradedSources
 from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.models import (
+    ApiMeta,
     ApiResponse,
     PaginatedResponse,
     PaginationMeta,
@@ -1527,6 +1529,7 @@ async def list_approvals_flat(
         status_filter = []
 
     all_rows: list[tuple[str, asyncpg.Record]] = []
+    tracker = DegradedSources(logger)
     for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
@@ -1545,7 +1548,7 @@ async def list_approvals_flat(
                     )
                 all_rows.extend((butler_name, row) for row in rows)
         except Exception:
-            logger.warning("Failed to query pending_actions for flat list", exc_info=True)
+            tracker.mark(butler_name, msg="Failed to query pending_actions for flat list")
 
     all_rows.sort(key=lambda pair: pair[1]["requested_at"], reverse=True)
     page_rows = all_rows[:limit]
@@ -1555,7 +1558,8 @@ async def list_approvals_flat(
         pa = PendingAction.from_row(row)
         summaries.append(_pending_action_to_summary(pa, butler_name))
 
-    return ApiResponse(data=summaries)
+    meta = ApiMeta(sources_degraded=tracker.names) if tracker.failed else ApiMeta()
+    return ApiResponse(data=summaries, meta=meta)
 
 
 @router.get("/history")
@@ -1582,6 +1586,7 @@ async def list_approvals_history(
 
     decided_statuses = list(_DECIDED_STATUSES)
     all_rows: list[tuple[str, asyncpg.Record]] = []
+    tracker = DegradedSources(logger)
 
     for butler_name, pool in named_pools:
         try:
@@ -1605,7 +1610,7 @@ async def list_approvals_history(
                     )
                 all_rows.extend((butler_name, row) for row in rows)
         except Exception:
-            logger.warning("Failed to query history from a pool", exc_info=True)
+            tracker.mark(butler_name, msg="Failed to query approvals history from a pool")
 
     all_rows.sort(
         key=lambda pair: pair[1]["decided_at"] or datetime.min.replace(tzinfo=UTC),
@@ -1616,7 +1621,8 @@ async def list_approvals_history(
     summaries = [
         _pending_action_to_summary(PendingAction.from_row(row), name) for name, row in page_rows
     ]
-    return ApiResponse(data=summaries)
+    meta = ApiMeta(sources_degraded=tracker.names) if tracker.failed else ApiMeta()
+    return ApiResponse(data=summaries, meta=meta)
 
 
 @router.get("/policy")

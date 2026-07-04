@@ -64,6 +64,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     eligibilityUnavailable: 0,
     hasPerEntryErrors: false,
     costSourceError: false,
+    sessionsSourceError: false,
     sourcesPartiallyDegraded: false,
     ...overrides,
   };
@@ -101,7 +102,7 @@ function makeRow(overrides: Partial<StatusBoardRow> = {}): StatusBoardRow {
   };
 }
 
-const NEEDS_YOU_ACTIVITIES = new Set(["offline", "quarantined", "overdue"]);
+const NEEDS_YOU_ACTIVITIES = new Set(["offline", "quarantined", "overdue", "unknown"]);
 
 function setHookState(rows: StatusBoardRow[], aggregates: StatusBoardAggregates) {
   const needsYou = rows.filter((r) => NEEDS_YOU_ACTIVITIES.has(r.activity));
@@ -434,5 +435,19 @@ describe("ButlersPage — needs-you strip", () => {
     const html = renderPage();
     expect(html).not.toContain("All 0 butlers healthy");
     expect(html).not.toContain("things need you");
+  });
+
+  it("surfaces a butler with unknown liveness rather than a falsely confident all-clear (bu-qvnce.1)", () => {
+    const rows = [
+      makeRow({ name: "healthy-butler", activity: "idle" }),
+      makeRow({ name: "unreachable-butler", activity: "unknown", cellTone: "neutral" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 2, butlerCount: 2 }));
+    const html = renderPage();
+
+    expect(html).toContain("1 thing needs you");
+    expect(html).toContain("unreachable-butler");
+    expect(html).toContain("liveness unknown, heartbeat unavailable");
+    expect(html).not.toContain("All 2 butlers healthy");
   });
 });

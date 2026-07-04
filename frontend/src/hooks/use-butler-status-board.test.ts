@@ -181,6 +181,16 @@ describe("row mapping (snake_case wire -> camelCase UI contract)", () => {
     expect(mapped.hourlyStripeError).toBe(true)
   })
 
+  it("sets hourlyStripeError when stripe_source_error is true even if schema_unreachable is false", () => {
+    // The hourly-activity query can fail independently of the session-count
+    // queries that drive schema_unreachable -- both must gate the stripe.
+    const row = makeRow({ schema_unreachable: false, stripe_source_error: true })
+    mockQuerySuccess(makeBoardResponse([row]))
+
+    const { rows } = useButlerStatusBoard()
+    expect(rows[0].hourlyStripeError).toBe(true)
+  })
+
   it("preserves server row order exactly (no client-side re-sort)", () => {
     mockQuerySuccess(
       makeBoardResponse([
@@ -213,7 +223,7 @@ describe("row mapping (snake_case wire -> camelCase UI contract)", () => {
 // ---------------------------------------------------------------------------
 
 describe("needsYou", () => {
-  it("includes offline, quarantined, and overdue rows, excludes running/idle/unknown", () => {
+  it("includes offline, quarantined, overdue, and unknown rows, excludes running/idle", () => {
     mockQuerySuccess(
       makeBoardResponse([
         makeRow({ name: "healthy-idle", activity: "idle" }),
@@ -221,12 +231,14 @@ describe("needsYou", () => {
         makeRow({ name: "down", activity: "offline" }),
         makeRow({ name: "banned", activity: "quarantined" }),
         makeRow({ name: "late", activity: "overdue" }),
+        // "unknown" liveness must surface here too -- a heartbeat-unavailable
+        // butler is never confidently healthy (bu-qvnce.1).
         makeRow({ name: "degraded", activity: "unknown" }),
       ]),
     )
 
     const { needsYou } = useButlerStatusBoard()
-    expect(needsYou.map((r) => r.name).sort()).toEqual(["banned", "down", "late"])
+    expect(needsYou.map((r) => r.name).sort()).toEqual(["banned", "degraded", "down", "late"])
   })
 
   it("is empty when the fleet is fully healthy", () => {
@@ -296,6 +308,18 @@ describe("aggregates passthrough", () => {
     expect(aggregates.costSourceError).toBe(true)
     expect(aggregates.hasPerEntryErrors).toBe(true)
     expect(aggregates.sourcesPartiallyDegraded).toBe(true)
+  })
+
+  it("maps sessions_source_error onto sessionsSourceError", () => {
+    mockQuerySuccess(makeBoardResponse([makeRow()], { sessions_source_error: true }))
+    const { aggregates } = useButlerStatusBoard()
+    expect(aggregates.sessionsSourceError).toBe(true)
+  })
+
+  it("defaults sessionsSourceError to false when the backend omits the field", () => {
+    mockQuerySuccess(makeBoardResponse([makeRow()]))
+    const { aggregates } = useButlerStatusBoard()
+    expect(aggregates.sessionsSourceError).toBe(false)
   })
 
   it("computes eligibilityUnavailable client-side from mapped rows", () => {

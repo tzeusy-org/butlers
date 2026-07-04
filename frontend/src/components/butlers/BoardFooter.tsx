@@ -87,6 +87,7 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
     butlerCount,
     stafferCount,
     costSourceError,
+    sessionsSourceError,
   } = aggregates
 
   const avgLoadValue = avgLoadPct == null ? "—" : `${avgLoadPct}%`
@@ -100,7 +101,9 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
   // confident fleet-wide total. Show "—" and name the degraded source below
   // rather than a calm "$0.00" that reads as "no spend today".
   const spendValue = costSourceError ? "—" : `$${totalSpendToday.toFixed(2)}`
-  const sessionsValue = totalSessions24h.toLocaleString()
+  // Same doctrine for the sessions stripe: a failed hourly-activity query
+  // must not read as a confident "0 sessions today".
+  const sessionsValue = sessionsSourceError ? "—" : totalSessions24h.toLocaleString()
 
   return (
     <footer
@@ -156,6 +159,15 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
         <SourceDegradedNote
           label="Spend today"
           detail="cost source unavailable, total above is incomplete"
+          className="mt-3"
+        />
+      )}
+
+      {/* Sessions source degraded note -- never let a failed stripe query hide behind "0". */}
+      {sessionsSourceError && (
+        <SourceDegradedNote
+          label="Sessions·24h"
+          detail="activity source unavailable, total above is incomplete"
           className="mt-3"
         />
       )}

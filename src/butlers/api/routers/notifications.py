@@ -24,8 +24,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
-from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.models.notification import AckFailedResult, NotificationStats, NotificationSummary
+from butlers.api.models import ApiResponse, PaginationMeta
+from butlers.api.models.notification import (
+    AckFailedResult,
+    NotificationListResponse,
+    NotificationStats,
+    NotificationSummary,
+)
 
 logger = logging.getLogger(__name__)
 _missing_notifications_table_warnings: set[str] = set()
@@ -90,16 +95,27 @@ def _log_missing_notifications_table_once(*, operation: str) -> None:
     )
 
 
-def _empty_notification_page(*, offset: int, limit: int) -> PaginatedResponse[NotificationSummary]:
-    """Return the standard empty paginated notification envelope."""
-    return PaginatedResponse[NotificationSummary](
+def _empty_notification_page(
+    *, offset: int, limit: int, source_available: bool = True
+) -> NotificationListResponse:
+    """Return the standard empty paginated notification envelope.
+
+    ``source_available=False`` when this empty page reflects a genuinely
+    unreachable Switchboard pool, not a truthful "no notifications match".
+    """
+    return NotificationListResponse(
         data=[],
         meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        source_available=source_available,
     )
 
 
-def _empty_notification_stats() -> ApiResponse[NotificationStats]:
-    """Return the standard empty notification stats envelope."""
+def _empty_notification_stats(*, source_available: bool = True) -> ApiResponse[NotificationStats]:
+    """Return the standard empty notification stats envelope.
+
+    ``source_available=False`` when this all-zero payload reflects a
+    genuinely unreachable Switchboard pool, not a truthful "no activity".
+    """
     return ApiResponse[NotificationStats](
         data=NotificationStats(
             total=0,
@@ -107,6 +123,7 @@ def _empty_notification_stats() -> ApiResponse[NotificationStats]:
             failed=0,
             by_channel={},
             by_butler={},
+            source_available=source_available,
         )
     )
 
@@ -144,7 +161,7 @@ async def _query_notifications(
     status: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
-) -> PaginatedResponse[NotificationSummary]:
+) -> NotificationListResponse:
     """Build and execute the paginated notification query.
 
     Shared by both the cross-butler and butler-scoped endpoints.
@@ -223,7 +240,7 @@ async def _query_notifications(
         for row in rows
     ]
 
-    return PaginatedResponse[NotificationSummary](
+    return NotificationListResponse(
         data=notifications,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
@@ -234,7 +251,7 @@ async def _query_notifications(
 # ---------------------------------------------------------------------------
 
 
-@router.get("", response_model=PaginatedResponse[NotificationSummary])
+@router.get("", response_model=NotificationListResponse)
 async def list_notifications(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
@@ -244,7 +261,7 @@ async def list_notifications(
     since: datetime | None = Query(None, description="Only notifications created after this time"),
     until: datetime | None = Query(None, description="Only notifications created before this time"),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> PaginatedResponse[NotificationSummary]:
+) -> NotificationListResponse:
     """Return paginated notification history from the Switchboard database.
 
     Supports filtering by butler, channel, status, and date range.
@@ -252,7 +269,7 @@ async def list_notifications(
     """
     pool = _get_switchboard_pool(db)
     if pool is None:
-        return _empty_notification_page(offset=offset, limit=limit)
+        return _empty_notification_page(offset=offset, limit=limit, source_available=False)
     try:
         return await _query_notifications(
             pool,
@@ -278,7 +295,7 @@ async def list_notifications(
 
 @butler_notifications_router.get(
     "/{name}/notifications",
-    response_model=PaginatedResponse[NotificationSummary],
+    response_model=NotificationListResponse,
 )
 async def list_butler_notifications(
     name: str,
@@ -289,7 +306,7 @@ async def list_butler_notifications(
     since: datetime | None = Query(None, description="Only notifications created after this time"),
     until: datetime | None = Query(None, description="Only notifications created before this time"),
     db: DatabaseManager = Depends(_get_db_manager),
-) -> PaginatedResponse[NotificationSummary]:
+) -> NotificationListResponse:
     """Return paginated notifications for a specific butler.
 
     Identical to ``GET /api/notifications`` but with ``source_butler``
@@ -297,7 +314,7 @@ async def list_butler_notifications(
     """
     pool = _get_switchboard_pool(db)
     if pool is None:
-        return _empty_notification_page(offset=offset, limit=limit)
+        return _empty_notification_page(offset=offset, limit=limit, source_available=False)
     try:
         return await _query_notifications(
             pool,
@@ -327,7 +344,7 @@ async def notification_stats(
     """
     pool = _get_switchboard_pool(db)
     if pool is None:
-        return _empty_notification_stats()
+        return _empty_notification_stats(source_available=False)
 
     # Query-budget: this handler fires 4 separate COUNT/GROUP-BY queries against
     # the notifications table on every /stats request.

@@ -73,6 +73,25 @@ export function SystemVerdictBanner() {
 
   const problems: Problem[] = [];
 
+  // A settled (non-loading) error must never be silently dropped from the
+  // verdict -- each of these sources feeds either a problem line or the
+  // "all clear" summary below, and a failed fetch is neither.
+  if (board.isError) {
+    problems.push({ key: "board-error", text: "fleet status unavailable", href: "/butlers" });
+  }
+  if (instance.isError) {
+    problems.push({ key: "instance-error", text: "instance facts unavailable" });
+  }
+  if (backups.isError) {
+    problems.push({ key: "backups-error", text: "backup facts unavailable" });
+  }
+  if (insights.isError) {
+    problems.push({ key: "insights-error", text: "insight delivery status unavailable" });
+  }
+  if (posture.isError) {
+    problems.push({ key: "posture-error", text: "security posture unavailable" });
+  }
+
   if (board.offline > 0) {
     problems.push({
       key: "offline",

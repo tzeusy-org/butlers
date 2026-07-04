@@ -160,9 +160,17 @@ function defaultApiFetch(path: string) {
 function setHooks({
   currentByButler = {},
   priorByButler = {},
+  currentUnavailable = [],
+  priorUnavailable = [],
+  currentError = false,
+  priorError = false,
 }: {
   currentByButler?: Record<string, number>
   priorByButler?: Record<string, number>
+  currentUnavailable?: string[]
+  priorUnavailable?: string[]
+  currentError?: boolean
+  priorError?: boolean
 } = {}) {
   mockUseSpendStream.mockReturnValue({ streamedCostUsd: 0 })
 
@@ -170,11 +178,19 @@ function setHooks({
   let call = 0
   mockUseSpendSummary.mockImplementation(() => {
     call += 1
-    const byButler = call % 2 === 1 ? currentByButler : priorByButler
+    const isCurrent = call % 2 === 1
+    const byButler = isCurrent ? currentByButler : priorByButler
+    const unavailableButlers = isCurrent ? currentUnavailable : priorUnavailable
+    const isError = isCurrent ? currentError : priorError
     return {
-      data: { data: { total_cost_usd: 1, by_butler: byButler }, meta: {} },
+      data: isError
+        ? undefined
+        : {
+            data: { total_cost_usd: 1, by_butler: byButler, unavailable_butlers: unavailableButlers },
+            meta: {},
+          },
       isLoading: false,
-      isError: false,
+      isError,
     }
   })
   mockUseDailySpend.mockReturnValue({
@@ -460,6 +476,40 @@ describe("SpendPage — what changed", () => {
 
     const strip = await screen.findByTestId("movers-strip")
     expect(strip.textContent).toContain("No spend change vs the prior window")
+  })
+
+  it("shows a degraded note instead of a false all-clear when a comparison window fails (bu-qvnce.1)", async () => {
+    setHooks({ currentByButler: { general: 1.0 }, priorError: true })
+    await act(async () => {
+      renderPage()
+    })
+
+    const strip = await screen.findByTestId("movers-strip")
+    expect(strip.textContent).not.toContain("No spend change vs the prior window")
+    expect(strip.textContent).toContain("spend comparison unavailable")
+    expect(strip.querySelectorAll('[data-testid="mover-chip"]').length).toBe(0)
+  })
+
+  it("excludes a butler with unavailable cost data instead of fabricating a '+$X · new' delta (bu-qvnce.1)", async () => {
+    // "finance" has real current spend but its prior-window cost was
+    // unavailable server-side -- a naive current-vs-0 comparison would
+    // fabricate "finance +$2.00 · new", which isn't true.
+    setHooks({
+      currentByButler: { general: 1.0, finance: 2.0 },
+      priorByButler: { general: 0.2 },
+      priorUnavailable: ["finance"],
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const strip = await screen.findByTestId("movers-strip")
+    const chips = Array.from(strip.querySelectorAll('[data-testid="mover-chip"]'))
+    expect(chips.map((c) => c.textContent)).not.toEqual(
+      expect.arrayContaining([expect.stringContaining("finance")]),
+    )
+    expect(strip.textContent).toContain("excluded from comparison")
+    expect(strip.textContent).toContain("finance")
   })
 })
 

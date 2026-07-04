@@ -17,11 +17,13 @@ import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC
 
+from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
-from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.degraded import DegradedSources
+from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.memory import (
     _DEFAULT_EMBEDDING_MODEL,
     ButlerMemoryStats,
@@ -85,18 +87,40 @@ def _any_pool(db: DatabaseManager) -> object:
     raise HTTPException(status_code=503, detail="No database pools available")
 
 
+def _is_missing_memory_schema_error(exc: Exception) -> bool:
+    """Return whether *exc* indicates the pool simply lacks memory tables.
+
+    This is the expected, common case for a butler that has not opted into
+    the memory module -- NOT a degraded source. Any other exception (a
+    dropped connection, a permission error, a malformed query) is a genuine
+    failure and must be tracked via *tracker* in ``_fan_out_memory_queries``,
+    never silently folded into the same "no memory tables" skip.
+    """
+    if isinstance(exc, UndefinedTableError):
+        return True
+    msg = str(exc).lower()
+    return "does not exist" in msg and ("relation" in msg or "table" in msg)
+
+
 async def _fan_out_memory_queries(
     db: DatabaseManager,
     *,
     query_name: str,
     query_fn: Callable[[str, object], Awaitable[object | None]],
     butler_filter: str | None = None,
+    tracker: DegradedSources | None = None,
 ) -> list[object]:
     """Run a query across candidate pools and skip pools without memory schema.
 
     When *butler_filter* is provided the fan-out is restricted to the single
     pool owned by that butler.  If that butler is unknown the function returns
     immediately with an empty list, avoiding unnecessary pool probing.
+
+    When *tracker* is provided, a pool failing for any reason OTHER than
+    "this pool has no memory tables" (see ``_is_missing_memory_schema_error``)
+    is recorded on it -- callers should surface ``tracker.names`` in the
+    response envelope (e.g. ``ApiMeta(pools_failed=...)``) so a genuinely
+    unreachable pool is never indistinguishable from a truthful empty result.
     """
     if butler_filter is not None:
         # Narrow to exactly one pool; return early when the butler is unknown.
@@ -118,7 +142,9 @@ async def _fan_out_memory_queries(
     async def _run(name: str, pool: object) -> object | None:
         try:
             return await query_fn(name, pool)
-        except Exception:
+        except Exception as exc:
+            if tracker is not None and not _is_missing_memory_schema_error(exc):
+                tracker.mark(name, msg=f"memory query {query_name!r} failed")
             logger.debug(
                 "Skipping pool %s for memory query %s (pool lacks memory tables or query failed)",
                 name,
@@ -245,10 +271,12 @@ async def get_memory_stats(
             "last_consolidation_facts_produced": (last_run["facts_produced"] if last_run else None),
         }
 
+    tracker = DegradedSources(logger)
     per_pool = await _fan_out_memory_queries(
         db,
         query_name="stats",
         query_fn=_stats_for_pool,
+        tracker=tracker,
     )
 
     totals = MemoryStats()
@@ -276,7 +304,8 @@ async def get_memory_stats(
             totals.last_consolidation_at = str(run_at)
             totals.last_consolidation_facts_produced = row["last_consolidation_facts_produced"]
 
-    return ApiResponse[MemoryStats](data=totals)
+    meta = ApiMeta(pools_failed=tracker.names) if tracker.failed else ApiMeta()
+    return ApiResponse[MemoryStats](data=totals, meta=meta)
 
 
 # ---------------------------------------------------------------------------

@@ -232,6 +232,107 @@ async def test_no_approvals_tables_returns_empty(app):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/approvals (flat) and /api/approvals/history --
+# sources_degraded contract (bu-qvnce.1)
+# ---------------------------------------------------------------------------
+
+
+def _app_with_one_healthy_one_raising_butler(app, *, healthy_rows=None):
+    """Two named approvals pools: 'general' answers normally, 'home' raises
+    mid-query (table exists per to_regclass, but the actual SELECT fails).
+    """
+    healthy_rows = healthy_rows or []
+
+    healthy_conn = AsyncMock()
+    healthy_conn.fetch = AsyncMock(return_value=healthy_rows)
+    healthy_conn.fetchval = AsyncMock(
+        side_effect=lambda *a, **k: True if ("to_regclass" in a[0] or "EXISTS" in a[0]) else 0
+    )
+
+    raising_conn = AsyncMock()
+    raising_conn.fetch = AsyncMock(side_effect=RuntimeError("connection reset by peer"))
+    raising_conn.fetchval = AsyncMock(
+        side_effect=lambda *a, **k: True if ("to_regclass" in a[0] or "EXISTS" in a[0]) else 0
+    )
+
+    class _MockAcquire:
+        def __init__(self, conn):
+            self._conn = conn
+
+        async def __aenter__(self):
+            return self._conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    healthy_pool = AsyncMock()
+    healthy_pool.acquire = MagicMock(side_effect=lambda: _MockAcquire(healthy_conn))
+
+    raising_pool = AsyncMock()
+    raising_pool.acquire = MagicMock(side_effect=lambda: _MockAcquire(raising_conn))
+
+    pools = {"general": healthy_pool, "home": raising_pool}
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general", "home"]
+    mock_db.pool = MagicMock(side_effect=lambda name: pools[name])
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+    return app
+
+
+async def test_list_approvals_flat_reports_sources_degraded_on_pool_failure(app):
+    """One pool raising mid-query must surface meta.sources_degraded, not a
+    silent drop of that butler's rows from the flat list."""
+    row = _make_action(tool_name="notify")
+    app = _app_with_one_healthy_one_raising_butler(app, healthy_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["meta"]["sources_degraded"] == ["home"]
+
+
+async def test_list_approvals_history_reports_sources_degraded_on_pool_failure(app):
+    """Same contract for the decided-approvals history endpoint."""
+    row = _make_action(tool_name="notify", status="approved")
+    app = _app_with_one_healthy_one_raising_butler(app, healthy_rows=[row])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/history")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["meta"]["sources_degraded"] == ["home"]
+
+
+async def test_list_approvals_flat_no_sources_degraded_when_all_pools_healthy(app):
+    """No sources_degraded key when every pool answers successfully."""
+    row = _make_action(tool_name="notify")
+    app = _app_with_two_butlers(app, home_rows=[row], general_rows=[])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "sources_degraded" not in body["meta"]
+
+
+# ---------------------------------------------------------------------------
 # butler filter param + butler field (bu-d3fhz)
 # ---------------------------------------------------------------------------
 

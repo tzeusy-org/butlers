@@ -231,7 +231,10 @@ def test_breaks_catalogue_envelope_structure():
 
 
 def test_breaks_catalogue_no_shared_pool_returns_empty():
-    """When credential_shared_pool raises KeyError, returns empty list (not 503)."""
+    """When credential_shared_pool raises KeyError, returns empty list (not 503),
+    but flags meta.catalogue_available=False -- an unreachable pool must never
+    look like a truthful "no catalogue rows for this provider" result.
+    """
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = []
     mock_db.credential_shared_pool = MagicMock(side_effect=KeyError("no pool"))
@@ -240,7 +243,9 @@ def test_breaks_catalogue_no_shared_pool_returns_empty():
 
     resp = client.get("/api/secrets/breaks-catalogue?provider=google")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"] == []
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["catalogue_available"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +254,10 @@ def test_breaks_catalogue_no_shared_pool_returns_empty():
 
 
 def test_breaks_catalogue_table_not_found_returns_empty():
-    """When the table does not exist, returns empty list (no 503)."""
+    """When the table does not exist (pre-migration), this is a legitimate
+    empty state -- NOT a degraded source -- so catalogue_available must not
+    be flagged false (unlike the pool-unreachable case above).
+    """
     from asyncpg.exceptions import UndefinedTableError
 
     shared_pool = AsyncMock()
@@ -267,7 +275,9 @@ def test_breaks_catalogue_table_not_found_returns_empty():
 
     resp = client.get("/api/secrets/breaks-catalogue?provider=google")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["data"] == []
+    body = resp.json()
+    assert body["data"] == []
+    assert "catalogue_available" not in body["meta"]
 
 
 # ---------------------------------------------------------------------------

@@ -225,6 +225,7 @@ function setupDefaultMocks({
       eligibilityUnavailable: 0,
       hasPerEntryErrors: false,
       costSourceError: false,
+      sessionsSourceError: false,
       sourcesPartiallyDegraded: false,
     },
   });

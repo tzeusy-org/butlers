@@ -87,6 +87,7 @@ import type {
   Label,
   CursorPaginatedResponse,
   AckFailedResult,
+  NotificationListResponse,
   NotificationParams,
   NotificationStats,
   NotificationSummary,
@@ -795,10 +796,10 @@ function notificationSearchParams(params?: NotificationParams): URLSearchParams 
 /** Fetch a paginated list of notifications across all butlers. */
 export function getNotifications(
   params?: NotificationParams,
-): Promise<PaginatedResponse<NotificationSummary>> {
+): Promise<NotificationListResponse> {
   const qs = notificationSearchParams(params).toString();
   const path = qs ? `/notifications?${qs}` : "/notifications";
-  return apiFetch<PaginatedResponse<NotificationSummary>>(path);
+  return apiFetch<NotificationListResponse>(path);
 }
 
 /** Fetch aggregate notification statistics. */
@@ -810,11 +811,11 @@ export function getNotificationStats(): Promise<ApiResponse<NotificationStats>> 
 export function getButlerNotifications(
   name: string,
   params?: NotificationParams,
-): Promise<PaginatedResponse<NotificationSummary>> {
+): Promise<NotificationListResponse> {
   const qs = notificationSearchParams(params).toString();
   const base = `/butlers/${encodeURIComponent(name)}/notifications`;
   const path = qs ? `${base}?${qs}` : base;
-  return apiFetch<PaginatedResponse<NotificationSummary>>(path);
+  return apiFetch<NotificationListResponse>(path);
 }
 
 /** Mark a single notification as read (flips failed → read). */

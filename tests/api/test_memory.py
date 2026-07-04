@@ -491,6 +491,69 @@ async def test_stats_consolidation_fields_aggregate_across_pools(app):
     assert data["last_consolidation_facts_produced"] == 11
 
 
+class _RaisingStatsPool:
+    """Fake pool whose fetchval always raises *exc* -- for degraded-mode tests."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def fetchval(self, query: str, *args: object) -> int:
+        raise self._exc
+
+    async def fetchrow(self, query: str, *args: object) -> dict | None:
+        raise self._exc
+
+
+async def test_stats_reports_pools_failed_for_a_genuine_query_failure(app):
+    """A pool that raises for a reason OTHER than a missing memory schema
+    must be named in meta.pools_failed -- its contribution is silently
+    dropped from the totals otherwise, with zero signal that they undercount.
+    """
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(counts={"consolidation_status = 'dead_letter'": 3}),
+            "finance": _RaisingStatsPool(RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["dead_letter_episodes"] == 3
+    assert body["meta"]["pools_failed"] == ["finance"]
+
+
+async def test_stats_does_not_flag_pools_failed_for_missing_memory_schema(app):
+    """A pool that simply lacks memory tables (UndefinedTableError) is the
+    expected, common case for a non-memory-enabled butler -- NOT a degraded
+    source, so it must not appear in meta.pools_failed.
+    """
+    from asyncpg.exceptions import UndefinedTableError
+
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(counts={"consolidation_status = 'dead_letter'": 3}),
+            "switchboard": _RaisingStatsPool(UndefinedTableError("relation does not exist")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["dead_letter_episodes"] == 3
+    assert "pools_failed" not in body["meta"]
+
+
 async def test_stats_facts_produced_tracks_latest_run_not_max(app):
     """facts_produced reflects the LATEST run's value, even when it is smaller.
 

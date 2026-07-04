@@ -46,6 +46,7 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
     eligibilityUnavailable: 0,
     hasPerEntryErrors: false,
     costSourceError: false,
+    sessionsSourceError: false,
     sourcesPartiallyDegraded: false,
     ...overrides,
   }
@@ -228,6 +229,29 @@ describe("BoardFooter", () => {
     it("still renders the formatted total when costSourceError is false", () => {
       const html = render(makeAggregates({ totalSpendToday: 4.2, costSourceError: false }))
       expect(html).toContain("$4.20")
+    })
+  })
+
+  describe("sessions source degraded (bu-qvnce.1 -- honest aggregation)", () => {
+    it("renders '—' instead of a confident '0' when sessionsSourceError is true", () => {
+      const html = render(makeAggregates({ totalSessions24h: 0, sessionsSourceError: true }))
+      expect(html).toContain("—")
+    })
+
+    it("renders a role=alert degraded note naming the sessions source when sessionsSourceError is true", () => {
+      const html = render(makeAggregates({ sessionsSourceError: true }))
+      expect(html).toContain('role="alert"')
+      expect(html.toLowerCase()).toContain("sessions")
+    })
+
+    it("does NOT render a degraded note when sessionsSourceError is false", () => {
+      const html = render(makeAggregates({ sessionsSourceError: false }))
+      expect(html).not.toContain('role="alert"')
+    })
+
+    it("still renders the formatted total when sessionsSourceError is false", () => {
+      const html = render(makeAggregates({ totalSessions24h: 42, sessionsSourceError: false }))
+      expect(html).toContain("42")
     })
   })
 })

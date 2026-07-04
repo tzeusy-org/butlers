@@ -59,6 +59,7 @@ class _FakeButlerPool:
         cost_output_tokens: int = 0,
         session_query_fails: bool = False,
         cost_query_fails: bool = False,
+        hourly_query_fails: bool = False,
     ) -> None:
         self.crons = crons or []
         self.active_count = active_count
@@ -70,6 +71,7 @@ class _FakeButlerPool:
         self.cost_output_tokens = cost_output_tokens
         self.session_query_fails = session_query_fails
         self.cost_query_fails = cost_query_fails
+        self.hourly_query_fails = hourly_query_fails
 
     async def fetchrow(self, sql, *args):
         if "completed_at FROM sessions" in sql:
@@ -103,6 +105,8 @@ class _FakeButlerPool:
         if "scheduled_tasks" in sql:
             return [{"cron": c} for c in self.crons]
         if "hours AS" in sql:
+            if self.hourly_query_fails:
+                raise RuntimeError("hourly activity query failed")
             return [{"sessions_count": c} for c in self.hourly_counts]
         if "model" in sql and "input_tokens" in sql:
             if self.cost_query_fails:
@@ -344,6 +348,35 @@ async def test_board_cost_failure_is_partial_sum_with_error_flag():
     assert payload["aggregates"]["cost_source_error"] is True
     # Partial sum reflects only the known butler's cost -- never a bare "$0.00".
     assert payload["aggregates"]["total_spend_today"] == rows_by_name["finance"]["cost_today"]
+
+
+async def test_board_hourly_stripe_failure_flags_error_never_fabricates_zero_stripe():
+    """A raising hourly-activity query must flag stripe_source_error, not a bare [0]*24."""
+    configs = [
+        ButlerConnectionInfo(name="finance", port=41105),
+        ButlerConnectionInfo(name="general", port=41101),
+    ]
+    db = _FakeDb(
+        switchboard=_FakeSwitchboardPool(rows=[_registry_row("finance"), _registry_row("general")]),
+        butlers={
+            "finance": _FakeButlerPool(hourly_counts=[2] * 24),
+            "general": _FakeButlerPool(hourly_query_fails=True),
+        },
+    )
+    resp = await _get_board(_build_app(configs, db))
+    payload = resp.json()["data"]
+    rows_by_name = {r["name"]: r for r in payload["rows"]}
+
+    assert rows_by_name["finance"]["stripe_source_error"] is False
+    assert rows_by_name["general"]["stripe_source_error"] is True
+    # The failed butler's stripe/total still degrade to an honest-looking zero
+    # array server-side, but the flag is what a client must gate on.
+    assert rows_by_name["general"]["hourly_stripe"] == [0] * 24
+    assert rows_by_name["general"]["hourly_total"] == 0
+    assert payload["aggregates"]["sessions_source_error"] is True
+    assert payload["aggregates"]["sources_partially_degraded"] is True
+    # Partial sum reflects only the known butler's sessions -- never a bare "0".
+    assert payload["aggregates"]["total_sessions_24h"] == rows_by_name["finance"]["hourly_total"]
 
 
 async def test_board_preserves_stable_roster_order_regardless_of_activity():

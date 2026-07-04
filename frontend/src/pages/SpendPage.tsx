@@ -41,6 +41,7 @@ import { differenceInCalendarDays, subDays } from "date-fns"
 
 import { Page } from "@/components/ui/page"
 import { Button } from "@/components/ui/button"
+import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Eyebrow } from "@/components/ui/Eyebrow"
 import { toast } from "sonner"
@@ -476,14 +477,21 @@ interface Mover {
 function computeMovers(
   current: Record<string, number>,
   prior: Record<string, number>,
+  unavailable: ReadonlySet<string>,
   limit = 6,
 ): Mover[] {
   const names = new Set([...Object.keys(current), ...Object.keys(prior)])
-  const movers: Mover[] = Array.from(names).map((name) => {
-    const c = current[name] ?? 0
-    const p = prior[name] ?? 0
-    return { name, current: c, prior: p, delta: c - p }
-  })
+  const movers: Mover[] = Array.from(names)
+    // A butler whose cost data was unavailable on either side of the
+    // comparison has an unreliable delta -- current-vs-0 or 0-vs-prior would
+    // fabricate a "+$X · new" or "· stopped" callout that isn't real
+    // (bu-qvnce.1 -- honest aggregation).
+    .filter((name) => !unavailable.has(name))
+    .map((name) => {
+      const c = current[name] ?? 0
+      const p = prior[name] ?? 0
+      return { name, current: c, prior: p, delta: c - p }
+    })
   movers.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
   return movers.filter((m) => Math.abs(m.delta) >= 0.000001).slice(0, limit)
 }
@@ -520,13 +528,20 @@ function MoversStrip({
   prior,
   windowDays,
   isLoading,
+  isError,
+  unavailableButlers,
 }: {
   current: Record<string, number>
   prior: Record<string, number>
   windowDays: number
   isLoading: boolean
+  isError: boolean
+  unavailableButlers: ReadonlySet<string>
 }) {
-  const movers = useMemo(() => computeMovers(current, prior), [current, prior])
+  const movers = useMemo(
+    () => computeMovers(current, prior, unavailableButlers),
+    [current, prior, unavailableButlers],
+  )
 
   return (
     <section className="border border-border" data-testid="movers-strip">
@@ -536,13 +551,15 @@ function MoversStrip({
           Ranked butler spend deltas vs the prior {windowDays}-day window.
         </p>
       </div>
-      <div className="p-4">
+      <div className="p-4 flex flex-col gap-3">
         {isLoading ? (
           <div className="flex gap-2">
             {[1, 2, 3].map((i) => (
               <Skeleton key={i} className="h-12 w-32" />
             ))}
           </div>
+        ) : isError ? (
+          <SourceDegradedNote label="Movers" detail="spend comparison unavailable" />
         ) : movers.length === 0 ? (
           <p className="font-serif italic text-muted-foreground text-sm">
             No spend change vs the prior window.
@@ -553,6 +570,12 @@ function MoversStrip({
               <MoverChip key={m.name} mover={m} />
             ))}
           </div>
+        )}
+        {!isLoading && !isError && unavailableButlers.size > 0 && (
+          <SourceDegradedNote
+            label="Movers"
+            detail={`excluded from comparison, cost source unavailable: ${Array.from(unavailableButlers).join(", ")}`}
+          />
         )}
       </div>
     </section>
@@ -1313,16 +1336,16 @@ export default function SpendPage() {
   const prevTo = useMemo(() => subDays(timeWindow.from, 1), [timeWindow.from])
   const prevFrom = useMemo(() => subDays(prevTo, windowDays - 1), [prevTo, windowDays])
 
-  const { data: currentSummary, isLoading: currentSummaryLoading } = useSpendSummary(
-    undefined,
-    timeWindow.from,
-    timeWindow.to,
-  )
-  const { data: priorSummary, isLoading: priorSummaryLoading } = useSpendSummary(
-    undefined,
-    prevFrom,
-    prevTo,
-  )
+  const {
+    data: currentSummary,
+    isLoading: currentSummaryLoading,
+    isError: currentSummaryError,
+  } = useSpendSummary(undefined, timeWindow.from, timeWindow.to)
+  const {
+    data: priorSummary,
+    isLoading: priorSummaryLoading,
+    isError: priorSummaryError,
+  } = useSpendSummary(undefined, prevFrom, prevTo)
 
   return (
     <Page archetype="overview" title="Spend">
@@ -1392,6 +1415,13 @@ export default function SpendPage() {
           prior={priorSummary?.data?.by_butler ?? {}}
           windowDays={windowDays}
           isLoading={currentSummaryLoading || priorSummaryLoading}
+          isError={currentSummaryError || priorSummaryError}
+          unavailableButlers={
+            new Set([
+              ...(currentSummary?.data?.unavailable_butlers ?? []),
+              ...(priorSummary?.data?.unavailable_butlers ?? []),
+            ])
+          }
         />
 
         {/* What changed: time window + honest per-butler-per-day stacked chart */}

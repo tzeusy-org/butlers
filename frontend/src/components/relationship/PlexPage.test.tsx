@@ -394,6 +394,26 @@ describe("PlexPage — attention derivation", () => {
     expect(rail?.querySelectorAll("li").length).toBe(0);
     expect(rail?.textContent).toContain("No one is owed a call.");
   });
+
+  it("shows a degraded note instead of a false all-clear when the ranking source errors (bu-qvnce.1)", () => {
+    vi.mocked(useDunbarRanking).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("ranking fetch failed"),
+    } as ReturnType<typeof useDunbarRanking>);
+
+    renderPage("/entities");
+
+    const rail = container.querySelector("[data-testid='plex-rail']");
+    expect(rail?.textContent).not.toContain("No one is owed a call.");
+    expect(rail?.textContent).toContain("ranking source unavailable");
+
+    const aside = container.querySelector("[aria-label='Capacity']");
+    expect(aside?.textContent).toContain("ranking source unavailable");
+    // No fabricated 0/N capacity bars while the ranking source is down.
+    expect(aside?.textContent).not.toContain("Layer sizes are cognitive limits");
+  });
 });
 
 // ---------------------------------------------------------------------------

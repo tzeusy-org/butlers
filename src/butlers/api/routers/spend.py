@@ -45,6 +45,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from butlers.api.db import DatabaseManager
+from butlers.api.degraded import DegradedSources
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
@@ -385,10 +386,17 @@ async def _get_butler_session_stats(
     info: ButlerConnectionInfo,
     pricing: PricingConfig,
     period: str,
+    *,
+    tracker: DegradedSources | None = None,
 ) -> tuple[str, float, int, int, int, dict[str, float]]:
     """Query a butler for session cost stats via the ``sessions_summary`` MCP tool.
 
     Returns (name, cost, sessions, input_tokens, output_tokens, by_model).
+
+    On any of the failure branches below the returned tuple is a fabricated
+    all-zero placeholder -- when *tracker* is provided, the butler is marked
+    on it so callers can surface ``unavailable_butlers`` and treat the totals
+    as a partial sum, never a confident fleet-wide total.
     """
     try:
         client = await asyncio.wait_for(mgr.get_client(info.name), timeout=_STATUS_TIMEOUT_S)
@@ -412,6 +420,8 @@ async def _get_butler_session_stats(
             info.name,
             _SESSIONS_SUMMARY_TOOL,
         )
+        if tracker is not None:
+            tracker.mark(info.name, msg="Cost summary unavailable")
     except json.JSONDecodeError as exc:
         logger.warning(
             "Invalid JSON from butler %s via %s: %s",
@@ -419,6 +429,8 @@ async def _get_butler_session_stats(
             _SESSIONS_SUMMARY_TOOL,
             exc,
         )
+        if tracker is not None:
+            tracker.mark(info.name, msg="Cost summary returned invalid JSON")
     except Exception as exc:
         logger.warning(
             "Cost summary tool call failed for butler %s via %s (%s: %s)",
@@ -427,6 +439,8 @@ async def _get_butler_session_stats(
             type(exc).__name__,
             exc,
         )
+        if tracker is not None:
+            tracker.mark(info.name, msg="Cost summary tool call failed")
     return (info.name, 0.0, 0, 0, 0, {})
 
 
@@ -436,11 +450,16 @@ async def _get_butler_session_stats_for_range(
     pricing: PricingConfig,
     from_date: date,
     to_date: date,
+    *,
+    tracker: DegradedSources | None = None,
 ) -> tuple[str, float, int, int, int, dict[str, float]]:
     """Query a butler for session cost stats over a custom date range.
 
     Uses ``sessions_daily`` and aggregates totals across [from_date, to_date].
     Returns (name, cost, sessions, input_tokens, output_tokens, by_model).
+
+    See ``_get_butler_session_stats`` for the *tracker*/``unavailable_butlers``
+    contract on failure.
     """
     try:
         client = await asyncio.wait_for(mgr.get_client(info.name), timeout=_STATUS_TIMEOUT_S)
@@ -486,12 +505,16 @@ async def _get_butler_session_stats_for_range(
             "Cost summary for date range unavailable for butler %s via sessions_daily",
             info.name,
         )
+        if tracker is not None:
+            tracker.mark(info.name, msg="Cost summary (date range) unavailable")
     except json.JSONDecodeError as exc:
         logger.warning(
             "Invalid JSON from butler %s via sessions_daily: %s",
             info.name,
             exc,
         )
+        if tracker is not None:
+            tracker.mark(info.name, msg="Cost summary (date range) returned invalid JSON")
     except Exception as exc:
         logger.warning(
             "Cost summary (date range) tool call failed for butler %s via sessions_daily (%s: %s)",
@@ -499,6 +522,8 @@ async def _get_butler_session_stats_for_range(
             type(exc).__name__,
             exc,
         )
+        if tracker is not None:
+            tracker.mark(info.name, msg="Cost summary (date range) tool call failed")
     return (info.name, 0.0, 0, 0, 0, {})
 
 
@@ -539,11 +564,14 @@ async def get_cost_summary(
         )
     if butler is not None:
         configs = [c for c in configs if c.name == butler]
+    tracker = DegradedSources(logger)
     if from_date is not None and to_date is not None:
         tasks = [
             _get_butler_session_stats_for_range_from_db(db, info, pricing, from_date, to_date)
             if db is not None
-            else _get_butler_session_stats_for_range(mgr, info, pricing, from_date, to_date)
+            else _get_butler_session_stats_for_range(
+                mgr, info, pricing, from_date, to_date, tracker=tracker
+            )
             for info in configs
         ]
         period_label = f"{from_date.isoformat()}/{to_date.isoformat()}"
@@ -551,7 +579,7 @@ async def get_cost_summary(
         tasks = [
             _get_butler_session_stats_from_db(db, info, pricing, period)
             if db is not None
-            else _get_butler_session_stats(mgr, info, pricing, period)
+            else _get_butler_session_stats(mgr, info, pricing, period, tracker=tracker)
             for info in configs
         ]
         period_label = period
@@ -559,13 +587,15 @@ async def get_cost_summary(
     if db is not None:
         if from_date is not None and to_date is not None:
             fallback_tasks = [
-                _get_butler_session_stats_for_range(mgr, info, pricing, from_date, to_date)
+                _get_butler_session_stats_for_range(
+                    mgr, info, pricing, from_date, to_date, tracker=tracker
+                )
                 for info, result in zip(configs, raw_results, strict=False)
                 if result is None
             ]
         else:
             fallback_tasks = [
-                _get_butler_session_stats(mgr, info, pricing, period)
+                _get_butler_session_stats(mgr, info, pricing, period, tracker=tracker)
                 for info, result in zip(configs, raw_results, strict=False)
                 if result is None
             ]
@@ -600,6 +630,7 @@ async def get_cost_summary(
         total_output_tokens=total_output,
         by_butler=by_butler,
         by_model=by_model,
+        unavailable_butlers=sorted(tracker.names),
     )
     return ApiResponse[SpendSummary](data=summary)
 
@@ -877,12 +908,18 @@ async def _get_butler_schedule_costs(
     pricing: PricingConfig,
     from_date: date | None = None,
     to_date: date | None = None,
+    *,
+    tracker: DegradedSources | None = None,
 ) -> list[ScheduleCost]:
     """Query a butler for per-schedule cost data.
 
     When ``from_date``/``to_date`` are provided, runs are scoped to that
     inclusive date range; otherwise all-time totals are returned (pre-existing
     behavior).
+
+    On failure this returns ``[]``, indistinguishable from "genuinely has no
+    schedules" -- when *tracker* is provided the butler is marked on it so
+    callers can surface ``unavailable_butlers``.
     """
     args: dict[str, object] = {}
     if from_date is not None and to_date is not None:
@@ -928,7 +965,8 @@ async def _get_butler_schedule_costs(
                     )
                 return costs
     except (ButlerUnreachableError, TimeoutError, Exception):
-        pass
+        if tracker is not None:
+            tracker.mark(info.name, msg="Schedule cost query failed")
     return []
 
 
@@ -994,16 +1032,17 @@ async def get_spend_breakdown(
     feature taxonomy is deferred to a future revision.
     """
     # Reuse the existing MTD summary across all butlers
+    tracker = DegradedSources(logger)
     tasks = [
         _get_butler_session_stats_from_db(db, info, pricing, "30d")
         if db is not None
-        else _get_butler_session_stats(mgr, info, pricing, "30d")
+        else _get_butler_session_stats(mgr, info, pricing, "30d", tracker=tracker)
         for info in configs
     ]
     raw_results = await asyncio.gather(*tasks)
     if db is not None:
         fallback_tasks = [
-            _get_butler_session_stats(mgr, info, pricing, "30d")
+            _get_butler_session_stats(mgr, info, pricing, "30d", tracker=tracker)
             for info, result in zip(configs, raw_results, strict=False)
             if result is None
         ]
@@ -1018,21 +1057,42 @@ async def get_spend_breakdown(
         for name, cost, _, _, _, _ in results:
             if cost > 0:
                 breakdown[name] = round(cost, 6)
-        return ApiResponse[dict](data={"by": "butler", "breakdown": breakdown})
+        return ApiResponse[dict](
+            data={
+                "by": "butler",
+                "breakdown": breakdown,
+                "unavailable_butlers": sorted(tracker.names),
+            }
+        )
 
     if by == "model":
         breakdown = {}
         for _, _, _, _, _, by_model in results:
             for model_id, model_cost in by_model.items():
                 breakdown[model_id] = round(breakdown.get(model_id, 0.0) + model_cost, 6)
-        return ApiResponse[dict](data={"by": "model", "breakdown": breakdown})
+        return ApiResponse[dict](
+            data={
+                "by": "model",
+                "breakdown": breakdown,
+                "unavailable_butlers": sorted(tracker.names),
+            }
+        )
 
     # by == "feature": proxy to schedule-level spend
-    schedule_tasks = [_get_butler_schedule_costs(mgr, info, pricing) for info in configs]
+    feature_tracker = DegradedSources(logger)
+    schedule_tasks = [
+        _get_butler_schedule_costs(mgr, info, pricing, tracker=feature_tracker) for info in configs
+    ]
     schedule_results = await asyncio.gather(*schedule_tasks)
     all_costs = [c for butler_costs in schedule_results for c in butler_costs]
     breakdown = {c.schedule_name: round(c.total_cost_usd, 6) for c in all_costs}
-    return ApiResponse[dict](data={"by": "feature", "breakdown": breakdown})
+    return ApiResponse[dict](
+        data={
+            "by": "feature",
+            "breakdown": breakdown,
+            "unavailable_butlers": sorted(feature_tracker.names),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

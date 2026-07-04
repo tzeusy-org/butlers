@@ -1976,9 +1976,11 @@ async def get_breaks_catalogue(
     try:
         pool = db.credential_shared_pool()
     except KeyError:
-        # Shared pool unavailable — return an empty catalogue rather than 503.
+        # Shared pool unavailable — return an empty catalogue rather than 503,
+        # but flag it: an unreachable pool must never look like a truthful
+        # "no catalogue rows for this provider" result.
         logger.debug("breaks-catalogue: shared pool unavailable, returning empty response")
-        return ApiResponse[list[BreakEntry]](data=[], meta=ApiMeta())
+        return ApiResponse[list[BreakEntry]](data=[], meta=ApiMeta(catalogue_available=False))
 
     # Build the SQL query.  When provider is supplied, add a WHERE clause.
     if provider is not None:
