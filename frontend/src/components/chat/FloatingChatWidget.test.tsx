@@ -20,9 +20,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 
 import { FloatingChatWidget } from "./FloatingChatWidget";
 import { CommandRegistryProvider, useCommandMenuActions } from "@/lib/command-registry";
+import { PageContextProvider } from "@/lib/page-context.tsx";
+import { __resetChatUnreadWatermarkForTests } from "@/hooks/use-chat-unread.ts";
 import type { ConversationSummary, Message } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -175,15 +178,28 @@ function mockHooksEmpty() {
   } as unknown as ReturnType<typeof useConversationSearch>);
 }
 
-function renderWidget() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <CommandRegistryProvider>
-        <FloatingChatWidget />
-      </CommandRegistryProvider>
-    </QueryClientProvider>,
+function buildWidgetTree(queryClient: QueryClient, initialPath: string) {
+  return (
+    <MemoryRouter initialEntries={[initialPath]}>
+      <QueryClientProvider client={queryClient}>
+        <CommandRegistryProvider>
+          <PageContextProvider>
+            <FloatingChatWidget />
+          </PageContextProvider>
+        </CommandRegistryProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
   );
+}
+
+function renderWidget(initialPath = "/") {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const utils = render(buildWidgetTree(queryClient, initialPath));
+  return {
+    ...utils,
+    /** Force a re-render (e.g. after changing a mocked hook's return value). */
+    rerenderWidget: (path: string = initialPath) => utils.rerender(buildWidgetTree(queryClient, path)),
+  };
 }
 
 beforeEach(() => {
@@ -193,6 +209,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   scriptedEvents = [];
   mockHooksWithConversations();
+  // useChatUnreadBadge's watermark is a real (unmocked) module-scope store —
+  // reset it + localStorage so badge state never leaks across tests.
+  window.localStorage.clear();
+  __resetChatUnreadWatermarkForTests();
 });
 
 afterEach(() => cleanup());
@@ -305,17 +325,96 @@ describe("FloatingChatWidget — cmdk command registration", () => {
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <QueryClientProvider client={queryClient}>
-        <CommandRegistryProvider>
-          <FloatingChatWidget />
-          <CommandProbe />
-        </CommandRegistryProvider>
-      </QueryClientProvider>,
+      <MemoryRouter initialEntries={["/"]}>
+        <QueryClientProvider client={queryClient}>
+          <CommandRegistryProvider>
+            <PageContextProvider>
+              <FloatingChatWidget />
+              <CommandProbe />
+            </PageContextProvider>
+          </CommandRegistryProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
 
     expect(screen.queryByTestId("floating-chat-panel")).toBeNull();
     fireEvent.click(screen.getByTestId("probe-run-command"));
     expect(screen.getByTestId("floating-chat-panel")).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Page-context capture (bu-p6ey8.4)
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — page-context capture", () => {
+  it("attaches route + query params captured at send time", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockResolvedValue({ ok: true } as Response);
+    scriptedEvents = [{ event: "done", data: {} }];
+
+    renderWidget("/entities/concentration?predicate=child-of");
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "Alice is child-of Bob" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"));
+    });
+
+    expect(createConversationMock.mock.calls[0][1]).toEqual({
+      message: "Alice is child-of Bob",
+      page_context: {
+        route: "/entities/concentration",
+        query_params: { predicate: "child-of" },
+      },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unread-reply badge (bu-p6ey8.4)
+// ---------------------------------------------------------------------------
+
+describe("FloatingChatWidget — unread badge", () => {
+  function conversationsWithOutputTokens(outputTokens: number): ConversationSummary[] {
+    return [{ ...CONVERSATIONS[0], total_output_tokens: outputTokens }, CONVERSATIONS[1]];
+  }
+
+  function mockConversationTotals(outputTokens: number) {
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: conversationsWithOutputTokens(outputTokens), meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversations>);
+  }
+
+  it("badges the trigger when a reply lands while the panel is closed, and opening clears it", () => {
+    mockConversationTotals(20);
+    const { rerenderWidget } = renderWidget();
+
+    // First observation of this conversation just establishes the baseline —
+    // no badge yet.
+    expect(screen.queryByTestId("chat-widget-unread-badge")).toBeNull();
+
+    // Simulate the ~60s poll surfacing a reply while the panel stayed closed.
+    mockConversationTotals(55);
+    rerenderWidget();
+    expect(screen.getByTestId("chat-widget-unread-badge")).toBeDefined();
+
+    // Opening the panel clears the badge.
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    expect(screen.queryByTestId("chat-widget-unread-badge")).toBeNull();
+  });
+
+  it("does not badge when nothing changed since the last observation", () => {
+    mockConversationTotals(20);
+    const { rerenderWidget } = renderWidget();
+    expect(screen.queryByTestId("chat-widget-unread-badge")).toBeNull();
+
+    // Re-poll with the exact same totals (no reply arrived).
+    mockConversationTotals(20);
+    rerenderWidget();
+    expect(screen.queryByTestId("chat-widget-unread-badge")).toBeNull();
   });
 });
 
@@ -358,7 +457,12 @@ describe("FloatingChatWidget — send-error classification", () => {
       fireEvent.click(screen.getByText("Retry"));
     });
     expect(createConversationMock).toHaveBeenCalledTimes(1);
-    expect(createConversationMock.mock.calls[0][1]).toEqual({ message: "hello switchboard" });
+    // page_context is now attached (bu-p6ey8.4) — default capture (route
+    // only, "/" has no query params) since this test renders at "/".
+    expect(createConversationMock.mock.calls[0][1]).toEqual({
+      message: "hello switchboard",
+      page_context: { route: "/" },
+    });
   });
 
   it("shows an inspect-session banner with a session link on SESSION_TIMEOUT", async () => {

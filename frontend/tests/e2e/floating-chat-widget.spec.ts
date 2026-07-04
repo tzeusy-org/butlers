@@ -140,3 +140,79 @@ test("floating chat widget: open, send, see persisted reply", async ({ page }) =
   // of the happy path.
   await expect(page.getByText(ASSISTANT_REPLY)).toBeVisible({ timeout: 10_000 });
 });
+
+// ---------------------------------------------------------------------------
+// Unread-reply badge [bu-p6ey8.4]
+// ---------------------------------------------------------------------------
+
+test("floating chat widget: badges the trigger for a reply that arrived while closed, and opening clears it", async ({
+  page,
+}) => {
+  const EXISTING_CONVERSATION_ID = "44444444-4444-4444-4444-444444444444";
+
+  // Pre-seed the unread-badge watermark (localStorage) BELOW the fixture's
+  // total_output_tokens for this conversation, before the app boots — this
+  // stands in for "a reply landed since this was last seen" without needing
+  // to wait out the real ~60s poll interval in the test.
+  await page.addInitScript(
+    ({ storageKey, conversationId, seenOutputTokens }) => {
+      window.localStorage.setItem(
+        storageKey,
+        JSON.stringify({ [conversationId]: seenOutputTokens }),
+      );
+    },
+    {
+      storageKey: "butlers:chat-widget-last-seen-v1",
+      conversationId: EXISTING_CONVERSATION_ID,
+      seenOutputTokens: 5,
+    },
+  );
+
+  await page.route(/\/api\/butlers\/switchboard\/conversations(\?.*)?$/, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: [
+            {
+              id: EXISTING_CONVERSATION_ID,
+              butler_name: "switchboard",
+              title: "Existing thread",
+              status: "active",
+              created_at: NOW_ISO,
+              updated_at: NOW_ISO,
+              message_count: 2,
+              total_input_tokens: 10,
+              total_output_tokens: 40, // > the seeded watermark (5) -> badges
+              total_duration_ms: 500,
+              routed_butler: "relationship",
+            },
+          ],
+          meta: { total: 1, limit: 20, offset: 0 },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.route(
+    /\/api\/butlers\/switchboard\/conversations\/[^/]+\/messages(\?.*)?$/,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [], meta: { total: 0, limit: 50, offset: 0 } }),
+      });
+    },
+  );
+
+  await page.goto("/", { timeout: 10_000 });
+
+  await expect(page.getByTestId("chat-widget-unread-badge")).toBeVisible();
+
+  await page.getByTestId("floating-chat-trigger").click();
+  await expect(page.getByTestId("floating-chat-panel")).toBeVisible();
+  await expect(page.getByTestId("chat-widget-unread-badge")).toHaveCount(0);
+});

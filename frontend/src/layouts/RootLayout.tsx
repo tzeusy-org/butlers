@@ -7,6 +7,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary'
 import { Toaster } from '../components/ui/sonner'
 import { BreadcrumbsControlProvider } from '../components/ui/breadcrumbs-control'
 import { CommandRegistryProvider } from '../lib/command-registry'
+import { PageContextProvider } from '../lib/page-context'
 import { useKeyboardShortcuts } from '../hooks/use-keyboard-shortcuts'
 import { ShortcutHints } from '../components/ui/shortcut-hints'
 import { useEventStream } from '../hooks/use-event-stream'
@@ -26,25 +27,31 @@ export default function RootLayout() {
   return (
     <BreadcrumbsControlProvider>
       <CommandRegistryProvider>
-        <Shell header={<PageHeader liveStatus={eventStreamStatus} />}>
-          <ErrorBoundary>
-            <Outlet />
-          </ErrorBoundary>
-        </Shell>
-        {/* EntityFinder: the one command menu (bu-86c4c.7) — opened
-            identically by Cmd+K, '/', and the header button. Absorbs the
-            legacy CommandPalette's page/butler/session/state search. */}
-        <EntityFinder />
-        {/* Registers the always-available "Trigger <butler>" Actions. */}
-        <GlobalActionsRegistrar />
-        <ShortcutHints />
-        <Toaster />
-        {/* Floating chat widget (bu-p6ey8.3) — bottom-right button on every
-            route, opening a compact popover chat panel routed through the
-            Switchboard butler. Also registers the "Talk to Butlers" cmdk
-            command. Mounted here (not inside Shell.tsx) since Shell has no
-            floating layer. */}
-        <FloatingChatWidget />
+        {/* PageContextProvider (bu-p6ey8.4): wraps both the routed page
+            content (which may enrich via usePageContext().set(...)) and the
+            floating chat widget (which snapshots route/query/entity_ref at
+            send time via usePageContextCapture()). */}
+        <PageContextProvider>
+          <Shell header={<PageHeader liveStatus={eventStreamStatus} />}>
+            <ErrorBoundary>
+              <Outlet />
+            </ErrorBoundary>
+          </Shell>
+          {/* EntityFinder: the one command menu (bu-86c4c.7) — opened
+              identically by Cmd+K, '/', and the header button. Absorbs the
+              legacy CommandPalette's page/butler/session/state search. */}
+          <EntityFinder />
+          {/* Registers the always-available "Trigger <butler>" Actions. */}
+          <GlobalActionsRegistrar />
+          <ShortcutHints />
+          <Toaster />
+          {/* Floating chat widget (bu-p6ey8.3) — bottom-right button on every
+              route, opening a compact popover chat panel routed through the
+              Switchboard butler. Also registers the "Talk to Butlers" cmdk
+              command. Mounted here (not inside Shell.tsx) since Shell has no
+              floating layer. */}
+          <FloatingChatWidget />
+        </PageContextProvider>
       </CommandRegistryProvider>
     </BreadcrumbsControlProvider>
   )

@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -50,6 +51,7 @@ import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
+import { usePageContext } from "@/lib/page-context.tsx";
 import { Row } from "@/components/ui/Row";
 import { Voice } from "@/components/ui/Voice";
 import { ProvenanceMarks, StalenessBand } from "@/components/ui/Provenance";
@@ -2598,6 +2600,21 @@ export default function EntityDetailPage() {
     facts_limit: factsLimit,
   });
   const entity = data?.data;
+
+  // Page-context enrichment (bu-p6ey8.4 reference implementation): the chat
+  // widget's default capture only sees route + query params, so it can't
+  // tell WHICH entity the owner is looking at when they state a correction.
+  // This attaches the entity currently in view as `entity_ref` (falling
+  // back to the raw id while the name is still loading) so a message sent
+  // from this page arrives grounded. Cleared automatically on unmount by
+  // usePageContext(), so navigating away never leaves a stale entity_ref
+  // attached to messages sent from a later, unrelated page.
+  const setPageContext = usePageContext().set;
+  useEffect(() => {
+    if (!entityId) return;
+    setPageContext({ entity_ref: entity?.canonical_name ?? entityId });
+  }, [entityId, entity?.canonical_name, setPageContext]);
+
   const updateEntity = useUpdateEntity();
   const promoteEntity = usePromoteEntity();
   const forgetEntity = useForgetRelationshipEntity();

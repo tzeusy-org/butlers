@@ -31,6 +31,12 @@ export const conversationKeys = {
 // Queries
 // ---------------------------------------------------------------------------
 
+/** Extra query options a caller can opt into on top of the defaults below. */
+export interface UseConversationsOptions {
+  /** Enables polling (e.g. the unread-badge watcher) at this interval (ms). */
+  refetchInterval?: number;
+}
+
 /**
  * Fetch a paginated list of conversations for a butler.
  * staleTime = 10 seconds (conversations update frequently during active chat).
@@ -38,12 +44,14 @@ export const conversationKeys = {
 export function useConversations(
   butlerName: string,
   params?: ConversationListParams,
+  options?: UseConversationsOptions,
 ) {
   return useQuery({
     queryKey: conversationKeys.list(butlerName, params),
     queryFn: () => listConversations(butlerName, params),
     enabled: !!butlerName,
     staleTime: 10_000,
+    ...(options?.refetchInterval ? { refetchInterval: options.refetchInterval } : {}),
   });
 }
 

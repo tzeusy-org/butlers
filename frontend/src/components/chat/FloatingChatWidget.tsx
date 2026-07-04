@@ -28,10 +28,13 @@
  * resumes the most recent open conversation" falls out of that refetch,
  * no extra persistence needed.
  *
- * Out of scope (sibling bu-p6ey8.4): page-context capture and the unread
- * badge. `buildMessagePayload()` below is the single choke point both
- * `createConversation`/`sendMessage` calls go through — the seam that bead
- * extends with `page_context` without touching call sites.
+ * Page-context capture and the unread badge (bu-p6ey8.4) hang off two seams
+ * left by bu-p6ey8.3: `buildMessagePayload()` is the single choke point both
+ * `createConversation`/`sendMessage` calls go through, now taking a
+ * `PageContext` snapshot (`usePageContextCapture()`, see
+ * `@/lib/page-context.tsx`) captured fresh at send time; the trigger button
+ * renders a badge driven by `useChatUnreadBadge()` (see
+ * `@/hooks/use-chat-unread.ts`).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -54,6 +57,7 @@ import type {
   ConversationSummary,
   CreateConversationRequest,
   Message,
+  PageContext,
   PricingMap,
 } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
@@ -67,6 +71,8 @@ import {
   useConversations,
   useConversationMessages,
 } from "@/hooks/use-conversations.ts";
+import { useChatUnreadBadge } from "@/hooks/use-chat-unread.ts";
+import { usePageContextCapture } from "@/lib/page-context.tsx";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry.tsx";
 
 // ---------------------------------------------------------------------------
@@ -84,13 +90,13 @@ const WIDGET_BUTLER = "switchboard";
 
 /**
  * Builds the outgoing message body for both `createConversation` and
- * `sendMessage`. This is the single choke point the widget uses to submit a
- * message — bu-p6ey8.4's PageContextProvider attaches `page_context` here
- * (see `CreateConversationRequest`/`SendMessageRequest.page_context` in
- * api/types.ts) without any call site needing to change.
+ * `sendMessage`. `pageContext` is a snapshot from `usePageContextCapture()`
+ * taken at the moment of send (see `sendText` below) — the single choke
+ * point the widget uses to submit a message, so no call site needed to
+ * change when page-context capture was added.
  */
-function buildMessagePayload(message: string): CreateConversationRequest {
-  return { message };
+function buildMessagePayload(message: string, pageContext: PageContext): CreateConversationRequest {
+  return { message, page_context: pageContext };
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +196,7 @@ interface WidgetPanelProps {
 
 function WidgetPanel({ onClose }: WidgetPanelProps) {
   const queryClient = useQueryClient();
+  const capturePageContext = usePageContextCapture();
 
   const [viewMode, setViewMode] = useState<"thread" | "history">("thread");
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -303,13 +310,22 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
         interrupted: false,
       });
 
+      // Snapshot page context NOW, not before — this is the exact moment of
+      // send, so a page navigation or usePageContext().set() call happening
+      // after this point never mutates the payload already built below.
+      const pageContext = capturePageContext();
+
       try {
         const response = isNew
-          ? await createConversation(WIDGET_BUTLER, buildMessagePayload(trimmed), controller.signal)
+          ? await createConversation(
+              WIDGET_BUTLER,
+              buildMessagePayload(trimmed, pageContext),
+              controller.signal,
+            )
           : await sendMessage(
               WIDGET_BUTLER,
               activeConversationId!,
-              buildMessagePayload(trimmed),
+              buildMessagePayload(trimmed, pageContext),
               controller.signal,
             );
 
@@ -385,7 +401,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
         }
       }
     },
-    [activeConversationId, queryClient],
+    [activeConversationId, queryClient, capturePageContext],
   );
 
   function handleSendClick() {
@@ -543,6 +559,11 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 export function FloatingChatWidget() {
   const [open, setOpen] = useState(false);
 
+  // Poll for replies that arrive while the panel is closed (bu-p6ey8.4 —
+  // "Unread badge"). Always mounted (unlike WidgetPanel, which unmounts on
+  // close) so polling continues regardless of open/closed state.
+  const hasUnread = useChatUnreadBadge(WIDGET_BUTLER, open);
+
   // "Talk to Butlers" cmdk command (bu-86c4c.7 command spine) — opens the
   // widget from anywhere, same pattern as GlobalActionsRegistrar.
   const commands = useMemo<PaletteCommand[]>(
@@ -572,11 +593,18 @@ export function FloatingChatWidget() {
           // entirely; the panel anchors to the same spot when open.
           className="fixed bottom-20 right-4 z-40 size-12 rounded-full p-0 shadow-lg"
           onClick={() => setOpen(true)}
-          aria-label="Talk to Butlers"
+          aria-label={hasUnread ? "Talk to Butlers (new reply)" : "Talk to Butlers"}
           title="Talk to Butlers"
           data-testid="floating-chat-trigger"
         >
           <MessageCircleIcon className="size-5" />
+          {hasUnread && (
+            <span
+              className="absolute right-1 top-1 size-2.5 rounded-full bg-destructive ring-2 ring-background"
+              data-testid="chat-widget-unread-badge"
+              aria-hidden="true"
+            />
+          )}
         </Button>
       )}
       {open && <WidgetPanel onClose={() => setOpen(false)} />}
