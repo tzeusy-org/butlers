@@ -216,8 +216,28 @@ describe("QA case dossier composition", () => {
     expect(screen.getByText("Diagnosing…")).toBeTruthy();
     expect(screen.queryByText("Evidence · log fragments")).toBeNull();
     expect(screen.queryByText("Considered & ruled out")).toBeNull();
-    expect(screen.getByText("No PR. Escalated to user.")).toBeTruthy();
+    // An in-flight (non-escalated) case has not been handed to the user --
+    // it just hasn't produced a PR yet (bu-qvnce.2).
+    expect(screen.getByText("No PR yet.")).toBeTruthy();
+    expect(screen.queryByText("No PR. Escalated to user.")).toBeNull();
     expect(screen.queryByText("Patrol journal · every QA decision on this case")).toBeNull();
+  });
+
+  it("test_dossier_renders_escalated_message_only_when_escalated", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        state_track_stage: "escalated",
+        investigation_notes: null,
+        pr: null,
+        journal: [],
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    render(<CaseDossier caseId="case-1" />);
+
+    expect(screen.getByText("No PR. Escalated to user.")).toBeTruthy();
   });
 
   it.each([

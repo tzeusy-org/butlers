@@ -1,4 +1,4 @@
-import type { QaPrSummary } from "@/api/types";
+import type { QaCaseDossier, QaPrSummary } from "@/api/types";
 import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
 
@@ -12,6 +12,13 @@ interface PRPanelProps {
    * so the panel accepts it as a separate optional dossier field.
    */
   diffSnapshot?: DiffPreviewLine[] | null;
+  /**
+   * Only the "escalated" stage means the case was actually handed to the
+   * user without a fix. Every other pr-less stage (detect/diagnose/pr/landed)
+   * just hasn't produced a PR yet -- rendering "Escalated to user" for those
+   * fabricates a decision that was never made.
+   */
+  stage: QaCaseDossier["state_track_stage"];
   className?: string;
 }
 
@@ -24,11 +31,11 @@ const prStateClassName: Record<QaPrSummary["state"], string> = {
   open: "border-[var(--amber)]/40 text-[var(--amber-text)]",
 };
 
-export function PRPanel({ pr, whyThisFix, diffSnapshot, className }: PRPanelProps) {
+export function PRPanel({ pr, whyThisFix, diffSnapshot, stage, className }: PRPanelProps) {
   if (!pr) {
     return (
       <p className={cn("font-serif text-sm italic text-muted-foreground", className)}>
-        No PR. Escalated to user.
+        {stage === "escalated" ? "No PR. Escalated to user." : "No PR yet."}
       </p>
     );
   }

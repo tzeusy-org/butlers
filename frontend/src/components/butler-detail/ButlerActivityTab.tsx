@@ -37,6 +37,13 @@ import {
   useButlerSessionKinds,
   useButlerLatencyStats,
 } from "@/hooks/use-butler-analytics"
+import { useSessionAggregate } from "@/hooks/use-sessions"
+
+// Module-level helper so Date.now() is not called directly during render
+// (required by the react-hooks/purity ESLint rule).
+function sinceIsoForWindow(windowDays: number): string {
+  return new Date(Date.now() - windowDays * 86_400_000).toISOString()
+}
 
 // ---------------------------------------------------------------------------
 // ErrorLine — inline error indicator
@@ -296,16 +303,22 @@ export default function ButlerActivityTab({ butlerName }: ButlerActivityTabProps
   const kindsQuery = useButlerSessionKinds(butlerName, windowDays)
   const latencyStats = useButlerLatencyStats(butlerName, windowDays)
 
+  // Errors are sessions with success=false, NOT a trigger_source value --
+  // "error" is not in TRIGGER_SOURCES (core/sessions.py), so the kind
+  // breakdown can never carry it. Query the same aggregate the cross-butler
+  // Sessions KPI strip uses, scoped to this butler and window (bu-qvnce.2).
+  const errorAggregate = useSessionAggregate({
+    butler: butlerName,
+    since: sinceIsoForWindow(windowDays),
+  })
+
   // Derive sessions count as the sum across all kinds
   const sessionsCount = kindsQuery.data?.data?.kinds.reduce((s, k) => s + k.count, 0) ?? null
 
-  // Derive error sessions count from trigger_source = "error" kind.
-  // When kinds data is loaded and there is no "error" entry, zero errors is
-  // the correct interpretation (not "unavailable"). null only when not loaded.
-  const errorsCount =
-    kindsQuery.data?.data != null
-      ? (kindsQuery.data.data.kinds.find((k) => k.kind === "error")?.count ?? 0)
-      : null
+  const errorsCount = errorAggregate.data?.data.failed_count ?? null
+
+  const isLoading = kindsQuery.isLoading || errorAggregate.isLoading
+  const isError = kindsQuery.isError || errorAggregate.isError
 
   return (
     <div
@@ -317,9 +330,9 @@ export default function ButlerActivityTab({ butlerName }: ButlerActivityTabProps
         sessionsCount={kindsQuery.isLoading ? null : sessionsCount}
         p50Ms={latencyStats.data?.p50_ms ?? null}
         p95Ms={latencyStats.data?.p95_ms ?? null}
-        errorsCount={kindsQuery.isLoading ? null : errorsCount}
-        isLoading={kindsQuery.isLoading}
-        isError={kindsQuery.isError}
+        errorsCount={errorAggregate.isLoading ? null : errorsCount}
+        isLoading={isLoading}
+        isError={isError}
       />
 
       {/* Row 2: Activity chart with RangeToggle */}

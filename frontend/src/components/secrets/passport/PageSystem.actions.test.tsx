@@ -456,6 +456,76 @@ function renderSharedPublic() {
   return renderInProvider(<PageSystem credential={SHARED_PUBLIC} />)
 }
 
+// ── State plaque honesty [bu-qvnce.2] ────────────────────────────────────────
+
+describe("PageSystem: state plaque reflects probe failure, not just row presence", () => {
+  it("renders a red 'failing' plaque when the credential's last probe failed", () => {
+    renderInProvider(<PageSystem credential={{ ...TELEGRAM, state: "failed" }} />)
+
+    const plaque = document.querySelector("[data-state-plaque]") as HTMLElement
+    expect(plaque).toBeTruthy()
+    expect(screen.getByText("failing")).toBeTruthy()
+    expect(plaque.style.color).toBe("var(--red)")
+  })
+
+  it("still renders a green 'shared default' plaque when the row is healthy", () => {
+    renderTelegram()
+
+    const plaque = document.querySelector("[data-state-plaque]") as HTMLElement
+    expect(screen.getByText("shared default")).toBeTruthy()
+    expect(plaque.style.color).toBe("var(--green)")
+  })
+})
+
+// ── Probe latency honesty [bu-qvnce.2] ───────────────────────────────────────
+
+describe("PageSystem: probe latency reflects the real server value", () => {
+  it("shows the real latency the server reports instead of a fabricated 0ms", async () => {
+    mockProbe.mockResolvedValue({
+      data: { ok: true, code: null, message: null, at: "just now", latency_ms: 143 },
+      meta: {},
+    } as never)
+    renderTelegram()
+
+    await act(async () => {
+      fireEvent.click(getBtn("test"))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("143ms")).toBeTruthy()
+    })
+    expect(screen.queryByText("0ms")).toBeNull()
+  })
+
+  it("renders no latency figure at all when the server omits it (never fabricates 0ms)", async () => {
+    mockProbe.mockResolvedValue({
+      data: { ok: true, code: null, message: null, at: "just now", latency_ms: null },
+      meta: {},
+    } as never)
+    renderTelegram()
+
+    await act(async () => {
+      fireEvent.click(getBtn("test"))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("at just now")).toBeTruthy()
+    })
+    expect(screen.queryByText(/^\d+ms$/)).toBeNull()
+  })
+})
+
+// ── Audit link honesty [bu-qvnce.2] ──────────────────────────────────────────
+
+describe("PageSystem: audit cross-reference link", () => {
+  it("prefixes the audit-log deep link with 's:' so it resolves instead of 422ing", () => {
+    renderTelegram()
+
+    const link = screen.getByRole("link", { name: /\/audit\?key=/ }) as HTMLAnchorElement
+    expect(link.getAttribute("href")).toBe(`/audit-log?key=s:${TELEGRAM.key}`)
+  })
+})
+
 describe("PageSystem: shared-public routing [bu-91noc]", () => {
   it("renders the generic editor (rotate button) for shared-public rows", () => {
     renderSharedPublic()

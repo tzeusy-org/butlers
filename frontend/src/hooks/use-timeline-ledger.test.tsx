@@ -157,6 +157,30 @@ describe("useTimelineLedger", () => {
     await waitFor(() => expect(result.current.events.map((e) => e.id)).toEqual(["e3", "e2"]));
   });
 
+  it("flags the live feed as down when the head poll fails after a successful first paint, without blanking the stale events", async () => {
+    const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
+
+    const { client, Wrapper } = makeWrapper();
+    const { result } = renderHook(() => useTimelineLedger({}), { wrapper: Wrapper });
+
+    await waitFor(() => expect(result.current.events).toHaveLength(1));
+    expect(result.current.isLiveFeedDown).toBe(false);
+
+    // The API starts failing after the first successful paint.
+    mockGetTimeline.mockRejectedValue(new Error("503"));
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["timeline"] });
+    });
+
+    await waitFor(() => expect(result.current.isLiveFeedDown).toBe(true));
+    // A dead API must not blank the page or look identical to a quiet fleet
+    // (bu-qvnce.2) -- the stale events stay visible and isError (the
+    // nothing-to-show state) stays false.
+    expect(result.current.events).toHaveLength(1);
+    expect(result.current.isError).toBe(false);
+  });
+
   it("resets pinned/committed state when filters change", async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
     const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], { has_more: false });

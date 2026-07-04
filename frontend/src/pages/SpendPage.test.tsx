@@ -31,8 +31,10 @@ vi.mock("@/api/client", () => ({
   apiFetch: (...args: Parameters<typeof import("@/api/client").apiFetch>) => apiFetchMock(...args),
 }))
 
+const mockUseSpendStream = vi.fn()
+
 vi.mock("@/hooks/use-spend-stream", () => ({
-  useSpendStream: () => ({ streamedCostUsd: 0 }),
+  useSpendStream: () => mockUseSpendStream(),
 }))
 
 vi.mock("@/hooks/use-model-catalog", () => ({
@@ -162,6 +164,8 @@ function setHooks({
   currentByButler?: Record<string, number>
   priorByButler?: Record<string, number>
 } = {}) {
+  mockUseSpendStream.mockReturnValue({ streamedCostUsd: 0 })
+
   // useSpendSummary is called twice per render: current window, prior window.
   let call = 0
   mockUseSpendSummary.mockImplementation(() => {
@@ -304,6 +308,108 @@ describe("SpendPage — posture", () => {
     await waitFor(() => {
       expect(screen.getByTestId("kpi-ceiling").textContent).toContain("$10.00")
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Live MTD stream merge [bu-qvnce.2] — the stream counter is monotonic and
+// never resets on its own, but every 120s poll refreshes the MTD baseline
+// with a number that already includes any spend that streamed in before the
+// poll landed. The merge must not add that same spend twice.
+// ---------------------------------------------------------------------------
+
+describe("SpendPage — live MTD stream merge", () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+    setHooks()
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it("adds live streamed spend on top of the polled MTD baseline", async () => {
+    apiFetchMock.mockImplementation((path: string) => defaultApiFetch(path))
+    mockUseSpendStream.mockReturnValue({ streamedCostUsd: 0 })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SpendPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-mtd").textContent).toContain("$2.20")
+    })
+
+    // $3 of live spend streams in before the next poll.
+    mockUseSpendStream.mockReturnValue({ streamedCostUsd: 3 })
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SpendPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-mtd").textContent).toContain("$5.20")
+    })
+  })
+
+  it("does not double-count streamed spend once the next poll baseline already reflects it", async () => {
+    let forecastCalls = 0
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/forecast") {
+        forecastCalls += 1
+        // The 2nd poll's baseline already includes the $3 that streamed
+        // between the 1st poll and now -- ground truth is $5.20, not $8.20.
+        const mtd = forecastCalls === 1 ? 2.2 : 5.2
+        return Promise.resolve({ data: { ...MOCK_FORECAST.data, mtd_usd: mtd }, meta: {} })
+      }
+      return defaultApiFetch(path)
+    })
+    mockUseSpendStream.mockReturnValue({ streamedCostUsd: 0 })
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { rerender } = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SpendPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-mtd").textContent).toContain("$2.20")
+    })
+
+    // $3 streams in live, ahead of the next poll.
+    mockUseSpendStream.mockReturnValue({ streamedCostUsd: 3 })
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SpendPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId("kpi-mtd").textContent).toContain("$5.20")
+    })
+
+    // The interval fires; the next poll lands with a baseline that already
+    // reflects that $3 (simulate it directly rather than fake-timing 120s,
+    // which deadlocks against RTL's own waitFor polling).
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["spend-forecast"] })
+    })
+    await waitFor(() => {
+      expect(forecastCalls).toBe(2)
+    })
+
+    expect(screen.getByTestId("kpi-mtd").textContent).toContain("$5.20")
+    expect(screen.getByTestId("kpi-mtd").textContent).not.toContain("$8.20")
   })
 })
 

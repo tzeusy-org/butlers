@@ -42,6 +42,7 @@ function setLedger(partial: Partial<UseTimelineLedgerResult>): void {
     showNewEvents: vi.fn(),
     degradedSources: [],
     heartbeatRollup: { ticks: 0, butlers: 0, failed: 0 },
+    isLiveFeedDown: false,
     ...partial,
   } as unknown as UseTimelineLedgerResult);
 }
@@ -123,5 +124,36 @@ describe("TimelinePage — error vs empty state", () => {
     const html = render();
     expect(html).toContain('data-testid="new-events-pill"');
     expect(html).toContain("3 new events");
+  });
+
+  // A dead API after the first successful paint must not look like a quiet
+  // fleet -- both used to render the same muted "Idle" dot (bu-qvnce.2).
+  it("renders the live-status badge as Down when the head poll is failing, even with stale events on screen", () => {
+    setLedger({
+      isLiveFeedDown: true,
+      isError: false,
+      events: [
+        {
+          id: "e1",
+          type: "session",
+          butler: "home",
+          timestamp: "2026-07-04T14:32:00Z",
+          summary: "event e1",
+          is_heartbeat: false,
+          data: {},
+        },
+      ],
+    });
+    const html = render();
+    expect(html).toContain('data-testid="live-status-badge-down"');
+    expect(html).not.toContain('data-testid="live-status-badge-idle"');
+    expect(html).not.toContain('data-testid="live-status-badge-live"');
+  });
+
+  it("renders the live-status badge as Idle (not Down) when the feed is merely quiet", () => {
+    setLedger({ isLiveFeedDown: false, events: [] });
+    const html = render();
+    expect(html).toContain('data-testid="live-status-badge-idle"');
+    expect(html).not.toContain('data-testid="live-status-badge-down"');
   });
 });

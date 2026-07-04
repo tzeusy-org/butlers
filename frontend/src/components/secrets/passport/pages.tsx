@@ -1136,7 +1136,7 @@ export function PageUser({
       return {
         ok: d.ok,
         code: d.code ?? null,
-        latencyMs: 0,
+        latencyMs: d.latency_ms ?? null,
         at: d.at ?? "just now",
         message: d.message ?? undefined,
       };
@@ -1645,8 +1645,17 @@ export function PageSystem({
   // to the correct pool. Only externally-managed or future reserved rows would
   // set read_only=true.
   const isSharedStore = !!credential.readOnly;
-  const stateColor = isMissing ? "var(--dim)" : "var(--green)";
-  const stateLabel = isMissing ? "not set" : isLocal ? "local override" : "shared default";
+  // A row can be present (shared/local) but still failing its last probe --
+  // don't paint it green just because it's set (bu-qvnce.2).
+  const isFailing = credential.state === "failed";
+  const stateColor = isMissing ? "var(--dim)" : isFailing ? "var(--red)" : "var(--green)";
+  const stateLabel = isMissing
+    ? "not set"
+    : isFailing
+      ? "failing"
+      : isLocal
+        ? "local override"
+        : "shared default";
   const stateLines: string[] = [];
   if (isLocal) stateLines.push(`target · ${credential.target}`);
   else if (!isMissing && credential.lastVerified) stateLines.push(`verified ${credential.lastVerified}`);
@@ -1759,7 +1768,7 @@ export function PageSystem({
       return {
         ok: d.ok,
         code: d.code ?? null,
-        latencyMs: 0,
+        latencyMs: d.latency_ms ?? null,
         at: d.at ?? "just now",
         message: d.message ?? undefined,
       };
@@ -1925,7 +1934,7 @@ export function PageSystem({
             eyebrow: "elsewhere",
             children: (
               <>
-                <ActionArrow href={`/audit-log?key=${credential.key}`}>
+                <ActionArrow href={`/audit-log?key=s:${credential.key}`}>
                   /audit?key={credential.key}
                 </ActionArrow>
                 {credential.usedBy.length > 0 && credential.usedBy[0] !== "*" && (

@@ -60,6 +60,7 @@ vi.mock("@/hooks/use-butlers", () => ({
 vi.mock("@/hooks/use-sessions", () => ({
   useButlerSessions: vi.fn(() => ({ data: null, isLoading: false })),
   useSessionDetail: vi.fn(() => ({ data: null, isLoading: false })),
+  useSessionAggregate: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-contacts", () => ({

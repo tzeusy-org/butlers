@@ -10,6 +10,10 @@ interface CaseListProps {
   className?: string;
   /** Header label reflecting the active time-range filter, e.g. "Cases · last 7d". */
   headerLabel?: string;
+  /** True when the backend has more matching cases than this page returned. */
+  hasMore?: boolean;
+  /** Total matching case count, used to caption the truncation. */
+  totalCount?: number;
 }
 
 // bu-86c4c.6: raw Tailwind shades -> Dispatch state tokens (background-fill
@@ -36,6 +40,8 @@ export function CaseList({
   onSelect,
   className,
   headerLabel = "Cases · last 7d",
+  hasMore = false,
+  totalCount,
 }: CaseListProps) {
   return (
     <aside className={cn("w-full md:w-[320px]", className)} aria-label="QA cases">
@@ -88,6 +94,15 @@ export function CaseList({
           );
         })}
       </div>
+      {hasMore ? (
+        <p
+          className="pt-2 font-mono text-[9.5px] uppercase tracking-[0.14em] text-muted-foreground"
+          data-testid="qa-case-list-truncation"
+        >
+          Showing {cases.length}
+          {totalCount !== undefined ? ` of ${totalCount}` : ""} — narrow filters to see more
+        </p>
+      ) : null}
     </aside>
   );
 }

@@ -1238,17 +1238,30 @@ export default function SpendPage() {
 
   // §5.3 — Connect to the spend stream and update KPIs incrementally.
   // streamedCostUsd is a monotonic cumulative counter of live "call" events
-  // received since mount.  Snapshot events are excluded so this value does NOT
-  // overlap with the server-fetched MTD baseline in the polled forecast.
+  // received since mount — it never resets on its own.
   const { streamedCostUsd } = useSpendStream()
 
-  // Compose a live forecast by adding the monotonic stream total directly on top
-  // of the polled MTD baseline.  No subtraction needed because streamedCostUsd
-  // only counts real-time events that arrived after the snapshot.
+  // Each polled forecast (every 120s) is a fresh MTD baseline that already
+  // reflects any spend that streamed in before that poll landed. Pin the
+  // streamedCostUsd value AS OF the most recent baseline so only spend that
+  // streamed in AFTER it gets added on top — otherwise the same live events
+  // get counted once by the stream and again by the next poll, compounding
+  // every refresh (bu-qvnce.2). Adjusted during render (React's sanctioned
+  // "derive state from a prop/query change" pattern) rather than a ref,
+  // since refs cannot be read or written during render (react-hooks/refs).
+  const [baselineForecast, setBaselineForecast] = useState(forecast)
+  const [baselineStreamedCostUsd, setBaselineStreamedCostUsd] = useState(streamedCostUsd)
+  if (forecast !== baselineForecast) {
+    setBaselineForecast(forecast)
+    setBaselineStreamedCostUsd(streamedCostUsd)
+  }
+
   const liveForecast = useMemo(() => {
     if (!forecast) return forecast
-    if (streamedCostUsd === 0) return forecast
-    const liveMtd = forecast.mtd_usd + streamedCostUsd
+    const sinceBaseline =
+      forecast === baselineForecast ? streamedCostUsd - baselineStreamedCostUsd : 0
+    if (sinceBaseline <= 0) return forecast
+    const liveMtd = forecast.mtd_usd + sinceBaseline
     const daysIn = forecast.days_in_month
     const daysElapsed = Math.max(forecast.days_elapsed, 1)
     const liveProjected = (liveMtd / daysElapsed) * daysIn
@@ -1257,7 +1270,7 @@ export default function SpendPage() {
       mtd_usd: liveMtd,
       projected_eom_usd: liveProjected,
     }
-  }, [forecast, streamedCostUsd])
+  }, [forecast, streamedCostUsd, baselineForecast, baselineStreamedCostUsd])
 
   // When new spend events arrive, invalidate the breakdown query on the next
   // natural polling cycle.  Throttled to at most once per 30 s to avoid

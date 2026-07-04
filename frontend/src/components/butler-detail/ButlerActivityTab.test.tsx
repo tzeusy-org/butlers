@@ -42,6 +42,10 @@ vi.mock("@/hooks/use-butler-analytics", () => ({
   useButlerLatencyStats: vi.fn(),
 }))
 
+vi.mock("@/hooks/use-sessions", () => ({
+  useSessionAggregate: vi.fn(),
+}))
+
 // Stub ActivityStripe and DayBars to avoid SVG/canvas complexity
 vi.mock("@/components/butlers/ActivityStripe", () => ({
   ActivityStripe: ({ counts }: { counts: number[] }) =>
@@ -59,6 +63,7 @@ import {
   useButlerSessionKinds,
   useButlerLatencyStats,
 } from "@/hooks/use-butler-analytics"
+import { useSessionAggregate } from "@/hooks/use-sessions"
 
 // ---------------------------------------------------------------------------
 // Fixed clock
@@ -101,14 +106,36 @@ const SESSION_KINDS_DATA = [
   { kind: "webhook", count: 5 },
 ]
 
-const SESSION_KINDS_WITH_ERRORS = [
-  { kind: "cron", count: 10 },
-  { kind: "error", count: 2 },
-]
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Errors are sessions with success=false (core/sessions.py), NEVER a
+ * trigger_source kind -- "error" is not in TRIGGER_SOURCES. The KPI sources
+ * this from GET /api/sessions/aggregate's failed_count (bu-qvnce.2).
+ */
+function mockErrorAggregate(failedCount: number | null, opts?: { isLoading?: boolean; isError?: boolean }) {
+  vi.mocked(useSessionAggregate).mockReturnValue({
+    data:
+      failedCount === null
+        ? undefined
+        : {
+            data: {
+              total: 0,
+              success_count: 0,
+              failed_count: failedCount,
+              running_count: 0,
+              success_rate: null,
+              input_tokens: 0,
+              output_tokens: 0,
+              by_butler: [],
+            },
+          },
+    isLoading: opts?.isLoading ?? false,
+    isError: opts?.isError ?? false,
+  } as unknown as ReturnType<typeof useSessionAggregate>)
+}
 
 function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -152,6 +179,8 @@ function setupWithData() {
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useButlerLatencyStats>)
+
+  mockErrorAggregate(0)
 }
 
 function setupLoading() {
@@ -178,6 +207,8 @@ function setupLoading() {
     isLoading: true,
     isError: false,
   } as unknown as ReturnType<typeof useButlerLatencyStats>)
+
+  mockErrorAggregate(null, { isLoading: true })
 }
 
 function setupEmpty() {
@@ -204,6 +235,8 @@ function setupEmpty() {
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useButlerLatencyStats>)
+
+  mockErrorAggregate(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +382,8 @@ describe("ButlerActivityTab — 7d range", () => {
       isLoading: false,
       isError: false,
     } as unknown as ReturnType<typeof useButlerLatencyStats>)
+
+    mockErrorAggregate(0)
   })
   afterEach(() => cleanup())
 
@@ -392,6 +427,8 @@ describe("ButlerActivityTab — 30d range", () => {
       isLoading: false,
       isError: false,
     } as unknown as ReturnType<typeof useButlerLatencyStats>)
+
+    mockErrorAggregate(0)
   })
   afterEach(() => cleanup())
 
@@ -438,6 +475,8 @@ describe("ButlerActivityTab — error state (session-kinds fails)", () => {
       isError: false,
     } as unknown as ReturnType<typeof useButlerLatencyStats>)
 
+    mockErrorAggregate(0)
+
     renderTab()
     const errorLines = screen.getAllByTestId("error-state-line")
     expect(errorLines.length).toBeGreaterThanOrEqual(1)
@@ -474,8 +513,24 @@ describe("ButlerActivityTab — error state (hourly-activity fails)", () => {
       isError: false,
     } as unknown as ReturnType<typeof useButlerLatencyStats>)
 
+    mockErrorAggregate(0)
+
     renderTab()
     // Should show the ErrorLine for activity panel
+    const errorLines = screen.getAllByTestId("error-state-line")
+    expect(errorLines.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe("ButlerActivityTab — error state (session-aggregate fails)", () => {
+  afterEach(() => cleanup())
+
+  it("shows ErrorLine in KPI panel when the errors aggregate fails", () => {
+    vi.resetAllMocks()
+    setupWithData()
+    mockErrorAggregate(null, { isError: true })
+
+    renderTab()
     const errorLines = screen.getAllByTestId("error-state-line")
     expect(errorLines.length).toBeGreaterThanOrEqual(1)
   })
@@ -520,18 +575,17 @@ describe("ButlerActivityTab — KPI values", () => {
     expect(screen.getByTestId("kpi-p95").textContent).toBe("5678")
   })
 
-  it("shows '0' for errors count when no error kind in session-kinds", () => {
+  it("shows '0' for errors count when the aggregate has no failed sessions", () => {
     renderTab()
-    // SESSION_KINDS_DATA has no 'error' kind — 0 is the correct value, not "—"
+    // mockErrorAggregate(0) via setupWithData — 0 is correct, not "—"
     expect(screen.getByTestId("kpi-errors").textContent).toBe("0")
   })
 
-  it("shows errors count when error kind is present in session-kinds", () => {
-    vi.mocked(useButlerSessionKinds).mockReturnValue({
-      data: { data: { kinds: SESSION_KINDS_WITH_ERRORS } },
-      isLoading: false,
-      isError: false,
-    } as unknown as ReturnType<typeof useButlerSessionKinds>)
+  // "error" is not a valid trigger_source (core/sessions.py TRIGGER_SOURCES),
+  // so the kind breakdown can never carry an error count -- the KPI must come
+  // from the session aggregate's failed_count instead (bu-qvnce.2).
+  it("shows the real errors count from the session aggregate, not the kind breakdown", () => {
+    mockErrorAggregate(2)
 
     renderTab()
     expect(screen.getByTestId("kpi-errors").textContent).toBe("2")

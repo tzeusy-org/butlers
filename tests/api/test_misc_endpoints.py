@@ -207,6 +207,43 @@ async def test_notifications_returns_paginated_structure():
     assert "data" in body and "meta" in body
 
 
+async def test_notifications_retried_filter_matches_computed_status_not_raw_column():
+    # "retried" is never a stored `status` value -- it's a failed notification
+    # superseded by a later sent one (see effective_status CASE). The filter
+    # used to build `status = $1` bound to the literal 'retried', which could
+    # never match any row. It must instead reuse the same EXISTS-based
+    # condition the SELECT uses to compute effective_status (bu-qvnce.2).
+    from tests.api.conftest import build_notifications_app
+
+    app, pool, _db = build_notifications_app(rows=[], total=0)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/notifications", params={"status": "retried"})
+    assert resp.status_code == 200
+
+    data_sql, *data_args = pool.fetch.call_args.args
+    assert "status = 'failed'" in data_sql
+    assert "EXISTS" in data_sql
+    assert "status = 'retried'" not in data_sql
+    assert "retried" not in data_args
+
+
+async def test_notifications_status_filter_still_binds_non_retried_values():
+    from tests.api.conftest import build_notifications_app
+
+    app, pool, _db = build_notifications_app(rows=[], total=0)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/notifications", params={"status": "sent"})
+    assert resp.status_code == 200
+
+    data_sql, *data_args = pool.fetch.call_args.args
+    assert "status = $1" in data_sql
+    assert "sent" in data_args
+
+
 # ---------------------------------------------------------------------------
 # Home butler API — 503 when pool unavailable
 # ---------------------------------------------------------------------------

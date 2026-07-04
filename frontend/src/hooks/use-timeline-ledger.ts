@@ -40,6 +40,13 @@ export interface UseTimelineLedgerResult {
   isLoading: boolean;
   /** A fetch failure with nothing usable to show — render the error state. */
   isError: boolean;
+  /**
+   * True whenever the live head poll is currently failing, even if stale
+   * cached events are still on screen. Without this, a dead API after the
+   * first successful paint looks identical to a genuinely quiet fleet —
+   * both just stop showing new events (bu-qvnce.2).
+   */
+  isLiveFeedDown: boolean;
   refetch: () => void;
   /** True when there is an older page beyond what's currently loaded. */
   hasMore: boolean;
@@ -130,6 +137,7 @@ export function useTimelineLedger(filters: TimelineLedgerFilters): UseTimelineLe
     events,
     isLoading: head.isLoading && events.length === 0,
     isError: !!head.isError && events.length === 0,
+    isLiveFeedDown: !!head.isError,
     refetch: () => void head.refetch(),
     hasMore,
     loadMore,

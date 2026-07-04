@@ -291,7 +291,10 @@ const PATROL_STRIP_LIMIT = 8;
 
 function statusDotClass(status: string): string {
   if (status === "error" || status === "failed") return "bg-destructive";
-  if (status === "dispatched") return "bg-[var(--amber)]";
+  // Backend patrol status is "findings_dispatched" (qa.py _VALID_PATROL_STATUSES),
+  // not "dispatched" -- the stale check never matched, so dispatched patrols
+  // rendered clean-green instead of amber (bu-qvnce.2).
+  if (status === "findings_dispatched") return "bg-[var(--amber)]";
   return "bg-[var(--green)]";
 }
 
@@ -470,6 +473,8 @@ export default function QaOverviewPage() {
               selectedId={effectiveCaseId ?? null}
               onSelect={handleCaseSelect}
               headerLabel={caseListSinceLabel(since)}
+              hasMore={cases.data?.meta?.has_more ?? false}
+              totalCount={cases.data?.meta?.total}
             />
           )}
         </div>

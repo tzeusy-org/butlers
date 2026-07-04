@@ -100,6 +100,7 @@ export default function TimelinePage() {
     showNewEvents,
     degradedSources,
     heartbeatRollup,
+    isLiveFeedDown,
   } = useTimelineLedger(filters);
 
   // Saved views — shared /api/timeline/saved-views backend (bu-vgj88),
@@ -169,7 +170,7 @@ export default function TimelinePage() {
         eyebrow="Fleet · timeline"
         headline="Every household event, newest first."
         description="Sessions, notifications, and errors across every butler — the fleet's single chronicle."
-        aside={<LiveStatusBadge latestReceivedAt={latestReceivedAt} />}
+        aside={<LiveStatusBadge latestReceivedAt={latestReceivedAt} isDown={isLiveFeedDown} />}
       />
 
       <DispatchSurface className="space-y-4">

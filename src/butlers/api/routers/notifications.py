@@ -116,6 +116,24 @@ def _empty_notification_stats() -> ApiResponse[NotificationStats]:
 # ---------------------------------------------------------------------------
 
 
+# "retried" is not a stored status -- it's a failed notification that a later
+# sent notification (same session/channel/message) superseded. Shared between
+# the WHERE-clause filter and the SELECT effective_status CASE so a
+# "?status=retried" filter always matches what effective_status reports as
+# retried (bu-qvnce.2 -- the filter used to compare status = 'retried', which
+# can never match since the column never stores that value).
+_RETRIED_EXISTS_SQL = (
+    "session_id IS NOT NULL AND EXISTS ("
+    "SELECT 1 FROM notifications n2 "
+    "WHERE n2.session_id = notifications.session_id "
+    "AND n2.channel = notifications.channel "
+    "AND n2.message = notifications.message "
+    "AND n2.status = 'sent' "
+    "AND n2.created_at > notifications.created_at"
+    ")"
+)
+
+
 async def _query_notifications(
     pool: asyncpg.Pool,
     *,
@@ -146,7 +164,9 @@ async def _query_notifications(
         args.append(channel)
         idx += 1
 
-    if status is not None:
+    if status == "retried":
+        conditions.append(f"status = 'failed' AND {_RETRIED_EXISTS_SQL}")
+    elif status is not None:
         conditions.append(f"status = ${idx}")
         args.append(status)
         idx += 1
@@ -174,14 +194,7 @@ async def _query_notifications(
         f"SELECT id, source_butler, channel, recipient, message, metadata, "
         f"status, error, session_id, trace_id, created_at, "
         f"CASE "
-        f"  WHEN status = 'failed' AND session_id IS NOT NULL AND EXISTS ("
-        f"    SELECT 1 FROM notifications n2 "
-        f"    WHERE n2.session_id = notifications.session_id "
-        f"    AND n2.channel = notifications.channel "
-        f"    AND n2.message = notifications.message "
-        f"    AND n2.status = 'sent' "
-        f"    AND n2.created_at > notifications.created_at"
-        f"  ) THEN 'retried' "
+        f"  WHEN status = 'failed' AND {_RETRIED_EXISTS_SQL} THEN 'retried' "
         f"  ELSE status "
         f"END AS effective_status "
         f"FROM notifications{where_clause} "

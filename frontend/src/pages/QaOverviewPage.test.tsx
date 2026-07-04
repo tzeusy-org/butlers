@@ -333,6 +333,36 @@ describe("QaOverviewPage -- dossier shell", () => {
     const html = renderPage();
     expect(html).toContain("Loading cases");
   });
+
+  // The /api/qa/cases default limit is 25 (qa.py list_cases); silently
+  // showing only the first page implies the rail is complete when it isn't
+  // (bu-qvnce.2).
+  it("names the truncation when more cases exist than the rail's page returned", () => {
+    (useQaCases as AnyMock).mockReturnValue({
+      data: {
+        data: [MOCK_CASE_1],
+        meta: { total: 30, offset: 0, limit: 25, has_more: true },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).toContain('data-testid="qa-case-list-truncation"');
+    expect(html).toContain("Showing 1 of 30");
+  });
+
+  it("omits the truncation notice when the rail holds every matching case", () => {
+    (useQaCases as AnyMock).mockReturnValue({
+      data: {
+        data: [MOCK_CASE_1],
+        meta: { total: 1, offset: 0, limit: 25, has_more: false },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).not.toContain('data-testid="qa-case-list-truncation"');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -465,5 +495,37 @@ describe("QaOverviewPage -- patrol pulse strip", () => {
     (useQaPatrols as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: true });
     const errorHtml = renderPage();
     expect(errorHtml).not.toContain("Recent patrols");
+  });
+
+  // The backend only ever emits "findings_dispatched" (qa.py _VALID_PATROL_STATUSES),
+  // never "dispatched" -- the stale frontend check never matched, so a patrol
+  // that actually dispatched findings rendered as clean-green (bu-qvnce.2).
+  it("colors a findings_dispatched patrol amber, not clean green", () => {
+    (useQaPatrols as AnyMock).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: "patrol-2",
+            started_at: "2026-05-16T00:00:00Z",
+            completed_at: "2026-05-16T00:05:00Z",
+            status: "findings_dispatched",
+            findings_count: 3,
+            novel_count: 1,
+            dispatched_count: 1,
+            log_lookback_minutes: 15,
+            sources_polled: [],
+            error_detail: null,
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    const linkIdx = html.indexOf('href="/qa/patrols/patrol-2"');
+    expect(linkIdx).toBeGreaterThan(-1);
+    const window = html.slice(linkIdx, linkIdx + 300);
+    expect(window).toContain("bg-[var(--amber)]");
+    expect(window).not.toContain("bg-[var(--green)]");
   });
 });

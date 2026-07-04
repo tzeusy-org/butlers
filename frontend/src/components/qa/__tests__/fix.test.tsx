@@ -28,19 +28,32 @@ describe("QA dossier fix-column components", () => {
     cleanup();
   });
 
-  it("test_pr_panel_null_renders_escalated_message", () => {
-    render(<PRPanel pr={null} whyThisFix={null} />);
+  it("test_pr_panel_null_renders_escalated_message_only_when_escalated", () => {
+    render(<PRPanel pr={null} whyThisFix={null} stage="escalated" />);
 
     expect(screen.getByText("No PR. Escalated to user.")).toBeTruthy();
     expect(screen.getByText("No PR. Escalated to user.").className).toContain("italic");
     expect(screen.getByText("No PR. Escalated to user.").className).toContain("font-serif");
   });
 
+  // A case still being diagnosed (or any non-escalated stage) has not been
+  // handed to the user -- it just hasn't produced a PR yet (bu-qvnce.2).
+  it.each(["detect", "diagnose", "pr", "landed"] as const)(
+    "test_pr_panel_null_renders_no_pr_yet_for_stage_%s",
+    (stage) => {
+      render(<PRPanel pr={null} whyThisFix={null} stage={stage} />);
+
+      expect(screen.getByText("No PR yet.")).toBeTruthy();
+      expect(screen.queryByText("No PR. Escalated to user.")).toBeNull();
+    },
+  );
+
   it("test_pr_panel_renders_all_fields", () => {
     render(
       <PRPanel
         pr={pr}
         whyThisFix="The failing runtime ignored catalog timeouts."
+        stage="pr"
         diffSnapshot={[
           { kind: "meta", text: "src/butlers/core/spawner.py" },
           { kind: "-", text: "runtime.invoke(prompt)" },
@@ -73,6 +86,7 @@ describe("QA dossier fix-column components", () => {
       <PRPanel
         pr={{ ...pr, ci_status: null, additions: null, deletions: null }}
         whyThisFix={null}
+        stage="pr"
       />,
     );
 
@@ -81,7 +95,14 @@ describe("QA dossier fix-column components", () => {
   });
 
   it("test_pr_panel_omits_empty_diff_preview", () => {
-    render(<PRPanel pr={pr} whyThisFix="The failing runtime ignored catalog timeouts." diffSnapshot={[]} />);
+    render(
+      <PRPanel
+        pr={pr}
+        whyThisFix="The failing runtime ignored catalog timeouts."
+        diffSnapshot={[]}
+        stage="pr"
+      />,
+    );
 
     expect(screen.queryByText("Diff preview")).toBeNull();
   });
@@ -128,7 +149,7 @@ describe("QA dossier fix-column components", () => {
   ] as [QaPrSummary["state"], string][])(
     "test_pr_panel_state_chip_%s",
     (state, expectedBorderClass) => {
-      render(<PRPanel pr={{ ...pr, state }} whyThisFix={null} />);
+      render(<PRPanel pr={{ ...pr, state }} whyThisFix={null} stage="pr" />);
 
       const chips = screen.getAllByText(state);
       // At least one chip element (the state badge span) should carry the border class.

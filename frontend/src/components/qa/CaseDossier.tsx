@@ -153,6 +153,7 @@ export function CaseDossier({
             pr={dossier.pr}
             whyThisFix={notes?.why_this_fix ?? null}
             diffSnapshot={notes?.diff_snapshot ?? null}
+            stage={dossier.state_track_stage}
           />
         </section>
       </div>
