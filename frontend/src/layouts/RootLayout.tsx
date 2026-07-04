@@ -10,6 +10,7 @@ import { CommandRegistryProvider } from '../lib/command-registry'
 import { useKeyboardShortcuts } from '../hooks/use-keyboard-shortcuts'
 import { ShortcutHints } from '../components/ui/shortcut-hints'
 import { useEventStream } from '../hooks/use-event-stream'
+import { FloatingChatWidget } from '../components/chat/FloatingChatWidget'
 
 export default function RootLayout() {
   useKeyboardShortcuts()
@@ -38,6 +39,12 @@ export default function RootLayout() {
         <GlobalActionsRegistrar />
         <ShortcutHints />
         <Toaster />
+        {/* Floating chat widget (bu-p6ey8.3) — bottom-right button on every
+            route, opening a compact popover chat panel routed through the
+            Switchboard butler. Also registers the "Talk to Butlers" cmdk
+            command. Mounted here (not inside Shell.tsx) since Shell has no
+            floating layer. */}
+        <FloatingChatWidget />
       </CommandRegistryProvider>
     </BreadcrumbsControlProvider>
   )

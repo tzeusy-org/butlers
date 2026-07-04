@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useConversations, useConversationSearch } from "@/hooks/use-conversations.ts";
 import { useDebounce } from "@/hooks/use-debounce.ts";
@@ -81,9 +82,20 @@ function ConversationItem({
       )}
     >
       <p className="text-sm font-medium line-clamp-2 leading-tight">{title}</p>
-      <p className="text-xs text-muted-foreground mt-0.5">
-        <Time value={conversation.updated_at} mode="relative" />
-      </p>
+      <div className="flex items-center gap-1.5 mt-0.5">
+        <p className="text-xs text-muted-foreground">
+          <Time value={conversation.updated_at} mode="relative" />
+        </p>
+        {conversation.routed_butler && (
+          <Badge
+            variant="outline"
+            className="text-[10px] h-4 px-1 font-mono"
+            data-testid="conversation-routed-butler"
+          >
+            {conversation.routed_butler}
+          </Badge>
+        )}
+      </div>
     </button>
   );
 }
@@ -97,6 +109,15 @@ export interface ConversationListProps {
   activeConversationId: string | null;
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
+  /**
+   * When `false`, the collapse toggle is hidden and the list always renders
+   * expanded at full width with no `localStorage` persistence — used when
+   * this component is reused as a standalone full-width history view (e.g.
+   * the floating chat widget's history panel, bu-p6ey8.3) rather than the
+   * collapsible sidebar beside the butler-detail Sheet's thread pane.
+   * @default true
+   */
+  collapsible?: boolean;
 }
 
 export function ConversationList({
@@ -104,17 +125,20 @@ export function ConversationList({
   activeConversationId,
   onSelectConversation,
   onNewConversation,
+  collapsible = true,
 }: ConversationListProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedQuery = useDebounce(searchQuery, 300);
 
-  const [collapsed, setCollapsed] = useState(() => {
+  const [collapsedState, setCollapsedState] = useState(() => {
+    if (!collapsible) return false;
     try {
       return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
     } catch {
       return false;
     }
   });
+  const collapsed = collapsible && collapsedState;
 
   const { data: conversationsData, isLoading } = useConversations(butlerName);
   const { data: searchData, isLoading: isSearching } = useConversationSearch(
@@ -124,7 +148,7 @@ export function ConversationList({
 
   function toggleCollapse() {
     const next = !collapsed;
-    setCollapsed(next);
+    setCollapsedState(next);
     try {
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
     } catch {
@@ -144,8 +168,9 @@ export function ConversationList({
   return (
     <div
       className={cn(
-        "flex flex-col border-r bg-muted/20",
-        collapsed ? "w-12" : "w-[200px]",
+        "flex flex-col bg-muted/20",
+        collapsible && "border-r",
+        collapsed ? "w-12" : collapsible ? "w-[200px]" : "w-full",
       )}
     >
       {/* Header */}
@@ -177,19 +202,21 @@ export function ConversationList({
             <PlusIcon className="size-4" />
           </Button>
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-8 shrink-0"
-          onClick={toggleCollapse}
-          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        >
-          {collapsed ? (
-            <PanelLeftOpenIcon className="size-4" />
-          ) : (
-            <PanelLeftCloseIcon className="size-4" />
-          )}
-        </Button>
+        {collapsible && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0"
+            onClick={toggleCollapse}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? (
+              <PanelLeftOpenIcon className="size-4" />
+            ) : (
+              <PanelLeftCloseIcon className="size-4" />
+            )}
+          </Button>
+        )}
       </div>
 
       {/* Search (expanded mode only) */}

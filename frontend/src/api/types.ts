@@ -4648,6 +4648,12 @@ export interface ConversationSummary {
   total_input_tokens: number;
   total_output_tokens: number;
   total_duration_ms: number;
+  /**
+   * Butler this Switchboard-classification-routed conversation stuck to
+   * after its first successful route (sticky follow-ups). `null`/absent for
+   * per-butler pinned conversations and bug/system-report threads.
+   */
+  routed_butler?: string | null;
 }
 
 /** Query params for GET /api/butlers/{name}/conversations. */
@@ -4657,15 +4663,34 @@ export interface ConversationListParams {
   offset?: number;
 }
 
+/**
+ * Dashboard route/query/entity context captured at message send time.
+ *
+ * Seam for bu-p6ey8.4 (PageContextProvider): this type mirrors the backend's
+ * `PageContext` model. No caller populates it yet — the floating chat widget
+ * (bu-p6ey8.3) builds outgoing message payloads through a single
+ * `buildMessagePayload` choke point specifically so a future page-context
+ * capture layer can attach this without touching call sites.
+ */
+export interface PageContext {
+  route: string;
+  query_params?: Record<string, string>;
+  entity_ref?: string | null;
+}
+
 /** Request body for POST /api/butlers/{name}/conversations. */
 export interface CreateConversationRequest {
   message: string;
   title?: string;
+  /** See `PageContext` — unpopulated seam for bu-p6ey8.4. */
+  page_context?: PageContext;
 }
 
 /** Request body for POST /api/butlers/{name}/conversations/{id}/messages. */
 export interface SendMessageRequest {
   message: string;
+  /** See `PageContext` — unpopulated seam for bu-p6ey8.4. */
+  page_context?: PageContext;
 }
 
 /** SSE event types emitted by the conversation streaming endpoints. */
@@ -4680,6 +4705,19 @@ export type ConversationSseEventType =
 export interface ConversationSseEvent {
   event: ConversationSseEventType;
   data: unknown;
+}
+
+/**
+ * Shape of the `data` payload on an `error` SSE event (see
+ * `src/butlers/api/routers/conversations.py` module docstring for the
+ * authoritative contract). `code` distinguishes a retryable connectivity
+ * failure from a graceful reply timeout (which carries `session_id` for an
+ * "inspect session" link) from a deterministic rejection.
+ */
+export interface ConversationSseErrorData {
+  code?: "SWITCHBOARD_UNAVAILABLE" | "INGEST_REJECTED" | "SWITCHBOARD_ERROR" | "SESSION_TIMEOUT";
+  message?: string;
+  session_id?: string | null;
 }
 
 // ---------------------------------------------------------------------------
