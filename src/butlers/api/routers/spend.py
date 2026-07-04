@@ -55,7 +55,14 @@ from butlers.api.deps import (
     get_mcp_manager,
     get_pricing,
 )
-from butlers.api.models import ApiResponse, DailySpend, ScheduleCost, SpendSummary, TopSession
+from butlers.api.models import (
+    ApiMeta,
+    ApiResponse,
+    DailySpend,
+    ScheduleCost,
+    SpendSummary,
+    TopSession,
+)
 from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.routers.audit import append as audit_append
 from butlers.core.sessions import sessions_daily, sessions_summary
@@ -641,12 +648,17 @@ async def _get_butler_daily_stats(
     pricing: PricingConfig,
     from_date: str,
     to_date: str,
+    *,
+    tracker: DegradedSources | None = None,
 ) -> list[dict]:
     """Query a butler for daily session stats via the ``sessions_daily`` MCP tool.
 
     Returns a list of dicts with keys: date, cost_usd, sessions, input_tokens,
-    output_tokens.  Falls back to an empty list when the butler is unreachable
-    or the tool is not yet implemented.
+    output_tokens.
+
+    On failure this returns ``[]``, indistinguishable from "genuinely has no
+    sessions in range" -- when *tracker* is provided the butler is marked on
+    it so callers can surface ``unavailable_butlers``.
     """
     try:
         client = await asyncio.wait_for(mgr.get_client(info.name), timeout=_STATUS_TIMEOUT_S)
@@ -684,7 +696,8 @@ async def _get_butler_daily_stats(
                     )
                 return days
     except (ButlerUnreachableError, TimeoutError, Exception):
-        pass
+        if tracker is not None:
+            tracker.mark(info.name, msg="Daily cost query failed")
     return []
 
 
@@ -718,6 +731,7 @@ async def get_daily_costs(
     if butler is not None:
         configs = [c for c in configs if c.name == butler]
 
+    tracker = DegradedSources(logger)
     tasks = [
         _get_butler_daily_stats_from_db(
             db,
@@ -727,13 +741,17 @@ async def get_daily_costs(
             to_date.isoformat(),
         )
         if db is not None
-        else _get_butler_daily_stats(mgr, info, pricing, from_date.isoformat(), to_date.isoformat())
+        else _get_butler_daily_stats(
+            mgr, info, pricing, from_date.isoformat(), to_date.isoformat(), tracker=tracker
+        )
         for info in configs
     ]
     raw_results = await asyncio.gather(*tasks)
     if db is not None:
         fallback_tasks = [
-            _get_butler_daily_stats(mgr, info, pricing, from_date.isoformat(), to_date.isoformat())
+            _get_butler_daily_stats(
+                mgr, info, pricing, from_date.isoformat(), to_date.isoformat(), tracker=tracker
+            )
             for info, result in zip(configs, raw_results, strict=False)
             if result is None
         ]
@@ -787,7 +805,8 @@ async def get_daily_costs(
         for v in sorted(merged.values(), key=lambda x: x["date"])
     ]
 
-    return ApiResponse[list[DailySpend]](data=daily)
+    meta = ApiMeta(unavailable_butlers=sorted(tracker.names)) if tracker.failed else ApiMeta()
+    return ApiResponse[list[DailySpend]](data=daily, meta=meta)
 
 
 async def _get_butler_top_sessions(
@@ -797,6 +816,8 @@ async def _get_butler_top_sessions(
     limit: int,
     from_date: date | None = None,
     to_date: date | None = None,
+    *,
+    tracker: DegradedSources | None = None,
 ) -> list[TopSession]:
     """Query a single butler for its most expensive sessions.
 
@@ -804,8 +825,10 @@ async def _get_butler_top_sessions(
     started within that inclusive date range; otherwise all-time results are
     returned (pre-existing behavior).
 
-    Returns a list of TopSession records with costs calculated from pricing config.
-    Falls back to empty list when the butler is unreachable or returns bad data.
+    Returns a list of TopSession records with costs calculated from pricing
+    config.  On failure this returns ``[]``, indistinguishable from
+    "genuinely has no sessions" -- when *tracker* is provided the butler is
+    marked on it so callers can surface ``unavailable_butlers``.
     """
     args: dict[str, object] = {"limit": limit}
     if from_date is not None and to_date is not None:
@@ -847,7 +870,8 @@ async def _get_butler_top_sessions(
                     )
                 return sessions
     except (ButlerUnreachableError, TimeoutError, Exception):
-        pass
+        if tracker is not None:
+            tracker.mark(info.name, msg="Top sessions query failed")
     return []
 
 
@@ -889,8 +913,10 @@ async def get_top_sessions(
     if butler is not None:
         configs = [c for c in configs if c.name == butler]
 
+    tracker = DegradedSources(logger)
     tasks = [
-        _get_butler_top_sessions(mgr, info, pricing, limit, from_date, to_date) for info in configs
+        _get_butler_top_sessions(mgr, info, pricing, limit, from_date, to_date, tracker=tracker)
+        for info in configs
     ]
     results = await asyncio.gather(*tasks)
 
@@ -899,7 +925,8 @@ async def get_top_sessions(
         all_sessions.extend(sessions)
 
     all_sessions.sort(key=lambda s: s.cost_usd, reverse=True)
-    return ApiResponse[list[TopSession]](data=all_sessions[:limit])
+    meta = ApiMeta(unavailable_butlers=sorted(tracker.names)) if tracker.failed else ApiMeta()
+    return ApiResponse[list[TopSession]](data=all_sessions[:limit], meta=meta)
 
 
 async def _get_butler_schedule_costs(

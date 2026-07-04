@@ -503,6 +503,103 @@ async def test_daily_costs_preserves_per_butler_identity(app):
     assert set(day2["by_butler"].keys()) == {"gen"}
 
 
+async def test_daily_costs_reports_unavailable_butlers_for_genuine_failure(app):
+    """A butler whose sessions_daily call genuinely fails must be named in
+    meta.unavailable_butlers -- its contribution is silently dropped from the
+    merged series otherwise, indistinguishable from "no spend that day"
+    (bu-i7p0z, mirrors the schedule-costs / cost-summary degraded pattern)."""
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="broken", port=41101),
+    ]
+    sw_daily = {
+        "days": [
+            {
+                "date": "2026-02-08",
+                "sessions": 1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "by_model": {},
+            },
+        ]
+    }
+    mgr = _mock_mgr({"sw": _make_tool_result(sw_daily), "broken": ButlerUnreachableError("broken")})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
+        )
+    body = resp.json()
+    assert body["meta"]["unavailable_butlers"] == ["broken"]
+
+
+async def test_daily_costs_all_reachable_reports_no_unavailable_butlers(app):
+    """When every butler's sessions_daily call succeeds, meta must not carry a
+    degraded flag -- a truthful empty/complete result must not read as
+    partial."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    sw_daily = {"days": []}
+    mgr = _mock_mgr({"sw": _make_tool_result(sw_daily)})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
+        )
+    assert "unavailable_butlers" not in resp.json()["meta"]
+
+
+async def test_daily_costs_db_fallback_failure_reports_unavailable_butlers(app):
+    """/daily's DB-primary-then-MCP-fallback branch must also mark the tracker:
+    a butler with no DB pool (KeyError -> None, triggering the MCP fallback)
+    whose fallback *also* fails must be named in meta.unavailable_butlers."""
+    configs = [ButlerConnectionInfo(name="broken", port=41101)]
+    db = _mock_db({})  # no pool registered -> KeyError -> falls back to MCP
+    mgr = _mock_mgr({"broken": ButlerUnreachableError("broken")})
+    _wire_db(_wire(app, mgr, configs, _flat_pricing()), db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
+        )
+    body = resp.json()
+    assert body["meta"]["unavailable_butlers"] == ["broken"]
+
+
+async def test_daily_costs_db_fallback_recovery_reports_no_unavailable_butlers(app):
+    """When the DB primary path misses (KeyError -> None) but the MCP fallback
+    recovers real data, the butler must NOT be marked degraded -- the request
+    was served honestly, just via the fallback path."""
+    configs = [ButlerConnectionInfo(name="recovered", port=41101)]
+    recovered_daily = {
+        "days": [
+            {
+                "date": "2026-02-08",
+                "sessions": 1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "by_model": {},
+            },
+        ]
+    }
+    db = _mock_db({})  # no pool registered -> KeyError -> falls back to MCP
+    mgr = _mock_mgr({"recovered": _make_tool_result(recovered_daily)})
+    _wire_db(_wire(app, mgr, configs, _flat_pricing()), db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
+        )
+    body = resp.json()
+    assert "unavailable_butlers" not in body["meta"]
+    assert body["data"][0]["sessions"] == 1
+
+
 # ---------------------------------------------------------------------------
 # GET /api/spend — date-range params (from/to)
 # ---------------------------------------------------------------------------
@@ -1013,6 +1110,58 @@ async def test_top_sessions_no_date_range_omits_mcp_args_back_compat(app):
     _tool_name, tool_args = client_mock.call_tool.call_args.args
     assert "from_date" not in tool_args
     assert "to_date" not in tool_args
+
+
+# ---------------------------------------------------------------------------
+# GET /api/spend/top-sessions — degraded-source reporting [bu-i7p0z]
+# ---------------------------------------------------------------------------
+
+
+async def test_top_sessions_reports_unavailable_butlers_for_genuine_failure(app):
+    """A butler whose top_sessions call genuinely fails must be named in
+    meta.unavailable_butlers -- its contribution is silently dropped from the
+    merged top-N otherwise, indistinguishable from "no expensive sessions"
+    (bu-i7p0z, mirrors the schedule-costs / cost-summary degraded pattern)."""
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="broken", port=41101),
+    ]
+    sw_sessions = {
+        "sessions": [
+            {
+                "session_id": "s1",
+                "model": "claude-sonnet-4-20250514",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "started_at": "2026-02-08T00:00:00Z",
+            }
+        ]
+    }
+    mgr = _mock_mgr(
+        {"sw": _make_tool_result(sw_sessions), "broken": ButlerUnreachableError("broken")}
+    )
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/top-sessions")
+    body = resp.json()
+    assert body["meta"]["unavailable_butlers"] == ["broken"]
+
+
+async def test_top_sessions_all_reachable_reports_no_unavailable_butlers(app):
+    """When every butler's top_sessions call succeeds, meta must not carry a
+    degraded flag -- a truthful empty/complete result must not read as
+    partial."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    sw_sessions = {"sessions": []}
+    mgr = _mock_mgr({"sw": _make_tool_result(sw_sessions)})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/top-sessions")
+    assert "unavailable_butlers" not in resp.json()["meta"]
 
 
 @pytest.mark.parametrize(
