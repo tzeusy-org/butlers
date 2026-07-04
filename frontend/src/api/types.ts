@@ -4654,6 +4654,14 @@ export interface ConversationSummary {
    * per-butler pinned conversations and bug/system-report threads.
    */
   routed_butler?: string | null;
+  /**
+   * Timestamp of the most recent assistant-role message in this
+   * conversation, or `null` if none has arrived yet. This is the
+   * unread-badge watermark signal (see `use-chat-unread.ts`) —
+   * `total_output_tokens` does not move for confirm-loop replies (they
+   * persist with `output_tokens` NULL) so it cannot detect a new reply.
+   */
+  latest_assistant_reply_at?: string | null;
 }
 
 /** Query params for GET /api/butlers/{name}/conversations. */

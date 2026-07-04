@@ -3,17 +3,28 @@
  *
  * Polls the EXISTING conversation-summary list (`useConversations`, no new
  * backend endpoint) roughly every 60s and compares each conversation's
- * `total_output_tokens` against a per-conversation watermark persisted in
- * localStorage. `total_output_tokens` only increases when an ASSISTANT reply
- * lands and a model call actually completes — sending a user message alone
- * never changes it — so this can never badge on the owner's own outgoing
- * messages.
+ * `latest_assistant_reply_at` against a per-conversation watermark persisted
+ * in localStorage. `latest_assistant_reply_at` only moves when an ASSISTANT
+ * message is actually persisted (`conversation_reply_create` — see
+ * `src/butlers/api/conversations.py`) — sending a user message alone never
+ * changes it — so this can never badge on the owner's own outgoing messages.
+ *
+ * bu-qesw0: this previously watermarked on `total_output_tokens`, which
+ * NEVER increments for a confirm-loop reply — `conversation_reply_create`
+ * persists it mid-session with `output_tokens = NULL` because the routed
+ * session's own token accounting isn't known yet (by design, see the SSE
+ * `message_complete` event). That made the badge permanently dead in
+ * production even though it looked correct under tests that fed synthetic,
+ * monotonically-increasing token counts. `latest_assistant_reply_at` is a
+ * timestamp derived from `MAX(dashboard_messages.created_at) WHERE role =
+ * 'assistant'`, so it moves the instant a reply — of any kind — is written.
  *
  * `panelOpen` drives watermark advancement: while the panel is open the
- * owner is considered caught up, so the watermark tracks live totals and any
- * badge clears. The moment it closes, the watermark freezes; a later poll
- * that shows a conversation's total strictly above its frozen watermark
- * means a reply arrived while the panel was closed, and badges the trigger.
+ * owner is considered caught up, so the watermark tracks the live value and
+ * any badge clears. The moment it closes, the watermark freezes; a later
+ * poll that shows a conversation's `latest_assistant_reply_at` strictly
+ * later than its frozen watermark means a reply arrived while the panel was
+ * closed, and badges the trigger.
  *
  * Watermark storage follows the same module-scope-store +
  * `useSyncExternalStore` pattern as `use-approval-decisions.ts`'s scheduled
@@ -29,11 +40,19 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useConversations } from "./use-conversations.ts";
 import type { ConversationSummary } from "@/api/types.ts";
 
-const WATERMARK_STORAGE_KEY = "butlers:chat-widget-last-seen-v1";
+// v2: the watermark value changed from a `total_output_tokens` number to a
+// `latest_assistant_reply_at` ISO timestamp (or null). Bumping the storage
+// key avoids comparing a stale numeric watermark against a timestamp string.
+const WATERMARK_STORAGE_KEY = "butlers:chat-widget-last-seen-v2";
 const POLL_INTERVAL_MS = 60_000;
 
-/** conversationId -> total_output_tokens as of the last time it was "seen". */
-type Watermark = Record<string, number>;
+/**
+ * conversationId -> `latest_assistant_reply_at` as of the last time it was
+ * "seen". `null` means the conversation was seen with no assistant reply yet
+ * (a fresh baseline); the key being absent entirely means never seen this
+ * session.
+ */
+type Watermark = Record<string, string | null>;
 
 function readWatermark(): Watermark {
   try {
@@ -106,19 +125,21 @@ export function useChatUnreadBadge(butlerName: string, panelOpen: boolean): bool
   const watermark = useSyncExternalStore(subscribeWatermark, getWatermarkSnapshot);
 
   // Establish a baseline for any conversation id seen for the first time
-  // this session (so history never retroactively badges), and — while the
-  // panel is open — advance every known conversation's watermark to its
-  // current total (the owner is caught up).
+  // this session (so history never retroactively badges, even when the
+  // conversation already has replies), and — while the panel is open —
+  // advance every known conversation's watermark to its current
+  // `latest_assistant_reply_at` (the owner is caught up).
   useEffect(() => {
     if (conversations.length === 0) return;
     const next: Watermark = { ...watermark };
     let changed = false;
     for (const conv of conversations) {
+      const latest = conv.latest_assistant_reply_at ?? null;
       if (!(conv.id in next)) {
-        next[conv.id] = conv.total_output_tokens;
+        next[conv.id] = latest;
         changed = true;
-      } else if (panelOpen && next[conv.id] !== conv.total_output_tokens) {
-        next[conv.id] = conv.total_output_tokens;
+      } else if (panelOpen && next[conv.id] !== latest) {
+        next[conv.id] = latest;
         changed = true;
       }
     }
@@ -126,13 +147,20 @@ export function useChatUnreadBadge(butlerName: string, panelOpen: boolean): bool
   }, [conversations, panelOpen, watermark]);
 
   // Derived badge state: while open, always caught up. While closed, badge
-  // if any conversation's total_output_tokens has grown past the watermark
-  // frozen at (or established after) the last time the panel was open.
+  // if any conversation's `latest_assistant_reply_at` is later than the
+  // watermark frozen at (or established after) the last time the panel was
+  // open. A conversation not yet baselined this session (effect hasn't run
+  // for it yet) never badges on this render.
   return useMemo(() => {
     if (panelOpen) return false;
     return conversations.some((conv) => {
+      if (!(conv.id in watermark)) return false;
+      const latest = conv.latest_assistant_reply_at ?? null;
+      if (!latest) return false;
       const seen = watermark[conv.id];
-      return seen !== undefined && conv.total_output_tokens > seen;
+      if (seen === latest) return false;
+      if (seen === null) return true;
+      return new Date(latest).getTime() > new Date(seen).getTime();
     });
   }, [panelOpen, conversations, watermark]);
 }

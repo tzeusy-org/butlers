@@ -73,7 +73,13 @@ The dashboard API SHALL provide an endpoint to list conversations for a butler w
 
 - **WHEN** `GET /api/butlers/{name}/conversations?status=active&limit=20&offset=0` is called
 - **THEN** conversations are returned ordered by `updated_at DESC` with pagination metadata
-- **AND** each conversation includes `id`, `title`, `status`, `created_at`, `updated_at`, `message_count`, `total_input_tokens`, `total_output_tokens`, `total_duration_ms`
+- **AND** each conversation includes `id`, `title`, `status`, `created_at`, `updated_at`, `message_count`, `total_input_tokens`, `total_output_tokens`, `total_duration_ms`, `latest_assistant_reply_at`
+
+#### Scenario: latest_assistant_reply_at reflects the most recent assistant message
+
+- **WHEN** a conversation list entry is built
+- **THEN** `latest_assistant_reply_at` is the `MAX(created_at)` of that conversation's `public.dashboard_messages` rows where `role = 'assistant'`, or `null` if it has none
+- **AND** this field, not `total_output_tokens`, is the correct freshness signal for detecting a new reply: `conversation_reply_create` (the confirm-loop write path) always persists its message with `output_tokens = NULL` — mid-session, before the routed session's own accounting is known — so `total_output_tokens` never increments for a confirm-loop reply and cannot be used to badge unread replies
 
 #### Scenario: List all conversations
 
@@ -291,7 +297,7 @@ API response models for conversation endpoints.
 #### Scenario: ConversationSummary model
 
 - **WHEN** a conversation list response is serialized
-- **THEN** each entry includes: `id`, `butler_name`, `title`, `status`, `created_at`, `updated_at`, `message_count`, `total_input_tokens`, `total_output_tokens`, `total_duration_ms`
+- **THEN** each entry includes: `id`, `butler_name`, `title`, `status`, `created_at`, `updated_at`, `message_count`, `total_input_tokens`, `total_output_tokens`, `total_duration_ms`, `routed_butler`, `latest_assistant_reply_at`
 
 #### Scenario: ConversationMessage model
 

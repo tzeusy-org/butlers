@@ -149,22 +149,23 @@ test("floating chat widget: badges the trigger for a reply that arrived while cl
   page,
 }) => {
   const EXISTING_CONVERSATION_ID = "44444444-4444-4444-4444-444444444444";
+  const SEEN_REPLY_AT = "2026-07-05T08:00:00.000Z"; // before the fixture's latest_assistant_reply_at
 
-  // Pre-seed the unread-badge watermark (localStorage) BELOW the fixture's
-  // total_output_tokens for this conversation, before the app boots — this
-  // stands in for "a reply landed since this was last seen" without needing
-  // to wait out the real ~60s poll interval in the test.
+  // Pre-seed the unread-badge watermark (localStorage) BEFORE the fixture's
+  // latest_assistant_reply_at for this conversation, before the app boots —
+  // this stands in for "a reply landed since this was last seen" without
+  // needing to wait out the real ~60s poll interval in the test.
   await page.addInitScript(
-    ({ storageKey, conversationId, seenOutputTokens }) => {
+    ({ storageKey, conversationId, seenReplyAt }) => {
       window.localStorage.setItem(
         storageKey,
-        JSON.stringify({ [conversationId]: seenOutputTokens }),
+        JSON.stringify({ [conversationId]: seenReplyAt }),
       );
     },
     {
-      storageKey: "butlers:chat-widget-last-seen-v1",
+      storageKey: "butlers:chat-widget-last-seen-v2",
       conversationId: EXISTING_CONVERSATION_ID,
-      seenOutputTokens: 5,
+      seenReplyAt: SEEN_REPLY_AT,
     },
   );
 
@@ -184,9 +185,10 @@ test("floating chat widget: badges the trigger for a reply that arrived while cl
               updated_at: NOW_ISO,
               message_count: 2,
               total_input_tokens: 10,
-              total_output_tokens: 40, // > the seeded watermark (5) -> badges
+              total_output_tokens: 0, // dead signal (bu-qesw0) — confirm-loop replies never bump this
               total_duration_ms: 500,
               routed_butler: "relationship",
+              latest_assistant_reply_at: NOW_ISO, // > the seeded watermark -> badges
             },
           ],
           meta: { total: 1, limit: 20, offset: 0 },

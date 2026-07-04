@@ -14,6 +14,14 @@ it does not run the Alembic chain (see tests/migrations/test_backfill_dashboard_
 for the established pattern), so this file provisions the minimal
 ``public.dashboard_conversations`` / ``public.dashboard_messages`` shape
 directly, matching core_006 (creation) + core_153 (``routed_butler`` column).
+
+bu-qesw0: also covers ``conversation_list``'s ``latest_assistant_reply_at``
+subquery against a live database. The unread-badge dead-signal bug (bu-qesw0)
+went undetected because the mocked-pool unit tests in
+tests/api/test_conversations.py feed ``conversation_list``'s *return value*
+directly and never execute the real SQL — a real-Postgres assertion here is
+the only thing that actually exercises the ``MAX(...) FILTER``-equivalent
+correlated subquery against ``public.dashboard_messages``.
 """
 
 from __future__ import annotations
@@ -26,6 +34,7 @@ import pytest
 
 from butlers.api.conversations import (
     conversation_create,
+    conversation_list,
     conversation_reply_create,
     conversation_set_routed_butler,
     message_find_reply_since,
@@ -166,3 +175,53 @@ async def test_message_find_reply_since_ignores_stale_reply_and_finds_fresh_one(
         assert result is not None
         assert result["content"] == "Recorded: X — correct?"
         assert result["id"] == created["id"]
+
+
+async def test_conversation_list_exposes_latest_assistant_reply_at(
+    provisioned_postgres_pool,
+) -> None:
+    """conversation_list's latest_assistant_reply_at must reflect the newest
+    assistant message even though total_output_tokens stays at 0 — the
+    dead-signal bug (bu-qesw0) was total_output_tokens never incrementing
+    for a conversation_reply-persisted assistant message."""
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_SCHEMA)
+        conv = await conversation_create(pool, butler_name="switchboard", first_message="hi")
+        conv_id = conv["id"]
+
+        # No replies yet: latest_assistant_reply_at is None.
+        rows, _ = await conversation_list(pool, butler_name="switchboard")
+        assert len(rows) == 1
+        assert rows[0]["latest_assistant_reply_at"] is None
+        assert rows[0]["total_output_tokens"] == 0
+
+        first_reply = await conversation_reply_create(
+            pool, conv_id, message="Recorded: Alice child-of Bob — correct?"
+        )
+        assert first_reply is not None
+
+        rows, _ = await conversation_list(pool, butler_name="switchboard")
+        assert rows[0]["latest_assistant_reply_at"] == first_reply["created_at"]
+        # The dead signal: still 0 even though a reply was just persisted.
+        assert rows[0]["total_output_tokens"] == 0
+
+        # A stale user message must not move latest_assistant_reply_at.
+        await pool.execute(
+            """
+            INSERT INTO public.dashboard_messages (id, conversation_id, role, content, created_at)
+            VALUES (gen_random_uuid(), $1, 'user', 'a follow-up question', $2)
+            """,
+            conv_id,
+            first_reply["created_at"] + timedelta(seconds=1),
+        )
+        rows, _ = await conversation_list(pool, butler_name="switchboard")
+        assert rows[0]["latest_assistant_reply_at"] == first_reply["created_at"]
+
+        # A second, later assistant reply advances the watermark signal.
+        second_reply = await conversation_reply_create(
+            pool, conv_id, message="Second reply — correct?"
+        )
+        assert second_reply is not None
+        rows, _ = await conversation_list(pool, butler_name="switchboard")
+        assert rows[0]["latest_assistant_reply_at"] == second_reply["created_at"]
+        assert second_reply["created_at"] > first_reply["created_at"]

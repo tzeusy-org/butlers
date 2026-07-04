@@ -4,13 +4,26 @@
  *
  * `useConversations` is mocked so the test controls the conversation-summary
  * list directly, standing in for what a real ~60s poll would eventually
- * return. Covers:
+ * return.
+ *
+ * bu-qesw0: rewritten to feed realistic `latest_assistant_reply_at`
+ * timestamps instead of synthetic, monotonically-increasing
+ * `total_output_tokens` counts. The prior version of this suite passed
+ * while the badge was dead in production, because `total_output_tokens`
+ * never actually moves for a confirm-loop reply
+ * (`conversation_reply_create` persists it with `output_tokens = NULL`) —
+ * feeding it directly encoded the wrong contract. `latest_assistant_reply_at`
+ * is what actually changes when a reply is persisted.
+ *
+ * Covers:
  *  - no badge while the panel is open, even as replies land
- *  - a reply (total_output_tokens increase) while closed badges within the
- *    next observed poll
+ *  - a reply (`latest_assistant_reply_at` advances) while closed badges
+ *    within the next observed poll
  *  - opening the panel clears an existing badge
- *  - the owner's own outgoing messages (message_count bump, no output-token
- *    change) never badge
+ *  - the owner's own outgoing messages (message_count bump, no
+ *    `latest_assistant_reply_at` change) never badge
+ *  - first-sight of a conversation that already has reply history (while
+ *    closed) does NOT badge — only a reply arriving *after* first sight does
  *  - the watermark persists across mounts via localStorage
  */
 
@@ -35,7 +48,7 @@ import {
 
 function conv(
   id: string,
-  totalOutputTokens: number,
+  latestAssistantReplyAt: string | null,
   overrides: Partial<ConversationSummary> = {},
 ): ConversationSummary {
   return {
@@ -47,9 +60,10 @@ function conv(
     updated_at: "2026-07-05T00:00:00.000Z",
     message_count: 1,
     total_input_tokens: 0,
-    total_output_tokens: totalOutputTokens,
+    total_output_tokens: 0,
     total_duration_ms: 0,
     routed_butler: null,
+    latest_assistant_reply_at: latestAssistantReplyAt,
     ...overrides,
   };
 }
@@ -64,20 +78,20 @@ afterEach(() => cleanup());
 
 describe("useChatUnreadBadge", () => {
   it("never badges while the panel is open, even as a reply lands", () => {
-    conversationsRef.current = [conv("c1", 20)];
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:20.000Z")];
     const { result, rerender } = renderHook(
       ({ open }) => useChatUnreadBadge("switchboard", open),
       { initialProps: { open: true } },
     );
     expect(result.current).toBe(false);
 
-    conversationsRef.current = [conv("c1", 45)];
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:45.000Z")];
     rerender({ open: true });
     expect(result.current).toBe(false);
   });
 
-  it("badges when a reply's total_output_tokens increases while the panel is closed", () => {
-    conversationsRef.current = [conv("c1", 20)];
+  it("badges when latest_assistant_reply_at advances while the panel is closed", () => {
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:20.000Z")];
     const { result, rerender } = renderHook(
       ({ open }) => useChatUnreadBadge("switchboard", open),
       { initialProps: { open: false } },
@@ -86,21 +100,21 @@ describe("useChatUnreadBadge", () => {
     // never retroactively badges on history.
     expect(result.current).toBe(false);
 
-    // A reply lands (assistant turn completes, output tokens increase).
-    conversationsRef.current = [conv("c1", 45)];
+    // A reply lands (a new assistant message is persisted).
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:45.000Z")];
     rerender({ open: false });
     expect(result.current).toBe(true);
   });
 
   it("opening the panel clears an existing badge", () => {
-    conversationsRef.current = [conv("c1", 20)];
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:20.000Z")];
     const { result, rerender } = renderHook(
       ({ open }) => useChatUnreadBadge("switchboard", open),
       { initialProps: { open: false } },
     );
     expect(result.current).toBe(false);
 
-    conversationsRef.current = [conv("c1", 45)];
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:45.000Z")];
     rerender({ open: false });
     expect(result.current).toBe(true);
 
@@ -108,23 +122,54 @@ describe("useChatUnreadBadge", () => {
     expect(result.current).toBe(false);
   });
 
-  it("never badges on the owner's own outgoing message (no output-token change)", () => {
-    conversationsRef.current = [conv("c1", 20, { message_count: 2 })];
+  it("never badges on the owner's own outgoing message (no reply timestamp change)", () => {
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:20.000Z", { message_count: 2 })];
     const { result, rerender } = renderHook(
       ({ open }) => useChatUnreadBadge("switchboard", open),
       { initialProps: { open: false } },
     );
     expect(result.current).toBe(false);
 
-    // Owner sends another message: message_count bumps, but total_output_tokens
-    // does not — only a completed assistant turn carries model usage.
-    conversationsRef.current = [conv("c1", 20, { message_count: 3 })];
+    // Owner sends another message: message_count bumps, but
+    // latest_assistant_reply_at does not — only a persisted assistant reply
+    // moves it.
+    conversationsRef.current = [
+      conv("c1", "2026-07-05T00:00:20.000Z", { message_count: 3 }),
+    ];
     rerender({ open: false });
     expect(result.current).toBe(false);
   });
 
+  it("never badges on first sight of a conversation with pre-existing reply history", () => {
+    // The very first poll already shows a reply — this must be treated as
+    // "already seen" (a baseline), not a fresh unread reply.
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:20.000Z")];
+    const { result, rerender } = renderHook(
+      ({ open }) => useChatUnreadBadge("switchboard", open),
+      { initialProps: { open: false } },
+    );
+    expect(result.current).toBe(false);
+
+    // No change yet — still caught up.
+    rerender({ open: false });
+    expect(result.current).toBe(false);
+  });
+
+  it("badges a conversation with no prior replies once its first reply lands while closed", () => {
+    conversationsRef.current = [conv("c1", null)];
+    const { result, rerender } = renderHook(
+      ({ open }) => useChatUnreadBadge("switchboard", open),
+      { initialProps: { open: false } },
+    );
+    expect(result.current).toBe(false);
+
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:45.000Z")];
+    rerender({ open: false });
+    expect(result.current).toBe(true);
+  });
+
   it("persists the watermark across mounts via localStorage", () => {
-    conversationsRef.current = [conv("c1", 20)];
+    conversationsRef.current = [conv("c1", "2026-07-05T00:00:20.000Z")];
     const { unmount } = renderHook(
       ({ open }) => useChatUnreadBadge("switchboard", open),
       { initialProps: { open: true } },
@@ -135,7 +180,7 @@ describe("useChatUnreadBadge", () => {
     // sitting in localStorage (not whatever is left in memory).
     __reloadChatUnreadWatermarkFromStorageForTests();
 
-    conversationsRef.current = [conv("c1", 60)];
+    conversationsRef.current = [conv("c1", "2026-07-05T00:01:00.000Z")];
     const { result } = renderHook(
       ({ open }) => useChatUnreadBadge("switchboard", open),
       { initialProps: { open: false } },

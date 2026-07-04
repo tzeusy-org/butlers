@@ -377,19 +377,27 @@ describe("FloatingChatWidget — page-context capture", () => {
 // ---------------------------------------------------------------------------
 
 describe("FloatingChatWidget — unread badge", () => {
-  function conversationsWithOutputTokens(outputTokens: number): ConversationSummary[] {
-    return [{ ...CONVERSATIONS[0], total_output_tokens: outputTokens }, CONVERSATIONS[1]];
+  // bu-qesw0: watermarked on latest_assistant_reply_at, not
+  // total_output_tokens — conversation_reply_create always persists its
+  // message with output_tokens = NULL (mid-session, before the routed
+  // session's own accounting is known), so total_output_tokens can never
+  // move for a confirm-loop reply and is not a usable freshness signal.
+  function conversationsWithLatestReplyAt(latestReplyAt: string | null): ConversationSummary[] {
+    return [
+      { ...CONVERSATIONS[0], latest_assistant_reply_at: latestReplyAt },
+      CONVERSATIONS[1],
+    ];
   }
 
-  function mockConversationTotals(outputTokens: number) {
+  function mockConversationTotals(latestReplyAt: string | null) {
     vi.mocked(useConversations).mockReturnValue({
-      data: { data: conversationsWithOutputTokens(outputTokens), meta: {} },
+      data: { data: conversationsWithLatestReplyAt(latestReplyAt), meta: {} },
       isLoading: false,
     } as unknown as ReturnType<typeof useConversations>);
   }
 
   it("badges the trigger when a reply lands while the panel is closed, and opening clears it", () => {
-    mockConversationTotals(20);
+    mockConversationTotals("2026-07-05T09:00:00.000Z");
     const { rerenderWidget } = renderWidget();
 
     // First observation of this conversation just establishes the baseline —
@@ -397,7 +405,7 @@ describe("FloatingChatWidget — unread badge", () => {
     expect(screen.queryByTestId("chat-widget-unread-badge")).toBeNull();
 
     // Simulate the ~60s poll surfacing a reply while the panel stayed closed.
-    mockConversationTotals(55);
+    mockConversationTotals("2026-07-05T09:05:00.000Z");
     rerenderWidget();
     expect(screen.getByTestId("chat-widget-unread-badge")).toBeDefined();
 
@@ -407,12 +415,12 @@ describe("FloatingChatWidget — unread badge", () => {
   });
 
   it("does not badge when nothing changed since the last observation", () => {
-    mockConversationTotals(20);
+    mockConversationTotals("2026-07-05T09:00:00.000Z");
     const { rerenderWidget } = renderWidget();
     expect(screen.queryByTestId("chat-widget-unread-badge")).toBeNull();
 
-    // Re-poll with the exact same totals (no reply arrived).
-    mockConversationTotals(20);
+    // Re-poll with the exact same latest_assistant_reply_at (no reply arrived).
+    mockConversationTotals("2026-07-05T09:00:00.000Z");
     rerenderWidget();
     expect(screen.queryByTestId("chat-widget-unread-badge")).toBeNull();
   });

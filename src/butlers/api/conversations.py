@@ -141,17 +141,26 @@ async def conversation_list(
     """List conversations for a butler with pagination.
 
     Returns (rows, total_count).  status='all' returns both active and archived.
+
+    Each row also carries ``latest_assistant_reply_at`` (the max ``created_at``
+    of that conversation's assistant-role messages, or ``None`` if it has no
+    replies yet). ``total_output_tokens`` is *not* a usable reply signal on
+    its own: ``conversation_reply_create`` persists mid-session replies with
+    ``output_tokens = NULL`` (accounting isn't known until the routed
+    session finishes), so it never increments for a confirm-loop reply. The
+    unread-badge watermark (``use-chat-unread.ts``) keys off
+    ``latest_assistant_reply_at`` instead.
     """
     if status == "all":
-        where = "butler_name = $1"
+        where = "c.butler_name = $1"
         args: list[Any] = [butler_name]
     else:
-        where = "butler_name = $1 AND status = $2"
+        where = "c.butler_name = $1 AND c.status = $2"
         args = [butler_name, status]
 
     total: int = (
         await pool.fetchval(
-            f"SELECT COUNT(*) FROM public.dashboard_conversations WHERE {where}",
+            f"SELECT COUNT(*) FROM public.dashboard_conversations c WHERE {where}",
             *args,
         )
         or 0
@@ -159,12 +168,17 @@ async def conversation_list(
 
     rows = await pool.fetch(
         f"""
-        SELECT id, butler_name, title, status, created_at, updated_at,
-               message_count, total_input_tokens, total_output_tokens, total_duration_ms,
-               routed_butler
-        FROM public.dashboard_conversations
+        SELECT c.id, c.butler_name, c.title, c.status, c.created_at, c.updated_at,
+               c.message_count, c.total_input_tokens, c.total_output_tokens, c.total_duration_ms,
+               c.routed_butler,
+               (
+                   SELECT MAX(m.created_at)
+                   FROM public.dashboard_messages m
+                   WHERE m.conversation_id = c.id AND m.role = 'assistant'
+               ) AS latest_assistant_reply_at
+        FROM public.dashboard_conversations c
         WHERE {where}
-        ORDER BY updated_at DESC
+        ORDER BY c.updated_at DESC
         OFFSET ${len(args) + 1} LIMIT ${len(args) + 2}
         """,
         *args,

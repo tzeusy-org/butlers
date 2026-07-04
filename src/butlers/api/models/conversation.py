@@ -78,6 +78,16 @@ class ConversationSummary(BaseModel):
     total_output_tokens: int
     total_duration_ms: int
     routed_butler: str | None = None
+    latest_assistant_reply_at: datetime | None = Field(
+        None,
+        description=(
+            "Timestamp of the most recent assistant-role message in this "
+            "conversation, or null if none has arrived yet. This is the "
+            "unread-badge watermark signal — total_output_tokens does not "
+            "move for confirm-loop replies (they persist with output_tokens "
+            "NULL) so it cannot be used to detect a new reply."
+        ),
+    )
 
 
 class ConversationMessage(BaseModel):
