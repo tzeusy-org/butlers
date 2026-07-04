@@ -207,7 +207,36 @@ pattern. Day-close explicitly may not ask the owner anything.
 - **Connector pattern**: ActivityWatch/ICS follow the adding-connectors-and-modules skill
   (account registry → connector → module → dashboard).
 
-## 7. Verification queries used (dev DB)
+## 7. Exploration addenda (confirmed by parallel code survey, 2026-07-05)
+
+- **Pie/Gantt render absence as nothing.** `AggregatePieChart.tsx` normalises percentages
+  over the sum of returned buckets only (`totalSeconds = buckets.reduce(...)`), not the
+  24 h day; the backend `aggregate/by-category` drops non-activity-layer and unmapped rows
+  and never synthesizes gap time; `GanttSwimlaneInner` renders idle time as empty lane
+  background. Neither surface has any "unaccounted time" concept — Tier 3.1 is confirmed
+  as a pure gap, not a partial one. Note the by-category endpoint buckets by **lane**
+  (music+gaming already fold to `play` server-side); frontend `other` is effectively dead.
+- **HA wellness promotion path** (`connectors/home_assistant_wellness.py`): a deterministic
+  classifier promotes health-shaped HA sensor events (smart scale, BP cuff, SpO2 — matched
+  on `device_class`/`unit_of_measurement`, extensible via `HA_WELLNESS_RULES_EXTRA`) onto a
+  wellness channel that writes `health.facts`. A second, LLM-free path to body metrics that
+  does not depend on the broken Google Health scopes — currently dark only because of the
+  same HA connectivity failure (Tier 0.2 revives both).
+- **Confidence ladder** (`confidence.py::derive_confidence`): high = ≥2 independent evidence
+  kinds (wearable-correlated kinds count once), medium = 2 weakly-related or 1 strong,
+  low = single weak signal — *low is still counted*; layer, not confidence, decides
+  counting. `occupation_inferred` (Tier 2) slots into this unchanged.
+- **Reconciliation** (`reconciliation.py::reconcile_day`, runs inside the day-close bundle
+  tool): merges overlapping same-lane activity candidates (confidence bumped when ≥2
+  distinct sources agree) and drops calendar intents when an at-home rest activity overlaps
+  ≥50 % of the window. The occupation adapter's contradictor logic should reuse this seam
+  rather than invent a parallel one.
+- **Dormant sources** (not workday-relevant but free coverage): `discord_user.py` is fully
+  coded and wired to zero butlers; `live_listener/` (ambient audio → transcript ingestion)
+  is complete but env-gated off; `exercise_inferred` additionally requires HR ≥ 100 bpm
+  point events inside movement episodes — a third consumer starved by the Google Health 403.
+
+## 8. Verification queries used (dev DB)
 
 ```sql
 -- Episodes for a local day (SGT)
