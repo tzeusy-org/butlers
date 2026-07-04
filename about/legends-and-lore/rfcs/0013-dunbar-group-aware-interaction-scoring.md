@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-04-16
+**Amended:** 2026-07-05 — D7 (Reciprocal Engagement Gating) added; see
+[Amendments](#amendments) and D6/Deployment Impact corrections below.
 
 ## Summary
 
@@ -276,13 +278,80 @@ group interaction).
 ### D6: Backward Compatibility
 
 Existing interaction facts without `direction` or `group_size` in metadata
-MUST continue to score correctly:
+MUST continue to score correctly for the `raw_score` computation:
 
 - Missing `direction` → defaults to multiplier 1.0 (incoming baseline).
 - Missing `group_size` → defaults to divisor 1.0 (DM weight).
 
-No migration of existing facts is required. The scoring SQL uses
-`COALESCE` for both fields.
+No migration of existing facts is required for these defaults. The scoring
+SQL uses `COALESCE` for both fields.
+
+> **Amended 2026-07-05:** This section describes only the `raw_score`
+> multiplier/divisor defaults, which are unchanged. It does NOT describe
+> whether a directionless fact is sufficient to sustain a contact's Dunbar
+> tier — that question is answered by the reciprocal engagement gate added
+> in D7 below, which post-dates this RFC as originally written. A
+> directionless fact still gets `direction_weight = 1.0` in `raw_score`
+> exactly as this section promises, but it no longer, by itself, keeps a
+> contact out of tier 1500. See D7 and [Amendments](#amendments).
+
+### D7: Reciprocal Engagement Gating (Added 2026-07-05, amends this RFC — PR #2897 / bu-557bb)
+
+D1-D6 as originally written computed a single `raw_score` per contact and
+used it directly as the Dunbar decay score. Production use surfaced three
+defects the original design did not anticipate:
+
+1. A single LLM-extracted transactional fact (e.g. a one-off delivery
+   callback logged as `mutual`) could land a contact in tier 15 purely from
+   decay-weighted recency, with no repeat engagement.
+2. Active posters in group chats the owner merely lurks in scored at full DM
+   weight when the LLM-extracted fact carried no `group_size` metadata.
+3. Incoming-only senders (recruiters, insurance agents the owner never
+   replies to) accrued nonzero scores and real tier placement despite zero
+   reciprocal engagement from the owner.
+
+To fix this, `compute_dunbar_scores()` multiplies `raw_score` by a
+reciprocal-engagement factor:
+
+```
+score = raw_score * min(1.0, engagement_days / RECIPROCITY_SATURATION_DAYS)
+```
+
+where `RECIPROCITY_SATURATION_DAYS = 3` and `engagement_days` is the count of
+distinct days carrying an active interaction fact whose `direction` is
+`outgoing` or `mutual` **and** whose effective `group_size` is `<= 2` (a
+direct, person-to-person context; read from either top-level metadata or
+`extra_metadata` for facts emitted through `interaction_log`). Facts with no
+`direction`, or an explicit `direction = 'incoming'`, do NOT count toward
+`engagement_days`, regardless of how many such facts exist or how recent they
+are.
+
+**Why this is a deliberate break from D6's "identical to current behavior"
+framing, not a regression:** D6 promises that pre-existing directionless
+facts score identically to explicitly-`incoming` facts. That remains true for
+the `raw_score` term — a directionless fact still gets `direction_weight =
+1.0`, same as an explicit `incoming` fact, and both are still diluted by
+`group_size` the same way. It is no longer true for the *final*, gated score:
+a contact whose active facts are all directionless or `incoming` now scores
+`0.0` and sits at tier 1500, because one-way inbound contact is not evidence
+the owner reciprocated. This is intentional — it is the entire point of the
+reciprocity gate (bu-557bb) — and it applies equally to genuinely new
+`incoming` facts and to legacy directionless facts, since both fall on the
+"not outgoing/mutual" side of the gate.
+
+**No data migration required.** `engagement_days` is computed at query time
+from `facts.metadata->>'direction'`; it is not a stored or derived column.
+There is nothing to backfill — the next `compute_dunbar_scores()` call
+reflects the gate for all existing facts immediately. Contacts whose
+historical engagement was already reciprocal (they have `outgoing`/`mutual`
+direct-context facts on file) are unaffected by this change; only contacts
+whose entire history is inbound-only lose tier standing, which is the
+corrected, intended behavior.
+
+Spec: `openspec/specs/dunbar-tier-scoring/spec.md`, "Decay score computation
+from interaction history" requirement, in particular the "Incoming-only
+contacts score zero (reciprocity gate)" and "Backward compatibility with
+pre-existing facts" scenarios.
 
 ## Integration
 
@@ -320,10 +389,20 @@ investment. Hysteresis (D3 in the Dunbar scoring engine) will buffer tier
 downgrades by 2 ranks, preventing sudden tier oscillation.
 
 **No data migration required:** Existing interaction facts without `direction`
-or `group_size` metadata will score at 1.0x multiplier and 1.0x divisor
-respectively (identical to current behavior). New facts from the updated
-interaction_sync will carry the enriched metadata. Over time (30-day half-life),
-old facts decay away and new weighted facts dominate the score.
+or `group_size` metadata score at 1.0x multiplier and 1.0x divisor
+respectively for the `raw_score` term (identical to current behavior for that
+term). New facts from the updated interaction_sync will carry the enriched
+metadata. Over time (30-day half-life), old facts decay away and new weighted
+facts dominate the score.
+
+> **Amended 2026-07-05:** The reciprocity gate added in D7 (PR #2897 /
+> bu-557bb) means "identical to current behavior" no longer holds for the
+> *final*, gated score of contacts whose entire active interaction history is
+> directionless or `incoming`-only — those contacts now score `0.0` and fall
+> to tier 1500 regardless of `raw_score`. This is a deliberate, deployed
+> behavior change validated against the live dataset (see D7), not a
+> residual migration gap. No backfill is needed because `engagement_days` is
+> computed at query time, not stored.
 
 ## Constants
 
@@ -334,6 +413,7 @@ old facts decay away and new weighted facts dominate the score.
 | `DIRECTION_WEIGHT_INCOMING` | 1.0 | `dunbar.py` | Cold |
 | `MAX_INTERACTION_GROUP_SIZE` | 20 | connector config (`butler.toml`) | Cold (requires connector restart) |
 | `_LAMBDA` (decay half-life) | ln(2)/30 | `dunbar.py` | Cold (unchanged) |
+| `RECIPROCITY_SATURATION_DAYS` (D7, added 2026-07-05) | 3 | `dunbar.py` | Cold |
 
 ## Alternatives Considered
 
@@ -359,3 +439,29 @@ The 1/n dilution correctly models that a message to 5 people is worth roughly
 Rejected because the Dunbar scoring query would need to scan two predicates,
 and the conceptual model is the same: an interaction happened, it just has
 context about how many people were involved.
+
+## Amendments
+
+### 2026-07-05 — Reciprocal engagement gating (D7)
+
+Added D7 (Reciprocal Engagement Gating) to document the reciprocity gate
+merged in PR #2897 (bu-557bb), which multiplies `raw_score` by
+`min(1.0, engagement_days / 3)`.
+
+This RFC originally shipped before the reciprocity gate existed, so D6's
+"Backward Compatibility" section and the "Deployment Impact" section's "no
+data migration required" paragraph read as though directionless facts score
+identically to explicitly-`incoming` facts in every respect. That is still
+true for the `raw_score` multiplier/divisor terms, but it is no longer true
+for final tier placement: directionless (and `incoming`-only) facts do not
+count toward `engagement_days`, so a contact with no reciprocal engagement
+now scores `0.0` and sits at tier 1500 regardless of how much raw signal
+they accumulate.
+
+This amendment corrects D6 and Deployment Impact inline (see above) and adds
+D7 to describe the gate's design and rationale. No code or spec changes
+accompany this amendment — `roster/relationship/tools/dunbar.py` and
+`openspec/specs/dunbar-tier-scoring/spec.md` already implement and specify
+the gated behavior as of PR #2897; this RFC was the artifact that had
+drifted out of sync with the deliberate, reviewed change. Filed as bu-p6b0c,
+discovered during bu-557bb's second-stage validation.
