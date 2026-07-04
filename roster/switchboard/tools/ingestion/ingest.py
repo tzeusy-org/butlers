@@ -106,6 +106,7 @@ _ALLOWED_RULE_TYPES = frozenset(
         "header_condition",
         "mime_type",
         "thread_affinity",
+        "pinned_target",
         "substring",
         "chat_id",
         "channel_id",
@@ -662,8 +663,10 @@ async def ingest_v1(
         )
 
     # 4. Run ingestion policy evaluation (before classification runtime spawn).
-    # Thread-affinity lookup runs before rule evaluation (pipeline order):
-    #   1. Thread-affinity lookup in routing history (highest precedence)
+    # Precedence order:
+    #   0. Envelope pin (control.pinned_target) — explicit, caller-asserted
+    #      target for this specific request (highest precedence)
+    #   1. Thread-affinity lookup in routing history
     #   2. Ingestion policy rules (via IngestionPolicyEvaluator)
     #   3. LLM classification fallback (pass_through)
     #
@@ -674,41 +677,78 @@ async def ingest_v1(
     if envelope.event.external_thread_id:
         thread_id = str(envelope.event.external_thread_id)
 
-    # 4a. Thread-affinity lookup (email only, before rule evaluation)
-    affinity_target: str | None = None
-    if enable_thread_affinity and source_channel == "email" and thread_id:
-        try:
-            affinity_result = await lookup_thread_affinity(
-                pool,
-                thread_id,
-                source_channel,
-                settings=thread_affinity_settings,
-            )
-            if affinity_result.outcome.produces_route:
-                affinity_target = affinity_result.target_butler
-                logger.debug(
-                    "Thread affinity hit: thread=%s -> butler=%s",
-                    thread_id,
-                    affinity_target,
-                )
-        except Exception:
-            logger.exception(
-                "Thread affinity lookup raised unexpectedly; failing open (no affinity)"
-            )
+    # 4a. Envelope pin — validated against the live, routable butler registry
+    # (the same candidate set LLM classification uses) so an unknown or
+    # non-routable target is rejected here rather than silently misrouted or
+    # falling through to classification. Bypasses thread-affinity and rule
+    # evaluation entirely when present.
+    pinned_target = envelope.control.pinned_target
+    if pinned_target is not None:
+        from butlers.tools.switchboard.routing.classify import (
+            _load_available_butlers,
+        )
 
-    if policy_evaluator is not None:
-        triage_decision = _run_policy_evaluation(
-            payload,
-            policy_evaluator,
+        available_butlers = await _load_available_butlers(pool)
+        if not any(butler["name"] == pinned_target for butler in available_butlers):
+            _ingest_metrics.record_ingest_result(source=source_channel, outcome="validation_error")
+            raise ValueError(
+                f"Invalid ingest.v1 envelope: pinned_target '{pinned_target}' is not "
+                "a registered, routable butler"
+            )
+        triage_decision = PolicyDecision(
+            action="route_to",
+            target_butler=pinned_target,
+            matched_rule_id=None,
+            matched_rule_type="pinned_target",
+            reason=f"pinned_target -> {pinned_target}",
+        )
+        _get_policy_telemetry().record_rule_matched(
+            rule_type="pinned_target",
+            action=f"route_to:{pinned_target}",
             source_channel=source_channel,
-            thread_affinity_target=affinity_target,
         )
         logger.debug(
-            "Policy decision for source=%s sender=%s: %s",
+            "Envelope pin for source=%s sender=%s: route_to=%s",
             source_channel,
             envelope.sender.identity,
-            triage_decision.action,
+            pinned_target,
         )
+    else:
+        # 4b. Thread-affinity lookup (email only, before rule evaluation)
+        affinity_target: str | None = None
+        if enable_thread_affinity and source_channel == "email" and thread_id:
+            try:
+                affinity_result = await lookup_thread_affinity(
+                    pool,
+                    thread_id,
+                    source_channel,
+                    settings=thread_affinity_settings,
+                )
+                if affinity_result.outcome.produces_route:
+                    affinity_target = affinity_result.target_butler
+                    logger.debug(
+                        "Thread affinity hit: thread=%s -> butler=%s",
+                        thread_id,
+                        affinity_target,
+                    )
+            except Exception:
+                logger.exception(
+                    "Thread affinity lookup raised unexpectedly; failing open (no affinity)"
+                )
+
+        if policy_evaluator is not None:
+            triage_decision = _run_policy_evaluation(
+                payload,
+                policy_evaluator,
+                source_channel=source_channel,
+                thread_affinity_target=affinity_target,
+            )
+            logger.debug(
+                "Policy decision for source=%s sender=%s: %s",
+                source_channel,
+                envelope.sender.identity,
+                triage_decision.action,
+            )
 
     # 5. Assign canonical request context
     request_id = _generate_uuid7()

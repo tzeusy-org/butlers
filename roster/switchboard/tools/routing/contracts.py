@@ -271,6 +271,17 @@ class IngestControlV1(BaseModel):
     ``request_context`` and consumed by downstream interaction-scoring jobs.
     See RFC 0013 D3.
     """
+    pinned_target: NonEmptyStr | None = None
+    """Optional butler name this envelope SHALL be routed to deterministically.
+
+    When set, Switchboard ingestion bypasses thread-affinity lookup and
+    ingestion-policy rule evaluation and produces a ``route_to`` triage
+    decision to this butler directly (no LLM classification). The target is
+    validated against the live, routable butler registry at ingest time; an
+    unknown or non-routable target is rejected rather than silently
+    misrouted. Used by per-butler dashboard conversations to pin follow-up
+    messages to the butler the owner is already talking to.
+    """
 
 
 class IngestEnvelopeV1(BaseModel):

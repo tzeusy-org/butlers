@@ -13,6 +13,7 @@ import json
 import shutil
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -260,6 +261,40 @@ def _make_email_envelope(
             "idempotency_key": idempotency_key,
             "policy_tier": "default",
         },
+    }
+
+
+def _make_dashboard_envelope(
+    *,
+    conversation_id: str = "conv-001",
+    message_id: str = "msg-001",
+    text: str = "What's my balance?",
+    pinned_target: str | None = None,
+) -> dict:
+    """Helper to build a dashboard ingest.v1 envelope."""
+    control: dict = {"policy_tier": "interactive"}
+    if pinned_target is not None:
+        control["pinned_target"] = pinned_target
+    return {
+        "schema_version": "ingest.v1",
+        "source": {
+            "channel": "dashboard",
+            "provider": "internal",
+            "endpoint_identity": f"dashboard:web:{conversation_id}",
+        },
+        "event": {
+            "external_event_id": message_id,
+            "external_thread_id": conversation_id,
+            "observed_at": datetime.now(UTC).isoformat(),
+        },
+        "sender": {
+            "identity": "dashboard:operator",
+        },
+        "payload": {
+            "raw": {"source": "dashboard", "conversation_id": conversation_id, "message": text},
+            "normalized_text": text,
+        },
+        "control": control,
     }
 
 
@@ -626,3 +661,155 @@ class TestIngestV1Partitioning:
             result.request_id,
         )
         assert row is not None
+
+
+def _make_evaluator_with_rules(rules: list[dict]):
+    """Create an IngestionPolicyEvaluator with pre-loaded rules (no DB)."""
+    import time
+
+    from butlers.ingestion_policy import IngestionPolicyEvaluator
+
+    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    evaluator._rules = rules
+    evaluator._last_loaded_at = time.monotonic()
+    return evaluator
+
+
+class TestPinnedTargetRouting:
+    """Test the ``control.pinned_target`` envelope-pin bypass (bu-qk92y).
+
+    ``_load_available_butlers`` is patched at its import site
+    (``butlers.tools.switchboard.routing.classify``) since ``ingest_v1``
+    imports it lazily inside the pinned-target branch; there is no
+    ``butler_registry`` table in this fixture's schema.
+    """
+
+    async def test_pinned_target_routes_deterministically(self, pool: asyncpg.Pool) -> None:
+        """A valid pinned_target produces a route_to decision, no LLM classification."""
+        envelope = _make_dashboard_envelope(
+            conversation_id="conv-pin-001",
+            message_id="msg-pin-001",
+            pinned_target="finance",
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "finance"}]),
+        ):
+            result = await ingest_v1(pool, envelope)
+
+        assert result.status == "accepted"
+        assert result.triage_decision == "route_to"
+        assert result.triage_target == "finance"
+
+        row = await pool.fetchrow(
+            "SELECT request_context FROM message_inbox WHERE id = $1",
+            result.request_id,
+        )
+        ctx = _decode_jsonb(row["request_context"])
+        assert ctx["triage_decision"] == "route_to"
+        assert ctx["triage_target"] == "finance"
+        assert ctx["triage_rule_type"] == "pinned_target"
+
+        event_row = await pool.fetchrow(
+            "SELECT triage_decision, triage_target FROM public.ingestion_events WHERE id = $1",
+            result.request_id,
+        )
+        assert event_row["triage_decision"] == "route_to"
+        assert event_row["triage_target"] == "finance"
+
+    async def test_pinned_target_wins_over_matching_policy_rule(self, pool: asyncpg.Pool) -> None:
+        """pinned_target takes precedence over a global rule that would otherwise match."""
+        envelope = _make_dashboard_envelope(
+            conversation_id="conv-pin-002",
+            message_id="msg-pin-002",
+            pinned_target="finance",
+        )
+        # A rule matching the same channel via a permissive substring condition;
+        # if evaluated it would route to "travel", not "finance".
+        evaluator = _make_evaluator_with_rules(
+            [
+                {
+                    "id": "00000000-0000-0000-0000-000000000002",
+                    "rule_type": "substring",
+                    "condition": {"pattern": "dashboard"},
+                    "action": "route_to:travel",
+                    "priority": 10,
+                }
+            ]
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "finance"}, {"name": "travel"}]),
+        ):
+            result = await ingest_v1(pool, envelope, policy_evaluator=evaluator)
+
+        assert result.triage_decision == "route_to"
+        assert result.triage_target == "finance"
+
+    async def test_pinned_target_wins_over_thread_affinity(self, pool: asyncpg.Pool) -> None:
+        """pinned_target takes precedence even on an email envelope with a thread_id.
+
+        Thread-affinity lookup is skipped entirely when pinned_target is set, so
+        no thread-affinity settings/DB fixture is required for this to pass.
+        """
+        envelope = _make_email_envelope(
+            message_id="<pin-affinity-001@example.com>",
+            sender="alerts@chase.com",
+        )
+        envelope["event"]["external_thread_id"] = "thread-pin-001"
+        envelope["control"]["pinned_target"] = "finance"
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "finance"}]),
+        ):
+            result = await ingest_v1(pool, envelope, enable_thread_affinity=True)
+
+        assert result.triage_decision == "route_to"
+        assert result.triage_target == "finance"
+
+    async def test_unknown_pinned_target_rejected(self, pool: asyncpg.Pool) -> None:
+        """An unknown/non-routable pinned_target is rejected, not silently misrouted."""
+        envelope = _make_dashboard_envelope(
+            conversation_id="conv-pin-003",
+            message_id="msg-pin-003",
+            pinned_target="does-not-exist",
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "finance"}]),
+        ):
+            with pytest.raises(ValueError, match="does-not-exist"):
+                await ingest_v1(pool, envelope)
+
+        # No message_inbox / ingestion_events row was created for the rejected submission.
+        row = await pool.fetchrow(
+            "SELECT id FROM message_inbox WHERE request_context ->> 'source_endpoint_identity' "
+            "= $1",
+            "dashboard:web:conv-pin-003",
+        )
+        assert row is None
+
+    async def test_unpinned_envelope_does_not_query_butler_registry(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """When pinned_target is absent, existing behavior is unchanged: no registry lookup."""
+        envelope = _make_telegram_envelope(
+            update_id="444004",
+            bot_id="pin_test_bot",
+            sender_id="user_no_pin",
+        )
+        assert "pinned_target" not in envelope["control"]
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(side_effect=AssertionError("should not be called without a pin")),
+        ):
+            result = await ingest_v1(pool, envelope)
+
+        assert result.status == "accepted"
+        assert result.triage_decision is None
+        assert result.triage_target is None
