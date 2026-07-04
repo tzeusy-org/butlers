@@ -7,13 +7,29 @@ Dunbar tier scoring assigns every person-entity known to the relationship butler
 ## Requirements
 
 ### Requirement: Decay score computation from interaction history
-The system SHALL compute a decay score for each contact by summing exponentially decayed, direction-weighted, group-size-divided contributions from all recorded interactions.
+The system SHALL compute a decay score for each contact by summing exponentially decayed, direction-weighted, group-size-divided contributions from all recorded interactions, then multiplying the sum by a reciprocal-engagement factor derived from the owner's own outgoing activity toward that contact.
 
 #### Scenario: Score for a contact with recent interactions
 - **WHEN** a contact has interactions recorded as temporal facts (`predicate='interaction'`, `scope='relationship'`)
-- **THEN** the decay score MUST be computed as `sum(exp(-lambda * days_since_interaction_i) * direction_weight * (1.0 / group_size))` for each interaction fact
+- **THEN** the raw decay score MUST be computed as `sum(exp(-lambda * days_since_interaction_i) * direction_weight * type_weight * (1.0 / group_size))` for each interaction fact
 - **AND** `lambda` MUST equal `ln(2) / 30` (30-day half-life)
 - **AND** `days_since_interaction_i` MUST be computed from each interaction's `valid_at` relative to the current timestamp
+- **AND** the final decay score MUST equal `raw_score * min(1.0, engagement_days / 3.0)`, where `engagement_days` is the count of distinct days carrying an active interaction fact with direction `outgoing` or `mutual` in a direct context (effective `group_size <= 2`, read from either top-level metadata or `extra_metadata` for facts emitted through `interaction_log`)
+
+#### Scenario: Incoming-only contacts score zero (reciprocity gate)
+- **WHEN** a contact's active interaction facts are all `incoming` (the owner has never engaged them via an `outgoing` or `mutual` interaction in a direct context)
+- **THEN** the contact's decay score MUST be `0.0` regardless of incoming volume or recency
+- **AND** this MUST apply to active posters in group chats the owner merely lurks in, and to unanswered inbound email senders (e.g. recruiters, insurance agents)
+
+#### Scenario: One-off engagement is dampened
+- **WHEN** a contact has exactly one distinct day of owner engagement (e.g. a single transactional callback)
+- **THEN** the contact's decay score MUST be one third of its raw decay score
+- **AND** the factor MUST saturate at 1.0 once the contact has 3 or more distinct engagement days
+
+#### Scenario: Group-derived outgoing facts do not count as engagement
+- **WHEN** counting `engagement_days` for the reciprocal-engagement factor
+- **THEN** `outgoing`/`mutual` facts whose `group_size` metadata exceeds 2 MUST be excluded (owner activity in a shared group chat is not person-to-person engagement); `group_size` MAY be top-level metadata or nested under `metadata.extra_metadata` for facts emitted through `interaction_log`
+- **AND** facts with NULL or absent `group_size` MUST be treated as direct context (group_size 1)
 
 #### Scenario: Direction weighting multipliers
 - **WHEN** computing the decay contribution of an interaction fact
@@ -27,11 +43,18 @@ The system SHALL compute a decay score for each contact by summing exponentially
 - **WHEN** computing the decay contribution of an interaction fact
 - **AND** `facts.metadata->>'type'` is `email`, `interview`, or `calendar_event`
 - **THEN** the contribution MUST be multiplied by `0.2`
-- **AND** all other interaction types MUST use the default type multiplier `1.0`
+- **AND** all other interaction types MUST use the default type multiplier `1.0` except as provided by the group-type scenario below
+
+#### Scenario: Group-chat types without group_size metadata are downweighted
+- **WHEN** computing the decay contribution of an interaction fact
+- **AND** `facts.metadata->>'type'` contains the substring `group` (e.g. `group_chat`, `telegram_group_chat`)
+- **AND** the fact carries no numeric `group_size` metadata
+- **THEN** the contribution MUST be multiplied by `0.2` in place of the default type multiplier (a group mention without group-size dilution must not score at DM weight)
+- **AND** when numeric `group_size` metadata IS present, including under `metadata.extra_metadata` for facts emitted through `interaction_log`, the exact group-size divisor applies and the type multiplier MUST NOT be additionally discounted for the `group` substring
 
 #### Scenario: Group size dilution
 - **WHEN** computing the decay contribution of an interaction fact
-- **THEN** the contribution MUST be divided by `group_size` read from `facts.metadata->>'group_size'`
+- **THEN** the contribution MUST be divided by `group_size` read from `facts.metadata->>'group_size'` or, for facts emitted through `interaction_log`, `facts.metadata->'extra_metadata'->>'group_size'`
 - **AND** if `group_size` is NULL or absent, it MUST default to 1.0 (DM weight)
 - **AND** `group_size` MUST be clamped to a minimum of 1.0 to prevent division by zero
 
@@ -49,7 +72,7 @@ The system SHALL compute a decay score for each contact by summing exponentially
 - **THEN** the decay score MUST be `0.0`
 
 #### Scenario: Score rewards frequency and recency
-- **WHEN** contact A has 10 interactions in the past 30 days and contact B has 1 interaction 5 days ago
+- **WHEN** contact A has 10 mutual interactions on distinct days in the past 30 days and contact B has 1 mutual interaction 5 days ago
 - **THEN** contact A's decay score MUST be greater than contact B's decay score
 
 #### Scenario: Score computation excludes inactive facts
@@ -60,7 +83,7 @@ The system SHALL compute a decay score for each contact by summing exponentially
 #### Scenario: Backward compatibility with pre-existing facts
 - **WHEN** computing scores with interaction facts that lack `direction` or `group_size` in metadata
 - **THEN** the scoring MUST use default multipliers (direction_weight=1.0, group_size=1.0)
-- **AND** existing scores MUST remain identical to pre-change behavior for facts without enriched metadata
+- **AND** such facts MUST NOT count toward `engagement_days` (an unknown direction is not evidence of owner engagement)
 
 ---
 
@@ -83,10 +106,15 @@ Dunbar scoring SHALL only apply to person-entities that have a linked contact re
 - **AND** the contact MUST NOT occupy a tier slot
 - **AND** the contact MUST still report its last-computed `dunbar_tier` and `dunbar_score` if queried directly, but marked as stale
 
+#### Scenario: Owner excluded from ranking
+- **WHEN** an entity carries the `owner` role
+- **THEN** the entity MUST be excluded from Dunbar scoring and rank computation (the owner does not occupy a slot in their own social circles)
+- **AND** direct Dunbar queries for the owner's contact MUST fall back to tier 1500 with score 0.0
+
 ---
 
 ### Requirement: Rank-based Dunbar tier assignment
-The system SHALL assign each contact to a Dunbar tier by ranking all listed contacts with linked entities by decay score and mapping rank positions to fixed layer boundaries.
+The system SHALL assign each contact to a Dunbar tier by ranking all listed contacts with linked entities by decay score and mapping rank positions to fixed layer boundaries, bounded by per-tier minimum score floors.
 
 #### Scenario: Tier assignment from rank position
 - **WHEN** all listed contacts with linked entities are sorted by decay score in descending order
@@ -96,6 +124,14 @@ The system SHALL assign each contact to a Dunbar tier by ranking all listed cont
 - **AND** ranks 51-150 MUST be assigned tier 150 (meaningful contacts)
 - **AND** ranks 151-500 MUST be assigned tier 500 (acquaintances)
 - **AND** ranks 501+ MUST be assigned tier 1500 (recognizable)
+- **AND** the rank-derived tier is subject to score-floor demotion per the tier score floor scenario below
+
+#### Scenario: Tier score floors bound rank-based assignment
+- **WHEN** a contact's rank position (after hysteresis) maps to a tier whose score floor the contact's decay score does not meet
+- **THEN** the contact MUST be demoted to the first larger tier whose floor its score meets
+- **AND** the floors MUST be: tier 5 ≥ 20.0, tier 15 ≥ 8.0, tier 50 ≥ 3.0, tier 150 ≥ 0.5, tier 500 ≥ 0.02; tier 1500 has no floor
+- **AND** floors MUST NOT promote a contact above its rank-derived tier
+- **AND** manual tier overrides MUST bypass score floors entirely
 
 #### Scenario: Zero-score contacts default to tier 1500
 - **WHEN** a contact has a decay score of `0.0` and no manual tier override
