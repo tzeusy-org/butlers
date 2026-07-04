@@ -63,6 +63,7 @@ const FAMILY: Group = {
   name: "Family",
   description: "Immediate family",
   member_count: 4,
+  // eslint-disable-next-line no-restricted-syntax -- fixture for an arbitrary user-chosen label color, not a themed value
   labels: [{ id: "label-vip", name: "VIP", color: "#e63946" }],
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-06-01T00:00:00Z",

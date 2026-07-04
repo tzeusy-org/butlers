@@ -89,7 +89,7 @@ function IssueCard({
       className={cn(
         "rounded-md border px-3 py-2 text-sm",
         issue.severity === "warning"
-          ? "border-amber-500/50 bg-amber-500/5"
+          ? "border-[var(--amber)]/50 bg-[var(--amber)]/5"
           : "border-border bg-muted",
       )}
       data-kind={issue.kind}
@@ -122,6 +122,7 @@ function IssueCard({
             <span key={proposalId} className="flex gap-1">
               <button
                 type="button"
+                // eslint-disable-next-line no-restricted-syntax -- call-to-action button color (confirm affordance), not a live status/health signal
                 className="rounded bg-emerald-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-emerald-700"
                 onClick={() => onAcceptProposal?.(proposalId)}
               >
@@ -170,12 +171,12 @@ export function ConflictRadarBanner({
       aria-label="Calendar conflict radar"
       data-testid="conflict-radar-banner"
       className={cn(
-        "rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm",
+        "rounded-lg border border-[var(--amber)]/40 bg-[var(--amber)]/5 px-3 py-2 text-sm",
         className,
       )}
     >
       <div className="flex items-center gap-2">
-        <span aria-hidden className="text-amber-500">
+        <span aria-hidden className="text-[var(--amber-text)]">
           ⚠
         </span>
         <button
@@ -187,7 +188,7 @@ export function ConflictRadarBanner({
           {summary || `${plural(issues.length, "scheduling issue")} ahead`}
         </button>
         {warningCount > 0 && (
-          <span className="shrink-0 rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+          <span className="shrink-0 rounded-full bg-[var(--amber)]/20 px-2 py-0.5 text-xs font-medium text-[var(--amber-text)]">
             {warningCount} to review
           </span>
         )}

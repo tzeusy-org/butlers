@@ -435,8 +435,8 @@ interface ThreadPanelProps {
 
 const DIRECTION_META: Record<ContactInteraction["direction"], { label: string; tone: string }> = {
   in:      { label: "In",    tone: "text-primary"          },
-  out:     { label: "Out",   tone: "text-emerald-500"      },
-  drafted: { label: "Draft", tone: "text-amber-500"        },
+  out:     { label: "Out",   tone: "text-[var(--green)]"      },
+  drafted: { label: "Draft", tone: "text-[var(--amber-text)]"        },
 };
 
 function ThreadPanel({ contactId, contactName, isLoading, isError, interactions }: ThreadPanelProps) {

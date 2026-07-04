@@ -291,8 +291,8 @@ const PATROL_STRIP_LIMIT = 8;
 
 function statusDotClass(status: string): string {
   if (status === "error" || status === "failed") return "bg-destructive";
-  if (status === "dispatched") return "bg-amber-500";
-  return "bg-emerald-500";
+  if (status === "dispatched") return "bg-[var(--amber)]";
+  return "bg-[var(--green)]";
 }
 
 function PatrolPulseStrip() {

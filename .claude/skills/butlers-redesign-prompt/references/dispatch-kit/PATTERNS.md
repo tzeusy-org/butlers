@@ -209,33 +209,22 @@ function Sev({ level, size = 6 }) {
 
 ## 10. Letter-mark (butler glyph)
 
-The **only** place butler hues exist. Two tones.
+The **only** place butler hues exist. Two tones. Do NOT re-derive the
+butler→hue map inline (that is exactly the kind of fork bu-86c4c.6 collapsed) —
+import the real component, which is the single source of truth for both the
+hue ramp (`--category-1..12`) and the butler→slot mapping:
 
 ```tsx
-const CAT = {
-  relationship: 'var(--category-1)', memory: 'var(--category-2)',
-  calendar:     'var(--category-3)', health: 'var(--category-4)',
-  household:    'var(--category-5)', education: 'var(--category-6)',
-  qa:           'var(--category-7)', chronicler: 'var(--category-8)',
-};
-function ButlerMark({ name, size = 16, tone = 'neutral' }) {
-  const ch = name[0].toUpperCase();
-  const hue = CAT[name] ?? 'var(--fg)';
-  const fill = tone === 'fill';
-  return (
-    <span className="inline-flex shrink-0 items-center justify-center rounded-[4px] font-semibold"
-          style={{
-            width: size, height: size,
-            fontSize: Math.round(size * 0.6),
-            background: fill ? hue : 'transparent',
-            color: fill ? '#fff' : hue,
-            border: fill ? '1px solid transparent' : '1px solid var(--border)',
-          }}>
-      {ch}
-    </span>
-  );
-}
+import { ButlerMark } from "@/components/ui/ButlerMark";
+
+<ButlerMark name="health" tone="fill" />
+<ButlerMark name="qa" tone="neutral" />
 ```
+
+See `frontend/src/components/ui/ButlerMark.tsx` (`KNOWN_BUTLERS`,
+`CATEGORY_VARS`, `butlerHueVar()`) and
+`openspec/specs/dashboard-design-language/spec.md` § Requirement: Butler
+Category Hues for the current canonical mapping.
 
 ---
 

@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useMindMapAnalytics } from "@/hooks/use-education";
+import { chartColor } from "@/lib/chart-colors";
 
 interface MasteryTrendChartProps {
   mindMapId: string | null;
@@ -52,8 +53,8 @@ export default function MasteryTrendChart({ mindMapId }: MasteryTrendChartProps)
             <Area
               type="monotone"
               dataKey="mastery"
-              stroke="#3b82f6"
-              fill="#3b82f6"
+              stroke={chartColor()}
+              fill={chartColor()}
               fillOpacity={0.2}
             />
           </AreaChart>

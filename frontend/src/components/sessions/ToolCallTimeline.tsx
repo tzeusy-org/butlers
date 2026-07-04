@@ -123,9 +123,9 @@ interface NormalizedToolCall {
 type ToolCallOutcome = "success" | "failed" | "pending" | "unknown";
 
 const TOOL_CALL_OUTCOME_STYLES: Record<ToolCallOutcome, { dotClass: string; label: string }> = {
-  success: { dotClass: "bg-emerald-500", label: "Success" },
+  success: { dotClass: "bg-[var(--green)]", label: "Success" },
   failed: { dotClass: "bg-destructive", label: "Failed" },
-  pending: { dotClass: "bg-amber-500", label: "Pending" },
+  pending: { dotClass: "bg-[var(--amber)]", label: "Pending" },
   unknown: { dotClass: "bg-muted-foreground/40", label: "Unknown" },
 };
 
@@ -323,7 +323,7 @@ export function ToolCallTimeline({
                     /error|fail/i.test(tc.outcome)
                       ? "text-destructive"
                       : /success|accepted|ok/i.test(tc.outcome)
-                        ? "text-emerald-600"
+                        ? "text-[var(--green)]"
                         : "text-muted-foreground",
                   )}
                 >

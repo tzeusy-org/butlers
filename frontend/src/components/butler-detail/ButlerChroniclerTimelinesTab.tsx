@@ -335,7 +335,7 @@ function SourceErrorIcon({ message }: { message: string }) {
     <Tooltip open={open} onOpenChange={setOpen}>
       <TooltipTrigger asChild>
         <AlertTriangle
-          className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+          className="h-3.5 w-3.5 shrink-0 text-[var(--amber-text)]"
           aria-label={`Source error: ${message}`}
           role="img"
           data-testid="source-error-icon"

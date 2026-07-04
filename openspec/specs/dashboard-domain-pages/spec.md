@@ -333,7 +333,7 @@ The page MUST contain:
 #### Scenario: Label color determinism
 
 - **WHEN** a label named "family" has no explicit `color` set
-- **THEN** its badge color MUST be deterministically derived from a hash of "family" using the categorical palette: `var(--category-1)`, `var(--category-2)`, `var(--category-3)`, `var(--category-4)`, `var(--category-5)`, `var(--category-6)`, `var(--category-7)`, `var(--category-8)`
+- **THEN** its badge color MUST be deterministically derived from a hash of "family" using the categorical palette: `var(--category-1)` through `var(--category-12)` (see `frontend/src/components/ui/ButlerMark.tsx` `categoryHueVar()`, the single source of truth for this hash pool — bu-86c4c.6 extended it from 8 to 12 slots)
 - **AND** the same label MUST always render with the same color
 
 #### Scenario: Google sync with mixed results
@@ -1414,9 +1414,9 @@ Data freshness MUST follow domain-appropriate refresh intervals:
 ## Source References
 
 - `frontend/src/index.css` — `--severity-low`, `--severity-medium`,
-  `--severity-high` token definitions (lines 67–69); `--category-1` through
-  `--category-8` definitions (lines 78–85). Both sets are also aliased into
-  Tailwind via `--color-severity-*` and `--color-category-*` (lines 263–281).
+  `--severity-high` token definitions; `--category-1` through `--category-12`
+  definitions (extended from 8 slots by bu-86c4c.6). Both sets are also
+  aliased into Tailwind via `--color-severity-*` and `--color-category-*`.
 - Epic bu-v1tt2 (Vertical C) — token system migration that introduced the named
   CSS tokens; this spec change closes the remaining spec-code drift.
 - `about/heart-and-soul/design-language.md` — token exemption for `--chart-*`

@@ -133,8 +133,8 @@ describe("QA dossier atoms", () => {
     render(<StateTrack stage="escalated" />);
 
     expect(screen.getByTestId("qa-state-track-escalated-label").textContent).toBe("· escalated");
-    expect(screen.getByTestId("qa-state-track-pr").className).toContain("text-amber-500");
-    expect(screen.getByTestId("qa-state-track-landed").className).toContain("text-amber-500");
+    expect(screen.getByTestId("qa-state-track-pr").className).toContain("text-[var(--amber-text)]");
+    expect(screen.getByTestId("qa-state-track-landed").className).toContain("text-[var(--amber-text)]");
   });
 
   it("renders the active dismissal caption when present", () => {

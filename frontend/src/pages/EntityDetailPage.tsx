@@ -362,7 +362,7 @@ function TelegramSessionSetup({
       <div className="flex items-center justify-between">
         <Eyebrow as="div">Telegram user session</Eyebrow>
         {status?.ready && (
-          <Badge variant="outline" className="text-green-600 border-green-600">Connected</Badge>
+          <Badge variant="outline" className="text-[var(--green)] border-[var(--green)]">Connected</Badge>
         )}
       </div>
       <div className="space-y-3">
@@ -370,19 +370,19 @@ function TelegramSessionSetup({
         {status && step === "idle" && (
           <div className="flex flex-col gap-1.5 text-sm">
             <div className="flex items-center gap-2">
-              <span className={status.has_api_id ? "text-green-600" : "text-muted-foreground"}>
+              <span className={status.has_api_id ? "text-[var(--green)]" : "text-muted-foreground"}>
                 {status.has_api_id ? "+" : "-"}
               </span>
               <span>API ID</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className={status.has_api_hash ? "text-green-600" : "text-muted-foreground"}>
+              <span className={status.has_api_hash ? "text-[var(--green)]" : "text-muted-foreground"}>
                 {status.has_api_hash ? "+" : "-"}
               </span>
               <span>API Hash</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className={status.has_session ? "text-green-600" : "text-muted-foreground"}>
+              <span className={status.has_session ? "text-[var(--green)]" : "text-muted-foreground"}>
                 {status.has_session ? "+" : "-"}
               </span>
               <span>Session String</span>
@@ -579,7 +579,7 @@ function TelegramSessionSetup({
         {/* Step: success */}
         {step === "success" && (
           <div className="space-y-2">
-            <div className="flex items-center gap-2 text-sm text-green-600">
+            <div className="flex items-center gap-2 text-sm text-[var(--green)]">
               <Check className="h-4 w-4" />
               <span>
                 Session created{userName ? ` for ${userName}` : ""}.

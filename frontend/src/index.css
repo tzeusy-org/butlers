@@ -5,7 +5,13 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* bu-86c4c.6: body font flips to the Dispatch --font-sans token (Inter
+   * Tight) instead of the generic system-ui stack, so the default body
+   * typeface speaks the same language as every opted-in Dispatch page.
+   * --font-sans is declared later in this same :root block (§ Font family
+   * tokens below); custom-property resolution does not require declaration
+   * order within one rule. */
+  font-family: var(--font-sans);
   line-height: 1.5;
   font-weight: 400;
   color: #213547;
@@ -132,7 +138,16 @@
   --permanence-strong:    oklch(0.646 0.120 41.1); /* warm orange               — chroma 0.222 → 0.120 */
   --permanence-permanent: oklch(0.488 0.130 264.4); /* deep blue                 — chroma 0.243 → 0.130 */
 
-  /* Categorical palette */
+  /* Categorical palette
+   *
+   * bu-86c4c.6: extended from 8 to 12 slots. The 11-butler roster
+   * (frontend/src/components/ui/ButlerMark.tsx KNOWN_BUTLERS) collided past
+   * slot 8 under the old mod-8 wrap (qa/relationship/travel silently reused
+   * chronicler/education/finance's hues). Slots 9-11 are new hues chosen to
+   * fill the largest gaps in the existing hue ring (see hue survey below);
+   * slot 12 is spare growth headroom. Slots 1-8 are UNCHANGED — every
+   * existing consumer (charts, badges, tags) keeps its exact color.
+   */
   --category-1: oklch(0.623 0.130 259.0);  /* blue   — chroma 0.214 → 0.130 */
   --category-2: oklch(0.581 0.130 292.5);  /* violet — chroma 0.234 → 0.130 */
   --category-3: oklch(0.769 0.120 84.0);   /* amber  — chroma 0.189 → 0.120 */
@@ -141,6 +156,10 @@
   --category-6: oklch(0.585 0.130 320.0);  /* mauve  — chroma 0.233 → 0.130, hue 278 → 320 (gap fix) */
   --category-7: oklch(0.717 0.120 208.5);  /* cyan   — chroma 0.184 → 0.120 */
   --category-8: oklch(0.737 0.130 58.0);   /* orange — chroma 0.213 → 0.130 */
+  --category-9:  oklch(0.650 0.130 128.0); /* green       — fills the 84°→183.5° (amber→teal) gap */
+  --category-10: oklch(0.620 0.150 346.0); /* raspberry   — fills the 320°→11.2° (mauve→rose) gap */
+  --category-11: oklch(0.580 0.140 234.0); /* indigo      — fills the 208.5°→259° (cyan→blue) gap */
+  --category-12: oklch(0.620 0.150 35.0);  /* red-orange  — fills the 11.2°→58° (rose→orange) gap; spare growth slot */
 
   /* ---------------------------------------------------------------------------
    * Role badge tokens
@@ -363,6 +382,10 @@ body {
   --color-category-6: var(--category-6);
   --color-category-7: var(--category-7);
   --color-category-8: var(--category-8);
+  --color-category-9:  var(--category-9);
+  --color-category-10: var(--category-10);
+  --color-category-11: var(--category-11);
+  --color-category-12: var(--category-12);
 
   /* Role badges */
   --color-role-owner:   var(--role-owner);
@@ -484,6 +507,10 @@ body {
   --category-6: oklch(0.640 0.130 320.0);  /* mauve  — chroma 0.218 → 0.130, hue 278 → 320 (gap fix) */
   --category-7: oklch(0.770 0.115 208.5);  /* cyan   — chroma 0.168 → 0.115 */
   --category-8: oklch(0.790 0.130 58.0);   /* orange — chroma 0.200 → 0.130 */
+  --category-9:  oklch(0.710 0.125 128.0); /* green       — lifted ~0.06 L to match dark-mode siblings */
+  --category-10: oklch(0.680 0.145 346.0); /* raspberry   — lifted ~0.06 L */
+  --category-11: oklch(0.640 0.135 234.0); /* indigo      — lifted ~0.06 L */
+  --category-12: oklch(0.680 0.145 35.0);  /* red-orange  — lifted ~0.06 L; spare growth slot */
 
   /* Role badges — lifted ~0.07 L for legibility on dark card backgrounds */
   --role-owner:   oklch(0.561 0.262 275.1);

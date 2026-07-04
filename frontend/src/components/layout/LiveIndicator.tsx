@@ -25,14 +25,14 @@ const STATE_META: Record<
 > = {
   connected: {
     label: 'Live',
-    dotClass: 'bg-green-500',
+    dotClass: 'bg-[var(--green)]',
     textClass: 'text-muted-foreground',
     pulse: true,
   },
   reconnecting: {
     label: 'Reconnecting',
-    dotClass: 'bg-amber-500',
-    textClass: 'text-amber-600 dark:text-amber-400',
+    dotClass: 'bg-[var(--amber)]',
+    textClass: 'text-[var(--amber-text)]',
     pulse: true,
   },
   down: {

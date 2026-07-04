@@ -51,11 +51,11 @@ function activityLabel(activity: ActivityVerb): string {
 function activityChipClasses(activity: ActivityVerb): string {
   switch (activity) {
     case "running":
-      return "text-emerald-600 dark:text-emerald-400"
+      return "text-[var(--green)]"
     case "idle":
       return "text-muted-foreground"
     case "overdue":
-      return "text-amber-600 dark:text-amber-400"
+      return "text-[var(--amber-text)]"
     case "offline":
       return "text-destructive"
     case "quarantined":
@@ -105,8 +105,8 @@ function cadenceTooltip(row: Pick<StatusBoardRow, "activity" | "silenceSeconds" 
 /** Color class for the left-edge state rail, keyed off eligibility per spec. */
 function eligibilityRailClass(eligibility: EligibilityState): string {
   switch (eligibility) {
-    case "active":      return "bg-emerald-500"
-    case "stale":       return "bg-amber-500"
+    case "active":      return "bg-[var(--green)]"
+    case "stale":       return "bg-[var(--amber)]"
     case "quarantined": return "bg-destructive"
     case "unavailable": return "bg-muted-foreground/30"
   }
@@ -238,7 +238,7 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
               isRestorePending
                 ? "cursor-not-allowed text-muted-foreground"
                 : "cursor-pointer underline underline-offset-2 decoration-current/50",
-              !isRestorePending && (heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-amber-600 dark:text-amber-400" : activityChipClasses(activity)),
+              !isRestorePending && (heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-[var(--amber-text)]" : activityChipClasses(activity)),
             ].filter(Boolean).join(" ")}
           >
             {isRestorePending ? "RESTORING…" : heartbeatUnavailable ? "—" : eligibility === "stale" ? "STALE" : activityLabel(activity)}
@@ -248,7 +248,7 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
             title={eligibility === "quarantined" ? quarantineReason ?? undefined : chipTitle}
             className={[
               "font-mono text-[9px] uppercase tracking-wider",
-              heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-amber-600 dark:text-amber-400" : activityChipClasses(activity),
+              heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-[var(--amber-text)]" : activityChipClasses(activity),
             ].join(" ")}
           >
             {heartbeatUnavailable ? "—" : eligibility === "stale" ? "STALE" : activityLabel(activity)}

@@ -172,7 +172,7 @@ function CircuitStateBadge({ state }: { state: "closed" | "open" | "half_open" }
     return (
       <Badge
         variant="outline"
-        className="border-emerald-500 text-emerald-600 text-xs"
+        className="border-[var(--green)] text-[var(--green)] text-xs"
         data-testid="circuit-state-badge"
       >
         closed
@@ -190,7 +190,7 @@ function CircuitStateBadge({ state }: { state: "closed" | "open" | "half_open" }
     return (
       <Badge
         variant="outline"
-        className="border-amber-500 text-amber-600 text-xs"
+        className="border-[var(--amber)] text-[var(--amber-text)] text-xs"
         data-testid="circuit-state-badge"
       >
         half open

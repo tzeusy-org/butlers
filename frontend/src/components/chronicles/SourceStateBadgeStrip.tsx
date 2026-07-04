@@ -109,7 +109,7 @@ function InactiveBadge({ row }: SourceBadgeProps) {
     <Tooltip>
       <TooltipTrigger asChild>
         <Badge
-          className="bg-yellow-500 text-white border-transparent cursor-help"
+          className="bg-[var(--amber)] text-white border-transparent cursor-help"
           aria-label={`${label}: no recent data`}
           aria-describedby={undefined}
         >

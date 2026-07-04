@@ -129,12 +129,12 @@ describe("BoardFooter", () => {
   describe("status-tone dots", () => {
     it("renders emerald dot when active > 0", () => {
       const html = render(makeAggregates({ active: 1 }))
-      expect(html).toContain("bg-emerald-500")
+      expect(html).toContain("bg-[var(--green)]")
     })
 
     it("does NOT render emerald dot when active === 0", () => {
       const html = render(makeAggregates({ active: 0 }))
-      expect(html).not.toContain("bg-emerald-500")
+      expect(html).not.toContain("bg-[var(--green)]")
     })
 
     it("renders destructive dot when offline > 0", () => {
@@ -156,7 +156,7 @@ describe("BoardFooter", () => {
       const html = render(
         makeAggregates({ active: 0, offline: 0, quarantined: 0 }),
       )
-      expect(html).not.toContain("bg-emerald-500")
+      expect(html).not.toContain("bg-[var(--green)]")
       expect(html).not.toContain("bg-destructive")
     })
   })

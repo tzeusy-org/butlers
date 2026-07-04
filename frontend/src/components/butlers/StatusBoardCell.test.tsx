@@ -88,9 +88,9 @@ describe("StatusBoardCell: activity=running", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell row={makeRow({ activity: "running", cellTone: "green", eligibility: "active" })} />,
     )
-    expect(html).toContain("bg-emerald-500")
+    expect(html).toContain("bg-[var(--green)]")
     expect(html).not.toContain("bg-destructive")
-    expect(html).not.toContain("bg-amber-500")
+    expect(html).not.toContain("bg-[var(--amber)]")
   })
 })
 
@@ -111,7 +111,7 @@ describe("StatusBoardCell: activity=offline", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell row={makeRow({ activity: "offline", cellTone: "red", status: "down", eligibility: "active" })} />,
     )
-    expect(html).toContain("bg-emerald-500")
+    expect(html).toContain("bg-[var(--green)]")
     expect(html).not.toContain("bg-destructive")
   })
 })
@@ -171,7 +171,7 @@ describe("StatusBoardCell: activity=overdue", () => {
       <StatusBoardCell row={makeRow({ activity: "overdue", cellTone: "amber" })} />,
     )
     expect(html).toContain("OVERDUE")
-    expect(html).toContain("text-amber-600")
+    expect(html).toContain("text-[var(--amber-text)]")
   })
 
   it("chip title surfaces the cron-expectation message (silent Xd, expected Y)", () => {
@@ -254,9 +254,9 @@ describe("StatusBoardCell: eligibility=stale", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell row={makeRow({ activity: "idle", eligibility: "stale" })} />,
     )
-    expect(html).toContain("bg-amber-500")
+    expect(html).toContain("bg-[var(--amber)]")
     expect(html).not.toContain("bg-destructive")
-    expect(html).not.toContain("bg-emerald-500")
+    expect(html).not.toContain("bg-[var(--green)]")
   })
 
   it("renders STALE chip label (not IDLE) for stale eligibility", () => {
@@ -267,7 +267,7 @@ describe("StatusBoardCell: eligibility=stale", () => {
       />,
     )
     expect(html).toContain("STALE")
-    expect(html).toContain("text-amber-600")
+    expect(html).toContain("text-[var(--amber-text)]")
     expect(html).not.toContain("IDLE")
   })
 })
@@ -281,14 +281,14 @@ describe("StatusBoardCell: eligibility rail colors", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell row={makeRow({ eligibility: "active" })} />,
     )
-    expect(html).toContain("bg-emerald-500")
+    expect(html).toContain("bg-[var(--green)]")
   })
 
   it("stale eligibility → amber rail", () => {
     const html = renderToStaticMarkup(
       <StatusBoardCell row={makeRow({ eligibility: "stale" })} />,
     )
-    expect(html).toContain("bg-amber-500")
+    expect(html).toContain("bg-[var(--amber)]")
   })
 
   it("quarantined eligibility → red rail", () => {
@@ -305,8 +305,8 @@ describe("StatusBoardCell: eligibility rail colors", () => {
       <StatusBoardCell row={makeRow({ eligibility: "unavailable" })} />,
     )
     expect(html).toContain("bg-muted-foreground/30")
-    expect(html).not.toContain("bg-emerald-500")
-    expect(html).not.toContain("bg-amber-500")
+    expect(html).not.toContain("bg-[var(--green)]")
+    expect(html).not.toContain("bg-[var(--amber)]")
     expect(html).not.toContain("bg-destructive")
   })
 })

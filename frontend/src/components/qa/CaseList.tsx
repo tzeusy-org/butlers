@@ -12,10 +12,12 @@ interface CaseListProps {
   headerLabel?: string;
 }
 
+// bu-86c4c.6: raw Tailwind shades -> Dispatch state tokens (background-fill
+// on a small status dot, the accepted "dot" affordance exception).
 const prStateClass: Record<NonNullable<QaCaseSummary["pr_state"]>, string> = {
   drafted: "bg-muted-foreground",
-  open: "bg-amber-500",
-  merged: "bg-emerald-500",
+  open: "bg-[var(--amber)]",
+  merged: "bg-[var(--green)]",
   closed: "bg-muted-foreground",
 };
 

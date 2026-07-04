@@ -72,7 +72,7 @@ function CopyableText({ text }: { text: string }) {
     >
       <span className="truncate max-w-[200px]">{text}</span>
       {copied ? (
-        <CheckIcon className="size-3 text-emerald-500 shrink-0" />
+        <CheckIcon className="size-3 text-[var(--green)] shrink-0" />
       ) : (
         <CopyIcon className="size-3 shrink-0" />
       )}

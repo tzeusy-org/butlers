@@ -279,7 +279,7 @@ describe("SessionDetailDrawer", () => {
     expect(dots).toHaveLength(4);
 
     expect(dots[0]?.getAttribute("data-tool-call-outcome")).toBe("success");
-    expect(dots[0]?.className).toContain("bg-emerald-500");
+    expect(dots[0]?.className).toContain("bg-[var(--green)]");
     expect(dots[0]?.getAttribute("aria-label")).toBe("Tool call outcome: Success");
 
     expect(dots[1]?.getAttribute("data-tool-call-outcome")).toBe("failed");
@@ -287,7 +287,7 @@ describe("SessionDetailDrawer", () => {
     expect(dots[1]?.getAttribute("aria-label")).toBe("Tool call outcome: Failed");
 
     expect(dots[2]?.getAttribute("data-tool-call-outcome")).toBe("pending");
-    expect(dots[2]?.className).toContain("bg-amber-500");
+    expect(dots[2]?.className).toContain("bg-[var(--amber)]");
     expect(dots[2]?.getAttribute("aria-label")).toBe("Tool call outcome: Pending");
 
     expect(dots[3]?.getAttribute("data-tool-call-outcome")).toBe("unknown");

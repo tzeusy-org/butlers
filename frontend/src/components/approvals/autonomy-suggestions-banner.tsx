@@ -103,12 +103,12 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
 
 function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: SuggestionCardProps) {
   return (
-    <Card className="border-amber-200 bg-amber-50/30 dark:border-amber-800 dark:bg-amber-950/20">
+    <Card className="border-[var(--amber)] bg-[var(--amber)]/30">
       <CardHeader className="pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-            <CardTitle className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+            <AlertTriangle className="h-4 w-4 text-[var(--amber-text)] shrink-0 mt-0.5" />
+            <CardTitle className="text-sm font-semibold text-[var(--amber-text)]">
               Review Standing Rule
             </CardTitle>
           </div>

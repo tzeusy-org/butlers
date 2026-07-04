@@ -30,7 +30,7 @@ export function ButlerStatusBadge({
           data-testid={testId}
           role={role}
           aria-label={ariaLabel ?? "Butler status: Up"}
-          className="bg-emerald-600 text-white hover:bg-emerald-600/90"
+          className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90"
         >
           Up
         </Badge>
@@ -42,7 +42,7 @@ export function ButlerStatusBadge({
           role={role}
           aria-label={ariaLabel ?? "Butler status: Degraded"}
           variant="outline"
-          className="border-amber-500 text-amber-600"
+          className="border-[var(--amber)] text-[var(--amber-text)]"
         >
           Degraded
         </Badge>

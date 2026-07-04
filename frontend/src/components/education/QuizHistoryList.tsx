@@ -6,12 +6,12 @@ import { useQuizResponses } from "@/hooks/use-education";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 const QUALITY_LABELS: Record<number, { label: string; className: string }> = {
-  0: { label: "Blackout", className: "bg-red-100 text-red-800" },
-  1: { label: "Wrong", className: "bg-red-100 text-red-800" },
-  2: { label: "Hard", className: "bg-amber-100 text-amber-800" },
-  3: { label: "Okay", className: "bg-yellow-100 text-yellow-800" },
+  0: { label: "Blackout", className: "bg-[var(--red)]/10 text-[var(--red)]" },
+  1: { label: "Wrong", className: "bg-[var(--red)]/10 text-[var(--red)]" },
+  2: { label: "Hard", className: "bg-[var(--amber)]/10 text-[var(--amber-text)]" },
+  3: { label: "Okay", className: "bg-[var(--amber)]/10 text-[var(--amber-text)]" },
   4: { label: "Good", className: "bg-blue-100 text-blue-800" },
-  5: { label: "Easy", className: "bg-emerald-100 text-emerald-800" },
+  5: { label: "Easy", className: "bg-[var(--green)]/10 text-[var(--green)]" },
 };
 
 const RESPONSE_TYPE_LABELS: Record<string, { label: string; className: string }> = {

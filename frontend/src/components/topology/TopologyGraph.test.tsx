@@ -79,22 +79,22 @@ describe("TopologyGraph -- loading and empty states", () => {
 describe("TopologyGraph -- canonical liveness tone coloring", () => {
   it("colors a running butler green from its canonical tone", () => {
     const html = render({ butlers: [{ name: "finance", status: "ok", type: "butler", tone: "green" }] });
-    expect(html).toContain("#22c55e");
+    expect(html).toContain("var(--green)");
   });
 
   it("colors an overdue butler amber from its canonical tone", () => {
     const html = render({ butlers: [{ name: "chronicler", status: "ok", type: "butler", tone: "amber" }] });
-    expect(html).toContain("#eab308");
+    expect(html).toContain("var(--amber)");
   });
 
   it("colors an offline/quarantined butler red from its canonical tone", () => {
     const html = render({ butlers: [{ name: "qa", status: "down", type: "butler", tone: "red" }] });
-    expect(html).toContain("#ef4444");
+    expect(html).toContain("var(--red)");
   });
 
   it("colors an idle/unknown butler neutral gray from its canonical tone", () => {
     const html = render({ butlers: [{ name: "general", status: "ok", type: "butler", tone: "neutral" }] });
-    expect(html).toContain("#6b7280");
+    expect(html).toContain("var(--dim)");
   });
 
   it("gives staffers the blue-hued running tone (butler/staffer distinction preserved)", () => {
@@ -105,13 +105,13 @@ describe("TopologyGraph -- canonical liveness tone coloring", () => {
     // the switchboard node itself rather than the whole page.
     const nodeMatch = html.match(/<div data-testid="node-switchboard"[^>]*>/);
     expect(nodeMatch).not.toBeNull();
-    expect(nodeMatch![0]).toContain("#3b82f6");
-    expect(nodeMatch![0]).not.toContain("#22c55e");
+    expect(nodeMatch![0]).toContain("var(--category-1)");
+    expect(nodeMatch![0]).not.toContain("var(--green)");
   });
 
   it("falls back to the legacy status-string color when tone is absent", () => {
     const html = render({ butlers: [{ name: "legacy-caller", status: "ok", type: "butler" }] });
-    expect(html).toContain("#22c55e");
+    expect(html).toContain("var(--green)");
   });
 
   it("animates the switchboard edge only when the butler's tone is green (running)", () => {

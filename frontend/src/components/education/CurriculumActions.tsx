@@ -14,7 +14,7 @@ import {
 import { useUpdateMindMapStatus } from "@/hooks/use-education";
 
 const STATUS_BADGE: Record<string, string> = {
-  active: "bg-emerald-100 text-emerald-800",
+  active: "bg-[var(--green)]/10 text-[var(--green)]",
   completed: "bg-blue-100 text-blue-800",
   abandoned: "bg-gray-100 text-gray-800",
 };

@@ -212,11 +212,11 @@ describe("ButlerApprovalsTab -- severity dot rendering", () => {
     expect(dot.className).toContain("bg-destructive")
   })
 
-  it("medium-severity dot has bg-amber-500 class", () => {
+  it("medium-severity dot has bg-[var(--amber)] class", () => {
     setupWithActions([MEDIUM_ACTION])
     renderTab()
     const dot = screen.getAllByTestId("severity-dot")[0]
-    expect(dot.className).toContain("bg-amber-500")
+    expect(dot.className).toContain("bg-[var(--amber)]")
   })
 
   it("low-severity dot has bg-muted-foreground class", () => {

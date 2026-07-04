@@ -117,7 +117,7 @@ export default function RuntimeConfigCard({ butlerName }: RuntimeConfigCardProps
       </CardHeader>
       <CardContent className="space-y-4">
         {restartFields.length > 0 && (
-          <div className="rounded-md bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 p-3 text-sm">
+          <div className="rounded-md bg-[var(--amber)]/10 border border-[var(--amber)]/40 p-3 text-sm">
             Restart required for: {restartFields.join(", ")}
           </div>
         )}

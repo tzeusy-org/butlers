@@ -28,6 +28,7 @@ import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Eyebrow } from "@/components/ui/Eyebrow";
 import { cn } from "@/lib/utils";
 import { useSettingsConsoleStream } from "@/hooks/use-settings-console-stream";
 import QaStafferCard from "@/components/settings/QaStafferCard";
@@ -71,23 +72,6 @@ interface ModelStats {
 
 interface ApprovalMetricsSummary {
   pending: number;
-}
-
-// ---------------------------------------------------------------------------
-// Shared mono eyebrow — 10px uppercase, 0.14em tracking, muted
-// ---------------------------------------------------------------------------
-
-function Eyebrow({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <p
-      className={cn(
-        "font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground leading-none",
-        className,
-      )}
-    >
-      {children}
-    </p>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +218,7 @@ function KpiCell({
 }) {
   return (
     <div className="flex flex-col gap-1.5 px-4 py-3 border-r border-b border-border/60 last:border-r-0 sm:[&:nth-child(2)]:border-r-0 lg:[&:nth-child(2)]:border-r lg:[&:nth-child(4)]:border-r-0">
-      <Eyebrow>{label}</Eyebrow>
+      <Eyebrow as="p">{label}</Eyebrow>
       {loading ? (
         <Skeleton className="h-8 w-16" />
       ) : (
@@ -543,7 +527,7 @@ export default function SettingsConsolePage() {
       {/* ------------------------------------------------------------------ */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <Eyebrow className="mb-2">system · console</Eyebrow>
+          <Eyebrow as="p" className="mb-2">system · console</Eyebrow>
           <h1 className="text-3xl font-medium tracking-tight leading-tight">Settings</h1>
           <p className="text-muted-foreground mt-1 text-sm">
             System configuration, model catalog, spend controls, and access management.

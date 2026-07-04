@@ -2,6 +2,7 @@ import { Link, useParams } from "react-router";
 
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Time } from "@/components/ui/time";
+import { Eyebrow } from "@/components/ui/Eyebrow";
 import { useQaPatrol } from "@/hooks/use-qa";
 import type { QaFindingRecord } from "@/api/index.ts";
 
@@ -34,7 +35,7 @@ function formatSourceType(value: string): string {
 const SEVERITY_CLASS: Record<number, string> = {
   0: "bg-destructive",
   1: "bg-destructive",
-  2: "bg-amber-500",
+  2: "bg-[var(--amber)]",
   3: "bg-muted-foreground",
   4: "bg-muted-foreground",
 };
@@ -63,7 +64,7 @@ function SeverityGlyph({ severity }: { severity: number }) {
 function DedupMark({ reason }: { reason: string | null }) {
   if (!reason) {
     return (
-      <span className="font-mono text-[10px] uppercase tracking-[0.10em] text-emerald-600 tnum">
+      <span className="font-mono text-[10px] uppercase tracking-[0.10em] text-[var(--green)] tnum">
         novel
       </span>
     );
@@ -180,18 +181,6 @@ function patrolStatusLabel(status: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Eyebrow primitive
-// ---------------------------------------------------------------------------
-
-function Eyebrow({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-      {children}
-    </p>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Loading skeleton
 // ---------------------------------------------------------------------------
 
@@ -248,7 +237,7 @@ export default function QaPatrolDetailPage() {
 
       {/* Page header */}
       <header className="space-y-1">
-        <Eyebrow>QA Patrol</Eyebrow>
+        <Eyebrow as="p">QA Patrol</Eyebrow>
         <h1 className="font-sans text-[22px] font-medium leading-[1.25] tracking-normal text-foreground">
           Patrol · <Time value={patrol.started_at} mode="absolute" />
         </h1>
@@ -261,7 +250,7 @@ export default function QaPatrolDetailPage() {
 
       {/* Findings section */}
       <section className="space-y-2" aria-label="Findings">
-        <Eyebrow>
+        <Eyebrow as="p">
           Findings ({patrol.findings_count}) &middot; {patrol.novel_count} novel &middot;{" "}
           {patrol.findings_count - patrol.novel_count} deduplicated
         </Eyebrow>
@@ -272,7 +261,7 @@ export default function QaPatrolDetailPage() {
       {/* Dispatch summary section */}
       {dispatched.length > 0 && (
         <section className="space-y-2" aria-label="Dispatched investigations">
-          <Eyebrow>
+          <Eyebrow as="p">
             Dispatched ({dispatched.length})
           </Eyebrow>
           <hr className="border-border" />
@@ -287,7 +276,7 @@ export default function QaPatrolDetailPage() {
       {/* Error detail */}
       {patrol.error_detail && (
         <section className="space-y-2" aria-label="Patrol error">
-          <Eyebrow>Error</Eyebrow>
+          <Eyebrow as="p">Error</Eyebrow>
           <p className="font-mono text-[11px] text-destructive">{patrol.error_detail}</p>
         </section>
       )}

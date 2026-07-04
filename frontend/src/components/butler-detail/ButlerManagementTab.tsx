@@ -160,7 +160,7 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded border border-border bg-muted/30 px-2 py-1 font-mono text-[11px] text-foreground">
-              <span className="text-green-600 dark:text-green-400">resolved · </span>
+              <span className="text-[var(--green)]">resolved · </span>
               {isLoading ? "…" : r?.resolved && r.model_id ? r.model_id : "not configured"}
             </span>
           </div>
@@ -371,9 +371,9 @@ function PromptDiffModal({
                 className={cn(
                   "whitespace-pre-wrap",
                   line.type === "added" &&
-                    "bg-green-500/10 text-green-700 dark:text-green-400",
+                    "bg-[var(--green)]/10 text-[var(--green)]",
                   line.type === "removed" &&
-                    "bg-red-500/10 text-red-700 dark:text-red-400",
+                    "bg-[var(--red)]/10 text-[var(--red)]",
                   line.type === "same" && "text-muted-foreground",
                 )}
               >
@@ -506,7 +506,7 @@ function ToolsSection({ butlerName }: { butlerName: string }) {
                   className={cn(
                     "h-4 w-4 rounded-full border",
                     t.allowed
-                      ? "border-green-500 bg-green-500/30"
+                      ? "border-[var(--green)] bg-[var(--green)]/30"
                       : "border-border bg-transparent",
                   )}
                 />
@@ -547,7 +547,7 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
                       className={cn(
                         "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-[0.04em]",
                         r
-                          ? "border-green-500 text-green-600 dark:text-green-400"
+                          ? "border-[var(--green)] text-[var(--green)]"
                           : "border-border text-muted-foreground",
                       )}
                     >
@@ -557,7 +557,7 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
                       className={cn(
                         "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-[0.04em]",
                         w
-                          ? "border-green-500 text-green-600 dark:text-green-400"
+                          ? "border-[var(--green)] text-[var(--green)]"
                           : "border-border text-muted-foreground",
                       )}
                     >
@@ -577,7 +577,7 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
               <ConfigRow
                 label="Drops · 7d"
                 value={
-                  <span className={ma.drops_7d > 0 ? "text-amber-500" : "text-muted-foreground"}>
+                  <span className={ma.drops_7d > 0 ? "text-[var(--amber-text)]" : "text-muted-foreground"}>
                     {ma.drops_7d}
                   </span>
                 }
@@ -667,7 +667,7 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
         <button
           type="button"
           onClick={() => setShowConfirm(true)}
-          className="font-mono text-[11px] text-red-500 underline underline-offset-4 hover:text-red-400"
+          className="font-mono text-[11px] text-[var(--red)] underline underline-offset-4 hover:opacity-80"
         >
           kill switch · 30s grace →
         </button>
@@ -697,7 +697,7 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
               <button
                 type="button"
                 disabled={isPending}
-                className="rounded border border-red-500/50 px-3 py-1.5 font-mono text-[11px] text-red-500 hover:bg-red-500/10 disabled:opacity-50"
+                className="rounded border border-[var(--red)]/50 px-3 py-1.5 font-mono text-[11px] text-[var(--red)] hover:bg-[var(--red)]/10 disabled:opacity-50"
                 onClick={handleConfirm}
               >
                 {isPending ? "shutting down…" : "confirm shutdown →"}

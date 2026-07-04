@@ -240,13 +240,13 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   }
 
   return (
-    <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-700 dark:bg-amber-950">
+    <div className="rounded-lg border border-[var(--amber)] bg-[var(--amber)] px-4 py-3">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-amber-900 dark:text-amber-100">
+          <p className="text-sm font-medium text-[var(--amber-text)]">
             Owner identity incomplete
           </p>
-          <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-300">
+          <p className="mt-0.5 text-xs text-[var(--amber-text)]">
             Missing: {missing.join(", ")}. Fill these in so butlers can recognise you and
             contact syncs don&apos;t create duplicates.
           </p>
@@ -256,7 +256,7 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
             <Button
               size="sm"
               variant="outline"
-              className="shrink-0 border-amber-400 text-amber-900 hover:bg-amber-100 dark:border-amber-600 dark:text-amber-100"
+              className="shrink-0 border-[var(--amber)] text-[var(--amber-text)] hover:bg-[var(--amber)]"
             >
               Set up identity
             </Button>

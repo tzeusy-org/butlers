@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { Eyebrow } from "@/components/ui/Eyebrow";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -83,23 +84,6 @@ interface WebhookWithSecret extends WebhookRow {
 
 type ExportScope = "all" | "memory" | "audit" | "config";
 
-// ---------------------------------------------------------------------------
-// Shared mono eyebrow — 10px uppercase, 0.14em tracking, muted
-// ---------------------------------------------------------------------------
-
-function Eyebrow({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <p
-      className={cn(
-        "font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground leading-none",
-        className,
-      )}
-    >
-      {children}
-    </p>
-  );
-}
-
 /**
  * Hairline section frame — a mono eyebrow header above a hairline-bordered body.
  * Replaces the old shadcn card chrome (no card components anywhere on this page).
@@ -116,7 +100,7 @@ function Section({
   return (
     <section className="flex flex-col gap-3">
       <div className="flex flex-col gap-1.5">
-        <Eyebrow>{title}</Eyebrow>
+        <Eyebrow as="p">{title}</Eyebrow>
         {description ? (
           <p className="text-xs text-muted-foreground leading-relaxed">{description}</p>
         ) : null}
@@ -495,7 +479,7 @@ function DataOpsSection() {
       {/* Export */}
       <div className="flex flex-col gap-3 border-r border-b border-border/60 px-4 py-4">
         <div className="flex flex-col gap-1.5">
-          <Eyebrow>Export data</Eyebrow>
+          <Eyebrow as="p">Export data</Eyebrow>
           <p className="text-xs text-muted-foreground leading-relaxed" data-testid="export-description">
             Download an AES-256-GCM encrypted export of your data. Decrypt using{" "}
             <span className="font-mono">DASHBOARD_EXPORT_ENCRYPTION_KEY</span>.
@@ -536,7 +520,7 @@ function DataOpsSection() {
         data-testid="wipe-panel-disabled"
       >
         <div className="flex flex-col gap-1.5">
-          <Eyebrow>Wipe all data</Eyebrow>
+          <Eyebrow as="p">Wipe all data</Eyebrow>
           <p className="text-xs text-muted-foreground leading-relaxed">
             Temporarily disabled. A safer implementation is in progress.
           </p>
@@ -1217,7 +1201,7 @@ export default function SettingsPermissionsPage() {
     <div className="max-w-5xl mx-auto space-y-8">
       {/* Page header */}
       <div>
-        <Eyebrow className="mb-2">system · permissions</Eyebrow>
+        <Eyebrow as="p" className="mb-2">system · permissions</Eyebrow>
         <h1 className="text-3xl font-medium tracking-tight leading-tight">
           Permissions &amp; data
         </h1>

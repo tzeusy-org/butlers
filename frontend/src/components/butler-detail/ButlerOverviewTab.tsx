@@ -197,7 +197,7 @@ function EventRow({
 function ActionRow({ action, butlerName }: { action: ApprovalAction; butlerName: string }) {
   return (
     <div className="grid grid-cols-[8px_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-border/40 py-2 last:border-b-0">
-      <span className="mt-1.5 h-1.5 w-1.5 rounded-[1px] bg-amber-500" aria-hidden="true" />
+      <span className="mt-1.5 h-1.5 w-1.5 rounded-[1px] bg-[var(--amber)]" aria-hidden="true" />
       <span className="min-w-0 truncate text-xs">
         {action.agent_summary || action.tool_name}
         <span className="text-muted-foreground"> · </span>
@@ -288,8 +288,8 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
           <span
             className={[
               "h-2 w-2 rounded-full",
-              statusTone(status) === "green" && "bg-emerald-500",
-              statusTone(status) === "amber" && "bg-amber-500",
+              statusTone(status) === "green" && "bg-[var(--green)]",
+              statusTone(status) === "amber" && "bg-[var(--amber)]",
               statusTone(status) === "red" && "bg-destructive",
               statusTone(status) === "dim" && "bg-muted-foreground",
             ].filter(Boolean).join(" ")}

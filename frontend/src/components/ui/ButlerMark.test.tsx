@@ -5,7 +5,7 @@
 // Coverage:
 //   - each known butler maps to a distinct, stable --category-N token
 //   - unknown butler names fall back to a hash-derived slot (deterministic)
-//   - the eight canonical slots are all reachable
+//   - the twelve canonical slots are all reachable
 //   - ButlerMark renders the correct initial glyph
 //   - tone="fill" and tone="neutral" produce the correct inline styles
 // ---------------------------------------------------------------------------
@@ -20,7 +20,7 @@ import { ButlerMark, butlerHueVar, KNOWN_BUTLERS } from "./ButlerMark"
 // ---------------------------------------------------------------------------
 
 describe("butlerHueVar: known butlers", () => {
-  // Verify that each known butler maps to one of the eight canonical tokens
+  // Verify that each known butler maps to one of the twelve canonical tokens
   // and that the mapping is stable (idempotent calls return the same value).
   const VALID_TOKENS = new Set([
     "var(--category-1)",
@@ -31,6 +31,10 @@ describe("butlerHueVar: known butlers", () => {
     "var(--category-6)",
     "var(--category-7)",
     "var(--category-8)",
+    "var(--category-9)",
+    "var(--category-10)",
+    "var(--category-11)",
+    "var(--category-12)",
   ])
 
   for (const name of KNOWN_BUTLERS) {
@@ -44,14 +48,15 @@ describe("butlerHueVar: known butlers", () => {
     })
   }
 
-  it("the first eight known butlers each occupy a distinct slot", () => {
-    // The roster has 11 known butlers. The first 8 must have unique slots;
-    // the 9th onward wraps. This assertion confirms no two of the first 8
-    // share a token (which would indicate a mapping collision in slot order).
-    const first8 = KNOWN_BUTLERS.slice(0, 8)
-    const tokens = first8.map((n) => butlerHueVar(n))
+  it("all known butlers occupy distinct slots (bu-86c4c.6: 12-slot ramp fits the full 11-butler roster)", () => {
+    // Regression guard for the collision this bead fixed: under the old
+    // mod-8 ramp, the 9th-11th roster entries (qa, relationship, travel)
+    // silently reused the 1st-3rd butler's hue (chronicler, education,
+    // finance). With 12 slots and 11 known butlers, every entry must now
+    // get its own distinct token.
+    const tokens = KNOWN_BUTLERS.map((n) => butlerHueVar(n))
     const uniqueTokens = new Set(tokens)
-    expect(uniqueTokens.size).toBe(8)
+    expect(uniqueTokens.size).toBe(KNOWN_BUTLERS.length)
   })
 })
 
@@ -62,7 +67,7 @@ describe("butlerHueVar: known butlers", () => {
 describe("butlerHueVar: unknown butler names", () => {
   it("returns a valid --category-N token for an unknown name", () => {
     const token = butlerHueVar("definitely-unknown-butler")
-    expect(token).toMatch(/^var\(--category-[1-8]\)$/)
+    expect(token).toMatch(/^var\(--category-(?:[1-9]|1[0-2])\)$/)
   })
 
   it("the same unknown name always resolves to the same token (deterministic multiplier-31 hash)", () => {
@@ -75,15 +80,15 @@ describe("butlerHueVar: unknown butler names", () => {
     // differ in their hash slot based on the djb2-like algorithm used.
     const a = butlerHueVar("alpha-x")
     const b = butlerHueVar("omega-z")
-    // We cannot guarantee they differ (8 slots, many names), but we CAN assert
+    // We cannot guarantee they differ (12 slots, many names), but we CAN assert
     // that both are valid tokens, which is the real invariant.
-    expect(a).toMatch(/^var\(--category-[1-8]\)$/)
-    expect(b).toMatch(/^var\(--category-[1-8]\)$/)
+    expect(a).toMatch(/^var\(--category-(?:[1-9]|1[0-2])\)$/)
+    expect(b).toMatch(/^var\(--category-(?:[1-9]|1[0-2])\)$/)
   })
 
   it("empty string falls back deterministically", () => {
     const token = butlerHueVar("")
-    expect(token).toMatch(/^var\(--category-[1-8]\)$/)
+    expect(token).toMatch(/^var\(--category-(?:[1-9]|1[0-2])\)$/)
   })
 })
 

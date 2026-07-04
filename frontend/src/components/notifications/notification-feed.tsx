@@ -47,7 +47,7 @@ function statusBadge(status: string) {
   switch (status) {
     case "sent":
       return (
-        <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
+        <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90">
           Sent
         </Badge>
       );
@@ -55,13 +55,13 @@ function statusBadge(status: string) {
       return <Badge variant="destructive">Failed</Badge>;
     case "retried":
       return (
-        <Badge variant="outline" className="border-amber-500 text-amber-600">
+        <Badge variant="outline" className="border-[var(--amber)] text-[var(--amber-text)]">
           Retried
         </Badge>
       );
     case "pending":
       return (
-        <Badge variant="outline" className="border-amber-500 text-amber-600">
+        <Badge variant="outline" className="border-[var(--amber)] text-[var(--amber-text)]">
           Pending
         </Badge>
       );

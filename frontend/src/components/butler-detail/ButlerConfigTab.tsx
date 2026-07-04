@@ -186,7 +186,7 @@ function SchedulePanelBody({ schedules, isLoading }: SchedulePanelBodyProps) {
 function OAuthStatusBadge({ status }: { status: string | null | undefined }) {
   if (status === "granted") {
     return (
-      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90 text-xs">
+      <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90 text-xs">
         authorized
       </Badge>
     );

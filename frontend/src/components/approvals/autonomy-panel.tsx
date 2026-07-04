@@ -58,7 +58,7 @@ function ruleTier(rule: ApprovalRule): "full autonomy" | "scoped" {
 
 function tierClass(tier: "full autonomy" | "scoped"): string {
   return tier === "full autonomy"
-    ? "text-red-600 dark:text-red-400"
+    ? "text-[var(--red)]"
     : "text-blue-600 dark:text-blue-400";
 }
 
@@ -87,7 +87,7 @@ function RuleRow({ rule }: { rule: ApprovalRule }) {
       </div>
       <div className="mt-1.5 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
-          <span className={nearMaxUses ? "text-amber-600 dark:text-amber-400 font-medium" : undefined}>
+          <span className={nearMaxUses ? "text-[var(--amber-text)] font-medium" : undefined}>
             {rule.use_count} use{rule.use_count === 1 ? "" : "s"}
             {rule.max_uses != null ? ` / ${rule.max_uses}` : ""}
           </span>

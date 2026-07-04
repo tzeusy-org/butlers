@@ -185,7 +185,7 @@ export function ScheduleTable({
                     title={schedule.enabled ? "Click to disable" : "Click to enable"}
                   >
                     {schedule.enabled ? (
-                      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
+                      <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90">
                         On
                       </Badge>
                     ) : (

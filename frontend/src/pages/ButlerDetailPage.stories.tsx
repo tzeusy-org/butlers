@@ -138,7 +138,7 @@ export const LoadingState: Story = () => (
   <StoryWrapper>
     <main aria-label="Butler detail: general">
       <PageHeading name="general" />
-      <div aria-label="Loading butler data" role="status" style={{ color: "#888" }}>
+      <div aria-label="Loading butler data" role="status" style={{ color: "var(--dim)" }}>
         Loading butler…
       </div>
     </main>
@@ -151,7 +151,7 @@ export const ErrorState: Story = () => (
   <StoryWrapper>
     <main aria-label="Butler detail: general">
       <PageHeading name="general" />
-      <div role="alert" aria-live="assertive" style={{ color: "#dc2626" }}>
+      <div role="alert" aria-live="assertive" style={{ color: "var(--red)" }}>
         Something went wrong: Failed to fetch butler data.
       </div>
     </main>

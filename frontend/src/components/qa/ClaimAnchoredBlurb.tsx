@@ -58,7 +58,7 @@ export function ClaimAnchoredBlurb({
             key={`claim-${segment.claim}-${index}`}
             className={cn(
               "rounded-[2px] underline decoration-border/80 decoration-1 underline-offset-4 transition-colors duration-fast",
-              active && "bg-severity-medium/15 decoration-amber-500",
+              active && "bg-severity-medium/15 decoration-[var(--amber)]",
             )}
             data-claim-id={segment.claim}
             data-testid={`qa-claim-${segment.claim}`}
@@ -70,7 +70,7 @@ export function ClaimAnchoredBlurb({
             <sup
               className={cn(
                 "ml-1 align-super font-mono text-[10px] leading-none text-muted-foreground transition-colors duration-fast",
-                active && "text-amber-500",
+                active && "text-[var(--amber-text)]",
               )}
               data-testid={`qa-claim-${segment.claim}-marker`}
             >

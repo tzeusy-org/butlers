@@ -126,13 +126,13 @@ describe("BoardHeader", () => {
 
     it("uses green dot class when all butlers healthy (healthy === total)", () => {
       const html = render(makeAggregates({ total: 10, offline: 0, quarantined: 0 }))
-      expect(html).toContain("bg-green-500")
+      expect(html).toContain("bg-[var(--green)]")
     })
 
     it("uses amber dot class when some butlers are unhealthy (healthy > 0 but < total)", () => {
       const html = render(makeAggregates({ total: 10, offline: 3, quarantined: 0 }))
-      expect(html).toContain("bg-amber-500")
-      expect(html).not.toContain("bg-green-500")
+      expect(html).toContain("bg-[var(--amber)]")
+      expect(html).not.toContain("bg-[var(--green)]")
     })
 
     it("uses red dot class when no butlers are healthy (healthy === 0)", () => {
@@ -140,9 +140,9 @@ describe("BoardHeader", () => {
         makeAggregates({ total: 4, active: 0, offline: 2, quarantined: 2 }),
       )
       // healthy = 4 - 2 - 2 = 0
-      expect(html).toContain("bg-red-500")
-      expect(html).not.toContain("bg-green-500")
-      expect(html).not.toContain("bg-amber-500")
+      expect(html).toContain("bg-[var(--red)]")
+      expect(html).not.toContain("bg-[var(--green)]")
+      expect(html).not.toContain("bg-[var(--amber)]")
     })
 
     it("uses amber dot when quarantined reduces health below total", () => {
@@ -150,7 +150,7 @@ describe("BoardHeader", () => {
         makeAggregates({ total: 10, offline: 0, quarantined: 2 }),
       )
       // healthy = 10 - 0 - 2 = 8
-      expect(html).toContain("bg-amber-500")
+      expect(html).toContain("bg-[var(--amber)]")
     })
 
     it("dents pill to amber when sourcesPartiallyDegraded=true even if all butlers appear healthy", () => {
@@ -160,16 +160,16 @@ describe("BoardHeader", () => {
       const html = render(
         makeAggregates({ total: 10, offline: 0, quarantined: 0, sourcesPartiallyDegraded: true }),
       )
-      expect(html).toContain("bg-amber-500")
-      expect(html).not.toContain("bg-green-500")
+      expect(html).toContain("bg-[var(--amber)]")
+      expect(html).not.toContain("bg-[var(--green)]")
     })
 
     it("remains green when sourcesPartiallyDegraded=false and all healthy", () => {
       const html = render(
         makeAggregates({ total: 10, offline: 0, quarantined: 0, sourcesPartiallyDegraded: false }),
       )
-      expect(html).toContain("bg-green-500")
-      expect(html).not.toContain("bg-amber-500")
+      expect(html).toContain("bg-[var(--green)]")
+      expect(html).not.toContain("bg-[var(--amber)]")
     })
 
     it("pill stays amber (not red) when sourcesPartiallyDegraded=true and some are offline", () => {
@@ -177,7 +177,7 @@ describe("BoardHeader", () => {
         makeAggregates({ total: 10, offline: 2, quarantined: 0, sourcesPartiallyDegraded: true }),
       )
       // healthy = 8, total = 10, healthy > 0 → amber regardless of degraded flag
-      expect(html).toContain("bg-amber-500")
+      expect(html).toContain("bg-[var(--amber)]")
     })
 
     it("pill shows red when all unhealthy even with sourcesPartiallyDegraded=true", () => {
@@ -185,7 +185,7 @@ describe("BoardHeader", () => {
         makeAggregates({ total: 4, offline: 4, quarantined: 0, sourcesPartiallyDegraded: true }),
       )
       // healthy = 0 → red
-      expect(html).toContain("bg-red-500")
+      expect(html).toContain("bg-[var(--red)]")
     })
   })
 

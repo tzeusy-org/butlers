@@ -10,6 +10,15 @@
 // `aggregations.LANES` / `lane_for_category` for the backend contract.
 //
 // Backend never returns colours, labels, or icons — those live here only.
+//
+// bu-86c4c.6: this is a fixed 9-slot life-activity categorical palette, not
+// the tri-state (red/amber/green) system color vocabulary — "eat" and "rest"
+// happen to land on amber/emerald shades by coincidence of a 9-color
+// taxonomy, not because either lane is a health/error signal. `--category-*`
+// is not a substitute either (that ramp is reserved for butler letter-marks
+// only, per about/heart-and-soul/design-language.md § Butler hue scope).
+// The two coincidental matches below are exempted from the raw-status-color
+// eslint rule with a line-level disable, not a lane recoloring.
 // ---------------------------------------------------------------------------
 
 import type { LucideIcon } from "lucide-react"
@@ -125,6 +134,7 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
   },
   eat: {
     label: "Eat",
+    // eslint-disable-next-line no-restricted-syntax -- lane taxonomy color, not a status signal (see file header)
     colour: "bg-amber-500",
     hex: "#f59e0b",
     icon: Utensils,
@@ -132,6 +142,7 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
   },
   rest: {
     label: "Rest",
+    // eslint-disable-next-line no-restricted-syntax -- lane taxonomy color, not a status signal (see file header)
     colour: "bg-emerald-600",
     hex: "#059669",
     icon: Armchair,

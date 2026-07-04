@@ -16,7 +16,7 @@ const TRACK_STAGES: Exclude<QaStateTrackStage, "escalated">[] = [
 
 function stageClass(stage: Exclude<QaStateTrackStage, "escalated">, activeStage: QaStateTrackStage) {
   if (activeStage === "escalated") {
-    return stage === "pr" || stage === "landed" ? "text-amber-500" : "text-foreground";
+    return stage === "pr" || stage === "landed" ? "text-[var(--amber-text)]" : "text-foreground";
   }
 
   const currentIndex = TRACK_STAGES.indexOf(activeStage);
@@ -50,7 +50,7 @@ export function StateTrack({ stage, className }: StateTrackProps) {
       ))}
       {stage === "escalated" ? (
         <span
-          className="text-amber-500"
+          className="text-[var(--amber-text)]"
           data-testid="qa-state-track-escalated-label"
         >
           · escalated

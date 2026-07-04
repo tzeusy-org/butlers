@@ -390,7 +390,7 @@ function Toolbar({
                 </span>
                 {modified && (
                   <span
-                    className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-amber-500"
+                    className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-[var(--amber)]"
                     data-testid={`view-modified-dot-${view.id}`}
                     aria-label="Filters differ from this saved view"
                   />
@@ -431,7 +431,7 @@ function Toolbar({
                     {view.name}
                     {modified && (
                       <span
-                        className="absolute top-1 right-2 size-1.5 rounded-full bg-amber-500"
+                        className="absolute top-1 right-2 size-1.5 rounded-full bg-[var(--amber)]"
                         data-testid={`view-modified-dot-${view.id}`}
                         aria-label="Filters differ from this saved view"
                       />
@@ -467,7 +467,7 @@ function Toolbar({
                     }}
                     className={[
                       "rounded px-1.5 py-1 font-mono text-[10px] transition-colors",
-                      "text-amber-600 hover:bg-amber-500/10",
+                      "text-[var(--amber-text)] hover:bg-[var(--amber)]/10",
                     ].join(" ")}
                     data-testid={`update-view-${view.id}`}
                     title={`Update "${view.name}" with the current filters`}
@@ -750,7 +750,7 @@ function BulkActionBar({
         Clear
       </Button>
       {overLimit && (
-        <p className="font-mono text-[10px] text-amber-600 ml-auto" data-testid="bulk-overlimit-msg">
+        <p className="font-mono text-[10px] text-[var(--amber-text)] ml-auto" data-testid="bulk-overlimit-msg">
           Max {MAX_BULK_RETRY_BATCH} events per batch
         </p>
       )}

@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useCrossTopicAnalytics } from "@/hooks/use-education";
+import { chartColor } from "@/lib/chart-colors";
 
 export default function CrossTopicChart() {
   const { data: analytics } = useCrossTopicAnalytics();
@@ -39,7 +40,7 @@ export default function CrossTopicChart() {
             <Tooltip
               formatter={(value: number | undefined) => [`${value ?? 0}%`, "Mastery"]}
             />
-            <Bar dataKey="mastery" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="mastery" fill={chartColor()} radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </CardContent>

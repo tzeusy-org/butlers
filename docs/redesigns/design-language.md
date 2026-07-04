@@ -7,4 +7,7 @@ Execution material (JSX patterns, page recipes, tokens, pre-merge checklist) liv
 `.claude/skills/butlers-redesign-prompt/references/dispatch-kit/`.
 
 This stub remains only so historical briefs and archived changes that cite
-`docs/redesigns/ingestion-design-language.md` do not dangle. Do not extend it; extend the spec.
+`docs/redesigns/ingestion-design-language.md` or `docs/redesigns/secrets-design-language.md`
+(the two per-redesign copies this file replaces — bu-86c4c.6 merged them, byte-identical apart
+from their own filename, into this single canonical stub) do not dangle. Do not extend it;
+extend the spec.

@@ -201,7 +201,7 @@ describe("SourceStateBadgeStrip — active source", () => {
   it("active badge does NOT carry the yellow colour class", () => {
     mockRows([makeRow({ source_name: "work", active: true })])
     const html = render()
-    expect(html).not.toContain("bg-yellow-500")
+    expect(html).not.toContain("bg-[var(--amber)]")
   })
 })
 
@@ -256,7 +256,7 @@ describe("SourceStateBadgeStrip — inactive source", () => {
       }),
     ])
     const html = render()
-    expect(html).toContain("bg-yellow-500")
+    expect(html).toContain("bg-[var(--amber)]")
   })
 
   it("inactive badge wraps a tooltip trigger element", () => {

@@ -404,6 +404,7 @@ function TrendPanel({
 // ---------------------------------------------------------------------------
 
 const STAGE_COLOR: Record<string, string> = {
+  // eslint-disable-next-line no-restricted-syntax -- categorical sleep-stage legend color (awake/light/deep/rem), not a status signal
   awake: "bg-amber-400",
   light: "bg-sky-300",
   deep: "bg-sky-600",

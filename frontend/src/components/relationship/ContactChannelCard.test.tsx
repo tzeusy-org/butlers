@@ -182,6 +182,7 @@ const CONTACT_TWO: LinkedContactSummary = {
   phone: "555-0100",
   contact_info: [CI_PHONE_ENTITY_FACTS],
   labels: [
+    // eslint-disable-next-line no-restricted-syntax -- fixture for an arbitrary user-chosen label color, not a themed value
     { id: "label-002", name: "Work", color: "#1a73e8" },
   ],
   preferred_channel: null,

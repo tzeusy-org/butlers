@@ -163,7 +163,7 @@ function ExplainButton({ episodeId }: ExplainButtonProps) {
         </p>
       )}
       {explain.isSuccess && (
-        <p className="text-xs text-emerald-600" data-testid="explain-success">
+        <p className="text-xs text-[var(--green)]" data-testid="explain-success">
           Episode explanation refreshed.
         </p>
       )}
@@ -278,7 +278,7 @@ function CorrectionForm({ episodeId, currentPrivacy, isSensitive }: CorrectionFo
         )}
       </Button>
       {submitCorrection.isSuccess && (
-        <p className="text-xs text-emerald-600" data-testid="correction-success">
+        <p className="text-xs text-[var(--green)]" data-testid="correction-success">
           Correction recorded.
         </p>
       )}

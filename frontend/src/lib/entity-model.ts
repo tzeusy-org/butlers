@@ -20,5 +20,8 @@
  * state badge (state-unidentified), or label badge renders on a saturated
  * background color and needs legible white text. This is the canonical
  * single source of that literal so component files stay hex-free.
+ *
+ * bu-86c4c.6: "white" keyword, not a hex literal (matches the ButlerMark
+ * tone="fill" precedent, `color: "white"`).
  */
-export const ENTITY_BADGE_TEXT = "#fff"
+export const ENTITY_BADGE_TEXT = "white"

@@ -79,7 +79,7 @@ function PostureRow({ label, secure, secureLabel, insecureLabel, testId }: Postu
       <dd className="m-0">
         <Badge
           variant={secure ? "default" : "outline"}
-          className={secure ? "bg-green-600 hover:bg-green-600 text-white" : "text-amber-600 border-amber-400"}
+          className={secure ? "bg-[var(--green)] hover:bg-[var(--green)] text-white" : "text-[var(--amber-text)] border-[var(--amber)]"}
           data-testid={testId}
         >
           {secure ? secureLabel : insecureLabel}

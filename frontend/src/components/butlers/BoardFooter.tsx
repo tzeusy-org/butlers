@@ -110,7 +110,7 @@ export function BoardFooter({ aggregates }: BoardFooterProps) {
         <StatCell
           label="Active"
           value={String(active)}
-          dotClass="bg-emerald-500"
+          dotClass="bg-[var(--green)]"
           showDot={active > 0}
           ariaLabel={`Active: ${active}`}
         />

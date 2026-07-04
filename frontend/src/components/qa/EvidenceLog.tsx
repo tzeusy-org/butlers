@@ -17,7 +17,8 @@ interface EvidenceLogProps {
 
 const levelClassName: Record<string, string> = {
   ERROR: "text-destructive",
-  WARN: "text-amber-500",
+  // bu-86c4c.6: --amber-text is the AA-contrast-safe text variant (bu-86c4c.16).
+  WARN: "text-[var(--amber-text)]",
 };
 
 function levelClass(level: string): string {
@@ -93,7 +94,7 @@ export function EvidenceLog({
             <span
               className={cn(
                 "text-muted-foreground transition-colors duration-fast",
-                active && "text-amber-500",
+                active && "text-[var(--amber-text)]",
               )}
               data-testid={`qa-evidence-row-${row.id}-claims`}
             >
@@ -102,7 +103,7 @@ export function EvidenceLog({
             <span
               className={cn(
                 "truncate text-muted-foreground transition-colors duration-fast tnum",
-                active && "text-amber-500",
+                active && "text-[var(--amber-text)]",
               )}
               data-testid={`qa-evidence-row-${row.id}-ts`}
             >

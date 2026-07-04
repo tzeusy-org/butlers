@@ -8,6 +8,8 @@
 import * as React from "react";
 
 import { cn } from "@/lib/utils";
+import { Eyebrow as DispatchEyebrow } from "@/components/ui/Eyebrow";
+import { Voice as DispatchVoice } from "@/components/ui/Voice";
 import type { CredentialState } from "./types.ts";
 import { STATE_CATALOG, STAMP_GLYPHS } from "./constants.ts";
 
@@ -35,7 +37,15 @@ export function stateColor(state: CredentialState): string {
 
 // ── Typography ─────────────────────────────────────────────────────────────
 
-/** Mono eyebrow: 10px / uppercase / 0.14em tracking / muted. */
+/**
+ * Mono eyebrow: 10px / uppercase / 0.14em tracking / muted, with an optional
+ * secondary "sub" caption (e.g. a date) rendered alongside it in --dim.
+ *
+ * bu-86c4c.6: thin wrapper over the canonical `components/ui/Eyebrow` — the
+ * typographic declaration (font, size, tracking, color) lives there only.
+ * This wrapper adds the passport-specific `sub` caption slot via composition
+ * rather than redeclaring the base style.
+ */
 export function Eyebrow({
   children,
   sub,
@@ -47,12 +57,7 @@ export function Eyebrow({
 }) {
   return (
     <div className={cn("flex items-baseline gap-2.5", className)}>
-      <span
-        className="font-mono text-[10px] uppercase tracking-[0.14em]"
-        style={{ color: "var(--mfg, oklch(0.708 0 0))" }}
-      >
-        {children}
-      </span>
+      <DispatchEyebrow>{children}</DispatchEyebrow>
       {sub && (
         <span
           className="font-mono text-[10px]"
@@ -102,7 +107,16 @@ export function Mono({
   );
 }
 
-/** Source Serif 4 voice paragraph. */
+/**
+ * Source Serif 4 voice paragraph, with passport-specific size/color/maxWidth
+ * overrides.
+ *
+ * bu-86c4c.6: thin wrapper over the canonical `components/ui/Voice` — the
+ * serif declaration (family, weight, tracking) lives there only. Inline
+ * style overrides below win over the canonical Tailwind classes (equal
+ * source, higher specificity) to preserve this module's historical
+ * size/color/maxWidth flexibility without redeclaring the font stack.
+ */
 export function Voice({
   children,
   italic = false,
@@ -119,19 +133,18 @@ export function Voice({
   className?: string;
 }) {
   return (
-    <p
+    <DispatchVoice
+      variant={italic ? "italic" : "roman"}
       className={cn("m-0", className)}
       style={{
-        fontFamily: "var(--font-serif, 'Source Serif 4', serif)",
         fontSize: size,
         lineHeight: 1.55,
-        fontStyle: italic ? "italic" : "normal",
         color: color ?? "var(--mfg, oklch(0.708 0 0))",
         maxWidth,
       }}
     >
       {children}
-    </p>
+    </DispatchVoice>
   );
 }
 

@@ -14,17 +14,21 @@ import dagre from "@dagrejs/dagre";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useMindMap, useFrontierNodes } from "@/hooks/use-education";
 
+// bu-86c4c.6: mastery-progression scale, not the tri-state (red/amber/green)
+// system — mastered/learning map onto the real success/needs-work states;
+// reviewing/diagnosed/unseen are stepped neutrals (no live red/amber/green
+// state to report), same shape as the --permanence-* progression scale.
 const STATUS_COLORS: Record<string, string> = {
-  mastered: "#10b981",
-  reviewing: "#3b82f6",
-  learning: "#f59e0b",
-  diagnosed: "#64748b",
-  unseen: "#d1d5db",
+  mastered: "var(--green)",
+  reviewing: "var(--mfg)",
+  learning: "var(--amber)",
+  diagnosed: "var(--dim)",
+  unseen: "var(--border-strong)",
 };
 
 function ConceptNode({ data }: { data: Record<string, unknown> }) {
   const status = data.mastery_status as string;
-  const color = STATUS_COLORS[status] ?? "#d1d5db";
+  const color = STATUS_COLORS[status] ?? "var(--border-strong)";
   const isFrontier = data.is_frontier as boolean;
   const score = data.mastery_score as number;
 

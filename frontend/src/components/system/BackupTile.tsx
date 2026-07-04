@@ -104,7 +104,7 @@ export function BackupTile() {
             <dd>
               <span
                 data-testid="backup-tile-reachable-badge"
-                className="bg-emerald-600 text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+                className="bg-[var(--green)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
               >
                 Reachable
               </span>

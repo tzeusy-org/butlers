@@ -1157,9 +1157,12 @@ No staggered entries, no count-up animations, no scale-in.
 
 ### Butler letter-mark
 
-The butler hue from `--category-1..8` resolves only onto the butler
-letter-mark. The canonical component is
-`frontend/src/components/ui/ButlerMark.tsx`.
+The butler hue from `--category-1..12` resolves only onto the butler
+letter-mark (extended from 8 slots by bu-86c4c.6 — the 11-butler roster no
+longer collides). The canonical component is
+`frontend/src/components/ui/ButlerMark.tsx`; see
+`openspec/specs/dashboard-design-language/spec.md` § Requirement: Butler
+Category Hues for the current butler→token mapping.
 
 `ButlerMark` exports:
 - `<ButlerMark name="..." tone="fill|neutral" />`: 16px squircle with

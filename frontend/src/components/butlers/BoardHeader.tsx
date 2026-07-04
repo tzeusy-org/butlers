@@ -48,10 +48,10 @@ function healthyCount(aggregates: StatusBoardAggregates): number {
  * confident "all-green" signal would be misleading.
  */
 function pillDotClass(healthy: number, total: number, sourcesPartiallyDegraded: boolean): string {
-  if (total === 0) return "bg-green-500"
-  if (healthy === total && !sourcesPartiallyDegraded) return "bg-green-500"
-  if (healthy > 0) return "bg-amber-500"
-  return "bg-red-500"
+  if (total === 0) return "bg-[var(--green)]"
+  if (healthy === total && !sourcesPartiallyDegraded) return "bg-[var(--green)]"
+  if (healthy > 0) return "bg-[var(--amber)]"
+  return "bg-[var(--red)]"
 }
 
 // ---------------------------------------------------------------------------

@@ -91,7 +91,7 @@ function titleCase(s: string): string {
 
 const DIRECTION_CLASS: Record<string, string> = {
   debit: "text-destructive",
-  credit: "text-emerald-500",
+  credit: "text-[var(--green)]",
 };
 
 // ---------------------------------------------------------------------------

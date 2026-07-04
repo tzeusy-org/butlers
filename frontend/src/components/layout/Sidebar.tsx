@@ -92,7 +92,7 @@ function railItemClassName(isActive: boolean): string {
 function StatusDot({ status }: { status: string | undefined }) {
   if (!status || (status !== 'degraded' && status !== 'error')) return null
 
-  const color = status === 'error' ? 'bg-destructive' : 'bg-amber-500'
+  const color = status === 'error' ? 'bg-destructive' : 'bg-[var(--amber)]'
   return (
     <span
       className={`absolute right-1 top-1 h-1.5 w-1.5 rounded-full ring-2 ring-background ${color}`}
@@ -116,9 +116,9 @@ function BadgeIndicator({
 
   const colorClass =
     variant === 'red'
-      ? 'bg-red-500 text-white'
+      ? 'bg-[var(--red)] text-white'
       : variant === 'amber'
-        ? 'bg-amber-500 text-white'
+        ? 'bg-[var(--amber)] text-white'
         : 'bg-primary text-primary-foreground'
 
   return (
@@ -411,8 +411,8 @@ function SidebarFooter({
   const dotColor = hasError
     ? 'bg-destructive'
     : hasDegraded
-      ? 'bg-amber-500'
-      : 'bg-green-500'
+      ? 'bg-[var(--amber)]'
+      : 'bg-[var(--green)]'
 
   const degradedCount = statuses.filter((s) => s === 'degraded').length
   const errorCount = statuses.filter((s) => s === 'error').length
@@ -692,9 +692,9 @@ function MobileFlatLink({
         <span
           className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
             item.badgeVariant === 'red'
-              ? 'bg-red-500 text-white'
+              ? 'bg-[var(--red)] text-white'
               : item.badgeVariant === 'amber'
-                ? 'bg-amber-500 text-white'
+                ? 'bg-[var(--amber)] text-white'
                 : 'bg-primary text-primary-foreground'
           }`}
         >

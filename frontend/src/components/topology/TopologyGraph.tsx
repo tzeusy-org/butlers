@@ -54,21 +54,24 @@ interface TopologyGraphProps {
 // (which have no canonical tone) and as a fallback for butler nodes that
 // have not yet loaded board data.
 const STATUS_COLORS: Record<string, string> = {
-  ok: "#22c55e", // green-500
-  online: "#22c55e",
-  down: "#ef4444", // red-500
-  offline: "#ef4444",
-  degraded: "#eab308", // yellow-500
-  stale: "#eab308", // yellow-500
+  ok: "var(--green)",
+  online: "var(--green)",
+  down: "var(--red)",
+  offline: "var(--red)",
+  degraded: "var(--amber)",
+  stale: "var(--amber)",
 };
 
+// Staffers keep a fixed identity blue (--category-1) rather than the
+// per-butler hash used elsewhere, matching the pre-existing convention this
+// map already encoded before bu-86c4c.6 replaced the raw hex.
 const STAFFER_STATUS_COLORS: Record<string, string> = {
-  ok: "#3b82f6", // blue-500
-  online: "#3b82f6",
-  down: "#ef4444", // red-500
-  offline: "#ef4444",
-  degraded: "#eab308", // yellow-500
-  stale: "#eab308", // yellow-500
+  ok: "var(--category-1)",
+  online: "var(--category-1)",
+  down: "var(--red)",
+  offline: "var(--red)",
+  degraded: "var(--amber)",
+  stale: "var(--amber)",
 };
 
 // Canonical tone -> color. Butlers use the same green/amber/red/neutral
@@ -76,17 +79,17 @@ const STAFFER_STATUS_COLORS: Record<string, string> = {
 // the vision's butler/staffer distinction visible, per the pre-existing
 // STAFFER_STATUS_COLORS convention.
 const TONE_COLORS: Record<CellTone, string> = {
-  green: "#22c55e",
-  amber: "#eab308",
-  red: "#ef4444",
-  neutral: "#6b7280",
+  green: "var(--green)",
+  amber: "var(--amber)",
+  red: "var(--red)",
+  neutral: "var(--dim)",
 };
 
 const STAFFER_TONE_COLORS: Record<CellTone, string> = {
-  green: "#3b82f6",
-  amber: "#eab308",
-  red: "#ef4444",
-  neutral: "#6b7280",
+  green: "var(--category-1)",
+  amber: "var(--amber)",
+  red: "var(--red)",
+  neutral: "var(--dim)",
 };
 
 function getStatusColor(status: string, agentType?: string, tone?: CellTone): string {
@@ -94,9 +97,9 @@ function getStatusColor(status: string, agentType?: string, tone?: CellTone): st
     return agentType === "staffer" ? STAFFER_TONE_COLORS[tone] : TONE_COLORS[tone];
   }
   if (agentType === "staffer") {
-    return STAFFER_STATUS_COLORS[status] ?? "#6b7280";
+    return STAFFER_STATUS_COLORS[status] ?? "var(--dim)";
   }
-  return STATUS_COLORS[status] ?? "#6b7280"; // gray-500
+  return STATUS_COLORS[status] ?? "var(--dim)";
 }
 
 function connectorLabel(c: ConnectorNode): string {
@@ -131,7 +134,7 @@ function buildNodes(
       style: {
         background: getStatusColor(switchboard.status, switchboard.type, switchboard.tone),
         color: "white",
-        border: "2px solid #1e293b",
+        border: "2px solid var(--bg-deep)",
         borderRadius: "12px",
         padding: "16px 24px",
         fontWeight: 700,
@@ -151,7 +154,7 @@ function buildNodes(
       style: {
         background: getStatusColor(heartbeat.status, heartbeat.type, heartbeat.tone),
         color: "white",
-        border: "2px dashed #64748b",
+        border: "2px dashed var(--dim)",
         borderRadius: "50%",
         padding: "12px",
         fontWeight: 600,
@@ -182,7 +185,7 @@ function buildNodes(
       position: { x, y },
       data: { label: butler.name },
       style: {
-        background: "#1e293b",
+        background: "var(--bg-deep)",
         color: "white",
         border: `2px solid ${getStatusColor(butler.status, butler.type, butler.tone)}`,
         borderRadius: "8px",
@@ -212,7 +215,7 @@ function buildNodes(
       position: { x, y },
       data: { label: connectorLabel(connector) },
       style: {
-        background: "#0f172a",
+        background: "var(--bg)",
         color: "white",
         border: `2px solid ${getStatusColor(connector.liveness)}`,
         borderRadius: "8px",
@@ -248,7 +251,7 @@ function buildEdges(
         id: `sw-${butler.name}`,
         source: "switchboard",
         target: butler.name,
-        style: { stroke: "#64748b" },
+        style: { stroke: "var(--dim)" },
         // Prefer the canonical tone when available: "green" means the
         // butler has an active session in progress (a stronger, more
         // meaningful animated-edge signal than mere MCP reachability).
@@ -267,7 +270,7 @@ function buildEdges(
         id: `conn-${connId}`,
         source: connId,
         target: "switchboard",
-        style: { stroke: "#8b5cf6" }, // purple for connector edges
+        style: { stroke: "var(--category-2)" }, // violet for connector edges (categorical, not state)
         animated: connector.liveness === "online",
       });
     }
@@ -280,7 +283,7 @@ function buildEdges(
         id: `hb-${butler.name}`,
         source: "heartbeat",
         target: butler.name,
-        style: { stroke: "#94a3b8", strokeDasharray: "5 5" },
+        style: { stroke: "var(--border-strong)", strokeDasharray: "5 5" },
       });
     }
     // Heartbeat -> Switchboard
@@ -289,7 +292,7 @@ function buildEdges(
         id: "hb-switchboard",
         source: "heartbeat",
         target: "switchboard",
-        style: { stroke: "#94a3b8", strokeDasharray: "5 5" },
+        style: { stroke: "var(--border-strong)", strokeDasharray: "5 5" },
       });
     }
   }

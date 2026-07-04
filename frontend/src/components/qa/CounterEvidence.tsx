@@ -11,9 +11,10 @@ interface CounterEvidenceProps {
   className?: string;
 }
 
+// bu-86c4c.6: --amber-text is the AA-contrast-safe text variant (bu-86c4c.16).
 const verdictClassName: Record<CounterEvidenceItem["verdict"], string> = {
-  accepted: "text-emerald-500",
-  pending: "text-amber-500",
+  accepted: "text-[var(--green)]",
+  pending: "text-[var(--amber-text)]",
   rejected: "text-muted-foreground",
 };
 

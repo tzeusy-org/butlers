@@ -59,7 +59,13 @@ const SheetContent = React.forwardRef<
           ref={ref}
           data-slot="sheet-content"
           className={cn(
-            "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 shadow-lg transition ease-in-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
+            // bu-86c4c.6: duration-slow (250ms) + ease-out-quart replaces the
+            // shadcn defaults (raw duration-300/500, ease-in-out) — sheets
+            // slide across >200px of travel, and ease-in-out is explicitly
+            // off the palette per the Dispatch motion contract (see
+            // about/heart-and-soul/design-language.md § Motion; --ease-out-quart
+            // is the only permitted easing for state transitions).
+            "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 shadow-lg transition ease-out-quart duration-slow",
             side === "right" &&
               "data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-sm",
             side === "left" &&

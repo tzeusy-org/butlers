@@ -55,7 +55,7 @@ function levelClass(level: LogLevel): string {
   switch (level) {
     case "DEBUG": return "text-muted-foreground";
     case "INFO":  return "text-primary";
-    case "WARN":  return "text-amber-500";
+    case "WARN":  return "text-[var(--amber-text)]";
     case "ERROR": return "text-destructive";
   }
 }

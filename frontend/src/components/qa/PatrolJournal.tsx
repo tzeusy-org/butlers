@@ -7,14 +7,15 @@ interface PatrolJournalProps {
   className?: string;
 }
 
+// bu-86c4c.6: --amber-text is the AA-contrast-safe text variant (bu-86c4c.16).
 const stepClassName: Record<string, string> = {
   "cross-checked": "text-foreground",
-  concluded: "text-emerald-500",
+  concluded: "text-[var(--green)]",
   considered: "text-muted-foreground",
   drafted: "text-foreground",
-  escalated: "text-amber-500",
-  flagged: "text-amber-500",
-  merged: "text-emerald-500",
+  escalated: "text-[var(--amber-text)]",
+  flagged: "text-[var(--amber-text)]",
+  merged: "text-[var(--green)]",
   sampled: "text-foreground",
   tick: "text-muted-foreground",
   wait: "text-muted-foreground",

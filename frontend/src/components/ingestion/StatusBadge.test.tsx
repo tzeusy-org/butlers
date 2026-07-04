@@ -36,7 +36,7 @@ describe("StatusBadge", () => {
     expect(container.textContent).toContain("ingested");
     const badge = container.querySelector("[data-slot='badge']");
     expect(badge).not.toBeNull();
-    expect(badge!.className).toContain("emerald");
+    expect(badge!.className).toContain("var(--green)");
   });
 
   it("renders 'skipped' with muted outline badge", () => {
@@ -76,7 +76,7 @@ describe("StatusBadge", () => {
     expect(container.textContent).toContain("replayed");
     const badge = container.querySelector("[data-slot='badge']");
     expect(badge).not.toBeNull();
-    expect(badge!.className).toContain("emerald");
+    expect(badge!.className).toContain("var(--green)");
     expect(badge!.getAttribute("data-variant")).toBe("outline");
   });
 

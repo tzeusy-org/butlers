@@ -7,7 +7,10 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card"
       className={cn(
-        "bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm",
+        // bu-86c4c.6: flat hairline surface, no drop shadow — Dispatch cards
+        // read via the border, not elevation. Any unmigrated page using the
+        // shadcn <Card> primitive inherits this for free.
+        "bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6",
         className
       )}
       {...props}

@@ -7,9 +7,9 @@ import type { EligibilitySegment } from "@/api/index.ts";
 // ---------------------------------------------------------------------------
 
 const STATE_COLORS: Record<string, string> = {
-  active: "bg-emerald-600",
-  stale: "bg-amber-500",
-  quarantined: "bg-red-600",
+  active: "bg-[var(--green)]",
+  stale: "bg-[var(--amber)]",
+  quarantined: "bg-[var(--red)]",
 };
 
 function segmentColor(state: string): string {

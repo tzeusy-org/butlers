@@ -143,9 +143,9 @@ function usagePercent(usage: number, limit: number | null): number | null {
  * green 0–60%, yellow 60–85%, red 85–100%, red when over (BLOCKED).
  */
 function barColorClass(percent: number): string {
-  if (percent >= 85) return "bg-red-500";
-  if (percent >= 60) return "bg-yellow-500";
-  return "bg-green-500";
+  if (percent >= 85) return "bg-[var(--red)]";
+  if (percent >= 60) return "bg-[var(--amber)]";
+  return "bg-[var(--green)]";
 }
 
 /** Coarse "Nm ago" / "Nh ago" / "Nd ago" relative time for the reset tooltip. */
@@ -519,7 +519,7 @@ function EditModelForm({
             <p className="font-mono text-[10px] text-destructive">{fieldErrors.alias}</p>
           )}
           {alias !== model.alias && !fieldErrors.alias && (
-            <p className="font-mono text-[10px] text-amber-600 dark:text-amber-400">
+            <p className="font-mono text-[10px] text-[var(--amber-text)]">
               Warning: Changing the alias may break existing butler override references.
             </p>
           )}
@@ -1244,7 +1244,7 @@ function UsageCell({
           {window}
         </span>
         {blocked && (
-          <span className="font-mono text-[8px] uppercase tracking-widest px-1 rounded bg-red-500 text-white">
+          <span className="font-mono text-[8px] uppercase tracking-widest px-1 rounded bg-[var(--red)] text-white">
             BLOCKED
           </span>
         )}
@@ -1296,7 +1296,7 @@ function UsageCell({
 
       {/* used / limit text — clicking the limit opens the inline editor */}
       <div className="flex items-center gap-1 font-mono text-[10px] tabular-nums">
-        <span className={blocked ? "text-red-500" : "text-muted-foreground"}>
+        <span className={blocked ? "text-[var(--red)]" : "text-muted-foreground"}>
           {formatCompactTokens(usage)}
         </span>
         <span className="text-muted-foreground">/</span>
@@ -1399,7 +1399,7 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-mono text-[12px] truncate">{model.alias}</span>
           {verificationStatus === "verified" && (
-            <span className="font-mono text-[9px] uppercase tracking-widest text-green-600 dark:text-green-400 shrink-0">
+            <span className="font-mono text-[9px] uppercase tracking-widest text-[var(--green)] shrink-0">
               ✓
             </span>
           )}

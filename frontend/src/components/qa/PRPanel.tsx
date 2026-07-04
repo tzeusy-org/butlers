@@ -18,8 +18,10 @@ interface PRPanelProps {
 const prStateClassName: Record<QaPrSummary["state"], string> = {
   closed: "border-muted-foreground/40 text-muted-foreground",
   drafted: "border-sky-500/40 text-sky-500",
-  merged: "border-emerald-500/40 text-emerald-500",
-  open: "border-amber-500/40 text-amber-500",
+  // bu-86c4c.6: merged/open are real states (success/pending) -> Dispatch
+  // tokens. --amber-text is the AA-contrast-safe text variant (bu-86c4c.16).
+  merged: "border-[var(--green)]/40 text-[var(--green)]",
+  open: "border-[var(--amber)]/40 text-[var(--amber-text)]",
 };
 
 export function PRPanel({ pr, whyThisFix, diffSnapshot, className }: PRPanelProps) {

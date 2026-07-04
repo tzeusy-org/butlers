@@ -380,7 +380,7 @@ describe("ButlerLogsTab — level tone classes", () => {
     renderTab();
     const levelCells = screen.getAllByTestId("log-level");
     const warnCell = levelCells.find((c) => c.textContent === "WARN");
-    expect(warnCell?.className).toContain("text-amber-500");
+    expect(warnCell?.className).toContain("text-[var(--amber-text)]");
   });
 
   it("ERROR level cell has destructive class", () => {

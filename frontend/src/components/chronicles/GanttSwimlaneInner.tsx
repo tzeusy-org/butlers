@@ -374,6 +374,7 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
             <p className="opacity-70">
               {startLabel} – {endLabel}
             </p>
+            {/* eslint-disable-next-line no-restricted-syntax -- privacy-tier classification label (sensitive), not a live system health/status signal */}
             <p className="text-yellow-600 mt-0.5">Sensitive</p>
           </>
         ) : (
@@ -393,7 +394,7 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
             </p>
             {isOpen && <p className="opacity-70 italic">Episode ongoing</p>}
             {locationStatus === "pannable" && (
-              <p className="text-emerald-600 mt-0.5" data-testid="gantt-location-pannable">
+              <p className="text-[var(--green)] mt-0.5" data-testid="gantt-location-pannable">
                 Click to pan map to location
               </p>
             )}

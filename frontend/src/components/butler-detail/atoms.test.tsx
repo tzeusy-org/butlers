@@ -93,9 +93,9 @@ describe("MonoLabel", () => {
     expect(html).toContain("text-muted-foreground")
   })
 
-  it("color=amber maps to text-amber-500", () => {
+  it("color=amber maps to text-[var(--amber-text)]", () => {
     const html = renderToStaticMarkup(<MonoLabel color="amber">A</MonoLabel>)
-    expect(html).toContain("text-amber-500")
+    expect(html).toContain("text-[var(--amber-text)]")
   })
 
   it("color=red maps to text-destructive", () => {
@@ -103,9 +103,9 @@ describe("MonoLabel", () => {
     expect(html).toContain("text-destructive")
   })
 
-  it("color=green maps to text-emerald-500", () => {
+  it("color=green maps to text-[var(--green)]", () => {
     const html = renderToStaticMarkup(<MonoLabel color="green">G</MonoLabel>)
-    expect(html).toContain("text-emerald-500")
+    expect(html).toContain("text-[var(--green)]")
   })
 
   it("color=dim maps to text-muted-foreground", () => {
@@ -271,9 +271,9 @@ describe("Panel: title and sub", () => {
 // ---------------------------------------------------------------------------
 
 describe("KpiCell: tone variants", () => {
-  it("tone=amber maps to text-amber-500", () => {
+  it("tone=amber maps to text-[var(--amber-text)]", () => {
     const html = renderToStaticMarkup(<KpiCell label="COST" value="$1.23" tone="amber" />)
-    expect(html).toContain("text-amber-500")
+    expect(html).toContain("text-[var(--amber-text)]")
   })
 
   it("tone=red maps to text-destructive", () => {
@@ -281,9 +281,9 @@ describe("KpiCell: tone variants", () => {
     expect(html).toContain("text-destructive")
   })
 
-  it("tone=green maps to text-emerald-500", () => {
+  it("tone=green maps to text-[var(--green)]", () => {
     const html = renderToStaticMarkup(<KpiCell label="SESSIONS" value="12" tone="green" />)
-    expect(html).toContain("text-emerald-500")
+    expect(html).toContain("text-[var(--green)]")
   })
 
   it("tone=dim maps to text-muted-foreground", () => {

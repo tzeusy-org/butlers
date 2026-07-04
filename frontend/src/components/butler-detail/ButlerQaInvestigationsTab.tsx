@@ -54,9 +54,9 @@ const SEV_LABELS: Record<number, string> = {
 };
 
 const SEV_CLASS: Record<number, string> = {
-  0: "bg-red-600 text-white hover:bg-red-600/90",
-  1: "bg-orange-500 text-white hover:bg-orange-500/90",
-  2: "bg-yellow-500 text-white hover:bg-yellow-500/90",
+  0: "bg-[var(--red)] text-white hover:bg-[var(--red)]/90",
+  1: "bg-[var(--amber)] text-white hover:bg-[var(--amber)]/90",
+  2: "bg-[var(--amber)] text-white hover:bg-[var(--amber)]/90",
   3: "bg-slate-400 text-white hover:bg-slate-400/90",
   4: "bg-sky-400 text-white hover:bg-sky-400/90",
 };
@@ -77,9 +77,9 @@ function SeverityBadge({ severity }: { severity: number }) {
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   dispatch_pending: { label: "pending", className: "border-slate-400 text-slate-500" },
-  investigating: { label: "investigating", className: "border-amber-500 text-amber-600" },
+  investigating: { label: "investigating", className: "border-[var(--amber)] text-[var(--amber-text)]" },
   pr_open: { label: "PR open", className: "border-blue-500 text-blue-600" },
-  pr_merged: { label: "PR merged", className: "bg-emerald-600 text-white hover:bg-emerald-600/90" },
+  pr_merged: { label: "PR merged", className: "bg-[var(--green)] text-white hover:bg-[var(--green)]/90" },
   failed: { label: "failed", className: "" },
   timeout: { label: "timeout", className: "" },
   unfixable: { label: "unfixable", className: "" },
@@ -176,7 +176,7 @@ interface PatrolStripeProps {
 function PatrolStatusChip({ status }: { status: string }) {
   if (status === "clean") {
     return (
-      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90 text-xs">
+      <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90 text-xs">
         clean
       </Badge>
     );
@@ -190,7 +190,7 @@ function PatrolStatusChip({ status }: { status: string }) {
   }
   if (status === "running") {
     return (
-      <Badge variant="outline" className="border-amber-500 text-amber-600 text-xs">
+      <Badge variant="outline" className="border-[var(--amber)] text-[var(--amber-text)] text-xs">
         running
       </Badge>
     );
@@ -496,7 +496,7 @@ function CircuitBreakerChip() {
   ) : (
     <Badge
       variant="outline"
-      className="border-emerald-500 text-emerald-600 text-xs"
+      className="border-[var(--green)] text-[var(--green)] text-xs"
       data-testid="circuit-breaker-closed"
     >
       Circuit breaker: closed

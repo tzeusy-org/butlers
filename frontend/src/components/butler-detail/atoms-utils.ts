@@ -25,9 +25,12 @@ export type Tone = "amber" | "red" | "green" | "dim" | "fg"
 
 export function toneClass(tone: Tone): string {
   switch (tone) {
-    case "amber": return "text-amber-500"
+    // bu-86c4c.6: raw Tailwind status shades replaced with the Dispatch
+    // state-color tokens (--amber-text is the AA-contrast-safe text variant
+    // of --amber per bu-86c4c.16; --green is already AA-safe as text).
+    case "amber": return "text-[var(--amber-text)]"
     case "red":   return "text-destructive"
-    case "green": return "text-emerald-500"
+    case "green": return "text-[var(--green)]"
     case "dim":   return "text-muted-foreground"
     case "fg":    return "text-foreground"
   }

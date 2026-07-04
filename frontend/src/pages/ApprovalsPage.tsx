@@ -164,13 +164,13 @@ function fmtTs(iso: string | null | undefined): string {
 function statusColor(status: string): string {
   switch (status) {
     case "pending":
-      return "text-amber-600 dark:text-amber-400";
+      return "text-[var(--amber-text)]";
     case "approved":
-      return "text-orange-600 dark:text-orange-400";
+      return "text-[var(--amber-text)]";
     case "executed":
       return "text-blue-600 dark:text-blue-400";
     case "rejected":
-      return "text-red-600 dark:text-red-400";
+      return "text-[var(--red)]";
     case "expired":
       return "text-muted-foreground";
     default:
@@ -408,7 +408,7 @@ function RailItem({
             <span
               className={
                 countdown.warn
-                  ? "text-red-600 dark:text-red-400 font-medium"
+                  ? "text-[var(--red)] font-medium"
                   : "text-muted-foreground"
               }
             >
@@ -678,7 +678,7 @@ function Dossier({
               <span
                 className={
                   expiryChip.warn
-                    ? "ml-2 text-red-600 dark:text-red-400 font-medium"
+                    ? "ml-2 text-[var(--red)] font-medium"
                     : "ml-2"
                 }
               >

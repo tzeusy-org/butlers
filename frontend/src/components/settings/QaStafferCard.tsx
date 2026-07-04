@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Eyebrow } from "@/components/ui/Eyebrow";
 import { cn } from "@/lib/utils";
 import {
   useAddQaAllowedRepo,
@@ -46,14 +47,6 @@ import { resolveQaRepoUrlInputValue } from "@/components/settings/qa-settings-st
 // ---------------------------------------------------------------------------
 // Small atoms (Dispatch vocabulary)
 // ---------------------------------------------------------------------------
-
-function Eyebrow({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground leading-none">
-      {children}
-    </p>
-  );
-}
 
 /** A {dot + label} status line: green when present, red when missing, dim when unknown. */
 function StatusLine({
@@ -197,7 +190,7 @@ export default function QaStafferCard() {
       {/* Header --------------------------------------------------------- */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex flex-col gap-1">
-          <Eyebrow>system · qa staffer</Eyebrow>
+          <Eyebrow as="p">system · qa staffer</Eyebrow>
           <h2 className="text-base font-medium tracking-tight">QA Staffer</h2>
           <p className="text-xs text-muted-foreground leading-relaxed">
             Repository, credentials, and commit identity the QA staffer uses to clone, commit,
@@ -218,7 +211,7 @@ export default function QaStafferCard() {
 
       {/* Repository configuration --------------------------------------- */}
       <div className="flex flex-col gap-2">
-        <Eyebrow>repository</Eyebrow>
+        <Eyebrow as="p">repository</Eyebrow>
         {repoConfig.isLoading ? (
           <Skeleton className="h-9 w-full" />
         ) : repoConfig.isError ? (
@@ -280,7 +273,7 @@ export default function QaStafferCard() {
 
       {/* Credentials: GH token + git author identity -------------------- */}
       <div className="flex flex-col gap-1 border-t border-border/60 pt-3">
-        <Eyebrow>credentials</Eyebrow>
+        <Eyebrow as="p">credentials</Eyebrow>
         {summary.isLoading ? (
           <Skeleton className="h-16 w-full" />
         ) : (
@@ -299,7 +292,7 @@ export default function QaStafferCard() {
 
             {/* Editable git author identity ----------------------------- */}
             <div className="flex flex-col gap-2 mt-3">
-              <Eyebrow>edit commit identity</Eyebrow>
+              <Eyebrow as="p">edit commit identity</Eyebrow>
               <div className="flex gap-2">
                 <Input
                   aria-label="Git author name"
@@ -352,7 +345,7 @@ export default function QaStafferCard() {
 
       {/* Allowed repositories whitelist --------------------------------- */}
       <div className="flex flex-col gap-2 border-t border-border/60 pt-3">
-        <Eyebrow>allowed repositories</Eyebrow>
+        <Eyebrow as="p">allowed repositories</Eyebrow>
         {allowedRepos.isLoading ? (
           <Skeleton className="h-12 w-full" />
         ) : allowedRepos.isError ? (

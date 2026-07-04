@@ -72,7 +72,7 @@ function EffectiveModelRow({ butlerName, tier }: { butlerName: string; tier: Com
         ) : resolved?.resolved ? (
           <code>{resolved.model_id}</code>
         ) : (
-          <span className="text-amber-600 dark:text-amber-400">Not configured</span>
+          <span className="text-[var(--amber-text)]">Not configured</span>
         )}
       </TableCell>
       <TableCell className="text-xs text-muted-foreground">
@@ -328,7 +328,7 @@ function OverridesTable({
               </TableCell>
               <TableCell>
                 {override.enabled ? (
-                  <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
+                  <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90">
                     On
                   </Badge>
                 ) : (

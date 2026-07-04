@@ -275,11 +275,11 @@ describe("QA case dossier composition", () => {
 
     render(<PatrolJournal events={events} patrolIntervalMinutes={12} />);
 
-    expect(screen.getByTestId("qa-journal-step-flagged").className).toContain("text-amber-500");
+    expect(screen.getByTestId("qa-journal-step-flagged").className).toContain("text-[var(--amber-text)]");
     expect(screen.getByTestId("qa-journal-step-sampled").className).toContain("text-foreground");
     expect(screen.getByTestId("qa-journal-step-wait").className).toContain("text-muted-foreground");
-    expect(screen.getByTestId("qa-journal-step-merged").className).toContain("text-emerald-500");
-    expect(screen.getByTestId("qa-journal-step-escalated").className).toContain("text-amber-500");
+    expect(screen.getByTestId("qa-journal-step-merged").className).toContain("text-[var(--green)]");
+    expect(screen.getByTestId("qa-journal-step-escalated").className).toContain("text-[var(--amber-text)]");
     expect(screen.getByText("5 entries · patrol every 12m")).toBeTruthy();
   });
 });

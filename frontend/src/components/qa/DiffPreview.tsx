@@ -18,12 +18,14 @@ const diffKindMeta = {
   },
   "+": {
     sign: "+",
-    rowClassName: "bg-emerald-500/10 text-emerald-950 dark:text-emerald-100",
+    // bu-86c4c.6: --green already resolves per-theme (see index.css .dark
+    // block), so the raw Tailwind shade + dark: pair collapses to one token.
+    rowClassName: "bg-[var(--green)]/10 text-[var(--green)]",
     testId: "qa-diff-line-plus",
   },
   "-": {
     sign: "-",
-    rowClassName: "bg-red-500/10 text-red-950 dark:text-red-100",
+    rowClassName: "bg-[var(--red)]/10 text-[var(--red)]",
     testId: "qa-diff-line-minus",
   },
   meta: {

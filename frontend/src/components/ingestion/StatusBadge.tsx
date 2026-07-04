@@ -43,7 +43,7 @@ function BadgeInner({ status }: { status: IngestionEventStatus }) {
   switch (status) {
     case "ingested":
       return (
-        <Badge className="bg-emerald-500 text-white hover:bg-emerald-600">
+        <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90">
           {STATUS_LABELS.ingested}
         </Badge>
       );
@@ -71,7 +71,7 @@ function BadgeInner({ status }: { status: IngestionEventStatus }) {
       return (
         <Badge
           variant="outline"
-          className="border-emerald-500 text-emerald-600"
+          className="border-[var(--green)] text-[var(--green)]"
         >
           {STATUS_LABELS.replay_complete}
         </Badge>
@@ -156,12 +156,12 @@ interface RowStatusStyle {
 }
 
 const ROW_STATUS_STYLE: Record<IngestionEventStatus, RowStatusStyle> = {
-  ingested: { dot: "bg-emerald-500", text: "text-emerald-600" },
+  ingested: { dot: "bg-[var(--green)]", text: "text-[var(--green)]" },
   skipped: { dot: "border border-muted-foreground/40", text: "text-muted-foreground" },
   filtered: { dot: "border border-muted-foreground/40", text: "text-muted-foreground" },
   error: { dot: "bg-destructive", text: "text-destructive" },
   replay_pending: { dot: "border border-blue-500", text: "text-blue-600" },
-  replay_complete: { dot: "border border-emerald-500", text: "text-emerald-600" },
+  replay_complete: { dot: "border border-[var(--green)]", text: "text-[var(--green)]" },
   replay_failed: { dot: "border border-destructive", text: "text-destructive" },
 };
 

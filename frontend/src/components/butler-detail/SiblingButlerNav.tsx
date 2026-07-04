@@ -53,11 +53,11 @@ function toneDotClass(
 ): string {
   switch (activity) {
     case "running":
-      return "bg-emerald-500"
+      return "bg-[var(--green)]"
     case "idle":
       return "bg-muted-foreground/40"
     case "overdue":
-      return "bg-amber-500"
+      return "bg-[var(--amber)]"
     case "offline":
       return "bg-destructive"
     case "quarantined":

@@ -2,7 +2,8 @@ import type { QaCaseSummary } from "@/api/types";
 
 export const qaSeverityClassName: Record<QaCaseSummary["sev"], string> = {
   high: "bg-destructive",
-  medium: "bg-amber-500",
+  // bu-86c4c.6: raw Tailwind amber-500 -> the Dispatch --amber state token.
+  medium: "bg-[var(--amber)]",
   low: "bg-muted-foreground",
 };
 

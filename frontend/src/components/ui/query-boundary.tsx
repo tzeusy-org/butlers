@@ -133,12 +133,12 @@ export function SourceDegradedNote({
     <div
       role="alert"
       className={cn(
-        "flex items-center gap-2 rounded-sm border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400",
+        "flex items-center gap-2 rounded-sm border border-[var(--amber)]/40 bg-[var(--amber)]/10 px-3 py-2 text-xs text-[var(--amber-text)]",
         className,
       )}
     >
       <span
-        className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+        className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--amber)]"
         aria-hidden="true"
       />
       <span className="font-medium">
@@ -148,7 +148,7 @@ export function SourceDegradedNote({
         <Button
           variant="link"
           size="sm"
-          className="ml-auto h-auto p-0 text-xs text-amber-700 dark:text-amber-400"
+          className="ml-auto h-auto p-0 text-xs text-[var(--amber-text)]"
           onClick={onRetry}
         >
           Retry

@@ -149,7 +149,7 @@ describe("EntityMark: tone=fill", () => {
     const html = renderToStaticMarkup(
       <EntityMark name="Acme" entityType="organization" tone="fill" />,
     )
-    expect(html).toContain("#fff")
+    expect(html).toContain("white")
   })
 
   it("applies transparent border in fill tone", () => {

@@ -671,7 +671,7 @@ describe("ButlerTravelTripsTab — expiring docs banner", () => {
     );
     renderTab();
     const count = screen.getByTestId("expiring-docs-count");
-    expect(count.className).toContain("text-amber-500");
+    expect(count.className).toContain("text-[var(--amber-text)]");
   });
 
   it("banner has role=alert for accessibility", () => {

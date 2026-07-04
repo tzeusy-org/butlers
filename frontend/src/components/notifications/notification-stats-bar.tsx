@@ -40,10 +40,10 @@ export function NotificationStatsBar({ stats, isLoading }: NotificationStatsBarP
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Sent</CardTitle>
-            <CheckCircle className="h-4 w-4 text-emerald-500" />
+            <CheckCircle className="h-4 w-4 text-[var(--green)]" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+            <div className="text-2xl font-bold text-[var(--green)]">
               {sent.toLocaleString()}
             </div>
           </CardContent>
@@ -53,10 +53,10 @@ export function NotificationStatsBar({ stats, isLoading }: NotificationStatsBarP
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Failed</CardTitle>
-            <XCircle className="h-4 w-4 text-red-500" />
+            <XCircle className="h-4 w-4 text-[var(--red)]" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-600 dark:text-red-400">
+            <div className="text-2xl font-bold text-[var(--red)]">
               {failed.toLocaleString()}
             </div>
           </CardContent>
@@ -74,10 +74,10 @@ export function NotificationStatsBar({ stats, isLoading }: NotificationStatsBarP
             <div
               className={`text-2xl font-bold ${
                 Number(failureRate) > 10
-                  ? "text-red-600 dark:text-red-400"
+                  ? "text-[var(--red)]"
                   : Number(failureRate) > 0
-                    ? "text-amber-600 dark:text-amber-400"
-                    : "text-emerald-600 dark:text-emerald-400"
+                    ? "text-[var(--amber-text)]"
+                    : "text-[var(--green)]"
               }`}
             >
               {failureRate}%

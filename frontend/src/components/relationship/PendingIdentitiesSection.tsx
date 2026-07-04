@@ -248,11 +248,11 @@ export function PendingIdentitiesSection() {
 
   return (
     <>
-      <Card className="border-amber-200 dark:border-amber-800">
+      <Card className="border-[var(--amber)]">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             Pending Identities
-            <Badge variant="outline" className="border-amber-500 text-amber-600">
+            <Badge variant="outline" className="border-[var(--amber)] text-[var(--amber-text)]">
               {pendingContacts.length}
             </Badge>
           </CardTitle>

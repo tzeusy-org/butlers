@@ -53,7 +53,7 @@ function deriveSeverity(action: ApprovalAction): Severity {
  *
  * Token mapping (no raw oklch/hex):
  *   high   -- bg-destructive      (red/danger)
- *   medium -- bg-amber-500        (amber)
+ *   medium -- bg-[var(--amber)]   (amber)
  *   low    -- bg-muted-foreground (dim)
  */
 function severityDotClass(severity: Severity): string {
@@ -61,7 +61,7 @@ function severityDotClass(severity: Severity): string {
     case "high":
       return "bg-destructive"
     case "medium":
-      return "bg-amber-500"
+      return "bg-[var(--amber)]"
     case "low":
       return "bg-muted-foreground"
   }

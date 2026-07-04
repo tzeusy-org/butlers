@@ -6,6 +6,144 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
+// ---------------------------------------------------------------------------
+// Dispatch one-visual-language guards (bu-86c4c.6)
+//
+// Three enforcement layers, each a `no-restricted-syntax` selector list.
+// IMPORTANT: eslint flat config does NOT merge `rules.no-restricted-syntax`
+// arrays across config objects that both match the same file — the LAST
+// matching object wins outright for that rule key (verified empirically
+// while authoring this). So every combination of "which selectors apply to
+// this file" below is expressed as ONE complete, non-overlapping config
+// object rather than several partial ones layered on top of each other.
+// ---------------------------------------------------------------------------
+
+// Pre-existing bu-86c4c.5 guard: hsl(var(--x)) is invalid CSS for this theme
+// (tokens are full oklch(...) literals, not HSL components).
+const HSL_VAR_SELECTORS = [
+  {
+    selector: 'Literal[value=/hsla?\\(\\s*var\\(/i]',
+    message:
+      'hsl(var(--x)) is invalid CSS for this theme (tokens are oklch(...) literals, ' +
+      'not HSL components). Use var(--x) directly, or chartColor()/chartColorAlpha() ' +
+      'from src/lib/chart-colors.ts for chart series colors.',
+  },
+  {
+    selector: 'TemplateElement[value.raw=/hsla?\\(\\s*var\\(/i]',
+    message:
+      'hsl(var(--x)) is invalid CSS for this theme (tokens are oklch(...) literals, ' +
+      'not HSL components). Use var(--x) directly, or chartColor()/chartColorAlpha() ' +
+      'from src/lib/chart-colors.ts for chart series colors.',
+  },
+]
+
+// bu-86c4c.6, deliverable (a): ban raw Tailwind status-palette classes.
+// The dashboard has exactly three state colors (--red, --amber, --green —
+// see openspec/specs/dashboard-design-language/spec.md § State Color
+// Discipline) plus their theme-aware CSS custom properties in index.css.
+// Raw Tailwind shades (bg-red-500, text-emerald-600, border-amber-400, a
+// dark: pair of the same, etc.) are a second, drifting dialect for the same
+// three signals — this audit found 80+ files using 2-3 different named
+// greens for "healthy" alone. Use `var(--red)` / `var(--amber)` (borders,
+// fills — dots are the accepted small-glyph exception to "no background
+// fills") / `var(--green)` / `var(--amber-text)` (TEXT only — see
+// bu-86c4c.16, base --amber fails WCAG AA as text) instead.
+//
+// Genuinely non-status uses that only coincidentally land on one of these
+// Tailwind shades (a fixed categorical/tag palette, not a live health
+// signal — e.g. components/chronicles/lane-taxonomy.ts's 9-color activity
+// taxonomy, components/general/ComplexityBadge.tsx's 6-tier palette) are
+// exempted with a line-level `eslint-disable-next-line no-restricted-syntax`
+// and an explanatory comment, not a rule-wide escape hatch.
+const STATUS_COLOR_SELECTORS = [
+  {
+    selector:
+      'Literal[value=/\\b(?:bg|text|border|ring|decoration|from|via|to|fill|stroke|outline|divide|caret|accent|shadow)-(?:red|green|emerald|amber|yellow|orange)-(?:50|100|150|200|300|400|500|600|700|800|900|950)\\b/]',
+    message:
+      'Raw Tailwind status-palette classes are banned (bu-86c4c.6) — this dashboard has ' +
+      'exactly three state colors: var(--red), var(--amber) (var(--amber-text) for TEXT — ' +
+      'see bu-86c4c.16), var(--green). If this is genuinely NOT a live status/health signal ' +
+      '(a fixed categorical/tag palette that coincidentally lands on this shade), leave the ' +
+      'class as-is and add a line-level eslint-disable-next-line with a one-line reason.',
+  },
+  {
+    selector:
+      'TemplateElement[value.raw=/\\b(?:bg|text|border|ring|decoration|from|via|to|fill|stroke|outline|divide|caret|accent|shadow)-(?:red|green|emerald|amber|yellow|orange)-(?:50|100|150|200|300|400|500|600|700|800|900|950)\\b/]',
+    message:
+      'Raw Tailwind status-palette classes are banned (bu-86c4c.6) — this dashboard has ' +
+      'exactly three state colors: var(--red), var(--amber) (var(--amber-text) for TEXT — ' +
+      'see bu-86c4c.16), var(--green). If this is genuinely NOT a live status/health signal ' +
+      '(a fixed categorical/tag palette that coincidentally lands on this shade), leave the ' +
+      'class as-is and add a line-level eslint-disable-next-line with a one-line reason.',
+  },
+]
+
+// bu-86c4c.6, deliverable (c): ban raw hex color literals in JSX files.
+// "No invented colors" is already a spec requirement (dashboard-design-
+// language spec.md § Surface Palette) for oklch(/#/rgb(/hsl( diffs outside
+// index.css; this closes the #hex gap specifically for component files
+// (.tsx). Scoped to .tsx (not .ts) because a couple of pre-existing .ts data
+// modules (lane-taxonomy.ts, entity-model.ts) hold small fixed hex palettes
+// that are out of this bead's diff size — component-file enforcement is
+// where the actual visual-language leak happens (inline style=, recharts
+// fill/stroke, canvas node styles).
+// Requires at least one A-F letter among the hex digits (lookahead) so that
+// purely-decimal `#NNN`-style IDs (QA short_ids like "#401", "#218", bead/PR
+// references) don't false-positive — verified against this codebase's real
+// hex-color literals, which (Tailwind palette values like #22c55e, #ef4444,
+// #eab308, #3b82f6) always include a letter; a human- or palette-chosen
+// color composed of only 0-9 is vanishingly rare in practice.
+const HEX_COLOR_SELECTORS = [
+  {
+    selector: 'Literal[value=/#(?=[0-9a-fA-F]*[a-fA-F])(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\\b/]',
+    message:
+      'Raw hex color literals are banned in JSX files (bu-86c4c.6). Reference an existing ' +
+      'CSS custom property with var(--x) instead (see frontend/src/index.css for the token ' +
+      'catalog). If this is a genuinely arbitrary, user-chosen color (e.g. a free-form label- ' +
+      'color input, not a themed value), add a line-level eslint-disable-next-line with a ' +
+      'one-line reason.',
+  },
+  {
+    selector: 'TemplateElement[value.raw=/#(?=[0-9a-fA-F]*[a-fA-F])(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\\b/]',
+    message:
+      'Raw hex color literals are banned in JSX files (bu-86c4c.6). Reference an existing ' +
+      'CSS custom property with var(--x) instead (see frontend/src/index.css for the token ' +
+      'catalog). If this is a genuinely arbitrary, user-chosen color (e.g. a free-form label- ' +
+      'color input, not a themed value), add a line-level eslint-disable-next-line with a ' +
+      'one-line reason.',
+  },
+]
+
+// bu-86c4c.6, deliverable (b): ban local re-declarations of the two
+// primitives the JARVIS audit found forked 7 times across ui/, three
+// Settings pages, QA, and the secrets passport (`function Eyebrow`, a
+// second `function Voice`) instead of importing the canonical
+// components/ui/Eyebrow.tsx / Voice.tsx. Scoped away from components/ui/
+// itself (the canonical home) and from the one documented composition
+// wrapper (secrets/passport/atoms.tsx, which imports and wraps the
+// canonical components rather than redeclaring their style — see that
+// file's Eyebrow/Voice for the accepted pattern).
+const PRIMITIVE_REDECLARATION_SELECTORS = [
+  {
+    selector: 'FunctionDeclaration[id.name=/^(?:Eyebrow|Voice)$/]',
+    message:
+      'Do not locally redeclare Eyebrow/Voice (bu-86c4c.6 collapsed 7 forks of these onto ' +
+      'components/ui/). Import { Eyebrow } from "@/components/ui/Eyebrow" or ' +
+      '{ Voice } from "@/components/ui/Voice" instead. If you need extra behavior, wrap the ' +
+      'canonical component (see components/secrets/passport/atoms.tsx for the accepted ' +
+      'composition-wrapper pattern) rather than redeclaring its typographic style.',
+  },
+  {
+    selector: 'VariableDeclarator[id.name=/^(?:Eyebrow|Voice)$/]',
+    message:
+      'Do not locally redeclare Eyebrow/Voice (bu-86c4c.6 collapsed 7 forks of these onto ' +
+      'components/ui/). Import { Eyebrow } from "@/components/ui/Eyebrow" or ' +
+      '{ Voice } from "@/components/ui/Voice" instead. If you need extra behavior, wrap the ' +
+      'canonical component (see components/secrets/passport/atoms.tsx for the accepted ' +
+      'composition-wrapper pattern) rather than redeclaring its typographic style.',
+  },
+]
+
 export default defineConfig([
   globalIgnores(['dist']),
   {
@@ -60,35 +198,47 @@ export default defineConfig([
     },
   },
   // ---------------------------------------------------------------------------
-  // Chart color plumbing guard (bu-86c4c.5)
-  //
-  // Every theme color token (--primary, --chart-1..5, etc.) is a full
-  // oklch(...) color literal, not a raw HSL component tuple, so wrapping one
-  // in hsl(var(--x)) is invalid CSS — browsers drop the declaration and the
-  // series/element silently renders black/invisible in the dark theme. This
-  // exact bug hit 9+ recharts components before this bead fixed it. Reference
-  // tokens directly with var(--x), or use the chartColor()/chartColorAlpha()
-  // helpers in src/lib/chart-colors.ts for chart series.
+  // Chart color plumbing guard (bu-86c4c.5) + one-visual-language guards
+  // (bu-86c4c.6). Split into three non-overlapping file-sets — see the
+  // "IMPORTANT" comment on the selector consts above for why this can't be
+  // layered as separate partial config objects.
   // ---------------------------------------------------------------------------
   {
-    files: ['**/*.{ts,tsx}'],
+    // Plain .ts files can never contain JSX (TypeScript rejects JSX syntax
+    // outside .tsx), so neither the hex-in-JSX guard nor the Eyebrow/Voice
+    // redeclaration guard (which specifically targets JSX-returning
+    // components) can ever fire here — only the theme-token guards apply.
+    files: ['**/*.ts'],
+    rules: {
+      'no-restricted-syntax': ['error', ...HSL_VAR_SELECTORS, ...STATUS_COLOR_SELECTORS],
+    },
+  },
+  {
+    // Every .tsx file EXCEPT components/ui/ (the canonical primitive home)
+    // and the one documented composition-wrapper exception.
+    files: ['**/*.tsx'],
+    ignores: ['src/components/ui/**', 'src/components/secrets/passport/atoms.tsx'],
     rules: {
       'no-restricted-syntax': [
         'error',
-        {
-          selector: 'Literal[value=/hsla?\\(\\s*var\\(/i]',
-          message:
-            'hsl(var(--x)) is invalid CSS for this theme (tokens are oklch(...) literals, ' +
-            'not HSL components). Use var(--x) directly, or chartColor()/chartColorAlpha() ' +
-            'from src/lib/chart-colors.ts for chart series colors.',
-        },
-        {
-          selector: 'TemplateElement[value.raw=/hsla?\\(\\s*var\\(/i]',
-          message:
-            'hsl(var(--x)) is invalid CSS for this theme (tokens are oklch(...) literals, ' +
-            'not HSL components). Use var(--x) directly, or chartColor()/chartColorAlpha() ' +
-            'from src/lib/chart-colors.ts for chart series colors.',
-        },
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...HEX_COLOR_SELECTORS,
+        ...PRIMITIVE_REDECLARATION_SELECTORS,
+      ],
+    },
+  },
+  {
+    // components/ui/ and the passport composition wrapper: still theme-token
+    // and hex clean, but exempt from the redeclaration ban (they ARE the
+    // canonical declaration / the accepted wrapper pattern).
+    files: ['src/components/ui/**/*.tsx', 'src/components/secrets/passport/atoms.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...HEX_COLOR_SELECTORS,
       ],
     },
   },

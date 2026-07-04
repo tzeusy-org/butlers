@@ -99,8 +99,8 @@ describe("QA dossier fix-column components", () => {
     );
 
     expect(screen.getByTestId("qa-diff-line-meta").className).toContain("bg-muted");
-    expect(screen.getByTestId("qa-diff-line-minus").className).toContain("bg-red");
-    expect(screen.getByTestId("qa-diff-line-plus").className).toContain("bg-emerald");
+    expect(screen.getByTestId("qa-diff-line-minus").className).toContain("bg-[var(--red)]");
+    expect(screen.getByTestId("qa-diff-line-plus").className).toContain("bg-[var(--green)]");
     expect(screen.getByTestId("qa-diff-line-context").className).toContain("bg-transparent");
     expect(screen.getByText("new call").className).toContain("whitespace-pre");
   });
@@ -122,8 +122,8 @@ describe("QA dossier fix-column components", () => {
   // drafted | open | merged | closed (spec correction: G11-GAP-8).
   it.each([
     ["drafted", "border-sky-500/40"],
-    ["open", "border-amber-500/40"],
-    ["merged", "border-emerald-500/40"],
+    ["open", "border-[var(--amber)]/40"],
+    ["merged", "border-[var(--green)]/40"],
     ["closed", "border-muted-foreground/40"],
   ] as [QaPrSummary["state"], string][])(
     "test_pr_panel_state_chip_%s",

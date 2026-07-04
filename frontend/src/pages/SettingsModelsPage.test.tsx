@@ -1033,22 +1033,22 @@ describe("SettingsModelsPage — token-usage columns", () => {
     const model = makeModel({ alias: "g", usage_24h: 100_000, limit_24h: 500_000 });
     setHookState({ entries: [model] });
     const html = renderPage();
-    expect(html).toContain("bg-green-500");
-    expect(html).not.toContain("bg-red-500");
+    expect(html).toContain("bg-[var(--green)]");
+    expect(html).not.toContain("bg-[var(--red)]");
   });
 
   it("renders a yellow progress bar between 60% and 85%", () => {
     const model = makeModel({ alias: "y", usage_24h: 350_000, limit_24h: 500_000 });
     setHookState({ entries: [model] });
     const html = renderPage();
-    expect(html).toContain("bg-yellow-500");
+    expect(html).toContain("bg-[var(--amber)]");
   });
 
   it("renders a red progress bar at or above 85%", () => {
     const model = makeModel({ alias: "r", usage_24h: 450_000, limit_24h: 500_000 });
     setHookState({ entries: [model] });
     const html = renderPage();
-    expect(html).toContain("bg-red-500");
+    expect(html).toContain("bg-[var(--red)]");
   });
 
   it("renders a BLOCKED badge when usage exceeds the limit", () => {

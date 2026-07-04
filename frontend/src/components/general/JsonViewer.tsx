@@ -46,6 +46,7 @@ function ValueSpan({ value }: { value: unknown }) {
   }
   if (typeof value === "boolean") {
     return (
+      // eslint-disable-next-line no-restricted-syntax -- JSON syntax-highlighting color (value-type coloring), not a status signal
       <span className="text-amber-500 font-medium">
         {value ? "true" : "false"}
       </span>
@@ -56,6 +57,7 @@ function ValueSpan({ value }: { value: unknown }) {
   }
   if (typeof value === "string") {
     return (
+      // eslint-disable-next-line no-restricted-syntax -- JSON syntax-highlighting color (value-type coloring), not a status signal
       <span className="text-emerald-400">
         &quot;{value}&quot;
       </span>

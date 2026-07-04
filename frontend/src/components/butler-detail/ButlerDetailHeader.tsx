@@ -67,9 +67,9 @@ function earliestNextRun(schedules: { enabled: boolean; next_run_at: string | nu
 function activityToneClass(activity: string): string {
   switch (activity) {
     case "running":
-      return "text-emerald-500"
+      return "text-[var(--green)]"
     case "overdue":
-      return "text-amber-600 dark:text-amber-400"
+      return "text-[var(--amber-text)]"
     case "offline":
     case "quarantined":
       return "text-destructive"

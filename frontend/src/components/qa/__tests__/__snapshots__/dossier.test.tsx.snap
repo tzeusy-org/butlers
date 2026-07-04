@@ -319,7 +319,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
             class="flex flex-wrap items-center gap-2"
           >
             <span
-              class="border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] tnum border-amber-500/40 text-amber-500"
+              class="border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.12em] tnum border-[var(--amber)]/40 text-[var(--amber-text)]"
             >
               open
             </span>
@@ -395,7 +395,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
               </span>
             </div>
             <div
-              class="grid grid-cols-[24px_minmax(0,1fr)] bg-red-500/10 text-red-950 dark:text-red-100"
+              class="grid grid-cols-[24px_minmax(0,1fr)] bg-[var(--red)]/10 text-[var(--red)]"
               data-testid="qa-diff-line-minus"
             >
               <span
@@ -411,7 +411,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
               </span>
             </div>
             <div
-              class="grid grid-cols-[24px_minmax(0,1fr)] bg-emerald-500/10 text-emerald-950 dark:text-emerald-100"
+              class="grid grid-cols-[24px_minmax(0,1fr)] bg-[var(--green)]/10 text-[var(--green)]"
               data-testid="qa-diff-line-plus"
             >
               <span
@@ -481,7 +481,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
           12:10 AM
         </time>
         <span
-          class="uppercase tracking-[0.12em] text-amber-500"
+          class="uppercase tracking-[0.12em] text-[var(--amber-text)]"
           data-testid="qa-journal-step-flagged"
         >
           flagged
@@ -511,7 +511,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
           12:16 AM
         </time>
         <span
-          class="uppercase tracking-[0.12em] text-emerald-500"
+          class="uppercase tracking-[0.12em] text-[var(--green)]"
           data-testid="qa-journal-step-concluded"
         >
           concluded

@@ -11,7 +11,7 @@
 // string should use the exported `butlerHueVar(name)` helper instead of
 // importing the component itself.
 //
-// Doctrine: each butler's hue from --category-1..8 appears only on the butler
+// Doctrine: each butler's hue from --category-1..12 appears only on the butler
 // letter-mark (colored squircle with initial). Never on backgrounds, borders,
 // buttons, headers, or other chrome. This rule applies to butler hues.
 // The categoryHueVar() helper uses the same token pool for non-butler entity
@@ -24,10 +24,20 @@
 // ---------------------------------------------------------------------------
 
 /**
- * All eight category CSS tokens, in slot order.
+ * All twelve category CSS tokens, in slot order.
  * Slot assignment is deterministic: known butlers use their roster index;
- * unknown names fall back to a djb2-style hash (mod 8) so distinct unknown
+ * unknown names fall back to a djb2-style hash (mod 12) so distinct unknown
  * butlers still receive distinct colors.
+ *
+ * bu-86c4c.6: extended from 8 to 12 slots. The roster has grown to 11 known
+ * butlers, which used to collide under the old mod-8 wrap (the 9th, 10th,
+ * and 11th roster entries silently reused the 1st, 2nd, and 3rd butler's
+ * hue). Slot 12 is spare headroom for the next butler added to
+ * KNOWN_BUTLERS. This array is the single source of truth for the
+ * butler->hue mapping — see openspec/specs/dashboard-design-language/spec.md
+ * § Requirement: Butler Category Hues for the mirrored doc table, which MUST
+ * be regenerated (by hand, from KNOWN_BUTLERS below) whenever this array or
+ * KNOWN_BUTLERS changes.
  */
 const CATEGORY_VARS = [
   "var(--category-1)",
@@ -38,6 +48,10 @@ const CATEGORY_VARS = [
   "var(--category-6)",
   "var(--category-7)",
   "var(--category-8)",
+  "var(--category-9)",
+  "var(--category-10)",
+  "var(--category-11)",
+  "var(--category-12)",
 ] as const
 
 /**

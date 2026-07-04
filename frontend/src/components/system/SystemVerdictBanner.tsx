@@ -147,7 +147,7 @@ export function SystemVerdictBanner() {
       role="group"
       aria-label="Instance problems"
       data-testid="verdict-banner-problems"
-      className="mb-4 rounded border border-amber-500/40 bg-amber-500/5 px-4 py-3"
+      className="mb-4 rounded border border-[var(--amber)]/40 bg-[var(--amber)]/5 px-4 py-3"
     >
       <span className="mb-2 block font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
         {problems.length} {problems.length === 1 ? "thing needs" : "things need"} you

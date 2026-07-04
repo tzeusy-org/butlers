@@ -31,7 +31,7 @@ export function AutoRefreshToggle({
   return (
     <div className="flex items-center gap-2">
       {enabled && (
-        <Badge variant="default" className="bg-emerald-600 text-white text-xs">
+        <Badge variant="default" className="bg-[var(--green)] text-white text-xs">
           Live
         </Badge>
       )}

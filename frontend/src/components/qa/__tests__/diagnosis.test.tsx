@@ -101,7 +101,7 @@ describe("QA diagnosis components", () => {
     expect(screen.getByTestId("qa-claim-c2").className).toContain(
       "bg-severity-medium/15",
     );
-    expect(screen.getByTestId("qa-claim-c2-marker").className).toContain("text-amber-500");
+    expect(screen.getByTestId("qa-claim-c2-marker").className).toContain("text-[var(--amber-text)]");
     expect(screen.getByTestId("qa-claim-c1").className).not.toContain(
       "bg-severity-medium/15",
     );
@@ -161,7 +161,7 @@ describe("QA diagnosis components", () => {
     fireEvent.mouseEnter(screen.getByTestId("qa-claim-c1"));
 
     expect(screen.getByText("ERROR").className).toContain("text-destructive");
-    expect(screen.getByText("WARN").className).toContain("text-amber-500");
+    expect(screen.getByText("WARN").className).toContain("text-[var(--amber-text)]");
     expect(screen.getByText("INFO").className).toContain("text-muted-foreground");
   });
 });

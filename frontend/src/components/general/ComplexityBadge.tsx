@@ -14,7 +14,13 @@ const COMPLEXITY_LABELS: Record<ComplexityTier, string> = {
   legacy: "Legacy",
 };
 
+// bu-86c4c.6: fixed 6-slot model-complexity-tier palette, not a status
+// signal — "reasoning" landing on red is a coincidence of an arbitrary
+// 6-color tier palette (workhorse/cheap/specialty/local/legacy are blue/
+// slate/purple/teal/zinc), not an error/critical state. Exempted from the
+// raw-status-color eslint rule with a line-level disable, not a recolor.
 const COMPLEXITY_COLORS: Record<ComplexityTier, string> = {
+  // eslint-disable-next-line no-restricted-syntax -- tier palette color, not a status signal (see comment above)
   reasoning: "bg-red-600 text-white hover:bg-red-600/90",
   workhorse: "bg-blue-600 text-white hover:bg-blue-600/90",
   cheap: "bg-slate-500 text-white hover:bg-slate-500/90",

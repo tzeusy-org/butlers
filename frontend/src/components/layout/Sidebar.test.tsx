@@ -386,7 +386,7 @@ describe("Sidebar", () => {
       // The Education nav item should contain an amber status dot
       const educationLink = container.querySelector('a[href="/education"]');
       expect(educationLink).toBeInstanceOf(HTMLAnchorElement);
-      expect(educationLink!.querySelector(".bg-amber-500")).toBeTruthy();
+      expect(educationLink!.querySelector('[class*="bg-[var(--amber)]"]')).toBeTruthy();
     });
 
     it("renders a status dot on an error butler's nav item", () => {
@@ -418,7 +418,7 @@ describe("Sidebar", () => {
 
       const educationLink = container.querySelector('a[href="/education"]');
       expect(educationLink).toBeInstanceOf(HTMLAnchorElement);
-      expect(educationLink!.querySelector(".bg-amber-500")).toBeNull();
+      expect(educationLink!.querySelector('[class*="bg-[var(--amber)]"]')).toBeNull();
       expect(educationLink!.querySelector(".bg-destructive")).toBeNull();
     });
   });
@@ -438,7 +438,7 @@ describe("Sidebar", () => {
       render();
 
       // The footer should contain a green dot
-      const greenDot = container.querySelector(".bg-green-500");
+      const greenDot = container.querySelector('[class*="bg-[var(--green)]"]');
       expect(greenDot).toBeTruthy();
     });
 
@@ -453,7 +453,7 @@ describe("Sidebar", () => {
 
       // Footer dot is distinct from the status dot on nav items
       // At least one amber dot renders somewhere (footer or item)
-      const amberDots = container.querySelectorAll(".bg-amber-500");
+      const amberDots = container.querySelectorAll('[class*="bg-[var(--amber)]"]');
       expect(amberDots.length).toBeGreaterThan(0);
     });
 
@@ -478,8 +478,8 @@ describe("Sidebar", () => {
       render();
 
       // No green, amber, or red dot when state is unknown
-      expect(container.querySelector(".bg-green-500")).toBeNull();
-      expect(container.querySelector(".bg-amber-500")).toBeNull();
+      expect(container.querySelector('[class*="bg-[var(--green)]"]')).toBeNull();
+      expect(container.querySelector('[class*="bg-[var(--amber)]"]')).toBeNull();
       expect(container.querySelector(".bg-destructive")).toBeNull();
 
       // Neutral dot is present
@@ -498,8 +498,8 @@ describe("Sidebar", () => {
       render();
 
       // No green, amber, or red dot when state is unknown
-      expect(container.querySelector(".bg-green-500")).toBeNull();
-      expect(container.querySelector(".bg-amber-500")).toBeNull();
+      expect(container.querySelector('[class*="bg-[var(--green)]"]')).toBeNull();
+      expect(container.querySelector('[class*="bg-[var(--amber)]"]')).toBeNull();
       expect(container.querySelector(".bg-destructive")).toBeNull();
 
       // Neutral dot is present
@@ -647,19 +647,19 @@ describe("Sidebar", () => {
       });
     });
 
-    it("renders bg-red-500 on QA badge when count > 0 (rail mode)", () => {
+    it("renders var(--red) on QA badge when count > 0 (rail mode)", () => {
       vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": 3 });
       render();
 
-      const redBadge = container.querySelector(".bg-red-500");
+      const redBadge = container.querySelector('[class*="bg-[var(--red)]"]');
       expect(redBadge).toBeTruthy();
     });
 
-    it("renders bg-red-500 on QA badge when count > 0 (mobile expanded mode)", () => {
+    it("renders var(--red) on QA badge when count > 0 (mobile expanded mode)", () => {
       vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": 5 });
       renderMobile();
 
-      const redBadge = container.querySelector(".bg-red-500");
+      const redBadge = container.querySelector('[class*="bg-[var(--red)]"]');
       expect(redBadge).toBeTruthy();
     });
 
@@ -667,7 +667,7 @@ describe("Sidebar", () => {
       vi.mocked(useBadgeCounts).mockReturnValue({ "qa-escalations": 0 });
       render();
 
-      const redBadge = container.querySelector(".bg-red-500");
+      const redBadge = container.querySelector('[class*="bg-[var(--red)]"]');
       expect(redBadge).toBeNull();
     });
   });

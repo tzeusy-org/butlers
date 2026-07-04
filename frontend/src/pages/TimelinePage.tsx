@@ -175,7 +175,7 @@ export default function TimelinePage() {
       <DispatchSurface className="space-y-4">
         {hasDegradedSource && (
           <p
-            className="font-mono text-[11px] text-amber-600 border border-amber-600/30 bg-amber-600/5 rounded px-3 py-1.5"
+            className="font-mono text-[11px] text-[var(--amber-text)] border border-[var(--amber)]/30 bg-[var(--amber)]/5 rounded px-3 py-1.5"
             data-testid="timeline-degraded-banner"
           >
             Partial data: {degradedSources.join(", ")} temporarily unavailable — this page may be

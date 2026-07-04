@@ -59,7 +59,9 @@ import {
 // Personal-scale dataset (a household's contact groups) — fetch the whole
 // thing in one page and filter/sort client-side rather than paginating.
 const FETCH_LIMIT = 500;
-const BADGE_TEXT = "#fff";
+// bu-86c4c.6: "white" keyword, not a hex literal — matches the ButlerMark
+// tone="fill" precedent (`color: "white"`) for text on a solid category fill.
+const BADGE_TEXT = "white";
 
 function labelBg(label: Label): string {
   return label.color ?? categoryHueVar(label.name);
@@ -127,6 +129,11 @@ function CreateLabelDialog() {
               id="circle-label-color"
               value={color}
               onChange={(e) => setColor(e.target.value)}
+              // bu-86c4c.6: example format text for a free-form user-chosen
+              // label color, not a themed color — labels intentionally accept
+              // any hex the owner types (see labelBg() above), so this is not
+              // a design-token violation.
+              // eslint-disable-next-line no-restricted-syntax
               placeholder="#e63946"
               maxLength={7}
             />
