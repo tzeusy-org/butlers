@@ -111,10 +111,12 @@ class TestHysteresis:
 class TestGetTierRanking:
     """Unit tests for get_tier_ranking (pure function, no DB)."""
 
-    def _make_scores(self, n: int, start_score: float = 10.0) -> list[dict]:
+    def _make_scores(self, n: int, start_score: float = 100.0) -> list[dict]:
         # Scores decrease from start_score but never go below 0.01 to avoid
         # triggering the zero-score → tier-1500 shortcut.  Real decay scores
         # are always non-negative; test helpers should reflect that invariant.
+        # The default keeps every entry above the tier-5 score floor (20.0) so
+        # rank-position tests are not perturbed by floor demotion.
         return [
             {
                 "contact_id": uuid.uuid4(),
@@ -216,6 +218,71 @@ class TestGetTierRanking:
         assert tier_150_count == 100  # ranks 51-150
         assert tier_500_count == 350  # ranks 151-500
         assert tier_1500_count == 100  # ranks 501-600
+
+
+class TestTierScoreFloors:
+    """Unit tests for TIER_SCORE_FLOOR and _apply_score_floor (D9)."""
+
+    def test_floor_values(self):
+        from butlers.tools.relationship.dunbar import TIER_SCORE_FLOOR
+
+        assert TIER_SCORE_FLOOR == {5: 20.0, 15: 8.0, 50: 3.0, 150: 0.5, 500: 0.02}
+
+    def test_score_meeting_floor_holds_tier(self):
+        from butlers.tools.relationship.dunbar import _apply_score_floor
+
+        assert _apply_score_floor(5, 25.0) == 5
+        assert _apply_score_floor(15, 8.0) == 15  # floor is inclusive
+        assert _apply_score_floor(50, 3.0) == 50
+
+    def test_score_below_floor_demotes_to_first_qualifying_tier(self):
+        from butlers.tools.relationship.dunbar import _apply_score_floor
+
+        assert _apply_score_floor(5, 10.0) == 15
+        assert _apply_score_floor(5, 4.0) == 50
+        assert _apply_score_floor(5, 0.6) == 150
+        assert _apply_score_floor(5, 0.3) == 500
+        assert _apply_score_floor(5, 0.01) == 1500
+
+    def test_floor_never_promotes(self):
+        from butlers.tools.relationship.dunbar import _apply_score_floor
+
+        # A huge score does not lift a rank-derived tier 50 into tier 5.
+        assert _apply_score_floor(50, 100.0) == 50
+        assert _apply_score_floor(1500, 100.0) == 1500
+
+    def test_get_tier_ranking_demotes_sparse_pool(self):
+        """Rank 1 in a sparse pool with a crumb score must not hold tier 5."""
+        from butlers.tools.relationship.dunbar import get_tier_ranking
+
+        scores = [
+            {
+                "contact_id": uuid.uuid4(),
+                "entity_id": uuid.uuid4(),
+                "score": 3.8,  # a single recent transactional call
+                "last_interaction_at": None,
+            }
+        ]
+        ranked = get_tier_ranking(scores)
+        assert ranked[0]["dunbar_rank"] == 1
+        assert ranked[0]["dunbar_tier"] == 50  # not 5: 3.8 < 20 and < 8, >= 3
+
+    def test_get_tier_ranking_override_bypasses_floor(self):
+        """A manual override pins the tier even when the score is below its floor."""
+        from butlers.tools.relationship.dunbar import get_tier_ranking
+
+        entity_id = uuid.uuid4()
+        scores = [
+            {
+                "contact_id": uuid.uuid4(),
+                "entity_id": entity_id,
+                "score": 0.1,
+                "last_interaction_at": None,
+            }
+        ]
+        ranked = get_tier_ranking(scores, overrides={entity_id: 5})
+        assert ranked[0]["dunbar_tier"] == 5
+        assert ranked[0]["dunbar_tier_override"] is True
 
 
 class TestDirectionWeightConstants:
@@ -473,13 +540,22 @@ async def _make_contact(
     return dict(row)
 
 
-async def _log_interaction(pool, entity_id: uuid.UUID | None, days_ago: float) -> None:
+async def _log_interaction(
+    pool,
+    entity_id: uuid.UUID | None,
+    days_ago: float,
+    direction: str | None = None,
+) -> None:
     """Insert an active interaction fact keyed by entity_id.
 
     entity_id=None simulates a contact with no linked entity; the fact is stored
     with a placeholder subject and NULL entity_id so the new reader (which joins
     on f.entity_id = c.entity_id) will not match it — matching pre-migration
     behaviour where NULL-entity contacts were excluded from Dunbar scoring.
+
+    direction=None simulates legacy facts without direction metadata (scored at
+    1.0x and NOT counted as owner engagement); pass 'outgoing'/'mutual' when the
+    test needs the contact to survive the reciprocal-engagement gate.
     """
     occurred_at = datetime.now(UTC) - timedelta(days=days_ago)
     if entity_id is None:
@@ -487,14 +563,17 @@ async def _log_interaction(pool, entity_id: uuid.UUID | None, days_ago: float) -
         subject = "entity:unknown"
     else:
         subject = f"entity:{entity_id}"
+    metadata = {"direction": direction} if direction is not None else {}
     await pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at)
-        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3)
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
         """,
         subject,
         entity_id,
         occurred_at,
+        metadata,
     )
 
 
@@ -528,8 +607,8 @@ async def test_score_reflects_recency(dunbar_pool):
     recent = await _make_contact(dunbar_pool, "Recent")
     old = await _make_contact(dunbar_pool, "Old")
 
-    await _log_interaction(dunbar_pool, recent["entity_id"], days_ago=2)
-    await _log_interaction(dunbar_pool, old["entity_id"], days_ago=60)
+    await _log_interaction(dunbar_pool, recent["entity_id"], days_ago=2, direction="mutual")
+    await _log_interaction(dunbar_pool, old["entity_id"], days_ago=60, direction="mutual")
 
     scores = await compute_dunbar_scores(dunbar_pool)
     score_map = {s["contact_id"]: s["score"] for s in scores}
@@ -548,8 +627,10 @@ async def test_score_rewards_frequency(dunbar_pool):
     infrequent = await _make_contact(dunbar_pool, "Infrequent")
 
     for i in range(10):
-        await _log_interaction(dunbar_pool, frequent["entity_id"], days_ago=i * 3 + 1)
-    await _log_interaction(dunbar_pool, infrequent["entity_id"], days_ago=5)
+        await _log_interaction(
+            dunbar_pool, frequent["entity_id"], days_ago=i * 3 + 1, direction="mutual"
+        )
+    await _log_interaction(dunbar_pool, infrequent["entity_id"], days_ago=5, direction="mutual")
 
     scores = await compute_dunbar_scores(dunbar_pool)
     score_map = {s["contact_id"]: s["score"] for s in scores}
@@ -649,7 +730,9 @@ async def test_direction_outgoing_10x_vs_incoming(dunbar_pool):
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
-    score_map = {s["contact_id"]: s["score"] for s in scores}
+    # The reciprocity gate zeroes the incoming-only contact's final score, so
+    # the D1 direction-weight contract is asserted on raw_score.
+    score_map = {s["contact_id"]: s["raw_score"] for s in scores}
 
     expected_ratio = DIRECTION_WEIGHT_OUTGOING / DIRECTION_WEIGHT_INCOMING
     ratio = score_map[outgoing["id"]] / score_map[incoming["id"]]
@@ -693,7 +776,8 @@ async def test_direction_mutual_5x_vs_incoming(dunbar_pool):
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
-    score_map = {s["contact_id"]: s["score"] for s in scores}
+    # Raw score: the incoming-only contact's final score is reciprocity-gated to 0.
+    score_map = {s["contact_id"]: s["raw_score"] for s in scores}
 
     expected_ratio = DIRECTION_WEIGHT_MUTUAL / DIRECTION_WEIGHT_INCOMING
     ratio = score_map[mutual["id"]] / score_map[incoming["id"]]
@@ -735,7 +819,8 @@ async def test_group_size_10_produces_tenth_score(dunbar_pool):
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
-    score_map = {s["contact_id"]: s["score"] for s in scores}
+    # Raw score: directionless facts do not survive the reciprocity gate.
+    score_map = {s["contact_id"]: s["raw_score"] for s in scores}
 
     # group score scales as 1/group_size
     expected_ratio = group_size_dm / group_size_large
@@ -776,9 +861,12 @@ async def test_null_direction_defaults_to_1x(dunbar_pool):
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
-    score_map = {s["contact_id"]: s["score"] for s in scores}
+    # Raw score: incoming-only contacts are reciprocity-gated to final score 0,
+    # which would make this assertion vacuous (0 == 0).
+    score_map = {s["contact_id"]: s["raw_score"] for s in scores}
 
     # NULL direction should equal explicit incoming (1.0x)
+    assert score_map[null_dir["id"]] > 0.0
     assert abs(score_map[null_dir["id"]] - score_map[explicit_incoming["id"]]) < 1e-9
 
 
@@ -815,9 +903,12 @@ async def test_null_group_size_defaults_to_1x(dunbar_pool):
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
-    score_map = {s["contact_id"]: s["score"] for s in scores}
+    # Raw score: directionless facts are reciprocity-gated to final score 0,
+    # which would make this assertion vacuous (0 == 0).
+    score_map = {s["contact_id"]: s["raw_score"] for s in scores}
 
     # NULL group_size should equal group_size=1 (both 1.0x divisor)
+    assert score_map[null_gs["id"]] > 0.0
     assert abs(score_map[null_gs["id"]] - score_map[explicit_dm["id"]]) < 1e-9
 
 
@@ -885,9 +976,210 @@ async def test_interaction_sync_connector_events_still_count(dunbar_pool):
     )
 
     scores = await compute_dunbar_scores(dunbar_pool)
-    score_map = {s["contact_id"]: s["score"] for s in scores}
+    row = next(s for s in scores if s["contact_id"] == direct["id"])
 
-    assert score_map[direct["id"]] > 0.0
+    # The sync fact is valid Dunbar evidence (raw score), but incoming-only
+    # contacts stay reciprocity-gated at final score 0.
+    assert row["raw_score"] > 0.0
+    assert row["score"] == 0.0
+    assert row["engagement_days"] == 0
+
+
+# ===========================================================================
+# Reciprocal engagement gating (D8) DB tests
+# ===========================================================================
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_incoming_only_contact_scores_zero(dunbar_pool):
+    """High-volume incoming-only senders (group lurker mentions, unanswered
+    recruiters) never accrue standing: final score is 0 regardless of volume."""
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    poster = await _make_contact(dunbar_pool, "ActiveGroupPoster")
+    for i in range(20):
+        await _log_interaction(dunbar_pool, poster["entity_id"], days_ago=i, direction="incoming")
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    row = next(s for s in scores if s["contact_id"] == poster["id"])
+
+    assert row["raw_score"] > 0.0
+    assert row["engagement_days"] == 0
+    assert row["reciprocity_factor"] == 0.0
+    assert row["score"] == 0.0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_single_engagement_day_dampens_score_to_one_third(dunbar_pool):
+    """One distinct day of owner engagement earns 1/3 of the raw score."""
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    one_off = await _make_contact(dunbar_pool, "OneOffCallback")
+    await _log_interaction(dunbar_pool, one_off["entity_id"], days_ago=2, direction="mutual")
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    row = next(s for s in scores if s["contact_id"] == one_off["id"])
+
+    assert row["engagement_days"] == 1
+    assert abs(row["reciprocity_factor"] - 1.0 / 3.0) < 1e-9
+    assert abs(row["score"] - row["raw_score"] / 3.0) < 1e-9
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_engagement_factor_saturates_at_three_days(dunbar_pool):
+    """Three or more distinct engagement days yield the full raw score."""
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    friend = await _make_contact(dunbar_pool, "EngagedFriend")
+    for days_ago in (1, 8, 15, 22):
+        await _log_interaction(
+            dunbar_pool, friend["entity_id"], days_ago=days_ago, direction="outgoing"
+        )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    row = next(s for s in scores if s["contact_id"] == friend["id"])
+
+    assert row["engagement_days"] == 4
+    assert row["reciprocity_factor"] == 1.0
+    assert abs(row["score"] - row["raw_score"]) < 1e-9
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_group_outgoing_does_not_count_as_engagement(dunbar_pool):
+    """Outgoing facts minted from group activity (group_size > 2) are not
+    person-to-person engagement: they add raw score but never unlock the gate."""
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    groupmate = await _make_contact(dunbar_pool, "GroupmateOnly")
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{groupmate['entity_id']}",
+        groupmate["entity_id"],
+        occurred_at,
+        {"direction": "outgoing", "group_size": 8},
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    row = next(s for s in scores if s["contact_id"] == groupmate["id"])
+
+    assert row["raw_score"] > 0.0
+    assert row["engagement_days"] == 0
+    assert row["score"] == 0.0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_owner_entity_excluded_from_scoring(dunbar_pool):
+    """The owner does not occupy a slot in their own Dunbar circles."""
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    owner = await _make_contact(dunbar_pool, "OwnerSelf")
+    await dunbar_pool.execute(
+        "UPDATE public.entities SET roles = ARRAY['owner'] WHERE id = $1",
+        owner["entity_id"],
+    )
+    await _log_interaction(dunbar_pool, owner["entity_id"], days_ago=1, direction="mutual")
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    ids = [s["contact_id"] for s in scores]
+    assert owner["id"] not in ids
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_group_type_without_group_size_downweighted(dunbar_pool):
+    """A group-chat-typed fact with no group_size metadata scores 0.2x, not DM weight."""
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    group_mention = await _make_contact(dunbar_pool, "GroupMention")
+    dm_chat = await _make_contact(dunbar_pool, "DmChat")
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{group_mention['entity_id']}",
+        group_mention["entity_id"],
+        occurred_at,
+        {"type": "telegram_group_chat", "direction": "incoming"},
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{dm_chat['entity_id']}",
+        dm_chat["entity_id"],
+        occurred_at,
+        {"type": "telegram_chat", "direction": "incoming"},
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["raw_score"] for s in scores}
+
+    ratio = score_map[group_mention["id"]] / score_map[dm_chat["id"]]
+    assert abs(ratio - 0.2) < 1e-9
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_group_type_with_group_size_not_double_discounted(dunbar_pool):
+    """When group_size metadata is present, the exact divisor applies and the
+    group-type 0.2x proxy discount must NOT stack on top."""
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    grouped = await _make_contact(dunbar_pool, "GroupWithSize")
+    plain = await _make_contact(dunbar_pool, "PlainWithSize")
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{grouped['entity_id']}",
+        grouped["entity_id"],
+        occurred_at,
+        {"type": "group_interaction", "direction": "mutual", "group_size": 5},
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{plain['entity_id']}",
+        plain["entity_id"],
+        occurred_at,
+        {"type": "dinner", "direction": "mutual", "group_size": 5},
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    score_map = {s["contact_id"]: s["raw_score"] for s in scores}
+
+    ratio = score_map[grouped["id"]] / score_map[plain["id"]]
+    assert abs(ratio - 1.0) < 1e-9
 
 
 @pytest.mark.integration
@@ -978,9 +1270,9 @@ async def test_scores_ordered_descending(dunbar_pool):
     low = await _make_contact(dunbar_pool, "Low")
     high = await _make_contact(dunbar_pool, "High")
 
-    await _log_interaction(dunbar_pool, low["entity_id"], days_ago=90)
+    await _log_interaction(dunbar_pool, low["entity_id"], days_ago=90, direction="mutual")
     for i in range(5):
-        await _log_interaction(dunbar_pool, high["entity_id"], days_ago=i + 1)
+        await _log_interaction(dunbar_pool, high["entity_id"], days_ago=i + 1, direction="mutual")
 
     scores = await compute_dunbar_scores(dunbar_pool)
     scored = [s for s in scores if s["contact_id"] in {low["id"], high["id"]}]

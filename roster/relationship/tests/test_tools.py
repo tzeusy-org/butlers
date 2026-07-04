@@ -2732,12 +2732,16 @@ async def test_contact_get_with_interactions_shows_nonzero_score(pool):
     cid = contact["id"]
     entity_id = contact["entity_id"]
 
-    # Insert an active interaction fact directly
+    # Insert an active mutual interaction fact directly (direction metadata is
+    # required to pass the reciprocal-engagement gate — incoming-only or
+    # directionless facts score 0).
     occurred = datetime.now(UTC) - timedelta(days=3)
     await pool.execute(
         """
-        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, entity_id)
-        VALUES ($1, 'interaction_other', 'chat', 'relationship', 'active', $2, $3)
+        INSERT INTO facts (subject, predicate, content, scope, validity, valid_at, entity_id,
+                           metadata)
+        VALUES ($1, 'interaction_other', 'chat', 'relationship', 'active', $2, $3,
+                '{"direction": "mutual"}'::jsonb)
         """,
         f"entity:{entity_id}",
         occurred,

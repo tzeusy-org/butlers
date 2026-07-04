@@ -1,12 +1,14 @@
 """Dunbar scoring engine — tier assignment and urgency ranking.
 
 Implements the Dunbar social layer model for the relationship butler.  Contacts
-are ranked by a decay-weighted interaction score and assigned to concentric
-tiers (5/15/50/150/500/1500).  An urgency formula combines overdue severity,
-tier weight, and contextual signals (upcoming dates, pending gifts, positive
-notes) to drive weekly reach-out suggestions.
+are ranked by a decay-weighted interaction score, gated by reciprocal owner
+engagement (incoming volume alone never accrues standing), and assigned to
+concentric tiers (5/15/50/150/500/1500) subject to per-tier score floors.  An
+urgency formula combines overdue severity, tier weight, and contextual signals
+(upcoming dates, pending gifts, positive notes) to drive weekly reach-out
+suggestions.
 
-Design decisions and rationale: openspec/changes/dunbar-tier-scoring/design.md
+Normative behavior: openspec/specs/dunbar-tier-scoring/spec.md
 """
 
 from __future__ import annotations
@@ -81,6 +83,31 @@ DIRECTION_WEIGHT_INCOMING: float = 1.0
 INTERACTION_TYPE_WEIGHT_CONTEXTUAL_EVENT: float = 0.2
 INTERACTION_TYPE_WEIGHT_DEFAULT: float = 1.0
 
+#: Reciprocal engagement gating (D8).  A contact's decay score is multiplied by
+#: min(1, engagement_days / RECIPROCITY_SATURATION_DAYS), where engagement_days
+#: counts the DISTINCT days on which the owner actively engaged the contact in a
+#: direct context (outgoing or mutual facts with group_size <= 2).  Contacts the
+#: owner has never engaged (group-chat lurker mentions, unanswered recruiter or
+#: insurance email) collapse to score 0 regardless of incoming volume; a single
+#: one-off engagement (e.g. a delivery callback) earns only a third of its raw
+#: score until engagement breadth builds up.
+RECIPROCITY_SATURATION_DAYS: int = 3
+
+#: Maximum group_size for a fact to count as a "direct" engagement context when
+#: computing engagement_days.  Group-derived outgoing facts (interaction_sync
+#: fan-out mints one per member whenever the owner posts in the group) are not
+#: evidence of person-to-person engagement.
+_DIRECT_CONTEXT_MAX_GROUP_SIZE: float = 2.0
+
+#: Minimum score required to HOLD a tier (D9).  Rank-based assignment alone
+#: hands out tier 5/15 slots for crumbs when the scored pool is sparse; a
+#: contact assigned a tier by rank is demoted to the first tier whose floor its
+#: score meets.  Floors sit at the decayed-score trough of each tier's expected
+#: cadence (TIER_CADENCE): e.g. an outgoing DM every 21 days sustains ~16-26
+#: points, so holding tier 15 requires >= 8.  Tier 1500 has no floor.  Manual
+#: overrides bypass floors.
+TIER_SCORE_FLOOR: dict[int, float] = {5: 20.0, 15: 8.0, 50: 3.0, 150: 0.5, 500: 0.02}
+
 #: Exponential decay lambda: ln(2) / 30-day half-life.
 _LAMBDA: float = math.log(2) / 30.0
 
@@ -146,6 +173,21 @@ def _rank_to_tier_with_hysteresis(current_rank: int, previous_tier: int | None) 
     return natural_tier
 
 
+def _apply_score_floor(tier: int, score: float) -> int:
+    """Demote a rank-assigned tier to the first tier whose score floor is met.
+
+    Tiers are checked from ``tier`` outward; tier 1500 has no floor and always
+    accepts.  A contact can never be *promoted* by this function.
+    """
+    for candidate in DUNBAR_TIERS:
+        if candidate < tier:
+            continue
+        floor = TIER_SCORE_FLOOR.get(candidate)
+        if floor is None or score >= floor:
+            return candidate
+    return DUNBAR_TIERS[-1]
+
+
 # ---------------------------------------------------------------------------
 # Core scoring function (D1, D2)
 # ---------------------------------------------------------------------------
@@ -158,64 +200,113 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
         {contact_id, entity_id, score, days_since_last}
 
     Only contacts mapped to a listed entity (``contact_entity_map`` row whose
-    ``public.entities.listed=true``) are included.  Contacts with no
-    interaction facts receive score=0.0.
+    ``public.entities.listed=true``) are included.  Entities carrying the
+    ``owner`` role are excluded — the owner does not occupy a slot in their own
+    Dunbar circles.  Contacts with no interaction facts receive score=0.0.
 
     The decay formula is::
 
-        score = sum(
+        raw_score = sum(
             exp(-lambda * days_since_interaction_i)
             * direction_weight
+            * type_weight
             * (1.0 / group_size)
         )
+        score = raw_score * min(1.0, engagement_days / RECIPROCITY_SATURATION_DAYS)
 
-    where ``lambda = ln(2) / 30`` (30-day half-life).
+    where ``lambda = ln(2) / 30`` (30-day half-life) and ``engagement_days`` is
+    the number of distinct days with an outgoing or mutual fact in a direct
+    context (group_size <= 2).
 
     Direction weights (RFC 0013, D1):
     - ``outgoing`` → 10.0 (owner actively communicated)
     - ``mutual`` → 5.0 (bidirectional exchange)
     - ``incoming`` / NULL → 1.0 (baseline; backward compatible)
 
+    Type weights:
+    - ``interview`` / ``calendar_event`` / ``email`` → 0.2 (contextual)
+    - types containing ``group`` with NO ``group_size`` metadata → 0.2 (a
+      group-chat mention without group-size dilution must not score at DM
+      weight; when ``group_size`` is present the exact divisor applies instead)
+    - everything else → 1.0
+
     Group size divisor (RFC 0013, D2):
     - ``group_size`` in metadata → divided by that value
     - NULL ``group_size`` → defaults to 1.0 (DM weight; backward compatible)
     - ``group_size < 1`` is clamped to 1.0 to prevent amplification and division by zero
+
+    Reciprocal engagement gating (D8):
+    - Incoming-only contacts (the owner never replied) score 0.0 no matter how
+      much they message — active posters in lurked group chats and unanswered
+      recruiters or insurance agents never accrue standing.
 
     Connector context guard:
     - LLM-extracted facts carrying connector provenance in ``extra_metadata`` are
       treated as mention/context facts, not direct interactions, unless they were
       emitted by the deterministic ``interaction_sync`` job.
 
-    Spec reference: D1, D2 — direction-weighted, group-size-divided exponential decay.
+    Spec reference: D1, D2, D8 — direction-weighted, group-size-divided,
+    reciprocity-gated exponential decay.
     """
     rows = await pool.fetch(
         """
         SELECT
-            cem.contact_id AS contact_id,
-            cem.entity_id  AS entity_id,
-            COALESCE(
-                SUM(
-                    CASE
-                        WHEN f.valid_at IS NOT NULL
-                        THEN EXP(
-                            -$1::float
-                            * GREATEST(
-                                EXTRACT(EPOCH FROM (now() - f.valid_at)) / 86400.0,
-                                0.0
+            contact_id,
+            entity_id,
+            raw_score * LEAST(1.0, engagement_days / $7::float) AS score,
+            raw_score,
+            engagement_days,
+            LEAST(1.0, engagement_days / $7::float)             AS reciprocity_factor,
+            last_interaction_at
+        FROM (
+            SELECT
+                cem.contact_id AS contact_id,
+                cem.entity_id  AS entity_id,
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN f.valid_at IS NOT NULL
+                            THEN EXP(
+                                -$1::float
+                                * GREATEST(
+                                    EXTRACT(EPOCH FROM (now() - f.valid_at)) / 86400.0,
+                                    0.0
+                                )
                             )
-                        )
-                        * CASE f.metadata->>'direction'
-                            WHEN 'outgoing' THEN $2::float
-                            WHEN 'mutual'   THEN $3::float
-                            ELSE $4::float
-                          END
-                        * CASE f.metadata->>'type'
-                            WHEN 'interview'      THEN $5::float
-                            WHEN 'calendar_event' THEN $5::float
-                            WHEN 'email'          THEN $5::float
-                            ELSE $6::float
-                          END
-                        * (1.0 / GREATEST(
+                            * CASE f.metadata->>'direction'
+                                WHEN 'outgoing' THEN $2::float
+                                WHEN 'mutual'   THEN $3::float
+                                ELSE $4::float
+                              END
+                            * CASE
+                                WHEN f.metadata->>'type' IN
+                                    ('interview', 'calendar_event', 'email')
+                                THEN $5::float
+                                WHEN f.metadata->>'type' LIKE '%group%'
+                                     AND jsonb_typeof(f.metadata->'group_size')
+                                         IS DISTINCT FROM 'number'
+                                THEN $5::float
+                                ELSE $6::float
+                              END
+                            * (1.0 / GREATEST(
+                                COALESCE(
+                                    CASE
+                                        WHEN jsonb_typeof(f.metadata->'group_size') = 'number'
+                                        THEN (f.metadata->>'group_size')::float
+                                        ELSE NULL
+                                    END,
+                                    1.0
+                                ),
+                                1.0
+                              ))
+                            ELSE NULL
+                        END
+                    ),
+                    0.0
+                )              AS raw_score,
+                COUNT(DISTINCT (f.valid_at)::date) FILTER (
+                    WHERE f.metadata->>'direction' IN ('outgoing', 'mutual')
+                      AND GREATEST(
                             COALESCE(
                                 CASE
                                     WHEN jsonb_typeof(f.metadata->'group_size') = 'number'
@@ -225,37 +316,35 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                                 1.0
                             ),
                             1.0
-                          ))
-                        ELSE NULL
-                    END
-                ),
-                0.0
-            )              AS score,
-            MAX(f.valid_at) AS last_interaction_at
-        FROM contact_entity_map cem
-        JOIN public.entities e ON e.id = cem.entity_id
-        LEFT JOIN facts f
-            ON  f.entity_id = cem.entity_id
-            AND f.predicate LIKE 'interaction_%'
-            AND f.scope     = 'relationship'
-            AND f.validity  = 'active'
-            AND (
-                f.metadata->'extra_metadata'->>'source' = 'interaction_sync'
-                OR NOT COALESCE(
-                    (f.metadata->'extra_metadata') ?| ARRAY[
-                        'source_channel',
-                        'request_id',
-                        'source_sender_identity',
-                        'source_thread_identity',
-                        'passive_ingest',
-                        'related_contact_name'
-                    ],
-                    false
+                          ) <= $8::float
+                )              AS engagement_days,
+                MAX(f.valid_at) AS last_interaction_at
+            FROM contact_entity_map cem
+            JOIN public.entities e ON e.id = cem.entity_id
+            LEFT JOIN facts f
+                ON  f.entity_id = cem.entity_id
+                AND f.predicate LIKE 'interaction_%'
+                AND f.scope     = 'relationship'
+                AND f.validity  = 'active'
+                AND (
+                    f.metadata->'extra_metadata'->>'source' = 'interaction_sync'
+                    OR NOT COALESCE(
+                        (f.metadata->'extra_metadata') ?| ARRAY[
+                            'source_channel',
+                            'request_id',
+                            'source_sender_identity',
+                            'source_thread_identity',
+                            'passive_ingest',
+                            'related_contact_name'
+                        ],
+                        false
+                    )
                 )
-            )
-        WHERE e.listed = true
-        GROUP BY cem.contact_id, cem.entity_id
-        ORDER BY score DESC
+            WHERE e.listed = true
+              AND NOT ('owner' = ANY(COALESCE(e.roles, '{}')))
+            GROUP BY cem.contact_id, cem.entity_id
+        ) scored
+        ORDER BY score DESC, raw_score DESC
         """,
         _LAMBDA,
         DIRECTION_WEIGHT_OUTGOING,
@@ -263,12 +352,17 @@ async def compute_dunbar_scores(pool: asyncpg.Pool) -> list[dict[str, Any]]:
         DIRECTION_WEIGHT_INCOMING,
         INTERACTION_TYPE_WEIGHT_CONTEXTUAL_EVENT,
         INTERACTION_TYPE_WEIGHT_DEFAULT,
+        float(RECIPROCITY_SATURATION_DAYS),
+        _DIRECT_CONTEXT_MAX_GROUP_SIZE,
     )
     return [
         {
             "contact_id": row["contact_id"],
             "entity_id": row["entity_id"],
             "score": float(row["score"]),
+            "raw_score": float(row["raw_score"]),
+            "engagement_days": int(row["engagement_days"]),
+            "reciprocity_factor": float(row["reciprocity_factor"]),
             "last_interaction_at": row["last_interaction_at"],
         }
         for row in rows
@@ -310,6 +404,12 @@ def get_tier_ranking(
 ) -> list[dict[str, Any]]:
     """Assign Dunbar tiers to a scored contact list.
 
+    Rank-based assignment is bounded by ``TIER_SCORE_FLOOR`` (D9): after rank
+    and hysteresis produce a tier, the contact is demoted to the first tier
+    whose floor its score meets.  This prevents a sparse scored pool from
+    handing out inner-circle slots for crumbs (e.g. a single transactional
+    call landing rank 12 → tier 15).  Manual overrides bypass floors.
+
     Args:
         scores: Output of ``compute_dunbar_scores`` — list of
             {contact_id, entity_id, score, ...} ordered by score desc.
@@ -346,6 +446,7 @@ def get_tier_ranking(
         else:
             prev = previous_tiers.get(entity_id)
             tier = _rank_to_tier_with_hysteresis(rank_0, prev)
+            tier = _apply_score_floor(tier, score)
             is_override = False
 
         result.append(
