@@ -266,18 +266,24 @@ The Issues page (`/issues`) and `IssuesPanel` component provide automated detect
 
 #### Scenario: Issue card structure
 - **WHEN** issues are displayed
-- **THEN** each issue renders as a bordered card showing: severity badge (destructive variant for "critical", secondary for other severities), butler name (or "N butlers" if multiple butlers are affected), description text, occurrence count with first-seen and last-seen timestamps (both relative and absolute), and optional "View" link (if `issue.link` is set) and "Dismiss" button
+- **THEN** each issue renders as a bordered card showing: severity badge (destructive variant for "critical", secondary for other severities), butler name (or "N butlers" if multiple butlers are affected), description text, occurrence count with first-seen and last-seen timestamps (both relative and absolute), and optional "View" link (if `issue.link` is set) and "Acknowledge" button
+- **AND** when the issue names a single real butler (`issue.butler` is not `"multiple"`), a "Run schedule now" button is also shown, forcing that butler's scheduler to run immediately via `POST /api/butlers/{name}/tick`
+- **AND** when the issue's `type` is `"unreachable"` and it names a single real butler, a "Ping butler" button is also shown, rechecking reachability immediately via `GET /api/butlers/{name}` (a real live MCP ping, not a cached read)
 
 #### Scenario: Multi-butler issue grouping
 - **WHEN** an issue has a `butlers` array with more than one entry
 - **THEN** the display shows "N butlers" (where N is the array length) instead of a single butler name
 - **AND** this indicates the issue affects multiple butlers and is likely systemic
+- **AND** neither "Run schedule now" nor "Ping butler" is shown, since there is no single butler to target
 
-#### Scenario: Issue dismissal persistence
-- **WHEN** the operator clicks "Dismiss" on an issue
-- **THEN** the issue is removed from the visible list
-- **AND** the dismissal is persisted server-side via POST to the dismiss-issue endpoint, keyed by the server-computed `issue_key`
-- **AND** dismissed issues remain hidden across refreshes and across browsers until the issue is undismissed server-side
+#### Scenario: Issue acknowledgment persistence (acknowledge-until-recurrence)
+- **WHEN** the operator clicks "Acknowledge" on an issue
+- **THEN** the issue is removed from the visible active list
+- **AND** the acknowledgment is persisted server-side via POST to the dismiss-issue endpoint, keyed by the server-computed `issue_key`, along with the issue's `last_seen_at` at the moment of acknowledgment
+- **AND** the acknowledgment is NOT dismiss-forever: it holds across refreshes and browsers only until the issue group recurs
+- **AND** if the group's `last_seen_at` later advances past the acknowledged watermark (a genuinely new occurrence), the issue automatically reappears in the active feed with no owner action required
+- **AND** a legacy acknowledgment recorded with no watermark (or an issue type that never carries a timestamp) falls back to holding indefinitely, since there is no recurrence signal to compare against
+- **AND** the acknowledged-issues view (`include_dismissed=true`) offers a "Restore" affordance to manually undo an acknowledgment before it would have lapsed on its own
 
 #### Scenario: Issue link navigation
 - **WHEN** an issue has a non-null `link` field

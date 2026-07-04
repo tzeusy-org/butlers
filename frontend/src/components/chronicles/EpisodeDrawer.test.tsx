@@ -53,6 +53,12 @@ let _explainIsSuccess = false
 let _explainError: Error | null = null
 let _explainMutateFn = vi.fn()
 
+let _submitCorrectionIsPending = false
+let _submitCorrectionIsSuccess = false
+let _submitCorrectionIsError = false
+let _submitCorrectionError: Error | null = null
+let _submitCorrectionMutateFn = vi.fn()
+
 vi.mock("@/hooks/use-chronicles", () => ({
   useChroniclerEpisode: () => ({
     data: _episodeData,
@@ -74,6 +80,13 @@ vi.mock("@/hooks/use-chronicles", () => ({
     isPending: _explainIsPending,
     isSuccess: _explainIsSuccess,
     error: _explainError,
+  }),
+  useSubmitEpisodeCorrection: () => ({
+    mutate: _submitCorrectionMutateFn,
+    isPending: _submitCorrectionIsPending,
+    isSuccess: _submitCorrectionIsSuccess,
+    isError: _submitCorrectionIsError,
+    error: _submitCorrectionError,
   }),
 }))
 
@@ -129,6 +142,11 @@ function reset() {
   _explainIsSuccess = false
   _explainError = null
   _explainMutateFn = vi.fn()
+  _submitCorrectionIsPending = false
+  _submitCorrectionIsSuccess = false
+  _submitCorrectionIsError = false
+  _submitCorrectionError = null
+  _submitCorrectionMutateFn = vi.fn()
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +451,88 @@ describe("EpisodeDrawerContent sensitive episode", () => {
     )
     expect(html).not.toContain("Confidential meeting")
     expect(html).toContain("Private event")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Correction form (JARVIS audit move 6, bu-86c4c.15) — real backend write
+// path, POST /api/chronicler/episodes/{id}/corrections.
+// ---------------------------------------------------------------------------
+
+describe("EpisodeDrawerContent correction form", () => {
+  it("renders the correction form with title, privacy, and note fields for a normal episode", () => {
+    reset()
+    _episodeData = makeEpisode({ canonical_privacy: "normal" })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+
+    expect(html).toContain("Correct this episode")
+    expect(html).toContain('id="correction-title"')
+    expect(html).toContain('id="correction-privacy"')
+    expect(html).toContain('id="correction-note"')
+    expect(html).toContain("Submit correction")
+  })
+
+  it("omits the Title field for a sensitive episode (nothing to compare a correction against)", () => {
+    reset()
+    _episodeData = makeEpisode({ canonical_privacy: "sensitive" })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+
+    expect(html).not.toContain('id="correction-title"')
+    // Privacy + note remain correctable even for a sensitive episode.
+    expect(html).toContain('id="correction-privacy"')
+    expect(html).toContain('id="correction-note"')
+  })
+
+  it("disables Submit before any field is filled in", () => {
+    reset()
+    _episodeData = makeEpisode()
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+
+    const buttonMatch = html.match(/<button[^>]*>\s*Submit correction\s*<\/button>/)
+    expect(buttonMatch).not.toBeNull()
+    expect(buttonMatch![0]).toContain("disabled")
+  })
+
+  it("shows a success message when the mutation has succeeded", () => {
+    reset()
+    _episodeData = makeEpisode()
+    _eventsData = []
+    _correctionsData = []
+    _submitCorrectionIsSuccess = true
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+
+    expect(html).toContain("correction-success")
+    expect(html).toContain("Correction recorded.")
+  })
+
+  it("shows an error message when the mutation has failed", () => {
+    reset()
+    _episodeData = makeEpisode()
+    _eventsData = []
+    _correctionsData = []
+    _submitCorrectionIsError = true
+    _submitCorrectionError = new Error("episode not found")
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+
+    expect(html).toContain("correction-error")
+    expect(html).toContain("episode not found")
+  })
+
+  it("shows a pending label while the correction is submitting", () => {
+    reset()
+    _episodeData = makeEpisode()
+    _eventsData = []
+    _correctionsData = []
+    _submitCorrectionIsPending = true
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+
+    expect(html).toContain("Submitting…")
   })
 })
 

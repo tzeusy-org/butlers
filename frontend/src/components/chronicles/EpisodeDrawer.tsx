@@ -13,11 +13,20 @@
 //   - Is disabled while a rate-limit window is active (backend enforces 24h)
 //   - Shows a countdown when rate-limited (retry_after_seconds from 429 body)
 //
+// Episode corrections (JARVIS audit move 6, bu-86c4c.15): "a
+// manifesto-binding promise" -- an owner correction is a real assertion of
+// fact, written via the same POST /api/chronicler/episodes/{id}/corrections
+// endpoint this drawer's own correction-history list already reads. Real
+// backend, HONEST-PENDING (not optimistic): the form waits for the actual
+// round trip rather than faking success on an audit-trail write.
+//
 // Constraints:
 //   - Does NOT auto-trigger on hover, scroll, or scrub
 //   - Mounts/unmounts cleanly via Sheet (Radix Dialog primitive)
 //   - Sensitive episodes: envelope (start, end, duration) is always visible;
-//     only payload-level identifying fields (title, source) are masked.
+//     only payload-level identifying fields (title, source) are masked --
+//     the correction form omits the Title field for sensitive episodes for
+//     the same reason (nothing to compare the correction against).
 //   - Restricted episodes: hidden at the server layer, never shown here.
 //   - See bu-6c5i6 privacy contract in roster/chronicler/AGENTS.md.
 // ---------------------------------------------------------------------------
@@ -28,7 +37,16 @@ import { Loader2, Sparkles } from "lucide-react"
 import { ApiError } from "@/api/client"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Sheet,
   SheetContent,
@@ -41,6 +59,7 @@ import {
   useChroniclerEpisodeCorrections,
   useChroniclerEpisodeEvents,
   useChroniclerExplain,
+  useSubmitEpisodeCorrection,
 } from "@/hooks/use-chronicles"
 import { useChroniclesTimezone } from "./use-chronicles-timezone"
 import { formatDateTimeInTz } from "./tz-format"
@@ -149,6 +168,127 @@ function ExplainButton({ episodeId }: ExplainButtonProps) {
         </p>
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Correction form — episode corrections (JARVIS audit move 6, bu-86c4c.15)
+// ---------------------------------------------------------------------------
+
+const PRIVACY_OPTIONS = ["normal", "sensitive", "restricted"] as const
+
+interface CorrectionFormProps {
+  episodeId: string
+  currentPrivacy: string
+  /** Sensitive episodes mask the title elsewhere in this drawer; omit the
+   * Title field here too since there is nothing to compare a correction
+   * against. */
+  isSensitive: boolean
+}
+
+function CorrectionForm({ episodeId, currentPrivacy, isSensitive }: CorrectionFormProps) {
+  const [title, setTitle] = useState("")
+  const [privacy, setPrivacy] = useState<string>("unchanged")
+  const [note, setNote] = useState("")
+
+  const submitCorrection = useSubmitEpisodeCorrection()
+
+  const trimmedTitle = title.trim()
+  const trimmedNote = note.trim()
+  const privacyChanged = privacy !== "unchanged" && privacy !== currentPrivacy
+  const hasAnyField = !!trimmedTitle || privacyChanged || !!trimmedNote
+  const canSubmit = hasAnyField && !submitCorrection.isPending
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!canSubmit) return
+
+    submitCorrection.mutate(
+      {
+        episodeId,
+        body: {
+          corrected_title: trimmedTitle || undefined,
+          corrected_privacy: privacyChanged ? privacy : undefined,
+          note: trimmedNote || undefined,
+        },
+      },
+      {
+        onSuccess: () => {
+          setTitle("")
+          setPrivacy("unchanged")
+          setNote("")
+        },
+      },
+    )
+  }
+
+  return (
+    <form className="space-y-2" onSubmit={handleSubmit} aria-label="Submit a correction">
+      {!isSensitive && (
+        <div className="space-y-1">
+          <label htmlFor="correction-title" className="text-xs text-muted-foreground">
+            Corrected title
+          </label>
+          <Input
+            id="correction-title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Leave blank to keep the current title"
+          />
+        </div>
+      )}
+      <div className="space-y-1">
+        <label htmlFor="correction-privacy" className="text-xs text-muted-foreground">
+          Corrected privacy
+        </label>
+        <Select value={privacy} onValueChange={setPrivacy}>
+          <SelectTrigger id="correction-privacy" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="unchanged">No change</SelectItem>
+            {PRIVACY_OPTIONS.map((p) => (
+              <SelectItem key={p} value={p}>
+                {p}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1">
+        <label htmlFor="correction-note" className="text-xs text-muted-foreground">
+          Note
+        </label>
+        <Textarea
+          id="correction-note"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="What was wrong, and what's true instead?"
+          rows={2}
+        />
+      </div>
+      <Button type="submit" variant="outline" size="sm" disabled={!canSubmit}>
+        {submitCorrection.isPending ? (
+          <>
+            <Loader2 className="size-3.5 animate-spin" />
+            Submitting…
+          </>
+        ) : (
+          "Submit correction"
+        )}
+      </Button>
+      {submitCorrection.isSuccess && (
+        <p className="text-xs text-emerald-600" data-testid="correction-success">
+          Correction recorded.
+        </p>
+      )}
+      {submitCorrection.isError && (
+        <p className="text-xs text-destructive" data-testid="correction-error">
+          Failed to submit correction.{" "}
+          {submitCorrection.error instanceof Error ? submitCorrection.error.message : ""}
+        </p>
+      )}
+    </form>
   )
 }
 
@@ -323,6 +463,18 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
             })}
           </ul>
         )}
+      </section>
+
+      {/* ── Submit a correction (bu-86c4c.15) ──────────────────── */}
+      <section aria-label="Submit a correction">
+        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Correct this episode
+        </h3>
+        <CorrectionForm
+          episodeId={ep.id}
+          currentPrivacy={ep.canonical_privacy}
+          isSensitive={isSensitive}
+        />
       </section>
 
       {/* ── Correction history ─────────────────────────────────── */}

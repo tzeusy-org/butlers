@@ -283,6 +283,14 @@ class DismissIssueRequest(BaseModel):
 
     issue_key: str
     dismissed_by: str | None = None
+    #: The issue's ``last_seen_at`` at the moment of acknowledgement (JARVIS
+    #: audit move 6, bu-86c4c.15). Persisted alongside the ack so the feed can
+    #: tell "still the same occurrence" apart from "recurred since you acked
+    #: it" — the acknowledge-until-recurrence contract. Optional so callers
+    #: that genuinely have no timestamp (e.g. an issue type that never sets
+    #: ``last_seen_at``) still work; a NULL here means the ack falls back to
+    #: dismiss-forever semantics for that row.
+    last_seen_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------

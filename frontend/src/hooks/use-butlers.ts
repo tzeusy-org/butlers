@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  forceButlerTick,
   getButler,
   getButlerConfig,
   getButlerModules,
@@ -80,6 +81,47 @@ export function usePatchRuntimeConfig(name: string) {
       queryClient.invalidateQueries({
         queryKey: ["butlers", name, "runtime-config"],
       });
+    },
+  });
+}
+
+/**
+ * Ping a butler to recheck reachability right now (JARVIS audit move 6,
+ * bu-86c4c.15 — "ping butler" on the Issues feed).
+ *
+ * HONEST-PENDING, not optimistic: this is a genuine live MCP ping against
+ * `GET /api/butlers/{name}` (the same live-status check the butler detail
+ * page and board rely on), so the owner must wait for the real round trip
+ * rather than see a faked-instant result. On settle it invalidates the
+ * issues feed so a newly-reachable butler's "unreachable" issue clears (or a
+ * still-unreachable one keeps showing) on the next read.
+ */
+export function usePingButler() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => getButler(name),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+    },
+  });
+}
+
+/**
+ * Force an immediate scheduler tick on a butler (JARVIS audit move 6,
+ * bu-86c4c.15 — "run schedule now" on Issues, "trigger tick" on /system).
+ *
+ * HONEST-PENDING: dispatches a real MCP `tick` call that runs any due
+ * schedules right now — not reversible, so no optimistic apply. Invalidates
+ * the board (activity/session counts may change) and the issues feed
+ * (a successful tick can resolve a "stale/overdue" signal) on settle.
+ */
+export function useForceButlerTick() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => forceButlerTick(name),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["butlers"] });
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
 }

@@ -15,14 +15,25 @@
 // Graceful per-butler error handling: rows with schemaUnreachable=true are
 // rendered with a degraded indicator rather than crashing the tile.
 //
+// Trigger tick on stale butlers (JARVIS audit move 6, bu-86c4c.15): an
+// "overdue" or "offline" row gets a "Trigger tick" remedy inline -- a real
+// POST /api/butlers/{name}/tick call that forces the scheduler to run right
+// now, rather than leaving the owner to click through to the butler detail
+// page. HONEST-PENDING (not optimistic): a real dispatch, not reversible.
+//
 // Data source: useButlerStatusBoard (refetches every 30 s).
 // ---------------------------------------------------------------------------
 
+import { toast } from "sonner";
+import { useNavigate } from "react-router";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { RowLink } from "@/components/ui/RowLink";
 import { Time } from "@/components/ui/time";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
+import { useForceButlerTick } from "@/hooks/use-butlers";
 import type { StatusBoardRow, ActivityVerb } from "@/hooks/use-butler-status-board";
 
 // ---------------------------------------------------------------------------
@@ -45,6 +56,11 @@ function dotClassFor(activity: ActivityVerb): string {
   }
 }
 
+/** Rows whose scheduler being silent is itself the problem -- the "Trigger tick" remedy applies. */
+function isStale(activity: ActivityVerb): boolean {
+  return activity === "overdue" || activity === "offline";
+}
+
 function sortByHeartbeat(rows: StatusBoardRow[]): StatusBoardRow[] {
   return [...rows].sort((a, b) => {
     // Null lastHeartbeatISO sorts last (oldest / no heartbeat)
@@ -61,9 +77,15 @@ function sortByHeartbeat(rows: StatusBoardRow[]): StatusBoardRow[] {
 
 interface ButlerRowProps {
   row: StatusBoardRow;
+  onTriggerTick: (name: string) => void;
+  isTicking: boolean;
 }
 
-function ButlerRow({ row }: ButlerRowProps) {
+function ButlerRow({ row, onTriggerTick, isTicking }: ButlerRowProps) {
+  const navigate = useNavigate();
+  const detailPath = `/butlers/${encodeURIComponent(row.name)}`;
+  const showTickRemedy = isStale(row.activity);
+
   return (
     <li className="py-1.5">
       {/* bu-86c4c.4 -- drill-down sweep: the whole row deep-links to the
@@ -71,9 +93,13 @@ function ButlerRow({ row }: ButlerRowProps) {
           (JARVIS audit finding: "stale heartbeat rows are not links to
           /butlers/:name -- while the same butlers ARE clickable in the graph
           below"). RowLink (bu-86c4c.16) gives a real <a> since this row has
-          no nested interactive controls. */}
+          no nested interactive controls -- except stale rows, which nest the
+          "Trigger tick" button (bu-86c4c.15) and so switch to the accessible
+          role="link" fallback with imperative navigation. */}
       <RowLink
-        to={`/butlers/${encodeURIComponent(row.name)}`}
+        to={detailPath}
+        hasNestedInteractive={showTickRemedy}
+        onActivate={() => navigate(detailPath)}
         aria-label={`View ${row.name}`}
         className="flex items-center justify-between gap-2 no-underline text-inherit -mx-1 rounded px-1 hover:bg-accent/40"
       >
@@ -102,11 +128,29 @@ function ButlerRow({ row }: ButlerRowProps) {
             )}
           </div>
         </div>
-        {row.activeSessionCount > 0 && (
-          <Badge variant="secondary" className="shrink-0">
-            {row.activeSessionCount} active
-          </Badge>
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {row.activeSessionCount > 0 && (
+            <Badge variant="secondary" className="shrink-0">
+              {row.activeSessionCount} active
+            </Badge>
+          )}
+          {showTickRemedy && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-1.5 text-xs text-muted-foreground"
+              disabled={isTicking}
+              onClick={(e) => {
+                // Nested inside RowLink's role="link" container -- stop the
+                // click from also bubbling into onActivate's navigate().
+                e.stopPropagation();
+                onTriggerTick(row.name);
+              }}
+            >
+              {isTicking ? "Triggering…" : "Trigger tick"}
+            </Button>
+          )}
+        </div>
       </RowLink>
     </li>
   );
@@ -119,6 +163,26 @@ function ButlerRow({ row }: ButlerRowProps) {
 export function ButlerHeartbeatTile() {
   const { rows, aggregates } = useButlerStatusBoard();
   const { isLoading, isError } = aggregates;
+  const forceTick = useForceButlerTick();
+
+  function handleTriggerTick(name: string) {
+    forceTick.mutate(name, {
+      onSuccess: (response) => {
+        if (response.data.success) {
+          toast.success(
+            response.data.message ? `${name}: ${response.data.message}` : `${name}: tick triggered`,
+          );
+        } else {
+          toast.error(`${name}: tick did not complete successfully`);
+        }
+      },
+      onError: (err) => {
+        toast.error(`Failed to trigger tick for ${name}`, {
+          description: err instanceof Error ? err.message : undefined,
+        });
+      },
+    });
+  }
 
   if (isLoading) {
     return (
@@ -147,6 +211,7 @@ export function ButlerHeartbeatTile() {
   }
 
   const sortedRows = sortByHeartbeat(rows);
+  const tickingName = forceTick.isPending ? forceTick.variables : undefined;
 
   return (
     <Card>
@@ -162,7 +227,12 @@ export function ButlerHeartbeatTile() {
         ) : (
           <ul className="divide-y divide-border">
             {sortedRows.map((row) => (
-              <ButlerRow key={row.name} row={row} />
+              <ButlerRow
+                key={row.name}
+                row={row}
+                onTriggerTick={handleTriggerTick}
+                isTicking={tickingName === row.name}
+              />
             ))}
           </ul>
         )}

@@ -31,19 +31,35 @@ export function useIssues(includeDismissed = false) {
   });
 }
 
+/** Variables for {@link useDismissIssue}. */
+export interface DismissIssueVariables {
+  issueKey: string;
+  /**
+   * The issue's current `last_seen_at`, recorded as the ack's recurrence
+   * watermark (acknowledge-until-recurrence, JARVIS audit move 6,
+   * bu-86c4c.15). When the group's `last_seen_at` later advances past this
+   * value, the server automatically un-acks it — this is NOT dismiss-forever.
+   */
+  lastSeenAt?: string | null;
+}
+
 /**
- * Dismiss (ack) an issue group server-side.
+ * Acknowledge an issue group server-side (acknowledge-until-recurrence, JARVIS
+ * audit move 6, bu-86c4c.15 — NOT dismiss-forever).
  *
- * Unlike the old localStorage-only behaviour, this persists the dismissal in
- * the backend so it holds across browsers and sessions. The dismissed issue is
- * optimistically removed from the cached active feed and both issue views are
- * invalidated on settle so the server's filtered views are the source of truth.
+ * Persists the ack in the backend so it holds across browsers and sessions,
+ * but only until the group recurs: pass the issue's `last_seen_at` so the
+ * server can detect a genuinely new occurrence and re-surface it
+ * automatically. The acked issue is optimistically removed from the cached
+ * active feed and both issue views are invalidated on settle so the server's
+ * filtered views (which apply the recurrence check) are the source of truth.
  */
 export function useDismissIssue() {
-  return useOptimisticListMutation<ApiResponse<unknown>, string, Issue>({
-    mutationFn: (issueKey: string) => dismissIssue(issueKey),
+  return useOptimisticListMutation<ApiResponse<unknown>, DismissIssueVariables, Issue>({
+    mutationFn: ({ issueKey, lastSeenAt }: DismissIssueVariables) =>
+      dismissIssue(issueKey, lastSeenAt),
     listKeyPrefix: ACTIVE_ISSUES_KEY,
-    updateItems: (issues, issueKey) => issues.filter((issue) => issue.issue_key !== issueKey),
+    updateItems: (issues, { issueKey }) => issues.filter((issue) => issue.issue_key !== issueKey),
     // Broad prefix so BOTH the active and dismissed views refresh, not just
     // the one this mutation optimistically touched.
     invalidateQueryKeys: [["issues"]],

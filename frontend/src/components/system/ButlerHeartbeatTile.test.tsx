@@ -36,6 +36,17 @@ vi.mock("@/hooks/use-butler-status-board", async (importOriginal) => {
   return { ...actual, useButlerStatusBoard: vi.fn() };
 });
 
+// Trigger-tick remedy (bu-86c4c.15) -- mock the mutation hook so these tests
+// don't need a real QueryClientProvider; the interactive tick-button behavior
+// itself is covered separately in ButlerHeartbeatTile.trigger-tick.test.tsx.
+vi.mock("@/hooks/use-butlers", () => ({
+  useForceButlerTick: vi.fn(() => ({
+    mutate: vi.fn(),
+    isPending: false,
+    variables: undefined,
+  })),
+}));
+
 // ---------------------------------------------------------------------------
 // Mock <Time> to avoid ChroniclesTimezoneProvider / date-fns-tz in tests.
 // Renders the ISO value so assertions on rendered heartbeat timestamps work.
@@ -335,7 +346,7 @@ describe("ButlerHeartbeatTile -- drill-down link (bu-86c4c.4)", () => {
     vi.resetAllMocks();
     setData([
       makeRow({ name: "general", activity: "idle" }),
-      makeRow({ name: "qa patrol", activity: "overdue", cellTone: "amber" }),
+      makeRow({ name: "qa patrol", activity: "running", cellTone: "green" }),
     ]);
   });
 
@@ -352,6 +363,39 @@ describe("ButlerHeartbeatTile -- drill-down link (bu-86c4c.4)", () => {
   it("URI-encodes butler names with special characters", () => {
     const html = render();
     expect(html).toContain('href="/butlers/qa%20patrol"');
+  });
+});
+
+describe("ButlerHeartbeatTile -- trigger-tick remedy (bu-86c4c.15)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setData([
+      makeRow({ name: "healthy", activity: "idle" }),
+      makeRow({ name: "overdue-butler", activity: "overdue", cellTone: "amber" }),
+      makeRow({ name: "down-butler", activity: "offline", cellTone: "red" }),
+    ]);
+  });
+
+  it("renders a Trigger tick button for overdue and offline rows", () => {
+    const html = render();
+    expect(html.match(/Trigger tick/g)?.length).toBe(2);
+  });
+
+  it("does not render a Trigger tick button for a healthy (idle) row", () => {
+    const html = render();
+    const healthyRowMatch = html.match(
+      /<a[^>]*href="\/butlers\/healthy"[^>]*>([\s\S]*?)<\/a>/,
+    );
+    expect(healthyRowMatch).not.toBeNull();
+    expect(healthyRowMatch![1]).not.toContain("Trigger tick");
+  });
+
+  it("switches a stale row's wrapper to role=link (nested button, not a real <a>)", () => {
+    const html = render();
+    // The overdue row's <a> must not exist -- it nests the Trigger tick
+    // button, so RowLink falls back to an accessible role="link" div.
+    expect(html).not.toMatch(/<a[^>]*href="\/butlers\/overdue-butler"/);
+    expect(html).toMatch(/role="link"[^>]*aria-label="View overdue-butler"/);
   });
 });
 

@@ -45,6 +45,10 @@ vi.mock("@/hooks/use-butlers", () => ({
   useButlerSkills: vi.fn(() => ({ data: null, isLoading: false })),
   useRuntimeConfig: vi.fn(() => ({ data: null, isLoading: false })),
   usePatchRuntimeConfig: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
+  // Trigger-tick remedy on stale butlers (bu-86c4c.15) -- ButlerHeartbeatTile
+  // (rendered by SystemPage in the spec-scenario test below) needs this.
+  usePingButler: vi.fn(() => ({ mutate: vi.fn(), isPending: false, variables: undefined })),
+  useForceButlerTick: vi.fn(() => ({ mutate: vi.fn(), isPending: false, variables: undefined })),
 }));
 
 vi.mock("@/hooks/use-sessions", () => ({

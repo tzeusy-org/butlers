@@ -57,10 +57,10 @@ interface CapturedQueryOptions {
   queryFn: () => unknown;
 }
 
-interface CapturedListMutationOptions {
-  mutationFn: (key: string) => unknown;
+interface CapturedListMutationOptions<TVariables = string> {
+  mutationFn: (variables: TVariables) => unknown;
   listKeyPrefix: readonly unknown[];
-  updateItems: (issues: Issue[], key: string) => Issue[];
+  updateItems: (issues: Issue[], variables: TVariables) => Issue[];
   invalidateQueryKeys?: (readonly unknown[])[];
 }
 
@@ -69,9 +69,9 @@ function lastQueryOptions(): CapturedQueryOptions {
   return calls[calls.length - 1][0] as unknown as CapturedQueryOptions;
 }
 
-function lastListMutationOptions(): CapturedListMutationOptions {
+function lastListMutationOptions<TVariables = string>(): CapturedListMutationOptions<TVariables> {
   const calls = mockUseOptimisticListMutation.mock.calls;
-  return calls[calls.length - 1][0] as unknown as CapturedListMutationOptions;
+  return calls[calls.length - 1][0] as unknown as CapturedListMutationOptions<TVariables>;
 }
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -116,11 +116,17 @@ describe("useDismissIssue", () => {
     vi.clearAllMocks();
   });
 
-  it("calls dismissIssue with the issue key, targets the active list", () => {
+  it("calls dismissIssue with the issue key and last_seen_at watermark, targets the active list", () => {
     useDismissIssue();
-    const opts = lastListMutationOptions();
-    opts.mutationFn("audit_error_group:boom::general");
-    expect(dismissIssue).toHaveBeenCalledWith("audit_error_group:boom::general");
+    const opts = lastListMutationOptions<{ issueKey: string; lastSeenAt?: string | null }>();
+    opts.mutationFn({
+      issueKey: "audit_error_group:boom::general",
+      lastSeenAt: "2026-07-01T12:00:00Z",
+    });
+    expect(dismissIssue).toHaveBeenCalledWith(
+      "audit_error_group:boom::general",
+      "2026-07-01T12:00:00Z",
+    );
     expect(opts.listKeyPrefix).toEqual(ACTIVE_KEY);
   });
 
@@ -128,7 +134,10 @@ describe("useDismissIssue", () => {
     useDismissIssue();
     const issue = makeIssue();
     const other = makeIssue({ issue_key: "other::general" });
-    const result = lastListMutationOptions().updateItems([issue, other], issue.issue_key);
+    const result = lastListMutationOptions<{
+      issueKey: string;
+      lastSeenAt?: string | null;
+    }>().updateItems([issue, other], { issueKey: issue.issue_key });
     expect(result).toEqual([other]);
   });
 

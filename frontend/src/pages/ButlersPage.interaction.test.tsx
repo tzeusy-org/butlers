@@ -13,9 +13,17 @@
  *
  * Additional assertion: clicking the restore chip does NOT trigger navigation
  * (e.stopPropagation is called; window.location.href must not change).
+ *
+ * Restore-with-reason-and-undo (JARVIS audit move 6, bu-86c4c.15): a click no
+ * longer fires setEligibility.mutate instantly — it schedules it
+ * RESTORE_UNDO_WINDOW_MS (5s) out behind an "Undo" toast action, mirroring
+ * ApprovalsPage's scheduled-decision pattern (bu-86c4c.14). Tests below use
+ * fake timers and advance past that window before asserting the mutation
+ * fired; a dedicated describe block covers the Undo action itself.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { toast } from "sonner";
@@ -27,7 +35,16 @@ import type { StatusBoardRow, StatusBoardAggregates } from "@/hooks/use-butler-s
 // Mocks — same modules as ButlersPage.test.tsx
 // ---------------------------------------------------------------------------
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+// sonner's real export is a CALLABLE function (toast(msg, opts)) that also
+// carries .success/.error statics -- the undo-toast path (bu-86c4c.15) calls
+// it directly, existing call sites use the statics.
+vi.mock("sonner", () => {
+  const toastFn = Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() });
+  return { toast: toastFn };
+});
+
+/** How long a scheduled restore waits before firing (matches ButlersPage.tsx). */
+const RESTORE_UNDO_WINDOW_MS = 5_000;
 
 vi.mock("@/hooks/use-butler-status-board", () => ({
   useButlerStatusBoard: vi.fn(),
@@ -140,6 +157,8 @@ beforeEach(() => {
 const mockMutate = vi.fn();
 
 beforeEach(() => {
+  vi.useFakeTimers();
+
   vi.mocked(useSetEligibility).mockReturnValue({
     mutate: mockMutate,
     mutateAsync: vi.fn(),
@@ -162,9 +181,28 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // ButlersPage's scheduled-restore store is module-scoped (bu-86c4c.15,
+  // mirroring ApprovalsPage's scheduledDecisions), so any restore left
+  // scheduled by a test (e.g. one that only asserts the immediate toast and
+  // never advances past the undo window) would otherwise leak into the next
+  // test in this file and make its "already scheduled" guard block a fresh
+  // click. Flush it here, before tearing down fake timers, so every test
+  // starts from an empty store.
+  act(() => {
+    vi.advanceTimersByTime(RESTORE_UNDO_WINDOW_MS);
+  });
   cleanup();
+  vi.useRealTimers();
   vi.resetAllMocks();
 });
+
+/** Click a restore chip, then advance past the undo window so the scheduled restore fires. */
+function clickAndCommitRestore(chip: HTMLElement) {
+  fireEvent.click(chip);
+  act(() => {
+    vi.advanceTimersByTime(RESTORE_UNDO_WINDOW_MS);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Render helper
@@ -183,7 +221,7 @@ function renderPage() {
 // ---------------------------------------------------------------------------
 
 describe("ButlersPage — quarantine restore chip (interaction)", () => {
-  it("calls setEligibility.mutate with { name, state: 'active' } when quarantined chip is clicked", () => {
+  it("calls setEligibility.mutate with { name, state: 'active' } once the undo window elapses", () => {
     const rows = [
       makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
     ];
@@ -195,7 +233,14 @@ describe("ButlersPage — quarantine restore chip (interaction)", () => {
     const chip = screen.getByRole("button", { name: /quarantined/i });
     expect(chip).toBeDefined();
 
+    // A click alone does not fire the mutation immediately -- it schedules it
+    // (restore-with-reason-and-undo, bu-86c4c.15).
     fireEvent.click(chip);
+    expect(mockMutate).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(RESTORE_UNDO_WINDOW_MS);
+    });
 
     expect(mockMutate).toHaveBeenCalledOnce();
     expect(mockMutate).toHaveBeenCalledWith(
@@ -227,7 +272,7 @@ describe("ButlersPage — quarantine restore chip (interaction)", () => {
 // ---------------------------------------------------------------------------
 
 describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
-  it("calls setEligibility.mutate with { name, state: 'active' } when stale chip is clicked", () => {
+  it("calls setEligibility.mutate with { name, state: 'active' } once the undo window elapses", () => {
     const rows = [
       makeRow({ name: "stale-butler", activity: "idle", eligibility: "stale" }),
     ];
@@ -239,7 +284,7 @@ describe("ButlersPage — stale eligibility restore chip (interaction)", () => {
     const chip = screen.getByRole("button", { name: /stale/i });
     expect(chip).toBeDefined();
 
-    fireEvent.click(chip);
+    clickAndCommitRestore(chip);
 
     expect(mockMutate).toHaveBeenCalledOnce();
     expect(mockMutate).toHaveBeenCalledWith(
@@ -279,7 +324,7 @@ describe("ButlersPage — restore toast feedback", () => {
     });
 
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    clickAndCommitRestore(screen.getByRole("button", { name: /quarantined/i }));
 
     expect(toast.success).toHaveBeenCalledWith("quarant restored");
     expect(toast.error).not.toHaveBeenCalled();
@@ -296,13 +341,104 @@ describe("ButlersPage — restore toast feedback", () => {
     });
 
     renderPage();
-    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    clickAndCommitRestore(screen.getByRole("button", { name: /quarantined/i }));
 
     expect(toast.error).toHaveBeenCalledWith(
       "Failed to restore quarant",
       expect.objectContaining({ description: "server unavailable" }),
     );
     expect(toast.success).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Undo action (JARVIS audit move 6, bu-86c4c.15)
+// ---------------------------------------------------------------------------
+
+describe("ButlersPage — restore undo action", () => {
+  it("shows an Undo toast action immediately on click", () => {
+    const rows = [
+      makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
+
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+
+    expect(toast).toHaveBeenCalledWith(
+      "Restoring quarant",
+      expect.objectContaining({ action: expect.objectContaining({ label: "Undo" }) }),
+    );
+  });
+
+  it("cancels the restore entirely when Undo is clicked before the window elapses", () => {
+    const rows = [
+      makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
+
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+
+    const toastCall = vi.mocked(toast).mock.calls[0];
+    const onUndoClick = (
+      toastCall[1] as unknown as { action: { onClick: () => void } }
+    ).action.onClick;
+    act(() => {
+      onUndoClick();
+    });
+    act(() => {
+      vi.advanceTimersByTime(RESTORE_UNDO_WINDOW_MS * 2);
+    });
+
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
+  it("shows the RESTORING pending label for the whole scheduled window, before the mutation even fires", () => {
+    const rows = [
+      makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
+
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /restoring/i })).toBeDefined();
+  });
+
+  it("does not double-fire the restore when the page unmounts and remounts mid-window", () => {
+    // Regression test: an earlier version tracked the scheduled restore in a
+    // plain `useState` on the page component. Unmounting (e.g. navigating
+    // away) mid-window discarded that state without cancelling the pending
+    // `window.setTimeout`, so a remount within the window saw an empty map,
+    // let the chip be clicked again, and scheduled a SECOND independent
+    // restore -- both timers eventually fired and setEligibility.mutate was
+    // called twice for the same butler. The module-scoped store fixes this
+    // by surviving the unmount.
+    const rows = [
+      makeRow({ name: "quarant", activity: "quarantined", eligibility: "quarantined", cellTone: "red" }),
+    ];
+    setHookState(rows, makeAggregates({ total: 1, butlerCount: 1, quarantined: 1 }));
+
+    const { unmount } = renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /quarantined/i }));
+    expect(mockMutate).not.toHaveBeenCalled();
+
+    // Navigate away, then back, before the undo window elapses.
+    unmount();
+    renderPage();
+
+    // The remounted page must see the restore as already scheduled -- its
+    // chip should read "Restoring…", not the clickable quarantined chip, so
+    // a second click cannot even be attempted.
+    expect(screen.getByRole("button", { name: /restoring/i })).toBeDefined();
+
+    act(() => {
+      vi.advanceTimersByTime(RESTORE_UNDO_WINDOW_MS);
+    });
+
+    expect(mockMutate).toHaveBeenCalledOnce();
   });
 });
 

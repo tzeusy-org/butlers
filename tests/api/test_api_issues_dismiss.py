@@ -8,6 +8,7 @@ the list-endpoint filtering against a mocked DB pool.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -67,6 +68,34 @@ class TestDismissIssue:
         assert "ON CONFLICT (issue_key) DO UPDATE" in insert_query
         assert pool.execute.await_args.args[1] == key
 
+    async def test_dismiss_persists_last_seen_at_watermark(self) -> None:
+        """Acknowledge-until-recurrence (bu-86c4c.15): the ack call stores the
+        issue's last_seen_at so a later recurrence can be detected."""
+        app, pool = _build_app()
+        key = compute_issue_key("unreachable", "general")
+        watermark = "2026-07-01T12:00:00Z"
+
+        resp = await _call(
+            app,
+            "post",
+            "/api/issues/dismiss",
+            json={"issue_key": key, "last_seen_at": watermark},
+        )
+
+        assert resp.status_code == 200
+        insert_query = pool.execute.await_args.args[0]
+        assert "last_seen_at" in insert_query
+        assert pool.execute.await_args.args[3] is not None
+
+    async def test_dismiss_without_last_seen_at_stores_none(self) -> None:
+        app, pool = _build_app()
+        key = compute_issue_key("unreachable", "general")
+
+        resp = await _call(app, "post", "/api/issues/dismiss", json={"issue_key": key})
+
+        assert resp.status_code == 200
+        assert pool.execute.await_args.args[3] is None
+
     async def test_dismiss_requires_issue_key(self) -> None:
         app, _ = _build_app()
         resp = await _call(app, "post", "/api/issues/dismiss", json={"issue_key": "   "})
@@ -115,7 +144,7 @@ class TestListFiltersDismissed:
             if "dismissed_issues" in query:
                 # Dismiss the audit_error_group key for this error.
                 key = compute_issue_key("audit_error_group:boom", "general")
-                return [{"issue_key": key}]
+                return [{"issue_key": key, "last_seen_at": None}]
             return [audit_row]
 
         mock_pool = AsyncMock()
@@ -149,7 +178,7 @@ class TestListIncludeDismissed:
 
         async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
             if "dismissed_issues" in query:
-                return [{"issue_key": dismissed_key}]
+                return [{"issue_key": dismissed_key, "last_seen_at": None}]
             return [audit_row]
 
         mock_pool = AsyncMock()
@@ -200,6 +229,127 @@ class TestListIncludeDismissed:
         resp = await _call(app, "get", "/api/issues?include_dismissed=true")
         assert resp.status_code == 200
         assert resp.json()["data"] == []
+
+
+class TestAcknowledgeUntilRecurrence:
+    """Acknowledge-until-recurrence (JARVIS audit move 6, bu-86c4c.15):
+
+    An ack recorded with a ``last_seen_at`` watermark should only hold while
+    the issue group hasn't recurred since. A later occurrence (a newer
+    ``last_seen_at`` on the same group) must un-ack it automatically.
+    """
+
+    def _audit_row(self, *, last_seen_at: str | None) -> dict[str, Any]:
+        return {
+            "error_summary": "boom",
+            "first_seen_at": None,
+            "last_seen_at": last_seen_at,
+            "occurrences": 3,
+            "butlers": ["general"],
+            "has_schedule": False,
+            "schedule_names": [],
+        }
+
+    async def test_recurred_issue_reappears_in_active_feed(self) -> None:
+        """last_seen_at newer than the ack watermark => back in the active feed."""
+        key = compute_issue_key("audit_error_group:boom", "general")
+
+        async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
+            if "dismissed_issues" in query:
+                # Acked while last_seen_at was 12:00; the group has since
+                # recurred at 13:00 (see the audit_row below).
+                return [
+                    {
+                        "issue_key": key,
+                        "last_seen_at": datetime.fromisoformat("2026-07-01T12:00:00+00:00"),
+                    }
+                ]
+            return [
+                self._audit_row(last_seen_at=datetime.fromisoformat("2026-07-01T13:00:00+00:00"))
+            ]
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+        app.dependency_overrides[get_butler_configs] = lambda: []
+
+        active_resp = await _call(app, "get", "/api/issues")
+        assert active_resp.status_code == 200
+        active_data = active_resp.json()["data"]
+        assert len(active_data) == 1
+        assert active_data[0]["issue_key"] == key
+        assert active_data[0]["dismissed"] is False
+
+        dismissed_resp = await _call(app, "get", "/api/issues?include_dismissed=true")
+        assert dismissed_resp.status_code == 200
+        assert dismissed_resp.json()["data"] == []
+
+    async def test_not_recurred_issue_stays_acked(self) -> None:
+        """last_seen_at unchanged (or older) since ack => still hidden from the active feed."""
+        key = compute_issue_key("audit_error_group:boom", "general")
+
+        async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
+            if "dismissed_issues" in query:
+                return [
+                    {
+                        "issue_key": key,
+                        "last_seen_at": datetime.fromisoformat("2026-07-01T12:00:00+00:00"),
+                    }
+                ]
+            return [
+                self._audit_row(last_seen_at=datetime.fromisoformat("2026-07-01T12:00:00+00:00"))
+            ]
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+        app.dependency_overrides[get_butler_configs] = lambda: []
+
+        active_resp = await _call(app, "get", "/api/issues")
+        assert active_resp.status_code == 200
+        assert active_resp.json()["data"] == []
+
+        dismissed_resp = await _call(app, "get", "/api/issues?include_dismissed=true")
+        assert dismissed_resp.status_code == 200
+        dismissed_data = dismissed_resp.json()["data"]
+        assert len(dismissed_data) == 1
+        assert dismissed_data[0]["issue_key"] == key
+        assert dismissed_data[0]["dismissed"] is True
+
+    async def test_legacy_ack_with_no_watermark_stays_dismissed_forever(self) -> None:
+        """A NULL watermark (legacy ack) preserves the old dismiss-forever behavior."""
+        key = compute_issue_key("audit_error_group:boom", "general")
+
+        async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
+            if "dismissed_issues" in query:
+                return [{"issue_key": key, "last_seen_at": None}]
+            return [
+                self._audit_row(last_seen_at=datetime.fromisoformat("2026-07-01T13:00:00+00:00"))
+            ]
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+        app.dependency_overrides[get_butler_configs] = lambda: []
+
+        active_resp = await _call(app, "get", "/api/issues")
+        assert active_resp.status_code == 200
+        assert active_resp.json()["data"] == []
 
 
 class TestIssueKeyComputation:

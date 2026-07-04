@@ -31,6 +31,7 @@ import {
   getChroniclerEvents,
   getChroniclerSourceState,
   postChroniclerEpisodeExplain,
+  submitChroniclerEpisodeCorrection,
 } from "@/api/client.ts";
 import type {
   ChroniclerAggregateByCategoryParams,
@@ -38,6 +39,7 @@ import type {
   ChroniclerDayCloseParams,
   ChroniclerEpisodesParams,
   ChroniclerEventsParams,
+  SubmitCorrectionRequest,
 } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -262,6 +264,34 @@ export function useChroniclerEpisodeCorrections(
     queryFn: () => getChroniclerEpisodeCorrections(episodeId!),
     enabled: options?.enabled !== false && !!episodeId,
     refetchInterval: options?.refetchInterval ?? false,
+  });
+}
+
+/**
+ * Submit an episode correction (JARVIS audit move 6, bu-86c4c.15 —
+ * "episode corrections on chronicles, a manifesto-binding promise").
+ *
+ * Calls the real POST /api/chronicler/episodes/{id}/corrections endpoint,
+ * which the Chronicler's own read path (`v_episodes_corrected`, consumed by
+ * {@link useChroniclerEpisode}) already honors, and the same table
+ * {@link useChroniclerEpisodeCorrections} already reads.
+ *
+ * HONEST-PENDING, not optimistic: a correction is an audit-trail entry the
+ * owner is asserting as fact, not a reversible toggle, so the UI shows a real
+ * pending state and waits for the server round trip rather than faking
+ * immediate success. On success, invalidates both the episode detail (so the
+ * corrected view refreshes) and the correction-history list for that episode.
+ */
+export function useSubmitEpisodeCorrection() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ episodeId, body }: { episodeId: string; body: SubmitCorrectionRequest }) =>
+      submitChroniclerEpisodeCorrection(episodeId, body),
+    onSuccess: (_data, { episodeId }) => {
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.episode(episodeId) });
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.episodeCorrections(episodeId) });
+    },
   });
 }
 

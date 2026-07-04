@@ -107,6 +107,7 @@ import type {
   TopSession,
   ScheduleCost,
   TriggerResponse,
+  TickResponse,
   ButlerMcpTool,
   ButlerMcpToolCallRequest,
   ButlerMcpToolCallResponse,
@@ -314,6 +315,7 @@ import type {
   ChroniclerOverride,
   ChroniclerPointEvent,
   ChroniclerSourceStateRow,
+  SubmitCorrectionRequest,
   EntityGift,
   EntityLoan,
   EntityImportantDate,
@@ -849,13 +851,21 @@ export function getIssues(
   return apiFetch<ApiResponse<Issue[]>>(`/issues${query}`);
 }
 
-/** Dismiss (ack) an issue group server-side so it persists across browsers. */
+/**
+ * Acknowledge an issue group server-side so it persists across browsers.
+ *
+ * Acknowledge-until-recurrence (JARVIS audit move 6, bu-86c4c.15): pass the
+ * issue's current `last_seen_at` as `lastSeenAt` so the server can detect a
+ * later recurrence and automatically un-ack the group — this is NOT
+ * dismiss-forever. Omitting it falls back to dismiss-forever for that row.
+ */
 export function dismissIssue(
   issueKey: string,
+  lastSeenAt?: string | null,
 ): Promise<ApiResponse<DismissIssueResult>> {
   return apiFetch<ApiResponse<DismissIssueResult>>("/issues/dismiss", {
     method: "POST",
-    body: JSON.stringify({ issue_key: issueKey }),
+    body: JSON.stringify({ issue_key: issueKey, last_seen_at: lastSeenAt ?? null }),
   });
 }
 
@@ -1110,6 +1120,19 @@ export function triggerButler(
       method: "POST",
       body: JSON.stringify({ prompt, complexity: complexity ?? "medium" }),
     },
+  );
+}
+
+/**
+ * Force an immediate scheduler tick on a specific butler (real backend: calls
+ * the butler's MCP `tick` tool, which runs any due schedules right now).
+ * Backs the "run schedule now" / "trigger tick" operator verbs (JARVIS audit
+ * move 6, bu-86c4c.15) on the Issues and /system surfaces.
+ */
+export function forceButlerTick(name: string): Promise<ApiResponse<TickResponse>> {
+  return apiFetch<ApiResponse<TickResponse>>(
+    `/butlers/${encodeURIComponent(name)}/tick`,
+    { method: "POST" },
   );
 }
 
@@ -5823,6 +5846,26 @@ export function getChroniclerEpisodeCorrections(
   episodeId: string,
 ): Promise<ChroniclerOverride[]> {
   return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/corrections`);
+}
+
+/**
+ * Submit an episode correction (JARVIS audit move 6, bu-86c4c.15 —
+ * "episode corrections on chronicles, a manifesto-binding promise").
+ *
+ * Real backend: `POST /api/chronicler/episodes/{id}/corrections`, which
+ * inserts a row into the existing `overrides` table honored by
+ * `v_episodes_corrected` — the same read path `getChroniclerEpisode` and
+ * `getChroniclerEpisodeCorrections` already consume. At least one correction
+ * field or a `note` is required (422 otherwise).
+ */
+export function submitChroniclerEpisodeCorrection(
+  episodeId: string,
+  body: SubmitCorrectionRequest,
+): Promise<ChroniclerOverride> {
+  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/corrections`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 /**

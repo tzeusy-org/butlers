@@ -69,20 +69,46 @@ async def _list_audit_error_issues(db: DatabaseManager | None) -> list[Issue]:
     return [issue_from_audit_group_row(row) for row in rows]
 
 
-async def _list_dismissed_keys(db: DatabaseManager | None) -> set[str]:
-    """Return the set of issue keys that have been dismissed (acked) server-side."""
+async def _list_dismissed_acks(db: DatabaseManager | None) -> dict[str, datetime | None]:
+    """Return every acked issue_key mapped to its ack-time ``last_seen_at``.
+
+    The mapped value is the recurrence watermark (JARVIS audit move 6,
+    bu-86c4c.15): an ack is only honored while the issue's current
+    ``last_seen_at`` has not advanced past this value. A ``None`` value means
+    no watermark was recorded (a legacy ack, or an issue type that never
+    carries a timestamp) and falls back to dismiss-forever for that row.
+    """
     if db is None:
-        return set()
+        return {}
     try:
         pool = db.pool("switchboard")
     except KeyError:
-        return set()
+        return {}
     try:
-        rows = await pool.fetch("SELECT issue_key FROM public.dismissed_issues")
+        rows = await pool.fetch("SELECT issue_key, last_seen_at FROM public.dismissed_issues")
     except Exception:
         logger.warning("Failed to query dismissed issues", exc_info=True)
-        return set()
-    return {str(row["issue_key"]) for row in rows}
+        return {}
+    return {str(row["issue_key"]): row["last_seen_at"] for row in rows}
+
+
+def _still_acked(issue: Issue, acked_last_seen_at: datetime | None) -> bool:
+    """Return True when an acked issue has NOT recurred since it was acked.
+
+    Acknowledge-until-recurrence (JARVIS audit move 6, bu-86c4c.15): a
+    dismissal only holds while the issue's ``last_seen_at`` is no newer than
+    the value recorded at ack time. If the issue recurs (its ``last_seen_at``
+    advances), the ack is considered stale and the issue reappears in the
+    active feed automatically — the owner never has to remember to restore a
+    mistakenly-dismissed-forever group.
+
+    Falls back to the old dismiss-forever behavior (always still-acked) when
+    either side lacks a timestamp to compare, since there is no recurrence
+    signal to act on.
+    """
+    if acked_last_seen_at is None or issue.last_seen_at is None:
+        return True
+    return _last_seen_epoch(issue.last_seen_at) <= _last_seen_epoch(acked_last_seen_at)
 
 
 def _require_pool(db: DatabaseManager | None):
@@ -152,7 +178,7 @@ async def list_issues(
     include_dismissed: bool = Query(
         False,
         description=(
-            "When true, return only the issues that have been dismissed (acked) "
+            "When true, return only the issues that have been acknowledged "
             "server-side instead of the active feed. Each returned issue carries "
             "``dismissed=True`` so the UI can offer a restore affordance."
         ),
@@ -164,18 +190,23 @@ async def list_issues(
     - Unreachable services (critical, live)
     - Grouped audit failures (warning/critical with first/last seen + count)
 
-    By default, issues the user has dismissed (acked) server-side are filtered
-    out. Pass ``include_dismissed=true`` to instead return *only* the dismissed
-    issues (each flagged ``dismissed=True``) so a mistakenly-dismissed issue can
-    be restored from the UI.
+    By default, issues the user has acknowledged server-side are filtered out
+    of the active feed — acknowledge-until-recurrence (JARVIS audit move 6,
+    bu-86c4c.15): the ack holds only while the group has not recurred since it
+    was acked (see :func:`_still_acked`); a fresh occurrence automatically
+    un-acks the group and it reappears here with no owner action required.
+    Pass ``include_dismissed=true`` to instead return *only* the
+    still-acknowledged issues (each flagged ``dismissed=True``) so an ack can
+    also be undone manually from the UI before it would have lapsed on its
+    own.
 
     Results are sorted by recency (most recent ``last_seen_at`` first).
     """
     tasks = [_check_butler_reachability(mgr, info) for info in configs]
-    reachability_results, audit_issues, dismissed_keys = await asyncio.gather(
+    reachability_results, audit_issues, acked_by_key = await asyncio.gather(
         asyncio.gather(*tasks),
         _list_audit_error_issues(db),
-        _list_dismissed_keys(db),
+        _list_dismissed_acks(db),
     )
 
     now = datetime.now(UTC)
@@ -192,16 +223,28 @@ async def list_issues(
 
     issues.extend(audit_issues)
 
-    # Partition by dismissal state. The ack is keyed by the issue's stable
-    # ``issue_key`` so the dismissal persists across browsers and sessions.
+    # Partition by ack state. The ack is keyed by the issue's stable
+    # ``issue_key`` so it persists across browsers and sessions, but only
+    # holds while the group hasn't recurred since it was acked.
     if include_dismissed:
-        # Restore view: surface only the dismissed issues, flagged so the UI can
-        # render a "Restore" affordance for each.
-        issues = [issue for issue in issues if issue.issue_key in dismissed_keys]
+        # Restore view: surface only the still-acknowledged issues, flagged so
+        # the UI can render a "Restore" affordance for each. A recurred (no
+        # longer acked) issue belongs in the active feed instead, not here.
+        issues = [
+            issue
+            for issue in issues
+            if issue.issue_key in acked_by_key
+            and _still_acked(issue, acked_by_key[issue.issue_key])
+        ]
         for issue in issues:
             issue.dismissed = True
     else:
-        issues = [issue for issue in issues if issue.issue_key not in dismissed_keys]
+        issues = [
+            issue
+            for issue in issues
+            if issue.issue_key not in acked_by_key
+            or not _still_acked(issue, acked_by_key[issue.issue_key])
+        ]
 
     severity_order = {"critical": 0, "warning": 1}
     issues.sort(
@@ -221,12 +264,20 @@ async def dismiss_issue(
     body: DismissIssueRequest = Body(...),
     db: DatabaseManager | None = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
-    """Dismiss (ack) an issue group so it no longer appears in the issues feed.
+    """Acknowledge an issue group so it no longer appears in the active feed.
 
-    The dismissal is persisted in ``public.dismissed_issues`` keyed by the
-    issue's stable ``issue_key``, so it holds across browsers and sessions
-    (unlike the old per-browser ``localStorage`` behaviour). Idempotent: a
-    repeat dismissal of the same key updates the existing row.
+    The ack is persisted in ``public.dismissed_issues`` keyed by the issue's
+    stable ``issue_key``, so it holds across browsers and sessions (unlike the
+    old per-browser ``localStorage`` behaviour). Idempotent: a repeat
+    acknowledgement of the same key updates the existing row.
+
+    Acknowledge-until-recurrence (JARVIS audit move 6, bu-86c4c.15): the
+    caller should pass the issue's current ``last_seen_at`` in
+    ``body.last_seen_at`` so the ack records a recurrence watermark. If the
+    group's ``last_seen_at`` later advances past this value (a genuine new
+    occurrence), :func:`list_issues` automatically un-acks it — this is not
+    dismiss-forever. Omitting ``last_seen_at`` falls back to dismiss-forever
+    for that row, since there is no watermark to compare against.
     """
     key = (body.issue_key or "").strip()
     if not key:
@@ -237,13 +288,15 @@ async def dismiss_issue(
 
     await pool.execute(
         """
-        INSERT INTO public.dismissed_issues (issue_key, dismissed_by, created_at)
-        VALUES ($1, $2, now())
+        INSERT INTO public.dismissed_issues (issue_key, dismissed_by, created_at, last_seen_at)
+        VALUES ($1, $2, now(), $3)
         ON CONFLICT (issue_key) DO UPDATE
-            SET dismissed_by = EXCLUDED.dismissed_by
+            SET dismissed_by = EXCLUDED.dismissed_by,
+                last_seen_at = EXCLUDED.last_seen_at
         """,
         key,
         dismissed_by,
+        body.last_seen_at,
     )
 
     return ApiResponse(data={"issue_key": key, "dismissed": True}, meta=ApiMeta())

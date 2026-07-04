@@ -138,9 +138,12 @@ band composition addendum and visually in each cell's `ButlerMark` component.
   - `stale` eligibility: amber rail, chip is clickable to restore
   - `quarantined` eligibility: red rail, chip is clickable to restore
   - No matching registry entry or unavailable registry response: dim rail
-- **AND** clicking a `quarantined` or `stale` chip SHALL trigger the existing
-  `setEligibility(name, "active")` mutation
-  (`frontend/src/hooks/use-general.ts:36-53`)
+- **AND** clicking a `quarantined` or `stale` chip SHALL schedule the existing
+  `setEligibility(name, "active")` mutation (`frontend/src/hooks/use-general.ts:36-53`)
+  a fixed undo window (5s) out behind an "Undo" toast action, rather than
+  firing it instantly (restore-with-reason-and-undo, JARVIS audit move 6,
+  bu-86c4c.15) -- clicking Undo before the window elapses cancels the
+  mutation entirely; letting the window elapse fires it exactly as before
 - **AND** the cell SHALL NOT be hidden for any eligibility state, including
   unavailable
 

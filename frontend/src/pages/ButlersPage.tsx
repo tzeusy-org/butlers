@@ -14,8 +14,19 @@
 //   - Full-page error (no cached data) via Page primitive's `error` prop.
 //   - Loading state delegated to the Page primitive skeleton.
 //   - onRestore wired to useSetEligibility mutation.
+//
+// Restore-with-reason-and-undo (JARVIS audit move 6, bu-86c4c.15): the
+// StatusBoardCell chip already surfaces the quarantine_reason as its title
+// (bu-86c4c.3) and IS the "Restore" button — what was missing was the undo
+// half. Restoring a quarantined butler is a real, consequential action (it
+// starts running again), so a click doesn't fire the mutation instantly; it
+// schedules it RESTORE_UNDO_WINDOW_MS out and offers an "Undo" toast action,
+// mirroring the scheduled-decision pattern ApprovalsPage established for its
+// a/d/x keyboard verbs (bu-86c4c.14). Nothing reaches the backend unless the
+// window elapses without an undo.
 // ---------------------------------------------------------------------------
 
+import { useSyncExternalStore } from "react";
 import { toast } from "sonner";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -33,6 +44,57 @@ import { useSetEligibility } from "@/hooks/use-general";
 
 /** Polling interval forwarded to BoardHeader's refresh caption. */
 const REFRESH_INTERVAL_MS = 30_000;
+
+/**
+ * How long an owner has to undo a restore before it actually fires
+ * (matches ApprovalsPage's UNDO_WINDOW_MS convention, bu-86c4c.14).
+ */
+const RESTORE_UNDO_WINDOW_MS = 5_000;
+
+// ---------------------------------------------------------------------------
+// Scheduled-restore store -- MODULE SCOPE, not component state.
+//
+// A restore scheduled via the quarantine chip must survive ButlersPage
+// unmounting mid undo-window: navigating away from /butlers and back within
+// 5s is ordinary navigation, not an edge case. If this lived in a `useState`
+// on the page component, a remount would start from an empty map -- the
+// original `window.setTimeout` from the unmounted instance keeps ticking
+// unseen, and the fresh instance would happily schedule a SECOND, independent
+// restore for the same name. Both timers eventually fire and the mutation
+// double-submits. Keeping the map here, outside any component instance,
+// makes "is this name already scheduled" and "cancel this name's timer"
+// globally consistent regardless of how many times the page mounts while the
+// window is open -- mirrors ApprovalsPage's identical scheduledDecisions
+// store (bu-86c4c.14).
+// ---------------------------------------------------------------------------
+let scheduledRestoresSnapshot: ReadonlyMap<string, number> = new Map();
+const scheduledRestoresListeners = new Set<() => void>();
+
+function setScheduledRestoresSnapshot(next: Map<string, number>) {
+  scheduledRestoresSnapshot = next;
+  for (const listener of scheduledRestoresListeners) listener();
+}
+
+function subscribeScheduledRestores(onStoreChange: () => void) {
+  scheduledRestoresListeners.add(onStoreChange);
+  return () => {
+    scheduledRestoresListeners.delete(onStoreChange);
+  };
+}
+
+function getScheduledRestoresSnapshot() {
+  return scheduledRestoresSnapshot;
+}
+
+/** Cancel and clear a name's scheduled restore, if one exists. */
+function cancelScheduledRestore(name: string) {
+  const timeoutId = scheduledRestoresSnapshot.get(name);
+  if (timeoutId === undefined) return;
+  window.clearTimeout(timeoutId);
+  const next = new Map(scheduledRestoresSnapshot);
+  next.delete(name);
+  setScheduledRestoresSnapshot(next);
+}
 
 // ---------------------------------------------------------------------------
 // ButlersPage
@@ -54,9 +116,21 @@ export default function ButlersPage() {
   // survive from cache the error object is still populated but isError is false.
   const showStaleBanner = error != null && hasRows;
 
-  const pendingRestoreName = setEligibility.isPending ? setEligibility.variables?.name : undefined;
+  // Butler names with a restore scheduled but not yet fired -- backed by the
+  // module-scoped store above (not useState) so a remount mid-window picks up
+  // the already-scheduled state instead of double scheduling.
+  const scheduledRestores = useSyncExternalStore(
+    subscribeScheduledRestores,
+    getScheduledRestoresSnapshot,
+    // getServerSnapshot: some tests render this page via
+    // `renderToStaticMarkup` (react-dom/server), which requires a third arg.
+    // There is no real SSR here, so reuse the same in-memory snapshot getter.
+    getScheduledRestoresSnapshot,
+  );
 
-  function handleRestore(name: string) {
+  const networkPendingName = setEligibility.isPending ? setEligibility.variables?.name : undefined;
+
+  function fireRestore(name: string) {
     setEligibility.mutate(
       { name, state: "active" },
       {
@@ -67,6 +141,24 @@ export default function ButlersPage() {
           }),
       },
     );
+  }
+
+  function handleRestore(name: string) {
+    if (scheduledRestores.has(name)) return; // already scheduled -- ignore repeat clicks
+
+    const timeoutId = window.setTimeout(() => {
+      const next = new Map(scheduledRestoresSnapshot);
+      next.delete(name);
+      setScheduledRestoresSnapshot(next);
+      fireRestore(name);
+    }, RESTORE_UNDO_WINDOW_MS);
+
+    setScheduledRestoresSnapshot(new Map(scheduledRestoresSnapshot).set(name, timeoutId));
+
+    toast(`Restoring ${name}`, {
+      action: { label: "Undo", onClick: () => cancelScheduledRestore(name) },
+      duration: RESTORE_UNDO_WINDOW_MS,
+    });
   }
 
   return (
@@ -114,7 +206,7 @@ export default function ButlersPage() {
               key={row.name}
               row={row}
               onRestore={handleRestore}
-              isRestorePending={pendingRestoreName === row.name}
+              isRestorePending={scheduledRestores.has(row.name) || networkPendingName === row.name}
             />
           ))}
         </div>

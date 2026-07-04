@@ -1529,6 +1529,12 @@ export interface TriggerResponse {
   output: string;
 }
 
+/** Response from forcing a scheduler tick (`POST /api/butlers/{name}/tick`). */
+export interface TickResponse {
+  success: boolean;
+  message: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // MCP debugging
 // ---------------------------------------------------------------------------
@@ -5577,6 +5583,22 @@ export interface ChroniclerOverride {
   note: string | null;
   submitted_by: string | null;
   created_at: string;
+}
+
+/**
+ * Request body for `POST /api/chronicler/episodes/{id}/corrections` — the
+ * episode-correction write path (JARVIS audit move 6, bu-86c4c.15). At least
+ * one correction field or a `note` is required (enforced server-side).
+ */
+export interface SubmitCorrectionRequest {
+  corrected_start_at?: string | null;
+  corrected_end_at?: string | null;
+  corrected_title?: string | null;
+  /** One of 'normal', 'sensitive', 'restricted'. */
+  corrected_privacy?: string | null;
+  corrected_tombstone_at?: string | null;
+  note?: string | null;
+  submitted_by?: string;
 }
 
 /**
