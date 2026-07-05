@@ -252,6 +252,56 @@ def _format_google_error(response: httpx.Response) -> str | None:
     return None
 
 
+# Google OAuth token-endpoint error codes that indicate the refresh token
+# itself is actually revoked/expired (owner re-consent required) — as
+# opposed to a transient network/rate-limit/5xx failure that self-heals on
+# the next poll. See _classify_source_api_error.
+_OAUTH_REVOCATION_ERROR_CODES = ("invalid_grant", "unauthorized_client")
+
+
+def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
+    """Classify a Gmail source-API failure for honest health reporting.
+
+    Returns ``(is_auth_revocation, description)``.
+
+    ``is_auth_revocation`` is True only when the failure is Google's OAuth
+    token endpoint reporting ``invalid_grant``/``unauthorized_client`` — a
+    genuinely revoked or expired refresh token that requires owner
+    re-consent. Every other failure (timeouts, connection errors, rate
+    limits, 5xx, or any other 4xx from the Gmail data API) is transient and
+    typically clears on the very next successful poll; conflating the two
+    into a single generic "unreachable or authentication failed" state
+    (bu-dej20) made a one-off network hiccup look identical to an
+    action-required credential revocation, and discarded the actual error
+    detail needed to tell them apart.
+
+    ``description`` is the most specific error text available: Google's own
+    structured error body when the exception carries an HTTP response, else
+    a compact ``"<error_type>: <str(exc)>"`` fallback.
+
+    Revocation detection inspects the parsed JSON payload's top-level
+    ``error`` field directly (the OAuth token endpoint's exact error shape:
+    ``{"error": "invalid_grant", ...}``) rather than substring-matching the
+    formatted description — a substring check on ``google_error`` would
+    false-positive if an unrelated Gmail data-API error message happened to
+    mention "invalid_grant" in prose, and the Gmail data API's nested-dict
+    error shape (``{"error": {"code": ..., "message": ...}}``) never equals
+    one of the revocation code strings so it's safely excluded either way.
+    """
+    response = getattr(exc, "response", None)
+    google_error = _format_google_error(response) if response is not None else None
+    is_auth_revocation = False
+    if response is not None:
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict) and payload.get("error") in _OAUTH_REVOCATION_ERROR_CODES:
+            is_auth_revocation = True
+    description = google_error or f"{get_error_type(exc)}: {exc}"
+    return is_auth_revocation, description
+
+
 class GmailConnectorConfig(BaseModel):
     """Configuration for Gmail connector runtime."""
 
@@ -553,6 +603,12 @@ class GmailConnectorRuntime:
         self._last_checkpoint_save: float | None = None
         self._last_ingest_submit: float | None = None
         self._source_api_ok: bool | None = None
+        # Most recent source-API failure detail + whether it was a genuine
+        # OAuth credential revocation (see _classify_source_api_error).
+        # Reset to None/False on every successful call alongside
+        # _source_api_ok = True.
+        self._source_api_error_message: str | None = None
+        self._auth_error: bool = False
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
 
@@ -698,6 +754,8 @@ class GmailConnectorRuntime:
             )
             response.raise_for_status()
             self._source_api_ok = True
+            self._source_api_error_message = None
+            self._auth_error = False
             self._metrics.record_source_api_call(api_method="messages.list.sent", status="success")
 
             data = response.json()
@@ -896,11 +954,29 @@ class GmailConnectorRuntime:
         Returns:
             Tuple of (state, error_message) where state is one of:
             "healthy", "degraded", "error"
+
+        ``error`` is reserved for a genuine OAuth credential revocation
+        (Google's token endpoint returning invalid_grant/unauthorized_client)
+        — this needs owner re-consent and will not clear on its own.
+        Any other source-API failure (timeout, connection error, rate limit,
+        5xx, transient 4xx) is reported as ``degraded`` with the actual
+        captured error: these self-heal on the next successful poll and do
+        not warrant the same alarm level. Both states clear back to
+        ``healthy`` as soon as any Gmail API call succeeds (see the
+        _source_api_ok = True / _auth_error = False resets throughout this
+        class) — this state is never sticky past the next successful call.
         """
         if self._source_api_ok is False:
-            return ("error", "Gmail API unreachable or authentication failed")
+            if self._auth_error:
+                return (
+                    "error",
+                    self._source_api_error_message or "Gmail OAuth token invalid or revoked",
+                )
+            return (
+                "degraded",
+                self._source_api_error_message or "Gmail API request failed",
+            )
 
-        # Could add degraded state for high error rates
         return ("healthy", None)
 
     def _get_checkpoint(self) -> tuple[str | None, datetime | None]:
@@ -1558,6 +1634,8 @@ class GmailConnectorRuntime:
             response.raise_for_status()
 
             self._source_api_ok = True
+            self._source_api_error_message = None
+            self._auth_error = False
             self._metrics.record_source_api_call(
                 api_method="messages.list.backfill", status="success"
             )
@@ -1575,6 +1653,7 @@ class GmailConnectorRuntime:
 
         except Exception as exc:
             self._source_api_ok = False
+            self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
             self._metrics.record_source_api_call(
                 api_method="messages.list.backfill", status="error"
             )
@@ -1759,6 +1838,8 @@ class GmailConnectorRuntime:
 
             # Mark API as connected on successful token refresh
             self._source_api_ok = True
+            self._source_api_error_message = None
+            self._auth_error = False
             self._metrics.record_source_api_call(api_method="token_refresh", status="success")
 
             logger.debug("Refreshed OAuth access token (expires in %ds)", expires_in)
@@ -1766,6 +1847,7 @@ class GmailConnectorRuntime:
         except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+            self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
             self._metrics.record_source_api_call(api_method="token_refresh", status="error")
             self._metrics.record_error(error_type=get_error_type(exc), operation="token_refresh")
             raise
@@ -1785,12 +1867,15 @@ class GmailConnectorRuntime:
 
             # Mark API as connected on success
             self._source_api_ok = True
+            self._source_api_error_message = None
+            self._auth_error = False
             self._metrics.record_source_api_call(api_method="profile.get", status="success")
 
             return response.json()
         except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+            self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
             self._metrics.record_source_api_call(api_method="profile.get", status="error")
             self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_profile")
             raise
@@ -1904,12 +1989,15 @@ class GmailConnectorRuntime:
 
             # Mark API as connected on success
             self._source_api_ok = True
+            self._source_api_error_message = None
+            self._auth_error = False
             self._metrics.record_source_api_call(api_method="history.list", status="success")
 
             return data.get("history", [])
         except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+            self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
             self._metrics.record_source_api_call(api_method="history.list", status="error")
             self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_history")
             raise
@@ -2313,12 +2401,15 @@ class GmailConnectorRuntime:
 
             # Mark API as connected on success
             self._source_api_ok = True
+            self._source_api_error_message = None
+            self._auth_error = False
             self._metrics.record_source_api_call(api_method="messages.get", status="success")
 
             return response.json()
         except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+            self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
             self._metrics.record_source_api_call(api_method="messages.get", status="error")
             self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_message")
             raise
@@ -3396,12 +3487,18 @@ class GmailAccountLoop:
         else:
             connectivity = "disconnected"
 
-        # Determine per-account status
-        error_msg = self._error
-        if not self.is_running and error_msg:
+        # Determine per-account status. A genuine OAuth credential revocation
+        # (runtime._auth_error) is "error" — it needs owner re-consent and
+        # will not clear on its own. Any other source-API failure is
+        # "degraded": transient (timeout, rate limit, 5xx) and self-heals on
+        # the next successful poll. Collapsing both into "error" (bu-dej20)
+        # made a one-off network hiccup indistinguishable from an
+        # action-required revoked token.
+        error_msg = self._error or runtime._source_api_error_message
+        if not self.is_running and self._error:
             account_status: Literal["healthy", "degraded", "error"] = "error"
         elif runtime._source_api_ok is False:
-            account_status = "error"
+            account_status = "error" if runtime._auth_error else "degraded"
         else:
             account_status = "healthy"
 
