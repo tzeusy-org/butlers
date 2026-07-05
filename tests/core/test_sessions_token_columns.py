@@ -158,7 +158,7 @@ class TestSessionTokenColumns:
     async def test_cache_token_columns_roundtrip_and_summary(self, pool_with_migrations):
         """session_complete persists cache buckets; sessions_summary aggregates them.
 
-        Covers migration core_154 (cached_input_tokens / cache_creation_tokens
+        Covers migration core_155 (cached_input_tokens / cache_creation_tokens
         on sessions) end-to-end against real Postgres.
         """
         session_id = await session_create(

@@ -1,7 +1,7 @@
 """cache_token_columns: cached/cache-write token counts on sessions + ledger.
 
-Revision ID: core_154
-Revises: core_153
+Revision ID: core_155
+Revises: core_154
 Create Date: 2026-07-05 00:00:00.000000
 
 Cost estimation previously priced only ``input_tokens``/``output_tokens``.
@@ -26,8 +26,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_154"
-down_revision = "core_153"
+revision = "core_155"
+down_revision = "core_154"
 branch_labels = None
 depends_on = None
 
