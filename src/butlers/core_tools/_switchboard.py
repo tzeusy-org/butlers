@@ -119,7 +119,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
 
     import importlib.util as _ilu
 
-    from butlers.core.model_routing import Complexity
+    from butlers.core.model_routing import coerce_complexity_tier
     from butlers.core.routing_context import _routing_ctx_var
     from butlers.core.utils import coerce_request_id as _coerce_request_id
     from butlers.tools.switchboard.backfill.connector import backfill_poll as _backfill_poll
@@ -432,8 +432,11 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 independently understandable without conversation history.
             context: Optional — key details and context the target butler
                 needs to act on this request.
-            complexity: Task complexity tier — one of "trivial", "medium",
-                "high", "extra_high". Defaults to "medium" when omitted.
+            complexity: Task complexity tier — one of "reasoning",
+                "workhorse", "cheap", "specialty", "local", "legacy".
+                Defaults to "workhorse" when omitted or unrecognized. Retired
+                pre-core_092 values (e.g. "medium", "high") are remapped to
+                their canonical equivalent.
         """
         from datetime import UTC, datetime
 
@@ -550,12 +553,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         identity_preamble = _routing_ctx.get("identity_preamble")
         effective_prompt = f"{identity_preamble}\n{prompt}" if identity_preamble else prompt
 
-        # Normalize complexity: accept valid enum values, default to medium.
-        _complexity_values = {c.value for c in Complexity}
-        _raw_complexity = complexity.strip().lower() if isinstance(complexity, str) else ""
-        _normalized_complexity = (
-            _raw_complexity if _raw_complexity in _complexity_values else Complexity.WORKHORSE.value
-        )
+        # Normalize complexity: accept canonical tier values, gracefully remap
+        # retired pre-core_092 vocabulary (e.g. "medium" -> "workhorse", "high"
+        # -> "reasoning") with a logged deprecation warning, and fail open to
+        # "workhorse" for anything else — this routing hot path must never
+        # crash a whole classification session over one cosmetic parameter.
+        _normalized_complexity = coerce_complexity_tier(complexity, strict=False).value
 
         # Forward attachment metadata from routing context so target
         # butlers know what attachments exist and can fetch on demand.

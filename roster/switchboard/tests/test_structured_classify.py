@@ -410,6 +410,27 @@ class TestValidateToolCall:
         }
         assert sc._validate_tool_call(call) is False
 
+    def test_route_to_butler_accepts_canonical_complexity(self):
+        """The classification schema only ever offers canonical tiers (bu-h3cwc)."""
+        for tier in ("reasoning", "workhorse", "cheap", "specialty", "local", "legacy"):
+            call = {
+                "name": "route_to_butler",
+                "input": {"butler": "health", "prompt": "x", "complexity": tier},
+            }
+            assert sc._validate_tool_call(call) is True
+
+    def test_route_to_butler_rejects_retired_complexity_vocabulary(self):
+        """Retired pre-core_092 values (e.g. "medium") are schema-invalid here — the
+        forced tool-use schema's enum only lists canonical tiers, so a model
+        emitting the old vocabulary triggers the existing retry/CLI-fallback
+        path rather than dispatching with a stale value (bu-h3cwc)."""
+        for legacy in ("trivial", "medium", "high", "extra_high", "discretion", "self_healing"):
+            call = {
+                "name": "route_to_butler",
+                "input": {"butler": "health", "prompt": "x", "complexity": legacy},
+            }
+            assert sc._validate_tool_call(call) is False
+
     def test_file_bug_report_requires_summary(self):
         assert (
             sc._validate_tool_call({"name": "file_bug_report", "input": {"summary": "broken"}})

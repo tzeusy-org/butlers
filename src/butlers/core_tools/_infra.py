@@ -159,11 +159,14 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         context:
             Optional text to prepend to the prompt.
         complexity:
-            Optional complexity tier ("trivial", "medium", "high",
-            "extra_high", "discretion", "self_healing"). Defaults to medium
-            when omitted.
+            Optional complexity tier — one of "reasoning", "workhorse",
+            "cheap", "specialty", "local", "legacy". Defaults to "workhorse"
+            when omitted. Retired pre-core_092 values (e.g. "medium", "high")
+            are still accepted and remapped to their canonical equivalent
+            with a logged deprecation warning; any other unrecognized value
+            raises a clear error.
         """
-        from butlers.core.model_routing import Complexity
+        from butlers.core.model_routing import coerce_complexity_tier
 
         spawn_kwargs: dict[str, Any] = {
             "prompt": prompt,
@@ -171,7 +174,7 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
             "trigger_source": "trigger",
         }
         if complexity is not None:
-            spawn_kwargs["complexity"] = Complexity(complexity)
+            spawn_kwargs["complexity"] = coerce_complexity_tier(complexity)
         result = await spawner.trigger(**spawn_kwargs)
         session_id = getattr(result, "session_id", None)
         return {

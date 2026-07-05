@@ -88,6 +88,16 @@ async def test_trigger_rejects_unknown_complexity():
         await trigger(prompt="hello", complexity="galactic")
 
 
+async def test_trigger_remaps_legacy_complexity_instead_of_crashing():
+    """Regression (bu-h3cwc): retired vocabulary (e.g. "medium") must degrade
+    gracefully via the deprecated-tier shim, not raise ``Complexity(value)``'s
+    bare ``ValueError``."""
+    trigger, spawner = _register_and_grab_trigger()
+    result = await trigger(prompt="hello", complexity="medium")
+    assert result["success"] is True
+    assert spawner.calls[0]["complexity"] is Complexity.WORKHORSE
+
+
 async def test_trigger_returns_session_id():
     """The trigger tool surfaces the spawned session UUID for traceability.
 

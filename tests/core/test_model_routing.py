@@ -26,6 +26,7 @@ from butlers.core.model_routing import (
     _parse_max_cost_per_call,
     _rule_condition_matches,
     apply_spend_routing_rules,
+    coerce_complexity_tier,
     next_same_tier_candidate,
     resolve_model,
     resolve_model_with_effective_tier,
@@ -96,6 +97,76 @@ def test_deprecated_tier_shim_remaps_and_warns(caplog: pytest.LogCaptureFixture)
         assert _check_deprecated_tier("reasoning") == "reasoning"
         assert _check_deprecated_tier("workhorse") == "workhorse"
     assert len(caplog.records) == 0
+
+
+@pytest.mark.unit
+def test_coerce_complexity_tier_canonical_passthrough() -> None:
+    """Canonical tier strings resolve to their matching Complexity member."""
+    for tier in Complexity:
+        assert coerce_complexity_tier(tier.value) == tier
+        assert coerce_complexity_tier(tier.value, strict=False) == tier
+
+
+@pytest.mark.unit
+def test_coerce_complexity_tier_defaults_to_workhorse_when_missing() -> None:
+    """None/empty input defaults to workhorse under both strict and lenient modes."""
+    assert coerce_complexity_tier(None) == Complexity.WORKHORSE
+    assert coerce_complexity_tier("") == Complexity.WORKHORSE
+    assert coerce_complexity_tier(None, strict=False) == Complexity.WORKHORSE
+
+
+@pytest.mark.unit
+def test_coerce_complexity_tier_remaps_legacy_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Retired pre-core_092 vocabulary degrades gracefully instead of crashing."""
+    import logging
+
+    expected = {
+        "trivial": Complexity.CHEAP,
+        "medium": Complexity.WORKHORSE,
+        "high": Complexity.REASONING,
+        "extra_high": Complexity.REASONING,
+        "discretion": Complexity.SPECIALTY,
+        "self_healing": Complexity.SPECIALTY,
+    }
+    with caplog.at_level(logging.WARNING, logger="butlers.core.model_routing"):
+        for legacy, canonical in expected.items():
+            assert coerce_complexity_tier(legacy) == canonical
+            assert coerce_complexity_tier(legacy, strict=False) == canonical
+
+    assert len(caplog.records) == len(expected) * 2
+    for record in caplog.records:
+        assert "DEPRECATED" in record.message
+
+    # Case/whitespace-insensitive.
+    assert coerce_complexity_tier("  MEDIUM  ") == Complexity.WORKHORSE
+
+
+@pytest.mark.unit
+def test_coerce_complexity_tier_strict_raises_clear_error_on_garbage() -> None:
+    """A genuinely-invalid value raises ValueError naming the valid tiers, not a bare enum error."""
+    with pytest.raises(ValueError) as exc_info:
+        coerce_complexity_tier("not_a_real_tier")
+
+    message = str(exc_info.value)
+    assert "not_a_real_tier" in message
+    for tier in Complexity:
+        assert tier.value in message
+
+
+@pytest.mark.unit
+def test_coerce_complexity_tier_lenient_fails_open_on_garbage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """strict=False never crashes — unrecognized values fall back to workhorse with a warning."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="butlers.core.model_routing"):
+        assert coerce_complexity_tier("not_a_real_tier", strict=False) == Complexity.WORKHORSE
+
+    assert len(caplog.records) == 1
+    assert "not_a_real_tier" in caplog.records[0].message
 
 
 # ---------------------------------------------------------------------------

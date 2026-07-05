@@ -111,8 +111,8 @@ ROUTE_TO_BUTLER_TOOL: dict[str, Any] = {
             },
             "complexity": {
                 "type": "string",
-                "enum": ["trivial", "medium", "high", "extra_high"],
-                "description": "Task complexity tier. Defaults to medium when omitted.",
+                "enum": ["reasoning", "workhorse", "cheap", "specialty", "local", "legacy"],
+                "description": "Task complexity tier. Defaults to workhorse when omitted.",
             },
         },
         "required": ["butler", "prompt"],
@@ -146,7 +146,7 @@ FILE_BUG_REPORT_TOOL: dict[str, Any] = {
 }
 
 _KNOWN_TOOL_NAMES = frozenset({"route_to_butler", "file_bug_report"})
-_VALID_COMPLEXITY = frozenset({"trivial", "medium", "high", "extra_high"})
+_VALID_COMPLEXITY = frozenset({"reasoning", "workhorse", "cheap", "specialty", "local", "legacy"})
 
 
 @dataclass

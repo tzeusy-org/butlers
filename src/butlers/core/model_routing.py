@@ -2,6 +2,11 @@
 
 Provides:
 - ``Complexity`` enum (canonical six: reasoning / workhorse / cheap / specialty / local / legacy)
+- ``coerce_complexity_tier(value, strict=True)`` — normalizes a caller-supplied complexity
+  string (LLM tool argument, structured-classification output, etc.) to a canonical
+  ``Complexity``, gracefully remapping retired vocabulary and either raising a clear
+  ``ValueError`` (``strict=True``) or fail-open defaulting to ``workhorse``
+  (``strict=False``) on genuinely unrecognized values.
 - ``resolve_model(pool, butler_name, complexity_tier)`` — highest-priority enabled model
   in tier whose state ∈ {verified, untested}; falls through canonical tier order if none
   qualify in the requested tier.
@@ -120,6 +125,59 @@ def _check_deprecated_tier(tier_value: str) -> str:
         )
         return canonical
     return tier_value
+
+
+def coerce_complexity_tier(value: str | None, *, strict: bool = True) -> Complexity:
+    """Normalize a caller-supplied complexity tier string to a canonical ``Complexity``.
+
+    Shared entry point for LLM-facing tool parameters (``route_to_butler``'s
+    and ``trigger``'s ``complexity`` args, and any structured-classification
+    schema output) where the caller may be a stale LLM prompt, cached memory,
+    or an old session transcript that still uses the pre-core_092 vocabulary
+    (trivial/medium/high/extra_high/discretion/self_healing).
+
+    Handles three cases:
+    - Missing/empty ``value`` -> ``Complexity.WORKHORSE`` (the canonical
+      default used across the routing/spawn/schedule surfaces).
+    - A canonical or retired tier value -> returned as the matching
+      ``Complexity`` member. Retired values are remapped via
+      ``_DEPRECATED_TIER_MAP`` (through ``_check_deprecated_tier``, which
+      always logs a deprecation warning) so a stale caller degrades
+      gracefully instead of crashing the tool call.
+    - Any other unrecognized value:
+      - ``strict=True`` (default): raises ``ValueError`` naming the valid
+        tiers — appropriate for tool entry points where a clear, actionable
+        tool-call error lets the caller retry with a valid value, rather than
+        opaquely surfacing ``Complexity(value)``'s own ``ValueError``.
+      - ``strict=False``: logs a warning and falls back to
+        ``Complexity.WORKHORSE`` instead of raising — appropriate for
+        fail-open routing hot paths (e.g. ``route_to_butler``) that must
+        never crash an entire classification session over one cosmetic
+        parameter.
+    """
+    normalized = value.strip().lower() if isinstance(value, str) else ""
+    if not normalized:
+        return Complexity.WORKHORSE
+    try:
+        return Complexity(normalized)
+    except ValueError:
+        pass
+    if normalized in _DEPRECATED_TIER_MAP:
+        return Complexity(_check_deprecated_tier(normalized))
+    if strict:
+        valid_tiers = ", ".join(tier.value for tier in Complexity)
+        legacy_tiers = ", ".join(_DEPRECATED_TIER_MAP)
+        raise ValueError(
+            f"Invalid complexity tier {value!r}. Must be one of: {valid_tiers} "
+            f"(legacy aliases still accepted: {legacy_tiers})."
+        )
+    logger.warning(
+        "Unrecognized complexity tier %r — defaulting to %r. "
+        "Valid tiers: reasoning/workhorse/cheap/specialty/local/legacy.",
+        value,
+        Complexity.WORKHORSE.value,
+    )
+    return Complexity.WORKHORSE
 
 
 @dataclasses.dataclass

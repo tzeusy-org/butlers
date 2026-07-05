@@ -279,6 +279,17 @@ async def test_route_to_butler_envelope_behavior(tmp_path: Path) -> None:
     await fn(butler="health", prompt="test")
     assert captured["input"]["complexity"] == "workhorse"
 
+    # Legacy pre-core_092 vocabulary (bu-h3cwc): remapped to its correct
+    # canonical equivalent via the shared deprecated-tier shim, not blanket
+    # -defaulted to workhorse (e.g. "high" -> "reasoning", not "workhorse").
+    captured.clear()
+    await fn(butler="health", prompt="test", complexity="high")
+    assert captured["input"]["complexity"] == "reasoning"
+
+    captured.clear()
+    await fn(butler="health", prompt="test", complexity="medium")
+    assert captured["input"]["complexity"] == "workhorse"
+
 
 # ---------------------------------------------------------------------------
 # Permissions-matrix enforcement (public.permissions: cross_butler) [bu-tzlq6]
