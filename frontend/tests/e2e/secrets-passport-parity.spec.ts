@@ -1188,12 +1188,29 @@ test.describe("PassportAddPanel (C37–C40)", () => {
     await expect(page.locator('[data-add-system-panel="true"]')).not.toBeAttached({ timeout: 5_000 });
   });
 
-  test("C39: AddPanel user -- selecting user credential shows user form", async ({ page }) => {
-    // Covers C39 -- user credential creation
+  test("C39: AddPanel user -- selecting user credential shows the guided connect view by default [bu-57b3m]", async ({ page }) => {
+    // Covers C39 -- user credential creation. OAuth-first birth flow: the raw
+    // type+value paste form is no longer the default -- guided connect
+    // (OAuth dance / provider drawer) is, with the raw form demoted behind an
+    // explicit "advanced" toggle.
     await openAddPanel(page);
     await page.locator('[data-add-family-chooser="true"] button', { hasText: /user credential/ }).click();
     await expect(page.locator('[data-add-user-panel="true"]')).toBeAttached({ timeout: 3_000 });
+    await expect(page.locator('[data-user-guided-connect="true"]')).toBeAttached({ timeout: 3_000 });
+    await expect(page.locator('[data-add-user-panel="true"] button', { hasText: /connect google/i })).toBeAttached({ timeout: 3_000 });
+    await expect(page.locator('[data-user-raw-form="true"]')).not.toBeAttached();
+    await expect(page.locator('[data-user-type-select="true"]')).not.toBeAttached();
+  });
+
+  test("C39: AddPanel user -- advanced toggle reveals the raw type+value paste form [bu-57b3m]", async ({ page }) => {
+    // Covers C39 -- raw credential paste stays available, demoted behind an
+    // explicit "advanced" toggle with a bypass-tracking warning.
+    await openAddPanel(page);
+    await page.locator('[data-add-family-chooser="true"] button', { hasText: /user credential/ }).click();
+    await page.locator('[data-add-user-panel="true"] button', { hasText: /advanced: paste raw credential/i }).click();
+    await expect(page.locator('[data-user-raw-form="true"]')).toBeAttached({ timeout: 3_000 });
     await expect(page.locator('[data-user-type-select="true"]')).toBeAttached({ timeout: 3_000 });
+    await expect(page.locator('[data-user-guided-connect="true"]')).not.toBeAttached();
   });
 
   test("C40: AddPanel provider -- selecting connect provider shows provider list", async ({ page }) => {

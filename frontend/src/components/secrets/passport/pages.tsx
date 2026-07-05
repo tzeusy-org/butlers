@@ -2918,6 +2918,9 @@ export function PassportAddPanel({
     setUserValue("");
     setUserLabel("");
     setProviderSlug(null);
+    setUserAdvanced(false);
+    setUserHaDrawerOpen(false);
+    setOauthError(null);
   }
 
   // ── SYSTEM sub-form ──────────────────────────────────────────────────────
@@ -2957,10 +2960,30 @@ export function PassportAddPanel({
   }
 
   // ── USER sub-form ─────────────────────────────────────────────────────────
+  // OAuth-first birth flow [bu-57b3m]: hand-pasting a raw entity_info value
+  // (wrong type spelling, token for the wrong client_id, missing
+  // google_accounts row so scope tracking never attaches) is how corrupt
+  // credential states are born. Default to the guided connect path — the
+  // same OAuth dance / provider drawer the reauthorize flow already uses —
+  // and demote raw type+value paste behind an explicit advanced toggle.
   const [userType, setUserType] = React.useState<string>(ENTITY_INFO_TYPES[0] as string);
   const [userValue, setUserValue] = React.useState("");
   const [userLabel, setUserLabel] = React.useState("");
+  const [userAdvanced, setUserAdvanced] = React.useState(false);
+  const [userHaDrawerOpen, setUserHaDrawerOpen] = React.useState(false);
   const userMutation = useCreateUserSecret();
+
+  // entity_info type → OAuth provider slug, for types with a live OAuth dance
+  // (same start route the reauthorize CTA uses). Only google_oauth_refresh
+  // qualifies today; extend this map if a future entity_info type gains a
+  // wired OAuth provider.
+  const USER_TYPE_OAUTH_PROVIDER: Record<string, string> = {
+    google_oauth_refresh: "google",
+  };
+  // entity_info types with a guided provider-config drawer covering the same
+  // credential (bu-ayp6v.8/.9) — the raw form should never be the default
+  // entry point for these.
+  const USER_TYPE_HAS_DRAWER = new Set(["home_assistant_token", "home_assistant_url"]);
 
   // Auto-fill label from type template suggestion
   function handleUserTypeChange(t: string) {
@@ -3230,85 +3253,156 @@ export function PassportAddPanel({
             new user credential
           </Mono>
 
-          {/* Type with template suggestions */}
-          <div className="flex flex-col gap-1">
-            <Mono size={9} upper tracking="0.12em" color="var(--dim)">type</Mono>
-            <select
-              value={userType}
-              onChange={(e) => handleUserTypeChange(e.target.value)}
-              className="font-mono text-[11px] p-1.5 outline-none"
-              style={{
-                border: "1px solid var(--border-strong)",
-                background: "var(--bg)",
-                color: "var(--fg)",
-                borderRadius: 3,
-              }}
-              data-user-type-select="true"
-            >
-              {ENTITY_INFO_TYPES.map((t) => (
-                <option key={t} value={t}>{entityInfoTypeLabel(t)}</option>
-              ))}
-            </select>
-          </div>
+          {/* Guided connect — primary path. One click, no hand-pasted tokens. */}
+          {!userAdvanced && (
+            <div className="flex flex-col gap-3" data-user-guided-connect="true">
+              <Mono size={11} color="var(--dim)">
+                connect the provider directly — the same dance the reauthorize CTA uses.
+              </Mono>
 
-          {/* Value */}
-          <div className="flex flex-col gap-1">
-            <Mono size={9} upper tracking="0.12em" color="var(--dim)">value</Mono>
-            <textarea
-              rows={3}
-              value={userValue}
-              onChange={(e) => setUserValue(e.target.value)}
-              placeholder={USER_SECRET_TEMPLATES.find((t) => t.type === userType)?.description ?? "credential value"}
-              className="font-mono text-[11px] p-2 resize-none outline-none w-full"
-              style={{
-                border: "1px solid var(--border-strong)",
-                background: "var(--bg)",
-                color: "var(--fg)",
-                borderRadius: 3,
-              }}
-            />
-          </div>
+              <div className="flex gap-2 flex-wrap">
+                <PillBtn
+                  variant="commit"
+                  onClick={() => handleOAuthConnect(USER_TYPE_OAUTH_PROVIDER.google_oauth_refresh)}
+                  disabled={!ownerEntityId || oauthPending}
+                  data-user-connect-google="true"
+                >
+                  {oauthPending ? "redirecting…" : "connect Google"}
+                </PillBtn>
+                <PillBtn
+                  onClick={() => setUserHaDrawerOpen(true)}
+                  disabled={!ownerEntityId || userHaDrawerOpen}
+                  data-user-setup-homeassistant="true"
+                >
+                  set up Home Assistant
+                </PillBtn>
+              </div>
 
-          {/* Label */}
-          <div className="flex flex-col gap-1">
-            <Mono size={9} upper tracking="0.12em" color="var(--dim)">label (optional)</Mono>
-            <input
-              type="text"
-              value={userLabel}
-              onChange={(e) => setUserLabel(e.target.value)}
-              placeholder="human-readable label"
-              className="font-mono text-[11px] p-2 outline-none w-full"
-              style={{
-                border: "1px solid var(--border-strong)",
-                background: "var(--bg)",
-                color: "var(--fg)",
-                borderRadius: 3,
-              }}
-            />
-          </div>
+              {!ownerEntityId && (
+                <Mono size={11} color="var(--dim)">
+                  user credential creation requires the owner entity to be set up
+                </Mono>
+              )}
 
-          {!ownerEntityId && (
-            <Mono size={11} color="var(--red)">
-              owner entity ID not available: cannot create user credential
-            </Mono>
+              {oauthError && (
+                <Mono size={11} color="var(--red)">
+                  {oauthError}
+                </Mono>
+              )}
+
+              {userHaDrawerOpen && (
+                <div className="mt-1" data-user-ha-drawer="true">
+                  <HomeAssistantDrawer onClose={() => setUserHaDrawerOpen(false)} />
+                </div>
+              )}
+
+              <div>
+                <PillBtn onClick={() => setUserAdvanced(true)} data-user-advanced-toggle="true">
+                  advanced: paste raw credential
+                </PillBtn>
+              </div>
+            </div>
           )}
 
-          {userMutation.error && (
-            <Mono size={11} color="var(--red)">
-              {userMutation.error instanceof Error
-                ? userMutation.error.message
-                : "Save failed."}
-            </Mono>
+          {/* Advanced — raw type+value paste. Demoted: bypasses account/scope tracking. */}
+          {userAdvanced && (
+            <div className="flex flex-col gap-3" data-user-raw-form="true">
+              <Mono size={11} color="var(--amber)">
+                pasted tokens bypass account and scope tracking — prefer the guided connect above when available.
+              </Mono>
+
+              {/* Type with template suggestions */}
+              <div className="flex flex-col gap-1">
+                <Mono size={9} upper tracking="0.12em" color="var(--dim)">type</Mono>
+                <select
+                  value={userType}
+                  onChange={(e) => handleUserTypeChange(e.target.value)}
+                  className="font-mono text-[11px] p-1.5 outline-none"
+                  style={{
+                    border: "1px solid var(--border-strong)",
+                    background: "var(--bg)",
+                    color: "var(--fg)",
+                    borderRadius: 3,
+                  }}
+                  data-user-type-select="true"
+                >
+                  {ENTITY_INFO_TYPES.map((t) => (
+                    <option key={t} value={t}>{entityInfoTypeLabel(t)}</option>
+                  ))}
+                </select>
+                {(USER_TYPE_OAUTH_PROVIDER[userType] || USER_TYPE_HAS_DRAWER.has(userType)) && (
+                  <Mono size={9} color="var(--dim)">
+                    this type has a guided connect above — only paste here if that path doesn't work.
+                  </Mono>
+                )}
+              </div>
+
+              {/* Value */}
+              <div className="flex flex-col gap-1">
+                <Mono size={9} upper tracking="0.12em" color="var(--dim)">value</Mono>
+                <textarea
+                  rows={3}
+                  value={userValue}
+                  onChange={(e) => setUserValue(e.target.value)}
+                  placeholder={USER_SECRET_TEMPLATES.find((t) => t.type === userType)?.description ?? "credential value"}
+                  className="font-mono text-[11px] p-2 resize-none outline-none w-full"
+                  style={{
+                    border: "1px solid var(--border-strong)",
+                    background: "var(--bg)",
+                    color: "var(--fg)",
+                    borderRadius: 3,
+                  }}
+                />
+              </div>
+
+              {/* Label */}
+              <div className="flex flex-col gap-1">
+                <Mono size={9} upper tracking="0.12em" color="var(--dim)">label (optional)</Mono>
+                <input
+                  type="text"
+                  value={userLabel}
+                  onChange={(e) => setUserLabel(e.target.value)}
+                  placeholder="human-readable label"
+                  className="font-mono text-[11px] p-2 outline-none w-full"
+                  style={{
+                    border: "1px solid var(--border-strong)",
+                    background: "var(--bg)",
+                    color: "var(--fg)",
+                    borderRadius: 3,
+                  }}
+                />
+              </div>
+
+              {!ownerEntityId && (
+                <Mono size={11} color="var(--red)">
+                  owner entity ID not available: cannot create user credential
+                </Mono>
+              )}
+
+              {userMutation.error && (
+                <Mono size={11} color="var(--red)">
+                  {userMutation.error instanceof Error
+                    ? userMutation.error.message
+                    : "Save failed."}
+                </Mono>
+              )}
+
+              <div className="flex gap-2">
+                <PillBtn
+                  variant="commit"
+                  onClick={handleUserSubmit}
+                  disabled={!userType || !userValue.trim() || userMutation.isPending || !ownerEntityId}
+                >
+                  {userMutation.isPending ? "saving…" : "create"}
+                </PillBtn>
+                <PillBtn onClick={() => setUserAdvanced(false)} data-user-advanced-back="true">
+                  back to guided connect
+                </PillBtn>
+              </div>
+            </div>
           )}
 
-          <div className="flex gap-2">
-            <PillBtn
-              variant="commit"
-              onClick={handleUserSubmit}
-              disabled={!userType || !userValue.trim() || userMutation.isPending || !ownerEntityId}
-            >
-              {userMutation.isPending ? "saving…" : "create"}
-            </PillBtn>
+          <div className="flex gap-2 pt-1" style={{ borderTop: "1px solid var(--border-soft)" }}>
             <PillBtn onClick={() => handleFamilySelect(null)}>
               back
             </PillBtn>

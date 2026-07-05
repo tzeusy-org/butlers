@@ -5,7 +5,8 @@
 // Coverage:
 //   - Family chooser renders three commit-pill buttons
 //   - SYSTEM sub-form: key/value/category/target fields + create action
-//   - USER sub-form: type/value/label fields + create action
+//   - USER sub-form: OAuth-first guided connect is the default; raw
+//     type/value/label paste is demoted behind an advanced toggle [bu-57b3m]
 //   - CONNECT PROVIDER: OAuth providers (google/spotify) + stubs
 //   - Template suggestions populate category/type
 //   - useCreateUserSecret is wired for user creation
@@ -47,6 +48,18 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(() => ({ data: { data: [] }, isLoading: false, error: null })),
+}));
+// Home Assistant guided-drawer hooks [bu-57b3m] — the USER family's "set up
+// Home Assistant" quick-connect renders the same drawer the provider family
+// already uses, so it needs the same hook mocks.
+vi.mock("@/hooks/use-home-assistant.ts", () => ({
+  useHomeAssistantStatus: vi.fn(() => ({
+    data: { state: "disconnected", url_configured: false, token_configured: false, masked_url: null },
+    isLoading: false,
+    error: null,
+  })),
+  useConfigureHomeAssistant: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null, data: null })),
+  useDeleteHomeAssistantConfig: vi.fn(() => ({ mutate: vi.fn(), isPending: false, reset: vi.fn(), error: null })),
 }));
 
 import { PassportAddPanel } from "./pages.tsx";
@@ -289,5 +302,97 @@ describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", ()
     fireEvent.click(screen.getByText("connect provider"));
     const connectBtn = screen.getByText(/connect google/i).closest("button") as HTMLButtonElement;
     expect(connectBtn.disabled).toBe(false);
+  });
+});
+
+// ── PassportAddPanel: USER family — OAuth-first guided connect [bu-57b3m] ────
+//
+// The USER sub-form used to open straight into a raw entity_info type+value
+// paste form. Hand-pasting OAuth refresh tokens is how corrupt credential
+// states are born (wrong type, wrong client_id, missing google_accounts row).
+// The guided connect (same OAuth dance / provider drawer the reauthorize CTA
+// uses) is now the default; raw paste is demoted behind an explicit toggle.
+
+describe("PassportAddPanel: USER family — guided connect is the default", () => {
+  afterEach(() => {
+    cleanup();
+    mockReauth.mockReset();
+  });
+
+  function renderUserFamily(ownerEntityId: string | undefined) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const utils = render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <PassportAddPanel ownerEntityId={ownerEntityId} onClose={() => {}} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByText("user credential"));
+    return utils;
+  }
+
+  it("opens on the guided connect view, not the raw paste form", () => {
+    renderUserFamily("entity-uuid-123");
+    expect(screen.getByText(/connect google/i)).toBeTruthy();
+    expect(screen.getByText(/set up home assistant/i)).toBeTruthy();
+    expect(document.querySelector('[data-user-guided-connect="true"]')).toBeTruthy();
+    expect(document.querySelector('[data-user-raw-form="true"]')).toBeFalsy();
+    expect(document.querySelector('[data-user-type-select="true"]')).toBeFalsy();
+  });
+
+  it("reveals the raw type+value form only after the advanced toggle is clicked", () => {
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/advanced: paste raw credential/i));
+    expect(document.querySelector('[data-user-raw-form="true"]')).toBeTruthy();
+    expect(document.querySelector('[data-user-type-select="true"]')).toBeTruthy();
+    // Guided connect is hidden while advanced is open
+    expect(document.querySelector('[data-user-guided-connect="true"]')).toBeFalsy();
+  });
+
+  it("shows a one-line warning that pasted tokens bypass account/scope tracking", () => {
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/advanced: paste raw credential/i));
+    expect(screen.getByText(/bypass account and scope tracking/i)).toBeTruthy();
+  });
+
+  it("'back to guided connect' returns from the advanced form to the guided view", () => {
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/advanced: paste raw credential/i));
+    fireEvent.click(screen.getByText(/back to guided connect/i));
+    expect(document.querySelector('[data-user-guided-connect="true"]')).toBeTruthy();
+    expect(document.querySelector('[data-user-raw-form="true"]')).toBeFalsy();
+  });
+
+  it("clicking connect Google in the user family calls reauthorizeUserCredential(google, ownerEntityId)", () => {
+    mockReauth.mockResolvedValue({ data: { redirect_url: "/api/oauth/google/start" }, meta: {} } as never);
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/connect google/i));
+    expect(mockReauth).toHaveBeenCalledWith("google", "entity-uuid-123");
+  });
+
+  // Note: unlike the "connect provider" family (reachable without an owner
+  // entity), the "user credential" family chooser button itself is disabled
+  // when ownerEntityId is absent (see the family-chooser test above) — so
+  // the guided connect view inside the user family is never reached without
+  // an owner entity, and there is no separate in-panel guard to exercise.
+
+  it("clicking 'set up Home Assistant' renders the guided Home Assistant drawer inline", () => {
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/set up home assistant/i));
+    expect(document.querySelector('[data-provider-config-drawer="homeassistant"]')).toBeTruthy();
+  });
+
+  it("resets back to the guided view when re-entering the user family after visiting advanced", () => {
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/advanced: paste raw credential/i));
+    expect(document.querySelector('[data-user-raw-form="true"]')).toBeTruthy();
+    // back to family chooser, then back into user credential
+    fireEvent.click(screen.getByText("back"));
+    fireEvent.click(screen.getByText("user credential"));
+    expect(document.querySelector('[data-user-guided-connect="true"]')).toBeTruthy();
+    expect(document.querySelector('[data-user-raw-form="true"]')).toBeFalsy();
   });
 });
