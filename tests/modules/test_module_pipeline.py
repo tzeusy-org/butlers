@@ -283,6 +283,253 @@ class TestMessagePipelineProcess:
 
 
 # ---------------------------------------------------------------------------
+# Structured tool-use classification fast lane [bu-qvnce.12 slice 3 / bu-evus6]
+# ---------------------------------------------------------------------------
+
+
+class TestMessagePipelineStructuredClassificationFastLane:
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_local_tool_server_provider_is_resolved_lazily_not_at_construction(
+        self, mock_load
+    ):
+        """Regression guard: ``ButlerDaemon._wire_pipelines()`` (and therefore
+        ``MessagePipeline.__init__``) runs BEFORE ``daemon.mcp`` is assigned a
+        real ``FastMCP`` instance during startup (lifecycle step 10b vs 12).
+        Capturing ``daemon.mcp`` by value at construction would silently and
+        permanently disable the fast lane. The provider must be a callable
+        resolved fresh on every dispatch — this proves a provider returning
+        ``None`` at construction time but a real object later still engages
+        the fast lane.
+        """
+        live_mcp_holder = {"mcp": None}  # simulates daemon.mcp being unset yet
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+            local_tool_server_provider=lambda: live_mcp_holder["mcp"],
+        )
+        # Simulate the FastMCP instance being assigned after construction
+        # (lifecycle step 12), before the first classification dispatch.
+        live_mcp_holder["mcp"] = MagicMock()
+
+        fast_result = FakeSpawnerResult(
+            tool_calls=[
+                {
+                    "name": "route_to_butler",
+                    "input": {"butler": "health", "prompt": "Track headache"},
+                    "result": {"status": "accepted", "butler": "health"},
+                }
+            ],
+        )
+        with patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            AsyncMock(return_value=fast_result),
+        ) as mock_fast_lane:
+            result = await pipeline.process("I have a headache")
+
+        assert result.target_butler == "health"
+        mock_fast_lane.assert_awaited_once()
+        _, kwargs = mock_fast_lane.call_args
+        assert kwargs["mcp_server"] is live_mcp_holder["mcp"]
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_fast_lane_result_flows_through_unchanged_and_cli_is_skipped(self, mock_load):
+        """When the fast lane returns a result, downstream extraction/telemetry
+        must behave identically to the CLI path, and dispatch_fn (the CLI
+        spawn) must never be called.
+        """
+        mock_dispatch = AsyncMock()
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=mock_dispatch,
+            source_butler="switchboard",
+            local_tool_server_provider=lambda: MagicMock(),
+        )
+
+        fast_result = FakeSpawnerResult(
+            output="",
+            tool_calls=[
+                {
+                    "name": "route_to_butler",
+                    "input": {"butler": "health", "prompt": "Track headache"},
+                    "result": {"status": "accepted", "butler": "health"},
+                }
+            ],
+            model="claude-haiku-4-5-20251001",
+            input_tokens=10,
+            output_tokens=5,
+        )
+        with patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            AsyncMock(return_value=fast_result),
+        ):
+            result = await pipeline.process("I have a headache")
+
+        assert result.target_butler == "health"
+        assert result.acked_targets == ["health"]
+        mock_dispatch.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_falls_back_to_cli_when_fast_lane_returns_none(self, mock_load):
+        """try_structured_classification() returning None (runtime not "api",
+        schema-invalid twice, failover exhausted, ...) must fall back to the
+        existing CLI dispatch_fn path unchanged.
+        """
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to health butler.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "health", "prompt": "Track headache"},
+                        "result": {"status": "ok", "butler": "health"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=mock_dispatch,
+            source_butler="switchboard",
+            local_tool_server_provider=lambda: MagicMock(),
+        )
+
+        with patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            AsyncMock(return_value=None),
+        ):
+            result = await pipeline.process("I have a headache")
+
+        assert result.target_butler == "health"
+        assert result.acked_targets == ["health"]
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_fast_lane_not_attempted_when_mcp_server_is_none(self, mock_load):
+        """mcp_server defaults to None — the fast lane must never even be
+        imported/called, and every existing dispatch_fn-only test stays valid.
+        """
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to health butler.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "health", "prompt": "Track headache"},
+                        "result": {"status": "ok", "butler": "health"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        with patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            AsyncMock(side_effect=AssertionError("fast lane must not be attempted")),
+        ):
+            result = await pipeline.process("I have a headache")
+
+        assert result.target_butler == "health"
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nhello\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_fast_lane_skipped_for_decomposition_payload(self, mock_load, mock_history):
+        """The decomposition/signal-extraction lane parses a JSON signal
+        array, not route_to_butler/file_bug_report tool calls — the fast
+        lane must never be attempted for it, even when mcp_server is set.
+        """
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output="[]", tool_calls=[])
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=mock_dispatch,
+            source_butler="switchboard",
+            local_tool_server_provider=lambda: MagicMock(),
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        with patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            AsyncMock(side_effect=AssertionError("fast lane must not be attempted")),
+        ):
+            result = await pipeline.process(
+                "conversation batch",
+                tool_args={
+                    "source_channel": "telegram_user_client",
+                    "request_context": {"payload_type": "conversation_history"},
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000001",
+            )
+
+        assert result.target_butler == "decomposed_empty"
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_fast_lane_exception_falls_back_to_cli(self, mock_load):
+        """A bug in the fast lane must never take down classification — any
+        unexpected exception falls back to the existing CLI path.
+        """
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to health butler.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "health", "prompt": "Track headache"},
+                        "result": {"status": "ok", "butler": "health"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=mock_dispatch,
+            source_butler="switchboard",
+            local_tool_server_provider=lambda: MagicMock(),
+        )
+        with patch(
+            "butlers.tools.switchboard.routing.structured_classify.try_structured_classification",
+            AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            result = await pipeline.process("I have a headache")
+
+        assert result.target_butler == "health"
+
+
+# ---------------------------------------------------------------------------
 # Dashboard chat-widget classification lanes [bu-p6ey8.2]
 # ---------------------------------------------------------------------------
 

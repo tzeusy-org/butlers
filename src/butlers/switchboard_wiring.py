@@ -155,6 +155,13 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         source_butler="switchboard",
         enable_ingress_dedupe=enable_ingress_dedupe,
         classification_timeout_s=classification_timeout_s,
+        # daemon.mcp is not yet assigned a real FastMCP instance at this
+        # point in startup (see butlers.lifecycle.run_startup: _wire_pipelines
+        # runs at step 10b, daemon.mcp = FastMCP(...) at step 12) — a provider
+        # closure defers the read until the first classification dispatch,
+        # by which point startup has long finished.
+        local_tool_server_provider=lambda: daemon.mcp,
+        credential_store=daemon._credential_store,
     )
     daemon._pipeline = pipeline
 

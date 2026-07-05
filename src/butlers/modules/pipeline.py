@@ -990,6 +990,30 @@ class MessagePipeline:
     route_fn:
         Optional override for the routing function.  Defaults to
         ``switchboard.route``.
+    local_tool_server_provider:
+        Optional zero-arg callable returning the live FastMCP server instance
+        for this butler (``lambda: daemon.mcp``), used to resolve and invoke
+        already-registered tool functions in-process (never to register new
+        tools — that stays exclusively inside ``register_tools()`` per
+        Vision Rule 2). A *provider* rather than the object itself because
+        ``ButlerDaemon._wire_pipelines()`` (and therefore this constructor)
+        runs before ``daemon.mcp`` is assigned a real ``FastMCP`` instance
+        during startup (see ``butlers.lifecycle.run_startup`` steps 10b vs
+        12) — capturing ``daemon.mcp`` by value here would permanently
+        freeze it at ``None``. The provider is called fresh on every
+        classification dispatch, by which point startup has long since
+        finished. When provided (and resolves to non-``None``), the
+        classification dispatch first attempts the structured tool-use fast
+        lane (bu-qvnce.12 slice 3) — see
+        ``butlers.tools.switchboard.routing.structured_classify`` — which
+        executes the routing decision in-process against that server instead
+        of spawning a full CLI session. ``None`` (the default) skips the
+        fast lane entirely and always uses the existing CLI/free-text
+        classification path.
+    credential_store:
+        Optional ``CredentialStore`` forwarded to the fast lane's
+        ``ApiAdapter`` for Anthropic API key resolution (mirrors how
+        ``Spawner`` resolves adapter credentials).
     """
 
     def __init__(
@@ -1004,6 +1028,8 @@ class MessagePipeline:
         enable_identity_resolution: bool = False,
         notify_owner_fn: Callable[..., Coroutine] | None = None,
         classification_timeout_s: int | None = None,
+        local_tool_server_provider: Callable[[], Any] | None = None,
+        credential_store: Any | None = None,
     ) -> None:
         self._pool = switchboard_pool
         self._dispatch_fn = dispatch_fn
@@ -1014,6 +1040,8 @@ class MessagePipeline:
         self._enable_identity_resolution = enable_identity_resolution
         self._notify_owner_fn = notify_owner_fn
         self._classification_timeout_s = classification_timeout_s
+        self._local_tool_server_provider = local_tool_server_provider
+        self._credential_store = credential_store
 
     def _set_routing_context(
         self,
@@ -2325,7 +2353,55 @@ class MessagePipeline:
                         dispatch_kwargs["timeout_override"] = self._classification_timeout_s
 
                     with tracer.start_as_current_span("butlers.switchboard.routing.llm_decision"):
-                        spawn_result = await self._dispatch_fn(**dispatch_kwargs)
+                        spawn_result = None
+                        # Structured tool-use fast lane (bu-qvnce.12 slice 3):
+                        # attempt it first when a local FastMCP server is
+                        # wired and this isn't the decomposition/signal-
+                        # extraction lane (that lane parses a JSON signal
+                        # array, not route_to_butler/file_bug_report calls,
+                        # and is out of scope here). try_structured_classification
+                        # returns None (no attempt made or attempt exhausted)
+                        # whenever the fast lane cannot safely produce a
+                        # decision, in which case the existing CLI/free-text
+                        # dispatch_fn call below runs completely unchanged.
+                        _local_tool_server = (
+                            self._local_tool_server_provider()
+                            if self._local_tool_server_provider is not None
+                            else None
+                        )
+                        if (
+                            _local_tool_server is not None
+                            and _payload_type != "conversation_history"
+                        ):
+                            from butlers.tools.switchboard.routing.structured_classify import (
+                                try_structured_classification,
+                            )
+
+                            try:
+                                spawn_result = await try_structured_classification(
+                                    self._pool,
+                                    mcp_server=_local_tool_server,
+                                    prompt=routing_prompt,
+                                    include_bug_report=(source == "dashboard"),
+                                    butler_name=self._source_butler,
+                                    credential_store=self._credential_store,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Structured classification fast lane raised "
+                                    "unexpectedly; falling back to CLI classification",
+                                    extra=self._log_fields(
+                                        source=source,
+                                        chat_id=chat_id,
+                                        target_butler=None,
+                                        latency_ms=None,
+                                        request_id=request_id,
+                                    ),
+                                )
+                                spawn_result = None
+
+                        if spawn_result is None:
+                            spawn_result = await self._dispatch_fn(**dispatch_kwargs)
 
                     spawn_latency_ms = (time.perf_counter() - spawn_start) * 1000
                     telemetry.routing_decision_latency_ms.record(spawn_latency_ms, request_attrs)

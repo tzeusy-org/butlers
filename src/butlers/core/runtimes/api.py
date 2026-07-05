@@ -7,13 +7,19 @@ where the cold CLI-spawn + MCP-handshake latency of the subprocess adapters
 (``claude_code.py``, ``codex.py``, ``gemini.py``, ``opencode.py``) dominates a
 call that never needed tools in the first place.
 
-Scope (bu-qvnce.12 slice 1): text-only, tool-free invocation. ``mcp_servers``
-must be empty — this adapter intentionally does not bridge MCP tool wiring
-into the Anthropic tool-use protocol; that is out of scope here (a future
-structured tool-use fast lane, if built, would pass tool schemas through a
-mechanism of its own rather than through ``mcp_servers``). Passing a non-empty
-``mcp_servers`` dict raises ``RuntimeError`` — fail loud rather than silently
-dropping tool access a caller thinks it has.
+Scope (bu-qvnce.12 slice 1): text-only, tool-free invocation via ``invoke()``.
+``mcp_servers`` must be empty — this adapter intentionally does not bridge MCP
+tool wiring into the Anthropic tool-use protocol. Passing a non-empty
+``mcp_servers`` dict to ``invoke()`` raises ``RuntimeError`` — fail loud rather
+than silently dropping tool access a caller thinks it has.
+
+Structured tool-use fast lane (bu-qvnce.12 slice 3): ``invoke_structured()``
+passes an explicit tool schema list straight to the Anthropic Messages API
+(forced tool-use via ``tool_choice``) — its own mechanism, independent of
+``mcp_servers``. The caller is responsible for executing the returned
+tool_use blocks itself (see
+``butlers.tools.switchboard.routing.structured_classify``); this adapter
+never bridges to MCP tool execution.
 
 Credential resolution mirrors ``ClaudeCodeAdapter`` exactly: the caller's
 ``env`` dict wins if it already carries a non-empty ``ANTHROPIC_API_KEY``;
@@ -64,10 +70,10 @@ def _extract_text(content_blocks: list[Any]) -> str | None:
 def _extract_tool_calls(content_blocks: list[Any]) -> list[dict[str, Any]]:
     """Extract tool_use blocks from an Anthropic Messages response's content list.
 
-    Present for forward-compatibility with a future tool-use fast lane; this
-    adapter never sends ``tools`` today so the model has nothing to invoke,
-    but a defensively-empty implementation here would hide a real response
-    shape change, so it stays a faithful (currently-dead) mapping.
+    Used by both ``invoke()`` (where it stays a faithful but normally-empty
+    mapping, since that method never sends ``tools``) and
+    ``invoke_structured()`` (the bu-qvnce.12 slice 3 fast lane, which forces
+    tool-use and relies on this to surface the model's decision).
     """
     return [
         {"id": block.id, "name": block.name, "input": block.input}
@@ -251,6 +257,124 @@ class ApiAdapter(RuntimeAdapter):
         tool_calls = _extract_tool_calls(response.content)
         usage = _extract_usage(getattr(response, "usage", None))
         return result_text, tool_calls, usage
+
+    async def invoke_structured(
+        self,
+        prompt: str,
+        system_prompt: str,
+        tools: list[dict[str, Any]],
+        env: dict[str, str],
+        model: str | None = None,
+        timeout: int | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None, dict[str, Any] | None]:
+        """Force tool-use with an explicit tool schema; no MCP, no subprocess.
+
+        Structured-output fast lane (bu-qvnce.12 slice 3): sends *tools* and a
+        forced ``tool_choice`` directly to the Anthropic Messages API instead
+        of relying on free-text parsing or an MCP-bridged tool round trip.
+        The caller executes the returned tool_use block(s) itself (typically
+        by invoking the equivalent local tool function in-process) and is
+        responsible for attaching a ``"result"`` key before treating an entry
+        like a normal ``SpawnerResult.tool_calls`` record.
+
+        Parameters mirror :meth:`invoke` except *tools* replaces
+        *mcp_servers* / *max_turns* / *runtime_args* / *cwd*, none of which
+        apply to a single tool-forced Messages call.
+
+        Returns
+        -------
+        tuple
+            ``(tool_calls, text, usage)`` — ``tool_calls`` uses the same
+            shape as :meth:`invoke`'s (via ``_extract_tool_calls``), with no
+            ``result`` key populated. ``text`` is any freeform text the model
+            additionally emitted. ``usage`` mirrors :meth:`invoke`'s
+            token-bucket contract.
+
+        Raises
+        ------
+        ValueError
+            If *tools* is empty or *model* is not provided.
+        RuntimeError
+            If no API key is available or the Messages API call fails.
+        TimeoutError
+            If the call exceeds *timeout* (or the default timeout).
+        """
+        if not tools:
+            raise ValueError("ApiAdapter.invoke_structured() requires a non-empty tools list")
+        if not model:
+            raise ValueError("ApiAdapter.invoke_structured() requires an explicit model id")
+
+        effective_timeout = _DEFAULT_TIMEOUT_SECONDS if timeout is None else timeout
+        api_key = await self._resolve_api_key(env)
+        if not api_key:
+            self._last_process_info = {
+                "pid": None,
+                "exit_code": -1,
+                "command": f"api:{model}",
+                "stderr": "",
+                "runtime_type": "api",
+                "error_detail": "No Anthropic API key available (checked env, "
+                "credential store 'cli-auth/claude', ANTHROPIC_API_KEY env var)",
+                "is_pre_tool_call": True,
+            }
+            raise RuntimeError(
+                "ApiAdapter: no Anthropic API key available (checked env, "
+                "credential store 'cli-auth/claude', ANTHROPIC_API_KEY env var)"
+            )
+
+        client = self._get_client(api_key)
+        cmd_for_log = f"api:{model}"
+
+        try:
+            response = await asyncio.wait_for(
+                client.messages.create(
+                    model=model,
+                    max_tokens=_DEFAULT_MAX_TOKENS,
+                    system=system_prompt or anthropic.NOT_GIVEN,
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=tools,
+                    tool_choice={"type": "any"},
+                ),
+                timeout=effective_timeout,
+            )
+        except TimeoutError:
+            logger.error("ApiAdapter structured invocation timed out after %ds", effective_timeout)
+            self._last_process_info = {
+                "pid": None,
+                "exit_code": -1,
+                "command": cmd_for_log,
+                "stderr": "(timeout)",
+                "runtime_type": "api",
+                "is_pre_tool_call": True,
+            }
+            raise TimeoutError(
+                f"ApiAdapter structured invocation timed out after {effective_timeout} seconds"
+            ) from None
+        except Exception as exc:
+            logger.error("ApiAdapter structured invocation failed: %s", exc, exc_info=True)
+            self._last_process_info = {
+                "pid": None,
+                "exit_code": -1,
+                "command": cmd_for_log,
+                "stderr": str(exc),
+                "runtime_type": "api",
+                "error_detail": str(exc),
+                "is_pre_tool_call": True,
+            }
+            raise RuntimeError(f"ApiAdapter structured invocation failed: {exc}") from exc
+
+        self._last_process_info = {
+            "pid": None,
+            "exit_code": 0,
+            "command": cmd_for_log,
+            "stderr": "",
+            "runtime_type": "api",
+        }
+
+        tool_calls = _extract_tool_calls(response.content)
+        text = _extract_text(response.content)
+        usage = _extract_usage(getattr(response, "usage", None))
+        return tool_calls, text, usage
 
     def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
         """No MCP bootstrap: writes an empty placeholder and refuses non-empty input."""

@@ -309,3 +309,126 @@ async def test_reset_drops_cached_client() -> None:
 
 def test_binary_name_is_diagnostic_placeholder() -> None:
     assert ApiAdapter().binary_name == "anthropic-api"
+
+
+# ---------------------------------------------------------------------------
+# invoke_structured() — structured tool-use fast lane (bu-qvnce.12 slice 3)
+# ---------------------------------------------------------------------------
+
+_ROUTE_TOOL_SCHEMA = {
+    "name": "route_to_butler",
+    "description": "Route to a butler.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"butler": {"type": "string"}, "prompt": {"type": "string"}},
+        "required": ["butler", "prompt"],
+    },
+}
+
+
+async def test_invoke_structured_requires_tools() -> None:
+    adapter, client = _adapter_with_client()
+    with pytest.raises(ValueError, match="requires a non-empty tools list"):
+        await adapter.invoke_structured(
+            prompt="hi", system_prompt="", tools=[], env={}, model="claude-haiku-4-5-20251001"
+        )
+    client.messages.create.assert_not_called()
+
+
+async def test_invoke_structured_requires_explicit_model() -> None:
+    adapter, client = _adapter_with_client()
+    with pytest.raises(ValueError, match="requires an explicit model id"):
+        await adapter.invoke_structured(
+            prompt="hi", system_prompt="", tools=[_ROUTE_TOOL_SCHEMA], env={}, model=None
+        )
+    client.messages.create.assert_not_called()
+
+
+async def test_invoke_structured_call_shape_forces_tool_choice() -> None:
+    """messages.create() receives tools + a forced tool_choice, unlike invoke()."""
+    response = _mock_response(
+        text=None,
+        tool_calls=[
+            {"id": "tu_1", "name": "route_to_butler", "input": {"butler": "health", "prompt": "x"}}
+        ],
+    )
+    adapter, client = _adapter_with_client(response)
+
+    tool_calls, text, usage = await adapter.invoke_structured(
+        prompt="classify this",
+        system_prompt="",
+        tools=[_ROUTE_TOOL_SCHEMA],
+        env={},
+        model="claude-haiku-4-5-20251001",
+    )
+
+    assert text is None
+    assert tool_calls == [
+        {"id": "tu_1", "name": "route_to_butler", "input": {"butler": "health", "prompt": "x"}}
+    ]
+    assert usage is not None
+
+    _, kwargs = client.messages.create.call_args
+    assert kwargs["tools"] == [_ROUTE_TOOL_SCHEMA]
+    assert kwargs["tool_choice"] == {"type": "any"}
+    assert kwargs["messages"] == [{"role": "user", "content": "classify this"}]
+
+
+async def test_invoke_structured_timeout_sets_last_process_info_and_reraises() -> None:
+    client = AsyncMock()
+
+    async def _hang(*args, **kwargs):
+        import asyncio
+
+        await asyncio.sleep(10)
+
+    client.messages.create = AsyncMock(side_effect=_hang)
+    adapter = ApiAdapter(client=client)
+
+    with pytest.raises(TimeoutError, match="structured invocation timed out"):
+        await adapter.invoke_structured(
+            prompt="hi",
+            system_prompt="",
+            tools=[_ROUTE_TOOL_SCHEMA],
+            env={},
+            model="claude-haiku-4-5-20251001",
+            timeout=0.01,
+        )
+    info = adapter.last_process_info
+    assert info is not None
+    assert info["exit_code"] == -1
+    assert info["is_pre_tool_call"] is True
+
+
+async def test_invoke_structured_sdk_error_wrapped_as_runtime_error() -> None:
+    client = AsyncMock()
+    client.messages.create = AsyncMock(side_effect=RuntimeError("upstream 500"))
+    adapter = ApiAdapter(client=client)
+
+    with pytest.raises(RuntimeError, match="ApiAdapter structured invocation failed"):
+        await adapter.invoke_structured(
+            prompt="hi",
+            system_prompt="",
+            tools=[_ROUTE_TOOL_SCHEMA],
+            env={},
+            model="claude-haiku-4-5-20251001",
+        )
+    info = adapter.last_process_info
+    assert info is not None
+    assert "upstream 500" in info["error_detail"]
+    assert info["is_pre_tool_call"] is True
+
+
+async def test_invoke_structured_no_api_key_raises() -> None:
+    adapter, client = _adapter_with_client()
+    env_without_key = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    with patch.dict(os.environ, env_without_key, clear=True):
+        with pytest.raises(RuntimeError, match="no Anthropic API key available"):
+            await adapter.invoke_structured(
+                prompt="hi",
+                system_prompt="",
+                tools=[_ROUTE_TOOL_SCHEMA],
+                env={},
+                model="claude-haiku-4-5-20251001",
+            )
+    client.messages.create.assert_not_called()
