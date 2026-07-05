@@ -149,8 +149,19 @@ jobs:
           echo "Disk usage after cleanup:"
           df -h /
 
+      - name: Integration test path coverage guard
+        run: uv run python3 scripts/check_integration_coverage.py
+
       - name: Integration tests (testcontainers)
-        run: uv run pytest roster/ tests/integration/ tests/config/ tests/core/ tests/migrations/ -q --maxfail=5 --tb=short -m "integration and not nightly" -n auto --dist loadfile --cov=src/butlers --cov-append --cov-report=json:coverage.json --cov-report=term-missing
+        # Path list intentionally covers the whole test tree (matches pytest's
+        # configured `testpaths` in pyproject.toml: tests/ + roster/) rather
+        # than enumerating specific subdirectories. An enumerated list rots
+        # silently: any new `pytest.mark.integration` test added outside the
+        # enumerated dirs would be collected by neither this job nor the "Unit
+        # tests" step above (which excludes -m integration) — see bu-m8cmk.
+        # The "Integration test path coverage guard" step above independently
+        # verifies this path list can never fall behind.
+        run: uv run pytest tests/ roster/ -q --maxfail=5 --tb=short -m "integration and not nightly" -n auto --dist loadfile --cov=src/butlers --cov-append --cov-report=json:coverage.json --cov-report=term-missing
         env:
           # Testcontainers uses the Docker socket directly — no DOCKER_HOST needed on ubuntu-latest
           TESTCONTAINERS_RYUK_DISABLED: "true"

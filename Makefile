@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -73,7 +73,13 @@ test-qg-parallel:
 check-for-update-joins:
 	python3 scripts/check_for_update_joins.py src/ tests/ roster/
 
-check: lint check-for-update-joins test
+# Regression guard for bu-m8cmk: fails if the CI "Integration tests
+# (testcontainers)" job's pytest path list would silently miss any
+# pytest.mark.integration test that exists elsewhere in the repo.
+check-integration-coverage:
+	uv run python3 scripts/check_integration_coverage.py
+
+check: lint check-for-update-joins check-integration-coverage test
 
 # Version management — single source of truth is pyproject.toml
 # Usage: make bump-version VERSION=1.2.3
