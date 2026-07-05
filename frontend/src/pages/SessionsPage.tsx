@@ -6,6 +6,10 @@ import type { SessionParams, SessionSummary } from "@/api/types";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { SessionsKpiStrip } from "@/components/sessions/SessionsKpiStrip";
 import { SessionTable } from "@/components/sessions/SessionTable";
+import {
+  SessionsVerdictOpener,
+  SESSIONS_VERDICT_WINDOW_HOURS,
+} from "@/components/sessions/SessionsVerdictOpener";
 import { SessionStripeChart } from "@/components/dashboard/SessionStripeChart";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,7 +24,7 @@ import {
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Page } from "@/components/ui/page";
 import { useButlers } from "@/hooks/use-butlers";
-import { useSessions } from "@/hooks/use-sessions";
+import { useSessionAggregate, useSessions } from "@/hooks/use-sessions";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
@@ -37,6 +41,13 @@ const STATUS_OPTIONS = [
   { value: "failed", label: "Failed" },
   { value: "running", label: "Running" },
 ] as const;
+
+/** Module-level so Date.now() is not called directly during render (the
+ * react-hooks/purity ESLint rule flags impure calls inline in a component/
+ * hook body, even inside a useMemo factory). */
+function cutoffIsoForWindow(hours: number): string {
+  return new Date(Date.now() - hours * 3_600_000).toISOString();
+}
 
 // ---------------------------------------------------------------------------
 // URL-state — filters + cursor mirrored to the querystring (shareable, refresh-safe)
@@ -140,6 +151,31 @@ export default function SessionsPage() {
   const nextCursor = meta?.next_cursor ?? null;
 
   const canGoNewer = cursor != null || prevCursors.length > 0;
+
+  // Verdict opener data — window-scoped failure clustering + nearest running
+  // session (bu-y0v0c, JARVIS pursuit move 9 slice 3). The cutoff is memoized
+  // once per mount so the aggregate's query key stays stable across renders
+  // (a fresh Date.now() every render would key-thrash the query cache).
+  const verdictSinceIso = useMemo(
+    () => cutoffIsoForWindow(SESSIONS_VERDICT_WINDOW_HOURS),
+    [],
+  );
+  const {
+    data: failedAggregateResponse,
+    isLoading: failedAggregateLoading,
+    isError: failedAggregateError,
+  } = useSessionAggregate(
+    { status: "failed", since: verdictSinceIso, include_trigger_breakdown: true },
+    { refetchInterval: autoRefreshControl.refetchInterval },
+  );
+  const {
+    data: runningSessionsResponse,
+    isLoading: runningSessionsLoading,
+    isError: runningSessionsError,
+  } = useSessions(
+    { status: "running", limit: 1 },
+    { refetchInterval: autoRefreshControl.refetchInterval },
+  );
 
   // -- Filter handlers -------------------------------------------------------
 
@@ -302,6 +338,20 @@ export default function SessionsPage() {
       onRetry={() => refetch()}
       empty={null}
     >
+      {/* Verdict opener — window-scoped failure clustering + nearest running
+          session, independent of the page's own filters (JARVIS pursuit
+          move 9 slice 3). */}
+      <div className="border-b border-border/60 px-6 py-3">
+        <SessionsVerdictOpener
+          failedAggregate={failedAggregateResponse?.data}
+          failedLoading={failedAggregateLoading}
+          failedError={failedAggregateError}
+          runningSessions={runningSessionsResponse?.data ?? []}
+          runningLoading={runningSessionsLoading}
+          runningError={runningSessionsError}
+        />
+      </div>
+
       {/* KPI strip — window-true, scoped to the active filters (not the page rows) */}
       <SessionsKpiStrip filterParams={filterParams} />
 

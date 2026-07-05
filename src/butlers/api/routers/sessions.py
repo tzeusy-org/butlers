@@ -46,6 +46,7 @@ from butlers.api.models.session import (
     ProcessLog,
     SessionAggregate,
     SessionAggregateButler,
+    SessionAggregateTriggerSource,
     SessionDetail,
     SessionKindBreakdown,
     SessionKindItem,
@@ -59,6 +60,7 @@ from butlers.api.read_models.sessions_v1 import (
     query_session_detail_fan_out,
     query_session_detail_single,
     query_session_summaries_keyset_fan_out,
+    query_session_trigger_breakdown_fan_out,
     row_to_summary,
 )
 
@@ -365,6 +367,15 @@ async def get_session_aggregate(
     from_date: datetime | None = Query(None, description="Sessions started after this time"),
     to_date: datetime | None = Query(None, description="Sessions started before this time"),
     request_id: str | None = Query(None, description="Filter by request_id"),
+    include_trigger_breakdown: bool = Query(
+        False,
+        description=(
+            "Also compute by_trigger_source (an extra GROUP BY scan) -- opt-in, "
+            "for callers that need trigger-level clustering (e.g. the sessions "
+            "verdict opener's failure-clustering clause). Omitted by default so "
+            "the common KPI-strip path never pays for it."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[SessionAggregate]:
     """Return a filter-aware, window-true session rollup across all butlers.
@@ -393,6 +404,16 @@ async def get_session_aggregate(
         db, where_clause, tuple(args), butler_names=target_butlers
     )
 
+    by_trigger_source: list[SessionAggregateTriggerSource] = []
+    if include_trigger_breakdown:
+        trigger_breakdown = await query_session_trigger_breakdown_fan_out(
+            db, where_clause, tuple(args), butler_names=target_butlers
+        )
+        by_trigger_source = [
+            SessionAggregateTriggerSource(trigger_source=t.trigger_source, count=t.count)
+            for t in trigger_breakdown
+        ]
+
     rated = result.success_count + result.failed_count
     success_rate = (result.success_count / rated) if rated > 0 else None
 
@@ -408,6 +429,7 @@ async def get_session_aggregate(
             by_butler=[
                 SessionAggregateButler(butler=b.butler, count=b.count) for b in result.by_butler
             ],
+            by_trigger_source=by_trigger_source,
         )
     )
 

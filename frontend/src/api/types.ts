@@ -260,11 +260,21 @@ export interface SessionAggregateButler {
   count: number;
 }
 
+/** One per-trigger_source count bucket (opt-in, see SessionParams.include_trigger_breakdown). */
+export interface SessionAggregateTriggerSource {
+  trigger_source: string;
+  count: number;
+}
+
 /**
  * Window-scoped, filter-aware rollup returned by GET /api/sessions/aggregate.
  * Counts span all butlers matching the active filters (window-true), NOT the
  * fetched page. `success_rate` is null when no terminal sessions match
  * (success_count + failed_count == 0). Cost is intentionally omitted.
+ *
+ * `by_trigger_source` is only populated when the request set
+ * `include_trigger_breakdown=true` -- otherwise an empty array (bu-y0v0c;
+ * powers the sessions verdict opener's failure-clustering clause).
  */
 export interface SessionAggregate {
   total: number;
@@ -275,6 +285,7 @@ export interface SessionAggregate {
   input_tokens: number;
   output_tokens: number;
   by_butler: SessionAggregateButler[];
+  by_trigger_source: SessionAggregateTriggerSource[];
 }
 
 /** Query parameters for session list endpoints. */
@@ -289,6 +300,8 @@ export interface SessionParams {
   status?: string; // "all" | "success" | "failed" | "running"
   since?: string;
   until?: string;
+  /** Aggregate-only: also compute by_trigger_source (see SessionAggregate). */
+  include_trigger_breakdown?: boolean;
 }
 
 /** Lightweight notification representation for list views. */
@@ -352,6 +365,7 @@ export interface NotificationStats {
   sent: number;
   failed: number;
   by_channel: Record<string, number>;
+  /** FAILED notifications only, grouped by source_butler (unlike by_channel, which spans every status) -- powers the notifications verdict opener's "M from <butler>" clause. */
   by_butler: Record<string, number>;
   /** False when the Switchboard notifications source was unreachable -- all counts above are zeros in that case. */
   source_available?: boolean;
@@ -374,6 +388,18 @@ export interface NotificationParams {
   butler?: string;
   channel?: string;
   status?: string;
+  since?: string;
+  until?: string;
+}
+
+/**
+ * Query parameters for GET /api/notifications/stats -- window scoping only
+ * (bu-y0v0c, JARVIS pursuit move 9 slice 3). Omitted entirely, the endpoint
+ * returns its original all-time rollup; passing `since`/`until` scopes every
+ * count to that `created_at` window (powers the notifications verdict
+ * opener's "N failed notifications ... in the last Xh" clause).
+ */
+export interface NotificationStatsParams {
   since?: string;
   until?: string;
 }

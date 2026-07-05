@@ -12,9 +12,11 @@ import { MemoryRouter, useLocation } from "react-router";
 import type { KeysetResponse, SessionSummary } from "@/api/types";
 
 const mockUseSessions = vi.fn();
+const mockUseSessionAggregate = vi.fn();
 
 vi.mock("@/hooks/use-sessions", () => ({
   useSessions: (...args: unknown[]) => mockUseSessions(...args),
+  useSessionAggregate: (...args: unknown[]) => mockUseSessionAggregate(...args),
 }));
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: () => ({ data: { data: [] } }),
@@ -109,6 +111,13 @@ function renderPage(initialEntry = "/sessions") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // SessionsVerdictOpener's data — not the focus of these page-mechanics
+  // tests, so stub a safe default (all-clear, not loading/erroring).
+  mockUseSessionAggregate.mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  });
 });
 
 afterEach(cleanup);
@@ -124,7 +133,10 @@ describe("SessionsPage — URL state round-trip", () => {
       "/sessions?butler=health&status=running&trigger=cron&request=req-1&since=2026-01-01&until=2026-02-01&cursor=abc",
     );
 
-    const params = mockUseSessions.mock.calls.at(-1)?.[0];
+    // The page's own list query is always the FIRST useSessions call — the
+    // verdict opener's "nearest running session" query (status=running,
+    // limit=1) is a separate, later call (see SessionsVerdictOpener wiring).
+    const params = mockUseSessions.mock.calls[0]?.[0];
     expect(params).toMatchObject({
       limit: 20,
       cursor: "abc",

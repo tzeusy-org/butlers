@@ -90,6 +90,7 @@ import type {
   NotificationListResponse,
   NotificationParams,
   NotificationStats,
+  NotificationStatsParams,
   NotificationSummary,
   PaginatedResponse,
   Schedule,
@@ -649,6 +650,7 @@ function sessionSearchParams(params?: SessionParams): URLSearchParams {
   // Backend uses from_date/to_date; SessionParams uses since/until as field names.
   if (params?.since != null && params.since !== "") sp.set("from_date", params.since);
   if (params?.until != null && params.until !== "") sp.set("to_date", params.until);
+  if (params?.include_trigger_breakdown) sp.set("include_trigger_breakdown", "true");
   return sp;
 }
 
@@ -811,9 +813,22 @@ export function getNotifications(
   return apiFetch<NotificationListResponse>(path);
 }
 
-/** Fetch aggregate notification statistics. */
-export function getNotificationStats(): Promise<ApiResponse<NotificationStats>> {
-  return apiFetch<ApiResponse<NotificationStats>>("/notifications/stats");
+/**
+ * Fetch aggregate notification statistics.
+ *
+ * `since`/`until` are optional window bounds (bu-y0v0c) -- omitted, this is
+ * the all-time rollup; when set, every count is scoped to that `created_at`
+ * window.
+ */
+export function getNotificationStats(
+  params?: NotificationStatsParams,
+): Promise<ApiResponse<NotificationStats>> {
+  const sp = new URLSearchParams();
+  if (params?.since != null && params.since !== "") sp.set("since", params.since);
+  if (params?.until != null && params.until !== "") sp.set("until", params.until);
+  const qs = sp.toString();
+  const path = qs ? `/notifications/stats?${qs}` : "/notifications/stats";
+  return apiFetch<ApiResponse<NotificationStats>>(path);
 }
 
 /** Fetch notifications for a specific butler. */

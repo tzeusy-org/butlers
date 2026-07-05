@@ -1,9 +1,13 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import type { NotificationParams } from "@/api/types";
 import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { NotificationStatsBar } from "@/components/notifications/notification-stats-bar";
+import {
+  NotificationsVerdictOpener,
+  NOTIFICATIONS_VERDICT_WINDOW_HOURS,
+} from "@/components/notifications/notifications-verdict-opener";
 import { NotificationTableSkeleton } from "@/components/skeletons";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,6 +33,13 @@ import {
 // ---------------------------------------------------------------------------
 
 const PAGE_SIZE = 20;
+
+/** Module-level so Date.now() is not called directly during render (the
+ * react-hooks/purity ESLint rule flags impure calls inline in a component/
+ * hook body, even inside a useMemo factory). */
+function cutoffIsoForWindow(hours: number): string {
+  return new Date(Date.now() - hours * 3_600_000).toISOString();
+}
 
 const CHANNEL_OPTIONS = [
   { value: "all", label: "All channels" },
@@ -121,6 +132,20 @@ export default function NotificationsPage() {
   // Data hooks
   const { data: statsResponse, isLoading: statsLoading } =
     useNotificationStats();
+  // Verdict opener's own windowed stats (bu-y0v0c, JARVIS pursuit move 9
+  // slice 3) -- a separate query, keyed on its own since/until, so it caches
+  // independently of the all-time stats bar above. The cutoff is memoized
+  // once per mount so the query key stays stable across renders (a fresh
+  // Date.now() every render would key-thrash the query cache).
+  const verdictSinceIso = useMemo(
+    () => cutoffIsoForWindow(NOTIFICATIONS_VERDICT_WINDOW_HOURS),
+    [],
+  );
+  const {
+    data: verdictStatsResponse,
+    isLoading: verdictStatsLoading,
+    isError: verdictStatsError,
+  } = useNotificationStats({ since: verdictSinceIso });
   const {
     data: notificationsResponse,
     isLoading: notificationsLoading,
@@ -231,6 +256,17 @@ export default function NotificationsPage() {
         ) : undefined
       }
     >
+      {/* Verdict opener — windowed failed-notification count + dominant
+          butler, composed from by_butler (fetched but discarded until now,
+          JARVIS pursuit move 9 slice 3). */}
+      <div className="border-b border-border/60 px-6 py-3">
+        <NotificationsVerdictOpener
+          stats={verdictStatsResponse?.data}
+          isLoading={verdictStatsLoading}
+          isError={verdictStatsError}
+        />
+      </div>
+
       {/* Stats bar — Sent/Failed tiles are filter anchors (bu-qvnce.13): click
           one to pivot the filter bar to that status without leaving the page. */}
       <NotificationStatsBar

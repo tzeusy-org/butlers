@@ -11,7 +11,11 @@ import {
   getNotificationStats,
   markNotificationRead,
 } from "@/api/index.ts";
-import type { NotificationParams, NotificationSummary } from "@/api/index.ts";
+import type {
+  NotificationParams,
+  NotificationStatsParams,
+  NotificationSummary,
+} from "@/api/index.ts";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 
 /** Both query-key namespaces a notification is cached under (the cross-butler feed and the per-butler feed). */
@@ -28,11 +32,19 @@ export function useNotifications(params?: NotificationParams) {
   });
 }
 
-/** Fetch aggregate notification statistics. */
-export function useNotificationStats() {
+/**
+ * Fetch aggregate notification statistics.
+ *
+ * `params` is optional window scoping (`since`/`until`, bu-y0v0c) -- omitted,
+ * this is the same all-time rollup every existing caller (NotificationsPage's
+ * KPI tiles, the dashboard Overview row) already relies on. Passing a window
+ * (e.g. the notifications verdict opener) keys the query on those params so
+ * it caches independently of the all-time query.
+ */
+export function useNotificationStats(params?: NotificationStatsParams) {
   return useQuery({
-    queryKey: ["notification-stats"],
-    queryFn: () => getNotificationStats(),
+    queryKey: ["notification-stats", params],
+    queryFn: () => getNotificationStats(params),
   });
 }
 

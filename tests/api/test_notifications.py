@@ -106,3 +106,77 @@ async def test_notification_stats_reports_source_available_on_success(app):
     assert resp.status_code == 200
     body = resp.json()
     assert body["data"]["source_available"] is True
+
+
+async def test_notification_stats_omits_window_predicate_by_default(app):
+    """No since/until -> every query against `notifications` carries no bound
+    `created_at` predicate (all-time rollup, unchanged pre-existing behavior)."""
+    mock_db, pool = _make_available_db()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/notifications/stats")
+
+    assert resp.status_code == 200
+    fetchval_calls = pool.fetchval.call_args_list
+    assert all("created_at >=" not in call.args[0] for call in fetchval_calls)
+    assert all("created_at <=" not in call.args[0] for call in fetchval_calls)
+    fetch_calls = pool.fetch.call_args_list
+    assert all("created_at >=" not in call.args[0] for call in fetch_calls)
+    assert all("created_at <=" not in call.args[0] for call in fetch_calls)
+
+
+async def test_notification_stats_by_butler_is_scoped_to_failed_status(app):
+    """by_butler groups FAILED notifications only (bu-y0v0c) -- unlike
+    by_channel, which spans every status."""
+    mock_db, pool = _make_available_db()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/notifications/stats")
+
+    assert resp.status_code == 200
+    fetch_calls = pool.fetch.call_args_list
+    by_butler_call = next(c for c in fetch_calls if "source_butler" in c.args[0])
+    assert "status = 'failed'" in by_butler_call.args[0]
+    by_channel_call = next(
+        c for c in fetch_calls if "channel" in c.args[0] and "source_butler" not in c.args[0]
+    )
+    assert "status = 'failed'" not in by_channel_call.args[0]
+
+
+async def test_notification_stats_threads_since_until_into_every_query(app):
+    """?since=...&until=... binds a created_at window on total/sent/failed/
+    by_channel/by_butler -- the windowed-verdict facet (bu-y0v0c)."""
+    mock_db, pool = _make_available_db()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/notifications/stats?since=2026-07-04T00:00:00Z&until=2026-07-05T00:00:00Z"
+        )
+
+    assert resp.status_code == 200
+
+    fetchval_calls = pool.fetchval.call_args_list
+    # total, sent, failed
+    assert len(fetchval_calls) == 3
+    for call in fetchval_calls:
+        sql = call.args[0]
+        assert "created_at >=" in sql
+        assert "created_at <=" in sql
+        assert len(call.args) - 1 == 2  # two bound window values
+
+    fetch_calls = pool.fetch.call_args_list
+    # by_channel, by_butler
+    assert len(fetch_calls) == 2
+    for call in fetch_calls:
+        sql = call.args[0]
+        assert "created_at >=" in sql
+        assert "created_at <=" in sql

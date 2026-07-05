@@ -115,6 +115,13 @@ class SessionAggregateButler(BaseModel):
     count: int
 
 
+class SessionAggregateTriggerSource(BaseModel):
+    """A single trigger_source's matching-session count for the aggregate rollup."""
+
+    trigger_source: str
+    count: int
+
+
 class SessionAggregate(BaseModel):
     """Window-scoped, filter-aware session rollup across all butlers.
 
@@ -136,6 +143,12 @@ class SessionAggregate(BaseModel):
     input_tokens: int
     output_tokens: int
     by_butler: list[SessionAggregateButler] = []
+    # Opt-in via ?include_trigger_breakdown=true (bu-y0v0c, JARVIS pursuit move
+    # 9 slice 3) — only populated on request so the common KPI-strip aggregate
+    # path never pays for the extra GROUP BY scan. Sorted by count descending,
+    # count > 0 only; powers the sessions verdict opener's failure-clustering
+    # "clustered on <trigger>" clause.
+    by_trigger_source: list[SessionAggregateTriggerSource] = []
 
 
 class SessionDetail(BaseModel):

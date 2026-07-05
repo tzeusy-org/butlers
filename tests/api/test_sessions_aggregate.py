@@ -176,6 +176,68 @@ async def test_aggregate_passes_filters_through_to_sql() -> None:
     assert captured["butler_names"] == ["health"]
 
 
+def _make_trigger_record(trigger_source: str, count: int):
+    m = MagicMock()
+    m.__getitem__ = MagicMock(
+        side_effect=lambda key: {"trigger_source": trigger_source, "count": count}[key]
+    )
+    return m
+
+
+async def test_aggregate_by_trigger_source_omitted_by_default() -> None:
+    """Without include_trigger_breakdown, by_trigger_source is empty and no
+    second (GROUP BY trigger_source) fan_out call happens."""
+    app = _make_app_with_aggregate(
+        {"health": {"total": 5, "success_count": 5}},
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions/aggregate")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["by_trigger_source"] == []
+
+
+async def test_aggregate_by_trigger_source_populated_when_requested() -> None:
+    """include_trigger_breakdown=true runs the extra GROUP BY scan and merges
+    counts for the same trigger_source across butlers."""
+
+    def _side_effect(sql, args, **kw):
+        if "GROUP BY trigger_source" in sql:
+            return {
+                "health": [_make_trigger_record("schedule", 6), _make_trigger_record("webhook", 1)],
+                "finance": [_make_trigger_record("schedule", 2)],
+            }
+        return {
+            "health": [_make_agg_record({"total": 7, "failed_count": 7})],
+            "finance": [_make_agg_record({"total": 2, "failed_count": 2})],
+        }
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["health", "finance"]
+    mock_db.fan_out = AsyncMock(side_effect=_side_effect)
+
+    app = create_app()
+    app.dependency_overrides[_sessions_get_db] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/sessions/aggregate?status=failed&include_trigger_breakdown=true"
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["by_trigger_source"] == [
+        {"trigger_source": "schedule", "count": 8},
+        {"trigger_source": "webhook", "count": 1},
+    ]
+    # The scalar aggregate is untouched by the extra facet.
+    assert data["total"] == 9
+    assert data["failed_count"] == 9
+
+
 async def test_aggregate_status_running_uses_success_is_null() -> None:
     """status=running adds the success IS NULL predicate (no bound bool)."""
     captured: dict = {}

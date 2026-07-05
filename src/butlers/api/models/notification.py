@@ -54,6 +54,10 @@ class NotificationStats(BaseModel):
     sent: int
     failed: int
     by_channel: dict[str, int]
+    # Failed notifications ONLY, grouped by source_butler (bu-y0v0c, JARVIS
+    # pursuit move 9 slice 3) -- powers the notifications verdict opener's "M
+    # from <butler>" clause. Scoped to failures (not all statuses) since that
+    # is the only consumer; unused prior to this field's introduction.
     by_butler: dict[str, int]
     # False when the Switchboard notifications source was unreachable --
     # all counts above are zeros in that case, never a truthful "no activity".

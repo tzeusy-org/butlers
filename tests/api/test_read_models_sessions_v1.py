@@ -35,6 +35,7 @@ from butlers.api.read_models.sessions_v1 import (
     query_session_detail_fan_out,
     query_session_detail_single,
     query_session_summaries_keyset_fan_out,
+    query_session_trigger_breakdown_fan_out,
     row_to_detail,
     row_to_summary,
 )
@@ -447,6 +448,68 @@ async def test_aggregate_fan_out_uses_filter_sql_and_butler_names():
     assert "FILTER (WHERE success IS NULL)" in sql
     assert "coalesce(sum(input_tokens), 0)" in sql
     assert " WHERE success = $1" in sql
+    assert call.kwargs.get("butler_names") == ["atlas"]
+
+
+# ---------------------------------------------------------------------------
+# query_session_trigger_breakdown_fan_out
+# ---------------------------------------------------------------------------
+
+
+def _trigger_row(*, trigger_source: str, count: int):
+    return _make_record({"trigger_source": trigger_source, "count": count})
+
+
+async def test_trigger_breakdown_merges_and_sums_across_butlers():
+    """Same trigger_source in two different butlers' DBs sums into one entry."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "general"]
+    mock_db.fan_out = AsyncMock(
+        return_value={
+            "atlas": [
+                _trigger_row(trigger_source="schedule", count=7),
+                _trigger_row(trigger_source="webhook", count=2),
+            ],
+            "general": [
+                _trigger_row(trigger_source="schedule", count=3),
+            ],
+        }
+    )
+
+    result = await query_session_trigger_breakdown_fan_out(mock_db, "", ())
+
+    assert [(t.trigger_source, t.count) for t in result] == [
+        ("schedule", 10),
+        ("webhook", 2),
+    ]
+
+
+async def test_trigger_breakdown_empty_when_no_rows():
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out = AsyncMock(return_value={"atlas": []})
+
+    result = await query_session_trigger_breakdown_fan_out(mock_db, "", ())
+
+    assert result == []
+
+
+async def test_trigger_breakdown_uses_group_by_sql_and_butler_names():
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out = AsyncMock(
+        return_value={"atlas": [_trigger_row(trigger_source="schedule", count=1)]}
+    )
+
+    await query_session_trigger_breakdown_fan_out(
+        mock_db, " WHERE success = $1", (False,), butler_names=["atlas"]
+    )
+
+    call = mock_db.fan_out.call_args_list[0]
+    sql = call.args[0]
+    assert "GROUP BY trigger_source" in sql
+    assert " WHERE success = $1" in sql
+    assert call.args[1] == (False,)
     assert call.kwargs.get("butler_names") == ["atlas"]
 
 

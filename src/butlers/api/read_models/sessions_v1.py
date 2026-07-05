@@ -16,6 +16,8 @@ Query functions (all async):
     query_session_summaries_keyset_fan_out(db, where, args, *, limit, cursor, butler_names)
         -> FanOutKeysetResult
     query_session_aggregate_fan_out(db, where, args, *, butler_names) -> FanOutAggregateResult
+    query_session_trigger_breakdown_fan_out(db, where, args, *, butler_names)
+        -> list[TriggerSourceCount]
     query_session_detail_fan_out(db, session_id) -> FanOutDetailResult
     query_session_detail_single(pool, session_id) -> SingleDetailResult
 
@@ -144,6 +146,14 @@ class ButlerCount:
     """A single butler's matching-session count (for aggregate ``by_butler``)."""
 
     butler: str
+    count: int
+
+
+@dataclass
+class TriggerSourceCount:
+    """A single trigger_source's matching-session count (opt-in breakdown)."""
+
+    trigger_source: str
     count: int
 
 
@@ -448,6 +458,64 @@ async def query_session_aggregate_fan_out(
     by_butler.sort(key=lambda b: b.count, reverse=True)
     combined.by_butler = by_butler
     return combined
+
+
+# Query-budget: one GROUP BY trigger_source scan per butler over the filtered
+# window, fanned out concurrently and merged (summed per trigger_source) in
+# memory.  Deliberately a SEPARATE query/function from
+# query_session_aggregate_fan_out above rather than folded into it: the common
+# KPI-strip path calls the scalar aggregate on every filter change, and this
+# extra GROUP BY scan should only run when a caller opts in (the sessions
+# verdict opener's failure-clustering clause -- bu-y0v0c, JARVIS pursuit move
+# 9 slice 3), not on every KPI recompute.
+_TRIGGER_BREAKDOWN_SQL_TEMPLATE = (
+    "SELECT trigger_source, count(*) AS count FROM sessions{where_clause} GROUP BY trigger_source"
+)
+
+
+async def query_session_trigger_breakdown_fan_out(
+    db: DatabaseManager,
+    where_clause: str,
+    args: tuple[Any, ...],
+    *,
+    butler_names: list[str] | None = None,
+) -> list[TriggerSourceCount]:
+    """Fan out a filter-aware ``GROUP BY trigger_source`` breakdown across butlers.
+
+    Runs the per-butler grouped count on every queried butler, then merges by
+    summing counts for the same ``trigger_source`` across butlers (a given
+    trigger_source, e.g. ``"schedule"``, is not butler-scoped).  Result is
+    sorted by count descending.
+
+    Parameters
+    ----------
+    db:
+        The DatabaseManager that manages per-butler pools.
+    where_clause:
+        A SQL WHERE clause fragment (including the leading ``WHERE`` keyword,
+        or an empty string).  Must use ``$1..$N`` matching *args*.
+    args:
+        Positional arguments for the WHERE clause parameters.
+    butler_names:
+        Subset of butler names to query.  Defaults to all registered butlers.
+
+    Returns
+    -------
+    list[TriggerSourceCount]
+        Combined per-trigger_source counts, sorted count descending.
+    """
+    sql = _TRIGGER_BREAKDOWN_SQL_TEMPLATE.format(where_clause=where_clause)
+    results = await db.fan_out(sql, args, butler_names=butler_names)
+
+    counts: dict[str, int] = {}
+    for _butler_name, db_rows in results.items():
+        for row in db_rows:
+            trigger_source = row["trigger_source"]
+            counts[trigger_source] = counts.get(trigger_source, 0) + int(row["count"] or 0)
+
+    breakdown = [TriggerSourceCount(trigger_source=k, count=v) for k, v in counts.items()]
+    breakdown.sort(key=lambda t: t.count, reverse=True)
+    return breakdown
 
 
 async def query_session_detail_fan_out(

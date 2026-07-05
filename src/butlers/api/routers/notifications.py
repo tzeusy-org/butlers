@@ -333,14 +333,50 @@ async def list_butler_notifications(
         return _empty_notification_page(offset=offset, limit=limit)
 
 
+def _window_predicate(
+    since: datetime | None, until: datetime | None, column: str
+) -> tuple[str, list[object]]:
+    """Build a ``created_at`` window predicate fragment (no leading AND/WHERE).
+
+    Returns ``("", [])`` when neither bound is set. *column* lets callers
+    qualify the column for aliased queries (e.g. ``"n.created_at"``).
+    """
+    conditions: list[str] = []
+    args: list[object] = []
+    idx = 1
+    if since is not None:
+        conditions.append(f"{column} >= ${idx}")
+        args.append(since)
+        idx += 1
+    if until is not None:
+        conditions.append(f"{column} <= ${idx}")
+        args.append(until)
+        idx += 1
+    return " AND ".join(conditions), args
+
+
 @router.get("/stats", response_model=ApiResponse[NotificationStats])
 async def notification_stats(
+    since: datetime | None = Query(
+        None,
+        description=(
+            "Only count notifications created at/after this timestamp -- window "
+            "scoping for verdict-style summaries (e.g. 'in the last 24h')."
+        ),
+    ),
+    until: datetime | None = Query(
+        None, description="Only count notifications created at/before this timestamp"
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[NotificationStats]:
     """Return aggregated notification statistics.
 
     Queries the Switchboard database for total counts, sent/failed breakdowns,
-    and per-channel / per-butler distributions.
+    and per-channel / per-butler distributions. ``since``/``until`` are
+    optional -- omitted, this is the same all-time rollup as before; when set,
+    every count below is scoped to that ``created_at`` window (bu-y0v0c,
+    JARVIS pursuit move 9 slice 3 -- powers the notifications verdict opener's
+    windowed by_butler clause).
     """
     pool = _get_switchboard_pool(db)
     if pool is None:
@@ -361,16 +397,36 @@ async def notification_stats(
     # At current notification volumes (< 100k rows) the full endpoint stays
     # under 50 ms.  If total rows exceed ~1 M, consider adding a materialized
     # summary table refreshed on insert, or caching this response for 60 s.
+    #
+    # since/until add one bound `created_at` predicate to each query above
+    # (qualified as `n.created_at` in Q3, which aliases the table `n`); the
+    # window's own bound values are re-used verbatim (unaliased vs. aliased
+    # predicate text differs, args do not).
+    window_clause, window_args = _window_predicate(since, until, "created_at")
+    window_where = f" WHERE {window_clause}" if window_clause else ""
+    window_and = f" AND {window_clause}" if window_clause else ""
+    n_clause, n_args = _window_predicate(since, until, "n.created_at")
+    n_and = f" AND {n_clause}" if n_clause else ""
+
     try:
-        total = await pool.fetchval("SELECT count(*) FROM notifications") or 0
-        sent = await pool.fetchval("SELECT count(*) FROM notifications WHERE status = 'sent'") or 0
+        total = (
+            await pool.fetchval(f"SELECT count(*) FROM notifications{window_where}", *window_args)
+            or 0
+        )
+        sent = (
+            await pool.fetchval(
+                f"SELECT count(*) FROM notifications WHERE status = 'sent'{window_and}",
+                *window_args,
+            )
+            or 0
+        )
         # Only count terminal failures — exclude failed attempts that were
         # successfully retried in the same session with the same message.
         failed = (
             await pool.fetchval(
-                """
+                f"""
                 SELECT count(*) FROM notifications n
-                WHERE n.status = 'failed'
+                WHERE n.status = 'failed'{n_and}
                 AND NOT (
                     n.session_id IS NOT NULL
                     AND EXISTS (
@@ -382,18 +438,26 @@ async def notification_stats(
                         AND n2.created_at > n.created_at
                     )
                 )
-                """
+                """,
+                *n_args,
             )
             or 0
         )
 
         channel_rows = await pool.fetch(
-            "SELECT channel, count(*) AS cnt FROM notifications GROUP BY channel"
+            f"SELECT channel, count(*) AS cnt FROM notifications{window_where} GROUP BY channel",
+            *window_args,
         )
         by_channel = {row["channel"]: row["cnt"] for row in channel_rows}
 
+        # by_butler is scoped to FAILED notifications only (unlike by_channel
+        # above, which spans every status) -- it powers the notifications
+        # verdict opener's "M from <butler>" clause, which is only meaningful
+        # as a breakdown of the failures already being reported (bu-y0v0c).
         butler_rows = await pool.fetch(
-            "SELECT source_butler, count(*) AS cnt FROM notifications GROUP BY source_butler"
+            f"SELECT source_butler, count(*) AS cnt FROM notifications "
+            f"WHERE status = 'failed'{window_and} GROUP BY source_butler",
+            *window_args,
         )
         by_butler = {row["source_butler"]: row["cnt"] for row in butler_rows}
     except Exception as exc:
