@@ -323,7 +323,16 @@ class FilteredEventBuffer:
                 subject_or_preview,
                 filter_reason,
                 status,
-                json.dumps(full_payload),
+                # Sanitize to JSON-safe primitives (e.g. datetimes -> str via
+                # default=str), then bind the resulting dict directly (no
+                # json.dumps, no ::jsonb cast). Every asyncpg pool in this
+                # codebase registers register_jsonb_codec() (src/butlers/db.py),
+                # whose encoder already calls json.dumps() on the bound value;
+                # pre-serializing here double-encodes full_payload into a
+                # jsonb-typed STRING instead of an OBJECT (bu-dycxq — same
+                # anti-pattern as bu-cymc4/bu-x92jw). The replay-drain read
+                # path below still tolerates legacy string-shaped rows.
+                json.loads(json.dumps(full_payload, default=str)),
                 error_detail,
             )
         )

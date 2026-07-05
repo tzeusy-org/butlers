@@ -1082,6 +1082,25 @@ class ContactsSyncStateStore:
         )
         if row is None:
             return ContactsSyncState()
+        raw_contact_versions = row["contact_versions"]
+        normalized_contact_versions = _normalize_contact_versions(raw_contact_versions)
+        if isinstance(raw_contact_versions, str):
+            # Legacy corrupted row (bu-dycxq double-encoding bug): heal it back
+            # to a proper jsonb object now that we've reconstructed it, so
+            # future readers see a correct object again. Guarded on
+            # jsonb_typeof so this stays idempotent under a racing repair of
+            # the same row.
+            await self._pool.execute(
+                """
+                UPDATE contacts_sync_state
+                SET contact_versions = $3
+                WHERE provider = $1 AND account_id = $2
+                  AND jsonb_typeof(contact_versions) = 'string'
+                """,
+                provider.strip().lower(),
+                account_id.strip(),
+                normalized_contact_versions,
+            )
         return ContactsSyncState(
             sync_cursor=row["sync_cursor"],
             cursor_issued_at=(
@@ -1099,7 +1118,7 @@ class ContactsSyncStateStore:
                 row["last_success_at"].isoformat() if row["last_success_at"] else None
             ),
             last_error=row["last_error"],
-            contact_versions=_normalize_contact_versions(row["contact_versions"]),
+            contact_versions=normalized_contact_versions,
         )
 
     async def save(
@@ -1142,7 +1161,14 @@ class ContactsSyncStateStore:
             _parse_iso_timestamp(state.last_incremental_sync_at),
             _parse_iso_timestamp(state.last_success_at),
             state.last_error,
-            json.dumps(state.contact_versions),
+            # Sanitize to JSON-safe primitives, then bind the resulting dict
+            # directly (no json.dumps, no ::jsonb cast). Every asyncpg pool in
+            # this codebase registers register_jsonb_codec() (src/butlers/db.py),
+            # whose encoder already calls json.dumps() on the bound value;
+            # pre-serializing here double-encodes contact_versions into a
+            # jsonb-typed STRING instead of an OBJECT (bu-dycxq — same
+            # anti-pattern as bu-cymc4/bu-x92jw).
+            json.loads(json.dumps(state.contact_versions, default=str)),
         )
 
 

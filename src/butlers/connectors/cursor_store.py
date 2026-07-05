@@ -110,10 +110,10 @@ WHERE connector_type = $1
 _UPSERT_SETTINGS_SQL = """\
 INSERT INTO switchboard.connector_registry
     (connector_type, endpoint_identity, settings)
-VALUES ($1, $2, $3::jsonb)
+VALUES ($1, $2, $3)
 ON CONFLICT (connector_type, endpoint_identity)
 DO UPDATE SET
-    settings = COALESCE(connector_registry.settings, '{}'::jsonb) || $3::jsonb
+    settings = COALESCE(connector_registry.settings, '{}'::jsonb) || $3
 RETURNING settings
 """
 
@@ -128,8 +128,6 @@ async def load_connector_settings(
     Returns the settings dict when present, or ``None`` when the row is missing
     or the settings column is NULL.
     """
-    import json as _json
-
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             _SELECT_SETTINGS_SQL,
@@ -138,10 +136,7 @@ async def load_connector_settings(
         )
     if row is None or row["settings"] is None:
         return None
-    settings = row["settings"]
-    if isinstance(settings, str):
-        settings = _json.loads(settings)
-    return settings
+    return row["settings"]
 
 
 async def save_connector_settings(
@@ -160,20 +155,24 @@ async def save_connector_settings(
     """
     import json as _json
 
-    settings_json = _json.dumps(settings)
+    # Sanitize to JSON-safe primitives (e.g. tuples -> lists, non-primitive
+    # values -> str via default=str), then bind the resulting dict directly.
+    # Every asyncpg pool in this codebase registers register_jsonb_codec()
+    # (src/butlers/db.py), whose encoder already calls json.dumps() on the
+    # bound value. Pre-serializing here (or casting the parameter via
+    # ``::jsonb``) would double-encode the value into a jsonb-typed STRING
+    # instead of an OBJECT (bu-dycxq — same anti-pattern as bu-cymc4/bu-x92jw).
+    sanitized_settings = _json.loads(_json.dumps(settings, default=str))
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             _UPSERT_SETTINGS_SQL,
             connector_type,
             endpoint_identity,
-            settings_json,
+            sanitized_settings,
         )
     if row is None or row["settings"] is None:
         return {}
-    merged = row["settings"]
-    if isinstance(merged, str):
-        merged = _json.loads(merged)
-    return merged
+    return row["settings"]
 
 
 async def create_cursor_pool(

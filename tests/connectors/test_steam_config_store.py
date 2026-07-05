@@ -7,7 +7,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,13 +27,18 @@ def _make_pool(conn_mock: Any) -> MagicMock:
 
 
 async def test_save_connector_settings_returns_merged_dict() -> None:
-    """save_connector_settings returns the merged settings dict on success."""
+    """save_connector_settings returns the merged settings dict on success.
+
+    The registered JSONB codec (register_jsonb_codec, src/butlers/db.py) always
+    decodes a jsonb column back to a Python dict, so the mocked pool returns a
+    dict here (not a pre-serialized string — see bu-dycxq).
+    """
     from butlers.connectors.cursor_store import save_connector_settings
 
     merged = {"account_rescan_s": 120, "heartbeat_interval_s": 30}
 
     conn_mock = AsyncMock()
-    conn_mock.fetchrow = AsyncMock(return_value={"settings": json.dumps(merged)})
+    conn_mock.fetchrow = AsyncMock(return_value={"settings": merged})
     pool = _make_pool(conn_mock)
 
     result = await save_connector_settings(pool, "steam", "steam:config", {"account_rescan_s": 120})
@@ -55,14 +59,19 @@ async def test_save_connector_settings_returns_empty_on_none_row() -> None:
 
 
 async def test_save_connector_settings_executes_upsert_sql() -> None:
-    """save_connector_settings executes the upsert SQL with correct params."""
+    """save_connector_settings executes the upsert SQL with correct params.
+
+    The bound settings param must be a plain dict, NOT a json.dumps() string:
+    every asyncpg pool in this codebase registers register_jsonb_codec()
+    (src/butlers/db.py), whose encoder calls json.dumps() itself, so binding an
+    already-serialized string would double-encode the value (bu-dycxq).
+    """
     from butlers.connectors.cursor_store import save_connector_settings
 
     settings_in = {"account_rescan_s": 60}
-    settings_out = json.dumps(settings_in)
 
     conn_mock = AsyncMock()
-    conn_mock.fetchrow = AsyncMock(return_value={"settings": settings_out})
+    conn_mock.fetchrow = AsyncMock(return_value={"settings": settings_in})
     pool = _make_pool(conn_mock)
 
     await save_connector_settings(pool, "steam", "steam:config", settings_in)
@@ -72,9 +81,10 @@ async def test_save_connector_settings_executes_upsert_sql() -> None:
     # First param is SQL; second/third are connector_type/endpoint_identity
     assert call_args[1] == "steam"
     assert call_args[2] == "steam:config"
-    # Fourth param is the settings JSON string
-    parsed = json.loads(call_args[3])
-    assert parsed == settings_in
+    # Fourth param is the settings dict itself, bound directly (no
+    # json.dumps, no ::jsonb cast).
+    assert call_args[3] == settings_in
+    assert isinstance(call_args[3], dict)
 
 
 async def test_save_connector_settings_handles_dict_settings() -> None:
