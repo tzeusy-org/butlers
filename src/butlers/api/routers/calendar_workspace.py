@@ -3099,6 +3099,48 @@ def _undo_create_args(pre_state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _reconstruct_action_result(value: object) -> dict[str, Any]:
+    """Normalize a ``calendar_action_log.action_result`` JSONB value into a dict.
+
+    Handles the canonical object shape as well as legacy rows corrupted by the
+    action_result double-JSON-encoding bug (bu-x92jw): the undo-marker writes
+    used to pre-serialize the marker with ``json.dumps()`` and bind it through
+    an asyncpg pool whose registered jsonb codec calls ``json.dumps()`` again,
+    landing the parameter as a jsonb-typed STRING. Postgres's ``||`` between a
+    jsonb object and a jsonb scalar coerces both operands into an array, so a
+    corrupted row looks like ``[{...original...}, "{\\"undo\\": {...}}"]``
+    instead of a merged object.
+
+    Reconstructs the equivalent merged object by dict-updating from every
+    array element in order -- Mapping elements merge directly; string elements
+    are re-parsed as JSON and merged if they decode to an object -- so a later
+    marker element always wins over an earlier one, matching the semantics the
+    original (uncorrupted) ``||`` concat was meant to have.
+    """
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, Mapping) else {}
+    if isinstance(value, list):
+        merged: dict[str, Any] = {}
+        for element in value:
+            if isinstance(element, Mapping):
+                merged.update(element)
+            elif isinstance(element, str):
+                try:
+                    parsed_element = json.loads(element)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed_element, Mapping):
+                    merged.update(parsed_element)
+        return merged
+    return {}
+
+
 def _created_event_id(action_result: dict[str, Any], origin_ref: object) -> str | None:
     """Resolve the created event's provider id for an undo-of-create delete."""
     event = action_result.get("event")
@@ -3154,7 +3196,28 @@ async def undo_calendar_mutation(
 
     action_type = str(row["action_type"])
     action_status = str(row["action_status"])
-    action_result = _normalize_json_object(row["action_result"])
+    raw_action_result = row["action_result"]
+    action_result = _reconstruct_action_result(raw_action_result)
+
+    if isinstance(raw_action_result, list):
+        # Legacy corrupted row (bu-x92jw double-encoding bug): heal it back to
+        # a proper jsonb object *before* the undo guards below run, so the
+        # SQL-level ``? 'undo'`` check in the atomic claim UPDATE (and any
+        # other action_result consumer) sees a correct object again. Guarded
+        # on jsonb_typeof so this stays idempotent under a concurrent repair
+        # racing the same row: only the first write actually lands, a racing
+        # repair's WHERE clause matches zero rows.
+        await db.pool(butler_name).execute(
+            """
+            UPDATE calendar_action_log
+            SET action_result = $2,
+                updated_at = now()
+            WHERE id = $1
+              AND jsonb_typeof(action_result) = 'array'
+            """,
+            action_id,
+            action_result,
+        )
 
     if action_status != "applied":
         raise HTTPException(
@@ -3250,19 +3313,29 @@ async def undo_calendar_mutation(
     # UPDATE matches a row (``RETURNING id`` is non-null) and wins the claim;
     # every other caller matches zero rows and falls through to the idempotent
     # already-undone 409 WITHOUT a second dispatch.
-    provisional_marker = json.dumps(
-        {
-            "undo": {
-                "status": "pending",
-                "request_id": request_id,
-                "inverse_tool": inverse_tool,
-            }
+    #
+    # Bind the marker as a plain dict, NOT a json.dumps() string cast to
+    # ``::jsonb``: every asyncpg pool in this codebase registers
+    # register_jsonb_codec() (src/butlers/db.py), whose encoder expects a
+    # Python object and calls json.dumps() on it itself. Passing an
+    # already-serialized string double-encodes the value into a jsonb-typed
+    # STRING instead of an OBJECT, and Postgres's ``||`` between an object and
+    # a scalar coerces both operands to arrays -- corrupting action_result and
+    # defeating the ``? 'undo'`` guard below (bu-x92jw). No ``::jsonb`` cast is
+    # needed either: Postgres infers the parameter's type as jsonb from the
+    # ``||`` operator context, matching the same concat pattern used
+    # elsewhere in this codebase (e.g. api/routers/memory.py, modules/calendar.py).
+    provisional_marker = {
+        "undo": {
+            "status": "pending",
+            "request_id": request_id,
+            "inverse_tool": inverse_tool,
         }
-    )
+    }
     claimed = await db.pool(butler_name).fetchval(
         """
         UPDATE calendar_action_log
-        SET action_result = COALESCE(action_result, '{}'::jsonb) || $2::jsonb,
+        SET action_result = COALESCE(action_result, '{}'::jsonb) || $2,
             updated_at = now()
         WHERE id = $1
           AND NOT (COALESCE(action_result, '{}'::jsonb) ? 'undo')
@@ -3316,20 +3389,20 @@ async def undo_calendar_mutation(
     if undone:
         # Finalize the provisional marker with the dispatch outcome so a repeated
         # undo fails fast (409). jsonb concat replaces the top-level marker.
-        marker = json.dumps(
-            {
-                "undo": {
-                    "request_id": request_id,
-                    "inverse_tool": inverse_tool,
-                    "status": mutation_result.get("status"),
-                }
+        # Bind the marker as a plain dict (see the provisional_marker comment
+        # above for why -- no json.dumps, no ::jsonb cast; bu-x92jw).
+        marker = {
+            "undo": {
+                "request_id": request_id,
+                "inverse_tool": inverse_tool,
+                "status": mutation_result.get("status"),
             }
-        )
+        }
         try:
             await db.pool(butler_name).execute(
                 """
                 UPDATE calendar_action_log
-                SET action_result = COALESCE(action_result, '{}'::jsonb) || $2::jsonb,
+                SET action_result = COALESCE(action_result, '{}'::jsonb) || $2,
                     updated_at = now()
                 WHERE id = $1
                 """,

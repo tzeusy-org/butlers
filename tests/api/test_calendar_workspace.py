@@ -1635,6 +1635,44 @@ async def test_undo_concurrent_dispatches_inverse_exactly_once(app):
     assert tool_name == "calendar_create_event"
 
 
+async def test_undo_legacy_corrupted_array_row_still_blocks_second_undo(app):
+    """A row corrupted by the action_result double-encoding bug (bu-x92jw) --
+    action_result stored as a jsonb ARRAY instead of an OBJECT -- is
+    reconstructed on read so the already-undone guard still fires, instead of
+    silently treating the corruption as "never undone" and dispatching a
+    second inverse mutation (e.g. recreating a deleted event twice).
+    """
+    corrupted_action_result = [
+        {"status": "updated", "pre_state": _UNDO_PRE_STATE},
+        json.dumps({"undo": {"request_id": "undo-prev", "inverse_tool": "calendar_update_event"}}),
+    ]
+    row = _undo_action_row(
+        action_type="workspace_user_update",
+        action_result=corrupted_action_result,  # type: ignore[arg-type]
+    )
+    app, mock_db, mock_client = _build_undo_app(app, action_rows={"general": [row]})
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 409
+    assert "already undone" in resp.json()["detail"]
+    mock_client.call_tool.assert_not_awaited()
+
+    # The corrupted row is healed back to a proper jsonb object before the
+    # guard runs, guarded on jsonb_typeof so the repair stays idempotent under
+    # a concurrent repair of the same row.
+    pool = mock_db.pool.return_value
+    repair_calls = [c for c in pool.execute.await_args_list if "jsonb_typeof" in c.args[0]]
+    assert len(repair_calls) == 1
+    _, repaired_action_id, healed = repair_calls[0].args
+    assert repaired_action_id == row["id"]
+    assert healed["undo"]["request_id"] == "undo-prev"
+    assert healed["pre_state"] == _UNDO_PRE_STATE
+
+
 # ---------------------------------------------------------------------------
 # Sync-health & cursor-recovery cockpit (bu-wwftzj)
 # ---------------------------------------------------------------------------

@@ -6536,6 +6536,46 @@ class CalendarModule(Module):
                 return dict(parsed)
         return {}
 
+    @staticmethod
+    def _reconstruct_action_result(value: Any) -> dict[str, Any]:
+        """Normalize a ``calendar_action_log.action_result`` JSONB value into a dict.
+
+        Handles the canonical object shape as well as legacy rows corrupted by
+        the action_result double-JSON-encoding bug (bu-x92jw, fixed in
+        api/routers/calendar_workspace.py's undo-marker writes): Postgres's
+        ``||`` between a jsonb object and a double-encoded jsonb-typed STRING
+        scalar coerces both operands into an array, so a corrupted row looks
+        like ``[{...original...}, "{\\"undo\\": {...}}"]`` instead of a merged
+        object. Reconstructs the equivalent merged object by dict-updating
+        from every array element in order (Mapping elements merge directly;
+        string elements are re-parsed as JSON and merged if they decode to an
+        object), so idempotent-replay reads of ``action_result`` (see
+        ``_load_projection_action``) recover the original mutation's result
+        instead of silently treating a corrupted row as empty.
+        """
+        if isinstance(value, Mapping):
+            return dict(value)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return dict(parsed) if isinstance(parsed, Mapping) else {}
+        if isinstance(value, list):
+            merged: dict[str, Any] = {}
+            for element in value:
+                if isinstance(element, Mapping):
+                    merged.update(element)
+                elif isinstance(element, str):
+                    try:
+                        parsed_element = json.loads(element)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed_element, Mapping):
+                        merged.update(parsed_element)
+            return merged
+        return {}
+
     @classmethod
     def _jsonify_for_storage(cls, value: Any) -> Any:
         """Convert nested values into JSON-serializable primitives."""
@@ -8350,8 +8390,26 @@ class CalendarModule(Module):
             return None
         status = str(row["action_status"])
         result = None
-        if row["action_result"] is not None:
-            normalized = self._normalize_json_object(row["action_result"])
+        raw_action_result = row["action_result"]
+        if raw_action_result is not None:
+            normalized = self._reconstruct_action_result(raw_action_result)
+            if isinstance(raw_action_result, list):
+                # Legacy corrupted row (bu-x92jw): heal it back to a proper
+                # jsonb object now that we've reconstructed it, so future
+                # readers (this method and the undo guard in
+                # calendar_workspace.py) see a correct object again. Guarded
+                # on jsonb_typeof so this stays idempotent under a racing
+                # repair of the same row.
+                await pool.execute(
+                    """
+                    UPDATE calendar_action_log
+                    SET action_result = $2, updated_at = now()
+                    WHERE idempotency_key = $1
+                      AND jsonb_typeof(action_result) = 'array'
+                    """,
+                    idempotency_key,
+                    normalized,
+                )
             if normalized:
                 result = normalized
         error = row["error"]
