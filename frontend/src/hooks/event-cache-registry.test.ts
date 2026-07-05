@@ -79,16 +79,29 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["butler-sessions"],
         ["butlers", "board"],
         ["session-detail", "home", "sess-1"],
+        ["session-detail-global"],
         ["timeline"],
       ]),
     );
   });
 
-  it("session: omits session-detail invalidation when butler or session_id is missing", () => {
+  it("session: omits butler-scoped session-detail invalidation when butler or session_id is missing", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "session", ts: 1, data: { phase: "started" } });
     const called = keys(invalidateQueries);
     expect(called.some((k) => Array.isArray(k) && k[0] === "session-detail")).toBe(false);
+  });
+
+  // bu-qvnce.5 (pursuit move 5, slice 2): SessionDetailPage's global fetch
+  // must stay live even when the event carries no butler/session_id (the
+  // butler-scoped key is conditional; the global one is not — see
+  // sessionPatch's doc comment for why).
+  it("session: always invalidates the global session-detail prefix, even without butler/session_id", () => {
+    const { qc, invalidateQueries } = makeQc();
+    applyFleetEvent(qc, { type: "session", ts: 1, data: { phase: "started" } });
+    expect(keys(invalidateQueries)).toEqual(
+      expect.arrayContaining([["session-detail-global"]]),
+    );
   });
 
   it("notification: invalidates messenger delivery stats, queue depth, the timeline, and the notifications feed itself", () => {

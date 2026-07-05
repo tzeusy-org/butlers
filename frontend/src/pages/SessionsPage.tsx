@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
+import { toast } from "sonner";
 
 import type { SessionParams, SessionSummary } from "@/api/types";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
@@ -22,6 +23,7 @@ import { useButlers } from "@/hooks/use-butlers";
 import { useSessions } from "@/hooks/use-sessions";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
+import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -96,8 +98,10 @@ export default function SessionsPage() {
   // History of cursors for pages BEFORE the current one (powers "Newer").
   const [prevCursors, setPrevCursors] = useState<(string | undefined)[]>([]);
 
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [selectedSessionButler, setSelectedSessionButler] = useState<string>("");
+  // Selection mirrors ?selected= in the URL (bu-qvnce.5 pursuit move 5 slice
+  // 4) — shareable/reloadable, and the j/k roving-focus shortcuts below can
+  // move it without any local component state.
+  const selectedSessionId = searchParams.get("selected");
   const autoRefreshControl = useAutoRefresh(10_000);
 
   // Fetch butler names for the dropdown + chart hue ordering.
@@ -203,10 +207,83 @@ export default function SessionsPage() {
     filters.since !== "" ||
     filters.until !== "";
 
-  function handleSessionClick(session: SessionSummary) {
-    setSelectedSessionId(session.id);
-    setSelectedSessionButler(session.butler ?? "");
+  function selectSession(id: string | null) {
+    // replace: true — j/k rove the list one keypress at a time (see the
+    // shortcut bindings below), and closing the drawer also calls this; a
+    // default push here would spam one history entry per keypress/close,
+    // the same "N Back-clicks to leave the page" defect PR #2928's
+    // follow-up (bu-k14bg) fixed for free-text filter inputs.
+    setSearchParams(
+      (prev) => {
+        const sp = new URLSearchParams(prev);
+        if (id) sp.set("selected", id);
+        else sp.delete("selected");
+        return sp;
+      },
+      { replace: true },
+    );
   }
+
+  function handleSessionClick(session: SessionSummary) {
+    selectSession(session.id);
+  }
+
+  const selectedSessionButler =
+    sessions.find((s) => s.id === selectedSessionId)?.butler ?? "";
+
+  // -- j/k/[/]/y keyboard loop (bu-qvnce.5, pursuit move 5 slice 4) ----------
+  // j/k rove the current page's rows; [ / ] step Older/Newer (matching the
+  // reading-order convention: `[` steps deeper into history, `]` steps back
+  // toward now); y copies the selected session's id. Migrated onto the
+  // shared page-scoped shortcut registry (bu-qvnce.11), same as
+  // ApprovalsPage's j/k/a/d/x — not a hand-rolled keydown handler.
+  function moveSelection(delta: 1 | -1) {
+    if (sessions.length === 0) return;
+    const idx = sessions.findIndex((s) => s.id === selectedSessionId);
+    const nextIdx =
+      idx === -1
+        ? delta === 1
+          ? 0
+          : sessions.length - 1
+        : Math.min(Math.max(idx + delta, 0), sessions.length - 1);
+    const next = sessions[nextIdx];
+    if (next) selectSession(next.id);
+  }
+
+  const shortcutBindings = useMemo<ShortcutBinding[]>(() => {
+    const bindings: ShortcutBinding[] = [
+      { key: "j", display: ["j"], description: "Next session", handler: () => moveSelection(1) },
+      { key: "k", display: ["k"], description: "Previous session", handler: () => moveSelection(-1) },
+      {
+        key: "[",
+        display: ["["],
+        description: "Older sessions",
+        handler: () => goOlder(),
+      },
+      {
+        key: "]",
+        display: ["]"],
+        description: "Newer sessions",
+        handler: () => goNewer(),
+      },
+    ];
+    if (selectedSessionId) {
+      bindings.push({
+        key: "y",
+        display: ["y"],
+        description: "Copy selected session ID",
+        handler: () => {
+          navigator.clipboard.writeText(selectedSessionId).then(() => {
+            toast.success("Copied session ID");
+          });
+        },
+      });
+    }
+    return bindings;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- moveSelection/goOlder/goNewer close over sessions/selectedSessionId/cursor/nextCursor/prevCursors directly; listing the actual referenced values keeps this memo fresh each render without re-deriving the closures.
+  }, [sessions, selectedSessionId, cursor, nextCursor, prevCursors]);
+
+  useRegisterShortcut(shortcutBindings);
 
   return (
     <Page
@@ -368,6 +445,7 @@ export default function SessionsPage() {
               onSessionClick={handleSessionClick}
               onRequestIdClick={handleRequestIdClick}
               showButlerColumn={true}
+              selectedId={selectedSessionId}
             />
           </FetchingDim>
         </CardContent>
@@ -403,7 +481,7 @@ export default function SessionsPage() {
       <SessionDetailDrawer
         butler={selectedSessionButler}
         sessionId={selectedSessionId}
-        onClose={() => setSelectedSessionId(null)}
+        onClose={() => selectSession(null)}
       />
     </Page>
   );

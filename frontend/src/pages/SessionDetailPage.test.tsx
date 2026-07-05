@@ -1,10 +1,12 @@
+// @vitest-environment jsdom
+
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import SessionDetailPage from "@/pages/SessionDetailPage";
-import { useSessionDetail } from "@/hooks/use-sessions";
+import { useGlobalSessionDetail } from "@/hooks/use-sessions";
 import type { SessionDetail } from "@/api/types";
 
 vi.mock("react-router", async (importOriginal) => {
@@ -12,12 +14,11 @@ vi.mock("react-router", async (importOriginal) => {
   return {
     ...actual,
     useParams: vi.fn(() => ({ id: "sess-abc123" })),
-    useSearchParams: vi.fn(() => [new URLSearchParams("butler=general"), vi.fn()]),
   };
 });
 
 vi.mock("@/hooks/use-sessions", () => ({
-  useSessionDetail: vi.fn(),
+  useGlobalSessionDetail: vi.fn(),
 }));
 
 // Stub complex child components to avoid deep dependency chains
@@ -30,12 +31,7 @@ vi.mock("@/components/sessions/ToolCallTimeline", () => ({
   ),
 }));
 
-// Stub global getSession to prevent import errors (not invoked when butler is set)
-vi.mock("@/api/index.ts", () => ({
-  getSession: vi.fn(),
-}));
-
-type UseSessionDetailResult = ReturnType<typeof useSessionDetail>;
+type UseGlobalSessionDetailResult = ReturnType<typeof useGlobalSessionDetail>;
 
 const BASE_SESSION: SessionDetail = {
   id: "sess-abc123",
@@ -56,19 +52,22 @@ const BASE_SESSION: SessionDetail = {
   input_tokens: 200,
   output_tokens: 50,
   parent_session_id: null,
+  complexity: null,
+  resolution_source: null,
+  process_log: null,
 };
 
 function setSessionState(
   session: SessionDetail | null,
-  opts: Partial<UseSessionDetailResult> = {},
+  opts: Partial<UseGlobalSessionDetailResult> = {},
 ) {
-  vi.mocked(useSessionDetail).mockReturnValue({
+  vi.mocked(useGlobalSessionDetail).mockReturnValue({
     data: session ? { data: session } : undefined,
     isLoading: false,
     isError: false,
     error: null,
     ...opts,
-  } as UseSessionDetailResult);
+  } as UseGlobalSessionDetailResult);
 }
 
 function renderPage(): string {
@@ -106,12 +105,7 @@ describe("SessionDetailPage — single-H1 contract", () => {
   });
 
   it("renders zero H1s in loading state (skeleton, no heading)", () => {
-    vi.mocked(useSessionDetail).mockReturnValue({
-      data: undefined,
-      isLoading: true,
-      isError: false,
-      error: null,
-    } as UseSessionDetailResult);
+    setSessionState(null, { isLoading: true });
     const html = renderPage();
     expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(0);
   });
@@ -126,6 +120,12 @@ describe("SessionDetailPage — content", () => {
     vi.resetAllMocks();
   });
 
+  it("fetches via the global useGlobalSessionDetail hook keyed on the route id", () => {
+    setSessionState(BASE_SESSION);
+    renderPage();
+    expect(useGlobalSessionDetail).toHaveBeenCalledWith("sess-abc123");
+  });
+
   it("renders session ID in breadcrumbs (first 8 chars)", () => {
     setSessionState(BASE_SESSION);
     const html = renderPage();
@@ -138,7 +138,7 @@ describe("SessionDetailPage — content", () => {
     expect(html).toContain("/sessions");
   });
 
-  it("renders trigger source badge", () => {
+  it("renders trigger source", () => {
     setSessionState(BASE_SESSION);
     const html = renderPage();
     expect(html).toContain("api");
@@ -192,20 +192,21 @@ describe("SessionDetailPage — content", () => {
     expect(html).not.toContain("It is sunny.");
   });
 
-  it("renders butler link when butler name is provided via search params", () => {
+  // The ?butler= dual-fetch path is gone: the butler link is derived from
+  // session.butler on the fetched SessionDetail, not a query-string param.
+  it("renders butler link derived from session.butler, with no ?butler= param in the URL", () => {
     setSessionState(BASE_SESSION);
     const html = renderPage();
-    // Butler name appears as a link in the Metadata card
     expect(html).toContain("/butlers/general");
   });
 
   it("renders token counts when present", () => {
     setSessionState(BASE_SESSION);
     const html = renderPage();
-    // input_tokens=200, output_tokens=50 → "200 / 50" after formatting
     expect(html).toContain("200");
     expect(html).toContain("50");
-    expect(html).toContain("Tokens (in/out)");
+    expect(html).toContain("Input Tokens");
+    expect(html).toContain("Output Tokens");
   });
 
   it("renders the ToolCallTimeline component", () => {
@@ -213,10 +214,38 @@ describe("SessionDetailPage — content", () => {
     const html = renderPage();
     expect(html).toContain("tool-call-timeline");
   });
+
+  it("renders trace_id, request_id, and parent_session_id links (previously omitted, types.ts:221-268)", () => {
+    setSessionState({ ...BASE_SESSION, parent_session_id: "sess-parent-1" });
+    const html = renderPage();
+    expect(html).toContain(`href="/ingestion?trace=trace-001"`);
+    expect(html).toContain(`href="/sessions?request=req-001"`);
+    expect(html).toContain(`href="/sessions/sess-parent-1"`);
+  });
+
+  it("renders process_log stderr/exit_code as root evidence for a failed session", () => {
+    setSessionState({
+      ...BASE_SESSION,
+      success: false,
+      error: "boom",
+      process_log: {
+        pid: 1,
+        exit_code: 137,
+        command: null,
+        stderr: "OOMKilled",
+        runtime_type: "claude_code",
+        created_at: null,
+        expires_at: null,
+      },
+    });
+    const html = renderPage();
+    expect(html).toContain("Root Evidence");
+    expect(html).toContain("137");
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Error / empty states
+// Error / empty / no-id states
 // ---------------------------------------------------------------------------
 
 describe("SessionDetailPage — async states", () => {
@@ -224,72 +253,16 @@ describe("SessionDetailPage — async states", () => {
     vi.resetAllMocks();
   });
 
-  it("shows error region when fetch fails", () => {
-    vi.mocked(useSessionDetail).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: true,
-      error: new Error("Not found"),
-    } as UseSessionDetailResult);
+  it("shows the Page error region when fetch fails", () => {
+    setSessionState(null, { isError: true, error: new Error("Not found") });
     const html = renderPage();
-    expect(html).toContain("Failed to load session details");
+    expect(html).toContain("Something went wrong");
+    expect(html).toContain("Not found");
   });
 
-  it("shows error region when session data is absent and not loading", () => {
-    // No data, not loading, not error → falls into the !session branch
-    vi.mocked(useSessionDetail).mockReturnValue({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-      error: null,
-    } as UseSessionDetailResult);
+  it("shows an error region when session data is absent and not loading/erroring (session not found)", () => {
+    setSessionState(null);
     const html = renderPage();
-    expect(html).toContain("Failed to load session details");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Slot composition baseline — for Gate-A change tracking
-// ---------------------------------------------------------------------------
-
-describe("SessionDetailPage — slot composition baseline", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-  });
-
-  // Breadcrumbs: Page does NOT own breadcrumbs (page uses raw <Breadcrumbs> directly)
-  it("breadcrumbs are rendered directly by the page (not via Page archetype)", () => {
-    setSessionState(BASE_SESSION);
-    const html = renderPage();
-    // No <Page archetype="detail"> — breadcrumbs component is rendered inline
-    expect(html).toContain('aria-label="Breadcrumb"');
-    // No max-w-5xl constraint (not using Page archetype=detail)
-    expect(html).not.toContain("max-w-5xl");
-  });
-
-  // No Tier-2 hero (no PulseStrip, no DetailPage shell)
-  it("does not render a Tier-2 hero or PulseStrip today (pre-redesign baseline)", () => {
-    setSessionState(BASE_SESSION);
-    const html = renderPage();
-    // DetailPage/Page shell with archetype=detail would include max-w-5xl
-    expect(html).not.toContain("max-w-5xl");
-    // No pulse-strip or dunbar-tier metrics
-    expect(html).not.toContain("Dunbar tier");
-  });
-
-  // Title slot: raw <h1> in the page body
-  it("title is rendered as a raw h1 (not via Page HeadingBlock)", () => {
-    setSessionState(BASE_SESSION);
-    const html = renderPage();
-    // Raw h1 class from the page body
-    expect(html).toMatch(/<h1[^>]*>Session Detail<\/h1>/);
-  });
-
-  // Primary slot: Metadata and Tool Calls cards present
-  it("primary content includes Metadata and Tool Calls sections", () => {
-    setSessionState(BASE_SESSION);
-    const html = renderPage();
-    expect(html).toContain("Metadata");
-    expect(html).toContain("Tool Calls");
+    expect(html).toContain("Something went wrong");
   });
 });

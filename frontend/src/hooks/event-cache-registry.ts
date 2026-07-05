@@ -83,6 +83,18 @@ const spendPatch: CachePatch = (qc) => {
  * liveness view updates in the same beat, not on its next 30s poll — this is
  * the mechanism behind "the owner must never see a butler finish in
  * Telegram before the dashboard notices."
+ *
+ * Also invalidates the GLOBAL session-detail key prefix (bu-qvnce.5, pursuit
+ * move 5 slice 2) — SessionDetailPage's useGlobalSessionDetail, keyed
+ * ["session-detail-global", id]. Before this, only the butler-scoped
+ * ["session-detail", butler, id] key (the drawer's) was covered here, while
+ * GlobalActionsRegistrar.tsx navigates straight to the un-scoped /sessions/:id
+ * route after triggering a butler — the proven "frozen 'Running' page" bug:
+ * the palette's own trigger->session flow landed on a page whose query key
+ * the bus never touched. Invalidated as a bare prefix (not per-id, unlike the
+ * butler-scoped branch below) since invalidateQueries prefix-matches every
+ * currently-cached id anyway, and a session "ended" event carries no
+ * guarantee the owner is even looking at that specific session's page.
  */
 const sessionPatch: CachePatch = (qc, event) => {
   qc.invalidateQueries({ queryKey: ["sessions"] });
@@ -93,6 +105,7 @@ const sessionPatch: CachePatch = (qc, event) => {
   // event stream — a session starting/ending is exactly the kind of event
   // its live tail must reflect without waiting for the next 30s poll.
   qc.invalidateQueries({ queryKey: ["timeline"] });
+  qc.invalidateQueries({ queryKey: ["session-detail-global"] });
   const butler = asString(event.data.butler);
   const sessionId = asString(event.data.session_id);
   if (butler && sessionId) {

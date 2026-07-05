@@ -21,3 +21,19 @@
  * worker report for the follow-up to broaden it.
  */
 export const POLL_BUS_RECONCILE_MS = 5 * 60_000;
+
+/**
+ * `POLL_RUNNING_SESSION_MS` — the PRIMARY update path for a single running
+ * session's dossier (bu-qvnce.5, pursuit move 5 slice 3).
+ *
+ * Unlike POLL_BUS_RECONCILE_MS above, this is not a reconciliation safety net
+ * sitting behind bus coverage: the fleet event bus only emits a "session"
+ * event on start/end (see event-cache-registry.ts's sessionPatch), never per
+ * tool-call, so a running session's streaming tool-call tail has no bus event
+ * to ride until the session ends. A short poll is the honest primary
+ * mechanism while `success === null` (StatusBadge's own "running" test) —
+ * once terminal, the query stops polling (see useGlobalSessionDetail /
+ * useSessionDetail) and relies entirely on the bus's end-of-session
+ * invalidation, same as every other bus-covered surface.
+ */
+export const POLL_RUNNING_SESSION_MS = 3_000;

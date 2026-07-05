@@ -52,6 +52,7 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "session", queryKey: ["butler-sessions"], source: "use-sessions.ts (useButlerSessions)" },
   { eventType: "session", queryKey: ["butlers", "board"], source: "use-butlers.ts (useButlersBoard)" },
   { eventType: "session", queryKey: ["timeline"], source: "use-timeline.ts (useTimeline)" },
+  { eventType: "session", queryKey: ["session-detail-global", "sess-1"], source: "use-sessions.ts (useGlobalSessionDetail / SessionDetailPage)" },
 
   // notification (the proven-gap surfaces, fixed alongside this manifest)
   { eventType: "notification", queryKey: ["notifications"], source: "use-notifications.ts (useNotifications)" },

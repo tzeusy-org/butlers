@@ -27,7 +27,21 @@ vi.mock("@/components/sessions/SessionsKpiStrip", () => ({
   SessionsKpiStrip: () => <div data-testid="kpi-stub" />,
 }));
 vi.mock("@/components/sessions/SessionDetailDrawer", () => ({
-  SessionDetailDrawer: () => <div data-testid="drawer-stub" />,
+  SessionDetailDrawer: ({
+    sessionId,
+    butler,
+    onClose,
+  }: {
+    sessionId: string | null;
+    butler: string;
+    onClose: () => void;
+  }) => (
+    <div data-testid="drawer-stub" data-session-id={sessionId ?? ""} data-butler={butler}>
+      <button type="button" data-testid="drawer-stub-close" onClick={onClose}>
+        Close
+      </button>
+    </div>
+  ),
 }));
 
 import SessionsPage from "@/pages/SessionsPage";
@@ -189,5 +203,121 @@ describe("SessionsPage — error state", () => {
     // The in-card empty state must NOT appear in the error branch.
     expect(container.textContent).not.toContain("No sessions found.");
     expect(queryByRole("alert")).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ?selected= URL mirroring (bu-qvnce.5, pursuit move 5 slice 4)
+// ---------------------------------------------------------------------------
+
+describe("SessionsPage — ?selected= URL mirroring", () => {
+  it("clicking a row writes ?selected=<id> and passes it + the row's butler to the drawer", () => {
+    setSessions({
+      data: keysetResponse(
+        [makeSession({ id: "sess-1", butler: "health" }), makeSession({ id: "sess-2", butler: "spend" })],
+        false,
+        null,
+      ),
+    });
+    const { getByTestId, getAllByTestId } = renderPage();
+
+    fireEvent.click(getAllByTestId("session-row")[1]);
+
+    expect(getByTestId("location-search").textContent).toContain("selected=sess-2");
+    expect(getByTestId("drawer-stub").getAttribute("data-session-id")).toBe("sess-2");
+    expect(getByTestId("drawer-stub").getAttribute("data-butler")).toBe("spend");
+  });
+
+  it("initializes selection from ?selected= on the URL (shareable/reloadable)", () => {
+    setSessions({
+      data: keysetResponse([makeSession({ id: "sess-1", butler: "health" })], false, null),
+    });
+    const { getByTestId } = renderPage("/sessions?selected=sess-1");
+
+    expect(getByTestId("drawer-stub").getAttribute("data-session-id")).toBe("sess-1");
+  });
+
+  it("closing the drawer clears ?selected= from the URL", () => {
+    setSessions({
+      data: keysetResponse([makeSession({ id: "sess-1" })], false, null),
+    });
+    const { getByTestId } = renderPage("/sessions?selected=sess-1");
+
+    expect(getByTestId("location-search").textContent).toContain("selected=sess-1");
+    fireEvent.click(getByTestId("drawer-stub-close"));
+    expect(getByTestId("location-search").textContent).not.toContain("selected=sess-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// j/k/[/]/y keyboard loop (bu-qvnce.5, pursuit move 5 slice 4)
+// ---------------------------------------------------------------------------
+
+describe("SessionsPage — j/k/[/]/y keyboard loop", () => {
+  it("j selects the first row, then advances through subsequent rows", () => {
+    setSessions({
+      data: keysetResponse(
+        [makeSession({ id: "sess-1" }), makeSession({ id: "sess-2" }), makeSession({ id: "sess-3" })],
+        false,
+        null,
+      ),
+    });
+    const { getByTestId } = renderPage();
+
+    fireEvent.keyDown(window, { key: "j" });
+    expect(getByTestId("location-search").textContent).toContain("selected=sess-1");
+
+    fireEvent.keyDown(window, { key: "j" });
+    expect(getByTestId("location-search").textContent).toContain("selected=sess-2");
+  });
+
+  it("k moves selection back to the previous row", () => {
+    setSessions({
+      data: keysetResponse(
+        [makeSession({ id: "sess-1" }), makeSession({ id: "sess-2" })],
+        false,
+        null,
+      ),
+    });
+    const { getByTestId } = renderPage("/sessions?selected=sess-2");
+
+    fireEvent.keyDown(window, { key: "k" });
+    expect(getByTestId("location-search").textContent).toContain("selected=sess-1");
+  });
+
+  it("[ steps Older and ] steps back Newer", () => {
+    setSessions({ data: keysetResponse([makeSession()], true, "next-1") });
+    const { getByTestId } = renderPage();
+
+    fireEvent.keyDown(window, { key: "[" });
+    expect(getByTestId("location-search").textContent).toContain("cursor=next-1");
+
+    fireEvent.keyDown(window, { key: "]" });
+    expect(getByTestId("location-search").textContent).not.toContain("cursor=next-1");
+  });
+
+  it("y copies the selected session's id to the clipboard", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    setSessions({
+      data: keysetResponse([makeSession({ id: "sess-1" })], false, null),
+    });
+    renderPage("/sessions?selected=sess-1");
+
+    fireEvent.keyDown(window, { key: "y" });
+
+    expect(writeText).toHaveBeenCalledWith("sess-1");
+  });
+
+  it("registers no y binding when nothing is selected", () => {
+    setSessions({ data: keysetResponse([makeSession({ id: "sess-1" })], false, null) });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    renderPage();
+    fireEvent.keyDown(window, { key: "y" });
+
+    expect(writeText).not.toHaveBeenCalled();
   });
 });

@@ -3,18 +3,34 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import type { SessionParams } from "@/api/types.ts";
-import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
+import type { ApiResponse, SessionDetail, SessionParams } from "@/api/types.ts";
+import { POLL_BUS_RECONCILE_MS, POLL_RUNNING_SESSION_MS } from "@/lib/poll-policy";
 
 import {
   getButlerSession,
   getButlerSessions,
+  getSession,
   getSessionAggregate,
   getSessions,
 } from "@/api/index.ts";
 
 interface SessionQueryOptions {
   refetchInterval?: number | false;
+}
+
+/**
+ * refetchInterval for a single session-detail query: POLL_RUNNING_SESSION_MS
+ * (the primary update path) while the session hasn't reached a terminal
+ * state, `false` once it has — see POLL_RUNNING_SESSION_MS's doc comment in
+ * poll-policy.ts for why a running session needs its own short poll rather
+ * than leaning on the bus (no per-tool-call bus event exists).
+ */
+function sessionDetailRefetchInterval(query: {
+  state: { data?: ApiResponse<SessionDetail> };
+}): number | false {
+  const session = query.state.data?.data;
+  if (!session) return false;
+  return session.success === null ? POLL_RUNNING_SESSION_MS : false;
 }
 
 /** Fetch a keyset-paginated list of sessions across all butlers. */
@@ -73,5 +89,28 @@ export function useSessionDetail(butler: string, id: string | null) {
     queryKey: ["session-detail", butler, id],
     queryFn: () => getButlerSession(butler, id!),
     enabled: !!butler && !!id,
+    // See POLL_RUNNING_SESSION_MS: primary path for a running session's
+    // streaming tool-call tail, off entirely once terminal.
+    refetchInterval: sessionDetailRefetchInterval,
+  });
+}
+
+/**
+ * Fetch full session detail cross-butler (GET /api/session/:id) — the ONE
+ * query key SessionDetailPage uses (bu-qvnce.5, pursuit move 5 slice 2).
+ *
+ * Previously SessionDetailPage hand-rolled this as an inline useQuery keyed
+ * ["session-detail-global", id] with no refetch policy and no bus coverage —
+ * the exact gap behind "the palette's own trigger->session flow lands on a
+ * frozen 'Running' page" (GlobalActionsRegistrar navigates here straight
+ * after triggering a butler). event-cache-registry.ts's sessionPatch now
+ * invalidates this key too; see event-cache-manifest.ts.
+ */
+export function useGlobalSessionDetail(id: string | null) {
+  return useQuery({
+    queryKey: ["session-detail-global", id],
+    queryFn: () => getSession(id!),
+    enabled: !!id,
+    refetchInterval: sessionDetailRefetchInterval,
   });
 }

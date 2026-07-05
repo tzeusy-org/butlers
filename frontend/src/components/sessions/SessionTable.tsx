@@ -28,6 +28,13 @@ export interface SessionTableProps {
   showButlerColumn?: boolean;
   /** Optional callback when a request_id is clicked to auto-fill the filter. */
   onRequestIdClick?: (requestId: string) => void;
+  /**
+   * Id of the currently-selected row (mirrors ?selected= in the URL,
+   * bu-qvnce.5 pursuit move 5 slice 4). Highlights the row and marks it
+   * aria-selected; also carries data-session-id for the page's j/k roving
+   * focus to sync native DOM focus onto.
+   */
+  selectedId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +130,7 @@ export function SessionTable({
   onSessionClick,
   showButlerColumn = false,
   onRequestIdClick,
+  selectedId = null,
 }: SessionTableProps) {
   if (!isLoading && sessions.length === 0) {
     return <EmptyState />;
@@ -150,11 +158,16 @@ export function SessionTable({
         ) : (
           sessions.map((session) => {
             const interactive = Boolean(onSessionClick);
+            const selected = selectedId != null && session.id === selectedId;
             return (
               <TableRow
                 key={session.id}
+                data-testid="session-row"
+                data-session-id={session.id}
+                aria-selected={interactive ? selected : undefined}
                 className={cn(
                   session.success === false && "bg-destructive/5",
+                  selected && "bg-muted",
                   interactive &&
                     "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 )}
