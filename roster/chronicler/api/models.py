@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -412,6 +412,39 @@ class CorrectionPrompts(BaseModel):
     """Low-confidence activities, ordered by start_at ASC."""
 
 
+class RoutineRow(BaseModel):
+    """A row from GET /api/chronicler/routines (bu-whhll.9)."""
+
+    id: str
+    dow_mask: int
+    """Bitmask over ISO weekday, bit 0 = Monday ... bit 6 = Sunday."""
+    window_start_local: time
+    window_end_local: time
+    timezone: str
+    label: str
+    support_count: int
+    confidence: float
+    evidence_summary: dict[str, Any] = Field(default_factory=dict)
+    origin: str
+    """``mined`` (weekly job) or ``declared`` (owner bootstrap, bu-whhll.11)."""
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class UpdateRoutineRequest(BaseModel):
+    """Request body for PATCH /api/chronicler/routines/{id}.
+
+    Owner-review fields only — both optional, both independently settable.
+    Mining-derived fields (window bounds, support_count, confidence,
+    evidence_summary) are not editable; the miner refreshes them on its next
+    weekly run.
+    """
+
+    enabled: bool | None = None
+    label: str | None = None
+
+
 __all__ = [
     "ActivityEvidenceChain",
     "AggregateByDayRow",
@@ -436,8 +469,10 @@ __all__ = [
     "EpisodeExplainResponse",
     "OpsSessionRow",
     "ProjectionHealthRow",
+    "RoutineRow",
     "SourceBreakdownEntry",
     "SourceStateRow",
     "SubsourceCheckpoint",
     "SubmitCorrectionRequest",
+    "UpdateRoutineRequest",
 ]

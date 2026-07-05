@@ -390,6 +390,44 @@ async def run_project_comms(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_routines_mine(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Mine N weeks of chronicler activity episodes for stable weekday routines.
+
+    Deterministic, no LLM (bu-whhll.9). Unlike the ``chronicler_project_*``
+    adapters, this job is not watermark-incremental — it re-scans the full
+    ``weeks``-wide window on every run and upserts into
+    ``chronicler.routines``, which is a summary table, not an episode stream.
+    """
+    from butlers.chronicler.routines import DEFAULT_TIMEZONE, DEFAULT_WEEKS, mine_routines
+
+    supported_fields = ("weeks", "timezone")
+    weeks = DEFAULT_WEEKS
+    timezone = DEFAULT_TIMEZONE
+    if job_args:
+        unknown_fields = sorted(set(job_args) - set(supported_fields))
+        if unknown_fields:
+            raise RuntimeError(
+                f"chronicler_routines_mine job only supports {', '.join(supported_fields)}; "
+                f"received unsupported keys: {unknown_fields}"
+            )
+        if "weeks" in job_args:
+            weeks = _normalize_positive_int(
+                job_args["weeks"], job_name="chronicler_routines_mine", field_name="weeks"
+            )
+        if "timezone" in job_args:
+            raw_timezone = job_args["timezone"]
+            if not isinstance(raw_timezone, str) or not raw_timezone:
+                raise RuntimeError(
+                    "chronicler_routines_mine job_args.timezone must be a non-empty string"
+                )
+            timezone = raw_timezone
+
+    return await mine_routines(db_pool, weeks=weeks, timezone=timezone)
+
+
 __all__ = [
     "_DEFAULT_CALENDAR_SCHEMAS",
     "_DEFAULT_SESSION_SCHEMAS",
@@ -409,4 +447,5 @@ __all__ = [
     "run_project_sessions",
     "run_project_spotify",
     "run_project_steam",
+    "run_routines_mine",
 ]

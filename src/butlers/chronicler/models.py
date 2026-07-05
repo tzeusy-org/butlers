@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time
 from typing import Any
 from uuid import UUID
 
@@ -251,6 +251,47 @@ class CorrectedPointEvent:
         return self.corrected_at is not None
 
 
+class RoutineOrigin(enum.StrEnum):
+    """How a ``chronicler.routines`` row came to exist.
+
+    ``mined`` — written by the deterministic weekly routine miner
+        (bu-whhll.9). Subject to the ``(dow_mask) WHERE origin='mined'``
+        idempotency index: at most one mined row per exact day-of-week
+        combination.
+    ``declared`` — owner-declared bootstrap schedule (bu-whhll.11). Not
+        constrained by the mined idempotency index.
+    """
+
+    MINED = "mined"
+    DECLARED = "declared"
+
+
+@dataclass
+class Routine:
+    """Row in `chronicler.routines` — an owner-reviewable weekly pattern.
+
+    ``dow_mask`` is a bitmask over ISO weekday, bit 0 = Monday ... bit 6 =
+    Sunday (``1 << date.weekday()``). ``window_start_local``/
+    ``window_end_local`` are local wall-clock ``time`` bounds interpreted in
+    ``timezone``. ``support_count``/``confidence`` are mining statistics
+    (ignored/zero for ``declared`` rows until a future bead computes them).
+    """
+
+    dow_mask: int
+    window_start_local: time
+    window_end_local: time
+    label: str
+    timezone: str = "Asia/Singapore"
+    support_count: int = 0
+    confidence: float = 0.0
+    evidence_summary: dict[str, Any] = field(default_factory=dict)
+    origin: RoutineOrigin = RoutineOrigin.MINED
+    enabled: bool = True
+    id: UUID | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 @dataclass
 class Override:
     """Row in `chronicler.overrides`.
@@ -286,5 +327,7 @@ __all__ = [
     "Precision",
     "Privacy",
     "ProjectionCheckpoint",
+    "Routine",
+    "RoutineOrigin",
     "SourceAdapterState",
 ]

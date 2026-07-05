@@ -58,6 +58,26 @@ class ChroniclerModuleConfig(BaseModel):
     """Configuration for the Chronicler read/bundle tools module."""
 
 
+# Module-default deterministic job schedules (bu-whhll.9), following the
+# memory module's pattern (see `MemoryModule._register_default_maintenance_schedules`
+# and `ensure_module_default_schedule`): self-registered on every daemon boot
+# so the job exists without a copy-pasted `[[butler.schedule]]` block in
+# `roster/chronicler/butler.toml`. An operator may still add such a block
+# reusing this `name` to override cadence — TOML wins on cadence, not
+# existence.
+_DEFAULT_SCHEDULES: tuple[dict[str, Any], ...] = (
+    {
+        # Weekly, Sunday 03:30 (owner's effective timezone — see
+        # `ensure_module_default_schedule`): mines the prior weeks' activity
+        # episodes for stable weekday desk-signal windows and upserts
+        # `chronicler.routines`. No LLM.
+        "name": "chronicler_routines_mine",
+        "cron": "30 3 * * 0",
+        "job_name": "chronicler_routines_mine",
+    },
+)
+
+
 class ChroniclerModule(Module):
     """Chronicler MCP module.
 
@@ -90,6 +110,37 @@ class ChroniclerModule(Module):
         blob_store: Any = None,
     ) -> None:
         self._db = db
+        await self._register_default_schedules(db)
+
+    async def _register_default_schedules(self, db: Any) -> None:
+        """Self-register default Chronicler job schedules (module-default).
+
+        Best-effort per schedule: a failure (e.g. ``scheduled_tasks`` not yet
+        migrated in some harness) is logged and does not fail module startup
+        or disable the module's MCP tools. See `_DEFAULT_SCHEDULES` and
+        `ensure_module_default_schedule` for the exact idempotency/reclaim
+        semantics.
+        """
+        if db is None:
+            return
+        from butlers.core.scheduler import ensure_module_default_schedule
+
+        for entry in _DEFAULT_SCHEDULES:
+            try:
+                await ensure_module_default_schedule(
+                    db.pool,
+                    name=entry["name"],
+                    cron=entry["cron"],
+                    job_name=entry["job_name"],
+                    job_args=entry.get("job_args"),
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to register default Chronicler schedule %r; "
+                    "it may need to be scheduled manually via butler.toml",
+                    entry["name"],
+                    exc_info=True,
+                )
 
     async def on_shutdown(self) -> None:
         self._db = None

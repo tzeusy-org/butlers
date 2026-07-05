@@ -44,7 +44,12 @@ from butlers.chronicler.aggregations import (
     union_seconds,
 )
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
-from butlers.chronicler.storage import upsert_tier2_cache
+from butlers.chronicler.storage import (
+    get_routine,
+    list_routines,
+    update_routine,
+    upsert_tier2_cache,
+)
 
 _models_path = Path(__file__).parent / "models.py"
 _spec = importlib.util.spec_from_file_location("chronicler_api_models", _models_path)
@@ -80,6 +85,8 @@ if _spec is not None and _spec.loader is not None:
     ActivityEvidenceChain = _models.ActivityEvidenceChain
     CorrectionPrompt = _models.CorrectionPrompt
     CorrectionPrompts = _models.CorrectionPrompts
+    RoutineRow = _models.RoutineRow
+    UpdateRoutineRequest = _models.UpdateRoutineRequest
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -2525,3 +2532,75 @@ async def list_correction_prompts(
             prompts=prompts,
         )
     )
+
+
+# ── GET /api/chronicler/routines, PATCH /api/chronicler/routines/{id} ─────
+#
+# Owner-reviewable weekly routines (bu-whhll.9): rows mined by the
+# deterministic weekly job (chronicler_routines_mine) plus any owner-declared
+# rows (origin='declared', bu-whhll.11). GET lists all rows for dashboard
+# review; PATCH lets the owner enable/disable a row or rename its label —
+# the only two owner-editable fields (see storage.update_routine).
+
+
+def _routine_to_row(routine: Any) -> RoutineRow:
+    return RoutineRow(
+        id=str(routine.id),
+        dow_mask=routine.dow_mask,
+        window_start_local=routine.window_start_local,
+        window_end_local=routine.window_end_local,
+        timezone=routine.timezone,
+        label=routine.label,
+        support_count=routine.support_count,
+        confidence=routine.confidence,
+        evidence_summary=routine.evidence_summary,
+        origin=routine.origin.value if hasattr(routine.origin, "value") else str(routine.origin),
+        enabled=routine.enabled,
+        created_at=routine.created_at,
+        updated_at=routine.updated_at,
+    )
+
+
+@router.get("/routines", response_model=ApiResponse[list[RoutineRow]])
+async def list_chronicler_routines(
+    enabled_only: bool = Query(False, description="Only return enabled routines."),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[RoutineRow]]:
+    """List owner-reviewable weekly routines, ordered by dow_mask then window start.
+
+    Includes both mined (``origin='mined'``) and owner-declared
+    (``origin='declared'``) rows. An empty ``routines`` table returns
+    ``{"data": [], "meta": {}}``.
+    """
+    pool = _pool(db)
+    routines = await list_routines(pool, enabled_only=enabled_only)
+    return ApiResponse[list[RoutineRow]](data=[_routine_to_row(r) for r in routines])
+
+
+@router.patch("/routines/{routine_id}", response_model=RoutineRow)
+async def patch_chronicler_routine(
+    routine_id: UUID,
+    request: UpdateRoutineRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> RoutineRow:
+    """Owner review: enable/disable a routine and/or rename its label.
+
+    Both fields are optional. Mining-derived fields (window bounds,
+    support_count, confidence, evidence_summary) are not editable here — the
+    weekly miner refreshes them on its next run, and (per
+    ``storage.upsert_mined_routine``) never overwrites ``enabled``/``label``
+    once set, so this edit survives every subsequent re-mine.
+    """
+    existing = await get_routine(_pool(db), routine_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Routine not found")
+
+    updated = await update_routine(
+        _pool(db),
+        routine_id,
+        enabled=request.enabled,
+        label=request.label,
+    )
+    if updated is None:  # pragma: no cover — defensive (row existed above)
+        raise HTTPException(status_code=404, detail="Routine not found")
+    return _routine_to_row(updated)

@@ -31,6 +31,8 @@ from butlers.chronicler.models import (
     Precision,
     Privacy,
     ProjectionCheckpoint,
+    Routine,
+    RoutineOrigin,
     SourceAdapterState,
 )
 
@@ -1009,11 +1011,158 @@ async def save_carryover(
         return
 
 
+# ── Routines (bu-whhll.9) ──────────────────────────────────────────────────
+
+
+def _row_to_routine(row: asyncpg.Record) -> Routine:
+    return Routine(
+        id=row["id"],
+        dow_mask=row["dow_mask"],
+        window_start_local=row["window_start_local"],
+        window_end_local=row["window_end_local"],
+        timezone=row["timezone"],
+        label=row["label"],
+        support_count=row["support_count"],
+        confidence=row["confidence"],
+        evidence_summary=_coerce_payload(row["evidence_summary"]),
+        origin=RoutineOrigin(row["origin"]),
+        enabled=row["enabled"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+async def upsert_mined_routine(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    dow_mask: int,
+    window_start_local: Any,
+    window_end_local: Any,
+    label: str,
+    support_count: int,
+    confidence: float,
+    evidence_summary: dict[str, Any],
+    timezone: str = "Asia/Singapore",
+) -> Routine:
+    """Idempotent upsert of a mined routine, keyed on ``dow_mask``.
+
+    Targets the partial unique index ``routines_mined_dow_mask_idx``
+    (``dow_mask`` WHERE ``origin = 'mined'``) added by migration
+    ``chronicler_018``: at most one mined row exists per exact
+    day-of-week combination. A re-run refreshes the mining-derived columns
+    (window bounds, timezone, support_count, confidence, evidence_summary)
+    but deliberately never touches ``label`` or ``enabled`` — those are the
+    owner's to edit via ``PATCH /api/chronicler/routines/{id}`` and must
+    survive every subsequent re-mine.
+    """
+    row = await conn.fetchrow(
+        """
+        INSERT INTO routines (
+            dow_mask, window_start_local, window_end_local, timezone,
+            label, support_count, confidence, evidence_summary, origin
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'mined')
+        ON CONFLICT (dow_mask) WHERE origin = 'mined' DO UPDATE SET
+            window_start_local = EXCLUDED.window_start_local,
+            window_end_local = EXCLUDED.window_end_local,
+            timezone = EXCLUDED.timezone,
+            support_count = EXCLUDED.support_count,
+            confidence = EXCLUDED.confidence,
+            evidence_summary = EXCLUDED.evidence_summary,
+            updated_at = now()
+        RETURNING *
+        """,
+        dow_mask,
+        window_start_local,
+        window_end_local,
+        timezone,
+        label,
+        support_count,
+        confidence,
+        evidence_summary,
+    )
+    return _row_to_routine(row)
+
+
+async def list_routines(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    enabled_only: bool = False,
+) -> list[Routine]:
+    """List routines ordered by dow_mask then window start.
+
+    Set ``enabled_only=True`` for inference consumers (bu-whhll.10/.11) that
+    must skip owner-disabled rows; the dashboard review surface wants both.
+    """
+    where = "WHERE enabled" if enabled_only else ""
+    rows = await conn.fetch(
+        f"""
+        SELECT * FROM routines
+        {where}
+        ORDER BY dow_mask ASC, window_start_local ASC
+        """
+    )
+    return [_row_to_routine(r) for r in rows]
+
+
+async def get_routine(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    routine_id: UUID,
+) -> Routine | None:
+    row = await conn.fetchrow("SELECT * FROM routines WHERE id = $1", routine_id)
+    if row is None:
+        return None
+    return _row_to_routine(row)
+
+
+async def update_routine(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    routine_id: UUID,
+    *,
+    enabled: bool | None = None,
+    label: str | None = None,
+) -> Routine | None:
+    """Owner-review PATCH: update ``enabled`` and/or ``label`` in place.
+
+    Both fields are optional; only the provided ones are updated. Returns
+    ``None`` when ``routine_id`` does not exist. Mining-derived columns
+    (window bounds, support_count, confidence, evidence_summary) are never
+    touched here — that is ``upsert_mined_routine``'s job.
+    """
+    updates: list[str] = []
+    args: list[Any] = []
+    if enabled is not None:
+        args.append(enabled)
+        updates.append(f"enabled = ${len(args)}")
+    if label is not None:
+        args.append(label)
+        updates.append(f"label = ${len(args)}")
+
+    if not updates:
+        return await get_routine(conn, routine_id)
+
+    updates.append("updated_at = now()")
+    args.append(routine_id)
+    row = await conn.fetchrow(
+        f"""
+        UPDATE routines
+        SET {", ".join(updates)}
+        WHERE id = ${len(args)}
+        RETURNING *
+        """,
+        *args,
+    )
+    if row is None:
+        return None
+    return _row_to_routine(row)
+
+
 __all__: Sequence[str] = (
     "get_carryover",
     "get_checkpoint",
     "get_checkpoint_subsource",
     "get_episode",
+    "get_routine",
     "get_source_state",
     "insert_override",
     "link_event_to_episode",
@@ -1022,13 +1171,16 @@ __all__: Sequence[str] = (
     "list_overlapping_episodes",
     "list_overrides_for",
     "list_point_events",
+    "list_routines",
     "mark_source_active",
     "record_idempotency",
     "register_source",
     "save_carryover",
+    "update_routine",
     "upsert_checkpoint",
     "upsert_checkpoint_subsource",
     "upsert_episode",
+    "upsert_mined_routine",
     "upsert_point_event",
     "upsert_tier2_cache",
 )
