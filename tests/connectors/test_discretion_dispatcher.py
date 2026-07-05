@@ -26,8 +26,8 @@ pytestmark = pytest.mark.unit
 _MODULE = "butlers.connectors.discretion_dispatcher"
 
 
-def _catalog_result() -> tuple[str, str, list, uuid.UUID, int]:
-    return ("api", "claude-haiku-4-5-20251001", [], uuid.uuid4(), 30)
+def _catalog_result() -> tuple[str, str, list, uuid.UUID, int, str]:
+    return ("api", "claude-haiku-4-5-20251001", [], uuid.uuid4(), 30, "specialty")
 
 
 def _allowed_quota() -> QuotaStatus:
@@ -53,7 +53,10 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
     adapter = _make_adapter()
 
     with (
-        patch(f"{_MODULE}.resolve_model", AsyncMock(return_value=_catalog_result())),
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            AsyncMock(return_value=_catalog_result()),
+        ),
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
@@ -76,7 +79,10 @@ async def test_call_without_identity_falls_back_to_constructor_butler_name() -> 
     adapter = _make_adapter()
 
     with (
-        patch(f"{_MODULE}.resolve_model", AsyncMock(return_value=_catalog_result())),
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            AsyncMock(return_value=_catalog_result()),
+        ),
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
@@ -98,7 +104,10 @@ async def test_call_with_explicit_butler_name_and_no_identity_uses_butler_name()
     adapter = _make_adapter()
 
     with (
-        patch(f"{_MODULE}.resolve_model", AsyncMock(return_value=_catalog_result())),
+        patch(
+            f"{_MODULE}.resolve_model_with_effective_tier",
+            AsyncMock(return_value=_catalog_result()),
+        ),
         patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
@@ -130,7 +139,7 @@ async def test_resolve_model_none_raises_before_any_ledger_write() -> None:
     dispatcher = DiscretionDispatcher(pool=pool, complexity_tier=Complexity.SPECIALTY)
 
     with (
-        patch(f"{_MODULE}.resolve_model", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=None)),
         patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
     ):
         with pytest.raises(RuntimeError, match="No specialty model configured"):
