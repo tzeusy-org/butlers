@@ -19,7 +19,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 import type { SpineEntry, SpineSortMode, Identity } from "./types.ts";
-import { needsHand, severityRank } from "./constants.ts";
+import { needsHand, isUnverified, severityRank } from "./constants.ts";
 import { CredentialDot, Sliver, Mono, IdentityChip, ProviderMark } from "./atoms.tsx";
 
 // ── Sorters ─────────────────────────────────────────────────────────────────
@@ -353,23 +353,40 @@ export function Spine({
     () => filtered.filter((e) => needsHand(e.state)).sort(cmp),
     [filtered, cmp],
   );
+  // Tri-state (bu-976n0): set-but-never-probed rows are an UNKNOWN, not a
+  // failure — they get their own quiet group instead of inflating the
+  // act-now "needs hand" bucket above.
+  const staleGroup = React.useMemo(
+    () => filtered.filter((e) => isUnverified(e.state)).sort(cmp),
+    [filtered, cmp],
+  );
   const restCli = React.useMemo(
-    () => filtered.filter((e) => e.family === "cli" && !needsHand(e.state)).sort(cmp),
+    () =>
+      filtered
+        .filter((e) => e.family === "cli" && !needsHand(e.state) && !isUnverified(e.state))
+        .sort(cmp),
     [filtered, cmp],
   );
   const restSys = React.useMemo(
-    () => filtered.filter((e) => e.family === "system" && !needsHand(e.state)).sort(cmp),
+    () =>
+      filtered
+        .filter((e) => e.family === "system" && !needsHand(e.state) && !isUnverified(e.state))
+        .sort(cmp),
     [filtered, cmp],
   );
   const restUsr = React.useMemo(
-    () => filtered.filter((e) => e.family === "user" && !needsHand(e.state)).sort(cmp),
+    () =>
+      filtered
+        .filter((e) => e.family === "user" && !needsHand(e.state) && !isUnverified(e.state))
+        .sort(cmp),
     [filtered, cmp],
   );
 
   // Running counter for global §N numbering — computed declaratively to
   // avoid React Compiler immutability complaints about render-time mutation.
   const n0NeedsHand = 0;
-  const n0Cli = needsHandGroup.length;
+  const n0Stale = needsHandGroup.length;
+  const n0Cli = n0Stale + staleGroup.length;
   const n0Sys = n0Cli + restCli.length;
   const n0Usr = n0Sys + restSys.length;
 
@@ -434,6 +451,29 @@ export function Spine({
           providers={providers}
         />
         {needsHandGroup.length > 0 && (
+          <div
+            aria-hidden="true"
+            className="mx-0 my-1"
+            style={{ height: 1, background: "var(--border)" }}
+          />
+        )}
+
+        {/*
+         * Stale/unverified group (bu-976n0): set but never probed (or a
+         * stale probe). Quiet — no "pinned"/act-now hint, no alarm color.
+         * Per bu-a63hn's background staleness loop this bucket should stay
+         * near-empty and self-clear on its own re-probe cadence.
+         */}
+        <SpineGroup
+          eyebrow={`stale · ${staleGroup.length}`}
+          hint={staleGroup.length > 0 ? "unverified" : ""}
+          items={staleGroup}
+          n0={n0Stale}
+          activeKey={activeKey}
+          onSelect={onSelect}
+          providers={providers}
+        />
+        {staleGroup.length > 0 && (
           <div
             aria-hidden="true"
             className="mx-0 my-1"

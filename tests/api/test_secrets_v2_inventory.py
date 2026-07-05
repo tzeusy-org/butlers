@@ -1,9 +1,12 @@
 """Integration tests for GET /api/secrets/inventory.
 
 Covers the four acceptance scenarios from bu-thx5x:
-1. Empty store — all three families return empty arrays; meta.needs_hand_count=0.
+1. Empty store — all three families return empty arrays;
+   meta.failing_count=0 and meta.unverified_count=0.
 2. Mixed states — verified-ok, verified-failed, never-verified rows are
-   correctly classified and needs_hand_count reflects non-ok rows.
+   correctly classified; failing_count reflects genuine failures only and
+   unverified_count reflects never-probed ('warn') rows separately
+   (bu-976n0 tri-state split).
 3. Identity filter (projection lens) — ?identity=<uuid> restricts the user
    array to the specified entity; system/cli remain unfiltered.
 4. Envelope conformance — response always has {data: {cli,system,user}, meta}.
@@ -12,7 +15,8 @@ Additional unit-level tests:
 - _fingerprint: sha256[:8] hex, None on empty value
 - _derive_state: state machine paths
 - _format_probe_time: "HH:MM today" / "yesterday HH:MM" / date fallback
-- _needs_hand_count: correct aggregation
+- _failing_count / _unverified_count / _dedupe_most_severe: correct
+  aggregation over a deduplicated row set (bu-976n0)
 - _fetch_probe_logs_bulk: bulk query returns dict keyed by credential_key
 
 Performance assertion note
@@ -39,7 +43,9 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
     DEFAULT_EXPIRING_LEAD_TIME,
+    _dedupe_most_severe,
     _derive_state,
+    _failing_count,
     _fetch_audit_bulk,
     _fetch_cli_secrets,
     _fetch_google_granted_scopes,
@@ -54,8 +60,8 @@ from butlers.api.routers.secrets_v2 import (
     _format_probe_time,
     _get_db_manager,
     _infer_provider_from_type,
-    _needs_hand_count,
     _row_to_test_result,
+    _unverified_count,
 )
 
 pytestmark = pytest.mark.unit
@@ -363,17 +369,21 @@ def test_format_probe_time_older():
     assert len(result) > 5
 
 
-def test_needs_hand_count_all_ok():
+def test_failing_and_unverified_count_all_ok():
     from butlers.api.routers.secrets_v2 import SystemSecret
 
     items = [
         SystemSecret(key="k1", state="ok", butler="b1"),
         SystemSecret(key="k2", state="ok", butler="b1"),
     ]
-    assert _needs_hand_count(items) == 0
+    assert _failing_count(items) == 0
+    assert _unverified_count(items) == 0
 
 
-def test_needs_hand_count_mixed():
+def test_failing_and_unverified_count_mixed():
+    """bu-976n0 tri-state split: 'warn' (never probed) is unverified, not
+    failing — this is the actual fix (previously both were lumped into one
+    needs_hand_count)."""
     from butlers.api.routers.secrets_v2 import SystemSecret
 
     items = [
@@ -381,8 +391,28 @@ def test_needs_hand_count_mixed():
         SystemSecret(key="k2", state="failing", butler="b1"),
         SystemSecret(key="k3", state="warn", butler="b1"),
         SystemSecret(key="k4", state="never_set", butler="b1"),
+        SystemSecret(key="k5", state="expiring", butler="b1"),
+        SystemSecret(key="k6", state="expired", butler="b1"),
     ]
-    assert _needs_hand_count(items) == 3
+    assert _failing_count(items) == 3  # failing, expiring, expired
+    assert _unverified_count(items) == 1  # warn only
+
+
+def test_dedupe_most_severe_collapses_by_key_keeping_worse_state():
+    """Two rows sharing a key (e.g. the same system secret surfaced by two
+    butler schemas) collapse into one, keeping the more severe state."""
+    from butlers.api.routers.secrets_v2 import SystemSecret
+
+    items = [
+        SystemSecret(key="SHARED", state="ok", butler="alpha"),
+        SystemSecret(key="SHARED", state="failing", butler="beta"),
+        SystemSecret(key="OTHER", state="ok", butler="alpha"),
+    ]
+    deduped = _dedupe_most_severe(items, lambda s: s.key)
+    assert len(deduped) == 2
+    by_key = {item.key: item for item in deduped}
+    assert by_key["SHARED"].state == "failing"
+    assert by_key["OTHER"].state == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +421,8 @@ def test_needs_hand_count_mixed():
 
 
 def test_inventory_empty_store():
-    """All three families return empty arrays; meta.needs_hand_count=0."""
+    """All three families return empty arrays; meta.failing_count=0 and
+    meta.unverified_count=0."""
     mock_db = _make_db_manager(butler_names=[], system_rows=[], user_rows=[], cli_rows=[])
     client = _build_app(mock_db)
     resp = client.get("/api/secrets/inventory")
@@ -408,7 +439,8 @@ def test_inventory_empty_store():
     assert data["user"] == []
 
     meta = body["meta"]
-    assert meta["needs_hand_count"] == 0
+    assert meta["failing_count"] == 0
+    assert meta["unverified_count"] == 0
 
 
 def test_inventory_no_shared_pool_returns_empty_user_and_cli():
@@ -474,7 +506,7 @@ def test_inventory_shared_pool_cli_rows_excluded_from_system_family():
     """category='cli' rows in the shared pool are NOT surfaced in the System
     family — CLI runtime tokens have their own family (_fetch_cli_secrets reads
     them separately from the same pool). Including them in both would double-list
-    and double-count them in meta.needs_hand_count.
+    and double-count them in meta.failing_count / meta.unverified_count.
     """
     google_row = _make_system_row(
         key="GOOGLE_OAUTH_CLIENT_ID", value="cid", category="google", last_test_ok=True
@@ -540,8 +572,10 @@ async def test_fetch_system_secrets_missing_table_logs_debug_only(caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_inventory_mixed_states_needs_hand_count():
-    """Mixed states: ok, failing, never-verified rows; needs_hand_count is correct."""
+def test_inventory_mixed_states_failing_and_unverified_count():
+    """Mixed states: ok, failing, never-verified rows; failing_count and
+    unverified_count split correctly (bu-976n0) — never-probed ('warn') is
+    NOT counted as failing."""
     ok_row = _make_system_row(key="KEY_OK", value="v1", last_test_ok=True)
     fail_row = _make_system_row(key="KEY_FAIL", value="v2", last_test_ok=False)
     # never-verified = is_set, last_test_ok=None → state=warn
@@ -566,8 +600,8 @@ def test_inventory_mixed_states_needs_hand_count():
     assert states["KEY_FAIL"] == "failing"
     assert states["KEY_WARN"] == "warn"
 
-    # needs_hand_count = failing + warn = 2
-    assert body["meta"]["needs_hand_count"] == 2
+    assert body["meta"]["failing_count"] == 1
+    assert body["meta"]["unverified_count"] == 1
 
 
 def test_inventory_never_set_credential():
@@ -731,7 +765,8 @@ def test_inventory_no_identity_uses_owner_default():
 
 
 def test_inventory_envelope_has_data_and_meta():
-    """Response MUST have {data: {cli, system, user}, meta: {needs_hand_count}}."""
+    """Response MUST have
+    {data: {cli, system, user}, meta: {failing_count, unverified_count}}."""
     mock_db = _make_db_manager()
     client = _build_app(mock_db)
     resp = client.get("/api/secrets/inventory")
@@ -747,8 +782,10 @@ def test_inventory_envelope_has_data_and_meta():
     assert "user" in body["data"]
 
     # meta keys
-    assert "needs_hand_count" in body["meta"]
-    assert isinstance(body["meta"]["needs_hand_count"], int)
+    assert "failing_count" in body["meta"]
+    assert isinstance(body["meta"]["failing_count"], int)
+    assert "unverified_count" in body["meta"]
+    assert isinstance(body["meta"]["unverified_count"], int)
 
 
 def test_inventory_response_does_not_include_raw_values():
@@ -836,6 +873,37 @@ def test_inventory_aggregates_across_butler_schemas():
     butler_map = {row["key"]: row["butler"] for row in system}
     assert butler_map["A_KEY"] == "alpha"
     assert butler_map["B_KEY"] == "beta"
+
+
+def test_inventory_meta_counts_dedupe_same_key_across_butlers():
+    """bu-976n0 regression: the same system-secret key surfaced by TWO butler
+    schemas must count ONCE in meta.unverified_count/failing_count, matching
+    the grouped model the UI renders (groupSystemCredentials collapses these
+    into one row) — not once per raw butler row. The originally reported
+    symptom was 29 raw rows vs 19 grouped rows in the KPI count.
+    """
+    # Same key ('SHARED_KEY'), never probed (state=warn), returned identically
+    # by every butler schema pool (the mock _make_db_manager routes every
+    # butler name to the same underlying pool/fixture).
+    shared_row = _make_system_row(key="SHARED_KEY", value="v1", last_test_ok=None)
+
+    mock_db = _make_db_manager(
+        butler_names=["alpha", "beta", "gamma"],
+        system_rows=[shared_row],
+        user_rows=[],
+        cli_rows=[],
+    )
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Raw data array still reflects one row per butler schema (3).
+    assert len(body["data"]["system"]) == 3
+
+    # Grouped meta count reflects ONE conceptual credential, not three.
+    assert body["meta"]["unverified_count"] == 1
+    assert body["meta"]["failing_count"] == 0
 
 
 # ---------------------------------------------------------------------------

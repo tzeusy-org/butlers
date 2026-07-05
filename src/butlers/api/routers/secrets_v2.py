@@ -30,7 +30,8 @@ Endpoints
 GET /api/secrets/inventory?identity=<uuid>
     Aggregated read across all butler schemas + public.entity_info.
     Returns ApiResponse<InventoryData> with cli/system/user arrays and
-    a meta.needs_hand_count computed server-side.
+    meta.failing_count / meta.unverified_count computed server-side
+    (bu-976n0 tri-state split — failing vs merely-unverified).
 
 GET /api/secrets/user/<provider>?identity=<uuid>
     Per-credential read for a user-scoped credential (public.entity_info).
@@ -120,8 +121,14 @@ Design decisions
 - Probe-log LRU: the most recent row in public.secret_probe_log for each
   (credential_scope, credential_key) is joined on the read path (one query
   per credential family), providing the TestResult for the spec.
-- meta.needs_hand_count = len([row for row in all_rows if row.state != 'ok']),
-  computed server-side from the full row set before the response is serialised.
+- meta.failing_count / meta.unverified_count (bu-976n0) are computed
+  server-side from a deduplicated row set before the response is serialised —
+  failing_count = genuinely broken/imminently-expiring rows, unverified_count
+  = set-but-never-probed rows. Deduplication matters because the System
+  family returns one row per butler schema and User can return more than one
+  entity_info row per provider; the frontend already collapses both before
+  rendering, so the aggregate must be computed over that same collapsed
+  model (see _dedupe_most_severe) or it disagrees with what the page shows.
   (Q7 resolution: server-computed, client-derived per-row flag stays stable.)
 - Graceful degradation: if a butler's pool is unreachable the butler's rows are
   silently omitted; the response still returns HTTP 200 (degraded-mode pattern).
@@ -1497,7 +1504,12 @@ async def _fetch_identity_info(
 
 
 def _count_severity(items: list[Any]) -> dict[str, int]:
-    """Return a severity breakdown dict for a list of credential rows."""
+    """Return a severity breakdown dict for a list of credential rows.
+
+    Callers should pass an already-deduplicated row set (see
+    ``_dedupe_most_severe``) — this function does not collapse duplicates
+    itself.
+    """
     counts: dict[str, int] = {"ok": 0, "warn": 0, "failing": 0, "expired": 0, "never_set": 0}
     for item in items:
         state = getattr(item, "state", "warn")
@@ -1505,9 +1517,67 @@ def _count_severity(items: list[Any]) -> dict[str, int]:
     return counts
 
 
-def _needs_hand_count(items: list[Any]) -> int:
-    """Count credentials that need attention (state != 'ok')."""
-    return sum(1 for item in items if getattr(item, "state", "warn") != "ok")
+# Most-to-least severe, mirroring the frontend's STATE_RANK
+# (frontend/src/hooks/use-secrets-inventory.ts) closely enough for merge
+# tie-breaking purposes. Only states _derive_state can actually emit appear
+# here — "expiring" ranks ahead of "warn"/"ok" so a merged row surfaces the
+# more urgent of the two when duplicates disagree.
+_STATE_SEVERITY_RANK: dict[str, int] = {
+    "expired": 0,
+    "failing": 1,
+    "expiring": 2,
+    "warn": 3,
+    "ok": 4,
+    "never_set": 5,
+}
+
+
+def _dedupe_most_severe(items: list[Any], key_fn: Callable[[Any], Any]) -> list[Any]:
+    """Collapse rows that represent the same conceptual credential, keeping
+    whichever duplicate has the more severe state.
+
+    bu-976n0: the System family returns one row PER BUTLER SCHEMA, and the
+    User family can return more than one entity_info row for the same
+    provider (e.g. distinct 'home_assistant_token' / 'home_assistant_url'
+    type suffixes). The frontend already collapses these before rendering
+    (``groupSystemCredentials`` / ``groupUserCredentials`` /
+    ``groupCliCredentials`` in use-secrets-inventory.ts) — a server-side
+    aggregate count must be computed over that same collapsed model, or it
+    disagrees with what the page actually shows (29 raw rows vs 19 grouped
+    rows was the originally reported symptom).
+    """
+    best: dict[Any, Any] = {}
+    for item in items:
+        key = key_fn(item)
+        current = best.get(key)
+        if current is None:
+            best[key] = item
+            continue
+        item_rank = _STATE_SEVERITY_RANK.get(getattr(item, "state", "warn"), 99)
+        current_rank = _STATE_SEVERITY_RANK.get(getattr(current, "state", "warn"), 99)
+        if item_rank < current_rank:
+            best[key] = item
+    return list(best.values())
+
+
+#: Backend states that count as "genuinely needs hand" — mirrors the
+#: frontend's NEEDS_HAND_STATES (constants.ts) restricted to the subset
+#: _derive_state can actually emit. Excludes "warn": set-but-never-probed is
+#: an unknown, not a failure (bu-976n0 — this exclusion is the actual fix;
+#: previously 'warn' was lumped in with genuine failures).
+_FAILING_STATES = frozenset({"expired", "failing", "expiring"})
+
+
+def _failing_count(items: list[Any]) -> int:
+    """Count credentials that are genuinely broken or imminently expiring —
+    the act-now bucket. See ``_FAILING_STATES``."""
+    return sum(1 for item in items if getattr(item, "state", "warn") in _FAILING_STATES)
+
+
+def _unverified_count(items: list[Any]) -> int:
+    """Count credentials that are merely unverified: set, but with no
+    successful probe on record (bu-976n0's 'warn' state)."""
+    return sum(1 for item in items if getattr(item, "state", "warn") == "warn")
 
 
 # ---------------------------------------------------------------------------
@@ -1547,8 +1617,10 @@ async def get_inventory(
 
     Raw credential values are NEVER returned.
 
-    meta.needs_hand_count is computed server-side from the full row set as
-    count(row.state != 'ok').
+    meta.failing_count / meta.unverified_count are computed server-side from
+    a deduplicated row set (bu-976n0): failing_count counts genuinely broken
+    or imminently-expiring rows, unverified_count counts set-but-never-probed
+    rows. See _dedupe_most_severe / _failing_count / _unverified_count.
     """
     # --- Resolve the shared credential pool (public schema) ---
     try:
@@ -1575,7 +1647,8 @@ async def get_inventory(
     # Exclude category 'cli'/'cli-auth' rows: CLI runtime tokens have their own
     # family and are read separately from this same pool by _fetch_cli_secrets().
     # Including them here would double-list them across the system and cli
-    # arrays and double-count them in meta.severity / needs_hand_count.
+    # arrays and double-count them in meta.severity / meta.failing_count /
+    # meta.unverified_count.
     #
     # read_only=False: these rows are now editable via target="shared-public".
     if shared_pool is not None:
@@ -1605,12 +1678,26 @@ async def get_inventory(
         identities = await _fetch_identity_info(shared_pool, seen_eids)
 
     # --- Build response ---
-    all_items: list[Any] = [*cli_secrets, *system_secrets, *user_secrets]
+    # meta.failing_count / meta.unverified_count (bu-976n0) must be computed
+    # over a DEDUPLICATED row set: the System family returns one row PER
+    # BUTLER SCHEMA, and User can return more than one entity_info row for the
+    # same provider (e.g. distinct home_assistant_token / home_assistant_url
+    # type suffixes). The frontend already collapses both before rendering
+    # (groupSystemCredentials / groupUserCredentials / groupCliCredentials in
+    # use-secrets-inventory.ts) — counting the raw per-butler rows previously
+    # disagreed with what the grouped UI actually shows (29 raw rows vs 19
+    # grouped rows was the originally reported symptom).
+    deduped_items: list[Any] = [
+        *_dedupe_most_severe(cli_secrets, lambda c: c.key),
+        *_dedupe_most_severe(system_secrets, lambda s: s.key),
+        *_dedupe_most_severe(
+            user_secrets, lambda u: (u.entity_id, _infer_provider_from_type(u.type))
+        ),
+    ]
 
-    # Single pass: derive both severity breakdown and needs_hand_count from the
-    # same _count_severity call to avoid iterating all_items twice.
-    counts = _count_severity(all_items)
-    needs_hand = sum(v for k, v in counts.items() if k != "ok")
+    counts = _count_severity(deduped_items)
+    failing = _failing_count(deduped_items)
+    unverified = _unverified_count(deduped_items)
     severity = {k: v for k, v in counts.items() if v > 0}
 
     data = InventoryData(
@@ -1622,9 +1709,11 @@ async def get_inventory(
     )
 
     # ApiMeta has extra="allow" so extra kwargs are serialised.
-    # meta.needs_hand_count is computed server-side from the full row set
-    # (Q7 resolution: server-computed aggregate; per-row flag stays client-derived).
-    meta = ApiMeta(needs_hand_count=needs_hand, severity=severity)
+    # meta.failing_count / meta.unverified_count are computed server-side from
+    # the deduplicated row set (bu-976n0 tri-state split — replaces the prior
+    # single meta.needs_hand_count, which conflated genuine failures with
+    # merely-unverified rows and double-counted per-butler duplicates).
+    meta = ApiMeta(failing_count=failing, unverified_count=unverified, severity=severity)
 
     return ApiResponse[InventoryData](data=data, meta=meta)
 

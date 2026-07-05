@@ -55,7 +55,7 @@ export function buildSpineEntries(
       r.state === "never_set"
         ? "not set"
         : r.state === "warn"
-          ? "needs probe"
+          ? "unverified"
         : r.state === "expiring" && r.expires
           ? `expires ${r.expires}`
           : `used ${r.lastUsed ?? "—"}`,
@@ -104,8 +104,15 @@ export function buildSpineEntries(
           ? `expires ${s.expires}`
           : s.state === "scope_mismatch"
             ? scopeMismatchSubline(s.scopesRequired, s.scopesGranted)
+            // bu-976n0: "warn" is set-but-never-probed (see _derive_state) —
+            // last_test_ok is None whenever this state is emitted, so there is
+            // never a real lastVerified to show here; state a plain "unverified"
+            // rather than fabricating a probe result. If a future backend
+            // change re-probes and re-verifies a stale-but-previously-ok
+            // credential into this bucket, lastVerified would be populated and
+            // this falls through to the honest "verified <when>" branch below.
             : s.state === "warn"
-              ? "needs probe"
+              ? (s.lastVerified ? `verified ${s.lastVerified}` : "unverified")
             : s.state === "never_set"
               ? "not connected"
               : `verified ${s.lastVerified ?? "—"}`,

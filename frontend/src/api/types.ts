@@ -7681,7 +7681,10 @@ export interface SecretsInventoryData {
 
 /** Meta fields returned alongside the inventory payload. */
 export interface SecretsInventoryMeta {
-  needs_hand_count: number;
+  /** Genuinely broken or imminently-expiring rows (bu-976n0 tri-state split). */
+  failing_count: number;
+  /** Set-but-never-probed rows — an unknown, not a failure (bu-976n0). */
+  unverified_count: number;
   severity?: Record<string, number>;
 }
 

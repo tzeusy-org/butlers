@@ -132,7 +132,7 @@ const MOCK_INVENTORY_RESPONSE = {
       },
     },
   },
-  meta: { needs_hand_count: 1, owner_entity_id: "tze" },
+  meta: { failing_count: 1, unverified_count: 0, owner_entity_id: "tze" },
 };
 
 const MOCK_GOOGLE_ACCOUNTS = [

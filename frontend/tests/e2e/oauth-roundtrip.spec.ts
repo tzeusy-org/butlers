@@ -94,7 +94,7 @@ const MOCK_INVENTORY_WITH_EXPIRED = {
       },
     },
   },
-  meta: { needs_hand_count: 0 },
+  meta: { failing_count: 0, unverified_count: 0 },
 };
 
 // ---------------------------------------------------------------------------

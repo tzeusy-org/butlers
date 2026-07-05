@@ -500,3 +500,85 @@ describe("DirectionPassport: probe-all button", () => {
     await waitFor(() => expect(getButton().disabled).toBe(false));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tri-state credential semantics: failing / stale-unverified / healthy
+// [bu-976n0]
+//
+// The "needs hand" bucket used to conflate a genuine probe failure with a
+// set-but-never-probed ("warn") row — both rendered amber + sliver + in the
+// same pinned group. This fabricated alarm: on 2026-07-05 19+ amber rows
+// were shown, of which only 3 were actually broken. These tests lock in the
+// fix: "warn" gets its own quiet "stale" group and never counts toward the
+// "need hand" / needsAttention alarm surfaces.
+// ---------------------------------------------------------------------------
+
+describe("Tri-state: unverified ('warn') rows are quiet, not alarm-colored [bu-976n0]", () => {
+  const staleInventory: InventoryResponse = {
+    ...MOCK_INVENTORY,
+    user: [
+      { ...MOCK_USER_CREDENTIALS[0]!, provider: "google", state: "ok" },
+      { ...MOCK_USER_CREDENTIALS[0]!, provider: "spotify", state: "warn" },
+    ],
+    system: [],
+    cli: [],
+  };
+
+  it("Spine: a 'warn' row lands in its own 'stale' group, not 'needs hand'", () => {
+    const entries = buildSpineEntries(staleInventory, "tze");
+    const html = renderToStaticMarkup(
+      <Spine
+        entries={entries}
+        activeKey={entries[0]?.key ?? ""}
+        onSelect={() => {}}
+        sortMode="severity"
+        onSortChange={() => {}}
+        search=""
+        onSearchChange={() => {}}
+        identities={MOCK_IDENTITIES}
+        activeIdentityId="tze"
+        onIdentityChange={() => {}}
+        providers={MOCK_PROVIDERS}
+      />,
+    );
+    // A quiet "stale" group carries the unverified row...
+    expect(html).toContain("stale · 1");
+    // ...and the act-now "needs hand" group is empty (hidden entirely) since
+    // nothing here is a genuine failure.
+    expect(html).not.toContain("needs hand ·");
+  });
+
+  it("Spine: no amber/sliver rendered for a 'warn'-only inventory (quiet, not alarm-colored)", () => {
+    const entries = buildSpineEntries(staleInventory, "tze");
+    const html = renderToStaticMarkup(
+      <Spine
+        entries={entries}
+        activeKey={entries[0]?.key ?? ""}
+        onSelect={() => {}}
+        sortMode="severity"
+        onSortChange={() => {}}
+        search=""
+        onSearchChange={() => {}}
+        identities={MOCK_IDENTITIES}
+        activeIdentityId="tze"
+        onIdentityChange={() => {}}
+        providers={MOCK_PROVIDERS}
+      />,
+    );
+    expect(html).not.toContain("var(--amber)");
+    expect(html).not.toContain("data-sliver");
+  });
+
+  it("DirectionPassport: KPI strip counts the warn row as 'unverified', not 'need hand'", () => {
+    const html = renderInRouter(<DirectionPassport inventory={staleInventory} />);
+    expect(html).toContain("0 need hand");
+    expect(html).toContain("1 unverified");
+  });
+
+  it("DirectionPassport: headline stays calm when only unverified rows are present", () => {
+    const html = renderInRouter(<DirectionPassport inventory={staleInventory} />);
+    // needsAttention is driven by genuine failures only — a lone 'warn' row
+    // must not trip the "N credentials need attention" alarm headline.
+    expect(html).toContain("Every credential, accounted for.");
+  });
+});

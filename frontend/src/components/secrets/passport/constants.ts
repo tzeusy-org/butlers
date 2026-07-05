@@ -12,20 +12,45 @@ export const STATE_CATALOG: Record<CredentialState, StateMeta> = {
   revoked:       { label: "revoked",        tone: "red",   sliver: true,  rank: 1 },
   scope_mismatch:{ label: "scope mismatch", tone: "amber", sliver: true,  rank: 2 },
   expiring:      { label: "expiring",       tone: "amber", sliver: true,  rank: 3 },
-  warn:          { label: "needs probe",    tone: "amber", sliver: true,  rank: 4 },
+  // bu-976n0 (tri-state): "warn" means set-but-never-probed (or a prior probe
+  // this stale, per _derive_state) — an UNKNOWN, not a BROKEN credential. It
+  // used to render identically to a genuine failure (amber + sliver), which
+  // fabricated alarm for the ~19-of-22 rows that were merely unverified on
+  // 2026-07-05. Quiet/dim, no sliver — see NEEDS_HAND_STATES / UNVERIFIED_STATES.
+  warn:          { label: "unverified",     tone: "dim",   sliver: false, rank: 4 },
   rotating:      { label: "rotating…", tone: "amber", sliver: false, rank: 4 },
   ok:            { label: "healthy",        tone: "ok",    sliver: false, rank: 5 },
   failed:        { label: "failed",         tone: "red",   sliver: true,  rank: 1 },
   never_set:     { label: "not set",        tone: "dim",   sliver: false, rank: 9 },
 };
 
-/** States that are "needs hand" — pinned at the top of the spine. */
+/**
+ * States that are genuinely "needs hand" — a probe actually failed, a token
+ * actually expired/was revoked, or a scope is actually missing. Pinned at the
+ * top of the spine as the act-now bucket.
+ *
+ * Deliberately EXCLUDES "warn" (bu-976n0): set-but-never-probed is an unknown,
+ * not a failure — see UNVERIFIED_STATES below. "rotating" stays here as a
+ * transient in-flight indicator, unchanged from prior behavior.
+ */
 export const NEEDS_HAND_STATES = new Set<CredentialState>([
-  "expired", "revoked", "scope_mismatch", "expiring", "warn", "rotating", "failed",
+  "expired", "revoked", "scope_mismatch", "expiring", "rotating", "failed",
 ]);
+
+/**
+ * States that are merely unverified — set, but with no successful probe on
+ * record (or a stale one). Quiet/gray, never alarm-colored: this bucket
+ * should be near-empty and self-clearing once the background staleness loop
+ * (bu-a63hn) re-probes it, not a standing amber alarm (bu-976n0).
+ */
+export const UNVERIFIED_STATES = new Set<CredentialState>(["warn"]);
 
 export function needsHand(state: CredentialState): boolean {
   return NEEDS_HAND_STATES.has(state);
+}
+
+export function isUnverified(state: CredentialState): boolean {
+  return UNVERIFIED_STATES.has(state);
 }
 
 export function severityRank(state: CredentialState): number {

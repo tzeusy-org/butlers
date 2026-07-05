@@ -24,7 +24,7 @@ import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
 import { Spine, SpineAddButton } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCliConnected, PassportEmptyState, PassportAddPanel } from "./pages.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
-import { needsHand } from "./constants.ts";
+import { needsHand, isUnverified } from "./constants.ts";
 import { useProbeAllSecrets } from "@/hooks/use-secrets-mutations.ts";
 
 // ── ProbeAllButton ───────────────────────────────────────────────────────────
@@ -72,11 +72,19 @@ function KpiCell({
   value,
   caption,
   captionTone = "dim",
+  quietCaption,
 }: {
   label: string;
   value: string;
   caption: string;
   captionTone?: "dim" | "amber" | "red";
+  /**
+   * A second, always-quiet caption line (bu-976n0) — e.g. an "N unverified"
+   * count. Rendered in --dim regardless of captionTone: unverified credentials
+   * are an unknown, not an alarm, and must never borrow the primary caption's
+   * amber/red weight.
+   */
+  quietCaption?: string;
 }) {
   const captionColor =
     captionTone === "amber"
@@ -104,6 +112,11 @@ function KpiCell({
       <Mono size={9} color={captionColor}>
         {caption}
       </Mono>
+      {quietCaption && (
+        <Mono size={9} color="var(--dim)">
+          {quietCaption}
+        </Mono>
+      )}
     </div>
   );
 }
@@ -271,9 +284,12 @@ export function DirectionPassport({
   const userForIdentity = inventory.user.filter((s) => spineIdSet.has(s.identity));
   const kpis = {
     integrations: {
-      total:    userForIdentity.length,
-      healthy:  userForIdentity.filter((x) => x.state === "ok").length,
-      needsHand:userForIdentity.filter((x) => needsHand(x.state)).length,
+      total:      userForIdentity.length,
+      healthy:    userForIdentity.filter((x) => x.state === "ok").length,
+      // Genuinely broken only (bu-976n0) — see UNVERIFIED_STATES for the
+      // separate "set but never probed" bucket below.
+      needsHand:  userForIdentity.filter((x) => needsHand(x.state)).length,
+      unverified: userForIdentity.filter((x) => isUnverified(x.state)).length,
     },
     system: {
       total:      inventory.system.length,
@@ -281,11 +297,17 @@ export function DirectionPassport({
       missing:    inventory.system.filter((x) => x.rowState === "missing").length,
     },
     cli: {
-      total:     inventory.cli.length,
-      ok:        inventory.cli.filter((x) => x.state === "ok").length,
-      attention: inventory.cli.filter((x) => needsHand(x.state)).length,
+      total:      inventory.cli.length,
+      ok:         inventory.cli.filter((x) => x.state === "ok").length,
+      attention:  inventory.cli.filter((x) => needsHand(x.state)).length,
+      unverified: inventory.cli.filter((x) => isUnverified(x.state)).length,
     },
   };
+  // needsAttention drives the headline + voice paragraph urgency — genuinely
+  // failing credentials only. Unverified/stale rows are surfaced separately
+  // (quiet KPI caption + their own Spine group) and never inflate this count
+  // (bu-976n0: this was the fabricated-alarm bug — 19 amber rows of which
+  // only 3 were actually broken).
   const needsAttention = kpis.integrations.needsHand + kpis.cli.attention;
 
   // Rough count of what "probe all" is about to sweep — never_set/missing
@@ -385,6 +407,11 @@ export function DirectionPassport({
                 value={`${kpis.integrations.healthy}/${kpis.integrations.total}`}
                 caption={`${kpis.integrations.needsHand} need hand`}
                 captionTone={kpis.integrations.needsHand > 0 ? "amber" : "dim"}
+                quietCaption={
+                  kpis.integrations.unverified > 0
+                    ? `${kpis.integrations.unverified} unverified`
+                    : undefined
+                }
               />
               <KpiSep />
               <KpiCell
@@ -398,6 +425,9 @@ export function DirectionPassport({
                 value={`${kpis.cli.ok}/${kpis.cli.total}`}
                 caption={kpis.cli.attention > 0 ? `${kpis.cli.attention} expiring` : "all ok"}
                 captionTone={kpis.cli.attention > 0 ? "amber" : "dim"}
+                quietCaption={
+                  kpis.cli.unverified > 0 ? `${kpis.cli.unverified} unverified` : undefined
+                }
               />
             </div>
           </div>

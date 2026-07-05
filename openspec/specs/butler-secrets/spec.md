@@ -23,13 +23,24 @@ The page is rendered in the binding **Dispatch** design language specified in `o
 
 #### Scenario: Spine grouping order
 - **WHEN** the spine renders
-- **THEN** rows are grouped in this exact order: `needs-hand` (pinned), `CLI runtimes`, `System`, `User`
-- **AND** the `needs-hand` group is always pinned and severity-sorted regardless of the `?sort=` mode
+- **THEN** rows are grouped in this exact order: `needs-hand` (pinned, act-now), `stale` (quiet, unverified — bu-976n0), `CLI runtimes`, `System`, `User`
+- **AND** the `needs-hand` group contains ONLY genuinely broken or imminently-expiring credentials (`expired`, `revoked`, `failed`, `scope_mismatch`, `expiring_soon`) and is always pinned and severity-sorted regardless of the `?sort=` mode
+- **AND** the `stale` group contains credentials in the `warn` state (set, but with no successful probe on record) — a `warn` credential is an unknown, not a failure, and MUST NOT appear in `needs-hand`
 - **AND** group eyebrows render in mono 10px uppercase with tracking 0.14em
 
 #### Scenario: Empty `needs-hand` group
-- **WHEN** every credential is healthy (no row has state in {`expired`, `revoked`, `failed`, `warn`, `scope_mismatch`, `expiring_soon`})
-- **THEN** the spine omits the `needs-hand` group entirely (no empty-state stub) and the page renders **zero red and zero amber pixels**
+- **WHEN** every credential is healthy (no row has state in {`expired`, `revoked`, `failed`, `scope_mismatch`, `expiring_soon`})
+- **THEN** the spine omits the `needs-hand` group entirely (no empty-state stub) and the page renders **zero red and zero amber pixels**, even if `warn`-state (stale/unverified) rows are present in their own quiet group
+
+#### Scenario: Empty `stale` group
+- **WHEN** no credential is in the `warn` state
+- **THEN** the spine omits the `stale` group entirely (no empty-state stub)
+
+#### Scenario: `warn` state is quiet, not alarm-colored
+- **WHEN** a credential is in the `warn` state (set-but-never-probed, or a stale prior probe)
+- **THEN** its spine row renders with a `--dim` state dot and no left-edge sliver — never `--amber` and never a sliver
+- **AND** its subline reads `unverified` (or `verified <when>` if a prior verification timestamp exists)
+- **AND** it does NOT count toward `meta.failing_count` or the "N need hand" KPI caption; it counts toward `meta.unverified_count` and a separate quiet KPI caption instead
 
 ### Requirement: Evidence-Over-Value Affordance Contract
 Each credential row in the spine SHALL surface a 6px state dot, a 2px left-edge sliver (coloured only when state demands), a mono label, and a mono subline. The masked-value blob (`••••••••`) is FORBIDDEN as the only proof a credential exists. Each credential page SHALL render the following evidence — in order — without any LLM-generated text:
