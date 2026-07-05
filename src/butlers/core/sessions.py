@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 # Valid trigger_source base values.
 # Schedule-like sources also allow "schedule:<task-name>" and
 # "deadline:<task-name>".
-TRIGGER_SOURCES = frozenset({"tick", "external", "trigger", "route", "healing", "dashboard", "qa"})
+TRIGGER_SOURCES = frozenset(
+    {"tick", "classification", "external", "trigger", "route", "healing", "dashboard", "qa"}
+)
 
 
 def _strip_null_bytes(value: str | None) -> str | None:
@@ -82,6 +84,7 @@ def _is_valid_trigger_source(trigger_source: str) -> bool:
 
     Valid values:
     - "tick"
+    - "classification"
     - "external"
     - "trigger"
     - "route"
@@ -128,9 +131,9 @@ async def session_create(
         pool: asyncpg connection pool for the butler's database.
         prompt: The prompt text sent to the runtime instance.
         trigger_source: What caused this session. Must be one of:
-            ``"tick"``, ``"external"``, ``"trigger"``, ``"route"``,
-            ``"healing"``, ``"dashboard"``, ``"schedule:<task-name>"``, or
-            ``"deadline:<task-name>"``.
+            ``"tick"``, ``"classification"``, ``"external"``, ``"trigger"``,
+            ``"route"``, ``"healing"``, ``"dashboard"``,
+            ``"schedule:<task-name>"``, or ``"deadline:<task-name>"``.
         trace_id: Optional OpenTelemetry trace ID for correlation.
         model: Optional model identifier used for this invocation.
         request_id: Required request ID for this session (UUIDv7 format).
@@ -162,9 +165,9 @@ async def session_create(
         raise ValueError("request_id is required and must not be None")
     if not _is_valid_trigger_source(trigger_source):
         raise ValueError(
-            f"Invalid trigger_source {trigger_source!r}; must be 'tick', 'external', "
-            f"'trigger', 'route', 'healing', 'dashboard', 'qa', "
-            f"'schedule:<task-name>', or 'deadline:<task-name>'"
+            f"Invalid trigger_source {trigger_source!r}; must be 'tick', "
+            f"'classification', 'external', 'trigger', 'route', 'healing', "
+            f"'dashboard', 'qa', 'schedule:<task-name>', or 'deadline:<task-name>'"
         )
 
     # Sanitize once up front so the retry path does not redo the work.

@@ -158,6 +158,8 @@ class DiscretionDispatcher:
         self,
         prompt: str,
         system_prompt: str = "",
+        *,
+        identity: str | None = None,
     ) -> str:
         """Invoke the discretion-tier model with *prompt* and return the response text.
 
@@ -173,6 +175,18 @@ class DiscretionDispatcher:
             The user-facing prompt to send.
         system_prompt:
             Optional system-level instructions for the model.
+        identity:
+            Per-connector identity for spend attribution (e.g. ``"tg:<chat_id>"``,
+            ``"home_assistant:ha.local:8123"``) forwarded by
+            :class:`~butlers.connectors.discretion.DiscretionEvaluator` as its
+            ``source_name``. Recorded as the ledger's ``butler_name`` in place
+            of the constructor's ``butler_name`` default (``"__discretion__"``)
+            so ``public.token_usage_ledger`` can distinguish which connector
+            source triggered the call instead of every discretion call sharing
+            one opaque identity. Does not affect model resolution (which still
+            uses the constructor's ``butler_name`` for per-butler catalog
+            overrides) — this is spend attribution only. ``None`` (the
+            default) preserves the prior constructor-default behavior.
 
         Returns
         -------
@@ -250,10 +264,11 @@ class DiscretionDispatcher:
                         await record_token_usage(
                             self._pool,
                             catalog_entry_id=catalog_entry_id,
-                            butler_name=self._butler_name,
+                            butler_name=identity or self._butler_name,
                             session_id=None,
                             input_tokens=input_tokens,
                             output_tokens=output_tokens or 0,
+                            purpose="discretion",
                         )
                         logger.debug(
                             "Discretion token usage recorded: in=%d out=%d model=%s",

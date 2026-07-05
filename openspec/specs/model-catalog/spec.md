@@ -29,7 +29,7 @@ The system SHALL maintain a `public.model_catalog` table as the canonical regist
 
 #### Scenario: Valid runtime types
 - **WHEN** a catalog entry specifies a `runtime_type`
-- **THEN** the value MUST correspond to a registered runtime adapter (e.g. `claude`, `codex`, `gemini`, `opencode`)
+- **THEN** the value MUST correspond to a registered runtime adapter (e.g. `claude`, `codex`, `gemini`, `opencode`, `api`)
 
 #### Scenario: Extra args format
 - **WHEN** `extra_args` is provided
@@ -199,4 +199,4 @@ All runtime adapters SHALL return `input_tokens` and `output_tokens` in their us
 
 #### Scenario: Known adapters to audit
 - **WHEN** the adapter token reporting contract is enforced
-- **THEN** the following adapters are verified: `claude`, `codex`, `gemini`, `opencode` (including ollama via opencode)
+- **THEN** the following adapters are verified: `claude`, `codex`, `gemini`, `opencode` (including ollama via opencode), `api` (direct Anthropic Messages API, no subprocess)

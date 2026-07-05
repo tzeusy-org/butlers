@@ -71,10 +71,10 @@ The manual trigger API SHALL accept an optional complexity parameter for operato
 - **THEN** the complexity defaults to `workhorse`
 
 ### Requirement: Tick Trigger Complexity
-The `tick` trigger source covers two distinct internal paths, each of which SHALL resolve its own complexity tier as described below. The system SHALL NOT apply a single fixed low-cost tier to every tick-triggered session.
+The `tick` and `classification` trigger sources cover two distinct internal paths, each of which SHALL resolve its own complexity tier as described below. The system SHALL NOT apply a single fixed low-cost tier to every tick/classification-triggered session.
 
 1. The scheduler tick handler (`tick()` in `src/butlers/core/scheduler.py`) dispatches each due scheduled task at that task's own configured complexity, defaulting to `workhorse` (`_DEFAULT_COMPLEXITY`) when the row specifies none or an unrecognized value. These sessions carry a `schedule:<name>` or `deadline:<name>` trigger source, not a fixed low-cost tier.
-2. The Switchboard routing-classification spawn (`src/butlers/modules/pipeline.py`) is the only session literally tagged `trigger_source="tick"`; it uses the `cheap` tier for its lightweight routing-LLM decision.
+2. The Switchboard routing-classification spawn (`src/butlers/modules/pipeline.py`) is the only session literally tagged `trigger_source="classification"` (bu-qvnce.12 renamed this from the historical `"tick"` — spend rules and QA/chronicler consumers that key off the classification call site now match both values so historical rows keep resolving correctly); it uses the `cheap` tier for its lightweight routing-LLM decision.
 
 #### Scenario: Scheduler tick uses each task's complexity, default workhorse
 - **WHEN** the scheduler tick handler dispatches a due cron, deadline, or event-chain task
@@ -82,5 +82,5 @@ The `tick` trigger source covers two distinct internal paths, each of which SHAL
 - **AND** a row with no complexity or an unrecognized value falls back to `workhorse`
 
 #### Scenario: Switchboard routing classification uses cheap
-- **WHEN** the Switchboard pipeline spawns its routing-classification session (`trigger_source="tick"`)
+- **WHEN** the Switchboard pipeline spawns its routing-classification session (`trigger_source="classification"`)
 - **THEN** the complexity is set to `cheap`

@@ -75,10 +75,14 @@ _NON_ACTIONABLE_GUARDRAIL_MARKERS = (
     "token_budget_exceeded",
 )
 
-# Switchboard classification sessions use trigger_source="tick" and a short
-# timeout cap before the pipeline falls back to General. Keep those expected
-# degradation rows out of autonomous QA dispatch; persistent routing quality
-# should be monitored through switchboard routing telemetry instead.
+# Switchboard classification sessions use trigger_source="classification"
+# (renamed from the historical "tick" in bu-qvnce.12 — both values identify
+# the same call site; "tick" persists only on rows recorded before the
+# rename) and a short timeout cap before the pipeline falls back to General.
+# Keep those expected degradation rows out of autonomous QA dispatch;
+# persistent routing quality should be monitored through switchboard routing
+# telemetry instead.
+_SWITCHBOARD_CLASSIFICATION_TRIGGER_SOURCES = frozenset({"tick", "classification"})
 _SWITCHBOARD_CLASSIFICATION_TIMEOUT_RE = re.compile(
     r"TimeoutError:\s+Session timed out after (\d+)s "
     r"\(model=[A-Za-z0-9._-]+mini,\s*butler=switchboard\)",
@@ -344,7 +348,11 @@ def _is_switchboard_classification_timeout(
     trigger_source: str | None,
     error_text: str | None,
 ) -> bool:
-    if source_butler != "switchboard" or status != "timeout" or trigger_source != "tick":
+    if (
+        source_butler != "switchboard"
+        or status != "timeout"
+        or trigger_source not in _SWITCHBOARD_CLASSIFICATION_TRIGGER_SOURCES
+    ):
         return False
     match = _SWITCHBOARD_CLASSIFICATION_TIMEOUT_RE.search(error_text or "")
     if not match:

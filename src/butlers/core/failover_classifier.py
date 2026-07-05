@@ -90,6 +90,15 @@ _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     "backend unavailable",
     "no such model",
     "api error",
+    # Anthropic Messages API (ApiAdapter, bu-qvnce.12): the SDK's own
+    # APIStatusError embeds a JSON error envelope whose `error.type` field
+    # uses underscore-joined identifiers (e.g. "api_error" for a generic 5xx,
+    # "overloaded_error" for 529) rather than the space-joined phrases above.
+    # These are pre-invocation, systemic provider failures — eligible.
+    "api_error",
+    "internal server error",
+    "bad gateway",
+    "gateway timeout",
     # OpenCode-specific structured errors (exit 0 with stderr)
     "providermodelnotfounderror",
     "model not found:",
@@ -102,6 +111,11 @@ _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     "network unreachable",
     "name or service not known",
     "temporary failure",
+    # Anthropic SDK's own APIConnectionError hardcodes this exact message
+    # ("Connection error.") for ANY network-level failure (DNS, dropped
+    # connection, TLS handshake failure, refused connection, etc.) — none
+    # of the more specific connection markers above match that literal text.
+    "connection error",
 )
 
 # Substrings matched (lowercased) against the exception message to detect

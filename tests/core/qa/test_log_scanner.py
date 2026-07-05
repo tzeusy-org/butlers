@@ -229,6 +229,25 @@ def test_switchboard_classification_timeout_excluded_from_log_scanner():
     assert _should_include_entry(entry) is False
 
 
+def test_switchboard_classification_timeout_excluded_with_renamed_trigger_source():
+    """bu-qvnce.12 renamed the classification trigger_source 'tick' ->
+    'classification'; new rows must suppress identically to legacy 'tick' rows."""
+    entry = LogEntry(
+        level="error",
+        event=(
+            "Runtime invocation failed: TimeoutError: Session timed out after 30s "
+            "(model=gpt-5.4-mini, butler=switchboard)"
+        ),
+        timestamp=datetime.now(UTC),
+        butler_name="switchboard",
+        logger="butlers.core.spawner",
+        exception="TimeoutError",
+        trigger_source="classification",
+        raw={"trigger_source": "classification", "timeout_s": 30},
+    )
+    assert _should_include_entry(entry) is False
+
+
 def test_legacy_switchboard_classification_timeout_uses_event_duration():
     """Legacy spawner logs without timeout_s still suppress only short tick timeouts."""
     entry = LogEntry(

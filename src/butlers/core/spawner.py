@@ -2227,6 +2227,7 @@ class Spawner:
                     output_tokens=_ledger_output_tokens or 0,
                     cached_input_tokens=_ledger_cached_input_tokens,
                     cache_creation_tokens=_ledger_cache_creation_tokens,
+                    purpose=trigger_source,
                 )
             # Emit per-call cost event to the live WS spend stream.
             # Uses the same token counts as the DB ledger (best-effort early capture).

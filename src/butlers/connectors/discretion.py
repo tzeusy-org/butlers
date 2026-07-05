@@ -262,8 +262,15 @@ class DiscretionLLMCaller(Protocol):
     for production use and lightweight mock objects for testing.
     """
 
-    async def call(self, prompt: str, system_prompt: str = "") -> str:
-        """Invoke the LLM with *prompt* and return the raw response text."""
+    async def call(
+        self, prompt: str, system_prompt: str = "", *, identity: str | None = None
+    ) -> str:
+        """Invoke the LLM with *prompt* and return the raw response text.
+
+        ``identity`` is an optional per-connector spend-attribution label
+        (see :meth:`~butlers.connectors.discretion_dispatcher.DiscretionDispatcher.call`);
+        implementations that don't care about spend attribution may ignore it.
+        """
         ...
 
 
@@ -463,7 +470,9 @@ class DiscretionEvaluator:
         )
 
         try:
-            raw = await self._dispatcher.call(prompt, system_prompt=self._system_prompt)
+            raw = await self._dispatcher.call(
+                prompt, system_prompt=self._system_prompt, identity=self._source
+            )
         except TimeoutError:
             logger.warning(
                 "Discretion LLM timed out for source=%s (weight=%.2f) — defaulting %s",

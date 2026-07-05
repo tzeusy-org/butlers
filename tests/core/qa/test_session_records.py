@@ -291,6 +291,34 @@ async def test_switchboard_classification_timeout_rows_are_not_actionable_findin
 
 
 @pytest.mark.asyncio
+async def test_switchboard_classification_timeout_rows_are_not_actionable_with_renamed_trigger_source():
+    """bu-qvnce.12 renamed the classification trigger_source 'tick' ->
+    'classification'; new rows must suppress identically to legacy 'tick' rows."""
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.execute = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(
+        return_value=[
+            _make_asyncpg_record(
+                source_butler="switchboard",
+                error=(
+                    "TimeoutError: Session timed out after 30s "
+                    "(model=gpt-5.4-mini, butler=switchboard)"
+                ),
+                status="timeout",
+                trigger_source="classification",
+                healing_fingerprint=None,
+            )
+        ]
+    )
+
+    findings = await SessionRecordsSource(pool=pool, repo_root=Path("/tmp")).discover(
+        lookback_minutes=15
+    )
+
+    assert findings == []
+
+
+@pytest.mark.asyncio
 async def test_non_classification_switchboard_timeout_rows_still_actionable():
     """Manual switchboard runtime timeouts are not hidden by the classifier filter."""
     pool = AsyncMock(spec=asyncpg.Pool)

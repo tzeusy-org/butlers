@@ -314,11 +314,17 @@ def _should_include_entry(
     return False
 
 
+#: trigger_source values that identify a switchboard classification session.
+#: Renamed from the historical "tick" to "classification" in bu-qvnce.12;
+#: "tick" is kept so log lines recorded before the rename still match.
+_SWITCHBOARD_CLASSIFICATION_TRIGGER_SOURCES = frozenset({"tick", "classification"})
+
+
 def _is_switchboard_classification_timeout(entry: LogEntry) -> bool:
     if (
         entry.butler_name != "switchboard"
         or entry.logger != "butlers.core.spawner"
-        or entry.trigger_source != "tick"
+        or entry.trigger_source not in _SWITCHBOARD_CLASSIFICATION_TRIGGER_SOURCES
     ):
         return False
     match = _SWITCHBOARD_CLASSIFICATION_TIMEOUT_RE.search(entry.event or "")

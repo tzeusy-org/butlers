@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.core.runtimes import (
+    ApiAdapter,
     ClaudeCodeAdapter,
     CodexAdapter,
     GeminiAdapter,
@@ -47,6 +48,7 @@ def test_adapter_registry_and_base_class() -> None:
         "gemini": GeminiAdapter,
         "opencode": OpenCodeAdapter,
         "claude": ClaudeCodeAdapter,
+        "api": ApiAdapter,
     }
     import butlers.core.runtimes as runtimes_module
 

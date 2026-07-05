@@ -38,6 +38,23 @@ complexity_tier = "cheap"
 priority = 25
 enabled = true
 
+# ---------------------------------------------------------------------------
+# Direct Anthropic Messages API adapter (bu-qvnce.12) — no CLI subprocess, no
+# MCP bootstrap. Outranks every other 'cheap' entry so switchboard
+# classification (trigger_source="classification") routes onto it by default;
+# see core_157_api_runtime_discretion_classification.py for the equivalent
+# seed applied to already-migrated databases.
+# ---------------------------------------------------------------------------
+
+[[models]]
+alias = "api-haiku-cheap"
+runtime_type = "api"
+model_id = "claude-haiku-4-5-20251001"
+extra_args = []
+complexity_tier = "cheap"
+priority = 30
+enabled = true
+
 [[models]]
 alias = "gpt-5.3-spark"
 runtime_type = "codex"
@@ -181,6 +198,18 @@ model_id = "ollama/qwen3.5:9b"
 extra_args = []
 complexity_tier = "specialty"
 priority = 10
+enabled = true
+
+# Direct Anthropic Messages API adapter (bu-qvnce.12) — outranks the local
+# Ollama discretion model so connector discretion screening (mcp_servers={},
+# max_turns=1 — never needed tool access) skips the CLI+MCP cold-start path.
+[[models]]
+alias = "api-haiku-specialty"
+runtime_type = "api"
+model_id = "claude-haiku-4-5-20251001"
+extra_args = []
+complexity_tier = "specialty"
+priority = 20
 enabled = true
 
 # ---------------------------------------------------------------------------

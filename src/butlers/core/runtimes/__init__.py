@@ -4,6 +4,7 @@ Provides the RuntimeAdapter ABC and a registry/factory for looking up
 adapter classes by runtime type string.
 """
 
+from butlers.core.runtimes.api import ApiAdapter
 from butlers.core.runtimes.base import (
     DEFAULT_RUNTIME_TYPE,
     RuntimeAdapter,
@@ -19,6 +20,7 @@ from butlers.core.runtimes.opencode import OpenCodeAdapter
 
 __all__ = [
     "DEFAULT_RUNTIME_TYPE",
+    "ApiAdapter",
     "ClaudeCodeAdapter",
     "CodexAdapter",
     "GeminiAdapter",

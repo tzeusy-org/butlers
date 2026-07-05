@@ -2317,7 +2317,7 @@ class MessagePipeline:
                     # sessions own their effective timeout through model_catalog.
                     dispatch_kwargs: dict[str, Any] = {
                         "prompt": routing_prompt,
-                        "trigger_source": "tick",
+                        "trigger_source": "classification",
                         "request_id": request_id,
                         "complexity": Complexity.CHEAP,
                     }

@@ -370,8 +370,8 @@ SELECT 1 FROM public.token_limits WHERE catalog_entry_id = $1 LIMIT 1
 _LEDGER_INSERT_SQL = """
 INSERT INTO public.token_usage_ledger
     (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens,
-     cached_input_tokens, cache_creation_tokens)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+     cached_input_tokens, cache_creation_tokens, purpose)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 """
 
 # Read the configured monthly spend ceiling (singleton row id=1).
@@ -1091,6 +1091,7 @@ async def record_token_usage(
     output_tokens: int,
     cached_input_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    purpose: str | None = None,
 ) -> None:
     """Record token usage to ``public.token_usage_ledger``.
 
@@ -1104,8 +1105,9 @@ async def record_token_usage(
     catalog_entry_id:
         UUID of the resolved ``public.model_catalog`` row.
     butler_name:
-        Name of the butler that spawned the session (or ``"__discretion__"`` for
-        discretion dispatcher calls).
+        Name of the butler that spawned the session, or the per-connector
+        identity for discretion dispatcher calls (e.g. ``"tg:<chat_id>"``);
+        falls back to ``"__discretion__"`` when no identity is available.
     session_id:
         UUID of the spawner session, or ``None`` for discretion dispatcher calls.
     input_tokens:
@@ -1117,6 +1119,13 @@ async def record_token_usage(
         Prompt-cache READ tokens reported by the adapter.
     cache_creation_tokens:
         Prompt-cache WRITE tokens reported by the adapter.
+    purpose:
+        Coarse "why" dimension for spend attribution (bu-qvnce.12), e.g. the
+        spawner's ``trigger_source`` (``route``/``schedule``/``classification``/
+        ``healing``/...) or ``"discretion"`` for connector discretion screening.
+        ``None`` when the caller has no meaningful purpose to report (kept
+        nullable rather than defaulted so honestly-unknown rows stay
+        distinguishable from a real, named purpose).
     """
     try:
         await pool.execute(
@@ -1128,6 +1137,7 @@ async def record_token_usage(
             output_tokens,
             cached_input_tokens,
             cache_creation_tokens,
+            purpose,
         )
     except Exception:
         logger.warning(

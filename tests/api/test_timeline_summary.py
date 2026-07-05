@@ -333,7 +333,7 @@ def test_heartbeat_classification_uses_trigger_source_not_summary_text():
     event = _session_to_event(row, butler="atlas")
     assert event.is_heartbeat is False
 
-    for trigger_source in ("tick", "heartbeat"):
+    for trigger_source in ("tick", "classification", "heartbeat"):
         hb_row = _make_session_row(prompt="doing the rounds", trigger_source=trigger_source)
         hb_event = _session_to_event(hb_row, butler="atlas")
         assert hb_event.is_heartbeat is True

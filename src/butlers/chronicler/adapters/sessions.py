@@ -79,13 +79,15 @@ DEFAULT_BATCH_LIMIT = 500
 # activity.  Rows with these values are excluded at the SQL layer so the
 # per-schema watermark advances only over user-visible work.
 #
-# Exact matches: 'tick', 'qa', 'healing'
+# Exact matches: 'tick', 'classification', 'qa', 'healing'
 # Prefix match:  'schedule:*'  (scheduler-fired background jobs)
 #
-# Rationale: heartbeat ticks, QA probes, healing sessions, and
-# scheduler-fired background jobs dominate raw session counts but carry no
-# "lived past time" signal for the Chronicler's mission.
-EXCLUDED_TRIGGER_SOURCES: frozenset[str] = frozenset({"tick", "qa", "healing"})
+# Rationale: heartbeat ticks, switchboard classification sessions (bu-qvnce.12
+# renamed the trigger_source from the historical 'tick' to 'classification';
+# 'tick' is kept here so pre-rename rows still exclude correctly), QA probes,
+# healing sessions, and scheduler-fired background jobs dominate raw session
+# counts but carry no "lived past time" signal for the Chronicler's mission.
+EXCLUDED_TRIGGER_SOURCES: frozenset[str] = frozenset({"tick", "classification", "qa", "healing"})
 EXCLUDED_TRIGGER_SOURCE_PREFIX: str = "schedule:"
 
 

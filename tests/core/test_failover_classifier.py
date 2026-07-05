@@ -350,6 +350,74 @@ class TestProviderAuthErrorsEligible:
         assert "default-closed" in dec.reason
 
 
+class TestApiAdapterAnthropicSdkErrorsEligible:
+    """bu-qvnce.12 (PR #2936) fail-open verification: ApiAdapter wraps every
+    Anthropic SDK exception as ``RuntimeError(f"ApiAdapter invocation failed:
+    {exc}")``. The SDK's own exception message shapes differ from the CLI
+    adapters this classifier was originally tuned for — most notably,
+    ``anthropic.APIConnectionError`` hardcodes the literal message
+    "Connection error." (no "refused"/"reset"/"timed out" suffix) for ANY
+    network-level failure, and ``APIStatusError``'s JSON error envelope uses
+    underscore-joined ``error.type`` identifiers (e.g. "api_error" for a
+    generic 5xx) rather than the space-joined phrases the marker list already
+    covers. Without explicit coverage, these are exactly the failure modes a
+    live outage or network blip would produce, and they must fail over to the
+    same-tier CLI safety net rather than terminate the dispatch.
+    """
+
+    def test_bare_anthropic_connection_error_is_eligible(self) -> None:
+        """anthropic.APIConnectionError's exact hardcoded message must fail over."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError("ApiAdapter invocation failed: Connection error."))
+        )
+        assert _eligible(dec), dec.reason
+
+    def test_anthropic_5xx_api_error_type_is_eligible(self) -> None:
+        """A generic Anthropic 500 (error.type == 'api_error') must fail over."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "ApiAdapter invocation failed: Error code: 500 - "
+                    "{'type': 'error', 'error': {'type': 'api_error', "
+                    "'message': 'Internal server error'}}"
+                )
+            )
+        )
+        assert _eligible(dec), dec.reason
+
+    def test_anthropic_missing_api_key_message_is_eligible(self) -> None:
+        """ApiAdapter's own no-credential RuntimeError must fail over."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "ApiAdapter: no Anthropic API key available (checked env, "
+                    "credential store 'cli-auth/claude', ANTHROPIC_API_KEY env var)"
+                )
+            )
+        )
+        assert _eligible(dec), dec.reason
+
+    def test_anthropic_401_authentication_error_is_eligible(self) -> None:
+        """A 401 (error.type == 'authentication_error') must fail over."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError(
+                    "ApiAdapter invocation failed: Error code: 401 - "
+                    "{'type': 'error', 'error': {'type': 'authentication_error', "
+                    "'message': 'invalid x-api-key'}}"
+                )
+            )
+        )
+        assert _eligible(dec), dec.reason
+
+    def test_anthropic_timeout_is_eligible(self) -> None:
+        """ApiAdapter's own TimeoutError (no captured tool calls) must fail over."""
+        dec = classify_failover_eligibility(
+            _ctx(TimeoutError("ApiAdapter invocation timed out after 60 seconds"))
+        )
+        assert _eligible(dec), dec.reason
+
+
 # ---------------------------------------------------------------------------
 # AC-1b.1: Empty runtime responses ARE eligible
 # ---------------------------------------------------------------------------

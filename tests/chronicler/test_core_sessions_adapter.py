@@ -111,6 +111,7 @@ def _adapter(*schemas: str) -> CoreSessionsAdapter:
 
 def test_excluded_trigger_sources_contains_expected_values() -> None:
     assert "tick" in EXCLUDED_TRIGGER_SOURCES
+    assert "classification" in EXCLUDED_TRIGGER_SOURCES
     assert "qa" in EXCLUDED_TRIGGER_SOURCES
     assert "healing" in EXCLUDED_TRIGGER_SOURCES
 

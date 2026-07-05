@@ -153,6 +153,23 @@ The system SHALL record token usage to the ledger whenever an adapter reports to
 - **THEN** a row is inserted into the ledger with the reported token counts
 - **AND** the usage counts against the quota (tokens were consumed by the provider regardless of session outcome)
 
+### Requirement: Purpose-Tagged Spend Attribution
+`public.token_usage_ledger` SHALL carry a nullable `purpose` column (bu-qvnce.12) recording a coarse "why" dimension for each row, independent of `butler_name` (who spent) and the cache-aware token buckets (what was spent). `record_token_usage()` SHALL accept an optional `purpose` keyword argument and write it through unchanged; omitting it SHALL record `NULL`, never a fabricated default.
+
+#### Scenario: Spawner stamps purpose from trigger_source
+- **WHEN** `core.spawner._run()` records ledger usage for a completed or failed session
+- **THEN** the row's `purpose` is set to that session's `trigger_source` (e.g. `route`, `schedule`, `classification`, `healing`, `dashboard`, `qa`, `external`, `trigger`)
+
+#### Scenario: Discretion dispatcher stamps purpose and per-connector identity
+- **WHEN** `DiscretionDispatcher.call()` records ledger usage
+- **THEN** the row's `purpose` is `"discretion"`
+- **AND** the row's `butler_name` is the caller-supplied `identity` (e.g. `"tg:<chat_id>"`) when provided, falling back to the dispatcher's constructor `butler_name` (default `"__discretion__"`) otherwise — replacing the prior behavior where every discretion call shared the same opaque `"__discretion__"` identity regardless of which connector triggered it
+
+#### Scenario: Purpose omitted defaults to NULL, not a fabricated category
+- **WHEN** a caller of `record_token_usage()` does not pass `purpose`
+- **THEN** the inserted row's `purpose` is `NULL`
+- **AND** `/spend` consumers MUST treat `NULL` as "unknown", never render it as a synthesized category
+
 #### Scenario: Adapter invocation fails before returning usage
 - **WHEN** the adapter raises an exception before returning any usage data (e.g., connection refused, immediate timeout)
 - **THEN** no ledger row is written (there are no token counts to record)

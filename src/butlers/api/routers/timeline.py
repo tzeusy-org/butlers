@@ -83,6 +83,7 @@ _TRIGGER_LABELS = {
     "route": "Routed message",
     "schedule": "Scheduled task",
     "tick": "Scheduled tick",
+    "classification": "Switchboard classification",
     "manual": "Manual trigger",
 }
 
@@ -90,7 +91,12 @@ _TRIGGER_LABELS = {
 # server-side (structured data) instead of the old client-side substring sniff
 # on the summary text (``summary.includes('tick')``), which folded real owner
 # events like "Buy concert tickets" into the collapsed heartbeat group.
-_HEARTBEAT_TRIGGER_SOURCES = frozenset({"tick", "heartbeat"})
+#
+# "classification" is switchboard's routing-decision trigger_source
+# (bu-qvnce.12 renamed it from the historical "tick" — both values identify
+# the same operational-telemetry call site, so both collapse into the same
+# heartbeat group; "tick" is kept for rows recorded before the rename).
+_HEARTBEAT_TRIGGER_SOURCES = frozenset({"tick", "classification", "heartbeat"})
 
 
 def _truncate(text: str) -> str:

@@ -47,8 +47,8 @@ A session created with `trigger_source = "route"` whose originating message prod
 #### Scenario: Non-routed sessions need not carry ingestion event id
 
 - **WHEN** a session is created with any non-route trigger source
-  (`tick`, `schedule:*`, `trigger`, `external`, `dashboard`,
-  `healing`, `qa`, `deadline:*`)
+  (`tick`, `classification`, `schedule:*`, `trigger`, `external`,
+  `dashboard`, `healing`, `qa`, `deadline:*`)
 - **THEN** the session row's `ingestion_event_id` MAY be NULL
 - **AND** chronicler title resolution SHALL NOT depend on this
   column for non-route sessions

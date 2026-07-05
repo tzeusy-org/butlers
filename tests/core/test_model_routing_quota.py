@@ -354,11 +354,12 @@ async def test_record_token_usage_and_reflected_in_quota(pool: asyncpg.Pool) -> 
         session_id=session_id,
         input_tokens=123,
         output_tokens=456,
+        purpose="route",
     )
 
     row = await pool.fetchrow(
         """
-        SELECT catalog_entry_id, butler_name, session_id, input_tokens, output_tokens
+        SELECT catalog_entry_id, butler_name, session_id, input_tokens, output_tokens, purpose
         FROM public.token_usage_ledger WHERE catalog_entry_id = $1
         """,
         entry_id,
@@ -367,8 +368,11 @@ async def test_record_token_usage_and_reflected_in_quota(pool: asyncpg.Pool) -> 
     assert row["butler_name"] == "test-butler"
     assert row["session_id"] == session_id
     assert row["input_tokens"] == 123 and row["output_tokens"] == 456
+    assert row["purpose"] == "route"
 
-    # NULL session_id accepted
+    # NULL session_id accepted; purpose defaults to NULL when the caller omits it
+    # (bu-qvnce.12 — pre-migration/unknown-purpose rows must stay honestly NULL,
+    # not silently defaulted to a fabricated category).
     entry2_id = await _insert_catalog_entry(pool, alias="record-null-session")
     await record_token_usage(
         pool,
@@ -379,10 +383,11 @@ async def test_record_token_usage_and_reflected_in_quota(pool: asyncpg.Pool) -> 
         output_tokens=20,
     )
     row2 = await pool.fetchrow(
-        "SELECT session_id, butler_name FROM public.token_usage_ledger WHERE catalog_entry_id = $1",
+        "SELECT session_id, butler_name, purpose FROM public.token_usage_ledger WHERE catalog_entry_id = $1",
         entry2_id,
     )
     assert row2 is not None and row2["session_id"] is None
+    assert row2["purpose"] is None
 
     # Quota check reflects recorded usage
     await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=1000, limit_30d=5000)

@@ -942,6 +942,7 @@ function RulesTable({ rules, onDelete, onReorder }: RulesTableProps) {
 const TRIGGER_SOURCES: string[] = [
   "route",
   "tick",
+  "classification",
   "schedule",
   "healing",
   "retry",
