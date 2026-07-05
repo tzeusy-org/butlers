@@ -211,6 +211,7 @@ WITH winsel AS (
         COALESCE(o.corrected_end_at, e.end_at)     AS e_at,
         e.source_name,
         e.episode_type,
+        e.layer,
         e.payload->>'trigger_source' AS trigger_source
     FROM episodes e
     LEFT JOIN LATERAL (
@@ -236,6 +237,7 @@ SELECT
     e_at,
     source_name,
     episode_type,
+    layer,
     trigger_source
 FROM winsel
 ORDER BY s_at
@@ -633,26 +635,40 @@ def _compute_kpi(
     streaks: Streaks,
     waking_gaps: Sequence[int],
 ) -> KpiSnapshot:
-    from butlers.chronicler.aggregations import category_for
+    """Bucket episodes into Activity-lane totals for the KPI snapshot.
 
-    lane_seconds: dict[str, float] = {}
+    Mirrors the counting seam the aggregate endpoint applies (tasks.md §4,
+    ``roster/chronicler/api/router.py``): only ``activity``-layer episodes are
+    counted (``lane_for_activity`` drops ``intent``/calendar and ``evidence``
+    rows), and overlapping same-lane intervals are unioned rather than summed
+    so concurrent episodes don't double-count. Without this an uncorroborated
+    all-day calendar block (intent layer) would leak into "other" hours.
+    """
+    from butlers.chronicler.aggregations import lane_for_activity, union_seconds
+
+    lane_intervals: dict[str, list[tuple[datetime, datetime]]] = {}
     longest_minutes = 0
     longest_title: str | None = None
     for r in episodes:
         s = max(r["s_at"], start_utc)
         e = min(r["e_at"] or end_utc, end_utc)
-        secs = max(0.0, (e - s).total_seconds())
-        cat = category_for(
+        if e <= s:
+            continue
+        lane = lane_for_activity(
+            r["layer"],
             r["source_name"],
             r["episode_type"],
             trigger_source=r["trigger_source"],
         )
-        lane_seconds[cat] = lane_seconds.get(cat, 0.0) + secs
-        mins = int(secs // 60)
+        if lane is None:
+            continue
+        lane_intervals.setdefault(lane, []).append((s, e))
+        mins = int((e - s).total_seconds() // 60)
         if mins > longest_minutes:
             longest_minutes = mins
             longest_title = r["title"]
 
+    lane_seconds = {lane: union_seconds(intervals) for lane, intervals in lane_intervals.items()}
     top = sorted(lane_seconds.items(), key=lambda kv: kv[1], reverse=True)[:3]
     longest_gap = max(waking_gaps) if waking_gaps else 0
     return KpiSnapshot(

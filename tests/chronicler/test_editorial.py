@@ -19,6 +19,7 @@ from butlers.chronicler.editorial import (
     KpiSnapshot,
     LaneHours,
     Streaks,
+    _compute_kpi,
     _compute_streaks,
     _detect_waking_gaps,
     _fetch_earliest_episode_date,
@@ -476,3 +477,116 @@ async def test_compose_excludes_source_health_for_old_archive_date(monkeypatch) 
     recent = await editorial.compose_briefing_payload(pool, date(2026, 5, 8), "UTC", now=now)
     assert any(i.kind == "source_health" for i in recent.attention_items)
     assert recent.state_class == "urgent"
+
+
+# ── _compute_kpi (bu-whhll.1: intent-leak regression) ───────────────────────
+#
+# The aggregate endpoint (roster/chronicler/api/router.py) only counts
+# `activity`-layer episodes (via `lane_for_activity`) and unions overlapping
+# same-lane intervals (`union_seconds`) instead of summing them. `_compute_kpi`
+# must apply the same rules or an all-day calendar block (intent layer, e.g.
+# "Singapore Armed Forces Day") leaks into the "other" KPI lane, and
+# overlapping same-lane episodes double-count.
+
+
+def test_compute_kpi_all_day_calendar_block_contributes_zero() -> None:
+    """An intent-layer (calendar) episode must not appear in any KPI lane."""
+    start = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
+    end = datetime(2026, 7, 3, 0, 0, tzinfo=UTC)
+    episodes = [
+        _FakeRow(
+            title="Singapore Armed Forces Day",
+            s_at=start,
+            e_at=end,
+            source_name="google_calendar.completed",
+            episode_type="scheduled_block",
+            layer="intent",
+            trigger_source=None,
+        ),
+    ]
+
+    kpi = _compute_kpi(episodes, start, end, sleep_minutes=0, streaks=Streaks(), waking_gaps=[])
+
+    assert kpi.hours_by_top_lanes == []
+    assert kpi.longest_episode_minutes == 0
+    assert kpi.longest_episode_title is None
+
+
+def test_compute_kpi_overlapping_same_lane_episodes_counted_once() -> None:
+    """Two overlapping activity-layer episodes in the same lane union, not sum."""
+    start = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
+    end = datetime(2026, 7, 3, 0, 0, tzinfo=UTC)
+    episodes = [
+        # Two overlapping 'tasks' (-> work lane) episodes, 09:00-11:00 and
+        # 10:00-13:00: overlap union is 09:00-13:00 == 4h, not the naive 5h sum.
+        _FakeRow(
+            title="Focus block",
+            s_at=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
+            e_at=datetime(2026, 7, 2, 11, 0, tzinfo=UTC),
+            source_name="chronicler.focus_inferred",
+            episode_type="focus_block",
+            layer="activity",
+            trigger_source=None,
+        ),
+        _FakeRow(
+            title="Scheduled work",
+            s_at=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
+            e_at=datetime(2026, 7, 2, 13, 0, tzinfo=UTC),
+            source_name="core.sessions",
+            episode_type="work",
+            layer="activity",
+            trigger_source="trigger",
+        ),
+    ]
+
+    kpi = _compute_kpi(episodes, start, end, sleep_minutes=0, streaks=Streaks(), waking_gaps=[])
+
+    assert kpi.hours_by_top_lanes == [LaneHours(lane="work", hours=4.0)]
+    # Longest single episode remains per-row (3h), not the unioned lane total.
+    assert kpi.longest_episode_minutes == 180
+    assert kpi.longest_episode_title == "Scheduled work"
+
+
+def test_compute_kpi_evidence_layer_episode_excluded() -> None:
+    """Raw evidence-layer rows (e.g. GPS points) never count toward a lane."""
+    start = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
+    end = datetime(2026, 7, 3, 0, 0, tzinfo=UTC)
+    episodes = [
+        _FakeRow(
+            title="GPS ping",
+            s_at=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
+            e_at=datetime(2026, 7, 2, 9, 5, tzinfo=UTC),
+            source_name="owntracks.points",
+            episode_type="movement_episode",
+            layer="evidence",
+            trigger_source=None,
+        ),
+    ]
+
+    kpi = _compute_kpi(episodes, start, end, sleep_minutes=0, streaks=Streaks(), waking_gaps=[])
+
+    assert kpi.hours_by_top_lanes == []
+    assert kpi.longest_episode_minutes == 0
+
+
+def test_compute_kpi_activity_layer_episode_counts() -> None:
+    """Sanity check: a normal activity-layer episode still counts as before."""
+    start = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
+    end = datetime(2026, 7, 3, 0, 0, tzinfo=UTC)
+    episodes = [
+        _FakeRow(
+            title="Deep sleep",
+            s_at=datetime(2026, 7, 2, 1, 0, tzinfo=UTC),
+            e_at=datetime(2026, 7, 2, 8, 0, tzinfo=UTC),
+            source_name="google_health.measurements",
+            episode_type="sleep_episode",
+            layer="activity",
+            trigger_source=None,
+        ),
+    ]
+
+    kpi = _compute_kpi(episodes, start, end, sleep_minutes=420, streaks=Streaks(), waking_gaps=[])
+
+    assert kpi.hours_by_top_lanes == [LaneHours(lane="sleep", hours=7.0)]
+    assert kpi.longest_episode_minutes == 420
+    assert kpi.longest_episode_title == "Deep sleep"
