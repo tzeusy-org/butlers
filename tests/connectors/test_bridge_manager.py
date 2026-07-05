@@ -11,6 +11,7 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -387,3 +388,113 @@ def test_recoverable_then_terminal_updates_flag_without_resetting_clock() -> Non
     mgr._set_degraded("pair_required", terminal=True)
     assert mgr.is_degraded_terminal is True
     assert mgr._degraded_since == since
+
+
+# ---------------------------------------------------------------------------
+# Invalidated-session escalation (bu-5ocmh)
+# ---------------------------------------------------------------------------
+
+
+def test_invalidated_session_false_when_healthy() -> None:
+    mgr = BridgeSubprocessManager(_make_config())
+    assert mgr.is_invalidated_session is False
+
+
+def test_invalidated_session_escalates_after_threshold() -> None:
+    """A persistent recoverable outage past the threshold escalates to a
+    terminal, is_invalidated_session=True classification."""
+    mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
+    mgr._set_degraded("Bridge status: disconnected")
+    mgr._degraded_since = time.monotonic() - 301.0
+    mgr._maybe_escalate_to_invalidated_session()
+    assert mgr.is_invalidated_session is True
+    assert mgr.is_degraded_terminal is True
+    assert "persisted >=" in mgr.degraded_reason
+
+
+def test_invalidated_session_not_escalated_below_threshold() -> None:
+    mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
+    mgr._set_degraded("Bridge status: disconnected")
+    mgr._degraded_since = time.monotonic() - 100.0
+    mgr._maybe_escalate_to_invalidated_session()
+    assert mgr.is_invalidated_session is False
+    assert mgr.is_degraded_terminal is False
+
+
+def test_invalidated_session_disabled_when_threshold_zero() -> None:
+    mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=0))
+    mgr._set_degraded("Bridge status: disconnected")
+    mgr._degraded_since = time.monotonic() - 99999.0
+    mgr._maybe_escalate_to_invalidated_session()
+    assert mgr.is_invalidated_session is False
+
+
+def test_invalidated_session_reasserts_terminal_every_poll_after_escalation() -> None:
+    """Once escalated, a subsequent plain _set_degraded() call (as _poll_status
+    reissues every tick) transiently resets `_degraded_terminal`, but the next
+    escalation check must re-assert terminal=True rather than leave it downgraded.
+    """
+    mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
+    mgr._set_degraded("Bridge status: disconnected")
+    mgr._degraded_since = time.monotonic() - 301.0
+    mgr._maybe_escalate_to_invalidated_session()
+    assert mgr.is_degraded_terminal is True
+
+    # Simulate the next health poll's plain (non-terminal) _set_degraded call.
+    mgr._set_degraded("Bridge status: disconnected")
+    assert mgr.is_degraded_terminal is False  # transient reset before re-escalation
+
+    mgr._maybe_escalate_to_invalidated_session()
+    assert mgr.is_degraded_terminal is True
+    assert mgr.is_invalidated_session is True
+
+
+def test_clear_degraded_resets_invalidated_session_flag() -> None:
+    mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
+    mgr._set_degraded("Bridge status: disconnected")
+    mgr._degraded_since = time.monotonic() - 301.0
+    mgr._maybe_escalate_to_invalidated_session()
+    assert mgr.is_invalidated_session is True
+    mgr._clear_degraded()
+    assert mgr.is_invalidated_session is False
+
+
+async def test_poll_status_escalates_disconnected_past_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end through _poll_status: a bridge stuck 'disconnected' longer
+    than the threshold is classified as an invalidated session."""
+    mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
+    mgr._process = _fake_process(returncode=None)
+    monkeypatch.setattr(
+        "butlers.connectors.bridge_manager._http_get_unix",
+        AsyncMock(return_value={"state": "disconnected", "connected": False, "logged_in": False}),
+    )
+
+    await mgr._poll_status()
+    assert mgr.is_degraded
+    assert mgr.is_invalidated_session is False  # first poll, duration ~0
+
+    mgr._degraded_since = time.monotonic() - 301.0
+    await mgr._poll_status()
+    assert mgr.is_invalidated_session is True
+    assert mgr.is_degraded_terminal is True
+
+
+async def test_poll_status_escalates_connected_but_link_dead_past_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The StreamReplaced false-green case (state=connected, link dead) also
+    escalates once it persists past the threshold."""
+    mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
+    mgr._process = _fake_process(returncode=None)
+    monkeypatch.setattr(
+        "butlers.connectors.bridge_manager._http_get_unix",
+        AsyncMock(return_value={"state": "connected", "connected": False, "logged_in": False}),
+    )
+
+    await mgr._poll_status()
+    mgr._degraded_since = time.monotonic() - 301.0
+    await mgr._poll_status()
+    assert mgr.is_invalidated_session is True
+    assert mgr.is_degraded_terminal is True

@@ -428,6 +428,38 @@ async def test_watchdog_loop_triggers_restart_when_stale(
     restart.assert_awaited_once()
 
 
+async def test_watchdog_loop_survives_invalidated_session_check_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected exception from the invalidated-session check (e.g. a
+    malformed settings row) must not kill the watchdog loop — that would
+    silently disable both invalidated-session alerting AND the stale-link
+    restart check for the rest of the connector process's lifetime, which
+    is exactly the "nothing ever tells the owner" failure mode bu-5ocmh
+    exists to fix, just from a different code path."""
+    import butlers.connectors.whatsapp_user_client as wac
+
+    connector = _connector_with_threshold(3600)
+    connector._running = True
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.degraded_duration_s = 4000.0
+    connector._bridge_manager.is_degraded_terminal = False
+    connector._bridge_manager.degraded_reason = "down"
+
+    monkeypatch.setattr(wac, "_LINK_WATCHDOG_INTERVAL_S", 0)
+    monkeypatch.setattr(
+        connector,
+        "_check_invalidated_session_state",
+        AsyncMock(side_effect=AttributeError("'str' object has no attribute 'get'")),
+    )
+    restart = AsyncMock()
+    monkeypatch.setattr(connector, "_restart_for_stale_link", restart)
+
+    await connector._link_watchdog_loop()  # must not raise
+
+    restart.assert_awaited_once()
+
+
 async def test_watchdog_loop_exits_cleanly_on_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -557,3 +589,351 @@ async def test_missing_raw_field_does_not_record(
         await owner_connector._record_owner_outbound_if_applicable(event, "chat-abc")
 
     mock_record.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Invalidated-session alerting + owner-triggered recovery (bu-5ocmh)
+# ---------------------------------------------------------------------------
+
+
+def _connector_with_mocks(**config_kwargs) -> WhatsAppUserClientConnector:
+    config = WhatsAppUserClientConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+        endpoint_identity=_ENDPOINT,
+        **config_kwargs,
+    )
+    connector = WhatsAppUserClientConnector(config, db_pool=MagicMock(), cursor_pool=MagicMock())
+    connector._mcp_client = MagicMock()
+    connector._mcp_client.call_tool = AsyncMock(return_value={"status": "ok"})
+    return connector
+
+
+async def test_check_invalidated_session_state_noop_without_bridge_manager() -> None:
+    connector = _connector_with_mocks()
+    connector._bridge_manager = None
+    await connector._check_invalidated_session_state()  # must not raise
+
+
+async def test_check_invalidated_session_state_alerts_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The alert fires exactly once per invalidation episode, not every tick."""
+    connector = _connector_with_mocks()
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.is_invalidated_session = True
+    connector._bridge_manager.is_degraded_terminal = True
+
+    alert = AsyncMock()
+    monkeypatch.setattr(connector, "_send_invalidated_session_alert", alert)
+    monkeypatch.setattr(connector, "_maybe_perform_pair_reset", AsyncMock())
+
+    await connector._check_invalidated_session_state()
+    await connector._check_invalidated_session_state()
+    await connector._check_invalidated_session_state()
+
+    alert.assert_awaited_once()
+    assert connector._invalidated_session_alert_sent is True
+
+
+async def test_check_invalidated_session_state_resets_after_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the session is no longer invalidated, the alert flag resets so a
+    future invalidation episode can alert again."""
+    connector = _connector_with_mocks()
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.is_invalidated_session = False
+    connector._invalidated_session_alert_sent = True
+    monkeypatch.setattr(connector, "_maybe_perform_pair_reset", AsyncMock())
+
+    await connector._check_invalidated_session_state()
+
+    assert connector._invalidated_session_alert_sent is False
+
+
+async def test_send_invalidated_session_alert_calls_deliver_tool() -> None:
+    """Alerting goes through Switchboard's `deliver` tool directly (this runs
+    outside any butler daemon, so the full notify() tool isn't reachable)."""
+    connector = _connector_with_mocks()
+
+    await connector._send_invalidated_session_alert()
+
+    connector._mcp_client.call_tool.assert_awaited_once()
+    tool_name, payload = connector._mcp_client.call_tool.call_args.args
+    assert tool_name == "deliver"
+    assert payload["source_butler"] == "whatsapp_user_client"
+    assert payload["notify_request"]["schema_version"] == "notify.v1"
+    assert payload["notify_request"]["delivery"]["channel"] == "telegram"
+
+
+async def test_send_invalidated_session_alert_never_raises_on_failure() -> None:
+    """A delivery failure (exception or {"status": "failed"}) must never
+    propagate — alerting failures must not affect ingestion."""
+    connector = _connector_with_mocks()
+    connector._mcp_client.call_tool = AsyncMock(side_effect=ConnectionError("switchboard down"))
+
+    await connector._send_invalidated_session_alert()  # must not raise
+
+
+async def test_send_invalidated_session_alert_records_attention_ledger_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _connector_with_mocks()
+    record = AsyncMock()
+    monkeypatch.setattr("butlers.core.attention_ledger.record_attention_event", record)
+
+    await connector._send_invalidated_session_alert()
+
+    record.assert_awaited_once()
+    assert record.call_args.kwargs["origin_butler"] == "whatsapp_user_client"
+    assert record.call_args.kwargs["outcome"] == "delivered"
+    assert record.call_args.kwargs["reason"] == "whatsapp_invalidated_session"
+
+
+async def test_maybe_perform_pair_reset_noop_when_not_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A healthy (or merely transiently-degraded, non-terminal) session must
+    never be cleared, even if a stale reset flag lingers in settings."""
+    connector = _connector_with_mocks()
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.is_degraded_terminal = False
+
+    load_settings = AsyncMock()
+    monkeypatch.setattr("butlers.connectors.cursor_store.load_connector_settings", load_settings)
+
+    await connector._maybe_perform_pair_reset()
+
+    load_settings.assert_not_awaited()
+
+
+async def test_maybe_perform_pair_reset_noop_without_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    connector = _connector_with_mocks()
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.is_degraded_terminal = True
+
+    monkeypatch.setattr(
+        "butlers.connectors.cursor_store.load_connector_settings",
+        AsyncMock(return_value={}),
+    )
+    reset = AsyncMock()
+    monkeypatch.setattr(connector, "_perform_pair_reset", reset)
+
+    await connector._maybe_perform_pair_reset()
+
+    reset.assert_not_awaited()
+
+
+async def test_maybe_perform_pair_reset_triggers_once_per_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pending pair_reset_requested_at flag triggers recovery exactly once;
+    re-reading the same (unchanged) flag value on the next tick must not
+    trigger it again."""
+    connector = _connector_with_mocks()
+    connector._bridge_manager = MagicMock()
+    connector._bridge_manager.is_degraded_terminal = True
+
+    monkeypatch.setattr(
+        "butlers.connectors.cursor_store.load_connector_settings",
+        AsyncMock(return_value={"pair_reset_requested_at": "2026-07-05T12:00:00+00:00"}),
+    )
+    reset = AsyncMock()
+    monkeypatch.setattr(connector, "_perform_pair_reset", reset)
+
+    await connector._maybe_perform_pair_reset()
+    await connector._maybe_perform_pair_reset()
+
+    reset.assert_awaited_once()
+
+
+async def test_clear_whatsmeow_device_store_executes_delete() -> None:
+    connector = _connector_with_mocks()
+    connector._cursor_pool = AsyncMock()
+
+    await connector._clear_whatsmeow_device_store()
+
+    connector._cursor_pool.execute.assert_awaited_once()
+    (sql,) = connector._cursor_pool.execute.call_args.args
+    assert "DELETE FROM public.whatsmeow_device" in sql
+
+
+async def test_clear_whatsmeow_device_store_raises_without_pool() -> None:
+    connector = _connector_with_mocks()
+    connector._cursor_pool = None
+
+    with pytest.raises(RuntimeError):
+        await connector._clear_whatsmeow_device_store()
+
+
+async def test_perform_pair_reset_stops_clears_and_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full owner-triggered recovery sequence: stop, clear the device
+    store, then rebuild+start a fresh BridgeSubprocessManager configured to
+    accept a terminal pair_required outcome as a normal result."""
+    connector = _connector_with_mocks()
+    old_manager = AsyncMock()
+    connector._bridge_manager = old_manager
+
+    clear_store = AsyncMock()
+    monkeypatch.setattr(connector, "_clear_whatsmeow_device_store", clear_store)
+    monkeypatch.setattr("butlers.connectors.cursor_store.save_connector_settings", AsyncMock())
+
+    new_manager = AsyncMock()
+    created_configs = []
+
+    def _fake_bridge_manager_ctor(cfg):
+        created_configs.append(cfg)
+        return new_manager
+
+    monkeypatch.setattr(
+        "butlers.connectors.whatsapp_user_client.BridgeSubprocessManager",
+        _fake_bridge_manager_ctor,
+    )
+
+    connector._invalidated_session_alert_sent = True
+    await connector._perform_pair_reset()
+
+    old_manager.stop.assert_awaited_once()
+    clear_store.assert_awaited_once()
+    new_manager.start.assert_awaited_once()
+    assert connector._bridge_manager is new_manager
+    assert created_configs[0].startup_allow_degraded is True
+    # Forgetting the alert episode lets a still-stuck (or freshly re-invalidated)
+    # bridge alert again rather than staying silently suppressed forever.
+    assert connector._invalidated_session_alert_sent is False
+
+
+async def test_perform_pair_reset_clears_persisted_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The persisted pair_reset_requested_at flag must be cleared once acted
+    on — otherwise a later, unrelated connector process restart (redeploy,
+    crash, host reboot) would re-read the same stale timestamp as if it were
+    a brand-new request and wipe an already-healthy, already-repaired
+    device (the in-memory `_last_pair_reset_handled_at` guard alone does not
+    survive a process restart)."""
+    connector = _connector_with_mocks()
+    connector._bridge_manager = AsyncMock()
+    monkeypatch.setattr(connector, "_clear_whatsmeow_device_store", AsyncMock())
+    monkeypatch.setattr(
+        "butlers.connectors.whatsapp_user_client.BridgeSubprocessManager",
+        lambda cfg: AsyncMock(),
+    )
+    save_settings = AsyncMock()
+    monkeypatch.setattr("butlers.connectors.cursor_store.save_connector_settings", save_settings)
+
+    await connector._perform_pair_reset()
+
+    save_settings.assert_awaited_once()
+    args = save_settings.call_args.args
+    assert args[0] is connector._db_pool
+    assert args[-1] == {"pair_reset_requested_at": None}
+
+
+async def test_perform_pair_reset_tolerates_expected_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restarted bridge legitimately waiting in pair_required can still hit
+    the outer startup_timeout_s in rare slow-spawn cases — this must be
+    treated as an acceptable outcome, not an unhandled crash."""
+    connector = _connector_with_mocks()
+    connector._bridge_manager = AsyncMock()
+    monkeypatch.setattr(connector, "_clear_whatsmeow_device_store", AsyncMock())
+    monkeypatch.setattr("butlers.connectors.cursor_store.save_connector_settings", AsyncMock())
+
+    new_manager = AsyncMock()
+    new_manager.start = AsyncMock(side_effect=TimeoutError("bridge did not start in time"))
+    monkeypatch.setattr(
+        "butlers.connectors.whatsapp_user_client.BridgeSubprocessManager",
+        lambda cfg: new_manager,
+    )
+
+    await connector._perform_pair_reset()  # must not raise
+
+
+async def test_perform_pair_reset_restarts_even_if_clear_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient DB failure while clearing the device store must not skip
+    the restart — otherwise the connector is left with no bridge at all
+    until the owner notices and retries."""
+    connector = _connector_with_mocks()
+    connector._bridge_manager = AsyncMock()
+    monkeypatch.setattr(
+        connector,
+        "_clear_whatsmeow_device_store",
+        AsyncMock(side_effect=RuntimeError("db blip")),
+    )
+    monkeypatch.setattr("butlers.connectors.cursor_store.save_connector_settings", AsyncMock())
+
+    new_manager = AsyncMock()
+    monkeypatch.setattr(
+        "butlers.connectors.whatsapp_user_client.BridgeSubprocessManager",
+        lambda cfg: new_manager,
+    )
+
+    await connector._perform_pair_reset()  # must not raise
+
+    new_manager.start.assert_awaited_once()
+    assert connector._bridge_manager is new_manager
+
+
+async def test_perform_pair_reset_restarts_even_if_stop_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure stopping the old bridge must not abort the whole recovery."""
+    connector = _connector_with_mocks()
+    old_manager = AsyncMock()
+    old_manager.stop = AsyncMock(side_effect=RuntimeError("stop blew up"))
+    connector._bridge_manager = old_manager
+    monkeypatch.setattr(connector, "_clear_whatsmeow_device_store", AsyncMock())
+    monkeypatch.setattr("butlers.connectors.cursor_store.save_connector_settings", AsyncMock())
+
+    new_manager = AsyncMock()
+    monkeypatch.setattr(
+        "butlers.connectors.whatsapp_user_client.BridgeSubprocessManager",
+        lambda cfg: new_manager,
+    )
+
+    await connector._perform_pair_reset()  # must not raise
+
+    new_manager.start.assert_awaited_once()
+    assert connector._bridge_manager is new_manager
+
+
+async def test_perform_pair_reset_survives_flag_clear_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient DB failure while clearing the persisted flag must not
+    abort the stop/clear/restart recovery sequence."""
+    connector = _connector_with_mocks()
+    connector._bridge_manager = AsyncMock()
+    monkeypatch.setattr(connector, "_clear_whatsmeow_device_store", AsyncMock())
+    monkeypatch.setattr(
+        "butlers.connectors.cursor_store.save_connector_settings",
+        AsyncMock(side_effect=RuntimeError("db blip")),
+    )
+
+    new_manager = AsyncMock()
+    monkeypatch.setattr(
+        "butlers.connectors.whatsapp_user_client.BridgeSubprocessManager",
+        lambda cfg: new_manager,
+    )
+
+    await connector._perform_pair_reset()  # must not raise
+
+    new_manager.start.assert_awaited_once()
+
+
+async def test_build_bridge_config_defaults_to_strict_startup() -> None:
+    """Ordinary boot (not a pair-reset restart) keeps the existing strict
+    startup contract: wait for a real 'connected' state."""
+    connector = _connector_with_mocks()
+    cfg = connector._build_bridge_config()
+    assert cfg.startup_allow_degraded is False
+
+
+async def test_build_bridge_config_allows_degraded_for_recovery() -> None:
+    connector = _connector_with_mocks()
+    cfg = connector._build_bridge_config(startup_allow_degraded=True)
+    assert cfg.startup_allow_degraded is True

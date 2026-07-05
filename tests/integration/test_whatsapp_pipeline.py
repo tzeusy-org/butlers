@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 from butlers.api.app import create_app
-from butlers.api.routers.whatsapp import _get_bridge_socket_path
+from butlers.api.routers.whatsapp import _get_bridge_socket_path, _get_db_manager
 from butlers.connectors.whatsapp_user_client import (
     WhatsAppUserClientConnector,
     WhatsAppUserClientConnectorConfig,
@@ -450,9 +450,19 @@ class TestWhatsAppJIDResolution:
 
 class TestDashboardPairAPI:
     @pytest.fixture
-    def whatsapp_app(self):
+    def mock_db_manager(self):
+        """Minimal DatabaseManager stand-in: no switchboard pool by default,
+        so the pair-reset DB path (bu-5ocmh) degrades to "not flagged" rather
+        than raising for tests that don't care about it."""
+        db = MagicMock()
+        db.pool.side_effect = KeyError("no switchboard pool configured for this test")
+        return db
+
+    @pytest.fixture
+    def whatsapp_app(self, mock_db_manager):
         app = create_app(api_key="")
         app.dependency_overrides[_get_bridge_socket_path] = lambda: "/tmp/test-wa-bridge.sock"
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db_manager
         yield app
         app.dependency_overrides.clear()
 
@@ -485,6 +495,114 @@ class TestDashboardPairAPI:
         with patch("butlers.api.routers.whatsapp._bridge_post", new=AsyncMock(return_value=None)):
             response = await client.post("/api/connectors/whatsapp/pair/start")
         assert response.status_code == 503 and "bridge" in response.json()["detail"].lower()
+
+    async def test_pair_start_empty_qr_without_invalidation_signature_keeps_generic_error(
+        self, client
+    ):
+        """An empty-QR response that doesn't look like an invalidated session
+        (bu-5ocmh) — e.g. low uptime, still legitimately negotiating — keeps
+        the original generic error rather than claiming a reset was requested."""
+        with (
+            patch(
+                "butlers.api.routers.whatsapp._bridge_post",
+                new=AsyncMock(return_value={"qr_data_uri": ""}),
+            ),
+            patch(
+                "butlers.api.routers.whatsapp._bridge_get",
+                new=AsyncMock(
+                    return_value={
+                        "state": "disconnected",
+                        "connected": False,
+                        "logged_in": False,
+                        "uptime_s": 5,
+                    }
+                ),
+            ),
+        ):
+            response = await client.post("/api/connectors/whatsapp/pair/start")
+        assert response.status_code == 502
+        assert "empty qr code" in response.json()["detail"].lower()
+
+    async def test_pair_start_invalidated_session_flags_connector_for_reset(
+        self, whatsapp_app, client
+    ):
+        """An empty-QR response on a bridge that looks like an invalidated
+        session (long uptime, dead link, device already loaded — bu-5ocmh)
+        flags the connector via connector_registry.settings and returns an
+        actionable error instead of the generic 'no QR code' message forever."""
+        fake_pool = AsyncMock()
+        fake_pool.fetchrow = AsyncMock(return_value={"endpoint_identity": "whatsapp:+12025551234"})
+        mock_db = MagicMock()
+        mock_db.pool.return_value = fake_pool
+        whatsapp_app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        with (
+            patch(
+                "butlers.api.routers.whatsapp._bridge_post",
+                new=AsyncMock(return_value={"qr_data_uri": ""}),
+            ),
+            patch(
+                "butlers.api.routers.whatsapp._bridge_get",
+                new=AsyncMock(
+                    return_value={
+                        "state": "disconnected",
+                        "connected": False,
+                        "logged_in": False,
+                        "uptime_s": 9999,
+                    }
+                ),
+            ),
+            patch(
+                "butlers.connectors.cursor_store.save_connector_settings",
+                new=AsyncMock(return_value={}),
+            ) as mock_save,
+        ):
+            response = await client.post("/api/connectors/whatsapp/pair/start")
+
+        assert response.status_code == 503
+        assert "invalidated" in response.json()["detail"].lower()
+        mock_save.assert_awaited_once()
+        _, args, kwargs = mock_save.mock_calls[0]
+        assert args[1] == "whatsapp_user_client"
+        assert args[2] == "whatsapp:+12025551234"
+        assert "pair_reset_requested_at" in args[3]
+
+    async def test_status_surfaces_pair_required_for_long_disconnected_bridge(self, client):
+        """/status relabels a long-uptime, link-dead 'disconnected' bridge as
+        pair_required (bu-5ocmh) instead of showing the same bare
+        'disconnected' the whole 7-week outage would otherwise have shown."""
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_get",
+            new=AsyncMock(
+                return_value={
+                    "state": "disconnected",
+                    "connected": False,
+                    "logged_in": False,
+                    "uptime_s": 9999,
+                }
+            ),
+        ):
+            response = await client.get("/api/connectors/whatsapp/status")
+        assert response.status_code == 200
+        assert response.json()["state"] == "pair_required"
+
+    async def test_status_keeps_disconnected_for_brief_outage(self, client):
+        """A brief, still-recovering disconnect (low uptime) must not be
+        mislabeled as pair_required — only a persistent one is (bu-5ocmh)."""
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_get",
+            new=AsyncMock(
+                return_value={
+                    "state": "disconnected",
+                    "connected": False,
+                    "logged_in": False,
+                    "uptime_s": 5,
+                }
+            ),
+        ):
+            response = await client.get("/api/connectors/whatsapp/status")
+        assert response.status_code == 200
+        assert response.json()["state"] == "disconnected"
 
     async def test_pair_poll_states(self, client):
         """GET /pair/poll returns correct state for waiting/paired/expired/bridge-down."""

@@ -532,6 +532,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         timeline,
         timeline_saved_views,
         webhooks,
+        whatsapp,
     )
 
     # Wire static routers (existing core routers)
@@ -580,6 +581,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
         timeline,
         timeline_saved_views,
         webhooks,
+        whatsapp,
     ]:
         app.dependency_overrides[module._get_db_manager] = get_db_manager
 

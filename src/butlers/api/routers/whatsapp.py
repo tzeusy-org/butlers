@@ -30,9 +30,11 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 
+import asyncpg
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
+from butlers.api.db import DatabaseManager
 from butlers.api.models.whatsapp import (
     WhatsAppDisconnectResponse,
     WhatsAppHealthResponse,
@@ -42,6 +44,7 @@ from butlers.api.models.whatsapp import (
     WhatsAppState,
     WhatsAppStatusResponse,
 )
+from butlers.connectors.bridge_manager import DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,13 @@ router = APIRouter(prefix="/api/connectors/whatsapp", tags=["whatsapp"])
 _DEFAULT_BRIDGE_SOCKET = "/tmp/wa-bridge.sock"
 _BRIDGE_TIMEOUT = 5.0  # seconds
 
+# Matches bridge_manager.BridgeConfig.invalidated_session_threshold_s — the
+# connector-side escalation this heuristic mirrors (bu-5ocmh). Kept as one
+# constant imported from bridge_manager so the two never drift apart.
+_INVALIDATED_SESSION_THRESHOLD_S = DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
+
+_WHATSAPP_CONNECTOR_TYPE = "whatsapp_user_client"
+
 
 def _get_bridge_socket_path() -> str:
     """Return the path to the Go bridge Unix socket.
@@ -62,6 +72,20 @@ def _get_bridge_socket_path() -> str:
     Override via app.dependency_overrides[_get_bridge_socket_path] in tests.
     """
     return os.environ.get("WHATSAPP_BRIDGE_SOCKET", _DEFAULT_BRIDGE_SOCKET)
+
+
+def _get_db_manager() -> DatabaseManager:
+    """Dependency stub — overridden at app startup or in tests."""
+    raise RuntimeError("DatabaseManager not initialized")
+
+
+def _get_switchboard_pool(db: DatabaseManager) -> asyncpg.Pool | None:
+    """Return the switchboard pool, or ``None`` when it's unavailable."""
+    try:
+        return db.pool("switchboard")
+    except KeyError:
+        logger.warning("Switchboard DB pool unavailable; cannot request WhatsApp pair-reset")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +189,78 @@ def _bridge_state_to_enum(raw_state: str | None) -> WhatsAppState:
     return mapping.get(raw_state or "", WhatsAppState.not_configured)
 
 
+def _looks_like_invalidated_session(data: dict) -> bool:
+    """Best-effort heuristic: does this bridge /status look like a
+    persistently-invalidated session (bu-5ocmh) rather than a normal
+    transient reconnect blip?
+
+    The bridge itself never reports this distinctly — it only ever reports
+    ``pair_required`` for a brand-new, *never-paired* device (set the moment
+    it boots with no stored device); a device it can't reconnect with just
+    cycles ``disconnected``/``connecting`` forever. This process (a separate
+    container from the connector, reachable only via this Unix socket — see
+    module docstring) has no memory of *when* that started, so it uses
+    ``uptime_s`` as a proxy: a bridge holding a device reconnects within
+    ~15s under normal conditions (see whatsapp-bridge spec), so one that has
+    been running far longer than that while never reaching a live
+    connected+logged-in link is almost certainly stuck on a dead device
+    rather than still legitimately retrying.
+
+    Mirrors ``bridge_manager.BridgeConfig.invalidated_session_threshold_s``
+    on the connector side (imported as one constant so the two stay in sync).
+    """
+    raw_state = data.get("state")
+    if raw_state not in ("disconnected", "connecting"):
+        return False
+    connected = data.get("connected")
+    logged_in = data.get("logged_in")
+    link_dead = connected is False or logged_in is False
+    if not link_dead:
+        return False
+    uptime = data.get("uptime_s")
+    return isinstance(uptime, (int, float)) and uptime >= _INVALIDATED_SESSION_THRESHOLD_S
+
+
+async def _request_pair_reset(pool: asyncpg.Pool) -> bool:
+    """Flag the whatsapp_user_client connector to clear its stale whatsmeow
+    device store and restart into QR pairing (bu-5ocmh recovery path).
+
+    The connector runs in a separate container reachable only via the
+    shared bridge Unix socket (see module docstring) — this process cannot
+    reach into its BridgeSubprocessManager directly. Instead this writes
+    ``pair_reset_requested_at`` into ``connector_registry.settings``, the
+    same dashboard-to-connector handoff already used for live-reloadable
+    settings like ``flush_interval_s``; the connector's watchdog (running
+    every ~60s) picks it up and performs the actual clear+restart.
+
+    Returns True if a ``whatsapp_user_client`` connector_registry row was
+    found and flagged, False if the connector has never started (no row to
+    flag yet).
+    """
+    from butlers.connectors.cursor_store import save_connector_settings
+
+    row = await pool.fetchrow(
+        """
+        SELECT endpoint_identity
+        FROM switchboard.connector_registry
+        WHERE connector_type = $1
+        ORDER BY last_heartbeat_at DESC NULLS LAST
+        LIMIT 1
+        """,
+        _WHATSAPP_CONNECTOR_TYPE,
+    )
+    if row is None:
+        return False
+
+    await save_connector_settings(
+        pool,
+        _WHATSAPP_CONNECTOR_TYPE,
+        row["endpoint_identity"],
+        {"pair_reset_requested_at": datetime.now(UTC).isoformat()},
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # GET /status
 # ---------------------------------------------------------------------------
@@ -189,6 +285,11 @@ async def get_whatsapp_status(
 
     raw_state = data.get("state")
     state = _bridge_state_to_enum(raw_state)
+    if state == WhatsAppState.disconnected and _looks_like_invalidated_session(data):
+        # A device the bridge has been unable to reconnect for a long time
+        # is functionally identical to needing a re-pair (bu-5ocmh) — showing
+        # a bare "disconnected" forever hides that from the owner.
+        state = WhatsAppState.pair_required
 
     phone = _mask_phone(data.get("phone"))
 
@@ -225,11 +326,19 @@ async def get_whatsapp_status(
 @router.post("/pair/start", response_model=WhatsAppPairStartResponse)
 async def start_whatsapp_pairing(
     socket_path: str = Depends(_get_bridge_socket_path),
+    db: DatabaseManager = Depends(_get_db_manager),
 ) -> WhatsAppPairStartResponse:
     """Instruct the bridge to generate a new QR code for pairing.
 
     Returns the QR code as a base64 PNG data URI plus expiry timestamp.
     Raises HTTP 503 if the bridge is not running (cannot generate QR).
+
+    bu-5ocmh: a bridge holding a device it can no longer reconnect with
+    never enters its own QR-pairing flow, so it never has a QR code to
+    offer here either — the *only* way in is the connector clearing that
+    dead device and restarting into pairing mode. If that's what this looks
+    like, flag it for the connector (see ``_request_pair_reset``) instead of
+    just reporting the same "no QR code" error forever.
     """
     data = await _bridge_post(socket_path, "/pair/start")
 
@@ -243,6 +352,24 @@ async def start_whatsapp_pairing(
 
     qr_data_uri = data.get("qr_data_uri", "")
     if not qr_data_uri:
+        status_data = await _bridge_get(socket_path, "/status")
+        if status_data is not None and _looks_like_invalidated_session(status_data):
+            flagged = False
+            try:
+                pool = _get_switchboard_pool(db)
+                if pool is not None:
+                    flagged = await _request_pair_reset(pool)
+            except Exception:
+                logger.exception("Failed to request WhatsApp pair-reset")
+            if flagged:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "WhatsApp session appears invalidated (a previously-paired device "
+                        "cannot reconnect). Clearing the stale session and restarting into "
+                        "QR pairing mode — this can take up to a minute. Please retry shortly."
+                    ),
+                )
         raise HTTPException(
             status_code=502,
             detail="Bridge returned an empty QR code. Check bridge logs.",
@@ -355,6 +482,8 @@ async def get_whatsapp_health(
 
     raw_state = data.get("state")
     state = _bridge_state_to_enum(raw_state)
+    if state == WhatsAppState.disconnected and _looks_like_invalidated_session(data):
+        state = WhatsAppState.pair_required
 
     uptime: float | None = data.get("uptime_seconds")
 

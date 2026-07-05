@@ -36,6 +36,15 @@ _EXIT_PAIR_TIMEOUT = 1  # QR-pairing timed out
 _EXIT_SESSION_INVALID = 2  # whatsmeow invalidated the session
 
 # ---------------------------------------------------------------------------
+# Invalidated-session detection (bu-5ocmh)
+# ---------------------------------------------------------------------------
+
+# "On the order of minutes, not weeks" — long enough that a normal ~15s
+# reconnect never trips it, short enough that a dead link surfaces the same
+# day rather than silently outage for weeks (see bu-5ocmh root cause).
+DEFAULT_INVALIDATED_SESSION_THRESHOLD_S = 300.0
+
+# ---------------------------------------------------------------------------
 # Backoff parameters
 # ---------------------------------------------------------------------------
 
@@ -93,6 +102,22 @@ class BridgeConfig:
     ``"connected"``. When ``True``, terminal degraded states such as
     ``"pair_required"`` and ``"disconnected"`` may also unblock startup so
     callers can continue in degraded mode.
+    """
+
+    invalidated_session_threshold_s: float = DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
+    """Seconds a *recoverable* degraded link (disconnected/connecting, or
+    connected-but-link-dead) may persist before being escalated to a terminal
+    "invalidated session" classification (see :attr:`is_invalidated_session`).
+
+    Root cause bu-5ocmh: when WhatsApp invalidates a linked device (remote
+    unlink / long-offline expiry), whatsmeow's own auto-reconnect keeps
+    retrying forever without ever surfacing ``pair_required`` or exiting with
+    a re-pair exit code — the bridge just cycles disconnected/connecting
+    indefinitely. A transient blip self-heals within seconds (see the
+    bridge's ~15s reconnect spec), so a threshold on the order of minutes
+    (not the default health-poll interval) distinguishes "still trying" from
+    "will never recover without a human re-pair" without needing anything
+    from the Go bridge itself. Set to 0 to disable this escalation.
     """
 
 
@@ -255,6 +280,12 @@ class BridgeSubprocessManager:
         # re-pair (QR scan), so a process/container restart cannot recover it.
         # The stale-link watchdog skips these: restarting would just re-degrade.
         self._degraded_terminal = False
+        # True specifically when THIS manager escalated a persistent
+        # recoverable outage into a terminal "invalidated session"
+        # classification (bu-5ocmh) — distinct from a bridge-reported
+        # ``pair_required`` (e.g. a brand-new, never-paired device) so
+        # callers can alert only on a genuine regression, not first-time setup.
+        self._invalidated_session = False
 
         # Restart backoff state
         self._restart_attempt = 0
@@ -292,6 +323,21 @@ class BridgeSubprocessManager:
         so the stale-link watchdog must not restart-loop on them.
         """
         return self._degraded and self._degraded_terminal
+
+    @property
+    def is_invalidated_session(self) -> bool:
+        """True if a persistent recoverable outage was escalated to a
+        terminal "invalidated session" classification (bu-5ocmh).
+
+        Unlike a bridge-reported ``pair_required`` (which fires immediately
+        for a brand-new, never-paired device), this only becomes true after
+        a *previously connectable* link stays dead for
+        ``invalidated_session_threshold_s`` — i.e. a real regression, not
+        first-time setup. Callers (e.g. the connector's alerting/recovery
+        watchdog) should key off this rather than ``is_degraded_terminal``
+        when deciding whether to page the owner.
+        """
+        return self._invalidated_session
 
     @property
     def degraded_duration_s(self) -> float | None:
@@ -668,6 +714,7 @@ class BridgeSubprocessManager:
         self._degraded_reason = None
         self._degraded_since = None
         self._degraded_terminal = False
+        self._invalidated_session = False
 
     # ------------------------------------------------------------------
     # Private helpers — health polling
@@ -792,14 +839,56 @@ class BridgeSubprocessManager:
                 logged_in,
             )
             self._set_degraded("Link down despite state=connected (session taken over?)")
+            self._maybe_escalate_to_invalidated_session()
         elif state in ("disconnected", "connecting"):
             # Post-startup: 'connecting' means the bridge dropped its session
             # and is attempting to reconnect.  Treat this as degraded until it
             # recovers to 'connected' — the next poll may clear it automatically.
             logger.warning("Bridge /status reports '%s' — entering degraded mode", state)
             self._set_degraded(f"Bridge status: {state}")
+            self._maybe_escalate_to_invalidated_session()
         elif state == "pair_required":
             logger.warning("Bridge requires pairing — entering degraded mode")
             self._set_degraded("pair_required", terminal=True)
         else:
             logger.warning("Unrecognised bridge state: %r", state)
+
+    def _maybe_escalate_to_invalidated_session(self) -> None:
+        """Escalate a persistent *recoverable* degraded link to a terminal
+        "invalidated session" classification (bu-5ocmh).
+
+        whatsmeow's own auto-reconnect can cycle disconnected/connecting (or
+        connected-but-link-dead) forever without ever exiting with a re-pair
+        code or reporting ``pair_required`` itself — e.g. after a remote
+        unlink or long-offline expiry invalidates the stored device. Left
+        unchecked this is exactly the 7-week silent outage bu-5ocmh
+        documents: `is_degraded_terminal` never flips, so the stale-link
+        watchdog never stops trying, and nothing ever tells the owner.
+
+        Once the degraded duration exceeds
+        ``invalidated_session_threshold_s`` (0 disables this), re-flag the
+        existing degraded episode as terminal + ``is_invalidated_session``.
+        This does not reset the degraded-since clock (mirrors
+        ``_set_degraded``'s existing terminal-escalation behavior) and is
+        idempotent across repeated health polls.
+
+        Callers always invoke this immediately after a plain (non-terminal)
+        ``_set_degraded(reason)`` call for the same poll, which resets
+        ``_degraded_terminal`` to ``False`` on every tick — so once already
+        escalated, this must re-assert ``terminal=True`` on every subsequent
+        poll rather than gating on ``_degraded_terminal``. ``_invalidated_session``
+        (only cleared by ``_clear_degraded``) is the durable marker instead.
+        """
+        threshold = self._config.invalidated_session_threshold_s
+        if threshold <= 0:
+            return
+        if not self._invalidated_session:
+            duration = self.degraded_duration_s
+            if duration is None or duration < threshold:
+                return
+            self._invalidated_session = True
+        reason = (
+            f"{self._degraded_reason} — persisted >= {threshold:.0f}s with no "
+            "recovery; session likely invalidated, re-pair required"
+        )
+        self._set_degraded(reason, terminal=True)

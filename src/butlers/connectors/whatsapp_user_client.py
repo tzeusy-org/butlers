@@ -33,6 +33,11 @@ Environment variables:
 - WA_FLUSH_INTERVAL_S (optional, default 1800)
 - WA_BUFFER_MAX_MESSAGES (optional, default 50)
 - WA_HISTORY_TIME_WINDOW_M (optional, default 35)
+- WHATSAPP_STALE_RESTART_THRESHOLD_S (optional, default 3600; recoverable-outage
+  restart watchdog; 0 disables)
+- WHATSAPP_INVALIDATED_SESSION_THRESHOLD_S (optional, default 300; seconds a
+  disconnected/link-dead bridge may persist before being classified as an
+  invalidated session requiring re-pair — see bu-5ocmh)
 
 Security requirements:
 - Never commit credentials or session artifacts to version control
@@ -52,7 +57,11 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from butlers.connectors.bridge_manager import BridgeConfig, BridgeSubprocessManager
+from butlers.connectors.bridge_manager import (
+    DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
+    BridgeConfig,
+    BridgeSubprocessManager,
+)
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.discretion import (
     ContactWeightResolver,
@@ -178,6 +187,15 @@ class WhatsAppUserClientConnectorConfig:
     # genuinely-competing session.
     stale_restart_threshold_s: int = 3600
 
+    # Invalidated-session detection (bu-5ocmh): seconds a recoverable degraded
+    # link (disconnected/connecting, or connected-but-link-dead) may persist
+    # before being escalated to a terminal "invalidated session" — the class
+    # of failure where WhatsApp remotely invalidated the linked device and
+    # whatsmeow's own auto-reconnect retries forever without ever reporting
+    # pair_required or exiting. See bridge_manager.BridgeConfig for the
+    # escalation itself; this just threads the threshold through from env.
+    invalidated_session_threshold_s: float = DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
+
     # Address-mention keywords for passive→interactive promotion
     address_keywords: frozenset[str] = field(default_factory=lambda: _DEFAULT_ADDRESS_KEYWORDS)
 
@@ -211,6 +229,12 @@ class WhatsAppUserClientConnectorConfig:
         stale_restart_threshold_s = int(
             os.environ.get("WHATSAPP_STALE_RESTART_THRESHOLD_S", "3600")
         )
+        invalidated_session_threshold_s = float(
+            os.environ.get(
+                "WHATSAPP_INVALIDATED_SESSION_THRESHOLD_S",
+                str(DEFAULT_INVALIDATED_SESSION_THRESHOLD_S),
+            )
+        )
 
         # Address keywords (comma-separated, case-insensitive)
         _raw_keywords = os.environ.get("CONNECTOR_ADDRESS_KEYWORDS", "").strip()
@@ -235,6 +259,7 @@ class WhatsAppUserClientConnectorConfig:
             buffer_max_messages=buffer_max_messages,
             health_port=health_port,
             stale_restart_threshold_s=stale_restart_threshold_s,
+            invalidated_session_threshold_s=invalidated_session_threshold_s,
             address_keywords=address_keywords,
             max_interaction_group_size=max_interaction_group_size,
         )
@@ -514,6 +539,10 @@ class WhatsAppUserClientConnector:
         # Bridge subprocess manager
         self._bridge_manager: BridgeSubprocessManager | None = None
 
+        # Invalidated-session alerting/recovery bookkeeping (bu-5ocmh)
+        self._invalidated_session_alert_sent = False
+        self._last_pair_reset_handled_at: str | None = None
+
         # Metrics
         self._metrics = ConnectorMetrics(
             connector_type=_CONNECTOR_TYPE,
@@ -557,6 +586,26 @@ class WhatsAppUserClientConnector:
         # Background stale-link watchdog task
         self._link_watchdog_task: asyncio.Task[None] | None = None
 
+    def _build_bridge_config(self, *, startup_allow_degraded: bool = False) -> BridgeConfig:
+        """Build the Go bridge subprocess config.
+
+        ``startup_allow_degraded`` is False for the connector's ordinary
+        boot (unchanged behavior: wait for a real "connected" state) but is
+        set True by the pair-reset recovery path (bu-5ocmh), where the
+        restarted bridge is *expected* to come up in ``pair_required`` (the
+        device store was just cleared) — without this, BridgeSubprocessManager.
+        start() would treat that as a startup failure and raise TimeoutError.
+        """
+        return BridgeConfig(
+            binary="whatsapp-bridge",
+            args=["--listen", f"unix://{self._config.bridge_socket}"],
+            env={"WA_BRIDGE_DSN": _get_bridge_db_dsn()},
+            bridge_socket=self._config.bridge_socket,
+            startup_timeout_s=_BRIDGE_STARTUP_TIMEOUT_S,
+            startup_allow_degraded=startup_allow_degraded,
+            invalidated_session_threshold_s=self._config.invalidated_session_threshold_s,
+        )
+
     async def start(self) -> None:
         """Start the WhatsApp user-client connector.
 
@@ -571,14 +620,7 @@ class WhatsAppUserClientConnector:
 
         # Start Go bridge — pass DSN via env var to avoid leaking credentials
         # in ps / /proc/<pid>/cmdline output.
-        bridge_cfg = BridgeConfig(
-            binary="whatsapp-bridge",
-            args=["--listen", f"unix://{self._config.bridge_socket}"],
-            env={"WA_BRIDGE_DSN": _get_bridge_db_dsn()},
-            bridge_socket=self._config.bridge_socket,
-            startup_timeout_s=_BRIDGE_STARTUP_TIMEOUT_S,
-        )
-        self._bridge_manager = BridgeSubprocessManager(bridge_cfg)
+        self._bridge_manager = BridgeSubprocessManager(self._build_bridge_config())
         await self._bridge_manager.start()
 
         # Resolve phone from bridge if endpoint_identity is still pending
@@ -615,11 +657,14 @@ class WhatsAppUserClientConnector:
             self._flush_scanner_loop(), name="wa-flush-scanner"
         )
 
-        # Start stale-link watchdog
-        if self._config.stale_restart_threshold_s > 0:
-            self._link_watchdog_task = asyncio.create_task(
-                self._link_watchdog_loop(), name="wa-link-watchdog"
-            )
+        # Start stale-link watchdog. Always runs (even when the stale-restart
+        # threshold is disabled via stale_restart_threshold_s=0) because it
+        # also drives invalidated-session alerting/recovery (bu-5ocmh), which
+        # is an independent concern from the restart-on-recoverable-outage
+        # behavior gated by that threshold — see _link_is_stale().
+        self._link_watchdog_task = asyncio.create_task(
+            self._link_watchdog_loop(), name="wa-link-watchdog"
+        )
 
         self._running = True
         logger.info(
@@ -913,6 +958,21 @@ class WhatsAppUserClientConnector:
         try:
             while self._running:
                 await asyncio.sleep(_LINK_WATCHDOG_INTERVAL_S)
+                # Invalidated-session alerting/recovery (bu-5ocmh) is an
+                # independent concern from the restart-on-recoverable-outage
+                # check below — it must still run when stale_restart_threshold_s
+                # disables the restart path. Guarded with a blanket try/except:
+                # this loop has no outer handler besides CancelledError, so an
+                # unexpected exception here must never kill the stale-link
+                # restart check that follows — that would silently reintroduce
+                # exactly the "nothing ever tells the owner" failure mode this
+                # bead exists to fix, just from a different code path.
+                try:
+                    await self._check_invalidated_session_state()
+                except Exception:
+                    logger.exception(
+                        "WA: invalidated-session check failed (non-fatal, continuing watchdog)"
+                    )
                 if self._link_is_stale():
                     await self._restart_for_stale_link()
                     return
@@ -965,6 +1025,226 @@ class WhatsAppUserClientConnector:
         without actually killing the test runner.
         """
         os._exit(1)
+
+    # -------------------------------------------------------------------------
+    # Internal: Invalidated-session alerting + owner-triggered recovery (bu-5ocmh)
+    # -------------------------------------------------------------------------
+
+    _PAIR_RESET_SETTINGS_KEY = "pair_reset_requested_at"
+
+    async def _check_invalidated_session_state(self) -> None:
+        """Called once per watchdog tick: alert the owner on a newly-detected
+        invalidated session, and act on any owner-requested pairing reset.
+
+        Split into two independent halves with different triggers: alerting
+        fires on bridge_manager's own duration-based escalation (no owner
+        action needed); recovery only fires once the owner has explicitly
+        clicked "pair device" on an invalidated session (see the dashboard's
+        POST /pair/start handling in api/routers/whatsapp.py).
+        """
+        if self._bridge_manager is None:
+            return
+
+        if self._bridge_manager.is_invalidated_session:
+            if not self._invalidated_session_alert_sent:
+                await self._send_invalidated_session_alert()
+                self._invalidated_session_alert_sent = True
+        else:
+            # Recovered (re-paired) or not currently invalidated — allow a
+            # future invalidation episode to alert again.
+            self._invalidated_session_alert_sent = False
+
+        await self._maybe_perform_pair_reset()
+
+    async def _send_invalidated_session_alert(self) -> None:
+        """Best-effort owner alert for a persistently-invalidated WhatsApp session.
+
+        This runs outside any butler daemon, so the full ``notify()`` MCP
+        tool (which needs a daemon's switchboard_client/db/permission
+        context — see ``butlers.core_tools._notifications.notify``) is not
+        reachable here. Calls Switchboard's ``deliver`` tool directly
+        instead — the same low-level primitive ``notify()`` itself calls
+        internally, and the established pattern for non-daemon callers (see
+        ``butlers.background``). Never raises — an alerting failure must
+        never affect ingestion.
+        """
+        notify_request = {
+            "schema_version": "notify.v1",
+            "origin_butler": _CONNECTOR_TYPE,
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": (
+                    "WhatsApp appears to have been unlinked (remote unlink or "
+                    "long-offline expiry) and cannot reconnect on its own. "
+                    "Ingestion is paused until you re-pair — open the dashboard "
+                    "WhatsApp settings and use 'Pair device' to scan a new QR code."
+                ),
+            },
+        }
+        delivered = False
+        try:
+            result = await self._mcp_client.call_tool(
+                "deliver",
+                {"source_butler": _CONNECTOR_TYPE, "notify_request": notify_request},
+            )
+            if isinstance(result, dict) and result.get("status") == "failed":
+                logger.warning(
+                    "WhatsApp invalidated-session alert was not delivered: %s",
+                    result.get("error"),
+                )
+            else:
+                delivered = True
+        except Exception:
+            logger.exception("WhatsApp invalidated-session alert failed to send")
+
+        if delivered and self._db_pool is not None:
+            from butlers.core.attention_ledger import record_attention_event
+
+            await record_attention_event(
+                self._db_pool,
+                origin_butler=_CONNECTOR_TYPE,
+                source="notify",
+                outcome="delivered",
+                channel="telegram",
+                intent="send",
+                priority="high",
+                reason="whatsapp_invalidated_session",
+            )
+
+    async def _maybe_perform_pair_reset(self) -> None:
+        """Act on an owner-requested pairing reset flag, if one is pending.
+
+        The dashboard's POST /pair/start writes ``pair_reset_requested_at``
+        to ``switchboard.connector_registry.settings`` when it detects the
+        bridge holding a dead device it cannot recover from on its own
+        (bu-5ocmh) — the dashboard runs in a separate container from this
+        connector and cannot reach into this process's
+        BridgeSubprocessManager directly, so it hands off via the DB, the
+        same way dashboard-configurable settings like flush_interval_s
+        already do (see ``_load_flush_interval_from_db``).
+
+        Only acts while the bridge is currently degraded-terminal — a stale
+        or duplicate flag must never clear a healthy, connected session.
+        """
+        if self._db_pool is None or self._bridge_manager is None:
+            return
+        if not self._bridge_manager.is_degraded_terminal:
+            return
+
+        try:
+            from butlers.connectors.cursor_store import load_connector_settings
+
+            settings = await load_connector_settings(
+                self._db_pool, _CONNECTOR_TYPE, self._config.endpoint_identity
+            )
+            # Defensive: every pool in this codebase registers register_jsonb_codec()
+            # (src/butlers/db.py), so `settings` is always a dict or None in
+            # practice — but a raw JSON string here must never raise past this
+            # try block and kill the watchdog loop for the rest of the process
+            # lifetime (see _link_watchdog_loop, which has no blanket handler).
+            requested_at = (settings or {}).get(self._PAIR_RESET_SETTINGS_KEY)
+        except Exception:
+            logger.debug("WA: failed to read pair-reset flag from DB (non-fatal)", exc_info=True)
+            return
+
+        if not requested_at or requested_at == self._last_pair_reset_handled_at:
+            return
+
+        logger.warning(
+            "WhatsApp: owner-requested pairing reset detected (requested_at=%s) — "
+            "clearing whatsmeow device store and restarting bridge into QR pairing",
+            requested_at,
+        )
+        self._last_pair_reset_handled_at = requested_at
+        await self._perform_pair_reset()
+
+    async def _clear_whatsmeow_device_store(self) -> None:
+        """DELETE FROM public.whatsmeow_device — the same cascade manual
+        recovery used to unblock the 2026-07-05 outage (whatsmeow's own FK
+        cascade to its ~12 child tables)."""
+        if self._cursor_pool is None:
+            raise RuntimeError(
+                "WhatsApp: cannot clear whatsmeow_device store — no DB pool available"
+            )
+        await self._cursor_pool.execute("DELETE FROM public.whatsmeow_device")
+        logger.warning("WhatsApp: cleared public.whatsmeow_device for re-pair")
+
+    async def _perform_pair_reset(self) -> None:
+        """Clear the dead whatsmeow device store and restart the bridge into
+        QR pairing mode — the explicit, owner-triggered recovery action for
+        an invalidated session (bu-5ocmh).
+
+        This is destructive (drops the stored device) and deliberately NOT
+        run automatically on detection; it only runs once an owner has
+        explicitly requested it (see ``_maybe_perform_pair_reset``).
+        """
+        if self._bridge_manager is None:
+            return
+
+        # Consume the persisted flag now, before doing anything destructive.
+        # `_last_pair_reset_handled_at` only guards re-triggers within THIS
+        # process's lifetime — the DB row is otherwise never cleared, so a
+        # future connector restart (redeploy, crash, host reboot) would
+        # re-read the same old timestamp as if it were a brand-new request
+        # and wipe an already-healthy, already-repaired device. Clearing it
+        # here (best-effort; a ledger-write hiccup must not abort recovery)
+        # makes "already handled" durable across restarts, not just in-memory.
+        if self._db_pool is not None:
+            try:
+                from butlers.connectors.cursor_store import save_connector_settings
+
+                await save_connector_settings(
+                    self._db_pool,
+                    _CONNECTOR_TYPE,
+                    self._config.endpoint_identity,
+                    {self._PAIR_RESET_SETTINGS_KEY: None},
+                )
+            except Exception:
+                logger.exception(
+                    "WhatsApp: failed to clear pair-reset flag in DB (continuing anyway) — "
+                    "a connector restart before this clears could re-trigger recovery"
+                )
+
+        try:
+            await self._bridge_manager.stop()
+        except Exception:
+            logger.exception("WhatsApp: failed to stop bridge before pair-reset (continuing)")
+
+        try:
+            await self._clear_whatsmeow_device_store()
+        except Exception:
+            # Don't abort the restart on a clear failure (e.g. a transient DB
+            # blip) — that would leave the connector with NO running bridge
+            # at all until the owner notices and clicks "pair device" again.
+            # Restarting with the old (still-invalidated) device is at worst
+            # a no-op, never worse than the outage this is meant to fix.
+            logger.exception("WhatsApp: failed to clear whatsmeow_device store — restarting anyway")
+
+        try:
+            # The freshly-restarted bridge boots with no device row, so it
+            # takes the Go bridge's "no paired device" branch and reports
+            # pair_required with a real QR code. Unlike the connector's
+            # ordinary boot (which requires reaching a full "connected"
+            # state within startup_timeout_s), this restart must accept a
+            # terminal pair_required outcome as a normal, expected result —
+            # see _build_bridge_config(startup_allow_degraded=True).
+            self._bridge_manager = BridgeSubprocessManager(
+                self._build_bridge_config(startup_allow_degraded=True)
+            )
+            await self._bridge_manager.start()
+            logger.warning("WhatsApp: bridge restarted into QR pairing mode after pair-reset")
+        except TimeoutError:
+            logger.info(
+                "WhatsApp: bridge restart after pair-reset did not reach startup "
+                "readiness within the timeout (may still be spawning)"
+            )
+        except Exception:
+            logger.exception("WhatsApp: failed to restart bridge after pair-reset")
+        finally:
+            # Whichever way this went, forget the alert episode so a fresh
+            # invalidation (or a still-stuck bridge) can alert/react again.
+            self._invalidated_session_alert_sent = False
 
     async def _scan_and_flush(self, flush_interval_s: int | None = None) -> None:
         """Iterate all chat buffers and flush those whose interval has elapsed.
