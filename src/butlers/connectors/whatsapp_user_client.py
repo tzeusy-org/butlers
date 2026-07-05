@@ -121,6 +121,7 @@ _LINK_WATCHDOG_INTERVAL_S = 60  # How often the stale-link watchdog checks the b
 _BRIDGE_STARTUP_TIMEOUT_S = 60.0  # Bridge startup timeout (longer for QR re-pair)
 _SSE_RECONNECT_DELAY_S = 5.0  # Delay before reconnecting SSE after failure
 _SSE_KEEPALIVE_TIMEOUT_S = 90.0  # Max silence from SSE stream before treating as stale
+_SSE_PAIRING_IDLE_INTERVAL_S = 30.0  # How often to recheck while awaiting QR pairing (bu-7sh43)
 _CONNECTOR_TYPE = "whatsapp_user_client"
 
 # ---------------------------------------------------------------------------
@@ -606,6 +607,44 @@ class WhatsAppUserClientConnector:
             invalidated_session_threshold_s=self._config.invalidated_session_threshold_s,
         )
 
+    async def _maybe_resolve_pending_endpoint_identity(self) -> None:
+        """Resolve ``endpoint_identity`` from the bridge once it is known.
+
+        ``endpoint_identity`` is only ever the ``"whatsapp:pending"``
+        placeholder for a brand-new deployment with no ``whatsapp_phone`` yet
+        in owner entity_info (see ``run_whatsapp_user_client_connector``) — a
+        real phone is learned exclusively from the bridge's own ``/status``
+        after QR pairing completes.
+
+        Since bu-7sh43, ``BridgeSubprocessManager.start()`` returns as soon as
+        the bridge reports ``pair_required`` — i.e. *before* the user has
+        scanned the QR — so a single resolution attempt right after
+        ``start()`` returns can no longer be relied on to see a phone number:
+        it fires while the bridge is still awaiting pairing. This is a no-op
+        once resolved (or once a real phone is configured), so it is safe to
+        call repeatedly; ``_sse_event_loop`` calls it on every pass so
+        resolution self-heals as soon as the bridge actually connects,
+        without blocking startup on the pairing scan.
+        """
+        if self._config.endpoint_identity != "whatsapp:pending" or self._bridge_manager is None:
+            return
+        status = await self._bridge_manager.get_status()
+        bridge_phone = status.get("phone")
+        if bridge_phone:
+            # Normalize to E.164: bridge returns bare digits, entity_info stores with '+'
+            if not bridge_phone.startswith("+"):
+                bridge_phone = f"+{bridge_phone}"
+            self._config = replace(self._config, endpoint_identity=f"whatsapp:{bridge_phone}")
+            logger.info(
+                "Resolved endpoint_identity from bridge: %s",
+                self._config.endpoint_identity,
+            )
+        elif status.get("state") == "connected":
+            logger.warning(
+                "Bridge connected but did not report phone number — using endpoint_identity=%s",
+                self._config.endpoint_identity,
+            )
+
     async def start(self) -> None:
         """Start the WhatsApp user-client connector.
 
@@ -623,24 +662,14 @@ class WhatsAppUserClientConnector:
         self._bridge_manager = BridgeSubprocessManager(self._build_bridge_config())
         await self._bridge_manager.start()
 
-        # Resolve phone from bridge if endpoint_identity is still pending
-        if self._config.endpoint_identity == "whatsapp:pending":
-            status = await self._bridge_manager.get_status()
-            bridge_phone = status.get("phone")
-            if bridge_phone:
-                # Normalize to E.164: bridge returns bare digits, entity_info stores with '+'
-                if not bridge_phone.startswith("+"):
-                    bridge_phone = f"+{bridge_phone}"
-                self._config = replace(self._config, endpoint_identity=f"whatsapp:{bridge_phone}")
-                logger.info(
-                    "Resolved endpoint_identity from bridge: %s",
-                    self._config.endpoint_identity,
-                )
-            else:
-                logger.warning(
-                    "Bridge connected but did not report phone number — using endpoint_identity=%s",
-                    self._config.endpoint_identity,
-                )
+        # Resolve phone from bridge if endpoint_identity is still pending. On a
+        # brand-new, never-configured deployment this first attempt usually
+        # cannot succeed yet: since bu-7sh43, start() returns as soon as the
+        # bridge reports pair_required (before the user has scanned the QR),
+        # so the bridge has no phone to report. _sse_event_loop retries this
+        # once the bridge actually reaches "connected" (see
+        # _maybe_resolve_pending_endpoint_identity).
+        await self._maybe_resolve_pending_endpoint_identity()
 
         # Load checkpoint
         await self._load_checkpoint()
@@ -739,11 +768,34 @@ class WhatsAppUserClientConnector:
         while self._running:
             # Check if bridge is degraded (pairing timeout or session invalidated)
             if self._bridge_manager is not None and self._bridge_manager.is_degraded:
+                if self._bridge_manager.is_awaiting_pairing:
+                    # A bridge sitting in pair_required is legitimately
+                    # waiting for a human to scan the QR — not a failure.
+                    # Idle here instead of stopping the whole connector
+                    # (and tearing down the bridge in the finally-block
+                    # below); the health-poll loop clears degraded once
+                    # pairing completes and this loop resumes the SSE
+                    # stream on its next iteration (bu-7sh43).
+                    logger.debug("Bridge awaiting QR pairing — idling SSE loop without stopping")
+                    try:
+                        await asyncio.sleep(_SSE_PAIRING_IDLE_INTERVAL_S)
+                    except asyncio.CancelledError:
+                        raise
+                    continue
                 logger.error(
                     "Bridge entered degraded mode: %s — stopping SSE loop",
                     self._bridge_manager.degraded_reason,
                 )
                 break
+
+            # Not degraded here — the bridge is connected (or this is the
+            # very first pass before startup readiness was even checked).
+            # Retry pending endpoint_identity resolution so a first-time
+            # setup self-heals as soon as pairing actually completes,
+            # instead of staying on the "whatsapp:pending" placeholder for
+            # the rest of the process lifetime (see
+            # _maybe_resolve_pending_endpoint_identity).
+            await self._maybe_resolve_pending_endpoint_identity()
 
             try:
                 logger.info("Connecting to bridge SSE /events stream …")

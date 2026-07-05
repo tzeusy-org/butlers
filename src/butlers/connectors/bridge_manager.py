@@ -96,12 +96,19 @@ class BridgeConfig:
     """Maximum seconds to wait for the bridge to become startup-ready."""
 
     startup_allow_degraded: bool = False
-    """Whether terminal degraded startup states can satisfy startup readiness.
+    """Whether non-pairing terminal degraded startup states can satisfy
+    startup readiness.
 
     When ``False`` (default), startup waits for `/status` to report
-    ``"connected"``. When ``True``, terminal degraded states such as
-    ``"pair_required"`` and ``"disconnected"`` may also unblock startup so
-    callers can continue in degraded mode.
+    ``"connected"``. When ``True``, other terminal degraded states such as
+    ``"disconnected"`` may also unblock startup so callers can continue in
+    degraded mode.
+
+    ``pair_required`` is exempt from this flag entirely (bu-7sh43): a bridge
+    legitimately waiting for a human to scan a QR code always satisfies
+    startup readiness immediately, regardless of this setting — it is a
+    normal waiting state, not a failure, so the ordinary
+    ``startup_timeout_s`` clock must never tear it down mid-pairing.
     """
 
     invalidated_session_threshold_s: float = DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
@@ -280,6 +287,11 @@ class BridgeSubprocessManager:
         # re-pair (QR scan), so a process/container restart cannot recover it.
         # The stale-link watchdog skips these: restarting would just re-degrade.
         self._degraded_terminal = False
+        # True specifically while the bridge is sitting in pair_required —
+        # a legitimate "waiting for a human to scan the QR" state, not a
+        # failure (bu-7sh43). Recomputed on every _set_degraded call, same
+        # as _degraded_terminal, so it always reflects the latest poll.
+        self._degraded_awaiting_pairing = False
         # True specifically when THIS manager escalated a persistent
         # recoverable outage into a terminal "invalidated session"
         # classification (bu-5ocmh) — distinct from a bridge-reported
@@ -323,6 +335,19 @@ class BridgeSubprocessManager:
         so the stale-link watchdog must not restart-loop on them.
         """
         return self._degraded and self._degraded_terminal
+
+    @property
+    def is_awaiting_pairing(self) -> bool:
+        """True if the bridge is currently sitting in ``pair_required``.
+
+        This is a legitimate, non-failure waiting state — a human needs to
+        scan the QR code the bridge is displaying — as opposed to other
+        degraded states (pairing-timeout exit, session invalidated, an
+        unreachable/crashing process). Callers (the startup-readiness wait
+        and the connector's SSE loop) use this to avoid tearing down or
+        restarting a bridge that is simply waiting to be paired (bu-7sh43).
+        """
+        return self._degraded and self._degraded_awaiting_pairing
 
     @property
     def is_invalidated_session(self) -> bool:
@@ -686,7 +711,9 @@ class BridgeSubprocessManager:
         logger.error("Bridge exited unexpectedly (rc=%s) — scheduling restart", rc)
         return True
 
-    def _set_degraded(self, reason: str, *, terminal: bool = False) -> None:
+    def _set_degraded(
+        self, reason: str, *, terminal: bool = False, awaiting_pairing: bool = False
+    ) -> None:
         """Enter degraded mode with the given human-readable reason.
 
         Args:
@@ -694,6 +721,9 @@ class BridgeSubprocessManager:
             terminal: True if recovery needs a human re-pair (QR scan) rather
                 than a restart. Terminal states are exempt from the stale-link
                 watchdog's restart so it does not loop pointlessly.
+            awaiting_pairing: True specifically for ``pair_required`` — a
+                legitimate waiting-for-a-human state, not a failure
+                (bu-7sh43). Reflects the latest call, same as ``terminal``.
         """
         # Stamp the degraded-since clock only on the transition into degraded so
         # repeated health polls while down do not keep resetting the duration.
@@ -704,6 +734,7 @@ class BridgeSubprocessManager:
         # Reflect the latest reason's recoverability, even if a recoverable
         # degradation later escalates to a terminal one mid-outage.
         self._degraded_terminal = terminal
+        self._degraded_awaiting_pairing = awaiting_pairing
         if self._config.startup_allow_degraded:
             self._startup_ready_event.set()
         logger.warning("Bridge entering degraded mode: %s", reason)
@@ -714,6 +745,7 @@ class BridgeSubprocessManager:
         self._degraded_reason = None
         self._degraded_since = None
         self._degraded_terminal = False
+        self._degraded_awaiting_pairing = False
         self._invalidated_session = False
 
     # ------------------------------------------------------------------
@@ -756,8 +788,17 @@ class BridgeSubprocessManager:
                     self._connected_event.set()
                     self._startup_ready_event.set()
                     break
-                if self._config.startup_allow_degraded and state == "pair_required":
-                    self._set_degraded("pair_required", terminal=True)
+                if state == "pair_required":
+                    # A bridge sitting in pair_required is legitimately
+                    # waiting for a human to scan the QR — not a startup
+                    # failure. This always satisfies startup readiness,
+                    # regardless of startup_allow_degraded, so the ordinary
+                    # startup_timeout_s clock never tears down a bridge
+                    # mid-pairing (bu-7sh43). whatsmeow rotates the QR
+                    # itself; if nobody scans, the bridge's own pairing
+                    # timeout eventually exits rc=1, which _classify_exit
+                    # already treats as a genuine, expected failure.
+                    self._set_degraded("pair_required", terminal=True, awaiting_pairing=True)
                     self._startup_ready_event.set()
                     break
                 if self._config.startup_allow_degraded and state == "disconnected":
@@ -849,7 +890,10 @@ class BridgeSubprocessManager:
             self._maybe_escalate_to_invalidated_session()
         elif state == "pair_required":
             logger.warning("Bridge requires pairing — entering degraded mode")
-            self._set_degraded("pair_required", terminal=True)
+            # Never escalated to is_invalidated_session (bu-5ocmh): pair_required
+            # is a legitimate, immediately-known waiting state (bu-7sh43), not a
+            # persistent-but-unexplained outage like disconnected/connecting.
+            self._set_degraded("pair_required", terminal=True, awaiting_pairing=True)
         else:
             logger.warning("Unrecognised bridge state: %r", state)
 

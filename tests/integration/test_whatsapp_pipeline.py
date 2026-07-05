@@ -474,8 +474,11 @@ class TestDashboardPairAPI:
         ) as c:
             yield c
 
-    async def test_pair_start_success_and_bridge_down(self, client):
+    async def test_pair_start_success_and_bridge_down(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """POST /pair/start returns QR data URI and expiry; 503 when bridge is unreachable."""
+        monkeypatch.setattr("butlers.api.routers.whatsapp._PAIR_START_RETRY_DELAY_S", 0.0)
         expires = (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
         with patch(
             "butlers.api.routers.whatsapp._bridge_post",
@@ -492,9 +495,34 @@ class TestDashboardPairAPI:
         assert data["qr_data_uri"].startswith("data:image/png;base64,")
         assert datetime.fromisoformat(data["expires_at"]) > datetime.now(UTC)
 
-        with patch("butlers.api.routers.whatsapp._bridge_post", new=AsyncMock(return_value=None)):
+        # Persistently unreachable — still 503 after the one quick retry.
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_post", new=AsyncMock(return_value=None)
+        ) as mock_post:
             response = await client.post("/api/connectors/whatsapp/pair/start")
         assert response.status_code == 503 and "bridge" in response.json()["detail"].lower()
+        assert mock_post.await_count == 2  # initial attempt + one retry
+
+    async def test_pair_start_retries_once_on_transient_unreachable_bridge(
+        self, client, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bridge that is unreachable on the first attempt but responds on
+        the retry (e.g. mid-respawn) must succeed rather than 503 (bu-7sh43:
+        with the startup-readiness teardown removed this race is rare, but a
+        single quick retry smooths over any remaining respawn window)."""
+        monkeypatch.setattr("butlers.api.routers.whatsapp._PAIR_START_RETRY_DELAY_S", 0.0)
+        expires = (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
+        mock_post = AsyncMock(
+            side_effect=[
+                None,
+                {"qr_data_uri": "data:image/png;base64,iVBORw0KGgo=", "expires_at": expires},
+            ]
+        )
+        with patch("butlers.api.routers.whatsapp._bridge_post", new=mock_post):
+            response = await client.post("/api/connectors/whatsapp/pair/start")
+        assert response.status_code == 200
+        assert response.json()["qr_data_uri"].startswith("data:image/png;base64,")
+        assert mock_post.await_count == 2
 
     async def test_pair_start_empty_qr_without_invalidation_signature_keeps_generic_error(
         self, client

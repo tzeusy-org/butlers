@@ -144,16 +144,17 @@ def test_not_running_with_exited_process() -> None:
 
 
 @pytest.mark.parametrize(
-    ("state", "expected_reason"),
+    ("state", "expected_reason", "expected_awaiting_pairing"),
     [
-        ("pair_required", "pair_required"),
-        ("disconnected", "Bridge status: disconnected"),
+        ("pair_required", "pair_required", True),
+        ("disconnected", "Bridge status: disconnected", False),
     ],
 )
 async def test_start_succeeds_in_degraded_mode_for_terminal_startup_states(
     monkeypatch: pytest.MonkeyPatch,
     state: str,
     expected_reason: str,
+    expected_awaiting_pairing: bool,
 ) -> None:
     mgr = BridgeSubprocessManager(_make_config(startup_timeout_s=0.25, startup_allow_degraded=True))
     proc = _blocking_process()
@@ -173,6 +174,7 @@ async def test_start_succeeds_in_degraded_mode_for_terminal_startup_states(
 
     assert mgr.is_degraded
     assert mgr.degraded_reason == expected_reason
+    assert mgr.is_awaiting_pairing is expected_awaiting_pairing
     assert not mgr._connected_event.is_set()
     assert mgr._startup_ready_event.is_set()
 
@@ -209,7 +211,45 @@ async def test_start_clears_degraded_if_bridge_recovers_before_health_loop(
 async def test_start_times_out_when_degraded_states_are_not_allowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A non-pairing degraded state (e.g. disconnected) must still be
+    exempt from readiness without startup_allow_degraded — pair_required is
+    the only state exempted from this flag (bu-7sh43; see
+    test_pair_required_never_times_out_startup_readiness_even_when_not_allowed)."""
     mgr = BridgeSubprocessManager(_make_config(startup_timeout_s=0.01))
+    proc = _blocking_process()
+
+    async def _spawn() -> None:
+        mgr._process = proc
+
+    monkeypatch.setattr(mgr, "_spawn", _spawn)
+    monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
+    monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(
+        "butlers.connectors.bridge_manager._http_get_unix",
+        AsyncMock(return_value={"state": "disconnected"}),
+    )
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(mgr.start(), timeout=1.0)
+
+    await mgr.stop()
+
+
+# ---------------------------------------------------------------------------
+# pair_required is always a non-failure startup-readiness state (bu-7sh43)
+# ---------------------------------------------------------------------------
+
+
+async def test_pair_required_never_times_out_startup_readiness_even_when_not_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root-cause regression for bu-7sh43: a bridge legitimately sitting in
+    pair_required (waiting for a human to scan the QR) must satisfy startup
+    readiness immediately — even on the ordinary boot path, which does NOT
+    set startup_allow_degraded — instead of being torn down when the
+    ordinary (much shorter) startup_timeout_s elapses."""
+    mgr = BridgeSubprocessManager(_make_config(startup_timeout_s=0.05))
+    assert mgr._config.startup_allow_degraded is False
     proc = _blocking_process()
 
     async def _spawn() -> None:
@@ -223,10 +263,68 @@ async def test_start_times_out_when_degraded_states_are_not_allowed(
         AsyncMock(return_value={"state": "pair_required"}),
     )
 
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(mgr.start(), timeout=1.0)
+    # Must resolve well within startup_timeout_s, not raise TimeoutError.
+    await asyncio.wait_for(mgr.start(), timeout=1.0)
+
+    assert mgr.is_degraded
+    assert mgr.is_degraded_terminal
+    assert mgr.is_awaiting_pairing
+    assert mgr.degraded_reason == "pair_required"
+    assert mgr._startup_ready_event.is_set()
 
     await mgr.stop()
+
+
+async def test_is_awaiting_pairing_false_for_other_degraded_reasons() -> None:
+    mgr = BridgeSubprocessManager(_make_config())
+    mgr._set_degraded("Bridge status: disconnected")
+    assert mgr.is_degraded
+    assert mgr.is_awaiting_pairing is False
+
+
+async def test_is_awaiting_pairing_false_for_pairing_timeout_exit() -> None:
+    """rc=1 (pairing timeout) is a genuine, expected failure — not the
+    'awaiting pairing' waiting state — so callers must still be able to
+    react/tear down on it (bu-7sh43)."""
+    mgr = BridgeSubprocessManager(_make_config())
+    assert mgr._classify_exit(1) is False
+    assert mgr.is_degraded_terminal
+    assert mgr.is_awaiting_pairing is False
+
+
+def test_clear_degraded_resets_awaiting_pairing_flag() -> None:
+    mgr = BridgeSubprocessManager(_make_config())
+    mgr._set_degraded("pair_required", terminal=True, awaiting_pairing=True)
+    assert mgr.is_awaiting_pairing is True
+    mgr._clear_degraded()
+    assert mgr.is_awaiting_pairing is False
+
+
+async def test_pair_required_never_escalates_to_invalidated_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Composition check against the bu-5ocmh invalidated-session classifier
+    (PR #2950): pair_required must never be misclassified as an invalidated
+    session, no matter how long it persists — it is already a fully-known,
+    immediately-terminal waiting state, unlike the disconnected/connecting
+    cycle _maybe_escalate_to_invalidated_session exists to catch."""
+    mgr = BridgeSubprocessManager(_make_config(invalidated_session_threshold_s=300.0))
+    mgr._process = _fake_process(returncode=None)
+    monkeypatch.setattr(
+        "butlers.connectors.bridge_manager._http_get_unix",
+        AsyncMock(return_value={"state": "pair_required"}),
+    )
+
+    await mgr._poll_status()
+    assert mgr.is_awaiting_pairing is True
+    assert mgr.is_invalidated_session is False
+
+    # Simulate pair_required persisting far past the invalidated-session
+    # threshold — still must not escalate.
+    mgr._degraded_since = time.monotonic() - 301.0
+    await mgr._poll_status()
+    assert mgr.is_invalidated_session is False
+    assert mgr.is_awaiting_pairing is True
 
 
 @pytest.mark.parametrize(

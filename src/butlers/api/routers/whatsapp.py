@@ -26,6 +26,7 @@ Security:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -56,6 +57,14 @@ router = APIRouter(prefix="/api/connectors/whatsapp", tags=["whatsapp"])
 
 _DEFAULT_BRIDGE_SOCKET = "/tmp/wa-bridge.sock"
 _BRIDGE_TIMEOUT = 5.0  # seconds
+
+# One quick retry for /pair/start when the bridge is momentarily unreachable.
+# bu-7sh43 removed the startup-readiness teardown that used to make the bridge
+# disappear mid-respawn every ~60s, so this race is now rare — but a bridge
+# process restart (e.g. an unrelated crash-and-respawn) can still take a
+# moment to rebind its Unix socket. A short, single retry smooths that over
+# without masking a genuinely-down bridge (which still 503s after the retry).
+_PAIR_START_RETRY_DELAY_S = 0.5
 
 # Matches bridge_manager.BridgeConfig.invalidated_session_threshold_s — the
 # connector-side escalation this heuristic mirrors (bu-5ocmh). Kept as one
@@ -341,6 +350,12 @@ async def start_whatsapp_pairing(
     just reporting the same "no QR code" error forever.
     """
     data = await _bridge_post(socket_path, "/pair/start")
+    if data is None:
+        # One quick retry: a bridge process restart can leave the Unix
+        # socket briefly unbound even though the connector is otherwise
+        # healthy — see _PAIR_START_RETRY_DELAY_S.
+        await asyncio.sleep(_PAIR_START_RETRY_DELAY_S)
+        data = await _bridge_post(socket_path, "/pair/start")
 
     if data is None:
         raise HTTPException(
