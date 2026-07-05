@@ -11,5 +11,6 @@ export { EvidenceLog } from "./EvidenceLog";
 export { PatrolJournal } from "./PatrolJournal";
 export { PRPanel } from "./PRPanel";
 export { QaKpiStrip } from "./QaKpiStrip";
+export { QaVerdictOpener } from "./QaVerdictOpener";
 export { StateTrack } from "./StateTrack";
 export type { QaStateTrackStage } from "./StateTrack";

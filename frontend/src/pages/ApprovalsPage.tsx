@@ -59,6 +59,7 @@ import {
 } from "@/hooks/use-approval-decisions.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
+import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
 
 // ---------------------------------------------------------------------------
@@ -1178,6 +1179,16 @@ export default function ApprovalsPage() {
     placeholderData: (prev) => prev,
   });
 
+  // Same queryKey as HistorySection's own useQuery below -- react-query
+  // dedupes by key, so this does not add a second network request. Lifted
+  // here purely so the verdict opener (JARVIS pursuit move 9) can name a
+  // decided-but-never-dispatched approval without HistorySection needing to
+  // thread its data back up.
+  const { data: historyData, isLoading: historyLoading, isError: historyIsError } = useQuery({
+    queryKey: Q.history(),
+    queryFn: () => getApprovalsHistory(undefined, 30),
+  });
+
   // `pending` may still carry stale cached rows from before a failed refetch
   // (react-query keeps the last good `data` around). QueryBoundary below
   // checks `isError` BEFORE `isEmpty`, so a fetch failure with zero cached
@@ -1380,6 +1391,19 @@ export default function ApprovalsPage() {
           system · approvals
         </div>
         <h1 className="text-2xl font-medium">Approvals</h1>
+      </div>
+
+      {/* Verdict opener — synthesizes the queue + history data this page
+          already fetches into one line (JARVIS pursuit move 9). */}
+      <div className="px-6 py-3 border-b border-border shrink-0">
+        <ApprovalsVerdictOpener
+          pending={pending}
+          pendingLoading={isLoading}
+          pendingError={isError}
+          history={historyData?.data ?? []}
+          historyLoading={historyLoading}
+          historyError={historyIsError}
+        />
       </div>
 
       {/* Autonomy suggestions — rendered above the two-pane body when pending

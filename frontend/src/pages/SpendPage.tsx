@@ -57,29 +57,18 @@ import {
 import { useTimeWindow, formatWindowDate, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
 import { CostStripeChart } from "@/components/costs/CostStripeChart"
+import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener"
 import { formatCostUsd } from "@/lib/format-cost"
 import { cn } from "@/lib/utils"
+import { computeMovers, type Mover } from "@/lib/spend-movers"
+import type { ForecastData, ForecastDay } from "@/lib/spend-forecast"
 import type { ComplexityTier } from "@/api/types"
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface ForecastDay {
-  date: string
-  cost_usd: number
-  projected: boolean
-}
-
-interface ForecastData {
-  days: ForecastDay[]
-  projected_eom_usd: number
-  days_in_month: number
-  days_elapsed: number
-  mtd_usd: number
-  ceiling_usd: number | null
-  projection_confidence: "low" | "normal"
-}
+// ForecastData/ForecastDay live in lib/spend-forecast.ts so SpendVerdictOpener
+// can share the same shape without a page-to-component import cycle.
 
 interface SpendRule {
   id: string
@@ -463,38 +452,10 @@ function CeilingEdit({ currentCeiling }: { currentCeiling: number | null }) {
 
 // ---------------------------------------------------------------------------
 // What changed — Movers strip: ranked butler spend deltas vs the prior
-// window of equal length. A butler with prior=0 is "new"; a butler with
-// current=0 is "stopped" — both are honest deltas, not fabricated ones.
+// window of equal length. computeMovers/Mover now live in lib/spend-movers.ts
+// so the SpendVerdictOpener page opener (bu-qvnce.9) shares the exact same
+// honest-delta logic instead of duplicating it.
 // ---------------------------------------------------------------------------
-
-interface Mover {
-  name: string
-  current: number
-  prior: number
-  delta: number
-}
-
-function computeMovers(
-  current: Record<string, number>,
-  prior: Record<string, number>,
-  unavailable: ReadonlySet<string>,
-  limit = 6,
-): Mover[] {
-  const names = new Set([...Object.keys(current), ...Object.keys(prior)])
-  const movers: Mover[] = Array.from(names)
-    // A butler whose cost data was unavailable on either side of the
-    // comparison has an unreliable delta -- current-vs-0 or 0-vs-prior would
-    // fabricate a "+$X · new" or "· stopped" callout that isn't real
-    // (bu-qvnce.1 -- honest aggregation).
-    .filter((name) => !unavailable.has(name))
-    .map((name) => {
-      const c = current[name] ?? 0
-      const p = prior[name] ?? 0
-      return { name, current: c, prior: p, delta: c - p }
-    })
-  movers.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-  return movers.filter((m) => Math.abs(m.delta) >= 0.000001).slice(0, limit)
-}
 
 function MoverChip({ mover }: { mover: Mover }) {
   const up = mover.delta > 0
@@ -1252,7 +1213,7 @@ export default function SpendPage() {
 
   // Posture — always the current month, independent of the explore-section
   // time window below (matches the original /settings/spend behavior).
-  const { data: forecastData, isLoading: forecastLoading } = useQuery({
+  const { data: forecastData, isLoading: forecastLoading, isError: forecastError } = useQuery({
     queryKey: ["spend-forecast"],
     queryFn: fetchForecast,
     refetchInterval: 120_000,
@@ -1351,6 +1312,26 @@ export default function SpendPage() {
   return (
     <Page archetype="overview" title="Spend">
       <div className="space-y-6">
+        {/* Verdict opener — pace, projection confidence (previously fetched
+            but discarded, see ForecastData.projection_confidence), and the
+            top mover, composed from data already fetched below (JARVIS
+            pursuit move 9). */}
+        <SpendVerdictOpener
+          forecast={liveForecast}
+          forecastLoading={forecastLoading}
+          forecastError={forecastError}
+          currentByButler={currentSummary?.data?.by_butler ?? {}}
+          priorByButler={priorSummary?.data?.by_butler ?? {}}
+          unavailableButlers={
+            new Set([
+              ...(currentSummary?.data?.unavailable_butlers ?? []),
+              ...(priorSummary?.data?.unavailable_butlers ?? []),
+            ])
+          }
+          moversLoading={currentSummaryLoading || priorSummaryLoading}
+          moversError={currentSummaryError || priorSummaryError}
+        />
+
         {/* Over-ceiling attention row — projected EOM exceeds the ceiling */}
         {overCeiling && liveForecast && (
           <div

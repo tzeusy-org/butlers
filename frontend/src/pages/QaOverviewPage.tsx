@@ -26,7 +26,7 @@ import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import type { QaCaseSummary } from "@/api/types";
-import { CaseDossier, CaseList, QaKpiStrip } from "@/components/qa";
+import { CaseDossier, CaseList, QaKpiStrip, QaVerdictOpener } from "@/components/qa";
 import { Time } from "@/components/ui/time";
 import { useButlers } from "@/hooks/use-butlers";
 import { useForceQaPatrol, useQaCases, useQaPatrols, useQaSummary } from "@/hooks/use-qa";
@@ -445,6 +445,13 @@ export default function QaOverviewPage() {
       />
 
       <PageHeader summary={summary} />
+
+      {/* Verdict opener -- staffer status/patrol/breaker/credentials fields
+          GET /api/qa/summary already returns but the KPI strip below never
+          rendered (JARVIS pursuit move 9). */}
+      <div className="border-b border-border/60 px-6 py-3">
+        <QaVerdictOpener summary={summary} />
+      </div>
 
       {/* KPI strip */}
       <div className="border-b border-border/60 px-6 py-4">
