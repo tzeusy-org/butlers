@@ -19,10 +19,11 @@ The OwnTracks connector bridges the OwnTracks mobile app into the butler ecosyst
 - **WHEN** the OwnTracks connector starts
 - **THEN** `source.channel = "owntracks"`, `source.provider = "owntracks"`, and `source.endpoint_identity = "owntracks:<tid>"` where `<tid>` is the OwnTracks tracker ID configured via `OWNTRACKS_TRACKER_ID` (default: device-reported `tid`)
 
-#### Scenario: Single device per instance
-- **WHEN** the connector is deployed
-- **THEN** each connector instance handles one OwnTracks device
-- **AND** multiple devices require multiple connector instances with distinct ports and endpoint identities
+#### Scenario: Multiple devices per instance
+- **WHEN** several physical OwnTracks devices (e.g. household members' phones) post to the same connector instance's webhook URL
+- **THEN** the connector resolves each device's own `owntracks:<tid>` identity independently and gives it its own heartbeat lifecycle, Prometheus metrics labels, filtered-event buffer, and checkpoint cursor
+- **AND** each resolved device registers its own row in `connector_registry`, keyed by `(connector_type, endpoint_identity)`, independently of sibling devices -- one device's activity never stops, replaces, or corrupts another device's heartbeat, checkpoint, or metrics
+- **AND** setting `OWNTRACKS_TRACKER_ID` pins the connector to one fixed identity (ignoring device-reported `tid`) for deployments that intentionally run one connector instance per device
 
 ### Requirement: Webhook Server
 The connector runs a FastAPI HTTP server that receives OwnTracks webhook POSTs and serves health/metrics endpoints on the same port.
@@ -244,6 +245,7 @@ The connector follows the connector base contract for heartbeat, metrics, health
 - **THEN** it sends periodic heartbeats to the Switchboard per the connector base heartbeat protocol
 - **AND** `connector_type = "owntracks"`
 - **AND** heartbeat counters reflect events received, submitted, and failed
+- **AND** when multiple devices post through the same instance, each resolved device runs its own independent heartbeat task under its own `endpoint_identity` (see Multiple devices per instance) rather than sharing or thrashing one heartbeat between devices
 
 #### Scenario: Prometheus metrics
 - **WHEN** the connector processes events

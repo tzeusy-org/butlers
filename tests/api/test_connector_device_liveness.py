@@ -238,6 +238,89 @@ async def test_device_liveness_query_failure_falls_back_gracefully(app: FastAPI)
     assert connector["hourly_events"] == [0] * 24
 
 
+async def test_devices_badge_suppressed_once_registry_has_a_row_per_known_device(
+    app: FastAPI,
+) -> None:
+    """Fully migrated connector_type: registry_row_counts >= known device count.
+
+    Once every device the fallback knows about (from ingestion_events) also has
+    its own connector_registry row (bu-86zll: OwnTracks now registers one row
+    per resolved device), each row's own state/last_heartbeat_at is already
+    device-accurate -- the ingestion_events-derived `devices` badge is no longer
+    needed and must be suppressed so it doesn't double up or disagree with the
+    per-row liveness.
+    """
+    now = dt.datetime.now(dt.UTC)
+    registry_rows = [
+        _registry_row(connector_type="owntracks", endpoint_identity="owntracks:a"),
+        _registry_row(connector_type="owntracks", endpoint_identity="owntracks:b"),
+    ]
+    device_rows = [
+        _device_row(connector_type="owntracks", sender_identity="owntracks:a", last_seen_at=now),
+        _device_row(connector_type="owntracks", sender_identity="owntracks:b", last_seen_at=now),
+    ]
+    pool = _make_pool_with_fetch_sequence([registry_rows, [], device_rows])
+    _wire_db(app, pool)
+
+    data = await _get_summaries(app)
+
+    for connector in data["connectors"]:
+        assert connector["devices"] is None
+
+
+async def test_devices_badge_stays_visible_during_partial_registry_migration(
+    app: FastAPI,
+) -> None:
+    """Partial migration: only some known devices have registered their own row.
+
+    A connector_type where one device ('a') has already started registering its
+    own connector_registry row post-bu-86zll but a sibling ('b', still known only
+    via ingestion_events -- e.g. dead/not yet posted since the fix deployed) has
+    NOT yet registered one must keep the `devices` badge. Gating on a flat
+    ``registry_row_counts > 1`` would suppress the badge the instant a *second*
+    row of any kind appears, hiding 'b' behind neither its own row nor the
+    fallback badge -- exactly the bu-e16to invisibility bug this badge exists to
+    prevent. The badge must only disappear once the registry has caught up to
+    *every* device the fallback already knows about.
+    """
+    now = dt.datetime.now(dt.UTC)
+    # Registry already has TWO rows ('a' and 'b' have freshly registered their
+    # own row post-bu-86zll) -- a flat ">1 rows" gate would already suppress
+    # the badge here. But 'c' has zero rows (dead/not yet posted since the fix
+    # deployed), matching the described bu-e16to failure mode exactly.
+    registry_rows = [
+        _registry_row(connector_type="owntracks", endpoint_identity="owntracks:a"),
+        _registry_row(connector_type="owntracks", endpoint_identity="owntracks:b"),
+    ]
+    # ingestion_events has seen THREE distinct devices historically.
+    device_rows = [
+        _device_row(connector_type="owntracks", sender_identity="owntracks:a", last_seen_at=now),
+        _device_row(connector_type="owntracks", sender_identity="owntracks:b", last_seen_at=now),
+        _device_row(
+            connector_type="owntracks",
+            sender_identity="owntracks:c",
+            last_seen_at=now - dt.timedelta(days=70),
+        ),
+    ]
+    pool = _make_pool_with_fetch_sequence([registry_rows, [], device_rows])
+    _wire_db(app, pool)
+
+    data = await _get_summaries(app)
+
+    # Both registered rows ('a' and 'b') must still carry the badge -- with 'c'
+    # still invisible in the registry itself, the badge is the only place its
+    # staleness is surfaced.
+    assert len(data["connectors"]) == 2
+    for connector in data["connectors"]:
+        devices = connector["devices"]
+        assert devices is not None
+        assert {d["sender_identity"] for d in devices} == {
+            "owntracks:a",
+            "owntracks:b",
+            "owntracks:c",
+        }
+
+
 async def test_device_query_skipped_when_registry_empty(app: FastAPI) -> None:
     """Empty registry means zero rows -- the device-liveness fetch is skipped."""
     pool = AsyncMock()

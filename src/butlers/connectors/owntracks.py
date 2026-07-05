@@ -1006,6 +1006,35 @@ async def persist_location_point(
 
 
 # ---------------------------------------------------------------------------
+# Per-device state (bu-86zll)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _OwnTracksDeviceState:
+    """Identity-scoped state for one resolved OwnTracks endpoint identity.
+
+    A single connector process/webhook commonly serves *several* physical
+    devices (e.g. household members' phones all posting through the same
+    webhook URL). Each resolved device tid gets its own instance of this
+    bundle -- its own Prometheus-metrics label wrapper, ingestion-policy
+    evaluator, filtered-event buffer, heartbeat lifecycle, and checkpoint
+    bookkeeping -- so N devices sharing one connector process each get their
+    own independent ``connector_registry`` row instead of one shared row
+    thrashing between whichever device most recently posted (bu-86zll, root
+    cause of bu-e16to).
+    """
+
+    endpoint_identity: str
+    metrics: ConnectorMetrics
+    ingestion_policy: IngestionPolicyEvaluator
+    filtered_event_buffer: FilteredEventBuffer
+    heartbeat: ConnectorHeartbeat
+    last_checkpoint_tst: int | None = None
+    last_checkpoint_save: float | None = None
+
+
+# ---------------------------------------------------------------------------
 # Main connector class
 # ---------------------------------------------------------------------------
 
@@ -1024,6 +1053,12 @@ class OwnTracksConnector:
     - Filtered event batch flush (task 6.4)
     - Replay queue drain (task 6.5)
     - IngestionPolicyEvaluator source filter gate (task 6.6)
+
+    Multiple physical devices may post through one connector process (see
+    :class:`_OwnTracksDeviceState`, bu-86zll). Each resolved device identity
+    is tracked independently in ``self._devices``; only the placeholder/
+    override identity used before any device has resolved is exposed via
+    ``self._endpoint_identity`` (used for connector-level health reporting).
     """
 
     def __init__(
@@ -1038,7 +1073,11 @@ class OwnTracksConnector:
         self._db_pool = db_pool
         self._cursor_pool = cursor_pool
 
-        # Endpoint identity (set during startup, may be updated on first event)
+        # Placeholder/primary identity: fixed for the life of the process when
+        # OWNTRACKS_TRACKER_ID is set; otherwise a startup placeholder that is
+        # never mutated (see self._devices for the real, per-device identities
+        # resolved from each event's own `tid`). Used for connector-level
+        # health reporting only.
         self._endpoint_identity = f"owntracks:{config.tracker_id_override or 'unknown'}"
 
         # MCP client
@@ -1052,36 +1091,21 @@ class OwnTracksConnector:
         self._running = False
         self._shutdown_event = asyncio.Event()
 
-        # Event tracking (for health endpoint - task 6.3)
+        # Event tracking (for health endpoint - task 6.3). Aggregate across
+        # all devices -- the health endpoint reports connector-process-level
+        # liveness, not per-device liveness (that lives in connector_registry).
         self._last_event_at: datetime | None = None
         self._events_today: int = 0
         self._events_today_date: date = datetime.now(UTC).date()
 
-        # Checkpoint tracking
-        self._last_checkpoint_tst: int | None = None
-        self._last_checkpoint_save: float | None = None
-
-        # Metrics (initialized with placeholder identity, updated on first event)
-        self._metrics = ConnectorMetrics(
-            connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=self._endpoint_identity,
-        )
+        # Per-device state (bu-86zll): metrics/policy/buffer/heartbeat/checkpoint,
+        # keyed by resolved endpoint_identity. Populated lazily as devices are
+        # seen; see _get_or_create_device().
+        self._devices: dict[str, _OwnTracksDeviceState] = {}
 
         # Health/error state
         self._health_error: str | None = None
         self._last_ingest_ok: bool | None = None
-
-        # Heartbeat (initialized after identity is finalized)
-        self._heartbeat: ConnectorHeartbeat | None = None
-
-        # Ingestion policy evaluator (initialized during startup)
-        self._ingestion_policy: IngestionPolicyEvaluator | None = None
-
-        # Filtered event buffer
-        self._filtered_event_buffer = FilteredEventBuffer(
-            connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=self._endpoint_identity,
-        )
 
         # Health server
         self._health_server: uvicorn.Server | None = None
@@ -1113,19 +1137,16 @@ class OwnTracksConnector:
             except (NotImplementedError, OSError):
                 logger.debug("OwnTracksConnector: signal handlers not supported on this platform")
 
-            # Phase 1: Initialize ingestion policy evaluator
-            scope = f"connector:{_CONNECTOR_TYPE}:{self._endpoint_identity}"
-            self._ingestion_policy = IngestionPolicyEvaluator(
-                scope=scope,
-                db_pool=self._db_pool,
-            )
-            await self._ingestion_policy.ensure_loaded()
-
-            # Phase 2: Initialize heartbeat
-            self._init_heartbeat()
+            # Phase 1 & 2: register the placeholder/primary device (metrics,
+            # ingestion policy, filtered-event buffer, heartbeat). Real device
+            # identities are added lazily as their first webhook event carries
+            # a `tid` -- see _get_or_create_device().
+            placeholder = self._create_device_state(self._endpoint_identity)
+            self._devices[self._endpoint_identity] = placeholder
+            await placeholder.ingestion_policy.ensure_loaded()
 
             # Phase 3: Load checkpoint
-            await self._load_checkpoint()
+            await self._load_checkpoint(placeholder)
 
             # Phase 4: Warn if ingestion tier is full
             if self._config.ingestion_tier == _TIER_FULL:
@@ -1146,16 +1167,16 @@ class OwnTracksConnector:
             app = self._build_app()
             self._start_health_server(app)
 
-            # Phase 7 & 8: Start heartbeat only if identity is already resolved.
-            # With the placeholder ``owntracks:unknown`` we'd pollute the registry
-            # with a zombie row that survives every restart; wait until the first
-            # webhook event carries a ``tid`` and let _endpoint_identity_ready()
-            # start the heartbeat under the real identity.
-            assert self._heartbeat is not None
+            # Phase 7 & 8: Start the placeholder's heartbeat only if its identity
+            # is pinned (OWNTRACKS_TRACKER_ID). With the placeholder
+            # ``owntracks:unknown`` we'd pollute the registry with a zombie row
+            # that survives every restart; wait until each device's first
+            # webhook event carries a ``tid`` and let _get_or_create_device()
+            # start that device's own heartbeat under its real identity.
             if self._config.tracker_id_override:
-                self._heartbeat.start()
+                placeholder.heartbeat.start()
                 try:
-                    await self._heartbeat._send_heartbeat()
+                    await placeholder.heartbeat._send_heartbeat()
                 except Exception as exc:
                     logger.debug(
                         "OwnTracksConnector: initial heartbeat failed (non-fatal): %s", exc
@@ -1195,20 +1216,28 @@ class OwnTracksConnector:
         if self._retention is not None:
             await self._retention.stop()
 
-        # Flush filtered event buffer
-        if self._db_pool is not None:
-            try:
-                await self._filtered_event_buffer.flush(self._db_pool)
-            except Exception:
-                logger.warning("OwnTracksConnector: filtered event flush failed on shutdown")
+        # Flush every device's filtered event buffer and send its final
+        # heartbeat (bu-86zll: each resolved device has its own independent
+        # buffer/heartbeat, not one shared instance).
+        for device in self._devices.values():
+            if self._db_pool is not None:
+                try:
+                    await device.filtered_event_buffer.flush(self._db_pool)
+                except Exception:
+                    logger.warning(
+                        "OwnTracksConnector: filtered event flush failed on shutdown for %s",
+                        device.endpoint_identity,
+                    )
 
-        # Send final heartbeat
-        if self._heartbeat is not None:
             try:
-                await self._heartbeat._send_heartbeat()
+                await device.heartbeat._send_heartbeat()
             except Exception as exc:
-                logger.debug("OwnTracksConnector: final heartbeat failed (non-fatal): %s", exc)
-            await self._heartbeat.stop()
+                logger.debug(
+                    "OwnTracksConnector: final heartbeat failed for %s (non-fatal): %s",
+                    device.endpoint_identity,
+                    exc,
+                )
+            await device.heartbeat.stop()
 
         # Stop health server
         if self._health_server is not None:
@@ -1220,59 +1249,91 @@ class OwnTracksConnector:
     # Initialization helpers
     # ------------------------------------------------------------------
 
-    def _init_heartbeat(self) -> None:
-        """Initialize heartbeat with current endpoint identity."""
+    def _get_checkpoint_info_for_identity(
+        self, identity: str
+    ) -> tuple[str | None, datetime | None]:
+        """Return (cursor, updated_at) for the named device's heartbeat checkpoint field.
+
+        Looked up by identity (rather than closing over the device object directly)
+        so the callback stays valid even if ``self._devices[identity]`` is ever
+        replaced.
+        """
+        device = self._devices.get(identity)
+        if device is None or device.last_checkpoint_tst is None:
+            return None, None
+        updated_at = (
+            datetime.fromtimestamp(device.last_checkpoint_save, tz=UTC)
+            if device.last_checkpoint_save is not None
+            else None
+        )
+        return str(device.last_checkpoint_tst), updated_at
+
+    def _create_device_state(self, identity: str) -> _OwnTracksDeviceState:
+        """Build a fresh identity-scoped state bundle for a device.
+
+        Does not start the heartbeat task or load ingestion policy rules --
+        callers (``start()`` for the placeholder, ``_get_or_create_device()``
+        for real devices) do that once the device is registered in
+        ``self._devices``, so the callback closures below always resolve
+        against a fully-registered device.
+        """
+        metrics = ConnectorMetrics(connector_type=_CONNECTOR_TYPE, endpoint_identity=identity)
+        scope = f"connector:{_CONNECTOR_TYPE}:{identity}"
+        ingestion_policy = IngestionPolicyEvaluator(scope=scope, db_pool=self._db_pool)
+        filtered_event_buffer = FilteredEventBuffer(
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=identity,
+        )
         hb_config = HeartbeatConfig.from_env(
             connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=self._endpoint_identity,
+            endpoint_identity=identity,
         )
-        self._heartbeat = ConnectorHeartbeat(
+        heartbeat = ConnectorHeartbeat(
             config=hb_config,
             mcp_client=self._mcp_client,
-            metrics=self._metrics,
+            metrics=metrics,
             get_health_state=self._get_health_state,
-            get_checkpoint=self._get_checkpoint_info,
+            get_checkpoint=lambda: self._get_checkpoint_info_for_identity(identity),
+        )
+        return _OwnTracksDeviceState(
+            endpoint_identity=identity,
+            metrics=metrics,
+            ingestion_policy=ingestion_policy,
+            filtered_event_buffer=filtered_event_buffer,
+            heartbeat=heartbeat,
         )
 
-    async def _endpoint_identity_ready(self) -> None:
-        """Re-initialize identity-bound components once the real endpoint identity is known.
+    async def _get_or_create_device(self, identity: str) -> _OwnTracksDeviceState:
+        """Return the per-device state for ``identity``, registering it if new.
 
-        Called when the first event's ``tid`` resolves the endpoint identity from the
-        placeholder ``owntracks:unknown`` to the actual device tracker ID. Keeps
-        ConnectorMetrics labels, FilteredEventBuffer flush keys, IngestionPolicyEvaluator
-        scope, and HeartbeatConfig endpoint consistent with the real identity.
-
-        The heartbeat task is replaced: the old one (still registering heartbeats under
-        the stale identity) is stopped, a new one is constructed with the resolved
-        identity, and started. Without this, the placeholder identity keeps ticking
-        forever while the real identity's row goes stale on the dashboard.
+        A newly resolved device gets its own heartbeat lifecycle immediately:
+        started, plus an out-of-band initial heartbeat send (mirrors the
+        override-identity startup path) so its connector_registry row appears
+        right away rather than waiting up to ``CONNECTOR_HEARTBEAT_INTERVAL_S``.
+        Existing devices are unaffected by a sibling device's resolution --
+        each device's heartbeat task runs independently and is never stopped
+        or replaced by another device's activity (bu-86zll).
         """
-        self._metrics = ConnectorMetrics(
-            connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=self._endpoint_identity,
-        )
+        device = self._devices.get(identity)
+        if device is not None:
+            return device
 
-        scope = f"connector:{_CONNECTOR_TYPE}:{self._endpoint_identity}"
-        self._ingestion_policy = IngestionPolicyEvaluator(
-            scope=scope,
-            db_pool=self._db_pool,
-        )
+        device = self._create_device_state(identity)
+        self._devices[identity] = device
+        await device.ingestion_policy.ensure_loaded()
+        await self._load_checkpoint(device)
 
-        self._filtered_event_buffer = FilteredEventBuffer(
-            connector_type=_CONNECTOR_TYPE,
-            endpoint_identity=self._endpoint_identity,
-        )
-
-        old_heartbeat = self._heartbeat
-        if old_heartbeat is not None:
-            try:
-                await old_heartbeat.stop()
-            except Exception:
-                logger.exception("OwnTracksConnector: failed to stop previous heartbeat task")
-
-        self._init_heartbeat()
-        assert self._heartbeat is not None
-        self._heartbeat.start()
+        device.heartbeat.start()
+        try:
+            await device.heartbeat._send_heartbeat()
+        except Exception as exc:
+            logger.debug(
+                "OwnTracksConnector: initial heartbeat failed for %s (non-fatal): %s",
+                identity,
+                exc,
+            )
+        logger.info("OwnTracksConnector: registered new device identity=%s", identity)
+        return device
 
     # ------------------------------------------------------------------
     # Webhook event processing
@@ -1287,18 +1348,28 @@ class OwnTracksConnector:
         payload_type = body.get("_type", "")
         observed_at = datetime.now(UTC).isoformat()
 
-        # Determine endpoint identity from tid if not overridden.
-        # On first event carrying a real tid, re-initialize identity-bound
-        # components (metrics, policy, buffer, heartbeat) so they all use the
-        # resolved identity rather than the placeholder "owntracks:unknown".
+        # Resolve which device this event belongs to and fetch (or lazily
+        # create) its dedicated state bundle -- captured as a local variable
+        # and threaded through the rest of this method instead of read back
+        # off `self`. This is deliberate: `_process_webhook_event` coroutines
+        # are dispatched fire-and-forget per webhook POST (see
+        # `_dispatch_event_to_main_loop`), so multiple devices' events can be
+        # interleaved on the event loop. Reading a shared `self._endpoint_*`
+        # attribute *after* an `await` (e.g. post-ingest, before the
+        # checkpoint save) could observe a different device's identity than
+        # the one this event actually belongs to, corrupting that device's
+        # checkpoint/location-evidence attribution (bu-86zll). Resolving once
+        # up front and using only the local `device` reference for the rest
+        # of this call closes that race regardless of interleaving.
         tid = body.get("tid")
         if tid and not self._config.tracker_id_override:
-            resolved = f"owntracks:{tid}"
-            if resolved != self._endpoint_identity:
-                self._endpoint_identity = resolved
-                await self._endpoint_identity_ready()
+            identity = f"owntracks:{tid}"
+        else:
+            identity = self._endpoint_identity
+        device = await self._get_or_create_device(identity)
 
-        # Track event counter for today (task 6.3)
+        # Track event counter for today (task 6.3). Aggregate across all
+        # devices -- see the connector-level note on self._last_event_at.
         now_date = datetime.now(UTC).date()
         if now_date != self._events_today_date:
             self._events_today = 0
@@ -1307,14 +1378,14 @@ class OwnTracksConnector:
         if payload_type not in _SUPPORTED_PAYLOAD_TYPES:
             logger.debug("OwnTracksConnector: ignoring unsupported _type=%r", payload_type)
             owntracks_events_received_total.labels(
-                endpoint_identity=self._endpoint_identity,
+                endpoint_identity=device.endpoint_identity,
                 event_type="ignored",
             ).inc()
             return
 
         # Increment received counter (task 6.2)
         owntracks_events_received_total.labels(
-            endpoint_identity=self._endpoint_identity,
+            endpoint_identity=device.endpoint_identity,
             event_type=payload_type,
         ).inc()
 
@@ -1322,67 +1393,66 @@ class OwnTracksConnector:
         self._events_today += 1
 
         # Apply source filter gate (task 6.6)
-        if self._ingestion_policy is not None:
-            ingest_envelope = IngestionEnvelope(
-                source_channel=_CONNECTOR_CHANNEL,
-                raw_key=self._endpoint_identity,
+        ingest_envelope = IngestionEnvelope(
+            source_channel=_CONNECTOR_CHANNEL,
+            raw_key=device.endpoint_identity,
+        )
+        decision = device.ingestion_policy.evaluate(ingest_envelope)
+        if not decision.allowed:
+            logger.debug(
+                "OwnTracksConnector: event blocked by policy (scope=%s, reason=%s)",
+                device.ingestion_policy.scope,
+                decision.reason,
             )
-            decision = self._ingestion_policy.evaluate(ingest_envelope)
-            if not decision.allowed:
-                logger.debug(
-                    "OwnTracksConnector: event blocked by policy (scope=%s, reason=%s)",
-                    self._ingestion_policy.scope,
-                    decision.reason,
-                )
-                # Record in filtered event buffer (task 6.4)
-                tst = body.get("tst", 0)
-                external_event_id = f"{tst}:{payload_type}"
-                if payload_type == "transition":
-                    external_event_id = f"{tst}:transition:{body.get('event', 'unknown')}"
+            # Record in filtered event buffer (task 6.4)
+            tst = body.get("tst", 0)
+            external_event_id = f"{tst}:{payload_type}"
+            if payload_type == "transition":
+                external_event_id = f"{tst}:transition:{body.get('event', 'unknown')}"
 
-                self._filtered_event_buffer.record(
-                    external_message_id=external_event_id,
-                    source_channel=_CONNECTOR_CHANNEL,
-                    sender_identity=self._endpoint_identity,
-                    subject_or_preview=f"OwnTracks {payload_type} event",
-                    filter_reason=FilteredEventBuffer.reason_policy_rule(
-                        scope="connector_rule",
-                        action=decision.action,
-                        rule_type=decision.matched_rule_type or "unknown",
-                    ),
-                    full_payload=FilteredEventBuffer.full_payload(
-                        channel=_CONNECTOR_CHANNEL,
-                        provider=_CONNECTOR_PROVIDER,
-                        endpoint_identity=self._endpoint_identity,
-                        external_event_id=external_event_id,
-                        external_thread_id=f"owntracks:{body.get('tid', 'unknown')}",
-                        observed_at=observed_at,
-                        sender_identity=self._endpoint_identity,
-                        raw=body,
-                    ),
-                )
-                return
+            device.filtered_event_buffer.record(
+                external_message_id=external_event_id,
+                source_channel=_CONNECTOR_CHANNEL,
+                sender_identity=device.endpoint_identity,
+                subject_or_preview=f"OwnTracks {payload_type} event",
+                filter_reason=FilteredEventBuffer.reason_policy_rule(
+                    scope="connector_rule",
+                    action=decision.action,
+                    rule_type=decision.matched_rule_type or "unknown",
+                ),
+                full_payload=FilteredEventBuffer.full_payload(
+                    channel=_CONNECTOR_CHANNEL,
+                    provider=_CONNECTOR_PROVIDER,
+                    endpoint_identity=device.endpoint_identity,
+                    external_event_id=external_event_id,
+                    external_thread_id=f"owntracks:{body.get('tid', 'unknown')}",
+                    observed_at=observed_at,
+                    sender_identity=device.endpoint_identity,
+                    raw=body,
+                ),
+            )
+            return
 
         # Build envelope based on payload type
         envelope: dict[str, Any]
         if payload_type == "location":
             envelope = build_location_envelope(
                 body,
-                self._endpoint_identity,
+                device.endpoint_identity,
                 observed_at,
                 self._config.ingestion_tier,
             )
         elif payload_type == "transition":
             envelope = build_transition_envelope(
                 body,
-                self._endpoint_identity,
+                device.endpoint_identity,
                 observed_at,
                 self._config.ingestion_tier,
             )
         else:  # waypoints
             envelope = build_waypoints_envelope(
                 body,
-                self._endpoint_identity,
+                device.endpoint_identity,
                 observed_at,
                 self._config.ingestion_tier,
             )
@@ -1397,7 +1467,7 @@ class OwnTracksConnector:
             logger.debug(
                 "OwnTracksConnector: ingested %s event from %s",
                 payload_type,
-                self._endpoint_identity,
+                device.endpoint_identity,
             )
         except Exception as exc:
             status = "error"
@@ -1407,19 +1477,19 @@ class OwnTracksConnector:
             raise
         finally:
             latency = time.perf_counter() - start_t
-            self._metrics.record_ingest_submission(status=status, latency=latency)
+            device.metrics.record_ingest_submission(status=status, latency=latency)
 
         # Update checkpoint (timestamp-based)
         tst = body.get("tst")
         if tst is not None:
-            await self._save_checkpoint(int(tst))
+            await self._save_checkpoint(device, int(tst))
 
         # Persist durable location evidence for Chronicler (RFC 0014 §D9)
         if payload_type == "location" and self._db_pool is not None and tst is not None:
             try:
                 await persist_location_point(
                     self._db_pool,
-                    endpoint_identity=self._endpoint_identity,
+                    endpoint_identity=device.endpoint_identity,
                     tst=int(tst),
                     lat=float(body.get("lat", 0.0)),
                     lon=float(body.get("lon", 0.0)),
@@ -1436,14 +1506,14 @@ class OwnTracksConnector:
         # Flush filtered event buffer (task 6.4) and drain replay queue (task 6.5)
         if self._db_pool is not None:
             try:
-                await self._filtered_event_buffer.flush(self._db_pool)
+                await device.filtered_event_buffer.flush(self._db_pool)
             except Exception:
                 logger.warning("OwnTracksConnector: filtered event flush failed", exc_info=True)
             try:
                 await drain_replay_pending(
                     pool=self._db_pool,
                     connector_type=_CONNECTOR_TYPE,
-                    endpoint_identity=self._endpoint_identity,
+                    endpoint_identity=device.endpoint_identity,
                     submit_fn=self._submit_envelope,
                     drain_logger=logger,
                 )
@@ -1458,22 +1528,22 @@ class OwnTracksConnector:
     # Checkpoint
     # ------------------------------------------------------------------
 
-    async def _load_checkpoint(self) -> None:
-        """Load timestamp checkpoint from cursor store on startup."""
+    async def _load_checkpoint(self, device: _OwnTracksDeviceState) -> None:
+        """Load timestamp checkpoint from cursor store for one device, on startup/creation."""
         if self._cursor_pool is None and self._db_pool is None:
             logger.debug("OwnTracksConnector: no DB pool available, skipping checkpoint load")
             return
 
         pool = self._cursor_pool or self._db_pool
         try:
-            cursor = await load_cursor(pool, _CONNECTOR_TYPE, self._endpoint_identity)
+            cursor = await load_cursor(pool, _CONNECTOR_TYPE, device.endpoint_identity)
             if cursor is not None:
                 try:
-                    self._last_checkpoint_tst = int(cursor)
+                    device.last_checkpoint_tst = int(cursor)
                     logger.info(
                         "OwnTracksConnector: loaded checkpoint tst=%d for %s",
-                        self._last_checkpoint_tst,
-                        self._endpoint_identity,
+                        device.last_checkpoint_tst,
+                        device.endpoint_identity,
                     )
                 except (ValueError, TypeError):
                     logger.warning(
@@ -1482,35 +1552,32 @@ class OwnTracksConnector:
         except Exception:
             logger.warning("OwnTracksConnector: failed to load checkpoint", exc_info=True)
 
-    async def _save_checkpoint(self, tst: int) -> None:
-        """Save timestamp checkpoint to cursor store."""
+    async def _save_checkpoint(self, device: _OwnTracksDeviceState, tst: int) -> None:
+        """Save timestamp checkpoint to cursor store for one device.
+
+        Keyed by ``device.endpoint_identity`` -- the device resolved for *this*
+        event, passed in by the caller rather than read off shared connector
+        state, so a checkpoint is never attributed to the wrong device (bu-86zll).
+        """
         if self._cursor_pool is None and self._db_pool is None:
             return
 
         pool = self._cursor_pool or self._db_pool
         try:
-            await save_cursor(pool, _CONNECTOR_TYPE, self._endpoint_identity, str(tst))
-            self._last_checkpoint_tst = tst
-            self._last_checkpoint_save = time.time()
-            self._metrics.record_checkpoint_save(status="success")
+            await save_cursor(pool, _CONNECTOR_TYPE, device.endpoint_identity, str(tst))
+            device.last_checkpoint_tst = tst
+            device.last_checkpoint_save = time.time()
+            device.metrics.record_checkpoint_save(status="success")
             logger.debug(
-                "OwnTracksConnector: saved checkpoint tst=%d for %s", tst, self._endpoint_identity
+                "OwnTracksConnector: saved checkpoint tst=%d for %s",
+                tst,
+                device.endpoint_identity,
             )
         except Exception:
-            self._metrics.record_checkpoint_save(status="error")
+            device.metrics.record_checkpoint_save(status="error")
             logger.warning(
                 "OwnTracksConnector: failed to save checkpoint tst=%d", tst, exc_info=True
             )
-
-    def _get_checkpoint_info(self) -> tuple[str | None, datetime | None]:
-        """Return (cursor, updated_at) for heartbeat."""
-        cursor = str(self._last_checkpoint_tst) if self._last_checkpoint_tst is not None else None
-        updated_at = (
-            datetime.fromtimestamp(self._last_checkpoint_save, tz=UTC)
-            if self._last_checkpoint_save is not None
-            else None
-        )
-        return cursor, updated_at
 
     # ------------------------------------------------------------------
     # Health state callbacks (task 6.3)

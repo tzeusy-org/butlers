@@ -125,21 +125,31 @@ async def list_connector_summaries_with_aggregates(
     is a cumulative lifetime counter (since process start) and is intentionally
     not exposed here to avoid mislabeling lifetime volumes as "today".
 
-    Each connector entry also includes ``devices`` (nullable) — for connector_types
-    with more than one distinct ``source_sender_identity`` observed in
-    ``public.ingestion_events`` within the last ``_DEVICE_LOOKBACK_WINDOW`` (90 days;
-    e.g. OwnTracks, where several physical devices post through one shared
-    connector_type and ``connector_registry`` only tracks a single heartbeat identity
-    for the whole connector), this is a list of ``{sender_identity, last_seen_at,
-    stale}`` entries, one per device, sorted most recent first. ``stale`` is true when
-    a device's last event is older than ``_DEVICE_STALE_THRESHOLD`` (48h). ``devices``
-    is ``null`` for single-device connectors so a silently-dead sibling device is
-    never hidden behind a healthy connector-level heartbeat from another device on
-    the same connector_type (bu-e16to). A device with no event at all in the lookback
-    window drops out of ``devices`` entirely rather than appearing maximally stale.
-    ``device_liveness_available`` (top-level, mirrors ``aggregates_available``) is
-    ``false`` only if the per-device query itself failed — it is unrelated to whether
-    any given connector_type has devices data.
+    Each connector entry also includes ``devices`` (nullable) — a fallback signal
+    for connector_types where ``connector_registry`` still shares ONE row across
+    several distinct ``source_sender_identity`` values in ``public.ingestion_events``
+    (bu-e16to). ``devices`` is derived independently from ``public.ingestion_events``
+    (within the last ``_DEVICE_LOOKBACK_WINDOW``, 90 days) and is a list of
+    ``{sender_identity, last_seen_at, stale}`` entries, one per device, sorted most
+    recent first. ``stale`` is true when a device's last event is older than
+    ``_DEVICE_STALE_THRESHOLD`` (48h).
+
+    ``devices`` is ``null`` when: (a) the connector_type has only one distinct
+    sender identity (nothing to disambiguate), or (b) the connector_type's
+    ``connector_registry`` rows have caught up to every device this fallback
+    already knows about (``registry_row_counts`` >= the known device count —
+    e.g. OwnTracks post-bu-86zll, once fully migrated), in which case each
+    row's own ``state``/``last_heartbeat_at`` is already device-accurate and
+    attaching the same ``devices`` list to every one of those rows would
+    double up / could disagree with each row's own liveness. A connector_type
+    only *partway* migrated (some devices already have their own row, a
+    sibling still doesn't) keeps the badge — gating on row count alone would
+    otherwise hide that still-unregistered sibling behind neither its own row
+    nor the badge (bu-e16to). A device with no event at all in the lookback
+    window drops out of ``devices`` entirely rather than appearing maximally
+    stale. ``device_liveness_available`` (top-level, mirrors
+    ``aggregates_available``) is ``false`` only if the per-device query itself
+    failed — it is unrelated to whether any given connector_type has devices data.
 
     Always returns HTTP 200 — connector registry errors fall back to an empty list.
     Hourly timeseries errors fall back to all-zero ``hourly_events`` arrays per connector.
@@ -189,6 +199,31 @@ async def list_connector_summaries_with_aggregates(
             data={"connectors": [], "aggregates_available": aggregates_available}
         )
 
+    # Count registry rows per connector_type. The `devices` badge list (below)
+    # exists specifically for connector_types where connector_registry cannot
+    # yet distinguish devices -- one shared row for several senders (bu-e16to).
+    # Once a connector_type is fixed to register one row per device (bu-86zll,
+    # e.g. OwnTracks), each row's own state/last_heartbeat_at is device-accurate,
+    # and attaching the same ingestion_events-derived `devices` list to every
+    # one of those rows would double up and could disagree with each row's own
+    # (now-authoritative) liveness.
+    #
+    # The gate below (registry_row_counts vs. len(device_map[...])) intentionally
+    # requires the registry to have caught up to *every* device the fallback
+    # already knows about, not merely ">1". A connector_type mid-migration --
+    # some devices already registering their own row, one sibling device still
+    # dead/not-yet-posted since the fix deployed and so still without ANY
+    # registry row -- would otherwise have its badge suppressed by an early
+    # partial row count while that dead sibling has no row of its own to show
+    # its staleness either, making it invisible via *both* signals (exactly the
+    # bu-e16to failure mode this badge exists to prevent). Suppressing only
+    # once registry_row_counts >= known device count avoids that window.
+    registry_row_counts: dict[str, int] = {}
+    for r in rows:
+        registry_row_counts[r["connector_type"]] = (
+            registry_row_counts.get(r["connector_type"], 0) + 1
+        )
+
     # Build per-connector hourly timeseries from ingestion_events in one query.
     # Returns a 24-element list (oldest hour first, newest last) — zero-filled for
     # missing buckets.  Sourced from public.ingestion_events (not Prometheus) so
@@ -231,13 +266,18 @@ async def list_connector_summaries_with_aggregates(
             logger.warning("connector summaries: failed to fetch hourly timeseries", exc_info=True)
             # hourly_map stays empty — connectors fall back to all-zeros below
 
-    # Per-device liveness for multi-device connectors (bu-e16to). A connector_type
-    # can have several distinct physical devices posting through it (e.g. OwnTracks
-    # household phones); connector_registry only ever tracks ONE shared heartbeat
-    # identity for such connectors (whichever device most recently resolved it),
-    # so a silently-dead sibling device is otherwise invisible. source_sender_identity
-    # on public.ingestion_events is set per-event from the payload's own device id
-    # and survives that identity churn, so it is the source of truth here.
+    # Per-device liveness fallback for connector_types whose connector_registry
+    # rows can't (yet) disambiguate devices on their own (bu-e16to). Some
+    # connector_types have several distinct physical devices posting through
+    # them (e.g. OwnTracks household phones) sharing one connector_registry row
+    # -- historically ONE shared heartbeat identity, thrashing between whichever
+    # device most recently resolved it, so a silently-dead sibling device was
+    # otherwise invisible (fixed at the connector level for OwnTracks by
+    # bu-86zll, which gives each device its own registry row; the fallback below
+    # stays in place for any connector_type not yet fixed, gated by
+    # registry_row_counts below). source_sender_identity on public.ingestion_events
+    # is set per-event from the payload's own device id, independent of
+    # connector_registry's identity churn, so it is the source of truth here.
     device_liveness_available = True
     device_map: dict[str, list[dict[str, Any]]] = {}
     if rows:
@@ -311,7 +351,19 @@ async def list_connector_summaries_with_aggregates(
                     "messages_failed": r["counter_messages_failed"] or 0,
                 },
                 "hourly_events": hourly,
-                "devices": device_map.get(r["connector_type"]),
+                # Only suppress the ingestion_events-derived `devices` badge
+                # list once connector_registry has a row for *every* device the
+                # fallback knows about for this connector_type (registry_row_counts
+                # >= known device count) -- not merely more than one row. A
+                # partially-migrated connector_type (some devices already have
+                # their own row; a sibling still doesn't) must keep the badge so
+                # that still-unregistered/dead sibling stays visible somewhere.
+                "devices": (
+                    device_map.get(r["connector_type"])
+                    if registry_row_counts.get(r["connector_type"], 0)
+                    < len(device_map.get(r["connector_type"], []))
+                    else None
+                ),
             }
         )
 
