@@ -15,7 +15,7 @@ Verifies:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -467,3 +467,93 @@ def test_link_stale_when_recoverable_past_threshold() -> None:
     connector._bridge_manager.degraded_duration_s = 3601.0
     connector._bridge_manager.is_degraded_terminal = False
     assert connector._link_is_stale() is True
+
+
+# ---------------------------------------------------------------------------
+# Owner-outbound point-event recording (bu-whhll.8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def owner_connector() -> WhatsAppUserClientConnector:
+    """Connector with a mock db_pool for owner-outbound recording tests."""
+    config = WhatsAppUserClientConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+        provider="whatsapp",
+        channel="whatsapp_user_client",
+        endpoint_identity=_ENDPOINT,
+    )
+    return WhatsAppUserClientConnector(config, db_pool=AsyncMock(), cursor_pool=MagicMock())
+
+
+async def test_is_from_me_event_records_point_event(
+    owner_connector: WhatsAppUserClientConnector,
+) -> None:
+    """A bridge event tagged raw.is_from_me=true records a point event."""
+    event: dict[str, Any] = {
+        "message_id": "msg-1",
+        "chat_jid": "chat-abc",
+        "sender_jid": "owner-jid",
+        "timestamp": 1751709600,
+        "type": "text",
+        "text": "hello",
+        "raw": {"is_from_me": True, "is_group": False},
+    }
+
+    with patch(
+        "butlers.connectors.whatsapp_user_client.record_owner_outbound_point",
+        new=AsyncMock(return_value=True),
+    ) as mock_record:
+        await owner_connector._record_owner_outbound_if_applicable(event, "chat-abc")
+
+    mock_record.assert_awaited_once()
+    kwargs = mock_record.call_args.kwargs
+    assert kwargs["channel"] == "whatsapp_user_client"
+    assert kwargs["provider"] == "whatsapp"
+    assert kwargs["endpoint_identity"] == _ENDPOINT
+    assert "chat-abc" in kwargs["dedup_material"]
+    assert "msg-1" in kwargs["dedup_material"]
+
+
+async def test_inbound_event_does_not_record_point_event(
+    owner_connector: WhatsAppUserClientConnector,
+) -> None:
+    """A bridge event from someone else (is_from_me=false) must never record."""
+    event: dict[str, Any] = {
+        "message_id": "msg-2",
+        "chat_jid": "chat-abc",
+        "sender_jid": "someone-else",
+        "timestamp": 1751709600,
+        "type": "text",
+        "text": "hi",
+        "raw": {"is_from_me": False, "is_group": False},
+    }
+
+    with patch(
+        "butlers.connectors.whatsapp_user_client.record_owner_outbound_point",
+        new=AsyncMock(return_value=True),
+    ) as mock_record:
+        await owner_connector._record_owner_outbound_if_applicable(event, "chat-abc")
+
+    mock_record.assert_not_awaited()
+
+
+async def test_missing_raw_field_does_not_record(
+    owner_connector: WhatsAppUserClientConnector,
+) -> None:
+    """An event with no 'raw' summary (e.g. malformed bridge payload) must never record."""
+    event: dict[str, Any] = {
+        "message_id": "msg-3",
+        "chat_jid": "chat-abc",
+        "timestamp": 1751709600,
+        "type": "text",
+        "text": "hi",
+    }
+
+    with patch(
+        "butlers.connectors.whatsapp_user_client.record_owner_outbound_point",
+        new=AsyncMock(return_value=True),
+    ) as mock_record:
+        await owner_connector._record_owner_outbound_if_applicable(event, "chat-abc")
+
+    mock_record.assert_not_awaited()

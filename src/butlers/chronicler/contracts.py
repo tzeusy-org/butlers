@@ -215,6 +215,21 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=True,
     ),
+    # Owner-outbound-message point events (bu-whhll.8, epic bu-whhll Tier 1).
+    # Metadata-only "phone in hand" signal: timestamp + channel, never
+    # content, never counterpart identity (see the adapter module docstring
+    # and connectors/owner_outbound_events.py).
+    SourceAdapterState(
+        source_name="owner_outbound.messages",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.owner_outbound_events",
+        boundary_semantics=(
+            "one owner_outbound_message point event per owner-authored "
+            "message observed live by telegram_user_client/whatsapp_user_client; "
+            "no episode rollup — never counted as lived time alone"
+        ),
+        optional_schema=True,
+    ),
     # Explicitly not time-bearing.
     SourceAdapterState(
         source_name="core.session_process_logs",

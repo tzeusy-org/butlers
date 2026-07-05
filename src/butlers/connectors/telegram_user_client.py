@@ -67,6 +67,7 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.connectors.owner_outbound_events import record_owner_outbound_point
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     resolve_owner_entity_info,
@@ -442,6 +443,7 @@ class TelegramUserClientConnector:
                         "sender_id": event.message.sender_id,
                     },
                 )
+                await self._record_owner_outbound_if_applicable(event.message)
                 await self._buffer_message(event.message)
 
             # Sync Telethon update state so the client can receive real-time
@@ -612,6 +614,36 @@ class TelegramUserClientConnector:
     # -------------------------------------------------------------------------
     # Internal: Per-chat buffering and flush scanner
     # -------------------------------------------------------------------------
+
+    async def _record_owner_outbound_if_applicable(self, message: Any) -> None:
+        """Record a metadata-only owner-outbound point event (bu-whhll.8).
+
+        Fires independently of buffering/ingest-policy/discretion — this is
+        a lightweight "phone in hand" corroborator signal (timestamp +
+        channel only), not a routing decision, so it must never block or be
+        gated by the ingest pipeline. Fails soft: never raises.
+        """
+        owner_sender_id = self._extract_owner_sender_id()
+        if owner_sender_id is None:
+            return
+        if self._extract_sender_identity(message) != owner_sender_id:
+            return
+
+        occurred_at = getattr(message, "date", None)
+        if not isinstance(occurred_at, datetime):
+            return
+
+        chat_id = self._extract_chat_id(message) or "unknown"
+        message_id = getattr(message, "id", None)
+
+        await record_owner_outbound_point(
+            self._db_pool,
+            channel=self._config.channel,
+            provider=self._config.provider,
+            endpoint_identity=self._config.endpoint_identity,
+            occurred_at=occurred_at,
+            dedup_material=f"{chat_id}:{message_id}",
+        )
 
     async def _buffer_message(self, message: Any) -> None:
         """Append a single Telegram message to its chat's buffer.

@@ -63,6 +63,7 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.connectors.owner_outbound_events import record_owner_outbound_point
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     resolve_owner_entity_info,
@@ -777,7 +778,40 @@ class WhatsAppUserClientConnector:
         if msg_id:
             self._last_event_id = str(msg_id)
 
+        await self._record_owner_outbound_if_applicable(event, chat_jid)
         await self._buffer_event(event, chat_jid)
+
+    async def _record_owner_outbound_if_applicable(
+        self, event: dict[str, Any], chat_jid: str
+    ) -> None:
+        """Record a metadata-only owner-outbound point event (bu-whhll.8).
+
+        The bridge tags every message with ``raw.is_from_me`` (whatsmeow
+        ``MessageInfo.IsFromMe``), so no phone-number comparison is needed
+        here. Fires independently of buffering/ingest-policy/discretion —
+        this is a lightweight "phone in hand" corroborator signal (timestamp
+        + channel only), not a routing decision. Fails soft: never raises.
+        """
+        raw = event.get("raw")
+        if not isinstance(raw, dict) or not raw.get("is_from_me"):
+            return
+
+        ts = event.get("timestamp") or event.get("observed_at")
+        if isinstance(ts, (int, float)):
+            occurred_at = datetime.fromtimestamp(ts, UTC)
+        else:
+            return
+
+        message_id = event.get("message_id") or event.get("id") or "unknown"
+
+        await record_owner_outbound_point(
+            self._db_pool,
+            channel=self._config.channel,
+            provider=self._config.provider,
+            endpoint_identity=self._config.endpoint_identity,
+            occurred_at=occurred_at,
+            dedup_material=f"{chat_jid}:{message_id}",
+        )
 
     async def _buffer_event(self, event: dict[str, Any], chat_jid: str) -> None:
         """Append a bridge event to the chat's buffer.

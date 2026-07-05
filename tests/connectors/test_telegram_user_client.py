@@ -11,7 +11,8 @@ Verifies:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -21,6 +22,7 @@ from butlers.connectors.telegram_user_client import (
 )
 
 _ENDPOINT = "telegram_user_client:telegram:user123"
+_OWNER_ENDPOINT = "telegram:user:999"
 
 
 @pytest.fixture
@@ -326,3 +328,94 @@ def test_participant_count_cache_ttl_constant(
 ) -> None:
     """Participant count cache TTL must be set to 3600 seconds (1 hour)."""
     assert connector._participant_count_cache_ttl_s == 3600
+
+
+# ---------------------------------------------------------------------------
+# Owner-outbound point-event recording (bu-whhll.8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def owner_connector() -> TelegramUserClientConnector:
+    """Connector configured with a numeric owner endpoint identity + a mock db_pool."""
+    config = TelegramUserClientConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+        provider="telegram",
+        channel="telegram_user_client",
+        endpoint_identity=_OWNER_ENDPOINT,
+    )
+    conn = TelegramUserClientConnector(config, db_pool=AsyncMock(), cursor_pool=MagicMock())
+    return conn
+
+
+async def test_owner_authored_message_records_point_event(
+    owner_connector: TelegramUserClientConnector,
+) -> None:
+    """A message sent BY the owner (sender_id matches endpoint identity) records a point event."""
+    msg = _make_message(msg_id=42, chat_id=100, sender_id=999)
+    msg.date = datetime(2026, 7, 5, 10, 0, 0, tzinfo=UTC)
+
+    with patch(
+        "butlers.connectors.telegram_user_client.record_owner_outbound_point",
+        new=AsyncMock(return_value=True),
+    ) as mock_record:
+        await owner_connector._record_owner_outbound_if_applicable(msg)
+
+    mock_record.assert_awaited_once()
+    kwargs = mock_record.call_args.kwargs
+    assert kwargs["channel"] == "telegram_user_client"
+    assert kwargs["provider"] == "telegram"
+    assert kwargs["endpoint_identity"] == _OWNER_ENDPOINT
+    assert kwargs["occurred_at"] == msg.date
+    # Chat/message identifiers may feed the dedup material, but no content
+    # and no display name is ever passed through.
+    assert "100" in kwargs["dedup_material"]
+    assert "42" in kwargs["dedup_material"]
+
+
+async def test_non_owner_message_does_not_record_point_event(
+    owner_connector: TelegramUserClientConnector,
+) -> None:
+    """A message sent by someone else (sender_id != owner) must never record."""
+    msg = _make_message(msg_id=42, chat_id=100, sender_id=111)
+    msg.date = datetime(2026, 7, 5, 10, 0, 0, tzinfo=UTC)
+
+    with patch(
+        "butlers.connectors.telegram_user_client.record_owner_outbound_point",
+        new=AsyncMock(return_value=True),
+    ) as mock_record:
+        await owner_connector._record_owner_outbound_if_applicable(msg)
+
+    mock_record.assert_not_awaited()
+
+
+async def test_owner_tagging_degrades_gracefully_when_owner_id_unresolvable(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """When endpoint_identity has no resolvable numeric owner id, never record."""
+    msg = _make_message(msg_id=42, chat_id=100, sender_id=999)
+    msg.date = datetime(2026, 7, 5, 10, 0, 0, tzinfo=UTC)
+
+    with patch(
+        "butlers.connectors.telegram_user_client.record_owner_outbound_point",
+        new=AsyncMock(return_value=True),
+    ) as mock_record:
+        await connector._record_owner_outbound_if_applicable(msg)
+
+    mock_record.assert_not_awaited()
+
+
+async def test_missing_message_date_does_not_record(
+    owner_connector: TelegramUserClientConnector,
+) -> None:
+    """A message with no usable timestamp must never record (never fabricate 'now')."""
+    msg = _make_message(msg_id=42, chat_id=100, sender_id=999)
+    msg.date = None
+
+    with patch(
+        "butlers.connectors.telegram_user_client.record_owner_outbound_point",
+        new=AsyncMock(return_value=True),
+    ) as mock_record:
+        await owner_connector._record_owner_outbound_if_applicable(msg)
+
+    mock_record.assert_not_awaited()

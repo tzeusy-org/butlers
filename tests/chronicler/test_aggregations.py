@@ -174,7 +174,7 @@ def test_all_supported_sources_have_non_other_category() -> None:
     or an intent-only source. Point-event-only sources can still be SUPPORTED
     without becoming lanes; intent-only sources (calendar) are never counted.
     """
-    point_event_only_sources = {"health.steps", "health.heart_rate"}
+    point_event_only_sources = {"health.steps", "health.heart_rate", "owner_outbound.messages"}
     # Calendar is the intent layer: shown as a planned block, never counted as
     # lived time, so it has no source category / lane (IEA reframe, §4).
     intent_only_sources = {"google_calendar.completed"}

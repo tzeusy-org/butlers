@@ -21,6 +21,7 @@ from butlers.chronicler.adapters import (
     GoogleHealthWorkoutAdapter,
     HomeAssistantHistoryAdapter,
     MealsAdapter,
+    OwnerOutboundMessageAdapter,
     OwnTracksPointAdapter,
     ReadingInferredAdapter,
     SpotifySessionAdapter,
@@ -219,6 +220,20 @@ async def run_project_activitywatch(
         supported_fields=("batch_limit", "screen_gap_minutes"),
     )
     adapter = ActivityWatchWindowAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
+async def run_project_owner_outbound(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project owner-outbound-message point events into Chronicler (bu-whhll.8)."""
+    options = _parse_job_args(
+        "chronicler_project_owner_outbound",
+        job_args,
+        supported_fields=("batch_limit",),
+    )
+    adapter = OwnerOutboundMessageAdapter(**options)
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
@@ -442,6 +457,7 @@ __all__ = [
     "run_project_google_health_workout",
     "run_project_home_assistant",
     "run_project_meals",
+    "run_project_owner_outbound",
     "run_project_owntracks",
     "run_project_reading_inferred",
     "run_project_sessions",
