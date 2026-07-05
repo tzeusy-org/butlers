@@ -1095,15 +1095,27 @@ async def update_steam_account_config(
         meta_patch["max_tracked_games"] = body.max_tracked_games
 
     # Merge into the existing metadata JSONB.
+    #
+    # Bind meta_patch as a plain dict, NOT a json.dumps() string cast to
+    # ``::jsonb``: every asyncpg pool in this codebase registers
+    # register_jsonb_codec() (src/butlers/db.py), whose encoder expects a
+    # Python object and calls json.dumps() on it itself. Passing an
+    # already-serialized string double-encodes the value into a jsonb-typed
+    # STRING, and Postgres's ``||`` between an object and a scalar coerces
+    # both operands into arrays -- corrupting metadata into
+    # ``[{...previous...}, "{\"poll_intervals\": ...}"]`` instead of a merged
+    # object (bu-yha6c; same class as bu-x92jw/PR #2925). No ``::jsonb`` cast
+    # is needed on the parameter either: Postgres infers its type from the
+    # ``||`` operator context.
     try:
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE public.steam_accounts
-                SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
+                SET metadata = COALESCE(metadata, '{}'::jsonb) || $1
                 WHERE id = $2
                 """,
-                __import__("json").dumps(meta_patch),
+                meta_patch,
                 account_id,
             )
     except Exception as exc:  # noqa: BLE001
