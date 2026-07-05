@@ -1,9 +1,10 @@
 import { EmptyState } from "@/components/ui/empty-state";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { MouseEvent } from "react";
 import { Link } from "react-router";
 import { Time } from "@/components/ui/time";
 import type { AuditLogEntry } from "@/api/types";
+import { CollapsibleJson } from "@/components/sessions/ToolCallTimeline";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -56,6 +57,48 @@ function stopRowToggle(e: MouseEvent) {
 }
 
 // ---------------------------------------------------------------------------
+// Outcome (JARVIS audit move 6) -- the audit log persists result/error/
+// metadata since core_122 but never projected them until now, so every row
+// read as neither success nor failure. Three honest states: success, error,
+// or unknown (rows written before the audit-writer unification, whose
+// `result` column is NULL -- not a fourth outcome, an absence of one).
+// ---------------------------------------------------------------------------
+
+function OutcomeBadge({ result }: { result: string | null | undefined }) {
+  if (result === "error") {
+    return (
+      <span className="text-xs font-medium text-[var(--red)]" data-testid="outcome-error">
+        Error
+      </span>
+    );
+  }
+  if (result === "success") {
+    return (
+      <span className="text-xs font-medium text-[var(--green)]" data-testid="outcome-success">
+        Success
+      </span>
+    );
+  }
+  return (
+    <span className="text-xs italic text-muted-foreground" data-testid="outcome-unknown">
+      Unknown
+    </span>
+  );
+}
+
+/**
+ * First line of an error message, matching the backend's grouping
+ * normalization (audit_grouping.py: `SPLIT_PART(error, E'\n', 1)`) closely
+ * enough for a "search the Issues feed for this text" hop -- not a precise
+ * group-key reconstruction (that logic, including tmp-path collapsing and
+ * slugging, lives server-side only), just enough to pivot a failure row to
+ * its likely issue group without duplicating that normalization here.
+ */
+function firstErrorLine(error: string): string {
+  return error.split("\n")[0]?.trim() || error;
+}
+
+// ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
@@ -77,6 +120,7 @@ function LoadingSkeleton() {
           <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell><Skeleton className="h-4 w-24" /></TableCell>
           <TableCell><Skeleton className="h-4 w-28" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-14" /></TableCell>
           <TableCell><Skeleton className="h-4 w-32" /></TableCell>
         </TableRow>
       ))}
@@ -122,6 +166,7 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
           <TableHead className="w-[100px]">Time</TableHead>
           <TableHead className="w-[140px]">Actor</TableHead>
           <TableHead className="w-[200px]">Action</TableHead>
+          <TableHead className="w-[90px]">Outcome</TableHead>
           <TableHead>Target</TableHead>
         </TableRow>
       </TableHeader>
@@ -130,127 +175,160 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
 
         {!isLoading &&
           entries.map((entry) => {
+            const expanded = expandedId === entry.id;
             return (
-              <TableRow
-                key={entry.id}
-                className="cursor-pointer hover:bg-muted/50"
-                onClick={() => toggleExpanded(entry.id)}
-              >
-                <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
-                  <Time value={entry.ts} mode="relative" />
-                </TableCell>
-                <TableCell className="text-sm font-medium">
-                  <Link
-                    to={actorHref(entry.actor)}
-                    onClick={stopRowToggle}
-                    className="hover:underline"
-                  >
-                    {entry.actor}
-                  </Link>
-                </TableCell>
-                <TableCell>
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
-                    {entry.action}
-                  </code>
-                </TableCell>
-                <TableCell className="max-w-xs truncate text-xs text-muted-foreground">
-                  {entry.target ? (
-                    targetHref(entry.target) ? (
-                      <Link
-                        to={targetHref(entry.target)!}
-                        onClick={stopRowToggle}
-                        className="hover:underline"
-                      >
-                        {entry.target}
-                      </Link>
+              // Fragment (not just the summary TableRow) so the detail row
+              // renders ADJACENT to its own row -- previously the single
+              // expanded detail row was appended once after the entire
+              // `entries.map()`, landing at the bottom of the table
+              // regardless of which row was expanded.
+              <Fragment key={entry.id}>
+                <TableRow
+                  className="cursor-pointer hover:bg-muted/50"
+                  onClick={() => toggleExpanded(entry.id)}
+                  aria-expanded={expanded}
+                  data-testid="audit-log-row"
+                >
+                  <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
+                    <Time value={entry.ts} mode="relative" />
+                  </TableCell>
+                  <TableCell className="text-sm font-medium">
+                    <Link
+                      to={actorHref(entry.actor)}
+                      onClick={stopRowToggle}
+                      className="hover:underline"
+                    >
+                      {entry.actor}
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
+                      {entry.action}
+                    </code>
+                  </TableCell>
+                  <TableCell>
+                    <OutcomeBadge result={entry.result} />
+                  </TableCell>
+                  <TableCell className="max-w-xs truncate text-xs text-muted-foreground">
+                    {entry.target ? (
+                      targetHref(entry.target) ? (
+                        <Link
+                          to={targetHref(entry.target)!}
+                          onClick={stopRowToggle}
+                          className="hover:underline"
+                        >
+                          {entry.target}
+                        </Link>
+                      ) : (
+                        entry.target
+                      )
                     ) : (
-                      entry.target
-                    )
-                  ) : (
-                    <span className="italic">—</span>
-                  )}
-                </TableCell>
-              </TableRow>
+                      <span className="italic">—</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+
+                {expanded && (
+                  <TableRow data-testid="audit-log-detail-row">
+                    <TableCell colSpan={5} className="bg-muted/30 p-4">
+                      <div className="space-y-3 text-sm">
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+                          <div>
+                            <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                              Actor
+                            </span>
+                            <p className="mt-0.5">
+                              <Link to={actorHref(entry.actor)} className="hover:underline">
+                                {entry.actor}
+                              </Link>
+                            </p>
+                          </div>
+                          <div>
+                            <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                              Action
+                            </span>
+                            <p className="mt-0.5">
+                              <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
+                                {entry.action}
+                              </code>
+                            </p>
+                          </div>
+                          <div>
+                            <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                              Outcome
+                            </span>
+                            <p className="mt-0.5">
+                              <OutcomeBadge result={entry.result} />
+                            </p>
+                          </div>
+                          {entry.target && (
+                            <div>
+                              <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                                Target
+                              </span>
+                              <p className="mt-0.5 font-mono text-xs">
+                                {targetHref(entry.target) ? (
+                                  <Link to={targetHref(entry.target)!} className="hover:underline">
+                                    {entry.target}
+                                  </Link>
+                                ) : (
+                                  entry.target
+                                )}
+                              </p>
+                            </div>
+                          )}
+                          {entry.ip && (
+                            <div>
+                              <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                                IP
+                              </span>
+                              <p className="mt-0.5 font-mono text-xs">{entry.ip}</p>
+                            </div>
+                          )}
+                          {entry.request_id && (
+                            <div className="col-span-2">
+                              <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                                Request ID
+                              </span>
+                              <p className="mt-0.5 font-mono text-xs">{entry.request_id}</p>
+                            </div>
+                          )}
+                        </div>
+                        {entry.note && (
+                          <div>
+                            <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                              Note
+                            </span>
+                            <p className="mt-0.5 text-xs">{entry.note}</p>
+                          </div>
+                        )}
+                        {entry.error && (
+                          <div>
+                            <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                              Error
+                            </span>
+                            <p className="mt-0.5 text-xs text-[var(--red)]">{entry.error}</p>
+                          </div>
+                        )}
+                        {entry.metadata && (
+                          <CollapsibleJson label="Metadata" data={entry.metadata} />
+                        )}
+                        {entry.result === "error" && entry.error && (
+                          <Link
+                            to={`/issues?q=${encodeURIComponent(firstErrorLine(entry.error))}`}
+                            className="inline-flex text-xs font-medium text-[var(--red)] hover:underline"
+                            data-testid="audit-log-issues-link"
+                          >
+                            View in Issues →
+                          </Link>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
             );
           })}
-
-        {/* Expanded detail row */}
-        {!isLoading &&
-          expandedId != null &&
-          (() => {
-            const entry = entries.find((e) => e.id === expandedId);
-            if (!entry) return null;
-            return (
-              <TableRow key={`${entry.id}-detail`}>
-                <TableCell colSpan={4} className="bg-muted/30 p-4">
-                  <div className="space-y-3 text-sm">
-                    <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-                      <div>
-                        <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                          Actor
-                        </span>
-                        <p className="mt-0.5">
-                          <Link to={actorHref(entry.actor)} className="hover:underline">
-                            {entry.actor}
-                          </Link>
-                        </p>
-                      </div>
-                      <div>
-                        <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                          Action
-                        </span>
-                        <p className="mt-0.5">
-                          <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
-                            {entry.action}
-                          </code>
-                        </p>
-                      </div>
-                      {entry.target && (
-                        <div>
-                          <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                            Target
-                          </span>
-                          <p className="mt-0.5 font-mono text-xs">
-                            {targetHref(entry.target) ? (
-                              <Link to={targetHref(entry.target)!} className="hover:underline">
-                                {entry.target}
-                              </Link>
-                            ) : (
-                              entry.target
-                            )}
-                          </p>
-                        </div>
-                      )}
-                      {entry.ip && (
-                        <div>
-                          <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                            IP
-                          </span>
-                          <p className="mt-0.5 font-mono text-xs">{entry.ip}</p>
-                        </div>
-                      )}
-                      {entry.request_id && (
-                        <div className="col-span-2">
-                          <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                            Request ID
-                          </span>
-                          <p className="mt-0.5 font-mono text-xs">{entry.request_id}</p>
-                        </div>
-                      )}
-                    </div>
-                    {entry.note && (
-                      <div>
-                        <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                          Note
-                        </span>
-                        <p className="mt-0.5 text-xs">{entry.note}</p>
-                      </div>
-                    )}
-                  </div>
-                </TableCell>
-              </TableRow>
-            );
-          })()}
       </TableBody>
     </Table>
   );

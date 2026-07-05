@@ -39,7 +39,11 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.app import create_app
-from butlers.api.audit_grouping import build_audit_group_query, issue_from_audit_group_row
+from butlers.api.audit_grouping import (
+    build_audit_group_occurrences_query,
+    build_audit_group_query,
+    issue_from_audit_group_row,
+)
 from butlers.api.db import DatabaseManager
 from butlers.api.routers import system as system_module
 from butlers.db import register_jsonb_codec
@@ -320,3 +324,56 @@ async def test_egress_canonical_only_operation_visible(
     assert resp.status_code == 200
     actors = resp.json()["data"]["actors"]
     assert any(a["actor_id"] == "anthropic.claude" for a in actors)
+
+
+# ---------------------------------------------------------------------------
+# Occurrences drill-down (JARVIS audit move 6, bu-qvnce.6)
+# ---------------------------------------------------------------------------
+
+
+async def test_occurrences_query_does_not_undercount_mixed_schedule_group(
+    pool: asyncpg.Pool,
+) -> None:
+    """Real-Postgres regression: a group can straddle both scheduled and
+    non-scheduled rows behind the same normalized ``error_summary`` --
+    ``grouped_errors`` groups by ``error_summary`` ALONE, and ``has_schedule``
+    is only a ``BOOL_OR`` aggregate over that group, not part of its identity.
+
+    Filtering the occurrences drill-down on the group's aggregated
+    ``has_schedule`` flag (the pre-fix behavior) silently drops the rows on
+    the other side of that flag, while the group's reported ``occurrences``
+    count keeps including them -- the drill-down page permanently undercounts
+    relative to the total it claims, no matter how many pages are fetched.
+    """
+    await _insert_canonical(
+        pool,
+        actor="calendar",
+        action="session",
+        result="error",
+        error="Connection timeout",
+        metadata={"trigger_source": "schedule:daily-sync"},
+    )
+    await _insert_canonical(
+        pool,
+        actor="calendar",
+        action="manual_trigger",
+        result="error",
+        error="Connection timeout",
+        metadata={},
+    )
+
+    group_rows = await pool.fetch(build_audit_group_query())
+    assert len(group_rows) == 1
+    group = group_rows[0]
+    assert group["error_summary"] == "Connection timeout"
+    total = int(group["occurrences"])
+    assert total == 2
+    butlers = [str(b) for b in group["butlers"]]
+
+    occurrences_sql = build_audit_group_occurrences_query()
+    occ_rows = await pool.fetch(occurrences_sql, str(group["error_summary"]), butlers, 50, 0)
+    assert len(occ_rows) == total, (
+        f"occurrences drill-down returned {len(occ_rows)} rows but the group "
+        f"reports occurrences={total} -- a scheduled/non-scheduled mix under "
+        "the same error_summary is being undercounted"
+    )

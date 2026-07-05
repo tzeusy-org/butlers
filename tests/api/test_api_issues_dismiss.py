@@ -352,6 +352,132 @@ class TestAcknowledgeUntilRecurrence:
         assert active_resp.json()["data"] == []
 
 
+class TestListIssueOccurrences:
+    """GET /api/issues/{issue_key}/occurrences (JARVIS audit move 6).
+
+    The endpoint re-derives the group's grouping parameters from a fresh
+    ``build_audit_group_query()`` call (branch on query text: no
+    ``normalized_errors`` -- err, both queries share that CTE text, so we
+    branch on the tell-tale ``grouped_errors`` alias instead, which only the
+    grouped query selects from).
+    """
+
+    def _audit_row(self, **overrides: Any) -> dict[str, Any]:
+        return {
+            "error_summary": "OAuth token expired",
+            "first_seen_at": None,
+            "last_seen_at": None,
+            "occurrences": 3,
+            "butlers": ["calendar"],
+            "has_schedule": False,
+            "schedule_names": [],
+            **overrides,
+        }
+
+    def _occurrence_row(self, **overrides: Any) -> dict[str, Any]:
+        return {
+            "id": 1,
+            "ts": datetime.fromisoformat("2026-07-01T12:00:00+00:00"),
+            "actor": "calendar",
+            "action": "oauth_refresh",
+            "target": None,
+            "note": None,
+            "ip": None,
+            "request_id": None,
+            "metadata": None,
+            "result": "error",
+            "error": "OAuth token expired",
+            **overrides,
+        }
+
+    async def test_found_group_returns_its_occurrences(self) -> None:
+        key = compute_issue_key("audit_error_group:oauth-token-expired", "calendar")
+        occurrence = self._occurrence_row()
+
+        async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
+            if "grouped_errors" in query:
+                return [self._audit_row()]
+            return [occurrence]
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+        app.dependency_overrides[get_butler_configs] = lambda: []
+
+        resp = await _call(app, "get", f"/api/issues/{key}/occurrences")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["data"]) == 1
+        assert body["data"][0]["actor"] == "calendar"
+        assert body["data"][0]["action"] == "oauth_refresh"
+        assert body["meta"]["total"] == 3
+
+        # The occurrences query binds (error_summary, butlers, limit, offset) --
+        # NOT is_schedule: a group's identity is error_summary ALONE
+        # (has_schedule is just a BOOL_OR aggregate over it), so filtering
+        # occurrences on that aggregate would silently drop rows on the other
+        # side of the flag for a group that straddles both.
+        occ_call = [
+            c for c in mock_pool.fetch.await_args_list if "grouped_errors" not in c.args[0]
+        ][0]
+        assert occ_call.args[1] == "OAuth token expired"
+        assert occ_call.args[2] == ["calendar"]
+
+    async def test_unknown_key_returns_404(self) -> None:
+        async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
+            return [self._audit_row()]
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+        app.dependency_overrides[get_butler_configs] = lambda: []
+
+        resp = await _call(app, "get", "/api/issues/nope::nowhere/occurrences")
+        assert resp.status_code == 404
+
+    async def test_multi_butler_group_restricts_to_its_butlers(self) -> None:
+        key = compute_issue_key("audit_error_group:oauth-token-expired", "multiple")
+
+        async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
+            if "grouped_errors" in query:
+                return [self._audit_row(butlers=["calendar", "health"])]
+            return [self._occurrence_row()]
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+        app.dependency_overrides[get_butler_configs] = lambda: []
+
+        resp = await _call(app, "get", f"/api/issues/{key}/occurrences")
+        assert resp.status_code == 200
+
+        occ_call = [
+            c for c in mock_pool.fetch.await_args_list if "grouped_errors" not in c.args[0]
+        ][0]
+        assert occ_call.args[2] == ["calendar", "health"]
+
+    async def test_empty_issue_key_is_422(self) -> None:
+        app, _ = _build_app()
+        resp = await _call(app, "get", "/api/issues/%20/occurrences")
+        assert resp.status_code == 422
+
+
 class TestIssueKeyComputation:
     def test_audit_group_key_uses_type(self) -> None:
         assert compute_issue_key("audit_error_group:foo", "general") == (

@@ -33,6 +33,9 @@ function entry(overrides: Partial<AuditLogEntry> = {}): AuditLogEntry {
     note: null,
     ip: null,
     request_id: null,
+    metadata: null,
+    result: null,
+    error: null,
     ...overrides,
   };
 }
@@ -78,6 +81,26 @@ describe("AuditLogTable -- target pivot", () => {
   it("renders the em-dash placeholder (no link) when target is absent", () => {
     const html = render([entry({ target: null })]);
     expect(html).toContain("—");
+  });
+});
+
+describe("AuditLogTable -- Outcome column (JARVIS audit move 6)", () => {
+  it("renders a green Success badge for result=success", () => {
+    const html = render([entry({ result: "success" })]);
+    expect(html).toContain('data-testid="outcome-success"');
+    expect(html).toContain("Success");
+  });
+
+  it("renders a red Error badge for result=error", () => {
+    const html = render([entry({ result: "error" })]);
+    expect(html).toContain('data-testid="outcome-error"');
+    expect(html).toContain("Error");
+  });
+
+  it("renders an Unknown badge when result is null (pre-core_122 rows)", () => {
+    const html = render([entry({ result: null })]);
+    expect(html).toContain('data-testid="outcome-unknown"');
+    expect(html).toContain("Unknown");
   });
 });
 
@@ -143,5 +166,102 @@ describe("AuditLogTable -- expanded detail panel pivots", () => {
     // The detail panel (which renders the row's `note`) must not appear --
     // the click on the nested link must not also toggle row expansion.
     expect(container.textContent).not.toContain("detail note");
+  });
+
+  it("renders the detail row immediately adjacent to the expanded row, not appended after every row", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AuditLogTable
+            entries={[
+              entry({ id: 1, actor: "finance", note: "first row note" }),
+              entry({ id: 2, actor: "health", note: "second row note" }),
+            ]}
+            isLoading={false}
+            isError={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const summaryRows = container.querySelectorAll('[data-testid="audit-log-row"]');
+    expect(summaryRows.length).toBe(2);
+
+    // Expand the SECOND row.
+    act(() => {
+      summaryRows[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // The detail row must be the second row's very next sibling -- not
+    // appended once at the bottom of the table regardless of which row
+    // was expanded.
+    const detailRow = summaryRows[1].nextElementSibling;
+    expect(detailRow?.getAttribute("data-testid")).toBe("audit-log-detail-row");
+    expect(detailRow?.textContent).toContain("second row note");
+    expect(detailRow?.textContent).not.toContain("first row note");
+  });
+
+  it("links a result=error row with an error message to the Issues feed", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AuditLogTable
+            entries={[
+              entry({
+                id: 9,
+                actor: "finance",
+                result: "error",
+                error: "OAuth token expired\nstack trace line 2",
+              }),
+            ]}
+            isLoading={false}
+            isError={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const row = container.querySelector('[data-testid="audit-log-row"]');
+    act(() => {
+      row!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const issuesLink = container.querySelector(
+      '[data-testid="audit-log-issues-link"]',
+    ) as HTMLAnchorElement;
+    expect(issuesLink).toBeTruthy();
+    expect(issuesLink.getAttribute("href")).toBe(
+      `/issues?q=${encodeURIComponent("OAuth token expired")}`,
+    );
+  });
+
+  it("does not render an Issues link for a success row", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AuditLogTable
+            entries={[entry({ id: 11, result: "success" })]}
+            isLoading={false}
+            isError={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const row = container.querySelector('[data-testid="audit-log-row"]');
+    act(() => {
+      row!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="audit-log-issues-link"]')).toBeNull();
   });
 });

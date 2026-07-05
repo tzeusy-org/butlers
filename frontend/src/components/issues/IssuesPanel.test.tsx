@@ -18,7 +18,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
 import IssuesPanel from "./IssuesPanel";
-import type { Issue } from "../../api/types";
+import type { AuditLogEntry, Issue } from "../../api/types";
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -199,6 +199,89 @@ describe("IssuesPanel", () => {
       renderPanel({ issues: [issue], dismissedView: true, onRunScheduleNow, onRestore: vi.fn() });
 
       expect(screen.queryByRole("button", { name: "Run schedule now" })).toBeNull();
+    });
+  });
+
+  describe("Occurrences drill-down (JARVIS audit move 6)", () => {
+    function makeOccurrence(overrides: Partial<AuditLogEntry> = {}): AuditLogEntry {
+      return {
+        id: 1,
+        ts: "2026-06-14T10:30:00.000Z",
+        actor: "general",
+        action: "oauth_refresh",
+        target: null,
+        note: null,
+        ip: null,
+        request_id: null,
+        ...overrides,
+      };
+    }
+
+    it("does not render as a disclosure control when onToggleOccurrences is not wired", () => {
+      const issue = makeIssue();
+      renderPanel({ issues: [issue] });
+
+      expect(screen.queryByRole("button", { name: /general/ })).toBeNull();
+    });
+
+    it("calls onToggleOccurrences with the issue key when an audit-derived row is clicked", () => {
+      const onToggleOccurrences = vi.fn();
+      const issue = makeIssue();
+      renderPanel({ issues: [issue], onToggleOccurrences });
+
+      // The row itself is the disclosure control (role="button" via DisclosureRow).
+      const row = screen.getByRole("button", { expanded: false });
+      fireEvent.click(row);
+
+      expect(onToggleOccurrences).toHaveBeenCalledWith("audit_error_group:boom::general");
+    });
+
+    it("does not treat an 'unreachable' (non-drillable) issue as a disclosure control", () => {
+      const onToggleOccurrences = vi.fn();
+      const issue = makeIssue({ type: "unreachable" });
+      renderPanel({ issues: [issue], onToggleOccurrences });
+
+      expect(screen.queryByRole("button", { expanded: false })).toBeNull();
+    });
+
+    it("renders occurrences (with a session link) when the row is expanded", () => {
+      const issue = makeIssue();
+      const occurrence = makeOccurrence({ request_id: "req-abc" });
+      renderPanel({
+        issues: [issue],
+        onToggleOccurrences: vi.fn(),
+        expandedIssueKey: issue.issue_key,
+        occurrences: [occurrence],
+      });
+
+      expect(screen.getByText("oauth_refresh")).toBeTruthy();
+      const sessionLink = screen.getByRole("link", { name: /Session/ }) as HTMLAnchorElement;
+      expect(sessionLink.getAttribute("href")).toBe("/sessions?request=req-abc");
+    });
+
+    it("shows a loading state while occurrences are being fetched", () => {
+      const issue = makeIssue();
+      renderPanel({
+        issues: [issue],
+        onToggleOccurrences: vi.fn(),
+        expandedIssueKey: issue.issue_key,
+        occurrences: [],
+        occurrencesLoading: true,
+      });
+
+      expect(screen.queryByText("No occurrences found for this group.")).toBeNull();
+    });
+
+    it("clicking a nested action control (Acknowledge) does not also toggle the disclosure row", () => {
+      const onToggleOccurrences = vi.fn();
+      const onDismiss = vi.fn();
+      const issue = makeIssue();
+      renderPanel({ issues: [issue], onToggleOccurrences, onDismiss });
+
+      fireEvent.click(screen.getByRole("button", { name: "Acknowledge" }));
+
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+      expect(onToggleOccurrences).not.toHaveBeenCalled();
     });
   });
 });

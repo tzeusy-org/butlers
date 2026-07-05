@@ -59,6 +59,28 @@ export default function AuditLogPage() {
   // because they originate from passport deep-links, not the filter bar UI.
   const keyFilter = searchParams.get("key") ?? undefined;
   const actorFilter = searchParams.get("actor") ?? undefined;
+  const resultFilter = searchParams.get("result") ?? undefined;
+
+  // Noise toggle (JARVIS audit move 6): the page defaults to kind=privileged
+  // (mutation/security rows only, backend predicate already existed) --
+  // ?noise=all opts OUT of that default to show every row including
+  // heartbeats and routine GETs. This is a distinct URL param from `kind` (not
+  // its literal value) so "default privileged" and "explicit all" are
+  // unambiguous regardless of whether a link happens to carry `?kind=privileged`.
+  const showAllNoise = searchParams.get("noise") === "all";
+
+  function handleToggleNoise() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (showAllNoise) {
+        next.delete("noise");
+      } else {
+        next.set("noise", "all");
+      }
+      return next;
+    });
+    setPage(0);
+  }
 
   // Build API params from filter state
   const params: AuditLogParams = {
@@ -68,8 +90,10 @@ export default function AuditLogPage() {
     ...(filters.action ? { action: filters.action } : {}),
     ...(filters.since ? { since: filters.since } : {}),
     ...(keyFilter ? { key: keyFilter } : {}),
+    ...(resultFilter ? { result: resultFilter } : {}),
     // ?actor= deep-link overrides the filter-bar actor when present
     ...(actorFilter ? { actor: actorFilter } : {}),
+    ...(showAllNoise ? {} : { kind: "privileged" }),
   };
 
   const { data: auditResponse, isLoading, isFetching, isError } = useAuditLog(params);
@@ -216,6 +240,22 @@ export default function AuditLogPage() {
                 onChange={(e) => handleFilterChange("since", e.target.value)}
                 className="w-40"
               />
+            </div>
+
+            {/* Noise toggle (JARVIS audit move 6): defaults to privileged-only
+                (mutation/security rows) -- this opts into every row including
+                heartbeats and routine GETs. */}
+            <div className="space-y-1">
+              <span className="text-muted-foreground text-xs font-medium block">Noise</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleToggleNoise}
+                data-testid="noise-toggle"
+                aria-pressed={showAllNoise}
+              >
+                {showAllNoise ? "Showing all activity" : "Privileged only"}
+              </Button>
             </div>
 
             {/* Clear filters */}

@@ -32,8 +32,16 @@ from butlers.api.models import Issue
 # SQL building-block
 # ---------------------------------------------------------------------------
 
-#: Shared CTE fragment. Paste into a larger query; the outer SELECT operates on
-#: the ``normalized_errors`` CTE, then callers add WHERE/LIMIT as needed.
+#: Shared CTE fragment carrying every raw ``public.audit_log`` column plus the
+#: normalized grouping columns (``error_summary``/``is_schedule``/
+#: ``schedule_name``). Two consumers build on top of this same fragment so the
+#: grouping definition (what counts as "the same error") can never drift
+#: between them:
+#:   - ``build_audit_group_query`` aggregates it into ``grouped_errors`` (one
+#:     row per distinct error, for the Issues/Briefing feeds).
+#:   - ``build_audit_group_occurrences_query`` selects the raw per-row
+#:     occurrences behind one already-identified group (for the Issues page's
+#:     "Seen Nx" drill-down).
 #:
 #: Canonical source (bu-j26e8)
 #: ---------------------------
@@ -52,11 +60,16 @@ from butlers.api.models import Issue
 #:   actor    -> butler          action   -> operation
 #:   ts       -> created_at      metadata -> request_summary
 #:   error    -> error           result   -> result
-_AUDIT_GROUP_CTE = """
+_AUDIT_NORMALIZED_CTE = """
 WITH audit_source AS (
     SELECT
+        id,
         actor AS butler,
         ts AS created_at,
+        target,
+        note,
+        ip,
+        request_id,
         error,
         action AS operation,
         COALESCE(metadata, '{{}}'::jsonb) AS request_summary,
@@ -65,8 +78,17 @@ WITH audit_source AS (
 ),
 normalized_errors AS (
     SELECT
+        id,
         butler,
         created_at,
+        target,
+        note,
+        ip,
+        request_id,
+        error,
+        operation,
+        request_summary,
+        result,
         COALESCE(
             NULLIF(BTRIM(
                 REGEXP_REPLACE(
@@ -88,7 +110,10 @@ normalized_errors AS (
         ) AS schedule_name
     FROM audit_source
     WHERE result = 'error'{where_extra}
-),
+)
+"""
+
+_GROUPED_CTE_TAIL = """,
 grouped_errors AS (
     SELECT
         error_summary,
@@ -105,9 +130,26 @@ grouped_errors AS (
     GROUP BY error_summary
     ORDER BY last_seen_at DESC{limit_clause}
 )
-"""
+SELECT * FROM grouped_errors"""
 
-_GROUPED_SELECT = "SELECT * FROM grouped_errors"
+_OCCURRENCES_SELECT = """
+SELECT
+    id,
+    created_at AS ts,
+    butler AS actor,
+    operation AS action,
+    target,
+    note,
+    ip,
+    request_id,
+    request_summary AS metadata,
+    result,
+    error
+FROM normalized_errors
+WHERE error_summary = $1
+  AND butler = ANY($2::text[])
+ORDER BY created_at DESC
+LIMIT $3 OFFSET $4"""
 
 
 def build_audit_group_query(
@@ -127,8 +169,46 @@ def build_audit_group_query(
         A complete SQL string ready to be passed to ``pool.fetch()``.
     """
     limit_clause = f"\n    LIMIT {int(limit)}" if limit is not None else ""
-    cte = _AUDIT_GROUP_CTE.format(where_extra=where_extra, limit_clause=limit_clause)
-    return cte + _GROUPED_SELECT
+    normalized_cte = _AUDIT_NORMALIZED_CTE.format(where_extra=where_extra)
+    return normalized_cte + _GROUPED_CTE_TAIL.format(limit_clause=limit_clause)
+
+
+def build_audit_group_occurrences_query() -> str:
+    """Return SQL for the raw ``audit_log`` rows behind one already-identified group.
+
+    Reuses the exact same ``normalized_errors`` CTE that :func:`build_audit_group_query`
+    groups, so a group's occurrences can never disagree with its own definition
+    (JARVIS audit move 6 — "Seen 47x" issue groups otherwise offer no drill-down
+    path to their occurrences).
+
+    ``grouped_errors`` groups by ``error_summary`` ALONE (``has_schedule`` and
+    ``butlers`` are only aggregates *over* that group, not part of its
+    identity) — so this query filters on ``error_summary`` alone too. It does
+    NOT additionally filter on ``is_schedule``: a group can legitimately mix
+    scheduled and non-scheduled rows behind the same normalized error message,
+    and filtering occurrences on the group's aggregated ``has_schedule`` flag
+    would silently drop the rows on the other side of that flag, while the
+    group's reported ``occurrences`` count keeps including them (undercounting
+    the drill-down page relative to the total it claims).
+
+    Callers bind exactly four positional parameters, in order:
+        1. exact-match normalized ``error_summary`` (the group's
+           ``Issue.error_message``)
+        2. ``text[]`` of butler names to restrict to (the group's
+           ``Issue.butlers`` — a single-element array for a single-butler
+           group, or the full list for a multi-butler group; this is a
+           redundant-but-harmless restriction since every row grouped under
+           this ``error_summary`` already comes from a butler in that list)
+        3. ``LIMIT``
+        4. ``OFFSET``
+
+    Returns:
+        A complete SQL string ready to be passed to ``pool.fetch()``. Each row
+        carries every column of the ``AuditLogEntry`` model (id/ts/actor/
+        action/target/note/ip/request_id/metadata/result/error).
+    """
+    normalized_cte = _AUDIT_NORMALIZED_CTE.format(where_extra="")
+    return normalized_cte + _OCCURRENCES_SELECT
 
 
 # ---------------------------------------------------------------------------
@@ -192,16 +272,23 @@ def issue_from_audit_group_row(row: object) -> Issue:
     butler = butlers[0] if len(butlers) == 1 else "multiple"
 
     # Param names must match what GET /api/audit-log and AuditLogPage's filter
-    # bar actually read (`actor`, `action`) — not `butler`/`operation`, which
-    # nothing on the consuming end recognizes (the link would silently land
-    # on an unfiltered audit log). AuditLogPage hydrates its initial filter
-    # state directly from these two query-string keys.
-    link_params: dict[str, str] = {}
+    # bar actually read (`actor`, `action`, `result`) — not `butler`/
+    # `operation`, which nothing on the consuming end recognizes (the link
+    # would silently land on an unfiltered audit log). AuditLogPage hydrates
+    # its initial filter state directly from these query-string keys.
+    #
+    # `result=error` is always present (JARVIS audit move 6): every row this
+    # function projects came from a `result = 'error'` group, so a
+    # multi-butler, non-scheduled group — the one case with no other
+    # disambiguating param — previously emitted a bare `/audit-log` with no
+    # predicate at all. That link now still narrows to error rows even when
+    # actor/action cannot be pinned to a single value.
+    link_params: dict[str, str] = {"result": "error"}
     if len(butlers) == 1:
         link_params["actor"] = butlers[0]
     if has_schedule:
         link_params["action"] = "session"
-    link = f"/audit-log?{urlencode(link_params)}" if link_params else "/audit-log"
+    link = f"/audit-log?{urlencode(link_params)}"
 
     return Issue(
         severity=severity,

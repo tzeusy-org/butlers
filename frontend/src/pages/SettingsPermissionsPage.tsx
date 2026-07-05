@@ -440,7 +440,7 @@ function AuditReelSection() {
             </div>
           )}
           <a
-            href="/audit-log"
+            href="/audit-log?kind=privileged"
             className="border-r border-b border-border/60 px-4 py-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1"
           >
             Full audit log <ExternalLink className="h-3 w-3" />

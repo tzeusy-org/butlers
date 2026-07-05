@@ -4,7 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { dismissIssue, getIssues, undismissIssue } from "@/api/index.ts";
+import { dismissIssue, getIssueOccurrences, getIssues, undismissIssue } from "@/api/index.ts";
 import type { ApiResponse, Issue } from "@/api/types";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 
@@ -79,5 +79,19 @@ export function useUndismissIssue() {
     listKeyPrefix: DISMISSED_ISSUES_KEY,
     updateItems: (issues, issueKey) => issues.filter((issue) => issue.issue_key !== issueKey),
     invalidateQueryKeys: [["issues"]],
+  });
+}
+
+/**
+ * Fetch the raw audit_log rows behind one issue group's "Seen Nx" count
+ * (JARVIS audit move 6). Only enabled while `issueKey` is provided and the
+ * caller has actually expanded the row — no point fetching occurrences for
+ * every collapsed issue on the page.
+ */
+export function useIssueOccurrences(issueKey: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["issues", "occurrences", issueKey],
+    queryFn: () => getIssueOccurrences(issueKey as string),
+    enabled: enabled && !!issueKey,
   });
 }

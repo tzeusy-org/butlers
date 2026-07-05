@@ -214,7 +214,10 @@ async def append(
     metadata:
         Optional structured context dict persisted to the ``metadata`` JSONB
         column (core_122).  Non-JSON-safe values (UUID, datetime, …) are
-        coerced to strings before storage.  ``None`` stores SQL ``NULL``.
+        coerced to strings before storage via a ``json.dumps``/``json.loads``
+        round-trip (the resulting dict is bound directly, not the
+        intermediate JSON string — see the implementation note below).
+        ``None`` stores SQL ``NULL``.
     result:
         Optional outcome label persisted to the ``result`` column (core_122),
         e.g. ``"success"`` or ``"error"``.
@@ -236,16 +239,25 @@ async def append(
         When ``public.audit_log`` does not exist (migration not yet applied).
         Callers should propagate this as HTTP 503.
     """
-    # Serialise metadata to a JSON string and cast with ``$N::jsonb`` so the
-    # insert does not depend on a JSONB codec being registered on the pool /
-    # connection the caller hands us.  ``None`` stays ``None`` → SQL NULL.
-    metadata_json = json.dumps(metadata, default=str) if metadata is not None else None
+    # Sanitize metadata into a fully JSON-safe dict (UUID/datetime -> str) via
+    # a json.dumps/loads round-trip, mirroring log_audit_entry()'s existing
+    # safe_summary/safe_context pattern below. Bind the resulting DICT
+    # directly (no json.dumps, no ::jsonb cast): every asyncpg pool in this
+    # codebase registers register_jsonb_codec() (src/butlers/db.py), whose
+    # encoder expects a Python object and calls json.dumps() on it itself.
+    # Passing an ALREADY-serialized JSON string with an explicit ::jsonb cast
+    # (the previous approach here) makes that encoder fire a SECOND time,
+    # double-encoding the value into a jsonb-typed STRING instead of an
+    # OBJECT — this codebase has hit the exact same anti-pattern twice before
+    # (bu-qki26, bu-aaacv; see tests/relationship/test_jsonb_codec.py). None
+    # stays None -> SQL NULL.
+    safe_metadata = json.loads(json.dumps(metadata, default=str)) if metadata is not None else None
 
     try:
         row_id: int = await pool.fetchval(
             "INSERT INTO public.audit_log "
             "(actor, action, target, note, ip, request_id, metadata, result, error) "
-            "VALUES ($1, $2, $3, $4, $5::inet, $6, $7::jsonb, $8, $9) "
+            "VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9) "
             "RETURNING id",
             actor,
             action,
@@ -253,7 +265,7 @@ async def append(
             note,
             ip,
             request_id,
-            metadata_json,
+            safe_metadata,
             result,
             error,
         )
@@ -305,6 +317,15 @@ async def list_audit_log(
             "Uses ix_audit_log_target_ts index for efficient lookup."
         ),
     ),
+    result: str | None = Query(
+        None,
+        description=(
+            "Filter by outcome (exact match on the 'result' column persisted "
+            "since core_122), e.g. 'success' or 'error'. Rows written before "
+            "the audit-writer unification have a NULL result and are excluded "
+            "by any non-empty filter value."
+        ),
+    ),
     kind: str | None = Query(
         None,
         description=(
@@ -317,9 +338,9 @@ async def list_audit_log(
 ) -> PaginatedResponse[AuditLogEntry]:
     """Return paginated audit log entries from ``public.audit_log``.
 
-    Supports filtering by actor, action, a lower-bound timestamp, and
-    credential key (``?key=``).  Results are ordered by ``ts DESC`` (newest
-    first).
+    Supports filtering by actor, action, a lower-bound timestamp, outcome
+    (``?result=``), and credential key (``?key=``).  Results are ordered by
+    ``ts DESC`` (newest first).
 
     The ``?key=`` parameter filters rows whose ``target`` column equals the
     normalised credential key, using the ``ix_audit_log_target_ts`` index
@@ -372,6 +393,12 @@ async def list_audit_log(
         args.append(normalised_key)
         idx += 1
 
+    result = (result or "").strip() or None
+    if result is not None:
+        conditions.append(f"result = ${idx}")
+        args.append(result)
+        idx += 1
+
     # kind=privileged: exclude high-frequency operational noise.
     # Filters out actions ending in _heartbeat (butler/switchboard heartbeats)
     # and actions starting with "GET /" (routine HTTP-GET audit entries).
@@ -395,7 +422,8 @@ async def list_audit_log(
     # Paged data query — order by ts DESC, slice with LIMIT/OFFSET directly
     # against the canonical table (no cross-source merge).
     data_sql = (
-        f"SELECT id, ts, actor, action, target, note, ip, request_id "
+        f"SELECT id, ts, actor, action, target, note, ip, request_id, "
+        f"metadata, result, error "
         f"FROM public.audit_log{where_clause} "
         f"ORDER BY ts DESC "
         f"LIMIT ${idx} OFFSET ${idx + 1}"
@@ -436,7 +464,8 @@ async def get_audit_log_entry(
 
     try:
         row = await pool.fetchrow(
-            "SELECT id, ts, actor, action, target, note, ip, request_id "
+            "SELECT id, ts, actor, action, target, note, ip, request_id, "
+            "metadata, result, error "
             "FROM public.audit_log "
             "WHERE id = $1",
             entry_id,

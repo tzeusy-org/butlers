@@ -32,14 +32,22 @@ The dashboard SHALL maintain a single, append-only audit log used by every mutat
 The dashboard SHALL expose paginated read access to the audit log.
 
 #### Scenario: List audit entries
-- **WHEN** `GET /api/audit-log?since=&actor=&action=&limit=` is called
-- **THEN** the response is `PaginatedResponse[AuditEntry]` with rows ordered `ts DESC`
+- **WHEN** `GET /api/audit-log?since=&actor=&action=&key=&result=&kind=&limit=` is called
+- **THEN** the response is `PaginatedResponse[AuditLogEntry]` with rows ordered `ts DESC`
 - **AND** `limit` defaults to 100 and is clamped to `≤ 1000`
-- **AND** `since` accepts an ISO 8601 timestamp; `actor` and `action` accept exact-match strings.
+- **AND** `since` accepts an ISO 8601 timestamp; `actor`, `action`, and `result` accept exact-match strings (`result` filters on the outcome column added by `core_122`, e.g. `success`/`error`)
+- **AND** `key` filters by normalised credential key; `kind=privileged` excludes `*_heartbeat` and `GET /*` noise rows
+- **AND** each returned `AuditLogEntry` projects `metadata`/`result`/`error` (added by `core_122`) alongside the base columns, defaulting to `null` for rows that never populated them.
 
 #### Scenario: Get audit entry by id
 - **WHEN** `GET /api/audit-log/{id}` is called
-- **THEN** the response is `ApiResponse[AuditEntry]` if the row exists, else `404`.
+- **THEN** the response is `ApiResponse[AuditLogEntry]` if the row exists, else `404`.
+
+#### Scenario: Drill into an audit-derived issue group's occurrences
+- **WHEN** `GET /api/issues/{issue_key}/occurrences?offset=&limit=` is called for an active `audit_error_group:*` or `scheduled_task_failure:*` issue group
+- **THEN** the response is `PaginatedResponse[AuditLogEntry]` containing the individual `public.audit_log` rows behind that group's occurrence count, newest first
+- **AND** the group is re-derived from the same grouping CTE used to build the Issues feed, so the occurrences can never disagree with the group's own definition
+- **AND** an `issue_key` that does not match any currently-active group returns `404`.
 
 ### Requirement: Audit Log Retention
 The audit log SHALL be retained indefinitely. No retention job, no expiry, no deletes.

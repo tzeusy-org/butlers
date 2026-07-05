@@ -1508,6 +1508,21 @@ export interface AuditLogEntry {
   note: string | null;
   ip: string | null;
   request_id: string | null;
+  /**
+   * Structured context persisted alongside the write (core_122). Optional on
+   * this type (not just nullable) so existing fixtures/call-sites built
+   * before core_122 was projected keep compiling unchanged; a real backend
+   * response always includes the key (with a value of `null` for rows
+   * written before the audit-writer unification).
+   */
+  metadata?: Record<string, unknown> | null;
+  /**
+   * Outcome label persisted since core_122, e.g. "success" | "error".
+   * `null`/absent for rows written before the unification (outcome unknown).
+   */
+  result?: string | null;
+  /** Error message persisted since core_122; only meaningful when `result` denotes a failure. */
+  error?: string | null;
 }
 
 /** Query parameters for the audit log endpoint (GET /api/audit-log). */
@@ -1522,6 +1537,8 @@ export interface AuditLogParams {
   since?: string;
   /** Filter by canonical credential key (e.g. "u:google"). Forwarded as ?key= to GET /api/audit-log. */
   key?: string;
+  /** Filter by outcome (exact match), e.g. "success" | "error". */
+  result?: string;
   /** Filter preset. "privileged" excludes heartbeat/GET noise, surfaces mutation/security rows only. */
   kind?: string;
 }

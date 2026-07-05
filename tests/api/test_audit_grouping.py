@@ -21,6 +21,7 @@ import pytest
 
 from butlers.api.audit_grouping import (
     attention_item_from_audit_group_row,
+    build_audit_group_occurrences_query,
     build_audit_group_query,
     issue_from_audit_group_row,
 )
@@ -89,6 +90,64 @@ class TestBuildAuditGroupQuery:
         sql = build_audit_group_query(where_extra=extra, limit=50)
         assert "INTERVAL '7 days'" in sql
         assert "LIMIT 50" in sql
+
+
+# ---------------------------------------------------------------------------
+# build_audit_group_occurrences_query
+# ---------------------------------------------------------------------------
+
+
+class TestBuildAuditGroupOccurrencesQuery:
+    def test_reuses_the_shared_normalized_cte(self):
+        """The occurrences query and the grouped query share the exact same
+        normalized_errors CTE text, so a group's occurrences can never
+        disagree with its own grouping definition."""
+        occurrences_sql = build_audit_group_occurrences_query()
+        grouped_sql = build_audit_group_query()
+        # Both must derive from the same normalized_errors CTE body.
+        shared_fragment = "COALESCE(metadata, '{}'::jsonb) AS request_summary"
+        assert shared_fragment in occurrences_sql
+        assert shared_fragment in grouped_sql
+
+    def test_selects_full_audit_log_entry_shape(self):
+        sql = build_audit_group_occurrences_query()
+        for column in (
+            "id",
+            "created_at AS ts",
+            "butler AS actor",
+            "operation AS action",
+            "target",
+            "note",
+            "ip",
+            "request_id",
+            "request_summary AS metadata",
+            "result",
+            "error",
+        ):
+            assert column in sql
+
+    def test_filters_by_error_summary_and_butlers_not_is_schedule(self):
+        """grouped_errors groups by error_summary ALONE -- has_schedule is only
+        a BOOL_OR aggregate over that group, not part of its identity. A group
+        can straddle both scheduled and non-scheduled rows behind the same
+        normalized error message, so this query must not additionally filter
+        on is_schedule (that would silently drop rows on the other side of the
+        flag while the group's reported total keeps counting them)."""
+        sql = build_audit_group_occurrences_query()
+        assert "WHERE error_summary = $1" in sql
+        assert "butler = ANY($2::text[])" in sql
+        assert "is_schedule" not in sql.split("FROM normalized_errors", 1)[1]
+
+    def test_orders_newest_first_with_limit_offset(self):
+        sql = build_audit_group_occurrences_query()
+        assert "ORDER BY created_at DESC" in sql
+        assert "LIMIT $3 OFFSET $4" in sql
+
+    def test_no_grouping_aggregate_in_occurrences_query(self):
+        """This query returns raw rows, not the grouped_errors aggregate."""
+        sql = build_audit_group_occurrences_query()
+        assert "grouped_errors" not in sql
+        assert "GROUP BY" not in sql
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +298,7 @@ class TestIssueFromAuditGroupRow:
         )
         issue = issue_from_audit_group_row(row)
         assert "actor=calendar" in (issue.link or "")
+        assert "result=error" in (issue.link or "")
 
         scheduled = _make_row(
             {
@@ -253,6 +313,25 @@ class TestIssueFromAuditGroupRow:
         )
         # Scheduled groups additionally pin the action=session filter.
         assert "action=session" in (issue_from_audit_group_row(scheduled).link or "")
+
+    def test_multi_butler_non_scheduled_link_is_not_bare(self):
+        """JARVIS audit move 6: a multi-butler, non-scheduled group previously
+        had no disambiguating param at all and emitted a bare `/audit-log`
+        link. It must now at least carry `result=error`."""
+        row = _make_row(
+            {
+                "error_summary": "Token expired",
+                "butlers": ["calendar", "health"],
+                "schedule_names": [],
+                "has_schedule": False,
+                "occurrences": 4,
+                "first_seen_at": None,
+                "last_seen_at": None,
+            }
+        )
+        issue = issue_from_audit_group_row(row)
+        assert issue.link != "/audit-log"
+        assert issue.link == "/audit-log?result=error"
 
     def test_empty_butlers_list_falls_back_to_unknown(self):
         row = _make_row(

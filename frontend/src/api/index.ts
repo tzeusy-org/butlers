@@ -116,6 +116,7 @@ export {
   getFacts,
   getHealth,
   getIssues,
+  getIssueOccurrences,
   dismissIssue,
   undismissIssue,
   getMemoryActivity,

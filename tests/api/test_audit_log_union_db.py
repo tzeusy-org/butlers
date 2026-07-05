@@ -31,6 +31,7 @@ switchboard chains) and asserts the canonical-only read contract:
 from __future__ import annotations
 
 import shutil
+import uuid
 from unittest.mock import MagicMock
 
 import asyncpg
@@ -252,3 +253,58 @@ async def test_key_filter_excludes_rows_without_credential_target(
     assert body["meta"]["total"] == 1
     assert body["data"][0]["target"] == "u:google"
     assert "schedule.create" not in [e["action"] for e in body["data"]]
+
+
+async def test_append_metadata_roundtrips_as_object_not_double_encoded_string(
+    pool: asyncpg.Pool, audit_app: FastAPI
+) -> None:
+    """Real-Postgres regression for the append() jsonb double-encoding fix
+    (JARVIS audit move 6, bu-qvnce.6).
+
+    append() used to ``json.dumps()`` metadata into a string and bind it with
+    an explicit ``$N::jsonb`` cast. Every asyncpg pool in this codebase also
+    registers a JSONB type codec (``register_jsonb_codec``, src/butlers/db.py)
+    whose encoder calls ``json.dumps()`` itself — so the old code path
+    double-encoded metadata into a jsonb-typed STRING instead of an OBJECT
+    (the same class of regression as bu-qki26 / bu-aaacv, see
+    ``tests/relationship/test_jsonb_codec.py``). The mocked-pool unit tests in
+    ``tests/api/test_audit_log.py`` only assert on the Python value handed to
+    ``pool.fetchval`` — they cannot prove what actually lands in a real jsonb
+    column. This test writes via the real ``append()`` code path against a
+    migrated Postgres and reads the row back two ways: directly off the
+    connection (proving the stored type is a dict, not a JSON string) and via
+    the ``GET /api/audit-log`` read path (proving ``AuditLogEntry.from_record``
+    surfaces the same structured object end-to-end).
+    """
+    non_json_safe_id = uuid.uuid4()
+    row_id = await audit_module.append(
+        pool,
+        "owner",
+        "model_priority_change",
+        metadata={"request_id": non_json_safe_id, "nested": {"nums": [1, 2, 3]}},
+        result="success",
+    )
+    assert row_id > 0
+
+    row = await pool.fetchrow(
+        "SELECT metadata, result, error FROM public.audit_log WHERE id = $1", row_id
+    )
+    stored_metadata = row["metadata"]
+    assert isinstance(stored_metadata, dict), (
+        f"metadata arrived as {type(stored_metadata).__name__!r}, not a dict — "
+        "the jsonb column was double-encoded into a string."
+    )
+    assert stored_metadata == {"request_id": str(non_json_safe_id), "nested": {"nums": [1, 2, 3]}}
+    assert row["result"] == "success"
+    assert row["error"] is None
+
+    resp = await _get(audit_app, f"{AUDIT_PATH}?action=model_priority_change")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["total"] == 1
+    entry = body["data"][0]
+    assert entry["metadata"] == {
+        "request_id": str(non_json_safe_id),
+        "nested": {"nums": [1, 2, 3]},
+    }
+    assert entry["result"] == "success"

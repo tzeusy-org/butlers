@@ -13,7 +13,11 @@ from datetime import UTC, datetime
 import anyio
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from butlers.api.audit_grouping import build_audit_group_query, issue_from_audit_group_row
+from butlers.api.audit_grouping import (
+    build_audit_group_occurrences_query,
+    build_audit_group_query,
+    issue_from_audit_group_row,
+)
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -23,7 +27,15 @@ from butlers.api.deps import (
     get_db_manager,
     get_mcp_manager,
 )
-from butlers.api.models import ApiMeta, ApiResponse, DismissIssueRequest, Issue
+from butlers.api.models import (
+    ApiMeta,
+    ApiResponse,
+    DismissIssueRequest,
+    Issue,
+    PaginatedResponse,
+    PaginationMeta,
+)
+from butlers.api.models.audit import AuditLogEntry
 
 logger = logging.getLogger(__name__)
 
@@ -335,3 +347,82 @@ async def undismiss_issue(
         )
 
     return ApiResponse(data={"issue_key": key, "deleted": True}, meta=ApiMeta())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/issues/{issue_key}/occurrences — drill-down for audit-derived groups
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{issue_key:path}/occurrences",
+    response_model=PaginatedResponse[AuditLogEntry],
+)
+async def list_issue_occurrences(
+    issue_key: str,
+    offset: int = Query(0, ge=0, description="Number of occurrences to skip"),
+    limit: int = Query(
+        50, ge=1, le=500, description="Max occurrences to return (default 50, max 500)"
+    ),
+    db: DatabaseManager | None = Depends(_get_db_manager),
+) -> PaginatedResponse[AuditLogEntry]:
+    """Return the raw ``public.audit_log`` rows behind one audit-derived issue group.
+
+    JARVIS audit move 6: a "Seen 47x" issue group previously offered no path to
+    its 47 occurrences. This re-derives the group's grouping parameters
+    (normalized error message, contributing butlers) from a fresh grouped
+    query — rather than trying to reverse the lossy slug embedded in
+    ``issue_key`` — then reuses the shared
+    :func:`~butlers.api.audit_grouping.build_audit_group_occurrences_query`
+    CTE to fetch the individual rows, so a group's occurrences can never
+    disagree with the group definition itself. Note the occurrences query
+    filters on ``error_summary`` alone (the actual ``GROUP BY`` key) — NOT on
+    the group's aggregated ``has_schedule`` flag, which a group can straddle
+    (see that function's docstring).
+
+    Only audit-derived groups (``audit_error_group:*`` /
+    ``scheduled_task_failure:*``) have occurrences to drill into — live
+    reachability issues (``unreachable``) always report exactly one
+    synthetic occurrence and are not stored rows, so their key 404s here.
+
+    Raises HTTP 404 when no active group matches ``issue_key`` (it may have
+    been resolved/expired since the feed was last fetched).
+    """
+    key = (issue_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=422, detail="issue_key is required")
+
+    pool = _require_pool(db)
+
+    try:
+        group_rows = await pool.fetch(build_audit_group_query())
+    except Exception as exc:
+        logger.warning("Failed to query audit groups for occurrences", exc_info=True)
+        raise HTTPException(status_code=503, detail="Database unavailable") from exc
+
+    match = None
+    for row in group_rows:
+        issue = issue_from_audit_group_row(row)
+        if issue.issue_key == key:
+            match = row
+            break
+
+    if match is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active issue group found for issue_key '{key}'",
+        )
+
+    error_summary = str(match["error_summary"])
+    butlers = [str(b) for b in (match["butlers"] or [])] or ["unknown"]
+    total = int(match["occurrences"] or 0)
+
+    occurrences_sql = build_audit_group_occurrences_query()
+    rows = await pool.fetch(occurrences_sql, error_summary, butlers, limit, offset)
+
+    page = [AuditLogEntry.from_record(row) for row in rows]
+
+    return PaginatedResponse[AuditLogEntry](
+        data=page,
+        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    )

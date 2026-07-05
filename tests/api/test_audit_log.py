@@ -13,7 +13,6 @@ Covers:
 from __future__ import annotations
 
 import ipaddress
-import json
 import re
 import uuid
 from datetime import UTC, datetime
@@ -130,6 +129,47 @@ def test_audit_log_entry_from_record_with_ip_address_object():
     assert entry.request_id is None
 
 
+def test_audit_log_entry_from_record_projects_core_122_fields():
+    """from_record() now reads metadata/result/error when the query selected them
+    (JARVIS audit move 6 -- previously they were documented as intentionally
+    unwired and always defaulted to None regardless of what the row carried)."""
+    row = _make_row(
+        metadata={"path": "/api/x"},
+        result="error",
+        error="boom",
+    )
+    entry = AuditLogEntry.from_record(row)
+    assert entry.metadata == {"path": "/api/x"}
+    assert entry.result == "error"
+    assert entry.error == "boom"
+
+
+def test_audit_log_entry_from_record_missing_core_122_columns_defaults_none():
+    """A row whose query never selected metadata/result/error (e.g. a caller
+    using the old three-column-shorter SELECT) still deserialises to None for
+    each, rather than raising KeyError."""
+
+    class _NoCore122Row:
+        _data = {
+            "id": 1,
+            "ts": datetime.now(tz=UTC),
+            "actor": "owner",
+            "action": "x",
+            "target": None,
+            "note": None,
+            "ip": None,
+            "request_id": None,
+        }
+
+        def __getitem__(self, key):
+            return self._data[key]
+
+    entry = AuditLogEntry.from_record(_NoCore122Row())
+    assert entry.metadata is None
+    assert entry.result is None
+    assert entry.error is None
+
+
 def test_audit_log_entry_from_record_full():
     rid = uuid.uuid4()
     ts = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
@@ -215,8 +255,15 @@ async def test_append_binds_target_note_ip_request_id_at_positions_3_through_6()
 async def test_append_persists_metadata_result_error():
     """append() forwards metadata/result/error (core_122) into the INSERT.
 
-    metadata is JSON-serialised and cast via ``$N::jsonb``; result and error
-    are passed through as plain TEXT positional args.
+    metadata is bound as a plain Python dict (NOT a pre-serialized JSON
+    string) with no ``::jsonb`` cast — every asyncpg pool in this codebase
+    registers a jsonb type codec (``register_jsonb_codec``, src/butlers/db.py)
+    whose encoder does the one-and-only ``json.dumps()`` itself. Binding an
+    already-serialized string here would make that encoder fire a second
+    time, double-encoding the value into a jsonb-typed STRING instead of an
+    OBJECT (this codebase has hit that exact regression twice before:
+    bu-qki26, bu-aaacv — see tests/relationship/test_jsonb_codec.py). result
+    and error are passed through as plain TEXT positional args.
     """
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value=123)
@@ -236,13 +283,35 @@ async def test_append_persists_metadata_result_error():
     assert "metadata" in sql
     assert "result" in sql
     assert "error" in sql
-    assert "$7::jsonb" in sql
-    # metadata is serialised to a JSON string and round-trips to the same dict.
+    assert "$7::jsonb" not in sql
+    # metadata is bound as a dict directly, not a pre-serialized JSON string.
     metadata_arg = call_args[7]
-    assert isinstance(metadata_arg, str)
-    assert json.loads(metadata_arg) == {"path": "/api/x", "trigger_source": "dashboard"}
+    assert isinstance(metadata_arg, dict)
+    assert metadata_arg == {"path": "/api/x", "trigger_source": "dashboard"}
     assert call_args[8] == "success"
     assert call_args[9] is None
+
+
+async def test_append_coerces_non_json_safe_metadata_values_to_strings():
+    """UUID/datetime values nested in metadata are coerced to strings (via a
+    json.dumps/loads round-trip) before binding, same as before -- only the
+    OUTER representation (dict, not a JSON string) changed."""
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=1)
+    rid = uuid.uuid4()
+
+    await append(
+        pool,
+        "owner",
+        "model_priority_change",
+        metadata={"request_id": rid},
+        result="success",
+    )
+
+    call_args = pool.fetchval.call_args[0]
+    metadata_arg = call_args[7]
+    assert isinstance(metadata_arg, dict)
+    assert metadata_arg == {"request_id": str(rid)}
 
 
 async def test_append_without_new_fields_passes_nulls():
@@ -426,6 +495,37 @@ def test_list_audit_log_filter_by_action():
     fetch_call = mock_pool.fetch.call_args[0]
     sql = fetch_call[0]
     assert "action = " in sql
+
+
+def test_list_audit_log_filter_by_result():
+    """?result=error filters on the result column (JARVIS audit move 6)."""
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log?result=error")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "result = " in sql
+    args = fetch_call[1:]
+    assert "error" in args
+
+
+def test_list_audit_log_no_result_param_no_result_condition_in_sql():
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    client.get("/api/audit-log")
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "result = " not in sql
+
+
+def test_list_audit_log_empty_result_param_treated_as_no_filter():
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+    resp = client.get("/api/audit-log?result=")
+    assert resp.status_code == 200
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    assert "result = " not in sql
 
 
 def test_list_audit_log_filter_by_since():

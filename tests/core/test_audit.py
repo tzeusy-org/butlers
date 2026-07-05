@@ -42,11 +42,14 @@ class TestWriteAuditEntry:
         assert args[2] == "session"
         # target <- request_summary.path (absent here -> None)
         assert args[3] is None
-        # metadata column ($7) carries the original request_summary as JSON.
-        metadata_json = args[7]
-        assert isinstance(metadata_json, str)
-        assert '"session_id"' in metadata_json
-        assert '"trigger_source"' in metadata_json
+        # metadata column ($7) carries the original request_summary (nested
+        # under "request_summary") as a dict -- bound directly, not a
+        # pre-serialized JSON string (append() binds dicts straight to the
+        # jsonb-codec-registered connection).
+        metadata = args[7]
+        assert isinstance(metadata, dict)
+        assert metadata["request_summary"]["session_id"] == "abc"
+        assert metadata["request_summary"]["trigger_source"] == "tick"
         # result / error columns ($8 / $9)
         assert args[8] == "success"
         assert args[9] is None

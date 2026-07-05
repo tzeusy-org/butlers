@@ -1176,9 +1176,26 @@ export function getAuditLog(
   if (params?.action) sp.set("action", params.action);
   if (params?.since) sp.set("since", params.since);
   if (params?.key) sp.set("key", params.key);
+  if (params?.result) sp.set("result", params.result);
   if (params?.kind) sp.set("kind", params.kind);
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<AuditLogEntry>>(qs ? `/audit-log?${qs}` : "/audit-log");
+}
+
+/**
+ * Fetch the raw audit_log rows behind one "Seen Nx" issue group (JARVIS audit
+ * move 6). `issueKey` is the group's stable `Issue.issue_key`.
+ */
+export function getIssueOccurrences(
+  issueKey: string,
+  params?: { offset?: number; limit?: number },
+): Promise<PaginatedResponse<AuditLogEntry>> {
+  const sp = new URLSearchParams();
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  const path = `/issues/${encodeURIComponent(issueKey)}/occurrences`;
+  return apiFetch<PaginatedResponse<AuditLogEntry>>(qs ? `${path}?${qs}` : path);
 }
 
 // ---------------------------------------------------------------------------

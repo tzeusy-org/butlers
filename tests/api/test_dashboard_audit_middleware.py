@@ -102,14 +102,17 @@ class TestEmitDashboardAudit:
         assert call_args[1] == "relationship"
         assert call_args[2] == "contact_info_delete"
         assert call_args[3] == "/api/relationship/contacts/abc/contact-info/xyz"
-        # metadata ($7) is a JSON string carrying request_summary + user_context.
-        metadata_json = call_args[7]
-        assert isinstance(metadata_json, str)
-        assert '"request_summary"' in metadata_json
+        # metadata ($7) is a plain dict carrying request_summary + user_context
+        # (bound directly, not a pre-serialized JSON string -- see append()'s
+        # docstring for why: every asyncpg pool here registers a jsonb codec
+        # that would otherwise double-encode a pre-serialized string).
+        metadata = call_args[7]
+        assert isinstance(metadata, dict)
+        assert "request_summary" in metadata
         # user_context defaults to owner principal even when no request/context
         # is supplied — never the legacy empty dict.
-        assert '"principal": "owner"' in metadata_json
-        assert '"source": "dashboard"' in metadata_json
+        assert metadata["user_context"]["principal"] == "owner"
+        assert metadata["user_context"]["source"] == "dashboard"
 
     async def test_explicit_user_context_overrides_default(self):
         mock_pool = AsyncMock()
@@ -126,8 +129,8 @@ class TestEmitDashboardAudit:
             user_context={"principal": "owner", "actor": "dashboard:rest-api"},
         )
 
-        metadata_json = mock_pool.fetchval.call_args[0][7]
-        assert '"actor": "dashboard:rest-api"' in metadata_json
+        metadata = mock_pool.fetchval.call_args[0][7]
+        assert metadata["user_context"]["actor"] == "dashboard:rest-api"
 
     async def test_noop_when_db_manager_is_none(self):
         # Should not raise
@@ -170,11 +173,12 @@ class TestEmitDashboardAudit:
         )
 
         # Sensitive body fields are redacted before landing in metadata JSONB.
-        metadata_json = mock_pool.fetchval.call_args[0][7]
-        assert isinstance(metadata_json, str)
-        assert '"type": "email"' in metadata_json
-        assert "[REDACTED]" in metadata_json
-        assert "secret@example.com" not in metadata_json
+        metadata = mock_pool.fetchval.call_args[0][7]
+        assert isinstance(metadata, dict)
+        body_out = metadata["request_summary"]["body"]
+        assert body_out["type"] == "email"
+        assert body_out["value"] == "[REDACTED]"
+        assert "secret@example.com" not in str(metadata)
 
 
 # ---------------------------------------------------------------------------
@@ -279,8 +283,6 @@ class TestDashboardAuditMiddleware:
     async def test_middleware_records_method_and_path(self):
         """Audit row metadata carries the request_summary (method + path); the
         path is also surfaced on the dedicated ``target`` column (bu-h47nm)."""
-        import json as _json
-
         app, mock_db, mock_pool = self._make_app_with_mock_db()
 
         with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
@@ -295,7 +297,7 @@ class TestDashboardAuditMiddleware:
                 await client.delete("/api/test-detail-check")
 
         # append() args: 0=sql 1=actor 2=action 3=target 4=note 5=ip
-        #                6=request_id 7=metadata_json(str) 8=result 9=error
+        #                6=request_id 7=metadata(dict) 8=result 9=error
         audit_calls = [
             call for call in mock_pool.fetchval.call_args_list if "public.audit_log" in str(call)
         ]
@@ -304,7 +306,8 @@ class TestDashboardAuditMiddleware:
         # target column carries the request path.
         assert "/api/test-detail-check" in call_args[3]
         # metadata JSONB carries the full request_summary.
-        metadata = _json.loads(call_args[7])
+        metadata = call_args[7]
+        assert isinstance(metadata, dict)
         summary = metadata["request_summary"]
         assert summary["method"] == "DELETE"
         assert "/api/test-detail-check" in summary["path"]
@@ -332,12 +335,11 @@ class TestDashboardAuditMiddleware:
                     headers={"X-API-Key": "ignored", "User-Agent": "pytest-suite"},
                 )
 
-        import json as _json
-
         audit_calls = [c for c in mock_pool.fetchval.call_args_list if "public.audit_log" in str(c)]
         assert audit_calls, "Expected audit INSERT but found none"
         # user_context now lives inside the metadata JSONB column (index 7).
-        metadata = _json.loads(audit_calls[-1][0][7])
+        metadata = audit_calls[-1][0][7]
+        assert isinstance(metadata, dict)
         user_context = metadata["user_context"]
         assert isinstance(user_context, dict)
         assert user_context, "user_context must not be empty"
@@ -372,9 +374,7 @@ class TestDashboardAuditMiddleware:
 
         # The same trace_id must appear in the audit append() call.
         # append() args: 0=sql 1=actor 2=action 3=target 4=note 5=ip
-        #                6=request_id 7=metadata_json(str) 8=result 9=error
-        import json as _json
-
+        #                6=request_id 7=metadata(dict) 8=result 9=error
         audit_calls = [
             call for call in mock_pool.fetchval.call_args_list if "public.audit_log" in str(call)
         ]
@@ -385,7 +385,8 @@ class TestDashboardAuditMiddleware:
             f"X-Trace-Id header ({header_trace_id!r}) does not match "
             f"audit row request_id ({call_args[6]!r})"
         )
-        metadata = _json.loads(call_args[7])
+        metadata = call_args[7]
+        assert isinstance(metadata, dict)
         audit_trace_id = metadata["request_summary"].get("trace_id")
         assert audit_trace_id == header_trace_id
 

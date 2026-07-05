@@ -214,6 +214,55 @@ describe("AuditLogPage — new-schema URL filter params", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Default kind=privileged + noise toggle (JARVIS audit move 6)
+// ---------------------------------------------------------------------------
+
+describe("AuditLogPage — kind=privileged default + noise toggle", () => {
+  it("defaults to kind=privileged with no ?noise= param", () => {
+    setupDefaults();
+    renderPage("/audit-log");
+
+    const calls = vi.mocked(useAuditLog).mock.calls;
+    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
+    expect(params.kind).toBe("privileged");
+  });
+
+  it("omits kind when ?noise=all is present", () => {
+    setupDefaults();
+    renderPage("/audit-log?noise=all");
+
+    const calls = vi.mocked(useAuditLog).mock.calls;
+    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
+    expect(params.kind).toBeUndefined();
+  });
+
+  it("still defaults to privileged even when ?kind=privileged is explicitly on the URL (e.g. Trust Console link)", () => {
+    setupDefaults();
+    renderPage("/audit-log?kind=privileged");
+
+    const calls = vi.mocked(useAuditLog).mock.calls;
+    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
+    expect(params.kind).toBe("privileged");
+  });
+
+  it("renders the noise toggle button", () => {
+    setupDefaults();
+    const html = renderPage("/audit-log");
+    expect(html).toContain('data-testid="noise-toggle"');
+    expect(html).toContain("Privileged only");
+  });
+
+  it("forwards ?result= to useAuditLog", () => {
+    setupDefaults();
+    renderPage("/audit-log?result=error");
+
+    const calls = vi.mocked(useAuditLog).mock.calls;
+    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
+    expect(params.result).toBe("error");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Table renders new-schema rows correctly
 // ---------------------------------------------------------------------------
 

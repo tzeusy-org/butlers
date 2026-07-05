@@ -56,14 +56,21 @@ class AuditLogEntry(BaseModel):
     def from_record(cls, row: object) -> AuditLogEntry:
         """Build an AuditLogEntry from an asyncpg Record.
 
-        The ``metadata``/``result``/``error`` columns (core_122) are NOT read
-        here: the existing read queries do not project them, so they default to
-        ``None``.  Wiring the reader to surface them is intentionally left to a
-        later PR in the audit-writer unification (this change is schema + write
-        capability only).
+        Projects the ``metadata``/``result``/``error`` columns (core_122).
+        Reads defensively via ``KeyError`` (rather than assuming the column is
+        always present) so a caller whose query happens to omit one of these
+        three columns still deserialises cleanly with ``None`` in its place,
+        instead of raising.
         """
         raw_ip = row["ip"]  # type: ignore[index]
         ip_str = str(raw_ip) if raw_ip is not None else None
+
+        def _optional(key: str) -> Any:
+            try:
+                return row[key]  # type: ignore[index]
+            except KeyError:
+                return None
+
         return cls(
             id=row["id"],  # type: ignore[index]
             ts=row["ts"],  # type: ignore[index]
@@ -73,4 +80,7 @@ class AuditLogEntry(BaseModel):
             note=row["note"],  # type: ignore[index]
             ip=ip_str,
             request_id=row["request_id"],  # type: ignore[index]
+            metadata=_optional("metadata"),
+            result=_optional("result"),
+            error=_optional("error"),
         )
