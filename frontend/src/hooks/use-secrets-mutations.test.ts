@@ -47,6 +47,7 @@ vi.mock("sonner", () => ({
   toast: {
     success: vi.fn(),
     error: vi.fn(),
+    warning: vi.fn(),
   },
 }));
 
@@ -66,6 +67,7 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     deleteSystemCredential: vi.fn(),
     rotateCliCredential: vi.fn(),
     revokeCliCredential: vi.fn(),
+    probeAllCredentials: vi.fn(),
   };
 });
 
@@ -84,6 +86,7 @@ import {
   useDeleteSystemSecret,
   useRotateCliRuntime,
   useRevokeCliRuntime,
+  useProbeAllSecrets,
   secretsUserKeys,
   secretsSystemKeys,
   secretsCliKeys,
@@ -93,6 +96,7 @@ import { secretsInventoryKeys } from "@/hooks/use-secrets-inventory.ts";
 const mockUseMutation = vi.mocked(useMutation);
 const mockToastSuccess = vi.mocked(toast.success);
 const mockToastError = vi.mocked(toast.error);
+const mockToastWarning = vi.mocked(toast.warning);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -433,6 +437,63 @@ describe("useRevokeCliRuntime", () => {
     onError(new Error("already revoked"));
 
     expect(mockToastError).toHaveBeenCalledWith("Revoke failed: already revoked");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useProbeAllSecrets
+// ---------------------------------------------------------------------------
+
+describe("useProbeAllSecrets", () => {
+  beforeEach(() => {
+    mockUseMutation.mockClear();
+    mockInvalidateQueries.mockClear();
+    mockToastSuccess.mockClear();
+    mockToastError.mockClear();
+    mockToastWarning.mockClear();
+  });
+
+  it("onSuccess with no failures shows a success toast and invalidates every family", () => {
+    useProbeAllSecrets();
+    const { onSuccess } = capturedMutationOptions();
+    onSuccess({ data: { results: [], probed: 5, ok: 5, failed: 0, skipped: 0 } }, undefined, undefined);
+
+    expect(mockToastSuccess).toHaveBeenCalledWith("Probed 5 credentials");
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(mockToastWarning).not.toHaveBeenCalled();
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: secretsInventoryKeys.all });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: secretsUserKeys.all });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: secretsSystemKeys.all });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: secretsCliKeys.all });
+  });
+
+  it("onSuccess with failures shows a warning toast with the breakdown", () => {
+    useProbeAllSecrets();
+    const { onSuccess } = capturedMutationOptions();
+    onSuccess(
+      { data: { results: [], probed: 4, ok: 2, failed: 2, skipped: 1 } },
+      undefined,
+      undefined,
+    );
+
+    expect(mockToastWarning).toHaveBeenCalledWith("Probed 4: 2 ok, 2 failed, 1 skipped");
+    expect(mockToastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("onSuccess with exactly one probed credential uses singular phrasing", () => {
+    useProbeAllSecrets();
+    const { onSuccess } = capturedMutationOptions();
+    onSuccess({ data: { results: [], probed: 1, ok: 1, failed: 0, skipped: 0 } }, undefined, undefined);
+
+    expect(mockToastSuccess).toHaveBeenCalledWith("Probed 1 credential");
+  });
+
+  it("onError shows error toast with message", () => {
+    useProbeAllSecrets();
+    const { onError } = capturedMutationOptions();
+    onError(new Error("already running"));
+
+    expect(mockToastError).toHaveBeenCalledWith("Probe all failed: already running");
   });
 });
 

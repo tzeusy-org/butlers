@@ -7463,6 +7463,35 @@ export interface SecretsProbeResult {
 }
 
 /**
+ * One credential's outcome from a probe-all sweep (POST /api/secrets/probe-all).
+ *
+ * `key` is the canonical credential key ("u:google" / "s:KEY" / "c:cli-auth/codex")
+ * — matches the passport spine's focus-key encoding 1:1, so a result can be
+ * looked up directly against a SpineEntry without re-deriving the key.
+ *
+ * `ok: null` means the row was skipped (rate-limited, circuit-broken, or an
+ * unexpected error) rather than actually probed — see `skipped`/`skip_reason`.
+ */
+export interface SecretsProbeAllResult {
+  key: string;
+  family: "system" | "user" | "cli";
+  label: string;
+  ok: boolean | null;
+  message: string | null;
+  skipped: boolean;
+  skip_reason: string | null;
+}
+
+/** Aggregate response for POST /api/secrets/probe-all. */
+export interface SecretsProbeAllResponse {
+  results: SecretsProbeAllResult[];
+  probed: number;
+  ok: number;
+  failed: number;
+  skipped: number;
+}
+
+/**
  * A CLI runtime token row as returned by GET /api/secrets/inventory.
  *
  * Maps to CliRuntime in the backend secrets_v2 router.

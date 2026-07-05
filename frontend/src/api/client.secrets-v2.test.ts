@@ -50,6 +50,8 @@ import {
   setSystemCredential,
   probeSystemCredential,
   deleteSystemCredential,
+  // Probe-all (bu-a63hn)
+  probeAllCredentials,
   // CLI mutations
   rotateCliCredential,
   revokeCliCredential,
@@ -216,6 +218,24 @@ describe("probeSystemCredential", () => {
     expect(url).toContain("/api/secrets/system/BUTLER_OPENAI_KEY/probe");
     expect(opts?.method).toBe("POST");
     expect(result.data.ok).toBe(true);
+  });
+});
+
+describe("probeAllCredentials", () => {
+  it("calls POST /api/secrets/probe-all and passes through the response", async () => {
+    mockApiResponse({
+      results: [{ key: "s:BUTLER_OPENAI_KEY", family: "system", label: "BUTLER_OPENAI_KEY", ok: true, message: null, skipped: false, skip_reason: null }],
+      probed: 1,
+      ok: 1,
+      failed: 0,
+      skipped: 0,
+    });
+    const result = await probeAllCredentials();
+    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/secrets/probe-all");
+    expect(opts?.method).toBe("POST");
+    expect(result.data.probed).toBe(1);
+    expect(result.data.results[0]!.key).toBe("s:BUTLER_OPENAI_KEY");
   });
 });
 

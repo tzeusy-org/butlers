@@ -15,8 +15,9 @@
 //              butler-secrets §Projection-Lens Identity Switcher
 // ---------------------------------------------------------------------------
 
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -38,6 +39,7 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     deleteSystemCredential: vi.fn(),
     rotateCliCredential: vi.fn(),
     revokeCliCredential: vi.fn(),
+    probeAllCredentials: vi.fn(),
     listCLIAuthProviders: vi.fn().mockResolvedValue([]),
     testCLIAuthApiKey: vi.fn(),
     saveCLIAuthApiKey: vi.fn(),
@@ -48,7 +50,7 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     disconnectGoogleHealth: vi.fn(),
   }
 })
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }))
 // PageSystem calls useButlers() for the override butler-picker.
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(() => ({ data: { data: [] }, isLoading: false, error: null })),
@@ -139,6 +141,7 @@ import {
 } from "./mock-data.ts";
 import { buildSpineEntries } from "./spine-builder.ts";
 import type { InventoryResponse } from "./types.ts";
+import { probeAllCredentials } from "@/api/client.ts";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -432,5 +435,68 @@ describe("DirectionPassport: snapshot (full page with rich mock data)", () => {
     );
     expect(html).toContain('data-page="cli"');
     expect(html).toMatchSnapshot();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ProbeAllButton — passport header "probe all" affordance [bu-a63hn]
+// ---------------------------------------------------------------------------
+
+describe("DirectionPassport: probe-all button", () => {
+  const mockProbeAll = vi.mocked(probeAllCredentials);
+
+  afterEach(() => {
+    cleanup();
+    mockProbeAll.mockReset();
+  });
+
+  function renderPassport(inventory: InventoryResponse) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/secrets"]}>
+          <DirectionPassport inventory={inventory} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("is hidden when there is nothing probeable", () => {
+    const emptyInventory: InventoryResponse = {
+      ...MOCK_INVENTORY,
+      user: [],
+      system: [],
+      cli: [],
+    };
+    renderPassport(emptyInventory);
+    expect(document.querySelector("[data-probe-all]")).toBeNull();
+  });
+
+  it("clicking it calls probeAllCredentials once and disables while pending", async () => {
+    let resolvePromise: (value: Awaited<ReturnType<typeof probeAllCredentials>>) => void;
+    mockProbeAll.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePromise = resolve;
+      }),
+    );
+
+    renderPassport(MOCK_INVENTORY);
+    // Re-query on every check rather than caching a node reference: an
+    // intervening re-render could swap the DOM node out from under a cached
+    // handle, making a later fireEvent/assertion silently target a detached
+    // element.
+    const getButton = () => document.querySelector("[data-probe-all]") as HTMLButtonElement;
+    expect(getButton()).not.toBeNull();
+    expect(getButton().disabled).toBe(false);
+
+    fireEvent.click(getButton());
+
+    await waitFor(() => expect(mockProbeAll).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getButton().disabled).toBe(true));
+
+    resolvePromise!({ data: { results: [], probed: 1, ok: 1, failed: 0, skipped: 0 }, meta: {} });
+    await waitFor(() => expect(getButton().disabled).toBe(false));
   });
 });

@@ -6514,6 +6514,7 @@ import type {
   SecretsAuditEvent,
   SecretsAuditParams,
   SecretsCliDetail,
+  SecretsProbeAllResponse,
   SecretsProbeResult,
   SecretsSystemDetail,
   SecretsUserDetail,
@@ -6719,6 +6720,23 @@ export function probeSystemCredential(key: string): Promise<ApiResponse<SecretsP
     `/secrets/system/${encodeURIComponent(key)}/probe`,
     { method: "POST" },
   );
+}
+
+/**
+ * POST /api/secrets/probe-all
+ *
+ * Sweeps every probeable credential (system, user, cli-auth) and returns a
+ * per-row outcome. Dispatches through the exact same probe_* functions as a
+ * manual per-row click, serially with a per-provider circuit breaker — see
+ * butlers.jobs.secrets_staleness for the engine.
+ *
+ * Returns ApiResponse<SecretsProbeAllResponse>.
+ * Returns 429 when a sweep is already in progress.
+ */
+export function probeAllCredentials(): Promise<ApiResponse<SecretsProbeAllResponse>> {
+  return apiFetch<ApiResponse<SecretsProbeAllResponse>>("/secrets/probe-all", {
+    method: "POST",
+  });
 }
 
 /**

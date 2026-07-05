@@ -15,6 +15,7 @@
 
 import * as React from "react";
 import { useSearchParams } from "react-router";
+import { Loader2 } from "lucide-react";
 
 import type { InventoryResponse, SpineSortMode } from "./types.ts";
 import { parseFocus } from "./constants.ts";
@@ -23,6 +24,45 @@ import { Spine, SpineAddButton } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCliConnected, PassportEmptyState, PassportAddPanel } from "./pages.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
 import { needsHand } from "./constants.ts";
+import { useProbeAllSecrets } from "@/hooks/use-secrets-mutations.ts";
+
+// ── ProbeAllButton ───────────────────────────────────────────────────────────
+
+/**
+ * "Probe all" affordance next to the KPI strip (bu-a63hn) — sweeps every
+ * probeable credential via POST /api/secrets/probe-all. Disabled and shows a
+ * spinner while the sweep is in flight; row states refresh via the
+ * inventory-query invalidation the mutation already performs on success.
+ */
+function ProbeAllButton({ count }: { count: number }) {
+  const probeAll = useProbeAllSecrets();
+  if (count === 0) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => probeAll.mutate()}
+      disabled={probeAll.isPending}
+      aria-busy={probeAll.isPending}
+      data-probe-all="true"
+      aria-label={`Probe all ${count} credentials`}
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight disabled:pointer-events-none disabled:opacity-60"
+      style={{
+        background: "transparent",
+        color: "var(--fg)",
+        borderColor: "var(--border)",
+      }}
+    >
+      {probeAll.isPending ? (
+        <>
+          <Loader2 size={11} className="animate-spin" aria-hidden="true" />
+          probing {count}…
+        </>
+      ) : (
+        <>probe all</>
+      )}
+    </button>
+  );
+}
 
 // ── KPI cell ─────────────────────────────────────────────────────────────────
 
@@ -230,6 +270,14 @@ export function DirectionPassport({
   };
   const needsAttention = kpis.integrations.needsHand + kpis.cli.attention;
 
+  // Rough count of what "probe all" is about to sweep — never_set/missing
+  // rows have nothing to verify, so they're excluded from this hint. Not a
+  // guaranteed exact match to the backend's collection (which also applies
+  // the cli-auth/registered-provider filter), just an honest ballpark for
+  // the button's busy label.
+  const probeableCount =
+    kpis.integrations.total + kpis.system.configured + kpis.cli.total;
+
   // Hide identity chip when only one identity is present.
   const showIdentityChip = inventory.identities.length > 1;
   const activeIdentity = inventory.identities.find((i) => i.id === identityId);
@@ -310,6 +358,7 @@ export function DirectionPassport({
                   onClick={() => {/* handled via spine */}}
                 />
               )}
+              <ProbeAllButton count={probeableCount} />
               <SpineAddButton onClick={() => setAddOpen(true)} active={addOpen} />
             </div>
             <div className="flex gap-3.5 items-baseline">

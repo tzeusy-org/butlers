@@ -4781,3 +4781,97 @@ async def reauthorize_cli_credential(
             ),
             meta=ApiMeta(),
         )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/secrets/probe-all
+# ---------------------------------------------------------------------------
+
+
+class ProbeAllResult(BaseModel):
+    """One credential's outcome from a probe-all sweep."""
+
+    key: str  # canonical credential key, e.g. "u:google" / "s:KEY" / "c:cli-auth/codex"
+    family: str  # "system" | "user" | "cli"
+    label: str
+    ok: bool | None  # None means skipped (rate-limited, circuit-broken, error)
+    message: str | None = None
+    skipped: bool = False
+    skip_reason: str | None = None
+
+
+class ProbeAllResponse(BaseModel):
+    """Aggregate outcome of a probe-all sweep."""
+
+    results: list[ProbeAllResult] = Field(default_factory=list)
+    probed: int = 0
+    ok: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+
+@router.post(
+    "/probe-all",
+    response_model=ApiResponse[ProbeAllResponse],
+)
+async def probe_all_credentials(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ProbeAllResponse]:
+    """Sweep every probeable credential and report a per-row outcome.
+
+    Backs the passport header's "probe all" button (bu-a63hn). Dispatches
+    through the exact same probe functions as a manual per-row click —
+    ``probe_user_credential`` / ``probe_system_credential`` / the cli-auth
+    ``test_api_key`` — called directly (no HTTP round-trip), so persistence
+    semantics never diverge: probe_log row + test-state cache columns +
+    audit stamp per credential, exactly as today's single-credential probe
+    endpoints already write.
+
+    Probes run serially (never concurrent) with a per-provider circuit
+    breaker, so a single dead provider cannot turn one sweep into a retry
+    storm. ``never_set`` rows and CLI rows with no live test path are
+    skipped — see ``butlers.jobs.secrets_staleness`` for the shared
+    collection/dispatch engine (also used by the background staleness loop).
+
+    Rate-limited server-side: only one sweep may run at a time (a concurrent
+    request gets 429); each individual system-credential probe still honors
+    its own existing 5s/key rate limit.
+
+    Returns 429 when a sweep is already in progress.
+    """
+    # Lazy import: butlers.jobs.secrets_staleness imports FROM this module at
+    # module level (the same per-family fetch helpers + probe_* functions), so
+    # importing it back here at module level would be a cycle. Mirrors the
+    # cli_auth.py <-> secrets_v2.py lazy-import pattern used elsewhere in this
+    # file (see reauthorize_cli_credential above).
+    from butlers.jobs.secrets_staleness import ProbeAllAlreadyRunning, run_secrets_probe_all
+
+    try:
+        outcomes = await run_secrets_probe_all(db)
+    except ProbeAllAlreadyRunning as exc:
+        raise HTTPException(
+            status_code=429, detail="A probe-all sweep is already in progress"
+        ) from exc
+
+    results = [
+        ProbeAllResult(
+            key=o.key,
+            family=o.family,
+            label=o.label,
+            ok=o.ok,
+            message=o.message,
+            skipped=o.skipped,
+            skip_reason=o.skip_reason,
+        )
+        for o in outcomes
+    ]
+    return ApiResponse[ProbeAllResponse](
+        data=ProbeAllResponse(
+            results=results,
+            probed=sum(1 for o in outcomes if not o.skipped),
+            ok=sum(1 for o in outcomes if o.ok is True),
+            failed=sum(1 for o in outcomes if o.ok is False),
+            skipped=sum(1 for o in outcomes if o.skipped),
+        ),
+        meta=ApiMeta(),
+    )

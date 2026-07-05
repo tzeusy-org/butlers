@@ -20,6 +20,7 @@ import {
   createEntityInfo,
   deleteSystemCredential,
   disconnectUserCredential,
+  probeAllCredentials,
   probeSystemCredential,
   probeUserCredential,
   rotateCliCredential,
@@ -137,6 +138,47 @@ export function useProbeUserSecret() {
     },
     onError: (error: Error) => {
       toast.error(`Probe failed: ${error.message}`);
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Probe-all (bu-a63hn)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sweep every probeable credential (system, user, cli-auth) via
+ * POST /api/secrets/probe-all. Backs the passport header's "probe all"
+ * button. A single blocking request; on success, every row's state
+ * (last_verified, test result) is refreshed by invalidating the inventory
+ * query — the passport re-renders each row with the swept outcome.
+ */
+export function useProbeAllSecrets() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => probeAllCredentials(),
+    onSuccess: (data) => {
+      const summary = data?.data;
+      if (summary) {
+        if (summary.failed > 0) {
+          toast.warning(
+            `Probed ${summary.probed}: ${summary.ok} ok, ${summary.failed} failed` +
+              (summary.skipped > 0 ? `, ${summary.skipped} skipped` : ""),
+          );
+        } else {
+          toast.success(
+            `Probed ${summary.probed} credential${summary.probed === 1 ? "" : "s"}` +
+              (summary.skipped > 0 ? ` (${summary.skipped} skipped)` : ""),
+          );
+        }
+      }
+      void queryClient.invalidateQueries({ queryKey: secretsInventoryKeys.all });
+      void queryClient.invalidateQueries({ queryKey: secretsUserKeys.all });
+      void queryClient.invalidateQueries({ queryKey: secretsSystemKeys.all });
+      void queryClient.invalidateQueries({ queryKey: secretsCliKeys.all });
+    },
+    onError: (error: Error) => {
+      toast.error(`Probe all failed: ${error.message}`);
     },
   });
 }

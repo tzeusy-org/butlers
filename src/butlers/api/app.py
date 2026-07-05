@@ -129,10 +129,40 @@ from butlers.jobs.secrets_lifecycle import (
     DEFAULT_SCAN_INTERVAL_S,
     run_secrets_lifecycle_loop,
 )
+from butlers.jobs.secrets_staleness import (
+    DEFAULT_STALENESS_S,
+    DEFAULT_STALENESS_SCAN_INTERVAL_S,
+    run_secrets_staleness_loop,
+)
 
 logger = logging.getLogger(__name__)
 
 _SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV = "SECRETS_LIFECYCLE_SCAN_INTERVAL_S"
+_SECRETS_STALENESS_SCAN_INTERVAL_ENV = "SECRETS_STALENESS_SCAN_INTERVAL_S"
+_SECRETS_STALENESS_WINDOW_ENV = "SECRETS_STALENESS_WINDOW_S"
+
+
+def _resolve_positive_float_env(env_var: str, default: float) -> float:
+    """Read a positive-float env var, falling back to ``default`` (with a
+    warning) when unset, non-numeric, or non-positive. Shared by both the
+    secrets-lifecycle and secrets-staleness interval/window env lookups so
+    the fallback behavior can never silently drift between the two.
+    """
+    raw = os.environ.get(env_var, str(default))
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError("value must be a positive number")
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a valid positive number; falling back to default %s",
+            env_var,
+            raw,
+            default,
+        )
+        return default
+    return value
+
 
 # Strong references to fire-and-forget background tasks spawned from lifespan.
 # asyncio only holds a weak reference to a running Task once its creating
@@ -180,6 +210,7 @@ async def lifespan(app: FastAPI):
     butler_configs = get_butler_configs()
     secrets_lifecycle_task: asyncio.Task | None = None
     settings_console_delta_task: asyncio.Task | None = None
+    secrets_staleness_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
         # Wire DB dependencies for both static and dynamic routers
@@ -209,19 +240,9 @@ async def lifespan(app: FastAPI):
         # of waiting for a /secrets page visit. Only started once the
         # DatabaseManager is actually available; sleeps before its first
         # scan (see run_secrets_lifecycle_loop) so it never fires mid-test.
-        try:
-            scan_interval_s = float(
-                os.environ.get(_SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV, str(DEFAULT_SCAN_INTERVAL_S))
-            )
-            if scan_interval_s <= 0:
-                raise ValueError("interval must be a positive number")
-        except ValueError:
-            logger.warning(
-                "%s is not a valid positive number; falling back to default %ss",
-                _SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV,
-                DEFAULT_SCAN_INTERVAL_S,
-            )
-            scan_interval_s = DEFAULT_SCAN_INTERVAL_S
+        scan_interval_s = _resolve_positive_float_env(
+            _SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV, DEFAULT_SCAN_INTERVAL_S
+        )
         secrets_lifecycle_task = asyncio.create_task(
             run_secrets_lifecycle_loop(get_db_manager(), interval_s=scan_interval_s)
         )
@@ -251,6 +272,29 @@ async def lifespan(app: FastAPI):
                 exc_info=True,
             )
 
+        # Background credential-staleness re-probe loop (bu-a63hn): unlike the
+        # lifecycle notifier above (which only pushes when a credential
+        # transitions into an attention state), this loop actively re-probes
+        # any credential whose last_verified is stale so the passport arrives
+        # already-verified instead of waiting for a manual click. Dispatches
+        # through the exact same probe_* functions the dashboard endpoints
+        # use — see butlers.jobs.secrets_staleness for the shared engine.
+        staleness_interval_s = _resolve_positive_float_env(
+            _SECRETS_STALENESS_SCAN_INTERVAL_ENV, DEFAULT_STALENESS_SCAN_INTERVAL_S
+        )
+        staleness_window_s = _resolve_positive_float_env(
+            _SECRETS_STALENESS_WINDOW_ENV, DEFAULT_STALENESS_S
+        )
+        secrets_staleness_task = asyncio.create_task(
+            run_secrets_staleness_loop(
+                get_db_manager(),
+                interval_s=staleness_interval_s,
+                staleness_s=staleness_window_s,
+            )
+        )
+        _BACKGROUND_TASKS.add(secrets_staleness_task)
+        secrets_staleness_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
     except Exception:
         logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
 
@@ -270,6 +314,10 @@ async def lifespan(app: FastAPI):
         settings_console_delta_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await settings_console_delta_task
+    if secrets_staleness_task is not None:
+        secrets_staleness_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await secrets_staleness_task
     await shutdown_db_manager()
     await shutdown_dependencies()
 
