@@ -182,17 +182,21 @@ function insightHref(candidate: InsightCandidate): string | null {
   ) {
     return (metadata as Record<string, unknown>)["href"] as string;
   }
-  // Map known health signal categories to their sub-pages.
+  // Map known health signal categories to their sub-pages. Measurement
+  // categories carry a `?type=` predicate (bu-qvnce.13, "health measurements
+  // ?type=") so the link lands on the pre-filtered reading log for that
+  // vital, not the unfiltered "All types" view.
   switch (category) {
     case "medication":
     case "adherence":
       return "/health/medications";
     case "measurement":
+      return "/health/measurements";
     case "blood_pressure":
     case "heart_rate":
     case "weight":
     case "blood_sugar":
-      return "/health/measurements";
+      return `/health/measurements?type=${encodeURIComponent(category)}`;
     case "symptom":
       return "/health/symptoms";
     case "condition":

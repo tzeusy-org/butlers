@@ -16,6 +16,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -72,10 +73,28 @@ const BUILT_IN_VIEWS: BuiltInView[] = [
 // TimelinePage
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// URL-backed facets/view/butlers (bu-qvnce.13, pursuit move 13) — the
+// `?event=` drawer param was already URL-backed (useEventDrawerState); the
+// source facets, butler multi-select, and active-view highlight now share
+// the URL too, so the filtered timeline is shareable/reloadable. Follows the
+// same comma-separated-set convention as QaOverviewPage's `?butler=`.
+// ---------------------------------------------------------------------------
+
+function parseCsvList(sp: URLSearchParams, key: string): string[] {
+  return (sp.get(key) ?? "").split(",").filter(Boolean);
+}
+
+function writeCsvList(sp: URLSearchParams, key: string, values: string[]): void {
+  if (values.length > 0) sp.set(key, values.join(","));
+  else sp.delete(key);
+}
+
 export default function TimelinePage() {
-  const [selectedButlers, setSelectedButlers] = useState<string[]>([]);
-  const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
-  const [activeViewId, setActiveViewId] = useState<string>("all");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedButlers = useMemo(() => parseCsvList(searchParams, "butler"), [searchParams]);
+  const selectedTypes = useMemo(() => parseCsvList(searchParams, "type"), [searchParams]);
+  const activeViewId = searchParams.get("view") ?? "all";
 
   const { data: butlersResponse } = useButlers();
   const butlerNames = butlersResponse?.data?.map((b) => b.name) ?? [];
@@ -113,22 +132,31 @@ export default function TimelinePage() {
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [saveViewName, setSaveViewName] = useState("");
 
-  function applyFilterSpec(spec: TimelineSavedViewFilterSpec) {
+  function applyFilterSpecToParams(sp: URLSearchParams, spec: TimelineSavedViewFilterSpec) {
     const types = Array.isArray(spec.event_type) ? (spec.event_type as string[]) : [];
     const butlers = Array.isArray(spec.butler) ? (spec.butler as string[]) : [];
-    setSelectedTypes(types);
-    setSelectedButlers(butlers);
+    writeCsvList(sp, "type", types);
+    writeCsvList(sp, "butler", butlers);
   }
 
   function selectBuiltInView(view: BuiltInView) {
-    setActiveViewId(view.id);
-    setSelectedTypes(view.event_type ?? []);
-    setSelectedButlers([]);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (view.id === "all") next.delete("view");
+      else next.set("view", view.id);
+      writeCsvList(next, "type", view.event_type ?? []);
+      writeCsvList(next, "butler", []);
+      return next;
+    });
   }
 
   function selectCustomView(id: string, spec: TimelineSavedViewFilterSpec) {
-    setActiveViewId(id);
-    applyFilterSpec(spec);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("view", id);
+      applyFilterSpecToParams(next, spec);
+      return next;
+    });
   }
 
   async function handleSaveView() {
@@ -139,7 +167,11 @@ export default function TimelinePage() {
     };
     try {
       const created = await createSavedView.mutateAsync({ name: saveViewName.trim(), filter_spec });
-      setActiveViewId(created.id);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("view", created.id);
+        return next;
+      });
       setSaveViewName("");
       setSaveDialogOpen(false);
     } catch (err) {
@@ -151,11 +183,23 @@ export default function TimelinePage() {
   // (the "all" view remains selected visually but no longer reflects the
   // exact filter set; simple and honest rather than tracking a modified dot).
   function toggleType(type: string) {
-    setSelectedTypes((prev) => (prev.includes(type) ? prev.filter((t) => t !== type) : [...prev, type]));
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const current = parseCsvList(prev, "type");
+      const updated = current.includes(type) ? current.filter((t) => t !== type) : [...current, type];
+      writeCsvList(next, "type", updated);
+      return next;
+    });
   }
 
   function toggleButler(name: string) {
-    setSelectedButlers((prev) => (prev.includes(name) ? prev.filter((b) => b !== name) : [...prev, name]));
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const current = parseCsvList(prev, "butler");
+      const updated = current.includes(name) ? current.filter((b) => b !== name) : [...current, name];
+      writeCsvList(next, "butler", updated);
+      return next;
+    });
   }
 
   // Live status: driven by the newest loaded event when pinned to now — the

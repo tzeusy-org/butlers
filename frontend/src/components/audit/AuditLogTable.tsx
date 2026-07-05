@@ -39,6 +39,14 @@ function actorHref(actor: string): string {
   return `/audit-log?actor=${encodeURIComponent(actor)}`;
 }
 
+// action: every row's `action` verb is exact-match filterable via ?action=
+// (AuditLogPage.tsx), the same predicate the page's own filter bar already
+// understands -- so an action cell pivots to that pre-filtered view of
+// itself (bu-qvnce.13, "action-cell pivot links").
+function actionHref(action: string): string {
+  return `/audit-log?action=${encodeURIComponent(action)}`;
+}
+
 function targetHref(target: string): string | null {
   if (target.startsWith("butler:")) {
     const name = target.slice("butler:".length);
@@ -202,9 +210,15 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                     </Link>
                   </TableCell>
                   <TableCell>
-                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
-                      {entry.action}
-                    </code>
+                    <Link
+                      to={actionHref(entry.action)}
+                      onClick={stopRowToggle}
+                      className="hover:underline"
+                    >
+                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
+                        {entry.action}
+                      </code>
+                    </Link>
                   </TableCell>
                   <TableCell>
                     <OutcomeBadge result={entry.result} />
@@ -248,9 +262,11 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                               Action
                             </span>
                             <p className="mt-0.5">
-                              <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
-                                {entry.action}
-                              </code>
+                              <Link to={actionHref(entry.action)} className="hover:underline">
+                                <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
+                                  {entry.action}
+                                </code>
+                              </Link>
                             </p>
                           </div>
                           <div>

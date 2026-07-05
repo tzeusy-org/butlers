@@ -853,12 +853,19 @@ export function acknowledgeAllFailed(): Promise<ApiResponse<AckFailedResult>> {
  * When `includeDismissed` is true, the server returns *only* the issues that
  * have been dismissed (acked) — each flagged `dismissed: true` — so the UI can
  * offer a restore affordance instead of the active feed.
+ *
+ * `window` bounds the audit-derived (grouped) issues server-side (bu-qvnce.13,
+ * capped CTE) — e.g. "24h" | "7d" | "30d" | "all". Omitted entirely when
+ * absent so the backend's own default (7d) applies.
  */
 export function getIssues(
-  includeDismissed = false,
+  params: { includeDismissed?: boolean; window?: string } = {},
 ): Promise<ApiResponse<Issue[]>> {
-  const query = includeDismissed ? "?include_dismissed=true" : "";
-  return apiFetch<ApiResponse<Issue[]>>(`/issues${query}`);
+  const qs = new URLSearchParams();
+  if (params.includeDismissed) qs.set("include_dismissed", "true");
+  if (params.window) qs.set("window", params.window);
+  const query = qs.toString();
+  return apiFetch<ApiResponse<Issue[]>>(`/issues${query ? `?${query}` : ""}`);
 }
 
 /**

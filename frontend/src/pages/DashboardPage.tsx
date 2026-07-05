@@ -14,7 +14,11 @@
  *
  * Data sources (no backend aggregation endpoint required):
  *   useBriefing()           -- DateEyebrow, BriefingStatus, Headline, Elaboration
- *   useIssues()             -- AttentionList (client-side stale/severity ordering)
+ *   useIssues({window:"all"}) -- AttentionList (client-side stale/severity ordering);
+ *                              explicitly opts out of the Issues page's default
+ *                              7d server-side window (bu-qvnce.13) since this
+ *                              page derives its own current/recent/old buckets
+ *                              from the full history.
  *   GET /api/butlers/board  -- ButlerIndex, RuntimeSummaryKpi, runtime attention
  *                              rows -- the SAME canonical, cadence-aware
  *                              liveness verdict the /butlers status board
@@ -95,7 +99,10 @@ export default function DashboardPage() {
   // ["butlers","board"]) live-refreshes this page too, not just /butlers.
   const boardQuery = useButlersBoard();
   const costQuery = useSpendSummary("today");
-  const issuesQuery = useIssues();
+  // window:"all" preserves this page's existing full-history behavior — its
+  // own bucketing (current/recent/old) already manages what's shown, so the
+  // Issues page's new 7d default (bu-qvnce.13) must not silently truncate it.
+  const issuesQuery = useIssues({ window: "all" });
   const approvalMetricsQuery = useApprovalMetrics();
   // Individual pending approvals for the inline approve/deny/defer rows below
   // (bu-86c4c.14). Small cap -- this is a "what needs a look" preview, not

@@ -488,7 +488,10 @@ function notificationAttentionRows(
       severity: "medium",
       title: `${failed} failed notification${failed === 1 ? "" : "s"}`,
       detail: "Delivery pressure needs review.",
-      href: "/notifications",
+      // Predicate-carrying door (bu-qvnce.13): the row names failed
+      // notifications specifically -- the link lands on the pre-filtered
+      // view, not the unfiltered stream.
+      href: "/notifications?status=failed",
       count: failed,
     },
   ];
@@ -576,7 +579,8 @@ function deriveNowRows(input: OverviewDerivationInput, maxTimelineRows: number):
           failedNotifications === 1 ? "" : "s"
         }`,
         detail: "Delivery failures are present.",
-        href: "/notifications",
+        // Predicate-carrying door (bu-qvnce.13): see notificationAttentionRows.
+        href: "/notifications?status=failed",
         count: failedNotifications,
       });
     }

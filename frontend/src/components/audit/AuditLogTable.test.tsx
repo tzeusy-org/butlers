@@ -60,6 +60,18 @@ describe("AuditLogTable -- actor pivot", () => {
   });
 });
 
+describe("AuditLogTable -- action pivot (bu-qvnce.13)", () => {
+  it("links the action cell to /audit-log?action=<action>", () => {
+    const html = render([entry({ action: "model.priority" })]);
+    expect(html).toContain('href="/audit-log?action=model.priority"');
+  });
+
+  it("URI-encodes action values", () => {
+    const html = render([entry({ action: "credential set" })]);
+    expect(html).toContain('href="/audit-log?action=credential%20set"');
+  });
+});
+
 describe("AuditLogTable -- target pivot", () => {
   it("links a butler: target to /butlers/:name", () => {
     const html = render([entry({ target: "butler:qa" })]);

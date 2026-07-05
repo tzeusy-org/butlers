@@ -49,8 +49,17 @@ import { useDismissIssue, useIssues, useUndismissIssue } from "./use-issues";
 
 const mockUseQuery = vi.mocked(useQuery);
 
+// The mutation hooks (useDismissIssue/useUndismissIssue) target the plain
+// 2-element list-key prefix -- only useIssues's own queryKey carries the
+// window suffix (bu-qvnce.13).
 const ACTIVE_KEY = ["issues", { dismissed: false }];
 const DISMISSED_KEY = ["issues", { dismissed: true }];
+
+// bu-qvnce.13: useIssues now takes an options object ({includeDismissed,
+// window}) instead of a positional boolean, and the query key carries the
+// window alongside the dismissed flag.
+const ACTIVE_QUERY_KEY = ["issues", { dismissed: false }, { window: undefined }];
+const DISMISSED_QUERY_KEY = ["issues", { dismissed: true }, { window: undefined }];
 
 interface CapturedQueryOptions {
   queryKey: unknown;
@@ -93,21 +102,33 @@ describe("useIssues", () => {
   });
 
   it("uses distinct query keys for the active vs dismissed views", () => {
-    useIssues(false);
-    expect(lastQueryOptions().queryKey).toEqual(ACTIVE_KEY);
-    useIssues(true);
-    expect(lastQueryOptions().queryKey).toEqual(DISMISSED_KEY);
+    useIssues({ includeDismissed: false });
+    expect(lastQueryOptions().queryKey).toEqual(ACTIVE_QUERY_KEY);
+    useIssues({ includeDismissed: true });
+    expect(lastQueryOptions().queryKey).toEqual(DISMISSED_QUERY_KEY);
   });
 
-  it("forwards include_dismissed to getIssues via queryFn", () => {
-    useIssues(true);
+  it("forwards includeDismissed to getIssues via queryFn", () => {
+    useIssues({ includeDismissed: true });
     lastQueryOptions().queryFn();
-    expect(getIssues).toHaveBeenCalledWith(true);
+    expect(getIssues).toHaveBeenCalledWith({ includeDismissed: true, window: undefined });
 
     vi.mocked(getIssues).mockClear();
-    useIssues(false);
+    useIssues({ includeDismissed: false });
     lastQueryOptions().queryFn();
-    expect(getIssues).toHaveBeenCalledWith(false);
+    expect(getIssues).toHaveBeenCalledWith({ includeDismissed: false, window: undefined });
+  });
+
+  it("defaults to includeDismissed=false when called with no options", () => {
+    useIssues();
+    expect(lastQueryOptions().queryKey).toEqual(ACTIVE_QUERY_KEY);
+  });
+
+  it("threads window through the query key and to getIssues (bu-qvnce.13)", () => {
+    useIssues({ window: "24h" });
+    expect(lastQueryOptions().queryKey).toEqual(["issues", { dismissed: false }, { window: "24h" }]);
+    lastQueryOptions().queryFn();
+    expect(getIssues).toHaveBeenCalledWith({ includeDismissed: false, window: "24h" });
   });
 });
 

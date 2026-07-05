@@ -163,6 +163,40 @@ describe("TimelineLedger — drawer", () => {
     });
     expect(container.querySelector('[data-testid="timeline-event-drawer"]')).toBeNull();
   });
+
+  // Off-page ?event= resolution (bu-qvnce.13): a deep link to an event
+  // outside the currently-loaded window must not silently render nothing.
+  it("shows an honest not-found notice when ?event= points at an id outside the loaded window", () => {
+    const events = [makeEvent("e1", "2026-07-04T15:10:00Z")];
+    renderLedger({ events }, ["/timeline?event=nonexistent"]);
+    expect(container.querySelector('[data-testid="timeline-event-not-found"]')).not.toBeNull();
+    expect(container.textContent).toContain("nonexistent");
+    expect(container.querySelector('[data-testid="timeline-event-drawer"]')).toBeNull();
+  });
+
+  it("does not show the not-found notice when the ?event= id is loaded", () => {
+    const events = [makeEvent("e1", "2026-07-04T15:10:00Z")];
+    renderLedger({ events }, ["/timeline?event=e1"]);
+    expect(container.querySelector('[data-testid="timeline-event-not-found"]')).toBeNull();
+  });
+
+  it("shows the not-found notice even when the loaded window is empty", () => {
+    renderLedger({ events: [] }, ["/timeline?event=nonexistent"]);
+    expect(container.querySelector('[data-testid="timeline-event-not-found"]')).not.toBeNull();
+    expect(container.textContent).toContain("No events found.");
+  });
+
+  it("clearing the not-found notice removes the ?event= param", () => {
+    const events = [makeEvent("e1", "2026-07-04T15:10:00Z")];
+    renderLedger({ events }, ["/timeline?event=nonexistent"]);
+    const dismiss = container.querySelector(
+      '[data-testid="timeline-event-not-found-dismiss"]',
+    ) as HTMLElement;
+    act(() => {
+      dismiss.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="timeline-event-not-found"]')).toBeNull();
+  });
 });
 
 describe("TimelineLedger — pagination", () => {

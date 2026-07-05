@@ -27,16 +27,17 @@ interface FilterState {
   since: string;
 }
 
-const EMPTY_FILTERS: FilterState = {
-  actor: "",
-  action: "",
-  since: "",
-};
-
+/**
+ * Read filter-bar state directly out of the URL (bu-qvnce.13) — actor/
+ * action/since have exactly ONE source of truth, the querystring. Previously
+ * `actor` also lived in a component-state mirror that a `?actor=` deep-link
+ * silently overrode without updating (the bug: the visible input and the
+ * request params could disagree). Collapsing to a single URL-serialized
+ * state makes that impossible: the input's `value` and the params sent to
+ * `useAuditLog` are read from the exact same place.
+ */
 function filtersFromSearchParams(searchParams: URLSearchParams): FilterState {
   return {
-    // Hydrate the actor filter bar from the ?actor= deep-link so the input
-    // reflects the active actor filter (e.g. arriving from a passport link).
     actor: searchParams.get("actor") ?? "",
     action: searchParams.get("action") ?? "",
     since: searchParams.get("since") ?? "",
@@ -49,16 +50,14 @@ function filtersFromSearchParams(searchParams: URLSearchParams): FilterState {
 
 export default function AuditLogPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [filters, setFilters] = useState<FilterState>(() =>
-    filtersFromSearchParams(searchParams),
-  );
   const [page, setPage] = useState(0);
 
-  // Deep-link filters from URL: ?key= and ?actor= are read directly from URL
-  // and forwarded to the backend. They are not part of the mutable FilterState
-  // because they originate from passport deep-links, not the filter bar UI.
+  // Single URL-serialized filter state (bu-qvnce.13) — no local mirror.
+  const filters = filtersFromSearchParams(searchParams);
+
+  // `key` and `result` are also URL-only deep-link params (no filter-bar
+  // input owns them), forwarded straight through.
   const keyFilter = searchParams.get("key") ?? undefined;
-  const actorFilter = searchParams.get("actor") ?? undefined;
   const resultFilter = searchParams.get("result") ?? undefined;
 
   // Noise toggle (JARVIS audit move 6): the page defaults to kind=privileged
@@ -82,7 +81,8 @@ export default function AuditLogPage() {
     setPage(0);
   }
 
-  // Build API params from filter state
+  // Build API params from filter state. `filters.actor` is the single source
+  // of truth (URL) now — no separate deep-link override needed.
   const params: AuditLogParams = {
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
@@ -91,8 +91,6 @@ export default function AuditLogPage() {
     ...(filters.since ? { since: filters.since } : {}),
     ...(keyFilter ? { key: keyFilter } : {}),
     ...(resultFilter ? { result: resultFilter } : {}),
-    // ?actor= deep-link overrides the filter-bar actor when present
-    ...(actorFilter ? { actor: actorFilter } : {}),
     ...(showAllNoise ? {} : { kind: "privileged" }),
   };
 
@@ -107,12 +105,29 @@ export default function AuditLogPage() {
   const currentPage = page + 1;
 
   function handleFilterChange(key: keyof FilterState, value: string) {
-    setFilters((prev) => ({ ...prev, [key]: value }));
+    // replace: true — actor/action are free-text inputs; without this, every
+    // keystroke pushes a new history entry, so Back would have to be clicked
+    // once per character typed instead of once to leave the page.
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value) next.set(key, value);
+        else next.delete(key);
+        return next;
+      },
+      { replace: true },
+    );
     setPage(0);
   }
 
   function handleClearFilters() {
-    setFilters(EMPTY_FILTERS);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("actor");
+      next.delete("action");
+      next.delete("since");
+      return next;
+    });
     setPage(0);
   }
 
@@ -125,13 +140,10 @@ export default function AuditLogPage() {
     setPage(0);
   }
 
+  // Clearing the actor deep-link chip and clearing the filter-bar actor input
+  // are now the same action (bu-qvnce.13 — there is only one actor state).
   function handleClearActorFilter() {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.delete("actor");
-      return next;
-    });
-    setPage(0);
+    handleFilterChange("actor", "");
   }
 
   const hasActiveFilters =
@@ -146,7 +158,7 @@ export default function AuditLogPage() {
       description="Browse audit log entries across all butlers."
     >
       {/* Deep-link filter chips — shown when ?key= or ?actor= are present */}
-      {(keyFilter || actorFilter) && (
+      {(keyFilter || filters.actor) && (
         <div className="flex flex-wrap items-center gap-2" data-testid="deep-link-filters">
           {keyFilter && (
             <Badge
@@ -165,16 +177,16 @@ export default function AuditLogPage() {
               </button>
             </Badge>
           )}
-          {actorFilter && (
+          {filters.actor && (
             <Badge
               variant="secondary"
               className="gap-1.5 py-1 pl-2.5 pr-1.5 text-xs"
               data-testid="actor-filter-chip"
             >
-              actor: {actorFilter}
+              actor: {filters.actor}
               <button
                 type="button"
-                aria-label={`Remove actor filter ${actorFilter}`}
+                aria-label={`Remove actor filter ${filters.actor}`}
                 className="hover:text-foreground text-muted-foreground ml-0.5 rounded-sm text-xs leading-none"
                 onClick={handleClearActorFilter}
               >

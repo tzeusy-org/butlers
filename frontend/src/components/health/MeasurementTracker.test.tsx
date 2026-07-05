@@ -16,8 +16,19 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 
 import MeasurementTracker from "@/components/health/MeasurementTracker";
+
+// MeasurementTracker's type/since/until filters are URL-backed (bu-qvnce.13),
+// so it needs a Router context even for tests that don't touch the URL.
+function renderTracker(initialPath = "/health/measurements") {
+  return render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <MeasurementTracker />
+    </MemoryRouter>,
+  );
+}
 
 const createMutate = vi.fn().mockResolvedValue({});
 const updateMutate = vi.fn().mockResolvedValue({});
@@ -56,7 +67,7 @@ afterEach(() => {
 
 describe("MeasurementTracker — direct CRUD", () => {
   it("logs a scalar measurement via the add dialog (value wrapped in { value })", async () => {
-    render(<MeasurementTracker />);
+    renderTracker();
 
     fireEvent.click(screen.getByRole("button", { name: /log measurement/i }));
 
@@ -74,7 +85,7 @@ describe("MeasurementTracker — direct CRUD", () => {
   });
 
   it("logs a compound blood-pressure reading as { systolic, diastolic }", async () => {
-    render(<MeasurementTracker />);
+    renderTracker();
 
     fireEvent.click(screen.getByRole("button", { name: /log measurement/i }));
 
@@ -95,7 +106,7 @@ describe("MeasurementTracker — direct CRUD", () => {
   });
 
   it("requires a numeric value before logging", async () => {
-    render(<MeasurementTracker />);
+    renderTracker();
     fireEvent.click(screen.getByRole("button", { name: /log measurement/i }));
     // Submit with a blank value — the submit button label inside the form.
     fireEvent.click(screen.getByRole("button", { name: /^log measurement$/i }));
@@ -103,7 +114,7 @@ describe("MeasurementTracker — direct CRUD", () => {
   });
 
   it("edits a measurement via the edit dialog", async () => {
-    render(<MeasurementTracker />);
+    renderTracker();
 
     fireEvent.click(screen.getByRole("button", { name: /edit weight/i }));
 
@@ -122,7 +133,7 @@ describe("MeasurementTracker — direct CRUD", () => {
   });
 
   it("deletes a measurement after confirmation", async () => {
-    render(<MeasurementTracker />);
+    renderTracker();
 
     fireEvent.click(screen.getByRole("button", { name: /delete weight/i }));
 
@@ -133,5 +144,19 @@ describe("MeasurementTracker — direct CRUD", () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(deleteMutate).toHaveBeenCalledWith("meas-1"));
+  });
+});
+
+describe("MeasurementTracker — URL-backed type filter (bu-qvnce.13)", () => {
+  it("hydrates the type filter from a ?type= deep link", () => {
+    renderTracker("/health/measurements?type=blood_pressure");
+    const select = screen.getByLabelText("Filter by type") as HTMLSelectElement;
+    expect(select.value).toBe("blood_pressure");
+  });
+
+  it("defaults to the 'All types' option with no ?type= param", () => {
+    renderTracker();
+    const select = screen.getByLabelText("Filter by type") as HTMLSelectElement;
+    expect(select.value).toBe("");
   });
 });

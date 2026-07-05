@@ -263,6 +263,39 @@ describe("AuditLogPage — kind=privileged default + noise toggle", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Single URL-serialized filter state (bu-qvnce.13) — actor/action/since have
+// exactly one source of truth (the URL); there is no separate component
+// state that a deep-link could silently override without updating.
+// ---------------------------------------------------------------------------
+
+describe("AuditLogPage — single URL-serialized filter state", () => {
+  it("reads action filter from the URL and forwards it to useAuditLog", () => {
+    setupDefaults();
+    renderPage("/audit-log?action=model.priority");
+
+    const calls = vi.mocked(useAuditLog).mock.calls;
+    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
+    expect(params.action).toBe("model.priority");
+  });
+
+  it("hydrates the action filter input from the URL", () => {
+    setupDefaults();
+    const html = renderPage("/audit-log?action=model.priority");
+    expect(html).toContain('id="filter-action"');
+    expect(html).toContain('value="model.priority"');
+  });
+
+  it("clearing the actor chip and the filter-bar actor resolve to the same URL param", () => {
+    // Both affordances mutate the same "actor" URL param -- there is no
+    // second, independent piece of state for either to disagree with.
+    setupDefaults();
+    const html = renderPage("/audit-log?actor=cli-abc123");
+    expect(html).toContain('data-testid="actor-filter-chip"');
+    expect(html).toContain('value="cli-abc123"');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Table renders new-schema rows correctly
 // ---------------------------------------------------------------------------
 

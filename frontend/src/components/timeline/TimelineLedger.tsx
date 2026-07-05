@@ -343,6 +343,37 @@ function EmptyState() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Off-page ?event= resolution (bu-qvnce.13, pursuit move 13) — a deep link
+// to an event outside the currently-loaded window previously matched no row
+// and silently rendered nothing (the drawer just never opened). This makes
+// that honest: the owner sees why the drawer isn't open, with a way to clear
+// the stale link, instead of a page that looks like the event doesn't exist.
+// ---------------------------------------------------------------------------
+
+function EventNotFoundNotice({ eventId, onClose }: { eventId: string; onClose: () => void }) {
+  return (
+    <div
+      className="mb-2 flex items-center justify-between gap-3 rounded border border-[var(--amber)]/30 bg-[var(--amber)]/5 px-3 py-2 font-mono text-[11px] text-[var(--amber-text)]"
+      data-testid="timeline-event-not-found"
+    >
+      <span>
+        Event <span className="font-medium">{eventId}</span> isn&apos;t in the currently loaded
+        window — it may be older than what&apos;s shown here, or no longer in the live feed.
+      </span>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 shrink-0 px-2"
+        onClick={onClose}
+        data-testid="timeline-event-not-found-dismiss"
+      >
+        Clear link
+      </Button>
+    </div>
+  );
+}
+
 function ErrorState({ onRetry }: { onRetry?: () => void }) {
   return (
     <div data-testid="timeline-error">
@@ -384,14 +415,29 @@ export function TimelineLedger({
     return <ErrorState onRetry={onRetry} />;
   }
 
+  // A ?event= deep link whose id isn't in the currently-loaded window (e.g.
+  // it scrolled out after "Load older", or the id is simply stale/wrong) —
+  // resolve it honestly instead of a drawer that silently never opens.
+  const drawerEventMissing = drawerEventId !== null && !events.some((e) => e.id === drawerEventId);
+
   if (events.length === 0) {
-    return <EmptyState />;
+    return (
+      <>
+        {drawerEventMissing && drawerEventId && (
+          <EventNotFoundNotice eventId={drawerEventId} onClose={closeDrawer} />
+        )}
+        <EmptyState />
+      </>
+    );
   }
 
   const hourGroups = groupByHour(events);
 
   return (
     <div>
+      {drawerEventMissing && drawerEventId && (
+        <EventNotFoundNotice eventId={drawerEventId} onClose={closeDrawer} />
+      )}
       {hourGroups.map((group) => (
         <HourGroupSection
           key={group.hourKey}

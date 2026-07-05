@@ -676,7 +676,9 @@ describe("DashboardPage -- OperationsNowList", () => {
     } as AnyMock);
     const html = renderPage();
     expect(html).toContain("1 failed notification");
-    expect(html).toContain('href="/notifications"');
+    // Predicate-carrying door (bu-qvnce.13): lands pre-filtered, not on the
+    // unfiltered stream.
+    expect(html).toContain('href="/notifications?status=failed"');
   });
 
   it("renders QA row when patrol fails", () => {

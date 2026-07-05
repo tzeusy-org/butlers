@@ -82,9 +82,9 @@ function setStatsState(state: Partial<UseNotificationStatsResult>) {
   } as UseNotificationStatsResult);
 }
 
-function renderPage(): string {
+function renderPage(initialPath = "/"): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialPath]}>
       <NotificationsPage />
     </MemoryRouter>,
   );
@@ -207,5 +207,41 @@ describe("NotificationsPage", () => {
     expect(callArgs?.channel).toBeUndefined();
     expect(callArgs?.status).toBeUndefined();
     expect(callArgs?.butler).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------
+  // URL-backed filters (bu-qvnce.13) — the filter bar and any inbound deep
+  // link (e.g. the dashboard's "N failed notifications" tile) share the same
+  // URL-derived state, so a `?status=failed` link always lands pre-filtered.
+  // -------------------------------------------------------------------
+  it("hydrates the status filter from a ?status=failed deep link", () => {
+    setStatsState({ data: undefined });
+    setNotificationsState({ data: undefined });
+
+    renderPage("/notifications?status=failed");
+
+    const callArgs = vi.mocked(useNotifications).mock.calls[0][0];
+    expect(callArgs?.status).toBe("failed");
+  });
+
+  it("omits page from params when ?page= is absent", () => {
+    setStatsState({ data: undefined });
+    setNotificationsState({ data: undefined });
+
+    renderPage("/notifications");
+
+    const callArgs = vi.mocked(useNotifications).mock.calls[0][0];
+    expect(callArgs?.offset).toBe(0);
+  });
+
+  it("computes offset from a ?page= deep link", () => {
+    setStatsState({ data: undefined });
+    setNotificationsState({ data: undefined });
+
+    renderPage("/notifications?page=2");
+
+    const callArgs = vi.mocked(useNotifications).mock.calls[0][0];
+    // PAGE_SIZE is 20 (see NotificationsPage.tsx); page 2 -> offset 40.
+    expect(callArgs?.offset).toBe(40);
   });
 });

@@ -7,9 +7,16 @@ import { Bell, CheckCircle, XCircle, Percent } from "lucide-react"
 interface NotificationStatsBarProps {
   stats: NotificationStats | undefined
   isLoading?: boolean
+  /**
+   * When provided, the Sent/Failed tiles become filter anchors (bu-qvnce.13,
+   * JARVIS pursuit move 13 — "stat tiles become filter anchors"): clicking one
+   * pivots the page's own status filter to that value instead of only ever
+   * displaying an inert count.
+   */
+  onFilterClick?: (status: "sent" | "failed") => void
 }
 
-export function NotificationStatsBar({ stats, isLoading }: NotificationStatsBarProps) {
+export function NotificationStatsBar({ stats, isLoading, onFilterClick }: NotificationStatsBarProps) {
   if (isLoading) {
     return <StatsSkeleton count={4} />
   }
@@ -36,8 +43,24 @@ export function NotificationStatsBar({ stats, isLoading }: NotificationStatsBarP
           </CardContent>
         </Card>
 
-        {/* Sent */}
-        <Card>
+        {/* Sent — clickable filter anchor when onFilterClick is wired */}
+        <Card
+          role={onFilterClick ? "button" : undefined}
+          tabIndex={onFilterClick ? 0 : undefined}
+          onClick={onFilterClick ? () => onFilterClick("sent") : undefined}
+          onKeyDown={
+            onFilterClick
+              ? (e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    onFilterClick("sent")
+                  }
+                }
+              : undefined
+          }
+          className={onFilterClick ? "cursor-pointer transition-colors hover:bg-muted/40" : undefined}
+          data-testid="stat-tile-sent"
+        >
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Sent</CardTitle>
             <CheckCircle className="h-4 w-4 text-[var(--green)]" />
@@ -49,8 +72,24 @@ export function NotificationStatsBar({ stats, isLoading }: NotificationStatsBarP
           </CardContent>
         </Card>
 
-        {/* Failed */}
-        <Card>
+        {/* Failed — clickable filter anchor when onFilterClick is wired */}
+        <Card
+          role={onFilterClick ? "button" : undefined}
+          tabIndex={onFilterClick ? 0 : undefined}
+          onClick={onFilterClick ? () => onFilterClick("failed") : undefined}
+          onKeyDown={
+            onFilterClick
+              ? (e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    onFilterClick("failed")
+                  }
+                }
+              : undefined
+          }
+          className={onFilterClick ? "cursor-pointer transition-colors hover:bg-muted/40" : undefined}
+          data-testid="stat-tile-failed"
+        >
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Failed</CardTitle>
             <XCircle className="h-4 w-4 text-[var(--red)]" />

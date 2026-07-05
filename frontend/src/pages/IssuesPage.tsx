@@ -6,6 +6,7 @@ import IssuesPanel from "@/components/issues/IssuesPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Page } from "@/components/ui/page";
+import { cn } from "@/lib/utils";
 import { useForceButlerTick, usePingButler } from "@/hooks/use-butlers";
 import {
   useDismissIssue,
@@ -16,15 +17,73 @@ import {
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import type { Issue } from "@/api/types";
 
+// ---------------------------------------------------------------------------
+// URL-backed window + severity/butler pills (bu-qvnce.13, pursuit move 13)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_WINDOW = "7d";
+
+const WINDOW_OPTIONS = [
+  { value: "24h", label: "24h" },
+  { value: "7d", label: "7d" },
+  { value: "30d", label: "30d" },
+  { value: "all", label: "All time" },
+] as const;
+
+const SEVERITY_OPTIONS = [
+  { value: "critical", label: "Critical" },
+  { value: "warning", label: "Warning" },
+] as const;
+
+function parseCsvSet(sp: URLSearchParams, key: string): Set<string> {
+  return new Set((sp.get(key) ?? "").split(",").filter(Boolean));
+}
+
+function toggleInCsv(sp: URLSearchParams, key: string, value: string): void {
+  const current = parseCsvSet(sp, key);
+  if (current.has(value)) {
+    current.delete(value);
+  } else {
+    current.add(value);
+  }
+  if (current.size > 0) {
+    sp.set(key, Array.from(current).sort().join(","));
+  } else {
+    sp.delete(key);
+  }
+}
+
 export default function IssuesPage() {
   const [showDismissed, setShowDismissed] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
-  const { data, isLoading, isError } = useIssues(showDismissed);
+
+  // Time window (default 7d, capped CTE server-side — bu-qvnce.13). Shareable
+  // and reloadable: the URL is the sole source of truth, no local mirror.
+  const activeWindow = searchParams.get("window") || DEFAULT_WINDOW;
+  const selectedSeverities = useMemo(() => parseCsvSet(searchParams, "severity"), [searchParams]);
+  const selectedButlers = useMemo(() => parseCsvSet(searchParams, "butler"), [searchParams]);
+
+  const { data, isLoading, isError } = useIssues({
+    includeDismissed: showDismissed,
+    window: activeWindow,
+  });
   const dismiss = useDismissIssue();
   const undismiss = useUndismissIssue();
   const pingButler = usePingButler();
   const runNow = useForceButlerTick();
-  const allIssues = useMemo(() => data?.data ?? [], [data]);
+  const windowedIssues = useMemo(() => data?.data ?? [], [data]);
+
+  // Butler options are derived from the currently-loaded (windowed) feed so
+  // the pill row never offers a butler with zero issues in view.
+  const availableButlers = useMemo(() => {
+    const names = new Set<string>();
+    for (const issue of windowedIssues) {
+      for (const name of issue.butlers?.length ? issue.butlers : [issue.butler]) {
+        if (name) names.add(name);
+      }
+    }
+    return Array.from(names).sort();
+  }, [windowedIssues]);
 
   // ?q= deep-link (JARVIS audit move 6): a failure row on the Audit Log page
   // links here with the first line of its error text so a failure is one hop
@@ -34,15 +93,66 @@ export default function IssuesPage() {
   // lookup — the closest exact match is usually the top (only) result.
   const qFilter = (searchParams.get("q") ?? "").trim();
   const issues = useMemo(() => {
-    if (!qFilter) return allIssues;
-    const needle = qFilter.toLowerCase();
-    return allIssues.filter((issue) => (issue.error_message ?? issue.description).toLowerCase().includes(needle));
-  }, [allIssues, qFilter]);
+    let result = windowedIssues;
+    if (qFilter) {
+      const needle = qFilter.toLowerCase();
+      result = result.filter((issue) =>
+        (issue.error_message ?? issue.description).toLowerCase().includes(needle),
+      );
+    }
+    if (selectedSeverities.size > 0) {
+      result = result.filter((issue) => selectedSeverities.has(issue.severity.toLowerCase()));
+    }
+    if (selectedButlers.size > 0) {
+      result = result.filter((issue) =>
+        (issue.butlers?.length ? issue.butlers : [issue.butler]).some((name) =>
+          selectedButlers.has(name),
+        ),
+      );
+    }
+    return result;
+  }, [windowedIssues, qFilter, selectedSeverities, selectedButlers]);
 
   function handleClearQFilter() {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.delete("q");
+      return next;
+    });
+  }
+
+  function handleWindowChange(value: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value === DEFAULT_WINDOW) next.delete("window");
+      else next.set("window", value);
+      return next;
+    });
+  }
+
+  function handleToggleSeverity(value: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      toggleInCsv(next, "severity", value);
+      return next;
+    });
+  }
+
+  function handleToggleButler(name: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      toggleInCsv(next, "butler", name);
+      return next;
+    });
+  }
+
+  const hasActivePills = selectedSeverities.size > 0 || selectedButlers.size > 0;
+
+  function handleClearPills() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("severity");
+      next.delete("butler");
       return next;
     });
   }
@@ -147,6 +257,66 @@ export default function IssuesPage() {
         </Button>
       }
     >
+      {/* Window + severity/butler pills (bu-qvnce.13): URL-backed, shareable.
+          Window defaults to 7d server-side (capped CTE); "All time" opts out
+          of the time bound but the row cap still applies. */}
+      <div className="flex flex-wrap items-center gap-3" data-testid="issues-filter-bar">
+        <div className="flex items-center gap-1.5" role="group" aria-label="Time window">
+          {WINDOW_OPTIONS.map((opt) => (
+            <button key={opt.value} type="button" onClick={() => handleWindowChange(opt.value)}>
+              <Badge
+                variant={activeWindow === opt.value ? "default" : "outline"}
+                className="cursor-pointer"
+                data-testid={`window-${opt.value}`}
+              >
+                {opt.label}
+              </Badge>
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-1.5" role="group" aria-label="Severity">
+          {SEVERITY_OPTIONS.map((opt) => (
+            <button key={opt.value} type="button" onClick={() => handleToggleSeverity(opt.value)}>
+              <Badge
+                variant={selectedSeverities.has(opt.value) ? "default" : "outline"}
+                className={cn(
+                  "cursor-pointer",
+                  selectedSeverities.has(opt.value) && "bg-primary text-primary-foreground",
+                )}
+                data-testid={`severity-${opt.value}`}
+              >
+                {opt.label}
+              </Badge>
+            </button>
+          ))}
+        </div>
+
+        {availableButlers.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Butler">
+            {availableButlers.map((name) => (
+              <button key={name} type="button" onClick={() => handleToggleButler(name)}>
+                <Badge
+                  variant={selectedButlers.has(name) ? "default" : "outline"}
+                  className={cn(
+                    "cursor-pointer",
+                    selectedButlers.has(name) && "bg-primary text-primary-foreground",
+                  )}
+                >
+                  {name}
+                </Badge>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {hasActivePills && (
+          <Button variant="ghost" size="sm" onClick={handleClearPills}>
+            Clear pills
+          </Button>
+        )}
+      </div>
+
       {qFilter && (
         <div className="flex flex-wrap items-center gap-2" data-testid="q-filter">
           <Badge

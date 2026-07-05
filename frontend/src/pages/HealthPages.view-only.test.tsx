@@ -288,14 +288,16 @@ describe("All six health pages have CRUD (epic bu-eqkmi complete)", () => {
 });
 
 describe("Measurements health page — direct CRUD (bu-mqhas)", () => {
+  // MeasurementTracker's type/since/until filters are URL-backed (bu-qvnce.13),
+  // so this page needs a Router context (see renderInRouter below).
   it("does NOT render the butler-managed view-only note", () => {
-    const { container } = render(<MeasurementsPage />);
+    const { container } = renderInRouter(<MeasurementsPage />);
     const notes = container.querySelectorAll('[data-testid="butler-managed-note"]');
     expect(notes.length).toBe(0);
   });
 
   it("exposes add, edit, and delete affordances", () => {
-    render(<MeasurementsPage />);
+    renderInRouter(<MeasurementsPage />);
     // Add affordance in the tracker toolbar.
     expect(screen.getByRole("button", { name: /log measurement/i })).toBeTruthy();
     // Per-row edit + delete affordances (one weight reading is mocked).
@@ -392,7 +394,7 @@ describe("Research health page — direct CRUD (bu-wamzk)", () => {
 describe("Health page descriptions — honest framing", () => {
   it("Measurements page drops imperative 'Track ...' lead copy", () => {
     for (const Component of [MeasurementsPage]) {
-      const { container } = render(<Component />);
+      const { container } = renderInRouter(<Component />);
       const heading = container.querySelector("h1");
       // The H1 description paragraph is the sibling <p> directly under the
       // header block; it must not start with the imperative "Track".

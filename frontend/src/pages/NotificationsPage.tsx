@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { useSearchParams } from "react-router";
 
 import type { NotificationParams } from "@/api/types";
 import { NotificationFeed } from "@/components/notifications/notification-feed";
@@ -66,14 +67,43 @@ const EMPTY_FILTERS: FilterState = {
   until: "",
 };
 
+/** Parse filter state out of the querystring (URL is the source of truth,
+ * bu-qvnce.13 — makes the notifications view shareable/reloadable and lets
+ * inbound links carry a predicate, e.g. `?status=failed`). */
+function parseFilters(sp: URLSearchParams): FilterState {
+  return {
+    butler: sp.get("butler") ?? "",
+    channel: sp.get("channel") ?? "all",
+    status: sp.get("status") ?? "all",
+    since: sp.get("since") ?? "",
+    until: sp.get("until") ?? "",
+  };
+}
+
+/** Write filter state into a URLSearchParams, omitting default/empty values. */
+function applyFilters(sp: URLSearchParams, f: FilterState): void {
+  const set = (key: string, value: string, empty: string) => {
+    if (value !== empty) sp.set(key, value);
+    else sp.delete(key);
+  };
+  set("butler", f.butler, "");
+  set("channel", f.channel, "all");
+  set("status", f.status, "all");
+  set("since", f.since, "");
+  set("until", f.until, "");
+}
+
 // ---------------------------------------------------------------------------
 // NotificationsPage
 // ---------------------------------------------------------------------------
 
 export default function NotificationsPage() {
-  // Filter state
-  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
-  const [page, setPage] = useState(0);
+  // Filter + page state — URL-backed (bu-qvnce.13): no local mirror, so a
+  // deep-link (e.g. from the dashboard's "N failed notifications" tile) and
+  // the visible filter bar can never disagree.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = parseFilters(searchParams);
+  const page = Number.parseInt(searchParams.get("page") ?? "0", 10) || 0;
   // Track which notification IDs are pending individual acks for UX feedback
   const [pendingAckIds, setPendingAckIds] = useState<Set<string>>(new Set());
 
@@ -114,13 +144,36 @@ export default function NotificationsPage() {
   const rangeEnd = Math.min((page + 1) * PAGE_SIZE, total);
 
   function handleFilterChange(key: keyof FilterState, value: string) {
-    setFilters((prev) => ({ ...prev, [key]: value }));
-    setPage(0); // Reset to first page when filters change
+    // replace: true — the butler filter is a free-text input; without this,
+    // every keystroke pushes a new history entry, so Back would have to be
+    // clicked once per character typed instead of once to leave the page.
+    setSearchParams(
+      (prev) => {
+        const sp = new URLSearchParams(prev);
+        applyFilters(sp, { ...parseFilters(prev), [key]: value });
+        sp.delete("page"); // Reset to first page when filters change
+        return sp;
+      },
+      { replace: true },
+    );
   }
 
   function handleClearFilters() {
-    setFilters(EMPTY_FILTERS);
-    setPage(0);
+    setSearchParams((prev) => {
+      const sp = new URLSearchParams(prev);
+      applyFilters(sp, EMPTY_FILTERS);
+      sp.delete("page");
+      return sp;
+    });
+  }
+
+  function handlePageChange(next: number) {
+    setSearchParams((prev) => {
+      const sp = new URLSearchParams(prev);
+      if (next > 0) sp.set("page", String(next));
+      else sp.delete("page");
+      return sp;
+    });
   }
 
   const hasActiveFilters =
@@ -178,10 +231,12 @@ export default function NotificationsPage() {
         ) : undefined
       }
     >
-      {/* Stats bar */}
+      {/* Stats bar — Sent/Failed tiles are filter anchors (bu-qvnce.13): click
+          one to pivot the filter bar to that status without leaving the page. */}
       <NotificationStatsBar
         stats={statsResponse?.data}
         isLoading={statsLoading}
+        onFilterClick={(status) => handleFilterChange("status", status)}
       />
 
       {/* Filter bar */}
@@ -332,7 +387,7 @@ export default function NotificationsPage() {
               variant="outline"
               size="sm"
               disabled={page === 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              onClick={() => handlePageChange(Math.max(0, page - 1))}
             >
               Previous
             </Button>
@@ -340,7 +395,7 @@ export default function NotificationsPage() {
               variant="outline"
               size="sm"
               disabled={!hasMore}
-              onClick={() => setPage((p) => p + 1)}
+              onClick={() => handlePageChange(page + 1)}
             >
               Next
             </Button>

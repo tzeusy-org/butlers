@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta
 
 import anyio
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -43,6 +44,35 @@ router = APIRouter(prefix="/api/issues", tags=["issues"])
 
 _STATUS_TIMEOUT_S = 5.0
 
+# JARVIS pursuit move 13 (bu-qvnce.13): the audit-derived issues query was an
+# unbounded all-time CTE with no LIMIT -- a fleet with years of audit history
+# would scan and group every error row ever logged on every page load. Both a
+# default time window AND a hard row cap now bound it; "all" opts out of the
+# window (e.g. a deliberate full-history query) but the cap still applies so
+# that path can never regress to a truly unbounded scan.
+_DEFAULT_ISSUES_WINDOW = "7d"
+_MAX_AUDIT_GROUP_ROWS = 500
+_WINDOW_RE = re.compile(r"^(\d+)(h|d)$")
+
+
+def _parse_issues_window(window: str) -> timedelta | None:
+    """Parse the ``window`` query value into a lookback timedelta.
+
+    Returns ``None`` for the literal ``"all"`` (no time-based filtering --
+    the row cap alone bounds the query). Raises 422 for anything else that
+    doesn't match ``<int>h`` / ``<int>d`` (e.g. ``"24h"``, ``"7d"``, ``"30d"``).
+    """
+    if window == "all":
+        return None
+    match = _WINDOW_RE.match(window)
+    if not match:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid window '{window}'; expected '<N>h', '<N>d', or 'all'",
+        )
+    amount, unit = match.groups()
+    return timedelta(hours=int(amount)) if unit == "h" else timedelta(days=int(amount))
+
 
 def _get_db_manager() -> DatabaseManager | None:
     """Stub dependency for DatabaseManager injection.
@@ -58,11 +88,18 @@ def _get_db_manager() -> DatabaseManager | None:
         return None
 
 
-async def _list_audit_error_issues(db: DatabaseManager | None) -> list[Issue]:
+async def _list_audit_error_issues(
+    db: DatabaseManager | None,
+    since: datetime | None,
+) -> list[Issue]:
     """Return grouped error issues derived from the audit log.
 
     Grouping key is normalized first-line error message (with tmp-path
     normalization). Each group exposes first/last timestamps and occurrences.
+
+    ``since`` (bu-qvnce.13) bounds the underlying CTE to rows at or after that
+    timestamp -- ``None`` (the ``window=all`` case) skips the time bound but
+    the query is still capped at ``_MAX_AUDIT_GROUP_ROWS`` groups.
     """
     if db is None:
         return []
@@ -73,7 +110,15 @@ async def _list_audit_error_issues(db: DatabaseManager | None) -> list[Issue]:
         return []
 
     try:
-        rows = await pool.fetch(build_audit_group_query())
+        if since is not None:
+            query = build_audit_group_query(
+                where_extra="\n                  AND created_at >= $1",
+                limit=_MAX_AUDIT_GROUP_ROWS,
+            )
+            rows = await pool.fetch(query, since)
+        else:
+            query = build_audit_group_query(limit=_MAX_AUDIT_GROUP_ROWS)
+            rows = await pool.fetch(query)
     except Exception:
         logger.warning("Failed to query audit-derived issues", exc_info=True)
         return []
@@ -195,12 +240,23 @@ async def list_issues(
             "``dismissed=True`` so the UI can offer a restore affordance."
         ),
     ),
+    window: str = Query(
+        _DEFAULT_ISSUES_WINDOW,
+        description=(
+            "Time window bounding audit-derived (grouped) issues, e.g. '24h', "
+            "'7d' (default), '30d', or 'all' to disable the time bound (a hard "
+            f"cap of {_MAX_AUDIT_GROUP_ROWS} groups still applies regardless). "
+            "Live reachability issues are unaffected -- they always reflect the "
+            "current check."
+        ),
+    ),
 ) -> ApiResponse[list[Issue]]:
     """Return grouped issues across butler infrastructure.
 
     Checks all butlers in parallel for:
     - Unreachable services (critical, live)
-    - Grouped audit failures (warning/critical with first/last seen + count)
+    - Grouped audit failures (warning/critical with first/last seen + count,
+      bounded to ``window`` -- bu-qvnce.13)
 
     By default, issues the user has acknowledged server-side are filtered out
     of the active feed — acknowledge-until-recurrence (JARVIS audit move 6,
@@ -214,10 +270,12 @@ async def list_issues(
 
     Results are sorted by recency (most recent ``last_seen_at`` first).
     """
+    window_delta = _parse_issues_window(window)
+    since = datetime.now(UTC) - window_delta if window_delta is not None else None
     tasks = [_check_butler_reachability(mgr, info) for info in configs]
     reachability_results, audit_issues, acked_by_key = await asyncio.gather(
         asyncio.gather(*tasks),
-        _list_audit_error_issues(db),
+        _list_audit_error_issues(db, since),
         _list_dismissed_acks(db),
     )
 

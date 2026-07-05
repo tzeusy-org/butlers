@@ -559,7 +559,7 @@ describe("deriveOverviewTriageModel", () => {
 
     expect(model.attentionRows.find((row) => row.kind === "notification")).toMatchObject({
       title: "2 failed notifications",
-      href: "/notifications",
+      href: "/notifications?status=failed",
       count: 2,
     });
     expect(model.nowRows.find((row) => row.kind === "notification")).toMatchObject({

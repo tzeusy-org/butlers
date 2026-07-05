@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";
+import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import type { Measurement, MeasurementParams, MeasurementType } from "@/api/types";
@@ -201,9 +202,14 @@ function MeasurementRow({
 // ---------------------------------------------------------------------------
 
 export default function MeasurementTracker() {
-  const [typeFilter, setTypeFilter] = useState<"" | MeasurementType>("");
-  const [since, setSince] = useState("");
-  const [until, setUntil] = useState("");
+  // Type/since/until filters are URL-backed (bu-qvnce.13, JARVIS pursuit move
+  // 13 — "health measurements ?type=") so a deep link (e.g. from the Health
+  // Overview page's vitals KPIs) lands pre-filtered and the view is
+  // shareable/reloadable. No local mirror — the URL is the sole source.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const typeFilter = (searchParams.get("type") ?? "") as "" | MeasurementType;
+  const since = searchParams.get("since") ?? "";
+  const until = searchParams.get("until") ?? "";
   const [page, setPage] = useState(0);
   // `null` = closed; `undefined` = add mode; a Measurement = edit mode.
   const [formTarget, setFormTarget] = useState<Measurement | null | undefined>(null);
@@ -215,6 +221,22 @@ export default function MeasurementTracker() {
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
   };
+
+  function setUrlFilter(key: "type" | "since" | "until", value: string) {
+    // replace: true — since/until are native date inputs that can fire
+    // onChange per typed segment (day/month/year), so without this a single
+    // date entry could push several history entries.
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value) next.set(key, value);
+        else next.delete(key);
+        return next;
+      },
+      { replace: true },
+    );
+    setPage(0);
+  }
 
   const { data, isLoading, isError, error, refetch } = useMeasurements(params);
 
@@ -236,10 +258,7 @@ export default function MeasurementTracker() {
           <select
             aria-label="Filter by type"
             value={typeFilter}
-            onChange={(e) => {
-              setTypeFilter(e.target.value as "" | MeasurementType);
-              setPage(0);
-            }}
+            onChange={(e) => setUrlFilter("type", e.target.value)}
             className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-44 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
           >
             {TYPE_FILTERS.map((opt) => (
@@ -256,10 +275,7 @@ export default function MeasurementTracker() {
               id="measurement-tracker-since"
               type="date"
               value={since}
-              onChange={(e) => {
-                setSince(e.target.value);
-                setPage(0);
-              }}
+              onChange={(e) => setUrlFilter("since", e.target.value)}
               className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
             />
           </div>
@@ -271,10 +287,7 @@ export default function MeasurementTracker() {
               id="measurement-tracker-until"
               type="date"
               value={until}
-              onChange={(e) => {
-                setUntil(e.target.value);
-                setPage(0);
-              }}
+              onChange={(e) => setUrlFilter("until", e.target.value)}
               className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-40 rounded-md border px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
             />
           </div>
@@ -283,9 +296,13 @@ export default function MeasurementTracker() {
               variant="ghost"
               size="sm"
               onClick={() => {
-                setTypeFilter("");
-                setSince("");
-                setUntil("");
+                setSearchParams((prev) => {
+                  const next = new URLSearchParams(prev);
+                  next.delete("type");
+                  next.delete("since");
+                  next.delete("until");
+                  return next;
+                });
                 setPage(0);
               }}
             >

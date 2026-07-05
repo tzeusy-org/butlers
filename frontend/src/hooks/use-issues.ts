@@ -13,17 +13,27 @@ const ACTIVE_ISSUES_KEY = ["issues", { dismissed: false }] as const;
 /** Query key for the dismissed (restorable) issues view. */
 const DISMISSED_ISSUES_KEY = ["issues", { dismissed: true }] as const;
 
-/** Fetch grouped issues across all butlers.
- *
- * When `includeDismissed` is true, the query returns *only* the dismissed
- * issues so the UI can offer a restore affordance. The two views are cached
- * under distinct query keys so toggling between them does not clobber the
- * active feed.
- */
-export function useIssues(includeDismissed = false) {
+export interface UseIssuesOptions {
+  /**
+   * When true, the query returns *only* the dismissed issues so the UI can
+   * offer a restore affordance. The two views are cached under distinct
+   * query keys so toggling between them does not clobber the active feed.
+   */
+  includeDismissed?: boolean;
+  /**
+   * Time window bounding audit-derived issues (bu-qvnce.13), e.g. "24h" |
+   * "7d" | "30d" | "all". Omitted entirely lets the backend's own default
+   * (7d) apply.
+   */
+  window?: string;
+}
+
+/** Fetch grouped issues across all butlers. */
+export function useIssues(options: UseIssuesOptions = {}) {
+  const { includeDismissed = false, window } = options;
   return useQuery({
-    queryKey: includeDismissed ? DISMISSED_ISSUES_KEY : ACTIVE_ISSUES_KEY,
-    queryFn: () => getIssues(includeDismissed),
+    queryKey: [...(includeDismissed ? DISMISSED_ISSUES_KEY : ACTIVE_ISSUES_KEY), { window }],
+    queryFn: () => getIssues({ includeDismissed, window }),
     // Live path: the fleet event bus (bu-86c4c.8) invalidates ["issues"] on
     // every new audit-log error. Polling is now a 5-minute reconciliation
     // sweep — a safety net, not the primary update path.
