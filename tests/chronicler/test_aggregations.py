@@ -64,6 +64,9 @@ _D1_PAIRS: list[tuple[str, str, str | None, str]] = [
     # Occupation-block inference from enabled routine windows (bu-whhll.10)
     # → its own 'occupation' category, still folding into the Work lane.
     ("chronicler.occupation_inferred", "occupation_block", None, "occupation"),
+    # HA non-person sensor-activity ambient motion (bu-49fqa) → its own
+    # 'ambient' category, folding into the Rest lane (never Work/Occupation).
+    ("home_assistant.sensor_activity", "room_activity_episode", None, "ambient"),
 ]
 
 

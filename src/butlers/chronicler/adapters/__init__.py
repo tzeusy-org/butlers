@@ -27,6 +27,9 @@ from butlers.chronicler.adapters.google_health import (
     GoogleHealthWorkoutAdapter,
 )
 from butlers.chronicler.adapters.home_assistant import HomeAssistantHistoryAdapter
+from butlers.chronicler.adapters.home_assistant_sensor_activity import (
+    HomeAssistantSensorActivityAdapter,
+)
 from butlers.chronicler.adapters.meals import MealsAdapter
 from butlers.chronicler.adapters.occupation import OccupationInferredAdapter
 from butlers.chronicler.adapters.owner_outbound import OwnerOutboundMessageAdapter
@@ -49,6 +52,7 @@ __all__ = [
     "GoogleHealthStepsAdapter",
     "GoogleHealthWorkoutAdapter",
     "HomeAssistantHistoryAdapter",
+    "HomeAssistantSensorActivityAdapter",
     "MealsAdapter",
     "OccupationInferredAdapter",
     "OwnTracksPointAdapter",

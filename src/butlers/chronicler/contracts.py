@@ -250,6 +250,25 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=False,
     ),
+    # HA non-person sensor-activity adapter (bu-49fqa, telemetry-distillation
+    # bead 1). Mines connectors.filtered_events for non-person HA domains
+    # (bead-1 scope: binary_sensor motion + door/garage/opening only).
+    SourceAdapterState(
+        source_name="home_assistant.sensor_activity",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.filtered_events (connector_type=home_assistant)",
+        boundary_semantics=(
+            "motion 'on' transitions cluster (gap-tolerant) into room_activity_episode "
+            "spans, layer=evidence by default, promoted to layer=activity/confidence=low "
+            "only when corroborated by an occupation_block or Spotify listening_episode; "
+            "door/garage_door/opening transitions each project one instantaneous "
+            "entry_event point event; precision=exact; category=ambient -> rest lane, "
+            "never work/occupation (bu-whhll.14 lane discipline); first Chronicler "
+            "adapter reading a table with a rolling TTL (12-month retention) — see "
+            "RETENTION_LAG_WARNING_DAYS lag monitoring in the adapter module"
+        ),
+        optional_schema=True,
+    ),
     # Explicitly not time-bearing.
     SourceAdapterState(
         source_name="core.session_process_logs",

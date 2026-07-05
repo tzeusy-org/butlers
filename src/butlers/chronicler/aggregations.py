@@ -37,6 +37,7 @@ CATEGORIES: frozenset[str] = frozenset(
         "workout",
         "social",
         "occupation",
+        "ambient",
         "other",
     }
 )
@@ -75,6 +76,12 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     # from butler-session Work time independently of direct-measurement
     # sources (tasks.md epic bu-whhll.14).
     ("chronicler.occupation_inferred", "occupation_block"): "occupation",
+    # HA non-person sensor-activity ambient motion (bu-49fqa, telemetry-
+    # distillation bead 1). Deliberately its own 'ambient' category (-> Rest
+    # lane), never folded into 'tasks'/'occupation' — this is what keeps
+    # ambient HA sensor evidence from re-opening the work/occupation
+    # lane-conflation problem bu-whhll.14 is fixing (design §1.5).
+    ("home_assistant.sensor_activity", "room_activity_episode"): "ambient",
 }
 
 # trigger_source values that represent user→butler conversations.
@@ -148,6 +155,7 @@ _CATEGORY_TO_LANE: dict[str, str] = {
     "sleep": "sleep",
     "social": "social",
     "occupation": "work",
+    "ambient": "rest",
 }
 
 

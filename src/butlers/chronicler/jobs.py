@@ -20,6 +20,7 @@ from butlers.chronicler.adapters import (
     GoogleHealthStepsAdapter,
     GoogleHealthWorkoutAdapter,
     HomeAssistantHistoryAdapter,
+    HomeAssistantSensorActivityAdapter,
     MealsAdapter,
     OccupationInferredAdapter,
     OwnerOutboundMessageAdapter,
@@ -280,6 +281,20 @@ async def run_project_home_assistant(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_home_assistant_sensor_activity(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project non-person HA binary_sensor activity into Chronicler (bu-49fqa)."""
+    options = _parse_job_args(
+        "chronicler_project_home_assistant_sensor_activity",
+        job_args,
+        supported_fields=("batch_limit", "room_activity_gap_minutes"),
+    )
+    adapter = HomeAssistantSensorActivityAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 async def run_project_google_health_sleep(
     db_pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -471,6 +486,7 @@ __all__ = [
     "run_project_google_health_steps",
     "run_project_google_health_workout",
     "run_project_home_assistant",
+    "run_project_home_assistant_sensor_activity",
     "run_project_meals",
     "run_project_occupation_inferred",
     "run_project_owner_outbound",
