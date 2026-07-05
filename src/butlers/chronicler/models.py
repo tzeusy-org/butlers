@@ -316,6 +316,26 @@ class DailyRollup:
 
 
 @dataclass
+class DailyRollupFlag:
+    """Row in `chronicler.daily_rollup_flags` (bu-v76a7, telemetry-
+    distillation bead 4) — one deterministic anomaly-flag verdict for a
+    closed local calendar day.
+
+    ``flag_type`` is one of ``feeder_dark``, ``sleep_missing``,
+    ``routine_break``, ``lane_share_outlier`` (design doc §3.4). ``detail``
+    carries rule-specific evidence (e.g. ``{"dark_sources": [...]}`` for
+    ``feeder_dark``) — never free text requiring an LLM to produce.
+    """
+
+    local_date: date
+    flag_type: str
+    severity: str = "info"
+    detail: dict[str, Any] = field(default_factory=dict)
+    id: UUID | None = None
+    created_at: datetime | None = None
+
+
+@dataclass
 class Override:
     """Row in `chronicler.overrides`.
 
@@ -341,6 +361,7 @@ __all__ = [
     "Confidence",
     "CorrectedEpisode",
     "CorrectedPointEvent",
+    "DailyRollupFlag",
     "Episode",
     "Layer",
     "LinkRelation",

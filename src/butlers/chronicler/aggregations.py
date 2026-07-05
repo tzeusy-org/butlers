@@ -174,6 +174,34 @@ def lane_for_category(category: str) -> str | None:
     return _CATEGORY_TO_LANE.get(category)
 
 
+def sources_for_lane(lane: str) -> frozenset[str]:
+    """Every ``source_name`` whose episodes can resolve into ``lane``.
+
+    Derived once from ``_CATEGORY_MAP``/``_CATEGORY_TO_LANE`` — the same
+    static tables ``category_for``/``lane_for_category`` already use — so
+    there is no second source of truth to keep in sync by hand. Includes
+    ``core.sessions`` for ``lane == "work"``, since that source resolves via
+    ``category_for``'s ``trigger_source`` special-case rather than an entry
+    in ``_CATEGORY_MAP``.
+
+    Used by the anomaly-flag rules (bu-v76a7) to decide which sources must
+    be healthy before a lane-level behavioral flag (e.g.
+    ``lane_share_outlier``) may fire — classify-before-flagging (design doc
+    §2.5): a lane whose only contributing source is a known outage must not
+    produce a fabricated behavioral verdict either way.
+
+    Pure deterministic function: no I/O, no LLM, no side effects.
+    """
+    sources = {
+        source_name
+        for (source_name, _episode_type), category in _CATEGORY_MAP.items()
+        if _CATEGORY_TO_LANE.get(category) == lane
+    }
+    if lane == "work":
+        sources.add("core.sessions")
+    return frozenset(sources)
+
+
 def lane_for_activity(
     layer: str,
     source_name: str,
@@ -342,6 +370,7 @@ __all__ = [
     "category_for",
     "lane_for_activity",
     "lane_for_category",
+    "sources_for_lane",
     "union_seconds",
     "untracked_seconds_for_window",
     "waking_overlap_seconds",

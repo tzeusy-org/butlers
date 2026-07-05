@@ -60,13 +60,15 @@
 
 ## 5. Anomaly flag rules (depends on §4)
 
-- [ ] 5.1 `feeder_dark`: source inactive or checkpoint stale beyond 2x its
-  cron interval.
-- [ ] 5.2 `sleep_missing`, `routine_break`, `lane_share_outlier`: each rule
+- [x] 5.1 `feeder_dark`: source inactive or checkpoint stale beyond 2x its
+  cron interval. (bu-v76a7 — `flags.py::is_source_dark`)
+- [x] 5.2 `sleep_missing`, `routine_break`, `lane_share_outlier`: each rule
   consults `source_adapter_state` first (classify-before-flagging) so a known
-  outage never gets misreported as a behavioral anomaly.
-- [ ] 5.3 Tests: each flag's positive and negative case; feeder-outage day
-  produces `feeder_dark` only, not a fabricated behavioral flag.
+  outage never gets misreported as a behavioral anomaly. (bu-v76a7)
+- [x] 5.3 Tests: each flag's positive and negative case; feeder-outage day
+  produces `feeder_dark` only, not a fabricated behavioral flag. (bu-v76a7 —
+  `tests/chronicler/test_flags.py` + real-Postgres
+  `tests/integration/test_daily_rollup_flags_integration.py`)
 
 ## 6. Dashboard/API read surface (depends on §4, §5)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import asdict
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -519,14 +520,18 @@ async def run_rollup_daily(
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Materialize per-lane daily rollups for every fully-elapsed local day
-    in the trailing lookback window (bu-u30as, telemetry-distillation bead 3).
+    in the trailing lookback window (bu-u30as, telemetry-distillation bead 3),
+    then evaluate the deterministic anomaly-flag rules for each of those days
+    (bu-v76a7, bead 4) — chained in the same job so flags are always computed
+    against the rollup rows that were just (re-)materialized this run.
 
     Deterministic, no LLM — reuses ``aggregations.lane_for_activity``/
     ``union_seconds`` exactly as ``GET /aggregate/by-category`` does. Not
     watermark-incremental, same convention as ``run_routines_mine``: each run
     re-processes the trailing ``lookback_days`` window and upserts
-    idempotently on ``(local_date, lane)``.
+    idempotently on ``(local_date, lane)`` / ``(local_date, flag_type)``.
     """
+    from butlers.chronicler.flags import evaluate_and_write_daily_flags
     from butlers.chronicler.rollups import (
         DEFAULT_LOOKBACK_DAYS,
         DEFAULT_TIMEZONE,
@@ -557,7 +562,17 @@ async def run_rollup_daily(
                 )
             timezone = raw_timezone
 
-    return await materialize_daily_rollups(db_pool, timezone=timezone, lookback_days=lookback_days)
+    result = await materialize_daily_rollups(
+        db_pool, timezone=timezone, lookback_days=lookback_days
+    )
+
+    flags_by_day: dict[str, Any] = {}
+    for day_str in result.get("days_processed", []):
+        flags_by_day[day_str] = await evaluate_and_write_daily_flags(
+            db_pool, local_date=date.fromisoformat(day_str), timezone=timezone
+        )
+    result["flags"] = flags_by_day
+    return result
 
 
 __all__ = [

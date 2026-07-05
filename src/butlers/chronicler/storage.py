@@ -23,6 +23,7 @@ from butlers.chronicler.models import (
     CorrectedEpisode,
     CorrectedPointEvent,
     DailyRollup,
+    DailyRollupFlag,
     Episode,
     Layer,
     LinkRelation,
@@ -1234,7 +1235,96 @@ async def list_daily_rollups(
     return [_row_to_daily_rollup(r) for r in rows]
 
 
+# ── Daily rollup flags (bu-v76a7, telemetry-distillation bead 4) ───────────
+
+
+def _row_to_daily_rollup_flag(row: asyncpg.Record) -> DailyRollupFlag:
+    return DailyRollupFlag(
+        id=row["id"],
+        local_date=row["local_date"],
+        flag_type=row["flag_type"],
+        severity=row["severity"],
+        detail=row["detail"] or {},
+        created_at=row["created_at"],
+    )
+
+
+async def upsert_daily_rollup_flag(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    local_date: Any,
+    flag_type: str,
+    severity: str = "info",
+    detail: dict[str, Any] | None = None,
+) -> DailyRollupFlag:
+    """Idempotent upsert of a per-(local_date, flag_type) anomaly flag.
+
+    Targets the ``UNIQUE (local_date, flag_type)`` constraint added by
+    migration ``chronicler_019``: re-evaluating a day the flag rules already
+    ran against (e.g. after a late-arriving correction) recomputes the row in
+    place rather than creating a duplicate. Pair with
+    :func:`delete_daily_rollup_flag` when a rule no longer holds on a re-run
+    — the row must be removed, not left stale, or a fixed condition would
+    keep reading as "still flagged" forever.
+    """
+    row = await conn.fetchrow(
+        """
+        INSERT INTO daily_rollup_flags (local_date, flag_type, severity, detail)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (local_date, flag_type) DO UPDATE SET
+            severity = EXCLUDED.severity,
+            detail = EXCLUDED.detail
+        RETURNING *
+        """,
+        local_date,
+        flag_type,
+        severity,
+        detail or {},
+    )
+    return _row_to_daily_rollup_flag(row)
+
+
+async def delete_daily_rollup_flag(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    local_date: Any,
+    flag_type: str,
+) -> None:
+    """Remove a ``(local_date, flag_type)`` flag row if present.
+
+    A no-op when no such row exists — callers use this to reconcile a day's
+    flags to "this rule no longer holds" without checking existence first.
+    """
+    await conn.execute(
+        "DELETE FROM daily_rollup_flags WHERE local_date = $1 AND flag_type = $2",
+        local_date,
+        flag_type,
+    )
+
+
+async def list_daily_rollup_flags(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    local_date: Any | None = None,
+) -> list[DailyRollupFlag]:
+    """List anomaly-flag rows, optionally filtered to a single ``local_date``.
+
+    Ordered by ``local_date DESC, flag_type ASC`` for deterministic output.
+    """
+    if local_date is not None:
+        rows = await conn.fetch(
+            "SELECT * FROM daily_rollup_flags WHERE local_date = $1 ORDER BY flag_type ASC",
+            local_date,
+        )
+    else:
+        rows = await conn.fetch(
+            "SELECT * FROM daily_rollup_flags ORDER BY local_date DESC, flag_type ASC"
+        )
+    return [_row_to_daily_rollup_flag(r) for r in rows]
+
+
 __all__: Sequence[str] = (
+    "delete_daily_rollup_flag",
     "get_carryover",
     "get_checkpoint",
     "get_checkpoint_subsource",
@@ -1243,6 +1333,7 @@ __all__: Sequence[str] = (
     "get_source_state",
     "insert_override",
     "link_event_to_episode",
+    "list_daily_rollup_flags",
     "list_daily_rollups",
     "list_episode_events",
     "list_episodes",
@@ -1258,6 +1349,7 @@ __all__: Sequence[str] = (
     "upsert_checkpoint",
     "upsert_checkpoint_subsource",
     "upsert_daily_rollup",
+    "upsert_daily_rollup_flag",
     "upsert_episode",
     "upsert_mined_routine",
     "upsert_point_event",

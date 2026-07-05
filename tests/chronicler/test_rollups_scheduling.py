@@ -86,7 +86,10 @@ async def test_run_rollup_daily_accepts_no_job_args(monkeypatch) -> None:
     result = await run_rollup_daily(AsyncMock(), job_args=None)
 
     assert captured == {"timezone": "Asia/Singapore", "lookback_days": 7}
-    assert result == {"timezone": "Asia/Singapore", "lookback_days": 7}
+    # No days_processed in the fake materializer result -> no flag evaluation
+    # runs, but run_rollup_daily always adds the (possibly empty) "flags" key
+    # (bu-v76a7, chained anomaly-flag step).
+    assert result == {"timezone": "Asia/Singapore", "lookback_days": 7, "flags": {}}
 
 
 async def test_run_rollup_daily_honors_explicit_overrides(monkeypatch) -> None:
