@@ -3483,4 +3483,32 @@ describe("CalendarWorkspacePage", () => {
       ).toBeNull();
     });
   });
+
+  describe("palette verbs + bindings (bu-t64p2)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function pressKey(key: string): Promise<void> {
+      await act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+        );
+        await flush();
+      });
+    }
+
+    it("'c' opens the create-event dialog in user view", async () => {
+      renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+      await pressKey("c");
+      expect(findDialogByTitle("Create user event")).toBeDefined();
+    });
+
+    it("'t' jumps the anchor to today", async () => {
+      vi.setSystemTime(new Date(2026, 4, 15, 12, 0, 0));
+      renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+      await pressKey("t");
+      expect(getSearchText()).toContain("anchor=2026-05-15");
+    });
+  });
 });

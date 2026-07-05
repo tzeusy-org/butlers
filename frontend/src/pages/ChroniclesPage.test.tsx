@@ -371,4 +371,48 @@ describe("ChroniclesPage editorial archetype", () => {
     const html = renderPage();
     expect(html).toContain("Something went wrong");
   });
+
+  describe("palette verbs + bindings (bu-t64p2)", () => {
+    function pressKey(key: string): void {
+      act(() => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+        );
+      });
+    }
+
+    it("'[' steps the requested date backward", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
+      _briefing = buildBriefing({ date: "2026-05-05" });
+
+      const { unmount } = mountPage("/chronicles?date=2026-05-05");
+      pressKey("[");
+      expect(_briefingArgs?.date).toBe("2026-05-04");
+      unmount();
+    });
+
+    it("']' steps the requested date forward", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
+      _briefing = buildBriefing({ date: "2026-05-05" });
+
+      const { unmount } = mountPage("/chronicles?date=2026-05-05");
+      pressKey("]");
+      expect(_briefingArgs?.date).toBe("2026-05-06");
+      unmount();
+    });
+
+    it("'t' jumps to the latest settled day", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
+      _briefing = buildBriefing({ date: "2026-05-05" });
+
+      const { unmount } = mountPage("/chronicles?date=2026-05-05");
+      // Yesterday in SGT relative to the mocked instant above.
+      pressKey("t");
+      expect(_briefingArgs?.date).toBe("2026-05-09");
+      unmount();
+    });
+  });
 });

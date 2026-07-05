@@ -23,7 +23,7 @@
  * bu-ju4kh — Phase 5: /settings Console
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
@@ -32,6 +32,7 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { cn } from "@/lib/utils";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import { useSettingsConsoleLive } from "@/hooks/use-settings-console-live";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import QaStafferCard from "@/components/settings/QaStafferCard";
 
 // ---------------------------------------------------------------------------
@@ -522,6 +523,24 @@ export default function SettingsConsolePage() {
   function handleNavigate(route: string) {
     navigate(route);
   }
+
+  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). The
+  // per-panel "handleNavigate" tiles just jump to other settings routes
+  // already reachable via the Pages group, so they're not duplicated here --
+  // this is the one non-navigation action on this page, surfaced
+  // unconditionally rather than only from the error-state "Retry" link.
+  const settingsConsoleCommands = useMemo<PaletteCommand[]>(
+    () => [
+      {
+        id: "settings-console-reload",
+        label: "Reload settings console",
+        keywords: ["refresh", "reload"],
+        perform: () => void consoleRefetch(),
+      },
+    ],
+    [consoleRefetch],
+  );
+  useRegisterCommands(settingsConsoleCommands);
 
   return (
     <div className="space-y-6">

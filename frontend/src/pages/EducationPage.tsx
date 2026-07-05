@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -39,6 +40,23 @@ export default function EducationPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const selectedMap = mindMaps.find((m) => m.id === selectedMapId) ?? null;
+
+  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). The
+  // one page-level action here; registered before any early return so the
+  // hook always runs (it stays available in both the empty-state and the
+  // full curriculum view, both of which render RequestCurriculumDialog).
+  const educationCommands = useMemo<PaletteCommand[]>(
+    () => [
+      {
+        id: "education-request-curriculum",
+        label: "Request curriculum",
+        keywords: ["new", "curriculum", "learning"],
+        perform: () => setRequestDialogOpen(true),
+      },
+    ],
+    [],
+  );
+  useRegisterCommands(educationCommands);
 
   if (isLoading) {
     return (

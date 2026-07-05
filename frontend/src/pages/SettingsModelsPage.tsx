@@ -17,11 +17,12 @@
  * bu-q2nz3 — Phase 2: /settings/models page
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { RotateCcw } from "lucide-react";
 
 import { ApiError } from "@/api/index.ts";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import type { ComplexityTier, ModelCatalogEntry } from "@/api/types.ts";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
@@ -1588,6 +1589,29 @@ export default function SettingsModelsPage() {
       },
     });
   };
+
+  // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
+  // Reuses this page's own "Verify all" and "New model" header buttons.
+  const modelCatalogCommands = useMemo<PaletteCommand[]>(() => {
+    const commands: PaletteCommand[] = [];
+    if (!verifyAll.isPending) {
+      commands.push({
+        id: "settings-models-verify-all",
+        label: "Verify all models",
+        keywords: ["check", "verify", "catalog"],
+        perform: handleVerifyAll,
+      });
+    }
+    commands.push({
+      id: "settings-models-new",
+      label: "New model",
+      keywords: ["add", "new", "model"],
+      perform: () => setAddOpen(true),
+    });
+    return commands;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleVerifyAll is recreated every render and closes over verifyAll directly.
+  }, [verifyAll.isPending]);
+  useRegisterCommands(modelCatalogCommands);
 
   return (
     <TooltipProvider>

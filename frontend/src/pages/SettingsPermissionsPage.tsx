@@ -17,11 +17,12 @@
  * state-color-on-background pattern, reserved here for the data-wipe danger zone.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { ExternalLink, Loader2 } from "lucide-react";
 
 import { useAuditLog } from "@/hooks/use-audit-log";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -455,6 +456,13 @@ function AuditReelSection() {
 // Data Ops Section
 // ---------------------------------------------------------------------------
 
+const EXPORT_SCOPE_LABEL: Record<ExportScope, string> = {
+  all: "all data",
+  memory: "memory",
+  audit: "audit log",
+  config: "config",
+};
+
 function DataOpsSection() {
   const [exportScope, setExportScope] = useState<ExportScope>("all");
   const [exportLoading, setExportLoading] = useState(false);
@@ -473,6 +481,24 @@ function DataOpsSection() {
       setExportLoading(false);
     }
   }
+
+  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
+  // this section's own export button + currently-selected scope -- the
+  // command label tracks the scope so it never promises "all data" when a
+  // narrower scope is picked in the dropdown.
+  const dataOpsCommands = useMemo<PaletteCommand[]>(() => {
+    if (exportLoading) return [];
+    return [
+      {
+        id: "settings-permissions-export",
+        label: `Export ${EXPORT_SCOPE_LABEL[exportScope]}`,
+        keywords: ["export", "download", "data"],
+        perform: handleExport,
+      },
+    ];
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleExport is recreated every render and closes over exportScope directly.
+  }, [exportLoading, exportScope]);
+  useRegisterCommands(dataOpsCommands);
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 border-t border-l border-border/60">
@@ -924,6 +950,29 @@ function WebhooksSection() {
     void reload();
   }, []);
 
+  // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
+  // Reuses this section's own reload + "Add webhook →" affordances.
+  const webhookCommands = useMemo<PaletteCommand[]>(() => {
+    const commands: PaletteCommand[] = [
+      {
+        id: "settings-permissions-reload-webhooks",
+        label: "Reload webhooks",
+        keywords: ["refresh", "reload", "webhooks"],
+        perform: () => void reload(),
+      },
+    ];
+    if (!addOpen) {
+      commands.push({
+        id: "settings-permissions-add-webhook",
+        label: "Add webhook",
+        keywords: ["new", "webhook"],
+        perform: () => setAddOpen(true),
+      });
+    }
+    return commands;
+  }, [addOpen]);
+  useRegisterCommands(webhookCommands);
+
   async function handleTest(id: string) {
     setTestingId(id);
     try {
@@ -1196,6 +1245,21 @@ export default function SettingsPermissionsPage() {
     toast.success(`Permission ${!granted ? "granted" : "revoked"}: ${butler} · ${perm}`);
     await loadMatrix();
   }
+
+  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
+  // the matrix's own loader, unconditionally rather than only on mount/flip.
+  const permissionsCommands = useMemo<PaletteCommand[]>(() => {
+    if (matrixLoading) return [];
+    return [
+      {
+        id: "settings-permissions-reload-matrix",
+        label: "Reload permissions matrix",
+        keywords: ["refresh", "reload", "permissions"],
+        perform: () => void loadMatrix(),
+      },
+    ];
+  }, [matrixLoading]);
+  useRegisterCommands(permissionsCommands);
 
   return (
     <div className="max-w-5xl mx-auto space-y-8">

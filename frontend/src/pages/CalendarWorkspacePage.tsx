@@ -90,6 +90,8 @@ import { Row } from "@/components/ui/Row";
 import { StateDot } from "@/components/ui/StateDot";
 import { Voice } from "@/components/ui/Voice";
 import { FetchingDim } from "@/components/ui/fetching-dim";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 import { cn } from "@/lib/utils";
 import {
   dateTimeLocalToIso,
@@ -4109,6 +4111,92 @@ export default function CalendarWorkspacePage() {
   const syncButtonLabel = syncMutation.isPending ? "Syncing..." : "Sync now";
   const canCreateUserEvents =
     view === "user" && submittableCalendars.length > 0;
+
+  // ---------------------------------------------------------------------
+  // Palette verbs + bindings (bu-t64p2 -- reachability sweep, bu-qvnce.11
+  // slice 5). Calendar had the fleet's richest toolbar and its sole keydown
+  // handler was the grid's own pointer/date-cell logic -- none of these
+  // already-wired actions had a keyboard path or a command-menu entry.
+  // ---------------------------------------------------------------------
+  const canCreateEvent = view === "butler" || canCreateUserEvents;
+
+  // openButlerCreateDialog/openUserCreateDialog/updateQuery are recreated
+  // every render and close over dynamic state directly (anchor, searchParams,
+  // availableButlers, submittableCalendars, ...). calendarCommands/
+  // calendarShortcuts below only recompute when canCreateEvent/view change,
+  // so capturing those functions straight in the memo deps would freeze
+  // whichever closure was live at the last recompute -- e.g. pressing "c"
+  // after navigating to a different day would reopen the create dialog
+  // prefilled for the day shown when the memo last ran, not today's anchor
+  // (gemini-code-assist, PR #2958). Route every invocation through a ref so
+  // it always calls the latest closure regardless of memo identity.
+  const calendarActionsRef = useRef({
+    openButlerCreateDialog,
+    openUserCreateDialog,
+    updateQuery,
+  });
+  calendarActionsRef.current = {
+    openButlerCreateDialog,
+    openUserCreateDialog,
+    updateQuery,
+  };
+
+  const calendarCommands = useMemo<PaletteCommand[]>(() => {
+    const commands: PaletteCommand[] = [];
+    if (canCreateEvent) {
+      commands.push({
+        id: "calendar-new-event",
+        label: view === "butler" ? "Create butler event" : "Create event",
+        keywords: ["new", "event", "create"],
+        perform: () =>
+          view === "butler"
+            ? calendarActionsRef.current.openButlerCreateDialog()
+            : calendarActionsRef.current.openUserCreateDialog(),
+        binding: ["c"],
+      });
+    }
+    commands.push(
+      {
+        id: "calendar-jump-today",
+        label: "Jump to today",
+        keywords: ["today", "anchor"],
+        perform: () => calendarActionsRef.current.updateQuery({ anchor: new Date() }),
+        binding: ["t"],
+      },
+      {
+        id: "calendar-search-events",
+        label: "Search events",
+        keywords: ["find", "search"],
+        perform: () => setSearchPaletteOpen(true),
+      },
+    );
+    return commands;
+  }, [canCreateEvent, view]);
+  useRegisterCommands(calendarCommands);
+
+  const calendarShortcuts = useMemo<ShortcutBinding[]>(() => {
+    const bindings: ShortcutBinding[] = [
+      {
+        key: "t",
+        display: ["t"],
+        description: "Jump to today",
+        handler: () => calendarActionsRef.current.updateQuery({ anchor: new Date() }),
+      },
+    ];
+    if (canCreateEvent) {
+      bindings.push({
+        key: "c",
+        display: ["c"],
+        description: view === "butler" ? "Create butler event" : "Create event",
+        handler: () =>
+          view === "butler"
+            ? calendarActionsRef.current.openButlerCreateDialog()
+            : calendarActionsRef.current.openUserCreateDialog(),
+      });
+    }
+    return bindings;
+  }, [canCreateEvent, view]);
+  useRegisterShortcut(calendarShortcuts);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">

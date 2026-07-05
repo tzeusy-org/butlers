@@ -1,7 +1,8 @@
-import { lazy, Suspense, useCallback, type ComponentProps } from "react";
+import { lazy, Suspense, useCallback, useMemo, type ComponentProps } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearchParams } from "react-router";
 
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { ButlerDetailActions } from "@/components/butler-detail/ButlerDetailActions";
 import { ButlerDetailHeader } from "@/components/butler-detail/ButlerDetailHeader";
 import ButlerOverviewTab from "@/components/butler-detail/ButlerOverviewTab";
@@ -150,6 +151,22 @@ export default function ButlerDetailPage() {
   const handleRetry = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["butlers", name], exact: true });
   }, [queryClient, name]);
+
+  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
+  // the Page shell's own onRetry handler -- not gated behind an error state,
+  // since forcing a refetch is harmless at any time.
+  const butlerDetailCommands = useMemo<PaletteCommand[]>(
+    () => [
+      {
+        id: "butler-detail-reload",
+        label: `Reload ${name || "butler"}`,
+        keywords: ["refresh", "reload", "butler"],
+        perform: handleRetry,
+      },
+    ],
+    [name, handleRetry],
+  );
+  useRegisterCommands(butlerDetailCommands);
 
   const tabParam = searchParams.get("tab");
   const activeTab: TabValue = isValidTab(tabParam, name) ? tabParam : "overview";

@@ -37,8 +37,11 @@
  * bu-w7b18.1
  */
 
+import { useMemo } from "react";
+
 import { useHealthBriefing } from "@/hooks/use-health-briefing.ts";
 import { useInsights } from "@/hooks/use-insights.ts";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { useMeasurementsLatest, useMeasurementSources } from "@/hooks/use-health.ts";
 import type { LatestMeasurementEntry, MeasurementSource } from "@/api/types.ts";
 import type { InsightCandidate } from "@/api/types.ts";
@@ -298,6 +301,28 @@ export default function HealthOverviewPage() {
     { eyebrow: "Heart rate", value: fmtScalar(hrEntry) },
     { eyebrow: "Blood sugar", value: fmtScalar(bsEntry) },
   ];
+
+  // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
+  // Both refetches already exist (briefing pill, insights error-state retry)
+  // -- surfaced unconditionally here rather than only on error.
+  const healthCommands = useMemo<PaletteCommand[]>(
+    () => [
+      {
+        id: "health-reload-briefing",
+        label: "Reload health briefing",
+        keywords: ["refresh", "reload", "briefing"],
+        perform: () => void refetchBriefing(),
+      },
+      {
+        id: "health-reload-attention",
+        label: "Reload attention index",
+        keywords: ["refresh", "reload", "insights", "signals"],
+        perform: () => void refetchInsights(),
+      },
+    ],
+    [refetchBriefing, refetchInsights],
+  );
+  useRegisterCommands(healthCommands);
 
   return (
     <div

@@ -17,12 +17,14 @@
 // and no exclamation marks.
 // ---------------------------------------------------------------------------
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useSearchParams } from "react-router";
 
 import { useTimezone } from "@/components/ui/timezone-context";
 import { useChroniclesBriefing } from "@/hooks/use-chronicles-briefing";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 import { Page } from "@/components/ui/page";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Button } from "@/components/ui/button";
@@ -202,6 +204,84 @@ export default function ChroniclesPage() {
 
   const atEarliest = isAtEarliest(selectedDate, earliest);
   const atLatest = isAtLatest(selectedDate, latest);
+
+  // -------------------------------------------------------------------
+  // Palette verbs + bindings (bu-t64p2 -- reachability sweep, bu-qvnce.11
+  // slice 5). Reuses the prev/next-day steppers and refetch already wired
+  // above; "Jump to latest day" composes selectDate(latest), which was
+  // computed but never itself exposed as a one-click affordance.
+  // -------------------------------------------------------------------
+  const atLatestDay = selectedDate === latest;
+  const chroniclesCommands = useMemo<PaletteCommand[]>(() => {
+    const commands: PaletteCommand[] = [];
+    if (!atEarliest) {
+      commands.push({
+        id: "chronicles-prev-day",
+        label: "Previous day",
+        keywords: ["back", "earlier"],
+        perform: () => selectDate(prevIsoDay(selectedDate)),
+        binding: ["["],
+      });
+    }
+    if (!atLatest) {
+      commands.push({
+        id: "chronicles-next-day",
+        label: "Next day",
+        keywords: ["forward", "later"],
+        perform: () => selectDate(nextIsoDay(selectedDate)),
+        binding: ["]"],
+      });
+    }
+    if (!atLatestDay) {
+      commands.push({
+        id: "chronicles-jump-latest",
+        label: "Jump to latest day",
+        keywords: ["today", "latest", "recent"],
+        perform: () => selectDate(latest),
+        binding: ["t"],
+      });
+    }
+    commands.push({
+      id: "chronicles-reload-briefing",
+      label: "Reload chronicles briefing",
+      keywords: ["refresh", "reload"],
+      perform: () => void refetch(),
+    });
+    return commands;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectDate/refetch are recreated every render and closed over directly; the listed values are what actually vary the resulting command set.
+  }, [atEarliest, atLatest, atLatestDay, selectedDate, latest]);
+  useRegisterCommands(chroniclesCommands);
+
+  const chroniclesShortcuts = useMemo<ShortcutBinding[]>(() => {
+    const bindings: ShortcutBinding[] = [];
+    if (!atEarliest) {
+      bindings.push({
+        key: "[",
+        display: ["["],
+        description: "Previous day",
+        handler: () => selectDate(prevIsoDay(selectedDate)),
+      });
+    }
+    if (!atLatest) {
+      bindings.push({
+        key: "]",
+        display: ["]"],
+        description: "Next day",
+        handler: () => selectDate(nextIsoDay(selectedDate)),
+      });
+    }
+    if (!atLatestDay) {
+      bindings.push({
+        key: "t",
+        display: ["t"],
+        description: "Jump to latest day",
+        handler: () => selectDate(latest),
+      });
+    }
+    return bindings;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- same closures as chroniclesCommands above.
+  }, [atEarliest, atLatest, atLatestDay, selectedDate, latest]);
+  useRegisterShortcut(chroniclesShortcuts);
 
   const subject = greetSubject(selectedDate, latest);
   const headlineLines = deriveHeadlineLines(

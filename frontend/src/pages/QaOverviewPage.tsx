@@ -30,6 +30,7 @@ import { CaseDossier, CaseList, QaKpiStrip, QaVerdictOpener } from "@/components
 import { Time } from "@/components/ui/time";
 import { useButlers } from "@/hooks/use-butlers";
 import { useForceQaPatrol, useQaCases, useQaPatrols, useQaSummary } from "@/hooks/use-qa";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 
 // ---------------------------------------------------------------------------
 // Filter types (all URL-persisted — see useSearchParams below)
@@ -406,6 +407,23 @@ export default function QaOverviewPage() {
       },
     });
   }
+
+  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
+  // the sticky top bar's existing "Force patrol" handler, confirm dialog and
+  // all -- no new behavior.
+  const qaCommands = useMemo<PaletteCommand[]>(
+    () => [
+      {
+        id: "qa-force-patrol",
+        label: "Force patrol",
+        keywords: ["run", "patrol", "trigger"],
+        perform: handleForcePatrol,
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleForcePatrol is recreated every render and closes over forcePatrol directly.
+    [forcePatrol.isPending],
+  );
+  useRegisterCommands(qaCommands);
 
   const casesData = cases.data?.data ?? [];
 

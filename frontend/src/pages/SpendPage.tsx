@@ -60,6 +60,7 @@ import { CostStripeChart } from "@/components/costs/CostStripeChart"
 import { SpendVerdictOpener } from "@/components/costs/SpendVerdictOpener"
 import { formatCostUsd } from "@/lib/format-cost"
 import { cn } from "@/lib/utils"
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry"
 import { computeMovers, type Mover } from "@/lib/spend-movers"
 import type { ForecastData, ForecastDay } from "@/lib/spend-forecast"
 import type { ComplexityTier } from "@/api/types"
@@ -1157,6 +1158,21 @@ function SpendRulesSection() {
 
   const rules = data?.data ?? []
 
+  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
+  // this section's own existing "+ Add rule" affordance.
+  const spendRuleCommands = useMemo<PaletteCommand[]>(() => {
+    if (creating) return []
+    return [
+      {
+        id: "spend-add-rule",
+        label: "Add spend rule",
+        keywords: ["new", "rule", "routing"],
+        perform: () => setCreating(true),
+      },
+    ]
+  }, [creating])
+  useRegisterCommands(spendRuleCommands)
+
   return (
     <section className="border border-border">
       <div className="flex items-center justify-between gap-4 px-4 py-3 border-b border-border">
@@ -1284,6 +1300,33 @@ export default function SpendPage() {
   // to the last 7 days via useTimeWindow's "today" preset fallback logic —
   // callers can widen with the picker below.
   const timeWindow = useTimeWindow(OWNER_TZ_DEFAULT)
+
+  // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
+  // Reuses TimeWindowPicker's own preset setters -- "change window" from the
+  // dispatch context.
+  const spendWindowCommands = useMemo<PaletteCommand[]>(() => {
+    const commands: PaletteCommand[] = []
+    if (timeWindow.preset !== "today") {
+      commands.push({
+        id: "spend-window-today",
+        label: "Change window: today",
+        keywords: ["window", "range", "today"],
+        perform: () => timeWindow.setPreset("today"),
+      })
+    }
+    if (timeWindow.preset !== "week") {
+      commands.push({
+        id: "spend-window-week",
+        label: "Change window: this week",
+        keywords: ["window", "range", "week"],
+        perform: () => timeWindow.setPreset("week"),
+      })
+    }
+    return commands
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- timeWindow.setPreset is stable (useCallback); timeWindow.preset is what actually varies the resulting command set.
+  }, [timeWindow.preset])
+  useRegisterCommands(spendWindowCommands)
+
   const {
     data: dailyResponse,
     isLoading: dailyLoading,

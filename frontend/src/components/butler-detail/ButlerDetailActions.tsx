@@ -25,7 +25,7 @@
 // NO Tier-2 hero block is added — identity stays in the Overview tab card.
 // ---------------------------------------------------------------------------
 
-import { type KeyboardEvent, useState } from "react";
+import { type KeyboardEvent, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { toast } from "sonner";
 
@@ -33,6 +33,7 @@ import { triggerButler } from "@/api/index.ts";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { COMPLEXITY_TIERS, complexityLabel } from "@/components/general/ComplexityBadge.tsx";
 import { Button } from "@/components/ui/button";
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import {
   Select,
   SelectContent,
@@ -146,6 +147,25 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
       state: isPaused ? "active" : "quarantined",
     });
   }
+
+  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
+  // this bar's own pause/resume toggle; "Run" is deliberately NOT duplicated
+  // here -- GlobalActionsRegistrar already registers "Trigger <butler>" for
+  // every butler (same underlying force-run semantics), so a second "Run
+  // <butler>" verb here would be a redundant command-menu entry.
+  const pauseResumeCommands = useMemo<PaletteCommand[]>(() => {
+    if (pauseDisabled) return [];
+    return [
+      {
+        id: `butler-detail-${isPaused ? "resume" : "pause"}`,
+        label: isPaused ? `Resume ${butlerName}` : `Pause ${butlerName}`,
+        keywords: ["eligibility", "quarantine", butlerName],
+        perform: handlePauseToggle,
+      },
+    ];
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handlePauseToggle is recreated every render and closes over isPaused/butlerName/setEligibility directly; the listed values are what actually vary the resulting command.
+  }, [pauseDisabled, isPaused, butlerName]);
+  useRegisterCommands(pauseResumeCommands);
 
   return (
     <div className="flex items-center gap-2" data-testid="butler-detail-actions">

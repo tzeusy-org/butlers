@@ -17,6 +17,7 @@ import * as React from "react";
 import { useSearchParams } from "react-router";
 import { Loader2 } from "lucide-react";
 
+import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import type { InventoryResponse, SpineSortMode } from "./types.ts";
 import { parseFocus } from "./constants.ts";
 import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
@@ -188,6 +189,23 @@ export function DirectionPassport({
 
   // ── Add panel ────────────────────────────────────────────────────────────
   const [addOpen, setAddOpen] = React.useState(false);
+
+  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Only
+  // "Add credential" is registered here -- bu-a63hn is in-flight adding a
+  // probe-all action; that verb belongs to whichever PR lands it, not this
+  // sweep.
+  const secretsCommands = React.useMemo<PaletteCommand[]>(
+    () => [
+      {
+        id: "secrets-add-credential",
+        label: "Add credential",
+        keywords: ["new", "credential", "secret"],
+        perform: () => setAddOpen(true),
+      },
+    ],
+    [],
+  );
+  useRegisterCommands(secretsCommands);
 
   // ── URL writers ─────────────────────────────────────────────────────────
   function handleSelectKey(key: string) {
