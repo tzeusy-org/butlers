@@ -78,6 +78,7 @@ def _hourly_row(
     endpoint_identity: str,
     hour_bucket: dt.datetime,
     event_count: int,
+    source: str = "ingested",
 ) -> MagicMock:
     return _make_row(
         {
@@ -85,6 +86,7 @@ def _hourly_row(
             "endpoint_identity": endpoint_identity,
             "hour_bucket": hour_bucket,
             "event_count": event_count,
+            "source": source,
         }
     )
 
@@ -384,3 +386,201 @@ async def test_hourly_events_empty_registry_returns_200(app: FastAPI) -> None:
     assert pool.fetch.call_count == 1, (
         f"Expected exactly 1 fetch call (registry only), got {pool.fetch.call_count}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Skip-aware 'filtered' series (bu-scyro)
+# ---------------------------------------------------------------------------
+
+
+async def test_hourly_filtered_events_distinct_from_ingested_not_summed(app: FastAPI) -> None:
+    """hourly_filtered_events is a DISTINCT series — never folded into hourly_events.
+
+    A connector with both ingested and filtered rows in the same hour must
+    report each series independently; hourly_events must NOT include the
+    filtered count (that would fabricate ingestion volume that never
+    happened).
+    """
+    now = dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0)
+    window_start = now - dt.timedelta(hours=23)
+
+    registry_rows = [_registry_row(connector_type="home_assistant", endpoint_identity="default")]
+    hourly_rows = [
+        _hourly_row(
+            connector_type="home_assistant",
+            endpoint_identity="default",
+            hour_bucket=window_start + dt.timedelta(hours=5),
+            event_count=2,
+            source="ingested",
+        ),
+        _hourly_row(
+            connector_type="home_assistant",
+            endpoint_identity="default",
+            hour_bucket=window_start + dt.timedelta(hours=5),
+            event_count=97,
+            source="filtered",
+        ),
+    ]
+    pool = _make_pool_with_fetch_sequence([registry_rows, hourly_rows, []])
+    _wire_db(app, pool)
+
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/connectors/summaries")
+
+    assert resp.status_code == 200
+    connector = resp.json()["data"]["connectors"][0]
+
+    assert connector["hourly_events"][5] == 2
+    assert sum(connector["hourly_events"]) == 2
+    assert connector["hourly_filtered_events"][5] == 97
+    assert sum(connector["hourly_filtered_events"]) == 97
+    # today.messages_ingested must stay the true ingested count, not ingested+filtered.
+    assert connector["today"]["messages_ingested"] == 2
+
+
+async def test_hourly_filtered_events_all_zeros_when_no_filtered_rows(app: FastAPI) -> None:
+    """A connector with only ingested rows gets an all-zero hourly_filtered_events."""
+    now = dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0)
+    window_start = now - dt.timedelta(hours=23)
+
+    registry_rows = [_registry_row(connector_type="gmail", endpoint_identity="user@example.com")]
+    hourly_rows = [
+        _hourly_row(
+            connector_type="gmail",
+            endpoint_identity="user@example.com",
+            hour_bucket=window_start,
+            event_count=5,
+        ),
+    ]
+    pool = _make_pool_with_fetch_sequence([registry_rows, hourly_rows, []])
+    _wire_db(app, pool)
+
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/connectors/summaries")
+
+    assert resp.status_code == 200
+    connector = resp.json()["data"]["connectors"][0]
+    assert len(connector["hourly_filtered_events"]) == 24
+    assert all(v == 0 for v in connector["hourly_filtered_events"])
+
+
+async def test_hourly_filtered_events_isolated_per_connector(app: FastAPI) -> None:
+    """A connector with ONLY filtered rows (100% skip-routed) still gets its own bucket.
+
+    Regression guard for the motivating scenario: a connector_type/endpoint that
+    never appears in public.ingestion_events at all (fully skip-routed into
+    connectors.filtered_events) must still surface its filtered volume, isolated
+    from any sibling connector's counts.
+    """
+    now = dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0)
+    window_start = now - dt.timedelta(hours=23)
+
+    registry_rows = [
+        _registry_row(connector_type="home_assistant", endpoint_identity="default"),
+        _registry_row(connector_type="gmail", endpoint_identity="user@example.com"),
+    ]
+    hourly_rows = [
+        # home_assistant has ONLY filtered rows — zero ingested.
+        _hourly_row(
+            connector_type="home_assistant",
+            endpoint_identity="default",
+            hour_bucket=window_start + dt.timedelta(hours=3),
+            event_count=150,
+            source="filtered",
+        ),
+        # gmail has only ingested rows.
+        _hourly_row(
+            connector_type="gmail",
+            endpoint_identity="user@example.com",
+            hour_bucket=window_start + dt.timedelta(hours=3),
+            event_count=4,
+            source="ingested",
+        ),
+    ]
+    pool = _make_pool_with_fetch_sequence([registry_rows, hourly_rows, []])
+    _wire_db(app, pool)
+
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/connectors/summaries")
+
+    assert resp.status_code == 200
+    by_type = {c["connector_type"]: c for c in resp.json()["data"]["connectors"]}
+
+    ha = by_type["home_assistant"]
+    assert sum(ha["hourly_events"]) == 0
+    assert sum(ha["hourly_filtered_events"]) == 150
+
+    gmail = by_type["gmail"]
+    assert sum(gmail["hourly_events"]) == 4
+    assert sum(gmail["hourly_filtered_events"]) == 0
+
+
+async def test_hourly_events_available_true_on_success(app: FastAPI) -> None:
+    """hourly_events_available (top-level) is true when the combined query succeeds."""
+    registry_rows = [_registry_row(connector_type="gmail", endpoint_identity="user@example.com")]
+    pool = _make_pool_with_fetch_sequence([registry_rows, [], []])
+    _wire_db(app, pool)
+
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/connectors/summaries")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["hourly_events_available"] is True
+
+
+async def test_hourly_events_available_false_on_query_failure(app: FastAPI) -> None:
+    """hourly_events_available flips false — never a fabricated all-quiet chart —
+    when the combined ingested+filtered query itself raises.
+    """
+    registry_rows = [_registry_row(connector_type="gmail", endpoint_identity="user@example.com")]
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=[registry_rows, Exception("DB error"), []])
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.execute = AsyncMock(return_value=None)
+    _wire_db(app, pool)
+
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/connectors/summaries")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["hourly_events_available"] is False
+    connector = data["connectors"][0]
+    assert connector["hourly_events"] == [0] * 24
+    assert connector["hourly_filtered_events"] == [0] * 24

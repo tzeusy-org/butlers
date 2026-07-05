@@ -119,13 +119,14 @@ function cleanup(root: Root, container: HTMLDivElement) {
 function mockHooks(
   connectors: ConnectorSummary[],
   profiles: ConnectorProfile[] = [],
+  responseOverrides: { hourly_events_available?: boolean } = {},
 ) {
   // The new endpoint returns { connectors: [...], aggregates_available: bool }
   // wrapped in ApiResponse<ConnectorSummariesResponse>: { data: { connectors, aggregates_available } }
   vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue(
-    makeResult({ data: { connectors, aggregates_available: true } }) as ReturnType<
-      typeof useConnectorSummariesWithAggregates
-    >,
+    makeResult({
+      data: { connectors, aggregates_available: true, ...responseOverrides },
+    }) as ReturnType<typeof useConnectorSummariesWithAggregates>,
   )
 
   vi.mocked(useAvailableConnectors).mockReturnValue(
@@ -633,5 +634,45 @@ describe('per-device liveness (bu-e16to)', () => {
 
     const verdict = container.querySelector('[data-testid="health-verdict-owntracks"]')
     expect(verdict?.textContent?.trim()).toBe('degraded')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// hourly_events_available degraded note (bu-scyro)
+//
+// The combined ingested+filtered hourly query failing must never render as an
+// honest "quiet 24h" -- the degraded source has to be named inline, not
+// suppressed behind all-zero sparklines and a "0" events · 24h stat.
+// ---------------------------------------------------------------------------
+
+describe('hourly_events_available degraded note (bu-scyro)', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('does not render a degraded note when hourly_events_available is true', () => {
+    mockHooks([HEALTHY_CONNECTOR], [], { hourly_events_available: true })
+    renderRoster(container, root)
+
+    expect(container.textContent).not.toMatch(/hourly event source unavailable/)
+  })
+
+  it('does not render a degraded note when hourly_events_available is absent (older cached response)', () => {
+    mockHooks([HEALTHY_CONNECTOR], [])
+    renderRoster(container, root)
+
+    expect(container.textContent).not.toMatch(/hourly event source unavailable/)
+  })
+
+  it('renders a degraded note when hourly_events_available is false', () => {
+    mockHooks([HEALTHY_CONNECTOR], [], { hourly_events_available: false })
+    renderRoster(container, root)
+
+    expect(container.textContent).toMatch(/24h activity/)
+    expect(container.textContent).toMatch(/hourly event source unavailable/)
   })
 })

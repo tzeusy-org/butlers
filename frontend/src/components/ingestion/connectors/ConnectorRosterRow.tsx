@@ -50,6 +50,11 @@ interface ConnectorRosterRowProps {
   connector: ConnectorSummary
   /** Pre-computed 24h hourly spark data (length-24 array). Absent → all zeros. */
   spark24h?: number[]
+  /**
+   * Pre-computed 24h filtered/skip-routed spark data (bu-scyro). Rendered as a
+   * visually-quiet second series on the same sparkline. Absent → no overlay.
+   */
+  spark24hFiltered?: number[]
   /** Pre-computed 24h event count. Falls back to sum of hourly_events. */
   events24h?: number
   /**
@@ -81,6 +86,7 @@ function formatNum(n: number): string {
 export function ConnectorRosterRow({
   connector,
   spark24h,
+  spark24hFiltered,
   events24h,
   catalogChannel,
   rosterSparkMax,
@@ -195,7 +201,12 @@ export function ConnectorRosterRow({
 
       {/* 24h sparkline */}
       <div className="flex flex-col gap-1">
-        <Sparkline data={bars} maxValue={rosterSparkMax} height={24} />
+        <Sparkline
+          data={bars}
+          secondaryData={spark24hFiltered}
+          maxValue={rosterSparkMax}
+          height={24}
+        />
         <div className="flex justify-between font-mono text-[9px] text-muted-foreground/40 tracking-[0.04em]">
           <span>00</span>
           <span>12</span>

@@ -3313,10 +3313,22 @@ export interface ConnectorSummary {
    */
   hourly_events: number[];
   /**
+   * 24-bucket hourly FILTERED/skip-routed event counts (bu-scyro), sourced
+   * from connectors.filtered_events — a DISTINCT series, never folded into
+   * `hourly_events`/`today.messages_ingested` (that would fabricate ingestion
+   * volume that never happened). Every self-persisting connector's skip
+   * volume (gmail, telegram, home_assistant, google_calendar) otherwise never
+   * appears on this chart at all. Optional/additive: absent on older cached
+   * responses — treat as all-zero when missing.
+   */
+  hourly_filtered_events?: number[];
+  /**
    * Per-device liveness rows, most-recent-device first. Null for single-device
    * connector_types (the roster row's own liveness already covers them); present
    * only when more than one distinct sender_identity has ever been observed for
-   * this connector_type.
+   * this connector_type. Sourced from ingestion_events UNIONed with
+   * connectors.filtered_events (bu-scyro) — a sender/device fully skip-routed
+   * and never ingested is still surfaced here.
    */
   devices?: ConnectorDeviceLiveness[] | null;
 }
@@ -3437,6 +3449,17 @@ export interface PipelineStats {
 export interface ConnectorSummariesResponse {
   connectors: ConnectorSummary[];
   aggregates_available: boolean;
+  /**
+   * False only if the backend's per-device liveness query itself failed
+   * (genuine-failure-only degraded flag — every connector's `devices` falls
+   * back to null in that case). Optional/additive.
+   */
+  device_liveness_available?: boolean;
+  /**
+   * False only if the combined ingested+filtered hourly query itself failed
+   * (bu-scyro; mirrors `device_liveness_available`). Optional/additive.
+   */
+  hourly_events_available?: boolean;
 }
 
 /**

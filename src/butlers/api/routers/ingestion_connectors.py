@@ -120,6 +120,19 @@ async def list_connector_summaries_with_aggregates(
     last).  This is sourced from ``public.ingestion_events`` (not Prometheus)
     so it is always populated regardless of ``aggregates_available``.
 
+    Each connector entry also includes ``hourly_filtered_events`` (bu-scyro) — a
+    DISTINCT 24-element array counting ``connectors.filtered_events`` rows per
+    hour (any status — filtered/error/replay_*). This is never folded into
+    ``hourly_events``/``today.messages_ingested``: doing so would fabricate
+    ingestion volume that never happened. It exists because every
+    self-persisting connector's skip volume (gmail, telegram, home_assistant
+    post-bu-416vk, google_calendar post-bu-iq2qr) is otherwise invisible on
+    this chart — pre-bu-416vk home_assistant was the anomaly whose skip
+    decisions inflated the ``ingested`` series instead of living in
+    filtered_events like every other connector. ``hourly_events_available``
+    (top-level, mirrors ``aggregates_available``/``device_liveness_available``)
+    is ``false`` only if the combined ingested+filtered query itself failed.
+
     ``today.messages_ingested`` is the **true last-24h count** derived by
     summing ``hourly_events``.  The raw ``counter_messages_ingested`` column
     is a cumulative lifetime counter (since process start) and is intentionally
@@ -127,9 +140,13 @@ async def list_connector_summaries_with_aggregates(
 
     Each connector entry also includes ``devices`` (nullable) — a fallback signal
     for connector_types where ``connector_registry`` still shares ONE row across
-    several distinct ``source_sender_identity`` values in ``public.ingestion_events``
-    (bu-e16to). ``devices`` is derived independently from ``public.ingestion_events``
-    (within the last ``_DEVICE_LOOKBACK_WINDOW``, 90 days) and is a list of
+    several distinct sender identities (bu-e16to). ``devices`` is derived from
+    ``public.ingestion_events`` UNIONed with ``connectors.filtered_events``
+    (bu-scyro — so a sender/device that is 100% skip-routed and never reaches
+    ingestion_events is not invisible here either; filtered_events rows with an
+    empty ``sender_identity`` are excluded, since a handful of connectors write
+    that placeholder when no real identity was resolvable), within the last
+    ``_DEVICE_LOOKBACK_WINDOW`` (90 days), and is a list of
     ``{sender_identity, last_seen_at, stale}`` entries, one per device, sorted most
     recent first. ``stale`` is true when a device's last event is older than
     ``_DEVICE_STALE_THRESHOLD`` (48h).
@@ -224,11 +241,29 @@ async def list_connector_summaries_with_aggregates(
             registry_row_counts.get(r["connector_type"], 0) + 1
         )
 
-    # Build per-connector hourly timeseries from ingestion_events in one query.
-    # Returns a 24-element list (oldest hour first, newest last) — zero-filled for
-    # missing buckets.  Sourced from public.ingestion_events (not Prometheus) so
-    # it works regardless of aggregates_available.
+    # Build per-connector hourly timeseries from ingestion_events AND
+    # filtered_events in one combined query (bu-scyro). Returns two 24-element
+    # lists per connector (oldest hour first, newest last) — zero-filled for
+    # missing buckets:
+    #   - hourly_map          — 'ingested' series, sourced from
+    #     public.ingestion_events WHERE status='ingested' (unchanged semantics)
+    #   - hourly_filtered_map — 'filtered' series, sourced from
+    #     connectors.filtered_events (every row regardless of status —
+    #     filtered/error/replay_* — since all of them represent traffic that
+    #     never reached ingestion_events)
+    #
+    # The two series are kept DISTINCT, never summed together: folding filtered
+    # volume into "ingested" would fabricate ingestion volume that never
+    # happened. This closes the bu-416vk/bu-scyro gap where every
+    # self-persisting connector's skip volume (gmail, telegram, HA post-#2986,
+    # calendar post-#2994) was invisible on this chart — pre-#2986 HA was the
+    # anomaly whose skip decisions inflated the 'ingested' series instead.
+    #
+    # Sourced from the DB (not Prometheus) so both series work regardless of
+    # aggregates_available.
     hourly_map: dict[tuple[str, str], list[int]] = {}
+    hourly_filtered_map: dict[tuple[str, str], list[int]] = {}
+    hourly_events_available = True
     if rows:
         try:
             now_utc = _dt.datetime.now(_dt.UTC)
@@ -237,34 +272,60 @@ async def list_connector_summaries_with_aggregates(
             window_start = now_utc.replace(minute=0, second=0, microsecond=0) - _dt.timedelta(
                 hours=23
             )
+            # Single UNION ALL query, bounded to the same 24h window on both
+            # sides. filtered_events is monthly-partitioned (core_007); a 24h
+            # window touches at most 2 partitions and is covered by
+            # ix_filtered_events_timeline (received_at DESC) — no new index
+            # required.
             hourly_rows = await pool.fetch(
                 """
-                SELECT
-                    source_channel        AS connector_type,
-                    source_endpoint_identity AS endpoint_identity,
-                    date_trunc('hour', received_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-                        AS hour_bucket,
-                    count(*)              AS event_count
-                FROM public.ingestion_events
-                WHERE received_at >= $1
-                  AND status = 'ingested'
-                GROUP BY source_channel, source_endpoint_identity,
-                         date_trunc('hour', received_at AT TIME ZONE 'UTC')
+                SELECT connector_type, endpoint_identity, hour_bucket, source, event_count
+                FROM (
+                    SELECT
+                        source_channel           AS connector_type,
+                        source_endpoint_identity AS endpoint_identity,
+                        date_trunc('hour', received_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                            AS hour_bucket,
+                        'ingested'               AS source,
+                        count(*)                 AS event_count
+                    FROM public.ingestion_events
+                    WHERE received_at >= $1
+                      AND status = 'ingested'
+                    GROUP BY source_channel, source_endpoint_identity,
+                             date_trunc('hour', received_at AT TIME ZONE 'UTC')
+                    UNION ALL
+                    SELECT
+                        connector_type,
+                        endpoint_identity,
+                        date_trunc('hour', received_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+                            AS hour_bucket,
+                        'filtered'               AS source,
+                        count(*)                 AS event_count
+                    FROM connectors.filtered_events
+                    WHERE received_at >= $1
+                    GROUP BY connector_type, endpoint_identity,
+                             date_trunc('hour', received_at AT TIME ZONE 'UTC')
+                ) combined
                 """,
                 window_start,
             )
-            # Populate bucket arrays for each connector key seen in hourly_rows
+            # Populate bucket arrays for each connector key seen in hourly_rows,
+            # routing to the ingested or filtered map by the `source` discriminator.
             for hr in hourly_rows:
                 key = (hr["connector_type"], hr["endpoint_identity"])
-                if key not in hourly_map:
-                    hourly_map[key] = [0] * 24
+                target_map = hourly_map if hr["source"] == "ingested" else hourly_filtered_map
+                if key not in target_map:
+                    target_map[key] = [0] * 24
                 # Determine which bucket index this hour falls into (0 = oldest, 23 = newest)
                 bucket_offset = int((hr["hour_bucket"] - window_start).total_seconds() // 3600)
                 if 0 <= bucket_offset < 24:
-                    hourly_map[key][bucket_offset] = int(hr["event_count"])
+                    target_map[key][bucket_offset] = int(hr["event_count"])
         except Exception:
             logger.warning("connector summaries: failed to fetch hourly timeseries", exc_info=True)
-            # hourly_map stays empty — connectors fall back to all-zeros below
+            # hourly_map/hourly_filtered_map stay empty — connectors fall back to
+            # all-zeros below, and hourly_events_available flips false so a
+            # genuine query failure is never rendered as an honest all-quiet chart.
+            hourly_events_available = False
 
     # Per-device liveness fallback for connector_types whose connector_registry
     # rows can't (yet) disambiguate devices on their own (bu-e16to). Some
@@ -278,6 +339,18 @@ async def list_connector_summaries_with_aggregates(
     # registry_row_counts below). source_sender_identity on public.ingestion_events
     # is set per-event from the payload's own device id, independent of
     # connector_registry's identity churn, so it is the source of truth here.
+    #
+    # bu-scyro: also union connectors.filtered_events' sender_identity so a
+    # device/sender that is now (post-#2986) 100% skip-routed into
+    # filtered_events — never touching ingestion_events at all — is not
+    # invisible to this liveness signal. filtered_events.sender_identity is
+    # NOT NULL at the schema level (core_007) but a handful of connectors write
+    # an empty string when no real identity was resolvable (google_health,
+    # spotify, google_calendar's non-organizer branch) — those rows are
+    # excluded (sender_identity <> '') so an empty placeholder never becomes a
+    # fake "device". "unknown" placeholders (discord/gmail/telegram parse
+    # failures) are kept, matching how the existing ingestion_events branch
+    # already tolerates them.
     device_liveness_available = True
     device_map: dict[str, list[dict[str, Any]]] = {}
     if rows:
@@ -285,15 +358,26 @@ async def list_connector_summaries_with_aggregates(
             device_lookback_start = _dt.datetime.now(_dt.UTC) - _DEVICE_LOOKBACK_WINDOW
             device_rows = await pool.fetch(
                 """
-                SELECT
-                    source_channel AS connector_type,
-                    source_sender_identity AS sender_identity,
-                    MAX(received_at) AS last_seen_at
-                FROM public.ingestion_events
-                WHERE source_sender_identity IS NOT NULL
-                  AND status = 'ingested'
-                  AND received_at >= $1
-                GROUP BY source_channel, source_sender_identity
+                SELECT connector_type, sender_identity, MAX(last_seen_at) AS last_seen_at
+                FROM (
+                    SELECT
+                        source_channel AS connector_type,
+                        source_sender_identity AS sender_identity,
+                        received_at AS last_seen_at
+                    FROM public.ingestion_events
+                    WHERE source_sender_identity IS NOT NULL
+                      AND status = 'ingested'
+                      AND received_at >= $1
+                    UNION ALL
+                    SELECT
+                        connector_type,
+                        sender_identity,
+                        received_at AS last_seen_at
+                    FROM connectors.filtered_events
+                    WHERE sender_identity <> ''
+                      AND received_at >= $1
+                ) combined
+                GROUP BY connector_type, sender_identity
                 """,
                 device_lookback_start,
             )
@@ -329,6 +413,7 @@ async def list_connector_summaries_with_aggregates(
         liveness = _liveness(r["last_heartbeat_at"])
         key = (r["connector_type"], r["endpoint_identity"])
         hourly = hourly_map.get(key, [0] * 24)
+        hourly_filtered = hourly_filtered_map.get(key, [0] * 24)
         # Sum the hourly timeseries (already a real 24h window from public.ingestion_events)
         # to produce a true last-24h ingestion count.  The raw counter_messages_ingested is
         # cumulative since process start and must NOT be used as a "today" figure.
@@ -351,6 +436,11 @@ async def list_connector_summaries_with_aggregates(
                     "messages_failed": r["counter_messages_failed"] or 0,
                 },
                 "hourly_events": hourly,
+                # Distinct 'filtered' series — connectors.filtered_events volume for this
+                # connector, NEVER folded into hourly_events/messages_ingested above (that
+                # would fabricate ingestion volume that never happened). Render as a
+                # visually-quiet second series alongside hourly_events.
+                "hourly_filtered_events": hourly_filtered,
                 # Only suppress the ingestion_events-derived `devices` badge
                 # list once connector_registry has a row for *every* device the
                 # fallback knows about for this connector_type (registry_row_counts
@@ -372,6 +462,10 @@ async def list_connector_summaries_with_aggregates(
             "connectors": connectors,
             "aggregates_available": aggregates_available,
             "device_liveness_available": device_liveness_available,
+            # False only if the combined ingested+filtered hourly query itself
+            # raised — mirrors aggregates_available/device_liveness_available
+            # (genuine-failure-only degraded flag; never fabricated zeros).
+            "hourly_events_available": hourly_events_available,
         }
     )
 
