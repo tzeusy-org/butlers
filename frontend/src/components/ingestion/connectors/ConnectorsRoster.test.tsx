@@ -525,3 +525,113 @@ describe('honest metadata', () => {
     expect(row?.textContent).not.toContain(`gmail · ${HEALTHY_CONNECTOR.endpoint_identity}`)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Per-device liveness for multi-device connectors (bu-e16to)
+//
+// Regression coverage for: OwnTracks devices 'tz' and 'el' went silent for
+// 10 weeks with zero dashboard signal because connector_registry only ever
+// tracks ONE shared heartbeat identity per connector_type ('th' stayed
+// healthy). The `devices` field surfaces every distinct sender_identity so a
+// silent sibling device is visible on the roster row itself.
+// ---------------------------------------------------------------------------
+
+const OWNTRACKS_WITH_STALE_DEVICE: ConnectorSummary = {
+  connector_type: 'owntracks',
+  endpoint_identity: 'owntracks:th',
+  liveness: 'online',
+  state: 'healthy',
+  error_message: null,
+  version: '1.0',
+  uptime_s: 3600,
+  last_heartbeat_at: new Date(Date.now() - 60_000).toISOString(),
+  first_seen_at: '2026-04-24T17:55:51Z',
+  today: { messages_ingested: 100, messages_failed: 0, uptime_pct: 99.9 },
+  hourly_events: Array(24).fill(0),
+  devices: [
+    {
+      sender_identity: 'owntracks:th',
+      last_seen_at: new Date(Date.now() - 60_000).toISOString(),
+      stale: false,
+    },
+    {
+      sender_identity: 'owntracks:el',
+      last_seen_at: new Date(Date.now() - 70 * 24 * 3600_000).toISOString(),
+      stale: true,
+    },
+    {
+      sender_identity: 'owntracks:tz',
+      last_seen_at: new Date(Date.now() - 71 * 24 * 3600_000).toISOString(),
+      stale: true,
+    },
+  ],
+}
+
+describe('per-device liveness (bu-e16to)', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('renders a device badge for every distinct sender_identity', () => {
+    mockHooks([OWNTRACKS_WITH_STALE_DEVICE])
+    renderRoster(container, root)
+
+    expect(
+      container.querySelector('[data-testid="connector-device-owntracks:th"]'),
+    ).not.toBeNull()
+    expect(
+      container.querySelector('[data-testid="connector-device-owntracks:el"]'),
+    ).not.toBeNull()
+    expect(
+      container.querySelector('[data-testid="connector-device-owntracks:tz"]'),
+    ).not.toBeNull()
+  })
+
+  it('marks stale devices distinctly from the fresh device', () => {
+    mockHooks([OWNTRACKS_WITH_STALE_DEVICE])
+    renderRoster(container, root)
+
+    const fresh = container.querySelector(
+      '[data-testid="connector-device-lastseen-owntracks:th"]',
+    )
+    const stale = container.querySelector(
+      '[data-testid="connector-device-lastseen-owntracks:el"]',
+    )
+    expect(fresh?.textContent).toMatch(/^last ·/)
+    expect(stale?.textContent).toMatch(/^stale ·/)
+  })
+
+  it('does not render a devices section for a single-device connector', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(container.querySelector('[data-testid="connector-devices"]')).toBeNull()
+  })
+
+  it('a stale sibling device surfaces the connector in the attention strip', () => {
+    // The connector itself is liveness=online/state=healthy -- only a stale
+    // device distinguishes it from HEALTHY_CONNECTOR. Without the devices-aware
+    // check in deriveConnectorDispatchInfo this would NOT appear in the strip,
+    // reproducing the exact bu-e16to invisibility bug.
+    mockHooks([OWNTRACKS_WITH_STALE_DEVICE])
+    renderRoster(container, root)
+
+    const strip = container.querySelector('[data-testid="attention-strip"]')
+    expect(strip).not.toBeNull()
+    expect(
+      container.querySelector('[data-testid="attention-item-owntracks"]'),
+    ).not.toBeNull()
+  })
+
+  it('a stale sibling device downgrades the row health verdict to degraded', () => {
+    mockHooks([OWNTRACKS_WITH_STALE_DEVICE])
+    renderRoster(container, root)
+
+    const verdict = container.querySelector('[data-testid="health-verdict-owntracks"]')
+    expect(verdict?.textContent?.trim()).toBe('degraded')
+  })
+})

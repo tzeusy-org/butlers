@@ -25,6 +25,9 @@
  * - liveness "stale"   + state "healthy"                          → auth "ok",                  health "degraded"
  * - liveness "offline" + state "healthy"                          → auth "ok",                  health "error" (connectivity)
  * - liveness *         + state "error"                            → auth "needs_reauth",         health "error"
+ * - liveness "online"  + state "healthy" + any devices[].stale     → auth "ok",                  health "degraded"
+ *   (bu-e16to: a multi-device connector_type's shared heartbeat only reflects ONE
+ *   device, so a stale sibling device must still surface as needing attention.)
  *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Reauth callout follows connector auth state"
@@ -119,6 +122,24 @@ export function deriveConnectorDispatchInfo(c: ConnectorSummary): ConnectorDispa
       health: 'degraded',
       needsAttention: true,
       authNote: msg ? truncate(msg, 48) : 'degraded',
+    }
+  }
+
+  // Healthy and online, but check for stale sibling devices (bu-e16to). The
+  // connector-level heartbeat only ever reflects ONE device on a multi-device
+  // connector_type (e.g. OwnTracks), so a stale device here is the only signal
+  // that a household device has gone silent — it must not be swallowed by an
+  // otherwise-healthy connector-level verdict.
+  const staleDevices = c.devices?.filter((d) => d.stale) ?? []
+  if (staleDevices.length > 0) {
+    return {
+      authStatus: 'ok',
+      health: 'degraded',
+      needsAttention: true,
+      authNote:
+        staleDevices.length === 1
+          ? `device silent · ${staleDevices[0].sender_identity}`
+          : `${staleDevices.length} devices silent`,
     }
   }
 

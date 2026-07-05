@@ -32,6 +32,7 @@ import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
 import type { ConnectorSummary } from '@/api/types'
 import { getProviderOAuthStartUrl } from '@/api/client'
+import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
 import { Sparkline } from './Sparkline'
 import {
   deriveConnectorDispatchInfo,
@@ -233,6 +234,11 @@ export function ConnectorRosterRow({
       <span aria-hidden="true" className="font-mono text-[13px] text-muted-foreground justify-self-end">
         ›
       </span>
+
+      {/* Per-device liveness — only present for multi-device connector_types
+          (e.g. OwnTracks). Wraps to its own implicit grid row below the main
+          content, aligned under the channel/function columns. */}
+      {c.devices && c.devices.length > 0 && <ConnectorDeviceBadges devices={c.devices} />}
     </div>
   )
 }

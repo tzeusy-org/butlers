@@ -3281,6 +3281,19 @@ export interface ConnectorDaySummary {
   uptime_pct: number | null;
 }
 
+/**
+ * Per-device liveness entry for a multi-device connector_type (e.g. OwnTracks,
+ * where several physical devices post through one shared connector_type and
+ * connector_registry only tracks a single heartbeat identity for the whole
+ * connector). Sourced from public.ingestion_events.source_sender_identity.
+ */
+export interface ConnectorDeviceLiveness {
+  sender_identity: string;
+  last_seen_at: string;
+  /** True when last_seen_at is older than the backend's stale threshold (48h). */
+  stale: boolean;
+}
+
 /** A connector with current liveness and today's stats (GET /api/connectors). */
 export interface ConnectorSummary {
   connector_type: string;
@@ -3299,6 +3312,13 @@ export interface ConnectorSummary {
    * Zero-filled for hours with no events.
    */
   hourly_events: number[];
+  /**
+   * Per-device liveness rows, most-recent-device first. Null for single-device
+   * connector_types (the roster row's own liveness already covers them); present
+   * only when more than one distinct sender_identity has ever been observed for
+   * this connector_type.
+   */
+  devices?: ConnectorDeviceLiveness[] | null;
 }
 
 /** One OAuth scope entry from connector-oauth-scope-surface backend. */
