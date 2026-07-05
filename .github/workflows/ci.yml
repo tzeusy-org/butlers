@@ -11,6 +11,65 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  session-link-guard:
+    # Fast, dependency-free gate (bu-mr5t5): fails the PR when a tool-session
+    # link/footer (see scripts/session_link_guard.py) leaks into the PR body
+    # or any commit message on the current head. Review-comment coverage is
+    # best-effort (falls back to an empty set on any API hiccup) so a GitHub
+    # API blip never blocks the mandatory body/commit checks. Advisory like
+    # every other check in this workflow: see docs note below on required-check
+    # status.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Write PR body to file
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" > "${RUNNER_TEMP}/pr_body.txt"
+
+      - name: Fetch review comments (best-effort)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Each call is independently best-effort: a failed/empty response
+          # just means that surface contributes nothing, it never fails the
+          # step. Raw (non-jq-filtered) JSON is dumped per surface; the combine
+          # script below does the field mapping so no shell/jq quoting games
+          # are needed here.
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate \
+            > "${RUNNER_TEMP}/rc_review_comments.json" || true
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+            > "${RUNNER_TEMP}/rc_issue_comments.json" || true
+          gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate \
+            > "${RUNNER_TEMP}/rc_reviews.json" || true
+          python3 scripts/combine_review_comment_sources.py \
+            --output "${RUNNER_TEMP}/review_comments.json" \
+            --input review-comment "${RUNNER_TEMP}/rc_review_comments.json" \
+            --input issue-comment "${RUNNER_TEMP}/rc_issue_comments.json" \
+            --input review "${RUNNER_TEMP}/rc_reviews.json"
+
+      - name: Scan for tool-session links
+        run: |
+          python3 scripts/session_link_guard.py \
+            --pr-body-file "${RUNNER_TEMP}/pr_body.txt" \
+            --commit-range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            --review-comments-file "${RUNNER_TEMP}/review_comments.json"
+
   check:
     runs-on: ubuntu-latest
 

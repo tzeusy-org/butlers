@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-session-links bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -80,6 +80,14 @@ check-integration-coverage:
 	uv run python3 scripts/check_integration_coverage.py
 
 check: lint check-for-update-joins check-integration-coverage test
+
+# Local dry run of the session-link-guard CI job (bu-mr5t5): scans commit
+# messages not yet on origin/main for tool-session link/footer leakage
+# before you push. No PR body or review comments to check locally, so this
+# is a strict subset of what CI enforces — treat it as a pre-push sanity
+# check, not a full substitute for the CI job.
+check-session-links:
+	python3 scripts/session_link_guard.py --commit-range "origin/main..HEAD"
 
 # Version management — single source of truth is pyproject.toml
 # Usage: make bump-version VERSION=1.2.3

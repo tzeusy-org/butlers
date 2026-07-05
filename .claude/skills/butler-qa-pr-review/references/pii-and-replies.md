@@ -22,6 +22,18 @@ Block at minimum:
 
 If reviewer text contains PII, do not quote it back verbatim in the reply.
 
+## No Tool-Session Links (bu-mr5t5)
+
+Separately from PII: never leave a tool-session URL or attribution footer
+(e.g. a Claude Code session link, an OpenAI Codex cloud task link) in the PR
+body, a commit message, or a reply — see
+[scripts/session_link_guard.py](../../../../scripts/session_link_guard.py)
+for the exact patterns and the `session-link-guard` CI job that enforces
+this on every PR. If your CLI tooling appends this kind of footer to commits
+by default, strip it before pushing rather than relying on catching it in a
+later scrub pass — a PR that merges before the scrub completes leaves the
+link permanently baked into `main`'s history.
+
 ## Validation Command
 
 Use the built-in validator on candidate PR text, reply text, and new commit

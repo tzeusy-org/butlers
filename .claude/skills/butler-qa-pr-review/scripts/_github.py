@@ -40,10 +40,19 @@ query($owner:String!, $name:String!, $number:Int!) {
       id
       url
       title
+      body
       reviewDecision
       headRefName
       headRefOid
       baseRefName
+      commits(first: 100) {
+        nodes {
+          commit {
+            oid
+            message
+          }
+        }
+      }
       reviewThreads(first: 100) {
         nodes {
           id

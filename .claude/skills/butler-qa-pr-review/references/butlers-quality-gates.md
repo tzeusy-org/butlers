@@ -12,6 +12,14 @@ checks are:
 2. `Format check`
 3. `Unit tests`
 4. `Integration tests (testcontainers)`
+5. `session-link-guard` (bu-mr5t5): fails the PR when a tool-session link or
+   footer (see [scripts/session_link_guard.py](../../../../scripts/session_link_guard.py))
+   leaks into the PR body or a commit message on the current head; review
+   comments are covered best-effort. Runs on `pull_request` events only.
+   Not currently a GitHub-required check on this repo's branch protection —
+   same advisory-but-visible standing as the other checks below — so a PR
+   can still merge over it red; treat a red run the same way you'd treat any
+   other failing gate here and fix it before calling review done.
 
 Treat these as the default required gates for this repository unless the PR
 shows a different required-check set in GitHub.
@@ -38,6 +46,7 @@ Useful shortcuts from [Makefile](../../../Makefile):
 make lint
 make test-qg
 make check
+make check-session-links
 ```
 
 Interpretation:
@@ -45,6 +54,9 @@ Interpretation:
 - `make lint`: repo-standard lint entrypoint
 - `make test-qg`: repo-standard quality-gate pytest scope
 - `make check`: lint plus the full suite
+- `make check-session-links`: local dry run of the `session-link-guard` CI
+  job's commit-message check (no PR body/review comments available locally —
+  a strict subset of what CI enforces, see the job comment in ci.yml)
 
 ## How To Use This Reference
 

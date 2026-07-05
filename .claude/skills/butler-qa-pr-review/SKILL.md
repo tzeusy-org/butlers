@@ -194,6 +194,12 @@ Before calling the PR review complete, verify all of the following:
 9. A dedicated alignment subagent completed `/heart-and-soul`, `/craft-and-care`, and `/spec-and-spine` checks on the diff and feature delta.
 10. Any doctrine, craft-and-care, or spec blockers were either fixed in the PR or documented as explicit blockers with justification.
 11. Any fixes, commits, and targeted tests were run from the PR's dedicated isolated worktree, not the main checkout.
+12. `validate_pr_review.py`'s `session_link_findings` is empty (bu-mr5t5): no
+    tool-session link/footer (see `scripts/session_link_guard.py` at the repo
+    root) leaked into the PR body, any commit message on the current head, or
+    a review comment. If your own tooling appends a session-attribution
+    footer to commits/PR text by default, strip it before finishing this
+    checklist — don't rely on catching it after the fact.
 
 ## Handoff Output
 
