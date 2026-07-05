@@ -88,7 +88,7 @@ def _make_shared_pool(
     async def _fetchrow(sql, *args):
         if "secret_probe_log" in sql:
             return probe_row
-        if "category = 'cli'" in sql:
+        if "category IN ('cli', 'cli-auth')" in sql:
             return cli_row
         return None
 
@@ -340,7 +340,7 @@ def test_rotate_cli_get_inventory_does_not_return_raw_value():
     cli_row = _make_cli_row(key="cli-token-abc123", value="stored_tok")
 
     # Build a DB mock with the CLI row returned in the fetch list.
-    # _fetch_cli_secrets uses: WHERE category = 'cli'
+    # _fetch_cli_secrets uses: WHERE category IN ('cli', 'cli-auth')
     # _fetch_user_secrets does NOT filter by category, so we must return []
     # for the user-secrets query to avoid a KeyError on missing 'value' field.
     mock_db = MagicMock(spec=DatabaseManager)
@@ -348,7 +348,7 @@ def test_rotate_cli_get_inventory_does_not_return_raw_value():
     shared_pool = AsyncMock()
 
     async def _shared_fetch(sql, *args):
-        if "category = 'cli'" in sql:
+        if "category IN ('cli', 'cli-auth')" in sql:
             return [cli_row]
         # User-secrets and any other query — return empty list.
         return []

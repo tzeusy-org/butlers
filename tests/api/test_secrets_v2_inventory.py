@@ -189,7 +189,7 @@ def _make_db_manager(
         if "secret_probe_log" in sql:
             # Bulk probe-log query for system credentials.
             return bulk_probe_rows
-        if "butler_secrets" in sql and "category = 'cli'" not in sql:
+        if "butler_secrets" in sql and "category IN ('cli', 'cli-auth')" not in sql:
             return system_rows
         return []
 
@@ -204,7 +204,7 @@ def _make_db_manager(
         if "secret_probe_log" in sql:
             # Bulk probe-log query for user/cli/shared-system credentials.
             return bulk_probe_rows
-        if "category = 'cli'" in sql:
+        if "category IN ('cli', 'cli-auth')" in sql:
             return cli_rows
         if "entity_info" in sql:
             return user_rows
@@ -618,7 +618,7 @@ def test_inventory_identity_filter_restricts_user_array():
     shared_pool = AsyncMock()
 
     async def _shared_fetch(sql, *args):
-        if "category = 'cli'" in sql:
+        if "category IN ('cli', 'cli-auth')" in sql:
             return []
         if "entity_info" in sql and "entity_id = $1" in sql:
             # Identity filter path — return only matching rows
@@ -659,7 +659,7 @@ def test_inventory_no_identity_uses_owner_default():
     shared_pool = AsyncMock()
 
     async def _shared_fetch(sql, *args):
-        if "category = 'cli'" in sql:
+        if "category IN ('cli', 'cli-auth')" in sql:
             return []
         # Owner path: query joins entities with owner role
         if "entity_info" in sql and "owner" in sql:
@@ -941,7 +941,7 @@ def test_inventory_includes_identity_info_with_real_names():
     shared_pool = AsyncMock()
 
     async def _shared_fetch(sql, *args):
-        if "category = 'cli'" in sql:
+        if "category IN ('cli', 'cli-auth')" in sql:
             return []
         if "entity_info" in sql:
             return [user_row]
@@ -1268,7 +1268,7 @@ def _make_google_inventory_pool(
     - SQL containing 'google_accounts' → UNION ALL result: owner_rows + primary_rows
     - SQL containing 'entity_id = $1' (identity-specific) → identity_rows[str(arg)] or []
     - SQL containing 'public.entities' (identity enrichment) → entity_rows or []
-    - SQL containing "category = 'cli'" → []
+    - SQL containing "category IN ('cli', 'cli-auth')" → []
     - SQL containing 'secret_probe_log' → []
     - SQL containing 'audit_log' or 'provider_feature_catalogue' → [] (no history /
       no catalogue seeded in these unit tests — real-data helpers degrade to empty)
@@ -1284,7 +1284,7 @@ def _make_google_inventory_pool(
     async def _fetch(sql, *args):
         if "secret_probe_log" in sql or "audit_log" in sql or "provider_feature_catalogue" in sql:
             return []
-        if "category = 'cli'" in sql:
+        if "category IN ('cli', 'cli-auth')" in sql:
             return []
         if "granted_scopes" in sql:
             # bu-6v1hx: real per-account scopes-granted lookup. Not exercised by

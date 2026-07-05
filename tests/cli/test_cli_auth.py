@@ -392,3 +392,165 @@ async def test_test_endpoint_device_code_not_authenticated_reports_failure():
 
     assert resp.success is False
     assert "re-login required" in resp.detail
+
+
+# ---------------------------------------------------------------------------
+# /test endpoint: outcome persistence (probe log + test-state cache + audit)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingPool:
+    """Minimal asyncpg-pool stand-in that records every execute() call."""
+
+    def __init__(self):
+        self.execute_calls: list[tuple[str, tuple]] = []
+
+    async def execute(self, sql, *args):
+        self.execute_calls.append((sql, args))
+        return "OK"
+
+    def acquire(self):
+        from contextlib import asynccontextmanager
+
+        pool = self
+
+        @asynccontextmanager
+        async def _cm():
+            conn = MagicMock()
+            conn.execute = pool.execute
+            yield conn
+
+        return _cm()
+
+
+def _make_persisting_db_manager() -> tuple[MagicMock, _RecordingPool]:
+    pool = _RecordingPool()
+    db_manager = MagicMock()
+    db_manager.credential_shared_pool = MagicMock(return_value=pool)
+    return db_manager, pool
+
+
+async def test_test_endpoint_persists_successful_probe(monkeypatch):
+    """A successful test writes probe_log + test-state cache + verified audit.
+
+    Regression [2026-07-05]: the endpoint returned its result without
+    persisting anything, so the passport's "probe · last test" panel (which
+    reads only public.secret_probe_log) reverted to "never probed" on refresh
+    and the cli-auth rows were stuck in the needs-hand bucket forever.
+    """
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+
+    db_manager, pool = _make_persisting_db_manager()
+
+    audit_calls: list[dict] = []
+
+    async def _fake_audit(p, *, action, credential_id, note=None):
+        audit_calls.append({"action": action, "credential_id": credential_id, "note": note})
+
+    import butlers.api.routers.secrets_v2 as _secrets_v2
+
+    monkeypatch.setattr(_secrets_v2, "_write_cli_audit", _fake_audit)
+
+    healthy = AuthHealthResult(
+        provider="codex",
+        state=AuthHealthState.authenticated,
+        detail="Logged in using ChatGPT",
+    )
+    with patch(
+        "butlers.api.routers.cli_auth.probe_provider",
+        AsyncMock(return_value=healthy),
+    ):
+        resp = await test_api_key("codex", db_manager=db_manager)
+
+    assert resp.success is True
+
+    probe_log_calls = [c for c in pool.execute_calls if "secret_probe_log" in c[0]]
+    assert len(probe_log_calls) == 1
+    scope, key, ok, code, message, latency_ms = probe_log_calls[0][1]
+    assert (scope, key, ok, code) == ("cli", "cli-auth/codex", True, None)
+    assert message == "Logged in using ChatGPT"
+    assert isinstance(latency_ms, int)
+
+    cache_calls = [c for c in pool.execute_calls if "last_test_ok" in c[0]]
+    assert len(cache_calls) == 1
+    assert cache_calls[0][1] == (True, None, "cli-auth/codex")
+
+    assert audit_calls == [
+        {
+            "action": "verified",
+            "credential_id": "cli-auth/codex",
+            "note": "Probe ok: Logged in using ChatGPT",
+        }
+    ]
+
+
+async def test_test_endpoint_persists_failed_probe(monkeypatch):
+    """A failed test records ok=False with the failure detail in all stores."""
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+
+    db_manager, pool = _make_persisting_db_manager()
+
+    audit_calls: list[dict] = []
+
+    async def _fake_audit(p, *, action, credential_id, note=None):
+        audit_calls.append({"action": action, "credential_id": credential_id, "note": note})
+
+    import butlers.api.routers.secrets_v2 as _secrets_v2
+
+    monkeypatch.setattr(_secrets_v2, "_write_cli_audit", _fake_audit)
+
+    revoked = AuthHealthResult(
+        provider="codex",
+        state=AuthHealthState.not_authenticated,
+        detail="OpenAI rejected the stored token (401) — re-login required.",
+    )
+    with patch(
+        "butlers.api.routers.cli_auth.probe_provider",
+        AsyncMock(return_value=revoked),
+    ):
+        resp = await test_api_key("codex", db_manager=db_manager)
+
+    assert resp.success is False
+
+    probe_log_calls = [c for c in pool.execute_calls if "secret_probe_log" in c[0]]
+    assert len(probe_log_calls) == 1
+    assert probe_log_calls[0][1][2] is False  # ok column
+
+    cache_calls = [c for c in pool.execute_calls if "last_test_ok" in c[0]]
+    assert len(cache_calls) == 1
+    ok, message, key = cache_calls[0][1]
+    assert ok is False
+    assert "re-login required" in message
+    assert key == "cli-auth/codex"
+
+    assert len(audit_calls) == 1
+    assert audit_calls[0]["action"] == "failed"
+    assert "re-login required" in audit_calls[0]["note"]
+
+
+async def test_test_endpoint_persistence_failure_does_not_mask_result():
+    """Persistence errors are swallowed — the test result still returns."""
+    from butlers.api.routers.cli_auth import test_api_key
+    from butlers.cli_auth.health import AuthHealthResult, AuthHealthState
+
+    pool = MagicMock()
+    pool.execute = AsyncMock(side_effect=Exception("DB down"))
+    pool.acquire = MagicMock(side_effect=Exception("DB down"))
+    db_manager = MagicMock()
+    db_manager.credential_shared_pool = MagicMock(return_value=pool)
+
+    healthy = AuthHealthResult(
+        provider="codex",
+        state=AuthHealthState.authenticated,
+        detail="Logged in using ChatGPT",
+    )
+    with patch(
+        "butlers.api.routers.cli_auth.probe_provider",
+        AsyncMock(return_value=healthy),
+    ):
+        resp = await test_api_key("codex", db_manager=db_manager)
+
+    assert resp.success is True
+    assert resp.detail == "Logged in using ChatGPT"

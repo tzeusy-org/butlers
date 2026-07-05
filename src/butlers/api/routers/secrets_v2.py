@@ -1141,7 +1141,13 @@ async def _fetch_cli_secrets(
     """Fetch CLI runtime tokens from the shared credential pool.
 
     CLI tokens are stored in the shared butler_secrets table under
-    category='cli'.  Returns empty list when the table doesn't exist.
+    category='cli' (rows created by the passport rotate endpoint) or
+    category='cli-auth' (rows created by cli_auth.persistence.persist_token
+    after a device-code/api-key flow).  Both spellings are one family — if
+    only 'cli' were matched here, the persisted-token rows would fall through
+    to the SYSTEM family, whose probe-log lookup uses scope 'system' and so
+    never sees the scope-'cli' rows written by POST /api/cli-auth/*/test.
+    Returns empty list when the table doesn't exist.
     """
     try:
         rows = await pool.fetch(
@@ -1159,7 +1165,7 @@ async def _fetch_cli_secrets(
                 last_test_code,
                 last_test_message
             FROM butler_secrets
-            WHERE category = 'cli'
+            WHERE category IN ('cli', 'cli-auth')
             ORDER BY secret_key
             """
         )
@@ -1353,17 +1359,15 @@ async def get_inventory(
     # Surface those rows so the System family reflects shared config; tag them
     # butler="shared-public" so the frontend adapter can wire mutations to
     # target="shared-public" (which routes writes to this pool).
-    # (cli-auth/* rows are rerouted to the CLI family by the frontend adapter.)
-    #
-    # Exclude category='cli' rows: CLI runtime tokens have their own family and
-    # are read separately from this same pool by _fetch_cli_secrets(). Including
-    # them here would double-list them across the system and cli arrays and
-    # double-count them in meta.severity / needs_hand_count.
+    # Exclude category 'cli'/'cli-auth' rows: CLI runtime tokens have their own
+    # family and are read separately from this same pool by _fetch_cli_secrets().
+    # Including them here would double-list them across the system and cli
+    # arrays and double-count them in meta.severity / needs_hand_count.
     #
     # read_only=False: these rows are now editable via target="shared-public".
     if shared_pool is not None:
         shared_system = await _fetch_system_secrets(shared_pool, "shared-public", read_only=False)
-        system_secrets.extend(s for s in shared_system if s.category != "cli")
+        system_secrets.extend(s for s in shared_system if s.category not in ("cli", "cli-auth"))
 
     # --- Fetch user secrets from shared pool ---
     user_secrets: list[UserSecret] = []
@@ -1584,8 +1588,9 @@ async def _fetch_single_cli_secret(
 ) -> CliRuntimeDetail | None:
     """Fetch a single CLI runtime token by key (id).
 
-    CLI tokens are stored in butler_secrets with category='cli'.
-    Returns None when no matching row exists.
+    CLI tokens are stored in butler_secrets with category='cli' or
+    'cli-auth' (see _fetch_cli_secrets for why both spellings are one
+    family).  Returns None when no matching row exists.
     """
     try:
         row = await pool.fetchrow(
@@ -1603,7 +1608,7 @@ async def _fetch_single_cli_secret(
                 last_test_message
             FROM butler_secrets
             WHERE secret_key = $1
-              AND category = 'cli'
+              AND category IN ('cli', 'cli-auth')
             """,
             credential_id,
         )
@@ -3209,10 +3214,19 @@ async def probe_user_credential(
         probe_ok = False
         # probe_code and probe_message are already set by _verify_oauth_credential
     else:
-        # skipped_local_check — derive from local state.
-        probe_ok = detail.state == "ok"
+        # skipped_local_check — no live verify was possible (unsupported
+        # provider, missing app credentials, or network error). Treat this as
+        # a local presence check: a set credential passes unless a previous
+        # live probe recorded a failure. A never-probed row (state 'warn')
+        # must pass — requiring state == 'ok' here recorded a failure whose
+        # cache write then locked the row at 'failing' on every later probe.
+        if detail.state == "never_set":
+            probe_ok = False
+            probe_message = "value not set"
+        else:
+            probe_ok = detail.state != "failing"
+            probe_message = detail.failure_tail if not probe_ok else None
         probe_code = None
-        probe_message = detail.failure_tail if not probe_ok else None
 
     # Execute probe_log insert + entity_info cache update in one transaction.
     try:
@@ -3885,12 +3899,22 @@ async def probe_system_credential(
         probe_code = probe_code_live
         probe_message = probe_message_live
     else:
-        # Fallback: derive from local state.
-        probe_ok = detail.state == "ok"
+        # Fallback: local presence check. There is no remote to call for a
+        # system credential (the OwnTracks format check above is the only
+        # live path), so a set, unexpired value passes. Requiring
+        # state == 'ok' here poisoned never-probed rows: state 'warn'
+        # recorded a failure, the cache write flipped the row to 'failing',
+        # and every subsequent probe re-failed it.
+        if detail.state == "never_set":
+            probe_ok = False
+            probe_message = "value not set"
+        elif detail.state == "expired":
+            probe_ok = False
+            probe_message = "value expired"
+        else:
+            probe_ok = True
+            probe_message = None
         probe_code = None
-        probe_message = None
-        if not probe_ok and detail.test is not None:
-            probe_message = detail.test.message
 
     # Execute probe_log insert + butler_secrets cache update in one transaction.
     # probe_log INSERT goes to the shared pool (public schema).

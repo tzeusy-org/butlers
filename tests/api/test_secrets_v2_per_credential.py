@@ -188,7 +188,7 @@ def _make_db_manager_for_per_credential(
     async def _butler_fetchrow(sql, *args):
         if "secret_probe_log" in sql:
             return probe_row
-        if "butler_secrets" in sql and "category = 'cli'" not in sql:
+        if "butler_secrets" in sql and "category IN ('cli', 'cli-auth')" not in sql:
             return system_row
         return None
 
@@ -201,7 +201,7 @@ def _make_db_manager_for_per_credential(
     async def _shared_fetchrow(sql, *args):
         if "secret_probe_log" in sql:
             return probe_row
-        if "category = 'cli'" in sql:
+        if "category IN ('cli', 'cli-auth')" in sql:
             return cli_row
         if "entity_info" in sql:
             return user_row
@@ -581,7 +581,7 @@ def test_system_credential_searches_all_butlers():
 
     async def _side_effect_fetchrow(sql, *args):
         nonlocal call_count
-        if "butler_secrets" in sql and "category = 'cli'" not in sql:
+        if "butler_secrets" in sql and "category IN ('cli', 'cli-auth')" not in sql:
             call_count += 1
             if call_count == 1:
                 return None  # first butler misses

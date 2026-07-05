@@ -24,7 +24,7 @@ openspec/changes/redesign-secrets-passport/specs/core-credentials/spec.md
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -490,20 +490,80 @@ def test_probe_returns_200_with_test_result():
     assert body["data"]["ok"] is True
 
 
-def test_probe_fail_credential_returns_false():
-    """Probe returns ok=False when credential last_test_ok=False."""
+def test_probe_never_set_credential_returns_false():
+    """Probe returns ok=False when the credential has no value (never_set)."""
     existing_row = _make_butler_secrets_row(
         secret_key="FAIL_KEY",
-        last_test_ok=False,
-        secret_value="val",
-        last_test_message="Connection refused",
+        last_test_ok=None,
+        secret_value="",
     )
     mock_db = _make_db(switchboard_row=existing_row)
     _system_probe_timestamps.pop("FAIL_KEY", None)
     client = _build_app(mock_db)
     resp = client.post("/api/secrets/system/FAIL_KEY/probe")
     assert resp.status_code == 200
-    assert resp.json()["data"]["ok"] is False
+    body = resp.json()["data"]
+    assert body["ok"] is False
+    assert body["message"] == "value not set"
+
+
+def test_probe_expired_credential_returns_false():
+    """Probe returns ok=False when the credential value has expired."""
+    existing_row = _make_butler_secrets_row(
+        secret_key="EXP_KEY",
+        last_test_ok=True,
+        secret_value="val",
+        expires_at=_NOW - timedelta(days=1),
+    )
+    mock_db = _make_db(switchboard_row=existing_row)
+    _system_probe_timestamps.pop("EXP_KEY", None)
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/system/EXP_KEY/probe")
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["ok"] is False
+    assert body["message"] == "value expired"
+
+
+def test_probe_never_probed_credential_returns_ok():
+    """A set, never-probed credential (state 'warn') must pass the local check.
+
+    Regression [2026-07-05]: deriving probe_ok from state == 'ok' recorded a
+    failure ("Probe failed: unknown error; probe_status=skipped_local_check")
+    for every never-probed key, and the cache write then locked the row at
+    'failing' on all subsequent probes.
+    """
+    existing_row = _make_butler_secrets_row(
+        secret_key="WARN_KEY",
+        last_test_ok=None,
+        secret_value="val",
+    )
+    mock_db = _make_db(switchboard_row=existing_row)
+    _system_probe_timestamps.pop("WARN_KEY", None)
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/system/WARN_KEY/probe")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["ok"] is True
+
+
+def test_probe_previously_failing_credential_self_heals():
+    """A set credential whose cached last_test_ok=False passes a fresh probe.
+
+    The system probe is a local presence check — the only writer of the cache
+    columns is the probe itself, so a stale failure must not make every later
+    probe re-fail (the poisoned-row loop this replaces)."""
+    existing_row = _make_butler_secrets_row(
+        secret_key="HEAL_KEY",
+        last_test_ok=False,
+        secret_value="val",
+        last_test_message="Connection refused",
+    )
+    mock_db = _make_db(switchboard_row=existing_row)
+    _system_probe_timestamps.pop("HEAL_KEY", None)
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/system/HEAL_KEY/probe")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["ok"] is True
 
 
 def test_probe_verified_action_when_ok(monkeypatch):
@@ -529,12 +589,11 @@ def test_probe_verified_action_when_ok(monkeypatch):
 
 
 def test_probe_failed_action_when_not_ok(monkeypatch):
-    """Probe writes 'failed' audit action when credential is in failing state."""
+    """Probe writes 'failed' audit action when the local check fails (no value)."""
     existing_row = _make_butler_secrets_row(
         secret_key="FAIL2_KEY",
-        last_test_ok=False,
-        secret_value="val",
-        last_test_message="Token expired",
+        last_test_ok=None,
+        secret_value="",
     )
     mock_db = _make_db(switchboard_row=existing_row)
     _system_probe_timestamps.pop("FAIL2_KEY", None)

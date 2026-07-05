@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -340,6 +341,75 @@ async def delete_api_key(
     return {"status": "deleted", "provider": provider_def.name}
 
 
+async def _persist_test_outcome(
+    db_manager: Any,
+    provider_name: str,
+    *,
+    ok: bool,
+    detail: str | None,
+    latency_ms: int,
+) -> None:
+    """Persist a CLI credential test outcome so it survives page refresh.
+
+    Mirrors what the user/system probe endpoints record (the passport's
+    "probe · last test" panel and needs-hand state read exclusively from
+    these stores — a test that only returns its result in the HTTP response
+    is invisible after refresh):
+
+    1. One row in ``public.secret_probe_log`` (scope ``cli``, key
+       ``cli-auth/<provider>``) — feeds the "last test" display.
+    2. Test-state cache columns on the ``butler_secrets`` row via
+       ``CredentialStore.record_test_result`` (same writer the Codex runtime
+       uses for this row) — feeds the inventory state / needs-hand bucket.
+    3. A ``verified``/``failed`` audit stamp — feeds the stamps timeline.
+
+    Every step is best-effort: a persistence failure must never mask the
+    test result itself.
+    """
+    key = f"cli-auth/{provider_name}"
+    store = _make_credential_store(db_manager)
+    if store is None:
+        return
+    message = detail[:512] if detail else None
+
+    try:
+        await store.pool.execute(
+            """
+            INSERT INTO public.secret_probe_log
+                (credential_scope, credential_key, ok, code, message, latency_ms)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            "cli",
+            key,
+            ok,
+            None,
+            message,
+            latency_ms,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("CLI auth test: probe_log write failed for %s", key, exc_info=True)
+
+    try:
+        await store.record_test_result(key, ok, message=None if ok else message)
+    except Exception:  # noqa: BLE001
+        logger.warning("CLI auth test: test-state cache write failed for %s", key, exc_info=True)
+
+    try:
+        # Lazy import: secrets_v2 lazily imports from this module, so a
+        # module-level import here would risk a cycle.
+        from butlers.api.routers.secrets_v2 import _write_cli_audit
+
+        note = f"Probe ok: {detail}" if ok else f"Probe failed: {detail or 'unknown error'}"
+        await _write_cli_audit(
+            store.pool,
+            action="verified" if ok else "failed",
+            credential_id=key,
+            note=note,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("CLI auth test: audit write failed for %s", key, exc_info=True)
+
+
 @router.post(
     "/{provider}/test",
     response_model=CLIAuthTestResponse,
@@ -358,11 +428,33 @@ async def test_api_key(
     against the backend. The frontend "probe" button calls this endpoint for
     every auth mode, so device_code providers must return a result rather than
     a 400.
+
+    The outcome is persisted (probe log, test-state cache, audit stamp) so the
+    passport's "last test" survives a page refresh — see
+    ``_persist_test_outcome``.
     """
     provider_def = PROVIDERS.get(provider)
     if provider_def is None:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
 
+    started = time.monotonic()
+    result = await _run_provider_test(provider_def, db_manager)
+    latency_ms = round((time.monotonic() - started) * 1000)
+    await _persist_test_outcome(
+        db_manager,
+        provider_def.name,
+        ok=result.success,
+        detail=result.detail,
+        latency_ms=latency_ms,
+    )
+    return result
+
+
+async def _run_provider_test(
+    provider_def: CLIAuthProviderDef,
+    db_manager: Any,
+) -> CLIAuthTestResponse:
+    """Run the live credential check for a provider and return the outcome."""
     if provider_def.auth_mode != "api_key":
         # device_code (and any non-api_key) provider: probe live auth health.
         store = _make_credential_store(db_manager)
@@ -374,7 +466,9 @@ async def test_api_key(
         )
 
     if not provider_def.test_command:
-        raise HTTPException(status_code=400, detail=f"No test command configured for {provider}.")
+        raise HTTPException(
+            status_code=400, detail=f"No test command configured for {provider_def.name}."
+        )
 
     # The API key is in the CLI's auth.json — just run the test command
     from butlers.cli_auth.session import _strip_ansi
