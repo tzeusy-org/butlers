@@ -45,11 +45,17 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
-    """Provision the switchboard chain — switchboard.connector_registry."""
+    """Provision core + switchboard chains — switchboard.connector_registry.
+
+    ``core`` is required alongside ``switchboard`` as of migration ``sw_019``
+    (bu-aga08): ``switchboard.routing_verdict_log`` FKs to
+    ``public.ingestion_events``, so the switchboard chain no longer migrates
+    standalone.
+    """
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        chains=["switchboard"],
+        chains=["core", "switchboard"],
         schemas={"switchboard": "switchboard"},
     )
 

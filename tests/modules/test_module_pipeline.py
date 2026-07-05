@@ -283,6 +283,329 @@ class TestMessagePipelineProcess:
 
 
 # ---------------------------------------------------------------------------
+# Routing verdict mining substrate write hooks [bu-aga08]
+# ---------------------------------------------------------------------------
+
+
+class TestMessagePipelineRoutingVerdictLog:
+    """Unit tests for the routing_verdict_log write hooks in MessagePipeline.
+
+    These assert on the call args passed to
+    ``butlers.modules.pipeline.record_routing_verdict`` (mocked) rather than
+    hitting a real DB — see
+    ``tests/integration/test_switchboard_routing_verdict_log_migration.py``
+    for the migration + real-insert coverage.
+    """
+
+    async def test_rule_bypass_route_to_records_rule_verdict(self):
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.route",
+                new_callable=AsyncMock,
+                return_value={"status": "ok"},
+            ),
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+        ):
+            result = await pipeline.process(
+                "some finance email",
+                tool_args={
+                    "source_channel": "email",
+                    "source_identity": "billing@chase.com",
+                    "request_context": {
+                        "triage_decision": "route_to",
+                        "triage_target": "finance",
+                        "triage_rule_id": "11111111-1111-1111-1111-111111111111",
+                        "triage_rule_type": "sender_domain",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000002",
+            )
+
+        assert result.target_butler == "finance"
+        mock_record.assert_awaited_once()
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["ingestion_event_id"] == "00000000-0000-0000-0000-000000000002"
+        assert kwargs["sender_identity"] == "billing@chase.com"
+        assert kwargs["source_channel"] == "email"
+        assert kwargs["verdict_source"] == "rule"
+        assert kwargs["verdict_action"] == "route_to"
+        assert kwargs["verdict_target"] == "finance"
+        assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
+
+    async def test_pinned_target_bypass_records_pinned_verdict_with_no_rule_id(self):
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.route",
+                new_callable=AsyncMock,
+                return_value={"status": "ok"},
+            ),
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+        ):
+            await pipeline.process(
+                "dashboard message",
+                tool_args={
+                    "source_channel": "dashboard",
+                    "request_context": {
+                        "triage_decision": "route_to",
+                        "triage_target": "general",
+                        "triage_rule_type": "pinned_target",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000003",
+            )
+
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["verdict_source"] == "pinned"
+        assert kwargs["matched_rule_id"] is None
+
+    async def test_thread_affinity_bypass_records_rule_verdict_with_no_rule_id(self):
+        """thread_affinity has no backing ingestion_rules row (matched_rule_id
+        is always None for it) but is still bucketed as verdict_source='rule'
+        — see verdict_log module docstring."""
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.route.route",
+                new_callable=AsyncMock,
+                return_value={"status": "ok"},
+            ),
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+        ):
+            await pipeline.process(
+                "threaded reply",
+                tool_args={
+                    "source_channel": "email",
+                    "request_context": {
+                        "triage_decision": "route_to",
+                        "triage_target": "relationship",
+                        "triage_rule_type": "thread_affinity",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000004",
+            )
+
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["verdict_source"] == "rule"
+        assert kwargs["matched_rule_id"] is None
+
+    async def test_skip_bypass_records_skip_verdict(self):
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+
+        with patch(
+            "butlers.modules.pipeline.record_routing_verdict",
+            new_callable=AsyncMock,
+        ) as mock_record:
+            result = await pipeline.process(
+                "bulk mail",
+                tool_args={
+                    "source_channel": "email",
+                    "request_context": {
+                        "triage_decision": "skip",
+                        "triage_rule_id": "22222222-2222-2222-2222-222222222222",
+                        "triage_rule_type": "header_condition",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000005",
+            )
+
+        assert result.target_butler == "skipped"
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["verdict_source"] == "rule"
+        assert kwargs["verdict_action"] == "skip"
+        assert kwargs.get("verdict_target") is None
+        assert kwargs["matched_rule_id"] == "22222222-2222-2222-2222-222222222222"
+
+    async def test_metadata_only_bypass_records_metadata_only_verdict(self):
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+
+        with patch(
+            "butlers.modules.pipeline.record_routing_verdict",
+            new_callable=AsyncMock,
+        ) as mock_record:
+            result = await pipeline.process(
+                "noreply mail",
+                tool_args={
+                    "source_channel": "email",
+                    "request_context": {"triage_decision": "metadata_only"},
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000006",
+            )
+
+        assert result.target_butler == "metadata_only"
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["verdict_action"] == "metadata_only"
+
+    async def test_bypass_does_not_record_verdict_when_no_message_inbox_id(self):
+        """No ingestion_event_id to FK against -> the write must be skipped,
+        not attempted with a null FK."""
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+
+        with patch(
+            "butlers.modules.pipeline.record_routing_verdict",
+            new_callable=AsyncMock,
+        ) as mock_record:
+            await pipeline.process(
+                "noreply mail",
+                tool_args={
+                    "source_channel": "email",
+                    "request_context": {"triage_decision": "metadata_only"},
+                },
+            )
+
+        mock_record.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_llm_route_to_butler_call_records_llm_verdict_with_session_id(self, mock_load):
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to health butler.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "health"},
+                        "result": {"status": "ok", "butler": "health"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with patch(
+            "butlers.modules.pipeline.record_routing_verdict",
+            new_callable=AsyncMock,
+        ) as mock_record:
+            result = await pipeline.process(
+                "I have a headache",
+                tool_args={"source_identity": "someone@example.com"},
+                message_inbox_id="00000000-0000-0000-0000-000000000007",
+            )
+
+        assert result.target_butler == "health"
+        mock_record.assert_awaited_once()
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["ingestion_event_id"] == "00000000-0000-0000-0000-000000000007"
+        assert kwargs["sender_identity"] == "someone@example.com"
+        assert kwargs["verdict_source"] == "llm"
+        assert kwargs["verdict_action"] == "route_to"
+        assert kwargs["verdict_target"] == "health"
+        # FakeSpawnerResult has no session_id attribute -> getattr default None.
+        assert kwargs["session_id"] is None
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_llm_no_tool_calls_fallback_does_not_record_llm_verdict(self, mock_load):
+        """The no-tool-calls -> infer-from-text/"general" fallback is a
+        heuristic default, not a genuine per-sender LLM decision, and must
+        not be logged as mining evidence."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output="No routing needed.", tool_calls=[])
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with patch(
+            "butlers.modules.pipeline.record_routing_verdict",
+            new_callable=AsyncMock,
+        ) as mock_record:
+            result = await pipeline.process(
+                "Just browsing",
+                message_inbox_id="00000000-0000-0000-0000-000000000008",
+            )
+
+        assert result.target_butler == "general"
+        mock_record.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_llm_multiple_route_to_butler_calls_record_one_verdict_each(self, mock_load):
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to health and finance.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "health"},
+                        "result": {"status": "ok", "butler": "health"},
+                    },
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "finance"},
+                        "result": {"status": "ok", "butler": "finance"},
+                    },
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with patch(
+            "butlers.modules.pipeline.record_routing_verdict",
+            new_callable=AsyncMock,
+        ) as mock_record:
+            await pipeline.process(
+                "multi-signal message",
+                message_inbox_id="00000000-0000-0000-0000-000000000009",
+            )
+
+        assert mock_record.await_count == 2
+        targets = {c.kwargs["verdict_target"] for c in mock_record.await_args_list}
+        assert targets == {"health", "finance"}
+
+
+# ---------------------------------------------------------------------------
 # Structured tool-use classification fast lane [bu-qvnce.12 slice 3 / bu-evus6]
 # ---------------------------------------------------------------------------
 

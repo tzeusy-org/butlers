@@ -31,6 +31,7 @@ from butlers.tools.switchboard.routing.telemetry import (
     get_switchboard_telemetry,
     normalize_error_class,
 )
+from butlers.tools.switchboard.routing.verdict_log import record_routing_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -1872,6 +1873,22 @@ class MessagePipeline:
                 )
                 _triage_target = request_context.get("triage_target") if request_context else None
 
+                # Routing verdict mining substrate (bu-aga08): classify the
+                # bypass's verdict_source up front so all three bypass branches
+                # below (route_to/skip/metadata_only) can log consistently.
+                # "pinned_target" is the dashboard's explicit override and is
+                # excluded from promotion mining; everything else that reaches
+                # this pre-resolved bypass (an actual ingestion_rules match, or
+                # a thread-affinity hit with no backing rule row) is bucketed as
+                # "rule" — see verdict_log module docstring for the rationale.
+                _triage_rule_type = (
+                    request_context.get("triage_rule_type") if request_context else None
+                )
+                _verdict_source = "pinned" if _triage_rule_type == "pinned_target" else "rule"
+                _verdict_matched_rule_id = (
+                    request_context.get("triage_rule_id") if request_context else None
+                )
+
                 if _triage_decision == "route_to" and _triage_target:
                     bypass_start = time.perf_counter()
                     with tracer.start_as_current_span(
@@ -2029,6 +2046,18 @@ class MessagePipeline:
                                 final_state_at=completed_at,
                             )
 
+                        if message_inbox_id:
+                            await record_routing_verdict(
+                                self._pool,
+                                ingestion_event_id=message_inbox_id,
+                                sender_identity=source_metadata.get("identity"),
+                                source_channel=source,
+                                verdict_source=_verdict_source,
+                                verdict_action="route_to",
+                                verdict_target=_triage_target,
+                                matched_rule_id=_verdict_matched_rule_id,
+                            )
+
                         return RoutingResult(
                             target_butler=_triage_target,
                             route_result={"policy_bypass": True},
@@ -2066,6 +2095,15 @@ class MessagePipeline:
                             classification_duration_ms=0.0,
                             final_state_at=completed_at,
                         )
+                        await record_routing_verdict(
+                            self._pool,
+                            ingestion_event_id=message_inbox_id,
+                            sender_identity=source_metadata.get("identity"),
+                            source_channel=source,
+                            verdict_source=_verdict_source,
+                            verdict_action="skip",
+                            matched_rule_id=_verdict_matched_rule_id,
+                        )
                     return RoutingResult(
                         target_butler="skipped",
                         route_result={"policy_bypass": True, "triage_decision": "skip"},
@@ -2098,6 +2136,15 @@ class MessagePipeline:
                             classified_at=completed_at,
                             classification_duration_ms=0.0,
                             final_state_at=completed_at,
+                        )
+                        await record_routing_verdict(
+                            self._pool,
+                            ingestion_event_id=message_inbox_id,
+                            sender_identity=source_metadata.get("identity"),
+                            source_channel=source,
+                            verdict_source=_verdict_source,
+                            verdict_action="metadata_only",
+                            matched_rule_id=_verdict_matched_rule_id,
                         )
                     return RoutingResult(
                         target_butler="metadata_only",
@@ -2710,6 +2757,30 @@ class MessagePipeline:
 
                     routed, acked, failed = _extract_routed_butlers(tool_calls)
                     failed_details = [f"{b}: routing failed" for b in failed]
+
+                    # Routing verdict mining substrate (bu-aga08): record one
+                    # verdict row per distinct LLM-resolved target, regardless
+                    # of whether the downstream route.execute dispatch itself
+                    # later succeeded — the mining signal is "what did the LLM
+                    # decide", not "did dispatch succeed". The heuristic
+                    # fallback below (no route_to_butler call at all) is
+                    # deliberately NOT logged here: it is a last-resort
+                    # text-inference/default, not a genuine per-sender LLM
+                    # routing decision, and would pollute promotion mining
+                    # with noise.
+                    if message_inbox_id and routed:
+                        _llm_verdict_session_id = getattr(spawn_result, "session_id", None)
+                        for _llm_verdict_target in dict.fromkeys(routed):
+                            await record_routing_verdict(
+                                self._pool,
+                                ingestion_event_id=message_inbox_id,
+                                sender_identity=source_metadata.get("identity"),
+                                source_channel=source,
+                                verdict_source="llm",
+                                verdict_action="route_to",
+                                verdict_target=_llm_verdict_target,
+                                session_id=_llm_verdict_session_id,
+                            )
 
                     # Fallback: LLM called no tools → infer from summary text, else general.
                     if not acked and source == "dashboard":
