@@ -20,6 +20,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getSecretsInventory } from "@/api/client.ts";
 import type {
   SecretsAuditEvent,
+  SecretsCapabilityStatus,
   SecretsCliRaw,
   SecretsIdentityInfo,
   SecretsProviderInfo,
@@ -35,6 +36,7 @@ import type {
   CredentialState,
   TestResult,
   AuditEvent,
+  CapabilityStatus,
 } from "@/components/secrets/passport/types.ts";
 
 const STATE_RANK: Record<CredentialState, number> = {
@@ -193,6 +195,30 @@ function adaptAuditEvents(raw: SecretsAuditEvent[] | undefined): AuditEvent[] {
   }));
 }
 
+/**
+ * Map backend per-capability probe rows to the FE CapabilityStatus shape
+ * (bu-4v5es). Absent/empty until the credential has been probed at least
+ * once under the new capability-level scheme.
+ */
+function adaptCapabilityStatuses(
+  raw: SecretsCapabilityStatus[] | undefined,
+): CapabilityStatus[] {
+  if (!raw) return [];
+  return raw.map((c) => ({
+    capability: c.capability,
+    test: adaptProbeResult(c.test),
+  }));
+}
+
+/** Merge two capability-status lists, keeping the first entry seen per capability. */
+function mergeCapabilities(a: CapabilityStatus[], b: CapabilityStatus[]): CapabilityStatus[] {
+  const byCapability = new Map<string, CapabilityStatus>();
+  for (const status of [...a, ...b]) {
+    if (!byCapability.has(status.capability)) byCapability.set(status.capability, status);
+  }
+  return Array.from(byCapability.values());
+}
+
 function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, SecretsProviderInfo>): UserCredential {
   return {
     provider:       extractProvider(raw.type, providers),
@@ -219,6 +245,8 @@ function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, Secr
     test:           adaptProbeResult(raw.test),
     // Real (bu-6v1hx): last few public.audit_log rows for this credential.
     audit:          adaptAuditEvents(raw.audit),
+    // Real (bu-4v5es): per-capability probe state.
+    capabilities:   adaptCapabilityStatuses(raw.capabilities),
   };
 }
 
@@ -356,6 +384,10 @@ function groupUserCredentials(credentials: UserCredential[]): UserCredential[] {
       audit: [...existing.audit, ...credential.audit],
       failureTail: existing.failureTail ?? credential.failureTail,
       webhook: existing.webhook ?? credential.webhook,
+      capabilities: mergeCapabilities(
+        existing.capabilities ?? [],
+        credential.capabilities ?? [],
+      ),
     });
   }
 

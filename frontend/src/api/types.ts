@@ -7432,6 +7432,14 @@ export interface BreakEntry {
   severity: "high" | "medium" | "low";
   /** OAuth scopes required by this feature (empty for non-OAuth credentials). */
   required_scopes: string[];
+  /**
+   * Capability family this feature maps to (bu-4v5es) — 'calendar' | 'gmail'
+   * | 'drive' | 'health' for Google, 'connectivity' for every other
+   * provider. Null when required_scopes don't map to any known capability
+   * (e.g. Google's ecosystem-wide account-connection row) — the frontend
+   * falls back to the static severity pip for those.
+   */
+  capability?: string | null;
 }
 
 /** Query parameters for the breaks-catalogue endpoint. */
@@ -7460,6 +7468,18 @@ export interface SecretsProbeResult {
   message: string | null;
   at: string | null;
   latency_ms?: number | null;
+}
+
+/**
+ * Latest probe result for one capability family of a user credential
+ * (bu-4v5es). Maps to CapabilityStatus in the backend secrets_v2 router.
+ *
+ * `capability` is 'calendar' | 'gmail' | 'drive' | 'health' for Google;
+ * 'connectivity' for every other provider's single live-verify call.
+ */
+export interface SecretsCapabilityStatus {
+  capability: string;
+  test: SecretsProbeResult | null;
 }
 
 /**
@@ -7582,6 +7602,12 @@ export interface SecretsUserRaw {
    * logged for this credential.
    */
   audit?: SecretsAuditEvent[];
+  /**
+   * Per-capability probe state (bu-4v5es) — e.g. calendar/gmail/drive/health
+   * for Google, a single 'connectivity' entry for every other provider.
+   * Empty/absent until the credential has been probed at least once.
+   */
+  capabilities?: SecretsCapabilityStatus[];
 }
 
 /**
@@ -7694,6 +7720,8 @@ export interface SecretsUserDetail {
   breaks: SecretsBreakDict[];
   test: SecretsProbeResult | null;
   audit: SecretsAuditEvent[];
+  /** Per-capability probe state (bu-4v5es). See SecretsUserRaw.capabilities. */
+  capabilities?: SecretsCapabilityStatus[];
 }
 
 /**

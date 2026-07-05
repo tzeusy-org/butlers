@@ -1311,7 +1311,7 @@ export function PageUser({
               </div>
             </div>
           )}
-          <WhatBreaks provider={credential.provider} />
+          <WhatBreaks provider={credential.provider} capabilities={credential.capabilities} />
           {credential.feeds.length > 0 && (
             <div>
               <Mono size={9} upper tracking="0.14em" color="var(--dim)">feeds</Mono>

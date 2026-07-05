@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils"
 import { ProviderMark } from "./ProviderMark"
 import { SeverityPip } from "./SeverityPip"
 import type { Severity } from "./SeverityPip"
+import type { CapabilityStatus } from "./types"
 
 // ---------------------------------------------------------------------------
 // Severity ordering
@@ -52,14 +53,56 @@ function sortBySeverityDesc(entries: BreakEntry[]): BreakEntry[] {
 }
 
 // ---------------------------------------------------------------------------
+// Capability probe pip — live ok/fail glyph, replacing the static severity
+// pip when a matching capability probe result is available (bu-4v5es).
+// ---------------------------------------------------------------------------
+
+function CapabilityProbePip({ status }: { status: CapabilityStatus }) {
+  const ok = status.test?.ok ?? null
+
+  if (ok === null) {
+    const label = `${status.capability}: not yet probed`
+    return (
+      <span
+        role="img"
+        aria-label={label}
+        title={label}
+        className="font-mono text-[11px] font-normal leading-none tabular-nums shrink-0 inline-block w-4 text-center"
+        style={{ color: "var(--dim,oklch(0.55_0_0))" }}
+      >
+        ?
+      </span>
+    )
+  }
+
+  const label = `${status.capability}: ${ok ? "ok" : status.test?.message ?? "failed"}`
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      className="font-mono text-[11px] font-normal leading-none tabular-nums shrink-0 inline-block w-4 text-center"
+      style={{ color: ok ? "var(--green,oklch(0.65_0.15_145))" : "var(--red)" }}
+    >
+      {ok ? "✓" : "✗"}
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // WhatBreaks row
 // ---------------------------------------------------------------------------
 
 interface WhatBreaksRowProps {
   entry: BreakEntry
+  capabilities?: CapabilityStatus[]
 }
 
-function WhatBreaksRow({ entry }: WhatBreaksRowProps) {
+function WhatBreaksRow({ entry, capabilities }: WhatBreaksRowProps) {
+  const capabilityStatus = entry.capability
+    ? capabilities?.find((c) => c.capability === entry.capability)
+    : undefined
+
   return (
     <div
       className={cn(
@@ -67,7 +110,11 @@ function WhatBreaksRow({ entry }: WhatBreaksRowProps) {
         "border-b border-[var(--border-soft,oklch(1_0_0/0.06))] last:border-b-0",
       )}
     >
-      <SeverityPip severity={entry.severity as Severity} />
+      {capabilityStatus ? (
+        <CapabilityProbePip status={capabilityStatus} />
+      ) : (
+        <SeverityPip severity={entry.severity as Severity} />
+      )}
       <ProviderMark provider={entry.butler} />
       <Mono className="flex-1 min-w-0">{entry.feature}</Mono>
       <Mono muted className="shrink-0 text-[10px]">{entry.butler}</Mono>
@@ -85,6 +132,12 @@ export interface WhatBreaksProps extends React.HTMLAttributes<HTMLDivElement> {
    * When omitted, the full catalogue is fetched and displayed.
    */
   provider?: string
+  /**
+   * Per-capability probe state for the credential being shown (bu-4v5es).
+   * When a catalogue row's `capability` matches an entry here, its row shows
+   * a live ok/fail glyph instead of the static severity pip.
+   */
+  capabilities?: CapabilityStatus[]
 }
 
 /**
@@ -98,7 +151,7 @@ export interface WhatBreaksProps extends React.HTMLAttributes<HTMLDivElement> {
  *   <WhatBreaks provider="google" />
  *   <WhatBreaks />  // full catalogue
  */
-export function WhatBreaks({ provider, className, ...props }: WhatBreaksProps) {
+export function WhatBreaks({ provider, capabilities, className, ...props }: WhatBreaksProps) {
   const { data, isLoading, isError } = useQuery({
     queryKey: ["secrets", "breaks-catalogue", provider ?? "__all__"],
     queryFn: () => getBreaksCatalogue(provider ? { provider } : undefined),
@@ -136,6 +189,7 @@ export function WhatBreaks({ provider, className, ...props }: WhatBreaksProps) {
         <WhatBreaksRow
           key={`${entry.butler}:${entry.feature}:${idx}`}
           entry={entry}
+          capabilities={capabilities}
         />
       ))}
     </div>

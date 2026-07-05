@@ -75,6 +75,16 @@ export interface BreakEntry {
   severity: "high" | "medium" | "low";
 }
 
+/**
+ * Latest probe result for one capability family of a user credential
+ * (bu-4v5es) — e.g. 'calendar' | 'gmail' | 'drive' | 'health' for Google,
+ * 'connectivity' for every other provider's single live-verify call.
+ */
+export interface CapabilityStatus {
+  capability: string;
+  test: TestResult | null;
+}
+
 /** User credential (entity_info-based, oauth/token/apikey/webhook). */
 export interface UserCredential {
   provider: string;
@@ -93,6 +103,12 @@ export interface UserCredential {
   audit: AuditEvent[];
   failureTail?: string | null;
   webhook?: string | null;
+  /**
+   * Per-capability probe state (bu-4v5es). Optional/empty until the
+   * credential has been probed at least once under the capability scheme —
+   * absent in older mock fixtures and pre-bu-4v5es data.
+   */
+  capabilities?: CapabilityStatus[];
 }
 
 /** System credential (butler_secrets-based). */

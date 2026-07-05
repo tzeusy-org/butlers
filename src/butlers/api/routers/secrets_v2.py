@@ -177,12 +177,14 @@ openspec/changes/redesign-secrets-passport/specs/dashboard-api/spec.md
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import secrets as _secrets_mod
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -235,6 +237,22 @@ class TestResult(BaseModel):
     # any probe that falls back to skipped_local_check) never had a real
     # round trip to time, so this stays None rather than a fabricated 0.
     latency_ms: int | None = None
+
+
+class CapabilityStatus(BaseModel):
+    """Latest probe result for one capability family of a credential (bu-4v5es).
+
+    Capability-qualified rows are persisted to public.secret_probe_log with
+    credential_key = '<credential type>:<capability>' — e.g. 'calendar',
+    'gmail', 'drive', 'health' for Google; 'connectivity' for every other
+    provider's single generic live check (see probe_user_credential /
+    _verify_credential_capabilities). Absent from the parent's capabilities
+    list until that capability has actually been probed at least once —
+    never a fabricated 'never probed' placeholder row.
+    """
+
+    capability: str
+    test: TestResult | None = None
 
 
 class SystemSecret(BaseModel):
@@ -297,6 +315,10 @@ class UserSecret(BaseModel):
     # newest first. Real data via _fetch_audit_bulk; empty when nothing has
     # ever been logged for this credential (genuinely no history).
     audit: list[dict] = Field(default_factory=list)
+    # Per-capability probe state (bu-4v5es) — e.g. calendar/gmail/drive/health
+    # for Google, a single 'connectivity' entry for every other provider.
+    # Empty until the credential has been probed at least once post-bu-4v5es.
+    capabilities: list[CapabilityStatus] = Field(default_factory=list)
 
 
 class CliRuntime(BaseModel):
@@ -394,6 +416,8 @@ class UserSecretDetail(BaseModel):
     breaks: list[dict] = Field(default_factory=list)  # BreakEntry[] from catalogue
     test: TestResult | None = None  # most recent probe result
     audit: list[dict] = Field(default_factory=list)  # last 10 AuditEvent rows
+    # Per-capability probe state (bu-4v5es) — see UserSecret.capabilities.
+    capabilities: list[CapabilityStatus] = Field(default_factory=list)
 
 
 class SystemSecretDetail(BaseModel):
@@ -679,6 +703,79 @@ async def _fetch_probe_logs_bulk(
         )
         return {}
     return {row["credential_key"]: _row_to_test_result(row) for row in rows}
+
+
+async def _fetch_capability_probe_logs_bulk(
+    pool: Any,
+    scope: str,
+    keys: list[str],
+) -> dict[str, list[CapabilityStatus]]:
+    """Fetch the latest probe row for each capability of every key (bu-4v5es).
+
+    Capability-qualified rows are written as
+    ``credential_key = '<base_key>:<capability>'`` (see
+    ``probe_user_credential`` / ``_verify_credential_capabilities``) —
+    e.g. ``'google_oauth_refresh:calendar'``. This is a separate query from
+    ``_fetch_probe_logs_bulk`` (which reads the bare, un-suffixed key used for
+    the aggregate "last test" badge); the two never collide because the bare
+    key never contains a colon.
+
+    Returns a dict keyed by the BASE credential key (matching ``keys``)
+    mapping to its list of ``CapabilityStatus`` entries, sorted by capability
+    name. A key with no capability-qualified rows yet (pre-bu-4v5es history,
+    or never probed) is absent from the dict — callers should treat a missing
+    key as "no capability data yet", not an empty-but-real result.
+
+    Silently returns an empty dict when the table doesn't exist or keys is
+    empty.
+    """
+    if not keys:
+        return {}
+    # Enumerate the known capability-qualified keys in Python rather than
+    # filtering with split_part(credential_key, ':', 1) = ANY(...) in SQL —
+    # a function call on the indexed column defeats
+    # ix_secret_probe_log_lookup (credential_scope, credential_key,
+    # recorded_at DESC), forcing a sequential scan as the table grows past
+    # its 90-day retention window. A plain credential_key = ANY(...) uses
+    # the index directly.
+    candidate_keys = [
+        f"{key}:{capability}"
+        for key in keys
+        for capability in (*_GOOGLE_CAPABILITY_ORDER, "connectivity")
+    ]
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT DISTINCT ON (credential_key)
+                   credential_key, ok, code, message, recorded_at, latency_ms
+            FROM public.secret_probe_log
+            WHERE credential_scope = $1
+              AND credential_key = ANY($2)
+            ORDER BY credential_key, recorded_at DESC
+            """,
+            scope,
+            candidate_keys,
+        )
+    except UndefinedTableError:
+        return {}
+    except PostgresError as exc:
+        logger.debug(
+            "capability probe_log bulk lookup failed for scope=%s keys=%s: %s",
+            scope,
+            keys,
+            exc,
+        )
+        return {}
+
+    by_key: dict[str, list[CapabilityStatus]] = {}
+    for row in rows:
+        base_key, _sep, capability = row["credential_key"].partition(":")
+        by_key.setdefault(base_key, []).append(
+            CapabilityStatus(capability=capability, test=_row_to_test_result(row))
+        )
+    for statuses in by_key.values():
+        statuses.sort(key=lambda c: c.capability)
+    return by_key
 
 
 # ---------------------------------------------------------------------------
@@ -1181,6 +1278,7 @@ async def _fetch_user_secrets(
     # For user credentials the probe key is the entity_info.type value.
     credential_keys = [row["type"] for row in rows]
     probe_map = await _fetch_probe_logs_bulk(pool, "user", credential_keys)
+    capability_map = await _fetch_capability_probe_logs_bulk(pool, "user", credential_keys)
 
     # Provider inference is needed for both the audit target and the
     # scopes-required/granted lookups below (see _infer_provider_from_type).
@@ -1242,6 +1340,7 @@ async def _fetch_user_secrets(
                 scopes_required=scopes_required_by_provider.get(provider, []),
                 scopes_granted=google_scopes_map.get(entity_id, []) if provider == "google" else [],
                 audit=audit_map.get(normalize_credential_key("user", provider), []),
+                capabilities=capability_map.get(row["type"], []),
             )
         )
 
@@ -1624,6 +1723,7 @@ async def _fetch_single_user_secret(
     state = _derive_state(is_set=bool(value), last_test_ok=last_test_ok, expires_at=expires_at)
     fp = _fingerprint(value)
     test = await _fetch_probe_log(pool, "user", row["type"])
+    capability_map = await _fetch_capability_probe_logs_bulk(pool, "user", [row["type"]])
 
     return UserSecretDetail(
         id=str(row["id"]),
@@ -1638,6 +1738,7 @@ async def _fetch_single_user_secret(
         last_verified=row["last_verified"],
         failure_tail=row["last_test_message"],
         test=test,
+        capabilities=capability_map.get(row["type"], []),
     )
 
 
@@ -2058,6 +2159,50 @@ class BreakEntry(BaseModel):
     feature: str
     severity: str  # 'high' | 'medium' | 'low'
     required_scopes: list[str] = Field(default_factory=list)
+    # Capability family this feature maps to (bu-4v5es), e.g. 'calendar',
+    # 'gmail', 'drive', 'health' for Google; 'connectivity' for every other
+    # provider. None when the feature's required_scopes don't map to any
+    # known capability (e.g. Google's ecosystem-wide '*' account-connection
+    # row) — the frontend falls back to the static severity pip for those.
+    capability: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Capability tagging — maps a catalogue row's required_scopes to the
+# capability family probed by probe_user_credential (bu-4v5es).
+# ---------------------------------------------------------------------------
+
+# Substring markers used to classify a Google OAuth scope URL into one of the
+# four probed capability families. Order matters: 'googlehealth' is checked
+# before the more generic markers so a health scope never gets misfiled.
+_GOOGLE_SCOPE_CAPABILITY_MARKERS: tuple[tuple[str, str], ...] = (
+    ("googlehealth", "health"),
+    ("calendar", "calendar"),
+    ("gmail", "gmail"),
+    ("drive", "drive"),
+)
+
+
+def _capability_for_scopes(provider: str, required_scopes: list[str]) -> str | None:
+    """Return the capability family a catalogue row's scopes map to.
+
+    Google rows are classified by scanning ``required_scopes`` for a known
+    marker (see ``_GOOGLE_SCOPE_CAPABILITY_MARKERS``); a row with no matching
+    scope (e.g. the ecosystem-wide 'Google account connection' row, which has
+    no required_scopes at all) returns None — there is no live per-capability
+    signal for it, so the frontend keeps the static severity pip.
+
+    Every non-Google provider's existing single live-verify call becomes one
+    capability named 'connectivity' (bu-4v5es) — every feature row for that
+    provider maps to it.
+    """
+    if provider == "google":
+        for scope in required_scopes:
+            for marker, capability in _GOOGLE_SCOPE_CAPABILITY_MARKERS:
+                if marker in scope:
+                    return capability
+        return None
+    return "connectivity"
 
 
 # ---------------------------------------------------------------------------
@@ -2169,11 +2314,14 @@ async def get_breaks_catalogue(
         # asyncpg may return JSONB as a list already or as a JSON string.
         if isinstance(scopes, str):
             scopes = json.loads(scopes)
+        scopes = scopes or []
+        row_provider = provider if provider is not None else row["provider"]
         entry = BreakEntry(
             butler=row["butler"],
             feature=row["feature"],
             severity=row["severity"],
-            required_scopes=scopes or [],
+            required_scopes=scopes,
+            capability=_capability_for_scopes(row_provider, scopes),
         )
         entries.append(entry)
         if provider is None:
@@ -2960,6 +3108,274 @@ async def _verify_oauth_credential(
 
 
 # ---------------------------------------------------------------------------
+# Capability-level probes (bu-4v5es)
+#
+# Green on the passport used to mean "refresh token mints an access token +
+# userinfo returns 200" — zero real scopes exercised, which is why Google
+# Health could 403 while the credential showed healthy. Google now gets one
+# cheap authenticated call PER capability family instead of a single generic
+# userinfo call; every other provider keeps its existing single live-verify
+# call, wrapped as one capability named 'connectivity' so the persistence
+# shape (credential_key:capability) is uniform across all providers.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _CapabilityProbe:
+    """Outcome of probing ONE capability family during a single probe call.
+
+    ``ok`` is ``None`` when no live signal was obtained for this capability
+    (network error, missing app credentials, unsupported provider) — the
+    skipped_local_check case. It is never fabricated as True or False.
+    """
+
+    capability: str
+    ok: bool | None
+    code: int | None
+    message: str | None
+    probe_status: str  # "live_ok" | "live_failed:<code>" | "skipped_local_check"
+    latency_ms: int | None = None
+
+
+# One cheap, read-only, authenticated Google API call per capability family.
+# calendarList.list / users.getProfile / about.get / dataSources.list are the
+# smallest-payload read endpoints in each API surface.
+_GOOGLE_CAPABILITY_ENDPOINTS: dict[str, str] = {
+    "calendar": "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1",
+    "gmail": "https://www.googleapis.com/gmail/v1/users/me/profile",
+    "drive": "https://www.googleapis.com/drive/v3/about?fields=user",
+    "health": "https://www.googleapis.com/fitness/v1/users/me/dataSources",
+}
+
+# Deterministic probe/report order.
+_GOOGLE_CAPABILITY_ORDER: tuple[str, ...] = ("calendar", "gmail", "drive", "health")
+
+
+async def _google_test_mode_expired(shared_pool: Any, entity_id: str | None) -> bool:
+    """True when *entity_id* is a flagged Google-Health test-mode account whose
+    unified refresh token has passed its known 7-day test-mode lifetime.
+
+    Reuses ``_fetch_google_test_mode_expiry`` (same query the inventory/detail
+    endpoints use for the synthetic ``expires`` field) so this never disagrees
+    with what the passport already displays. Used only to pick the right
+    wording for a token-exchange failure (7-day test-mode expiry vs a generic
+    invalid_grant) — never raises; any lookup failure returns False.
+    """
+    if not entity_id:
+        return False
+    expiry_map = await _fetch_google_test_mode_expiry(shared_pool, [entity_id])
+    expires_at = expiry_map.get(entity_id)
+    if expires_at is None:
+        return False
+    return datetime.now(tz=UTC) >= expires_at
+
+
+def _skipped_capabilities() -> list[_CapabilityProbe]:
+    """One skipped_local_check entry per Google capability family."""
+    return [
+        _CapabilityProbe(
+            capability=cap, ok=None, code=None, message=None, probe_status="skipped_local_check"
+        )
+        for cap in _GOOGLE_CAPABILITY_ORDER
+    ]
+
+
+async def _verify_google_capabilities(
+    refresh_token: str,
+    shared_pool: Any,
+    *,
+    entity_id: str | None,
+) -> list[_CapabilityProbe]:
+    """Probe each Google capability family with its own cheap authenticated call.
+
+    Exchanges the refresh token for an access token ONCE, then fans out one
+    GET per capability family (calendar, gmail, drive, health) using that
+    SAME access token — the stored refresh token is a scope-widened unified
+    token covering all four, so a per-capability failure means THAT scope is
+    missing/restricted, not that the credential itself is dead. This is the
+    exact asymmetry that motivated this bead: Health can 403 while
+    Calendar/Gmail/Drive succeed.
+
+    Failure-mode distinction:
+    - Token-exchange failure is credential-wide (every capability shares the
+      same probe_status/code/message) — labeled as a likely 7-day test-mode
+      expiry when the account is a flagged test-mode account past its known
+      window (see ``_google_test_mode_expired``), else a generic
+      token_exchange failure message.
+    - A per-capability 403 (exchange succeeded, but THIS capability's own API
+      call is rejected) is a distinct restricted-scope failure.
+    - Network errors (either stage) fall back to skipped_local_check for the
+      affected capabilities — never fabricated as a failure.
+    """
+    cred_store = CredentialStore(shared_pool)
+    try:
+        client_id = await cred_store.load(KEY_CLIENT_ID)
+        client_secret = await cred_store.load(KEY_CLIENT_SECRET)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_verify_google_capabilities: failed to load app credentials: %s", exc)
+        return _skipped_capabilities()
+
+    if not client_id or not client_secret:
+        logger.debug("_verify_google_capabilities: app credentials not configured; skipping")
+        return _skipped_capabilities()
+
+    try:
+        async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
+            token_resp = await client.post(
+                _GOOGLE_TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                },
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_verify_google_capabilities: network error during token exchange: %s", exc)
+        return _skipped_capabilities()
+
+    if token_resp.status_code != 200:
+        test_mode_expired = await _google_test_mode_expired(shared_pool, entity_id)
+        reason = f"token_exchange HTTP {token_resp.status_code}"
+        if test_mode_expired:
+            reason += " (token likely expired: 7-day test-mode limit)"
+        return [
+            _CapabilityProbe(
+                capability=cap,
+                ok=False,
+                code=token_resp.status_code,
+                message=reason,
+                probe_status=f"live_failed:{token_resp.status_code}",
+            )
+            for cap in _GOOGLE_CAPABILITY_ORDER
+        ]
+
+    try:
+        token_data = token_resp.json()
+    except Exception as exc:  # noqa: BLE001
+        reason = f"token_exchange: invalid JSON response: {exc}"
+        logger.warning("_verify_google_capabilities: %s", reason)
+        return [
+            _CapabilityProbe(
+                capability=cap,
+                ok=False,
+                code=None,
+                message=reason,
+                probe_status="live_failed:invalid_json",
+            )
+            for cap in _GOOGLE_CAPABILITY_ORDER
+        ]
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        reason = "token_exchange: no access_token in response"
+        logger.warning("_verify_google_capabilities: %s", reason)
+        return [
+            _CapabilityProbe(
+                capability=cap,
+                ok=False,
+                code=None,
+                message=reason,
+                probe_status="live_failed:no_access_token",
+            )
+            for cap in _GOOGLE_CAPABILITY_ORDER
+        ]
+
+    async def _probe_one(capability: str) -> _CapabilityProbe:
+        url = _GOOGLE_CAPABILITY_ENDPOINTS[capability]
+        started_at = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
+                resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "_verify_google_capabilities: network error probing capability=%s: %s",
+                capability,
+                exc,
+            )
+            return _CapabilityProbe(
+                capability=capability,
+                ok=None,
+                code=None,
+                message=None,
+                probe_status="skipped_local_check",
+            )
+
+        latency_ms = round((time.monotonic() - started_at) * 1000)
+        if resp.status_code == 200:
+            return _CapabilityProbe(
+                capability=capability,
+                ok=True,
+                code=None,
+                message=None,
+                probe_status="live_ok",
+                latency_ms=latency_ms,
+            )
+
+        if resp.status_code == 403:
+            message = f"403 restricted-scope ({capability} scope not granted)"
+        else:
+            message = f"GET {capability} HTTP {resp.status_code}"
+        return _CapabilityProbe(
+            capability=capability,
+            ok=False,
+            code=resp.status_code,
+            message=message,
+            probe_status=f"live_failed:{resp.status_code}",
+            latency_ms=latency_ms,
+        )
+
+    return list(await asyncio.gather(*(_probe_one(cap) for cap in _GOOGLE_CAPABILITY_ORDER)))
+
+
+async def _verify_credential_capabilities(
+    provider: str,
+    credential_type: str,
+    raw_value: str,
+    shared_pool: Any,
+    *,
+    entity_id: str | None,
+) -> list[_CapabilityProbe]:
+    """Return one ``_CapabilityProbe`` per capability family for *provider*.
+
+    Google (accepted ``_oauth_refresh`` types) fans out to
+    ``_verify_google_capabilities`` — one named capability per family
+    (calendar, gmail, drive, health). Every other provider keeps its existing
+    single live-verify call (``_verify_oauth_credential``, unchanged), wrapped
+    as one capability named 'connectivity' — no probe logic outside Google
+    changes.
+    """
+    if provider == "google" and credential_type.endswith("_oauth_refresh"):
+        return await _verify_google_capabilities(raw_value, shared_pool, entity_id=entity_id)
+
+    started_at = time.monotonic()
+    probe_status, probe_code, probe_message = await _verify_oauth_credential(
+        provider, credential_type, raw_value, shared_pool
+    )
+    latency_ms: int | None = None
+    if probe_status == "live_ok" or probe_status.startswith("live_failed"):
+        latency_ms = round((time.monotonic() - started_at) * 1000)
+
+    if probe_status == "live_ok":
+        ok: bool | None = True
+    elif probe_status.startswith("live_failed"):
+        ok = False
+    else:
+        ok = None
+
+    return [
+        _CapabilityProbe(
+            capability="connectivity",
+            ok=ok,
+            code=probe_code,
+            message=probe_message,
+            probe_status=probe_status,
+            latency_ms=latency_ms,
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Mutation audit helper
 # ---------------------------------------------------------------------------
 
@@ -3247,11 +3663,25 @@ async def probe_user_credential(
     probe outcome from the current local state (is the value set, is the credential
     expired, is the last_test_ok field true?).
 
+    Capability-level probes (bu-4v5es): Google credentials are verified with
+    ONE cheap authenticated call PER capability family (calendar, gmail,
+    drive, health) instead of a single generic userinfo call — this is what
+    catches "Health scope not granted" while Calendar/Gmail/Drive still work,
+    an asymmetry a single generic call can never see. Every other provider
+    keeps its existing single live-verify call, wrapped as one capability
+    named 'connectivity'. Any capability failing rolls the credential up to
+    failing, naming the failing capability/capabilities in the message.
+
     In the same SQL transaction it:
-    1. Inserts one row into ``public.secret_probe_log``, including
-       ``latency_ms`` (round-trip wall time of the live verify call) when a
-       live call was actually made — never a fabricated number for the
-       skipped-local-check fallback path.
+    1. Inserts one AGGREGATE row into ``public.secret_probe_log`` per
+       credential type (bare ``credential_key``, used by the existing "last
+       test" reads), including ``latency_ms`` (round-trip wall time of the
+       live verify call) when a live call was actually made — never a
+       fabricated number for the skipped-local-check fallback path.
+    1b. Inserts one CAPABILITY-QUALIFIED row per capability that actually got
+        a live signal (``credential_key = '<type>:<capability>'``) — read by
+        ``GET /api/secrets/inventory`` / ``GET /api/secrets/user/<provider>``
+        to populate each row's ``capabilities`` list.
     2. Updates ``last_verified``, ``last_test_ok``, ``last_test_code``,
        ``last_test_message`` on the matching ``public.entity_info`` row.
 
@@ -3310,31 +3740,51 @@ async def probe_user_credential(
     # network call to time in that path, so a real measurement never exists.
     probe_latency_ms: int | None = None
 
+    # Per-capability probes (bu-4v5es): Google fans out to one cheap
+    # authenticated call per capability family; every other provider keeps
+    # its existing single live-verify call wrapped as one 'connectivity'
+    # capability. `capabilities` is empty when no live attempt was possible
+    # at all (no raw value read) — falls through to the local-state branch
+    # below exactly as before this bead.
+    capabilities: list[_CapabilityProbe] = []
     if raw_refresh_token:
-        _probe_started_at = time.monotonic()
         try:
-            probe_status, probe_code, probe_message = await _verify_oauth_credential(
+            capabilities = await _verify_credential_capabilities(
                 provider,
                 credential_key,
                 raw_refresh_token,
                 shared_pool,
+                entity_id=detail.entity_id,
             )
-            # Only attribute latency to an actual live round trip. When
-            # _verify_oauth_credential returns "skipped_local_check" it made
-            # no network call at all (no verify handler, unsupported
-            # credential type, missing app credentials) — timing that would
-            # report a meaningless near-zero number, not a real latency.
-            if probe_status == "live_ok" or probe_status.startswith("live_failed"):
-                probe_latency_ms = round((time.monotonic() - _probe_started_at) * 1000)
         except Exception as exc:  # noqa: BLE001
-            # Should not happen — _verify_oauth_credential catches internally — but be safe.
+            # Should not happen — the underlying verify helpers catch
+            # internally — but be safe.
             logger.warning(
-                "probe_user_credential: unexpected verify error for provider=%s: %s",
+                "probe_user_credential: unexpected capability-probe error for provider=%s: %s",
                 provider,
                 exc,
             )
-            probe_status = "skipped_local_check"
-            probe_latency_ms = None
+            capabilities = []
+
+    if capabilities:
+        # Roll up: any capability failing => credential failing, naming it.
+        failing = [c for c in capabilities if c.ok is False]
+        if failing:
+            probe_status = failing[0].probe_status
+            probe_code = failing[0].code
+            probe_message = "; ".join(
+                f"{c.capability}: {c.message}" if c.message else c.capability for c in failing
+            )
+        elif any(c.ok is True for c in capabilities):
+            probe_status, probe_code, probe_message = "live_ok", None, None
+        else:
+            # Every capability came back skipped_local_check (network errors,
+            # missing app credentials, unsupported provider) — no live signal
+            # at all, identical to the pre-bu-4v5es fallback trigger.
+            probe_status, probe_code, probe_message = "skipped_local_check", None, None
+        probe_latency_ms = max(
+            (c.latency_ms for c in capabilities if c.latency_ms is not None), default=None
+        )
 
     # Resolve final probe_ok from live result or fall back to local state.
     if probe_status == "live_ok":
@@ -3391,8 +3841,9 @@ async def probe_user_credential(
     try:
         async with shared_pool.acquire() as conn:
             async with conn.transaction():
-                # 1. Insert one probe log row per credential type in the group
-                # (the per-type "last test" displays all read this table).
+                # 1. Insert one aggregate probe log row per credential type in
+                # the group (the per-type "last test" displays all read this
+                # table via the bare, un-suffixed credential_key).
                 for _probe_type in sibling_types:
                     await conn.execute(
                         """
@@ -3407,6 +3858,28 @@ async def probe_user_credential(
                         probe_message,
                         probe_latency_ms,
                     )
+
+                    # 1b. Capability-qualified rows (bu-4v5es): one per
+                    # capability that actually got a live signal this probe
+                    # (cap.ok is not None) — a capability that only ever hit
+                    # skipped_local_check leaves no new row, same as the
+                    # existing "missing key = never probed" semantics.
+                    for cap in capabilities:
+                        if cap.ok is None:
+                            continue
+                        await conn.execute(
+                            """
+                            INSERT INTO public.secret_probe_log
+                                (credential_scope, credential_key, ok, code, message, latency_ms)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            """,
+                            "user",
+                            f"{_probe_type}:{cap.capability}",
+                            cap.ok,
+                            cap.code,
+                            cap.message,
+                            cap.latency_ms,
+                        )
 
                 # 2. Update test-state cache columns on every row of the group.
                 # last_verified is set only on success (per spec §Cache write on probe).
