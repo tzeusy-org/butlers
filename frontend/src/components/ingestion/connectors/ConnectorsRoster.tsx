@@ -20,7 +20,23 @@
  * regardless of `aggregates_available`. When the response's top-level
  * `hourly_events_available` is `false` (the combined hourly query itself
  * failed), a `SourceDegradedNote` names the degraded source instead of letting
- * the all-zero fallback arrays render as an honest "quiet 24h".
+ * the all-zero fallback arrays render as an honest "quiet 24h". Likewise,
+ * when `device_liveness_available` is `false` (the per-device liveness query
+ * itself failed), every connector's `devices` falls back to `null` — a
+ * `SourceDegradedNote` names that failure too, since a silently-null
+ * `devices` list is indistinguishable from "no multi-device connectors"
+ * (bu-fm3my; same shape as bu-scyro's hourly note). Both flags are
+ * genuine-failure-only — absent (older cached response) must NOT trigger
+ * the note, only an explicit `false`.
+ *
+ * `aggregates_available` on this endpoint is NOT gated here: the response's
+ * per-connector fields (`hourly_events`, `hourly_filtered_events`, `today`,
+ * `devices`) are all DB-sourced, not Prometheus-sourced, so nothing rendered
+ * on this page actually depends on it (the flag mirrors the pipeline cache's
+ * Prometheus reachability, consumed instead by BoardFooter's own
+ * `aggregates_available` on a different endpoint/response). Gating a note on
+ * it here would fabricate a "degraded" signal for data unaffected by the
+ * flag.
  *
  * NOTE: useConnectorDetail MUST NOT be mounted from this roster (spec §6.2).
  * Only summary-level data is shown here.
@@ -118,6 +134,13 @@ export function ConnectorsRoster() {
   // (older cached response) must NOT be treated as false. Never let that render as
   // an honest "quiet 24h" — surface the degraded source inline instead.
   const hourlyEventsAvailable = connectorsResp?.data?.hourly_events_available !== false
+
+  // device_liveness_available (bu-e16to/bu-fm3my) is false only when the backend's
+  // per-device liveness query itself raised — in that case every connector's
+  // `devices` falls back to null, indistinguishable from "no multi-device
+  // connectors" (silently hiding a stale/dead sibling device). Absent field
+  // (older cached response) must NOT be treated as false.
+  const deviceLivenessAvailable = connectorsResp?.data?.device_liveness_available !== false
 
   // Available dormant profiles (catalog entries not yet registered)
   const catalogProfiles = availableResp?.data ?? []
@@ -231,6 +254,18 @@ export function ConnectorsRoster() {
         <SourceDegradedNote
           label="24h activity"
           detail="hourly event source unavailable, sparklines and events · 24h above are incomplete"
+          className="mt-4"
+        />
+      )}
+
+      {/* Per-device liveness source degraded note -- a failed per-device query
+          falls back to devices:null for every connector, which is otherwise
+          indistinguishable from "no multi-device connectors" and would hide a
+          silently-dead sibling device (bu-e16to/bu-fm3my). */}
+      {!deviceLivenessAvailable && (
+        <SourceDegradedNote
+          label="device liveness"
+          detail="per-device liveness source unavailable, multi-device connectors may be missing sibling device badges"
           className="mt-4"
         />
       )}

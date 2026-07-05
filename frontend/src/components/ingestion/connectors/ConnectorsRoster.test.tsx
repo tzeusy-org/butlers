@@ -119,7 +119,10 @@ function cleanup(root: Root, container: HTMLDivElement) {
 function mockHooks(
   connectors: ConnectorSummary[],
   profiles: ConnectorProfile[] = [],
-  responseOverrides: { hourly_events_available?: boolean } = {},
+  responseOverrides: {
+    hourly_events_available?: boolean
+    device_liveness_available?: boolean
+  } = {},
 ) {
   // The new endpoint returns { connectors: [...], aggregates_available: bool }
   // wrapped in ApiResponse<ConnectorSummariesResponse>: { data: { connectors, aggregates_available } }
@@ -674,5 +677,47 @@ describe('hourly_events_available degraded note (bu-scyro)', () => {
 
     expect(container.textContent).toMatch(/24h activity/)
     expect(container.textContent).toMatch(/hourly event source unavailable/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// device_liveness_available degraded note (bu-fm3my)
+//
+// The per-device liveness query failing must never render as an honest
+// "no multi-device connectors" -- devices:null on genuine failure is
+// indistinguishable from that case and would hide a silently-dead sibling
+// device (bu-e16to). Same shape as the hourly_events_available note above.
+// ---------------------------------------------------------------------------
+
+describe('device_liveness_available degraded note (bu-fm3my)', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('does not render a degraded note when device_liveness_available is true', () => {
+    mockHooks([HEALTHY_CONNECTOR], [], { device_liveness_available: true })
+    renderRoster(container, root)
+
+    expect(container.textContent).not.toMatch(/device liveness/)
+    expect(container.textContent).not.toMatch(/per-device liveness source unavailable/)
+  })
+
+  it('does not render a degraded note when device_liveness_available is absent (older cached response)', () => {
+    mockHooks([HEALTHY_CONNECTOR], [])
+    renderRoster(container, root)
+
+    expect(container.textContent).not.toMatch(/per-device liveness source unavailable/)
+  })
+
+  it('renders a degraded note when device_liveness_available is false', () => {
+    mockHooks([HEALTHY_CONNECTOR], [], { device_liveness_available: false })
+    renderRoster(container, root)
+
+    expect(container.textContent).toMatch(/device liveness/)
+    expect(container.textContent).toMatch(/per-device liveness source unavailable/)
   })
 })
