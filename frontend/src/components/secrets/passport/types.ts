@@ -183,4 +183,11 @@ export interface InventoryResponse {
    * May be undefined in older mock data; create-user flow degrades gracefully.
    */
   ownerEntityId?: string;
+  /**
+   * Named backend sources that failed during this fan-out and were dropped
+   * from the response (bu-5ccth). Threaded from meta.sources_degraded so
+   * SecretsPage can name the missing family instead of failing the whole
+   * page. Empty/undefined means nothing was degraded.
+   */
+  sourcesDegraded?: string[];
 }

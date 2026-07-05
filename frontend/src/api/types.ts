@@ -7686,6 +7686,14 @@ export interface SecretsInventoryMeta {
   /** Set-but-never-probed rows — an unknown, not a failure (bu-976n0). */
   unverified_count: number;
   severity?: Record<string, number>;
+  /**
+   * Named sources that failed during this fan-out and were dropped from the
+   * response rather than failing the whole request (bu-5ccth). Mirrors the
+   * fleet-wide `meta.sources_degraded` convention (see CLAUDE.md API
+   * Conventions and `approvals.py`'s `DegradedSources` usage). Absent or
+   * empty means every source that was queried succeeded.
+   */
+  sources_degraded?: string[];
 }
 
 /** Query parameters for GET /api/secrets/inventory. */

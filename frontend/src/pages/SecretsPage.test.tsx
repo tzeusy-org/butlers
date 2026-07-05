@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
-// SecretsPage tests [bu-q77du, bu-nrgk9]
+// SecretsPage tests [bu-q77du, bu-nrgk9, bu-5ccth]
 //
 // Coverage:
 //   - Page mounts DirectionPassport without crashing
@@ -8,15 +8,21 @@
 //   - Identity-switch: ?identity=<id> updates URL and re-projects User group
 //   - OAuth re-entry: ?toast=connected shows toast (sonner spy) and strips param
 //   - OAuth re-entry: ?oauth_error=<e> shows warning toast and strips param
+//   - Degraded partial rendering (bu-5ccth): terminal failure keeps a working
+//     Retry button; a refetch failure with cached data renders the passport
+//     behind a SourceDegradedNote banner instead of blanking the page; a
+//     meta.sources_degraded backend hit names the missing family inline.
 //
 // SecretsPage now fetches inventory via useSecretsInventory (bu-nrgk9).
 // Tests that render <SecretsPage /> mock the hook so they receive MOCK_INVENTORY
 // synchronously without a real network call.
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createRoot, type Root } from "react-dom/client";
 import * as React from "react";
+import { act } from "react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -24,21 +30,37 @@ import SecretsPage from "./SecretsPage";
 import { DirectionPassport } from "@/components/secrets/passport";
 import { MOCK_INVENTORY } from "@/components/secrets/passport/mock-data";
 import { buildSpineEntries } from "@/components/secrets/passport/spine-builder";
+import { useSecretsInventory } from "@/hooks/use-secrets-inventory.ts";
 
 // ---------------------------------------------------------------------------
 // Mock useSecretsInventory so <SecretsPage /> receives MOCK_INVENTORY
-// synchronously without hitting the network.
+// synchronously without hitting the network. Individual tests override the
+// return value via vi.mocked(...).mockReturnValue(...) to exercise the
+// loading/terminal-error/degraded-with-data states.
 // ---------------------------------------------------------------------------
 
 vi.mock("@/hooks/use-secrets-inventory.ts", () => ({
-  useSecretsInventory: () => ({
-    data: MOCK_INVENTORY,
-    isLoading: false,
-    isError: false,
-  }),
+  useSecretsInventory: vi.fn(),
   secretsInventoryKeys: { all: [], byIdentity: () => [] },
   adaptInventoryResponse: (d: unknown) => d,
 }));
+
+type UseSecretsInventoryResult = ReturnType<typeof useSecretsInventory>;
+
+const BASE_QUERY_RESULT = {
+  data: MOCK_INVENTORY,
+  isLoading: false,
+  isError: false,
+  error: null,
+  dataUpdatedAt: 1751763600000, // 2026-07-06T01:00:00Z — arbitrary fixed epoch
+  refetch: vi.fn(),
+};
+
+beforeEach(() => {
+  vi.mocked(useSecretsInventory).mockReturnValue(
+    BASE_QUERY_RESULT as unknown as UseSecretsInventoryResult,
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,6 +78,53 @@ function renderInRouter(
       <MemoryRouter initialEntries={initialEntries}>{element}</MemoryRouter>
     </QueryClientProvider>,
   );
+}
+
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
+
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+const mountedRoots: Array<{ container: HTMLDivElement; root: Root }> = [];
+
+afterEach(() => {
+  while (mountedRoots.length > 0) {
+    const mounted = mountedRoots.pop()!;
+    act(() => {
+      mounted.root.unmount();
+    });
+    mounted.container.remove();
+  }
+});
+
+/** Mounts <SecretsPage /> interactively (createRoot + act) so click handlers
+ * (e.g. the Retry button) actually fire — renderToStaticMarkup is SSR-only
+ * and cannot exercise event handlers. Unmounted automatically by the shared
+ * afterEach above. */
+async function mountInteractive(
+  initialEntries: string[] = ["/secrets"],
+): Promise<{ container: HTMLDivElement; root: Root }> {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  mountedRoots.push({ container, root });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={initialEntries}>
+          <SecretsPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await flush();
+  });
+  return { container, root };
 }
 
 // ---------------------------------------------------------------------------
@@ -242,5 +311,117 @@ describe("Legacy patterns absent", () => {
     // DirectionPassport uses the Dispatch design language, not card-based layout
     expect(html).toContain('data-direction-passport="true"');
     expect(html).toContain('data-spine-row');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Degraded partial rendering (bu-5ccth)
+//
+// A single slow/failed inventory query must never paint the whole page
+// "Failed to load credentials." with no retry and no partial render when
+// cached data exists. TanStack Query v5 never clears `data` on a
+// background-refetch error, so the terminal wall is reserved for
+// isError && !data; every other error keeps rendering the passport behind a
+// SourceDegradedNote banner with a working Retry action.
+// ---------------------------------------------------------------------------
+
+describe("Degraded partial rendering (bu-5ccth)", () => {
+  afterEach(() => {
+    vi.mocked(useSecretsInventory).mockReset();
+  });
+
+  it("terminal failure (no cached data): shows the failure message with a working Retry button", async () => {
+    const refetch = vi.fn();
+    vi.mocked(useSecretsInventory).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("relation \"entity_info\" does not exist"),
+      dataUpdatedAt: 0,
+      refetch,
+    } as unknown as UseSecretsInventoryResult);
+
+    const { container } = await mountInteractive();
+
+    expect(container.textContent).toContain("Failed to load credentials");
+    expect(container.textContent).toContain('relation "entity_info" does not exist');
+    // No passport chrome — there is genuinely nothing to show yet.
+    expect(container.querySelector("[data-spine-row]")).toBeNull();
+
+    const retryButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Retry",
+    );
+    expect(retryButton).toBeTruthy();
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("refetch failure WITH cached data: keeps rendering the passport behind a degraded banner, not the terminal wall", async () => {
+    const refetch = vi.fn();
+    vi.mocked(useSecretsInventory).mockReturnValue({
+      data: MOCK_INVENTORY,
+      isLoading: false,
+      isError: true,
+      error: new Error("Request timed out after 15s"),
+      dataUpdatedAt: 1751763600000,
+      refetch,
+    } as unknown as UseSecretsInventoryResult);
+
+    const { container } = await mountInteractive();
+
+    // The passport still renders — never-blank floor.
+    expect(container.querySelector('[data-direction-passport="true"]')).toBeTruthy();
+    expect(container.querySelectorAll("[data-spine-row]").length).toBeGreaterThan(0);
+
+    // The terminal "Failed to load credentials" wall must NOT render.
+    expect(container.textContent).not.toContain("Failed to load credentials");
+
+    const banner = container.querySelector(
+      "[data-testid='secrets-inventory-degraded']",
+    );
+    expect(banner).toBeTruthy();
+    expect(banner?.textContent).toContain("unreachable");
+    expect(banner?.textContent).toContain("retrying");
+
+    const retryButton = banner?.querySelector("button");
+    expect(retryButton).toBeTruthy();
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("meta.sources_degraded (partial backend fan-out failure): names the missing family without an error state", async () => {
+    vi.mocked(useSecretsInventory).mockReturnValue({
+      data: { ...MOCK_INVENTORY, sourcesDegraded: ["finance"] },
+      isLoading: false,
+      isError: false,
+      error: null,
+      dataUpdatedAt: 1751763600000,
+      refetch: vi.fn(),
+    } as unknown as UseSecretsInventoryResult);
+
+    const { container } = await mountInteractive();
+
+    expect(container.querySelector('[data-direction-passport="true"]')).toBeTruthy();
+    const banner = container.querySelector(
+      "[data-testid='secrets-inventory-partial-degraded']",
+    );
+    expect(banner).toBeTruthy();
+    expect(banner?.textContent).toContain("finance");
+    expect(banner?.textContent).toContain("unavailable");
+  });
+
+  it("no sourcesDegraded and no isError: no degraded banner rendered", async () => {
+    const { container } = await mountInteractive();
+
+    expect(container.querySelector("[data-testid='secrets-inventory-degraded']")).toBeNull();
+    expect(
+      container.querySelector("[data-testid='secrets-inventory-partial-degraded']"),
+    ).toBeNull();
   });
 });

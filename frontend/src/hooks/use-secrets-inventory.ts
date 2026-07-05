@@ -482,6 +482,8 @@ export function adaptInventoryResponse(data: {
   user: SecretsUserRaw[];
   identities: SecretsIdentityInfo[];
   providers?: Record<string, SecretsProviderInfo>;
+  /** Threaded from meta.sources_degraded (bu-5ccth); see InventoryResponse.sourcesDegraded. */
+  sources_degraded?: string[];
 }): InventoryResponse {
   const providers: Record<string, SecretsProviderInfo> = { ...(data.providers ?? {}) };
   const user = data.user.map((raw) => {
@@ -496,19 +498,20 @@ export function adaptInventoryResponse(data: {
   const identities = mapIdentities(data.identities);
   const ownerEntityId = identities.find((i) => i.role === "owner")?.id;
   return {
-    user:          groupUserCredentials(user),
-    system:        system.filter(
+    user:            groupUserCredentials(user),
+    system:          system.filter(
       (credential) =>
         !isCliAuthSystemCredential(credential) &&
         !isProviderManagedSystemCredential(credential),
     ),
-    cli:           groupCliCredentials([
+    cli:             groupCliCredentials([
       ...data.cli.map(adaptCliCredential),
       ...cliFromSystem,
     ]),
     identities,
     providers,
     ownerEntityId,
+    sourcesDegraded: data.sources_degraded ?? [],
   };
 }
 
@@ -542,7 +545,11 @@ export function useSecretsInventory(args: UseSecretsInventoryArgs = {}) {
       const resp = await getSecretsInventory(
         identity ? { identity } : undefined,
       );
-      return adaptInventoryResponse(resp.data);
+      // meta.sources_degraded (bu-5ccth) names any backend source dropped
+      // from this fan-out rather than failing the whole request — thread it
+      // through so SecretsPage can name the missing family inline instead of
+      // silently rendering an incomplete inventory as an all-clear.
+      return adaptInventoryResponse({ ...resp.data, sources_degraded: resp.meta.sources_degraded });
     },
     staleTime: THIRTY_SECONDS_MS,
     refetchInterval: FIVE_MINUTES_MS,

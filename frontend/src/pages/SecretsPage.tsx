@@ -9,6 +9,15 @@
 //   ?toast=connected  → green sonner toast + strip param
 //   ?oauth_error=<e>  → amber sonner toast + strip param
 //
+// Degraded-mode rendering (bu-5ccth): a single slow/failed inventory refetch
+// must never blank a page that has useful cached data. TanStack Query v5
+// never clears `data` on a background-refetch error (the reducer's "error"
+// action spreads `...state`, leaving `data` untouched — see
+// query-core/build/modern/query.js), so `isError && !inventory` only happens
+// on a genuinely first-ever failed load with nothing cached yet. Every other
+// error keeps the last-known inventory renderable behind a
+// SourceDegradedNote banner instead of the terminal wall.
+//
 // Spec: openspec/changes/redesign-secrets-passport/specs/butler-secrets/spec.md
 //   §Passport-Book Information Architecture
 //   §Deep-Link Focus Routing
@@ -22,6 +31,18 @@ import { toast } from "sonner";
 
 import { DirectionPassport } from "@/components/secrets/passport";
 import { useSecretsInventory } from "@/hooks/use-secrets-inventory.ts";
+import { Button } from "@/components/ui/button";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
+
+/** "HH:MM" in the viewer's local time, for the "showing data from HH:MM" banner copy. */
+function formatUpdatedAt(updatedAt: number): string {
+  if (!updatedAt) return "an earlier load";
+  return new Date(updatedAt).toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
 
 export default function SecretsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -58,7 +79,14 @@ export default function SecretsPage() {
 
   // Fetch the credential inventory. The ?identity= URL param scopes the user
   // credential array to a specific entity (projection-lens semantics).
-  const { data: inventory, isLoading, isError } = useSecretsInventory({
+  const {
+    data: inventory,
+    isLoading,
+    isError,
+    error,
+    dataUpdatedAt,
+    refetch,
+  } = useSecretsInventory({
     identity: identityParam ?? undefined,
   });
 
@@ -81,24 +109,63 @@ export default function SecretsPage() {
     );
   }
 
-  if (isError || !inventory) {
+  // Terminal failure: nothing cached to fall back on (the very first load
+  // failed, or a timed-out/erroring refetch on a fresh ?identity= that has
+  // never loaded before). Still recoverable in place via Retry — no page
+  // reload required.
+  if (isError && !inventory) {
+    const detail =
+      error instanceof Error && error.message ? error.message : null;
     return (
       <div
         data-direction-passport="true"
         style={{
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
+          gap: 12,
           minHeight: "100%",
           color: "var(--red)",
           fontFamily: "var(--font-mono, monospace)",
           fontSize: 13,
         }}
       >
-        Failed to load credentials.
+        <span>Failed to load credentials{detail ? `. ${detail}` : "."}</span>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>
+          Retry
+        </Button>
       </div>
     );
   }
 
-  return <DirectionPassport inventory={inventory} />;
+  if (!inventory) return null;
+
+  const degradedFamilies = inventory.sourcesDegraded ?? [];
+
+  return (
+    <div className="flex flex-col min-h-full">
+      {isError && (
+        <div className="px-9 pt-3" data-testid="secrets-inventory-degraded">
+          <SourceDegradedNote
+            label="Inventory"
+            detail={`unreachable — showing data from ${formatUpdatedAt(dataUpdatedAt)} · retrying`}
+            onRetry={() => refetch()}
+          />
+        </div>
+      )}
+      {!isError && degradedFamilies.length > 0 && (
+        <div className="px-9 pt-3" data-testid="secrets-inventory-partial-degraded">
+          <SourceDegradedNote
+            label="Inventory"
+            detail={`${degradedFamilies.join(", ")} unavailable — showing the rest`}
+            onRetry={() => refetch()}
+          />
+        </div>
+      )}
+      <div className="flex-1 min-h-0">
+        <DirectionPassport inventory={inventory} />
+      </div>
+    </div>
+  );
 }
