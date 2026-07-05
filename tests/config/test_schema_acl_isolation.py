@@ -522,6 +522,7 @@ def test_connector_writer_role_enforcement(postgres_container):
     db_url = _create_db(postgres_container, _unique_db_name())
     bootstrap_extensions(db_url)
     asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(run_migrations(db_url, chain="relationship"))
     _require_runtime_acl(db_url)
     _require_connector_writer(db_url)
 
@@ -569,6 +570,23 @@ def test_connector_writer_role_enforcement(postgres_container):
         " VALUES (gen_random_uuid(), 'connector-acl', 'probe', 'ep-2',"
         "  'ext-2', 'dk-connector-probe-1', 'hash', 'full', 'standard')",
     )
+    _execute_as_role_via_session_auth(
+        db_url,
+        session_role,
+        "connector_writer",
+        "SELECT count(*) FROM relationship.entity_facts",
+    )
+
+    with pytest.raises(ProgrammingError, match="permission denied"):
+        _execute_as_role_via_session_auth(
+            db_url,
+            session_role,
+            "connector_writer",
+            "INSERT INTO relationship.entity_facts"
+            " (subject, predicate, object, object_kind, src)"
+            " VALUES (gen_random_uuid(), 'has-email', 'probe@example.com',"
+            "  'literal', 'acl-probe')",
+        )
 
     setup_engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
