@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,6 +33,20 @@ from butlers.api.deps import (
 from butlers.api.pricing import ModelPricing, PricingConfig
 
 pytestmark = pytest.mark.unit
+
+# Real sleep captured before any test patches asyncio.sleep (mirrors
+# tests/daemon/test_scheduler_loop.py's _fast_sleep pattern) -- patching
+# "butlers.api.routers.settings_console.asyncio.sleep" patches the asyncio
+# module's own `sleep` attribute (same module object everywhere), so a fast
+# replacement must NOT call `asyncio.sleep` itself or it recurses into its
+# own patch.
+_real_sleep = asyncio.sleep
+
+
+async def _fast_sleep(_delay: float) -> None:
+    """Yield control to the event loop without a real delay."""
+    await _real_sleep(0)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -537,3 +552,209 @@ async def test_check_failed_webhooks_swallows_db_errors():
     items = await _check_failed_webhooks(db)
 
     assert items == []
+
+
+# ---------------------------------------------------------------------------
+# _compute_console_deltas -- pure diff helper shared by the legacy
+# per-connection WS loop and the standalone bus-emitting background loop
+# ---------------------------------------------------------------------------
+
+
+def _console_payload(*, active_butlers: int = 1, attention: list[dict] | None = None) -> dict:
+    return {
+        "header_counts": {
+            "active_butlers": active_butlers,
+            "spend_mtd_usd": 0.0,
+            "open_approvals": 0,
+            "models_verified": 0,
+            "models_total": 0,
+        },
+        "attention": attention or [],
+        "attention_truncated_count": 0,
+    }
+
+
+def test_compute_console_deltas_no_change_is_empty():
+    payload = _console_payload(active_butlers=3)
+    header_delta, added, removed = console_mod._compute_console_deltas(payload, payload)
+    assert header_delta == {}
+    assert added == []
+    assert removed == []
+
+
+def test_compute_console_deltas_header_change_only():
+    prev = _console_payload(active_butlers=1)
+    new = _console_payload(active_butlers=2)
+    header_delta, added, removed = console_mod._compute_console_deltas(prev, new)
+    assert header_delta == {"active_butlers": 2}
+    assert added == []
+    assert removed == []
+
+
+def test_compute_console_deltas_attention_add():
+    item = {"tone": "red", "kind": "open_approvals", "text": "x", "action_route": "/approvals"}
+    prev = _console_payload(attention=[])
+    new = _console_payload(attention=[item])
+    header_delta, added, removed = console_mod._compute_console_deltas(prev, new)
+    assert header_delta == {}
+    assert added == [item]
+    assert removed == []
+
+
+def test_compute_console_deltas_attention_remove():
+    item = {
+        "tone": "amber",
+        "kind": "spend_ceiling",
+        "text": "x",
+        "action_route": "/settings/spend",
+    }
+    prev = _console_payload(attention=[item])
+    new = _console_payload(attention=[])
+    header_delta, added, removed = console_mod._compute_console_deltas(prev, new)
+    assert header_delta == {}
+    assert added == []
+    assert removed == ["spend_ceiling"]
+
+
+# ---------------------------------------------------------------------------
+# run_settings_console_delta_loop -- standalone bus-emitting background task
+# (bu-3quv8, completes bu-qvnce.14 slice 2 on the backend)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_settings_console_delta_loop_emits_nothing_on_first_tick():
+    """The first tick has no baseline to diff against -- no emit_event calls,
+    the REST GET's own snapshot is the client's initial state."""
+    payload = _console_payload(active_butlers=1)
+    first_tick_done = asyncio.Event()
+
+    async def _fake_build(*_args, **_kwargs):
+        first_tick_done.set()
+        return payload
+
+    with (
+        patch.object(console_mod, "_build_console_payload", side_effect=_fake_build),
+        patch("butlers.api.routers.settings_console.asyncio.sleep", side_effect=_fast_sleep),
+        patch.object(console_mod, "emit_event") as mock_emit,
+    ):
+        task = asyncio.create_task(
+            console_mod.run_settings_console_delta_loop(
+                _BUTLER_CONFIG, MagicMock(), _PRICING, None, interval_s=0.001
+            )
+        )
+        try:
+            await asyncio.wait_for(first_tick_done.wait(), timeout=2.0)
+            await _real_sleep(0)  # let the tick finish updating the cache
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    mock_emit.assert_not_called()
+    assert console_mod._cache_payload == payload
+
+
+@pytest.mark.asyncio
+async def test_settings_console_delta_loop_emits_deltas_on_change():
+    """A change between tick 1 and tick 2 fans header_delta / attention_add /
+    attention_remove onto the fleet event bus via emit_event."""
+    added_item = {
+        "tone": "red",
+        "kind": "open_approvals",
+        "text": "x",
+        "action_route": "/approvals",
+    }
+    removed_item = {
+        "tone": "amber",
+        "kind": "spend_ceiling",
+        "text": "y",
+        "action_route": "/settings/spend",
+    }
+    payload_1 = _console_payload(active_butlers=1, attention=[removed_item])
+    payload_2 = _console_payload(active_butlers=2, attention=[added_item])
+
+    call_count = 0
+    second_tick_done = asyncio.Event()
+
+    async def _fake_build(*_args, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return payload_1
+        second_tick_done.set()
+        return payload_2
+
+    with (
+        patch.object(console_mod, "_build_console_payload", side_effect=_fake_build),
+        patch("butlers.api.routers.settings_console.asyncio.sleep", side_effect=_fast_sleep),
+        patch.object(console_mod, "emit_event") as mock_emit,
+    ):
+        task = asyncio.create_task(
+            console_mod.run_settings_console_delta_loop(
+                _BUTLER_CONFIG, MagicMock(), _PRICING, None, interval_s=0.001
+            )
+        )
+        try:
+            await asyncio.wait_for(second_tick_done.wait(), timeout=2.0)
+            await _real_sleep(0)  # let the tick finish emitting before we cancel
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    calls = {c.args[0]: c.args[1] for c in mock_emit.call_args_list}
+    assert calls["header_delta"] == {"active_butlers": 2}
+    assert calls["attention_add"] == added_item
+    assert calls["attention_remove"] == {"kind": "spend_ceiling"}
+    assert console_mod._cache_payload == payload_2
+
+
+@pytest.mark.asyncio
+async def test_settings_console_delta_loop_continues_after_aggregation_failure():
+    """A failed aggregation tick is logged and swallowed -- the loop keeps
+    running and still catches up on the next successful tick."""
+    payload = _console_payload(active_butlers=5)
+    call_count = 0
+    recovered = asyncio.Event()
+
+    async def _fake_build(*_args, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("aggregation exploded")
+        recovered.set()
+        return payload
+
+    with (
+        patch.object(console_mod, "_build_console_payload", side_effect=_fake_build),
+        patch("butlers.api.routers.settings_console.asyncio.sleep", side_effect=_fast_sleep),
+        patch.object(console_mod, "emit_event") as mock_emit,
+    ):
+        task = asyncio.create_task(
+            console_mod.run_settings_console_delta_loop(
+                _BUTLER_CONFIG, MagicMock(), _PRICING, None, interval_s=0.001
+            )
+        )
+        try:
+            await asyncio.wait_for(recovered.wait(), timeout=2.0)
+            await _real_sleep(0)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    # The failed first tick never established a baseline; the recovered
+    # second tick becomes the new first-successful-tick, so there is still no
+    # diff to emit -- but the loop must have survived the RuntimeError to get
+    # here at all.
+    mock_emit.assert_not_called()
+    assert console_mod._cache_payload == payload
+
+
+@pytest.mark.asyncio
+async def test_settings_console_delta_loop_rejects_non_positive_interval():
+    with pytest.raises(ValueError):
+        await console_mod.run_settings_console_delta_loop(
+            _BUTLER_CONFIG, MagicMock(), _PRICING, None, interval_s=0
+        )

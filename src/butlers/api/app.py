@@ -25,6 +25,8 @@ from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
 from butlers.api.deps import (
     get_butler_configs,
     get_db_manager,
+    get_mcp_manager,
+    get_pricing,
     init_db_manager,
     init_dependencies,
     init_pricing,
@@ -101,7 +103,12 @@ from butlers.api.routers.sessions import (
 from butlers.api.routers.sessions import (
     router as sessions_router,
 )
-from butlers.api.routers.settings_console import router as settings_console_router
+from butlers.api.routers.settings_console import (
+    router as settings_console_router,
+)
+from butlers.api.routers.settings_console import (
+    run_settings_console_delta_loop,
+)
 from butlers.api.routers.spend import router as spend_router
 from butlers.api.routers.spotify import router as spotify_router
 from butlers.api.routers.sse import router as sse_router
@@ -172,6 +179,7 @@ async def lifespan(app: FastAPI):
     # Initialize DB pools for all discovered butlers
     butler_configs = get_butler_configs()
     secrets_lifecycle_task: asyncio.Task | None = None
+    settings_console_delta_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
         # Wire DB dependencies for both static and dynamic routers
@@ -220,6 +228,29 @@ async def lifespan(app: FastAPI):
         _BACKGROUND_TASKS.add(secrets_lifecycle_task)
         secrets_lifecycle_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
+        # Settings Console live updates (bu-3quv8): fans header_delta /
+        # attention_add / attention_remove onto the unified fleet event bus
+        # (WS /api/events/stream) independent of whether anything is
+        # connected to the legacy WS /api/settings/stream -- see
+        # run_settings_console_delta_loop's docstring. Guarded in its own
+        # try/except (rather than folded into the DatabaseManager try above)
+        # so a pricing-config load failure can't misleadingly log as a DB
+        # init failure; GET /api/settings/console is unaffected either way.
+        try:
+            settings_console_delta_task = asyncio.create_task(
+                run_settings_console_delta_loop(
+                    butler_configs, get_mcp_manager(), get_pricing(), get_db_manager()
+                )
+            )
+            _BACKGROUND_TASKS.add(settings_console_delta_task)
+            settings_console_delta_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        except Exception:
+            logger.warning(
+                "Failed to start settings-console delta loop; header/attention bus events "
+                "disabled (GET /api/settings/console is unaffected)",
+                exc_info=True,
+            )
+
     except Exception:
         logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
 
@@ -235,6 +266,10 @@ async def lifespan(app: FastAPI):
         secrets_lifecycle_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await secrets_lifecycle_task
+    if settings_console_delta_task is not None:
+        settings_console_delta_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await settings_console_delta_task
     await shutdown_db_manager()
     await shutdown_dependencies()
 

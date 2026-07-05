@@ -7,6 +7,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import SettingsConsolePage from "@/pages/SettingsConsolePage";
 
+// useSettingsConsoleLive subscribes to the shared EventBusProvider (bu-3quv8),
+// which this page test does not mount (it renders via renderToStaticMarkup,
+// synchronously, before any query resolves anyway) -- mirrors SpendPage.test.tsx's
+// mock of useSpendTicker for the same reason. Pass-through keeps this test's
+// only real dependency on the REST-fetched `consoleResp?.data` above.
+vi.mock("@/hooks/use-settings-console-live", () => ({
+  useSettingsConsoleLive: (data: unknown) => data,
+}));
+
 vi.mock("@/api/client", () => ({
   apiFetch: vi.fn((path: string) => {
     if (path === "/settings/console") {

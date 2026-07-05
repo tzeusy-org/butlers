@@ -73,6 +73,24 @@ The dashboard SHALL expose `WS /api/settings/stream` emitting incremental update
 - **THEN** the first event delivered SHALL be a full `header_delta` containing the current snapshot
 - **AND** subsequent events resume incremental delivery.
 
+### Requirement: Settings Console Deltas On The Unified Fleet Event Bus
+The dashboard SHALL also fan Settings Console `header_delta` / `attention_add` / `attention_remove` events onto the unified fleet event bus (`WS /api/events/stream`), independent of any `WS /api/settings/stream` connection, so a client can receive live console updates via the single shared bus connection instead of opening a second socket (bu-3quv8, completing the settings-console half of bu-qvnce.14's single-socket doctrine).
+
+#### Scenario: Deltas are emitted regardless of legacy WS connections
+- **WHEN** the console payload changes (a header count or an attention item)
+- **THEN** the backend emits the corresponding `header_delta` / `attention_add` / `attention_remove` event via `emit_event` onto `WS /api/events/stream`
+- **AND** this happens via a standalone background aggregation loop, independent of whether any client is connected to the legacy `WS /api/settings/stream` route.
+
+#### Scenario: Dashboard client subscribes via the shared bus, not a second socket
+- **WHEN** the dashboard's Settings Console page needs live header/attention updates
+- **THEN** it subscribes to `"header_delta"` / `"attention_add"` / `"attention_remove"` on the shared `EventBusProvider` connection
+- **AND** it does not open its own `WS /api/settings/stream` connection.
+
+#### Scenario: A missed or replayed delta converges rather than drifts
+- **WHEN** a bus event is replayed from the shared bus's ring-buffer snapshot (on initial connect or reconnect), or a delta is missed entirely while disconnected
+- **THEN** the client ignores replayed console-delta events and instead relies on its periodic `GET /api/settings/console` reconciliation poll to reseed the full, authoritative state
+- **AND** state converges to the server's own aggregation on that fixed cadence rather than silently drifting from an unapplied or double-applied delta.
+
 ## Source References
 - Non-Negotiable Rule 1 (Composure is the brand) and Rule 4 (every element earns its place against state) from `about/heart-and-soul/design-language.md`.
 - PLAN.md §4 routes contract and §5 Settings Console API surface.

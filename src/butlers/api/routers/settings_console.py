@@ -14,6 +14,16 @@ Implements §7.1 of the settings-redesign OpenSpec change:
        Multiplexes header_delta / attention_add / attention_remove events.
        Reconnect emits a full snapshot (event type "snapshot").
        Auth: ?api_key=<DASHBOARD_API_KEY> at handshake time (opt-in; absent when not configured).
+       Kept for any legacy client; the dashboard no longer connects here (see below).
+
+Settings Console deltas are ALSO fanned onto the unified fleet event bus
+(``WS /api/events/stream``, ``butlers.api.routers.events.emit_event``) as
+"header_delta" / "attention_add" / "attention_remove" events, via the
+standalone ``run_settings_console_delta_loop`` background task started once
+from the API lifespan (bu-3quv8) -- independent of whether anything is
+connected to the WS route above. The dashboard's ``use-settings-console-live.ts``
+subscribes there instead of opening a second socket (single-socket doctrine,
+bu-qvnce.14).
 
 Partial-failure mode: when a sub-system aggregation fails, the exception is
 caught per-subsystem and surfaces an amber attention item instead of erroring
@@ -44,6 +54,7 @@ from butlers.api.deps import (
 )
 from butlers.api.models import ApiResponse
 from butlers.api.pricing import PricingConfig
+from butlers.api.routers.events import emit_event
 
 logger = logging.getLogger(__name__)
 
@@ -499,6 +510,112 @@ async def _build_console_payload(
     }
 
 
+def _compute_console_deltas(
+    prev_payload: dict[str, Any],
+    new_payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    """Diff two console payloads into (header_delta, added_items, removed_kinds).
+
+    Pure, no I/O -- shared by the per-connection WS loop (``settings_stream``,
+    kept for any existing legacy client) and the standalone bus-emitting
+    background loop (``run_settings_console_delta_loop``) so the two
+    consumers can never disagree about what changed between two payloads.
+    """
+    old_counts = prev_payload["header_counts"]
+    new_counts = new_payload["header_counts"]
+    header_delta = {k: v for k, v in new_counts.items() if old_counts.get(k) != v}
+
+    old_items = {item["kind"]: item for item in prev_payload["attention"]}
+    new_items = {item["kind"]: item for item in new_payload["attention"]}
+
+    added = [item for kind, item in new_items.items() if kind not in old_items]
+    removed = [kind for kind in old_items if kind not in new_items]
+
+    return header_delta, added, removed
+
+
+# ---------------------------------------------------------------------------
+# Standalone background loop -- fans deltas onto the unified fleet event bus
+# ---------------------------------------------------------------------------
+
+#: Cadence for both the standalone delta loop below and the legacy
+#: per-connection WS loop (settings_stream) -- kept as one constant so the
+#: two consumers never silently drift into different polling rates.
+_CONSOLE_DELTA_INTERVAL_S = 5.0
+
+
+async def run_settings_console_delta_loop(
+    configs: list[ButlerConnectionInfo],
+    mgr: MCPClientManager,
+    pricing: PricingConfig,
+    db: DatabaseManager | None,
+    *,
+    interval_s: float = _CONSOLE_DELTA_INTERVAL_S,
+) -> None:
+    """Continuously aggregate the console payload and fan header_delta /
+    attention_add / attention_remove onto the unified fleet event bus
+    (``WS /api/events/stream``, see ``emit_event``) whenever it changes.
+
+    Runs as a single standalone ``asyncio.Task`` started once from the API
+    lifespan (see ``butlers.api.app.lifespan``), independent of any
+    ``WS /api/settings/stream`` connection. Unlike that legacy per-connection
+    loop -- which only computes deltas while a client happens to be attached,
+    and duplicates the full aggregation once per connection -- this task
+    always runs exactly once regardless of how many (if any) dashboards are
+    open, so ``EventBusProvider`` subscribers (``use-settings-console-live.ts``)
+    get live updates without a dashboard needing to open a second socket.
+
+    Also keeps the ``GET /api/settings/console`` in-memory cache warm as a
+    side effect: a request arriving between ticks is served from a payload
+    this loop already computed, rather than triggering its own aggregation.
+
+    Sleeps first (mirrors ``run_secrets_lifecycle_loop``) so process startup
+    (including every test that runs the full app lifespan) never pays a
+    real-aggregation burst before the first tick actually matters, and emits
+    no deltas on that first tick (nothing to diff against yet) -- callers
+    always have the REST snapshot for their initial state; deltas only need
+    to cover changes from that point forward. Never raises -- a failed
+    aggregation or emit is logged and the loop continues (mirrors
+    ``run_secrets_lifecycle_loop``'s fault isolation).
+    """
+    global _cache_ts, _cache_payload
+
+    if interval_s <= 0:
+        raise ValueError(f"interval_s must be a positive number, got {interval_s!r}")
+
+    prev_payload: dict[str, Any] | None = None
+
+    while True:
+        await asyncio.sleep(interval_s)
+
+        try:
+            new_payload = await _build_console_payload(configs, mgr, pricing, db)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("settings_console_delta_loop: aggregation tick failed")
+            continue
+
+        if prev_payload is not None:
+            try:
+                header_delta, added, removed = _compute_console_deltas(prev_payload, new_payload)
+                if header_delta:
+                    emit_event("header_delta", header_delta)
+                for item in added:
+                    emit_event("attention_add", item)
+                for kind in removed:
+                    emit_event("attention_remove", {"kind": kind})
+            except Exception:
+                logger.debug(
+                    "settings_console_delta_loop: emit_event failed (non-fatal)", exc_info=True
+                )
+
+        prev_payload = new_payload
+        async with _cache_lock:
+            _cache_payload = new_payload
+            _cache_ts = time.monotonic()
+
+
 # ---------------------------------------------------------------------------
 # GET /api/settings/console
 # ---------------------------------------------------------------------------
@@ -588,8 +705,6 @@ async def settings_stream(
 
     await websocket.accept()
 
-    _POLL_INTERVAL_S = 5.0
-
     try:
         # Emit full snapshot on connect
         payload = await _build_console_payload(configs, mgr, pricing, db)
@@ -598,27 +713,16 @@ async def settings_stream(
         prev_payload = payload
 
         while True:
-            await asyncio.sleep(_POLL_INTERVAL_S)
+            await asyncio.sleep(_CONSOLE_DELTA_INTERVAL_S)
             new_payload = await _build_console_payload(configs, mgr, pricing, db)
 
-            # Compute header_delta
-            old_counts = prev_payload["header_counts"]
-            new_counts = new_payload["header_counts"]
-            delta = {k: v for k, v in new_counts.items() if old_counts.get(k) != v}
-            if delta:
-                await websocket.send_json({"type": "header_delta", "data": delta})
-
-            # Compute attention changes
-            old_items = {item["kind"]: item for item in prev_payload["attention"]}
-            new_items = {item["kind"]: item for item in new_payload["attention"]}
-
-            for kind, item in new_items.items():
-                if kind not in old_items:
-                    await websocket.send_json({"type": "attention_add", "data": item})
-
-            for kind in old_items:
-                if kind not in new_items:
-                    await websocket.send_json({"type": "attention_remove", "data": {"kind": kind}})
+            header_delta, added, removed = _compute_console_deltas(prev_payload, new_payload)
+            if header_delta:
+                await websocket.send_json({"type": "header_delta", "data": header_delta})
+            for item in added:
+                await websocket.send_json({"type": "attention_add", "data": item})
+            for kind in removed:
+                await websocket.send_json({"type": "attention_remove", "data": {"kind": kind}})
 
             prev_payload = new_payload
 

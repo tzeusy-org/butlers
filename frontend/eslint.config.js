@@ -358,9 +358,12 @@ export default defineConfig([
     },
   },
   {
-    // Same poll-policy enforcement for ApprovalsPage.tsx (a .tsx file, so it
-    // must instead repeat the general '**/*.tsx' block's full selector set).
-    files: ['src/pages/ApprovalsPage.tsx'],
+    // Same poll-policy enforcement for ApprovalsPage.tsx and
+    // SettingsConsolePage.tsx (bu-3quv8: its ["settings-console"] query is now
+    // bus-covered by header_delta/attention_add/attention_remove, see
+    // use-settings-console-live.ts) -- both .tsx files, so they must repeat
+    // the general '**/*.tsx' block's full selector set.
+    files: ['src/pages/ApprovalsPage.tsx', 'src/pages/SettingsConsolePage.tsx'],
     rules: {
       'no-restricted-syntax': [
         'error',

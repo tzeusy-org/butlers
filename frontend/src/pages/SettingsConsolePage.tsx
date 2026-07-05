@@ -30,7 +30,8 @@ import { apiFetch } from "@/api/client";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { cn } from "@/lib/utils";
-import { useSettingsConsoleStream } from "@/hooks/use-settings-console-stream";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
+import { useSettingsConsoleLive } from "@/hooks/use-settings-console-live";
 import QaStafferCard from "@/components/settings/QaStafferCard";
 
 // ---------------------------------------------------------------------------
@@ -506,26 +507,17 @@ export default function SettingsConsolePage() {
     queryKey: ["settings-console"],
     queryFn: fetchConsole,
     staleTime: 10_000,
-    // The WS /api/settings/stream ticker drives live updates; this poll is only
-    // a slow cold-start / reconnect safety net, not the primary update path.
-    refetchInterval: 5 * 60_000,
+    // Bus-covered (bu-3quv8): header_delta / attention_add / attention_remove
+    // events on the shared fleet event bus drive live updates (see
+    // useSettingsConsoleLive below); this poll is the reconciliation sweep,
+    // not the primary update path.
+    refetchInterval: POLL_BUS_RECONCILE_MS,
   });
 
-  // Live console state: the WS sends a full snapshot on connect, then applies
-  // header_delta / attention_add / attention_remove events incrementally
-  // (spec: dashboard-settings-console — Settings Console Live Stream). Until the
-  // first snapshot arrives (or if the socket is down) we fall back to the GET
-  // fetch above.
-  const { data: liveConsoleData, status: streamStatus } = useSettingsConsoleStream();
-
-  // Prefer the live stream while it is connecting/open. If the socket is down
-  // (e.g. a proxy/firewall blocks the WS permanently), `liveConsoleData` would
-  // otherwise stay frozen at its last value forever; in that case fall back to
-  // the periodic GET poll so the safety net actually refreshes the view.
-  const consoleData =
-    streamStatus === "closed"
-      ? (consoleResp?.data ?? liveConsoleData)
-      : (liveConsoleData ?? consoleResp?.data);
+  // Live console state: layers header_delta / attention_add / attention_remove
+  // bus events on top of the REST snapshot above (see use-settings-console-live.ts).
+  // Returns undefined until the first GET response lands, same as before this port.
+  const consoleData = useSettingsConsoleLive(consoleResp?.data);
 
   function handleNavigate(route: string) {
     navigate(route);

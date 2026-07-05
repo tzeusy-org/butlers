@@ -21,7 +21,18 @@ function keys(invalidateQueries: ReturnType<typeof vi.fn>): unknown[] {
 describe("EVENT_CACHE_REGISTRY", () => {
   it("has one entry per canonical event type", () => {
     expect(Object.keys(EVENT_CACHE_REGISTRY).sort()).toEqual(
-      ["approval", "heartbeat", "ingestion", "issue", "notification", "session", "spend"].sort(),
+      [
+        "approval",
+        "attention_add",
+        "attention_remove",
+        "header_delta",
+        "heartbeat",
+        "ingestion",
+        "issue",
+        "notification",
+        "session",
+        "spend",
+      ].sort(),
     );
   });
 
@@ -142,6 +153,15 @@ describe("EVENT_CACHE_REGISTRY", () => {
     applyFleetEvent(qc, { type: "heartbeat", ts: 1, data: {} });
     expect(invalidateQueries).not.toHaveBeenCalled();
   });
+
+  it.each(["header_delta", "attention_add", "attention_remove"])(
+    "%s: is a no-op (Settings Console applies these via its own local reducer, not react-query)",
+    (type) => {
+      const { qc, invalidateQueries } = makeQc();
+      applyFleetEvent(qc, { type, ts: 1, data: {} });
+      expect(invalidateQueries).not.toHaveBeenCalled();
+    },
+  );
 
   it("unknown event type: is a no-op rather than throwing", () => {
     const { qc, invalidateQueries } = makeQc();

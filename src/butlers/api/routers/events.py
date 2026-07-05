@@ -7,7 +7,8 @@ building a fourth bespoke socket, every surface that wants live updates can
 subscribe once here and receive a typed envelope::
 
     {"type": "approval" | "spend" | "session" | "notification" | "issue"
-             | "ingestion" | "heartbeat", "ts": <unix float>, "data": {...}}
+             | "ingestion" | "header_delta" | "attention_add"
+             | "attention_remove" | "heartbeat", "ts": <unix float>, "data": {...}}
 
 On connect the server replays a snapshot of recent events (ring buffer) so a
 client is never blank while waiting for the next live event. When no event
@@ -60,6 +61,9 @@ EVENT_TYPES = frozenset(
         "issue",  # a new audit-log error landed (issues feed may have changed)
         "approval",  # mirrors /api/approvals/stream payloads
         "spend",  # mirrors /api/spend/stream payloads
+        "header_delta",  # Settings Console header_counts changed (bu-3quv8)
+        "attention_add",  # Settings Console attention item appeared (bu-3quv8)
+        "attention_remove",  # Settings Console attention item cleared (bu-3quv8)
         "heartbeat",  # synthetic keepalive; no `data`
     }
 )

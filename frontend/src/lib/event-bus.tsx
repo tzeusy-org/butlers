@@ -14,13 +14,15 @@
  *   - useSpendStream (SpendPage's live cost ticker) -- ported to
  *     use-spend-ticker.ts's useSpendTicker(), which subscribes here instead
  *     of opening /api/spend/stream itself.
- *   - useSettingsConsoleStream (SettingsConsolePage) -- NOT ported. Its wire
- *     protocol (header_delta/attention_add/attention_remove) has no
- *     equivalent on the unified bus today -- the backend never fans those
- *     deltas onto `/api/events/stream` (see src/butlers/api/routers/
- *     settings_console.py). Porting it needs a backend event type, which is
- *     out of scope for a frontend-only slice; left running its own socket
- *     with a follow-up filed to add the backend wiring.
+ *   - useSettingsConsoleStream (SettingsConsolePage) -- ported (bu-3quv8) to
+ *     use-settings-console-live.ts's useSettingsConsoleLive(), which
+ *     subscribes here to the "header_delta"/"attention_add"/
+ *     "attention_remove" types instead of opening /api/settings/stream
+ *     itself. The backend now fans those deltas onto this bus via a
+ *     standalone background task independent of any WS /api/settings/stream
+ *     connection (see run_settings_console_delta_loop in
+ *     src/butlers/api/routers/settings_console.py); the legacy WS route
+ *     remains for any other client but the dashboard no longer opens it.
  *
  * EventBusProvider wraps `useEventStream()` ONCE and re-exposes its per-type
  * events to any number of subscribers via `subscribe(type, cb)`. Cache
@@ -66,7 +68,8 @@ export interface EventBusContextValue {
   /**
    * Subscribe to every event of a given fleet-bus `type` (see EVENT_TYPES in
    * src/butlers/api/routers/events.py -- "session" | "notification" |
-   * "ingestion" | "issue" | "approval" | "spend" | "heartbeat"). Returns an
+   * "ingestion" | "issue" | "approval" | "spend" | "header_delta" |
+   * "attention_add" | "attention_remove" | "heartbeat"). Returns an
    * unsubscribe function; call it on cleanup.
    */
   subscribe: (type: string, listener: BusListener) => () => void;

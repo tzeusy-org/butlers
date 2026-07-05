@@ -6,7 +6,8 @@
  * every dashboard-relevant event type in one envelope:
  *
  *   {"type": "session" | "notification" | "ingestion" | "issue"
- *           | "approval" | "spend" | "heartbeat", "ts": <unix float>, "data": {...}}
+ *           | "approval" | "spend" | "header_delta" | "attention_add"
+ *           | "attention_remove" | "heartbeat", "ts": <unix float>, "data": {...}}
  *
  * Rather than each consumer hand-rolling its own invalidation logic (the
  * pattern that was built three times for approvals/spend/settings-console —
@@ -167,6 +168,21 @@ const heartbeatPatch: CachePatch = () => {
   // Intentionally a no-op.
 };
 
+/**
+ * header_delta / attention_add / attention_remove — Settings Console live
+ * updates (bu-3quv8). Unlike every other type above, these do NOT go through
+ * react-query invalidation: the console's state lives outside the query
+ * cache in its own local reducer (use-settings-console-live.ts), seeded from
+ * the ["settings-console"] query and merged with live bus deltas in place.
+ * Invalidating that query key here would force a full aggregation re-fetch
+ * on every delta -- exactly the cost these event types exist to avoid. A
+ * no-op like heartbeatPatch above, but for a different reason (a dedicated
+ * consumer already exists, not "nothing needs this").
+ */
+const settingsConsoleDeltaPatch: CachePatch = () => {
+  // Intentionally a no-op -- see comment above.
+};
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -182,6 +198,9 @@ export const EVENT_CACHE_REGISTRY: Record<string, CachePatch> = {
   notification: notificationPatch,
   issue: issuePatch,
   ingestion: ingestionPatch,
+  header_delta: settingsConsoleDeltaPatch,
+  attention_add: settingsConsoleDeltaPatch,
+  attention_remove: settingsConsoleDeltaPatch,
   heartbeat: heartbeatPatch,
 };
 
