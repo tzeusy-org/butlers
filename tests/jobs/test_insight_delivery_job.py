@@ -342,6 +342,75 @@ class TestSwitchboardInsightDeliveryJobWiring:
 
 
 # ---------------------------------------------------------------------------
+# Tests: _run_switchboard_insight_urgent_subcycle_job wiring (bu-o8233)
+# ---------------------------------------------------------------------------
+
+
+class TestSwitchboardInsightUrgentSubcycleJobWiring:
+    """Verify the hourly urgent-subcycle job wires notify_fn AND urgent_only=True."""
+
+    @pytest.mark.asyncio
+    async def test_job_passes_urgent_only_true_and_non_none_notify_fn(self):
+        """The scheduled job must call delivery_cycle(urgent_only=True, notify_fn=...)."""
+        from butlers.scheduled_jobs import _run_switchboard_insight_urgent_subcycle_job
+
+        pool = _make_mock_pool()
+        captured: dict[str, Any] = {}
+
+        async def fake_delivery_cycle(
+            p: Any,
+            *,
+            notify_fn: Any = None,
+            now: Any = None,
+            urgent_only: bool = False,
+        ) -> dict[str, Any]:
+            captured["notify_fn"] = notify_fn
+            captured["urgent_only"] = urgent_only
+            return {"skipped": False, "delivered": [], "expired": 0, "effective_budget": 0}
+
+        with patch(
+            "butlers.tools.switchboard.insight.broker.delivery_cycle",
+            side_effect=fake_delivery_cycle,
+        ):
+            await _run_switchboard_insight_urgent_subcycle_job(pool, None)
+
+        assert "notify_fn" in captured, "delivery_cycle was not called"
+        assert captured["notify_fn"] is not None, (
+            "notify_fn must NOT be None — delivery would be skipped"
+        )
+        assert callable(captured["notify_fn"]), "notify_fn must be callable"
+        assert captured["urgent_only"] is True, (
+            "the hourly job must pass urgent_only=True or it degenerates into "
+            "a second daily-budgeted cycle"
+        )
+
+    @pytest.mark.asyncio
+    async def test_job_uses_same_notify_fn_builder_as_daily_job(self):
+        """The urgent subcycle shares the exact same production notify_fn factory
+        as the daily cycle — same channel resolution, same delivery path."""
+        from butlers.scheduled_jobs import (
+            _build_switchboard_insight_notify_fn,
+            _run_switchboard_insight_urgent_subcycle_job,
+        )
+
+        pool = _make_mock_pool()
+
+        with (
+            patch(
+                "butlers.scheduled_jobs._build_switchboard_insight_notify_fn",
+                wraps=_build_switchboard_insight_notify_fn,
+            ) as wrapped_builder,
+            patch(
+                "butlers.tools.switchboard.insight.broker.delivery_cycle",
+                new=AsyncMock(return_value={"skipped": True}),
+            ),
+        ):
+            await _run_switchboard_insight_urgent_subcycle_job(pool, None)
+
+        wrapped_builder.assert_called_once_with(pool)
+
+
+# ---------------------------------------------------------------------------
 # Tests: broker channel selection (majority vote in notify_metadata)
 # ---------------------------------------------------------------------------
 

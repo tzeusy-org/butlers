@@ -721,6 +721,7 @@ async def delivery_cycle(
     *,
     notify_fn: Any | None = None,
     now: datetime | None = None,
+    urgent_only: bool = False,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
 
@@ -745,6 +746,34 @@ async def delivery_cycle(
         If None, delivery is skipped (useful for testing cycle logic).
     now:
         Reference time (defaults to UTC now). Used in tests to control time.
+    urgent_only:
+        bu-o8233 (JARVIS pursuit move 8 slice 4) — hourly urgent sub-cycle mode.
+        Today's single daily cron slot means a priority>=90 candidate proposed
+        minutes after the daily run can sit ``pending`` for nearly 24h before
+        the existing priority-urgent bypass (which only affects quiet-hours/
+        context-bus *suppression*, not cadence) ever gets a chance to consider
+        it. When True, this cycle:
+          - narrows candidate selection to ``priority >= URGENT_PRIORITY_THRESHOLD``
+            from the start (routine candidates are never touched by this mode —
+            they stay untouched ``pending`` for the next daily cycle);
+          - skips the quiet-hours/context-bus consult entirely (urgent
+            candidates always bypass both per RFC 0011 Amendment 1, so the
+            reads would be pure overhead);
+          - still honours an explicit ``verbosity=off`` opt-out (that is a
+            hard user preference, not a time-based deferral the urgent bypass
+            is meant to override);
+          - has no daily budget cap — every eligible urgent candidate is
+            delivered (or folded into one digest) this cycle, not just the
+            top-B;
+          - skips end-of-cycle maintenance (``cleanup_old_rows``,
+            disengagement auto-off) — the daily cycle already covers those
+            once a day; running them hourly too would be redundant.
+        Idempotency across the two cycles needs no extra bookkeeping: both
+        select ``WHERE status = 'pending'`` and this cycle's own delivery step
+        flips delivered candidates to ``status = 'delivered'`` before
+        returning, so a later daily cycle (or the next hourly tick) simply
+        never sees them again — the same row-status guard the daily cycle
+        already relies on.
 
     Returns
     -------
@@ -766,31 +795,58 @@ async def delivery_cycle(
         "effective_budget": 0,
     }
 
+    settings = await get_insight_settings(pool)
+
     # Step 1: Check quiet hours + context bus (bu-qvnce.8 slices 1-2). Both are
     # deterministic, non-LLM reads. Neither suppresses a candidate at or above
     # URGENT_PRIORITY_THRESHOLD (RFC 0011 Amendment 1: fail-open for urgent,
     # budgeted for routine) — that check happens below, once pending
     # candidates are known, so a single urgent candidate doesn't skip the
-    # whole cycle's suppression bookkeeping.
-    settings = await get_insight_settings(pool)
-    _quiet_hours_active = _is_quiet_hours(settings, now=now)
-    _context_signal = await get_suppressing_context_signal(pool)
+    # whole cycle's suppression bookkeeping. In urgent_only mode every
+    # candidate this cycle considers is already >= the urgent threshold, so
+    # the suppression consult is skipped outright rather than computed and
+    # then ignored.
     _suppression_reason: str | None = None
-    if _quiet_hours_active:
-        _suppression_reason = "quiet_hours"
-    elif _context_signal is not None:
-        _suppression_reason = f"context_bus:{_context_signal}"
+    if not urgent_only:
+        _quiet_hours_active = _is_quiet_hours(settings, now=now)
+        _context_signal = await get_suppressing_context_signal(pool)
+        if _quiet_hours_active:
+            _suppression_reason = "quiet_hours"
+        elif _context_signal is not None:
+            _suppression_reason = f"context_bus:{_context_signal}"
 
-    # Check verbosity=off early
+    # Check verbosity=off early. This is a hard user opt-out (distinct from
+    # the time-based quiet-hours/context-bus deferral above), so it applies
+    # even in urgent_only mode — the priority-urgent bypass fails open past
+    # quiet hours and dnd/sleeping signals, not past the owner's own "insights
+    # off" setting.
     configured_budget = _get_configured_budget(settings)
     if configured_budget == 0:
-        logger.info("insight-delivery-cycle: verbosity=off, filtering all pending")
-        await pool.execute(
-            """
-            UPDATE insight_candidates SET status = 'filtered'
-            WHERE status = 'pending'
-            """
-        )
+        if urgent_only:
+            # Only touch the urgent working set this cycle actually considers.
+            # Routine (sub-threshold) candidates must stay untouched 'pending'
+            # for a later, non-suppressed cycle — the same invariant this mode
+            # upholds everywhere else (see selection/budget/cleanup above).
+            logger.info(
+                "insight-delivery-cycle: verbosity=off, filtering pending urgent "
+                "(priority>=%d) candidates only",
+                URGENT_PRIORITY_THRESHOLD,
+            )
+            await pool.execute(
+                """
+                UPDATE insight_candidates SET status = 'filtered'
+                WHERE status = 'pending' AND priority >= $1
+                """,
+                URGENT_PRIORITY_THRESHOLD,
+            )
+        else:
+            logger.info("insight-delivery-cycle: verbosity=off, filtering all pending")
+            await pool.execute(
+                """
+                UPDATE insight_candidates SET status = 'filtered'
+                WHERE status = 'pending'
+                """
+            )
         result["skipped"] = True
         return result
 
@@ -799,20 +855,32 @@ async def delivery_cycle(
     expired = await expire_candidates(pool, now=now)
     result["expired"] = expired
 
-    # Fetch pending candidates
-    rows = await pool.fetch(
-        """
-        SELECT id FROM insight_candidates
-        WHERE status = 'pending'
-        ORDER BY priority DESC, created_at ASC
-        """
-    )
+    # Fetch pending candidates. urgent_only narrows this to priority>=90 from
+    # the start — routine candidates are never selected, filtered, or
+    # otherwise touched by this cycle.
+    if urgent_only:
+        rows = await pool.fetch(
+            """
+            SELECT id FROM insight_candidates
+            WHERE status = 'pending' AND priority >= $1
+            ORDER BY priority DESC, created_at ASC
+            """,
+            URGENT_PRIORITY_THRESHOLD,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT id FROM insight_candidates
+            WHERE status = 'pending'
+            ORDER BY priority DESC, created_at ASC
+            """
+        )
     pending_ids = [str(row["id"]) for row in rows]
 
     if not pending_ids:
         return result
 
-    if _suppression_reason is not None:
+    if not urgent_only and _suppression_reason is not None:
         urgent_rows = await pool.fetch(
             """
             SELECT id FROM insight_candidates
@@ -861,8 +929,15 @@ async def delivery_cycle(
     if not eligible_ids:
         return result
 
-    # Step 5: Compute effective budget
-    effective_budget = await compute_effective_budget(pool, settings, now=now)
+    # Step 5: Compute effective budget. urgent_only has no daily cap — every
+    # eligible urgent candidate is delivered this cycle (the budget exists to
+    # ration routine insights across a day; it does not apply to the
+    # always-deliver urgent bypass), so the "budget" here is simply the full
+    # eligible set.
+    if urgent_only:
+        effective_budget = len(eligible_ids)
+    else:
+        effective_budget = await compute_effective_budget(pool, settings, now=now)
     result["effective_budget"] = effective_budget
 
     if effective_budget == 0:
@@ -897,8 +972,10 @@ async def delivery_cycle(
             len(selected),
         )
         result["skipped"] = True
-        # Still run cleanup so the cycle doesn't accumulate stale rows
-        await cleanup_old_rows(pool, now=now)
+        # Still run cleanup so the cycle doesn't accumulate stale rows (daily
+        # cycle only — see the urgent_only skip rationale on Step 10 below).
+        if not urgent_only:
+            await cleanup_old_rows(pool, now=now)
         return result
 
     deliver_count = len(selected)
@@ -1009,10 +1086,13 @@ async def delivery_cycle(
             len(selected_ids),
         )
 
-    # Step 10: Cleanup
-    await cleanup_old_rows(pool, now=now)
-
-    # Auto-off check: total disengagement over 14 consecutive days
-    await check_total_disengagement_auto_off(pool, now=now, notify_fn=notify_fn)
+    # Step 10: Cleanup + disengagement auto-off. Skipped in urgent_only mode —
+    # these are daily-cadence maintenance concerns the regular cycle already
+    # covers once a day; running them on every hourly urgent tick too would
+    # just be redundant work (cleanup_old_rows' retention window is in days,
+    # and the auto-off check requires 14 consecutive *days* of history).
+    if not urgent_only:
+        await cleanup_old_rows(pool, now=now)
+        await check_total_disengagement_auto_off(pool, now=now, notify_fn=notify_fn)
 
     return result

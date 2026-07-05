@@ -899,6 +899,153 @@ class TestTickIntegration:
             await pool.fetchrow("SELECT status FROM deferred_notifications WHERE id = $1", fail_id)
         )["status"] == "pending"
 
+    # -----------------------------------------------------------------------
+    # Same-window coalescing (bu-o8233, JARVIS pursuit move 8 slice 4)
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    async def _insert_deferred(
+        pool,
+        *,
+        butler_name: str,
+        message: str,
+        deliver_at: datetime,
+        recipient: str | None = None,
+        channel: str = "telegram",
+        priority: str = "medium",
+    ):
+        envelope = {
+            "schema_version": "notify.v1",
+            "origin_butler": butler_name,
+            "delivery": {"intent": "send", "channel": channel, "message": message},
+        }
+        if recipient is not None:
+            envelope["delivery"]["recipient"] = recipient
+        return await pool.fetchval(
+            """
+            INSERT INTO deferred_notifications
+                (butler_name, channel, message, priority, envelope, deliver_at, status)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, 'pending')
+            RETURNING id
+            """,
+            butler_name,
+            channel,
+            message,
+            priority,
+            json.dumps(envelope),
+            deliver_at,
+        )
+
+    async def test_tick_deferred_notifications_coalesce_same_target_into_one_digest(self, pool):
+        """N due notifications for the same (channel, recipient) compose into
+        ONE notify_fn call instead of N separate sends, and all N rows are
+        marked delivered together."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        due = now - timedelta(minutes=5)
+        ids = [
+            await self._insert_deferred(
+                pool,
+                butler_name="finance",
+                message=f"Bill {i} is due",
+                deliver_at=due,
+                recipient="owner-123",
+            )
+            for i in range(3)
+        ]
+
+        notify_calls: list[dict] = []
+
+        async def capture_notify(env: dict):
+            notify_calls.append(env)
+
+        async def noop(**kwargs):
+            pass
+
+        await tick(pool, noop, notify_fn=capture_notify)
+
+        assert len(notify_calls) == 1, "3 same-target due notifications must compose into 1 send"
+        composed = notify_calls[0]
+        assert composed["schema_version"] == "notify.v1"
+        assert composed["delivery"]["recipient"] == "owner-123"
+        assert composed["delivery"]["channel"] == "telegram"
+        assert "3" in composed["delivery"]["message"]
+        for i in range(3):
+            assert f"Bill {i} is due" in composed["delivery"]["message"]
+
+        rows = await pool.fetch(
+            "SELECT status, delivered_at FROM deferred_notifications WHERE id = ANY($1::uuid[])",
+            ids,
+        )
+        assert all(r["status"] == "delivered" for r in rows)
+        assert all(r["delivered_at"] is not None for r in rows)
+
+    async def test_tick_deferred_notifications_do_not_coalesce_different_recipients(self, pool):
+        """Two due notifications for DIFFERENT recipients must never be folded
+        into one composed message — each is delivered on its own."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        due = now - timedelta(minutes=5)
+        await self._insert_deferred(
+            pool, butler_name="finance", message="For Alice", deliver_at=due, recipient="alice"
+        )
+        await self._insert_deferred(
+            pool, butler_name="finance", message="For Bob", deliver_at=due, recipient="bob"
+        )
+
+        notify_calls: list[dict] = []
+
+        async def capture_notify(env: dict):
+            notify_calls.append(env)
+
+        async def noop(**kwargs):
+            pass
+
+        await tick(pool, noop, notify_fn=capture_notify)
+
+        assert len(notify_calls) == 2, "different recipients must not be coalesced"
+        recipients = {c["delivery"]["recipient"] for c in notify_calls}
+        assert recipients == {"alice", "bob"}
+        messages = {c["delivery"]["message"] for c in notify_calls}
+        assert messages == {"For Alice", "For Bob"}, (
+            "solo-target sends must be delivered verbatim, not digest-formatted"
+        )
+
+    async def test_tick_deferred_notification_coalesced_failure_keeps_all_pending(self, pool):
+        """A failed composed-digest send must leave EVERY row in the group
+        pending for retry — no partial delivery within a coalesced group."""
+        from butlers.core.scheduler import tick
+
+        now = datetime.now(UTC)
+        due = now - timedelta(minutes=5)
+        ids = [
+            await self._insert_deferred(
+                pool,
+                butler_name="finance",
+                message=f"Item {i}",
+                deliver_at=due,
+                recipient="owner-456",
+            )
+            for i in range(2)
+        ]
+
+        async def failing_notify(env: dict):
+            raise RuntimeError("Switchboard unavailable")
+
+        async def noop(**kwargs):
+            pass
+
+        await tick(pool, noop, notify_fn=failing_notify)
+
+        rows = await pool.fetch(
+            "SELECT status FROM deferred_notifications WHERE id = ANY($1::uuid[])", ids
+        )
+        assert all(r["status"] == "pending" for r in rows), (
+            "a failed composed send must not partially mark the group delivered"
+        )
+
     async def test_tick_event_chains(self, pool):
         """tick() fires: calendar_event_end, deadline_passed (expired+completed),
         deadline_threshold; no-refire of fired chains; chains_fired span set."""

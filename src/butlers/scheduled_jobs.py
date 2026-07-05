@@ -180,6 +180,29 @@ async def _run_switchboard_insight_delivery_cycle_job(
     return await delivery_cycle(pool, notify_fn=notify_fn)
 
 
+async def _run_switchboard_insight_urgent_subcycle_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the hourly urgent insight sub-cycle for the Switchboard butler.
+
+    bu-o8233 (JARVIS pursuit move 8 slice 4): the daily ``insight_delivery_cycle``
+    slot means a priority>=90 candidate proposed shortly after the daily 08:00
+    run could otherwise sit ``pending`` for nearly 24h. This job calls the same
+    ``delivery_cycle`` pipeline with ``urgent_only=True`` so priority>=90
+    candidates only ever wait for the next hourly tick, never the next day.
+
+    Shares the exact same production ``notify_fn`` as the daily cycle (same
+    channel resolution, same Switchboard delivery path) — only the candidate
+    selection and cadence differ.
+    """
+    del job_args
+    from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+    notify_fn = _build_switchboard_insight_notify_fn(pool)
+    return await delivery_cycle(pool, notify_fn=notify_fn, urgent_only=True)
+
+
 async def _run_switchboard_spend_rule_savings_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1512,6 +1535,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "switchboard": {
             "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
+            "insight_urgent_subcycle": _run_switchboard_insight_urgent_subcycle_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "session_process_logs_prune": _run_session_process_logs_prune_job,

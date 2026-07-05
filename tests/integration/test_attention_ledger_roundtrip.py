@@ -240,6 +240,35 @@ async def test_record_attention_event_round_trips(pool: asyncpg.Pool) -> None:
     assert stored_metadata == {"insight_count": 3}
 
 
+async def test_record_attention_event_notify_coalesced_round_trips(pool: asyncpg.Pool) -> None:
+    """bu-o8233 (JARVIS pursuit move 8 slice 4): same-window coalescing at the
+    notify() boundary (``_tick_deferred_notification_pass``) records
+    ``source="notify"`` + ``outcome="coalesced"`` — a combination the insight
+    engine already used, but notify() never had before this change. Confirms
+    the real CHECK constraint (``chk_attention_ledger_outcome``) permits
+    'coalesced' for source='notify', not just source='insight'.
+    """
+    row_id = await record_attention_event(
+        pool,
+        origin_butler="finance",
+        source="notify",
+        outcome="coalesced",
+        channel="telegram",
+        intent="send",
+        priority="medium",
+        notification_ref="deferred-notification-7",
+    )
+    assert row_id is not None
+
+    row = await pool.fetchrow("SELECT * FROM public.attention_ledger WHERE id = $1::uuid", row_id)
+    assert row is not None
+    assert row["source"] == "notify"
+    assert row["outcome"] == "coalesced"
+    assert row["priority_label"] == "medium"
+    assert row["priority_score"] == 50
+    assert row["notification_ref"] == "deferred-notification-7"
+
+
 async def test_record_attention_event_notify_priority_label_normalization(
     pool: asyncpg.Pool,
 ) -> None:

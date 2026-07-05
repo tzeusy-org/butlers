@@ -66,6 +66,18 @@ cron = "0 8 * * *"
 dispatch_mode = "job"
 job_name = "insight_delivery_cycle"
 
+# Hourly urgent insight sub-cycle (bu-o8233, JARVIS pursuit move 8 slice 4) —
+# priority>=90 candidates must not wait for the next daily 08:00 slot. Offset
+# to :30 past the hour so it never lands on the exact same tick as the daily
+# cycle above (both would still dispatch correctly if they did — the
+# scheduler dispatches due tasks serially within one tick — but the offset
+# avoids the redundant back-to-back dispatch at 08:00).
+[[butler.schedule]]
+name = "insight-urgent-subcycle"
+cron = "30 * * * *"
+dispatch_mode = "job"
+job_name = "insight_urgent_subcycle"
+
 # Spend rule 7-day savings computation (§5.4) — runs daily at 04:15 UTC (off-peak)
 [[butler.schedule]]
 name = "spend-rule-savings"

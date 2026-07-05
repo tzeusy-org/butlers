@@ -78,8 +78,10 @@
   candidates (existing `run_insight_scan` job already covers overlapping but
   not identical ground — cadence and richness differ per task; needs its
   own design pass, not a quick toml flip).
-- Slice 4: same-window coalescing of multiple notify()-path sends + an
-  hourly urgent sub-cycle (priority>=90 as "hours, not one daily slot").
+- ~~Slice 4: same-window coalescing of multiple notify()-path sends + an
+  hourly urgent sub-cycle (priority>=90 as "hours, not one daily slot").~~
+  Delivered via bu-o8233 — see `openspec/changes/attention-ledger-coalescing-urgent-subcycle`
+  and RFC 0011 Amendment 2.
 - Slice 5: dashboard attention-ledger panel under Trust Console (the ledger
   schema and `count_attention_events_since()` groundwork already exist for
   this).
