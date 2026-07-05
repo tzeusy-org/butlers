@@ -65,6 +65,7 @@ import { useButlers } from "@/hooks/use-butlers";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { FetchingDim } from "@/components/ui/fetching-dim";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { KbMono } from "@/components/ui/KbMono";
 import type {
   EntityFinderSearchResult,
@@ -265,6 +266,7 @@ export default function EntityFinder() {
     isLoading,
     isFetching: entityFetching,
     isError,
+    refetch: refetchEntitySearch,
   } = useEntityFinderSearch(query, {
     limit: 8,
   });
@@ -534,9 +536,15 @@ export default function EntityFinder() {
           </div>
 
           <Command.List className="max-h-[420px] flex-1 overflow-y-auto p-2">
-            {/* Search error — a failed entity search must surface as an error,
-             * not collapse into the "no results" empty copy. Client-side page
-             * matches (which never hit the network) still render below. */}
+            {/* Search error, no fallback data — a failed entity search with
+             * nothing cached must surface as an error, not collapse into the
+             * "no results" empty copy. Client-side page matches (which never
+             * hit the network) still render below. When stale rows ARE
+             * present (see the SourceDegradedNote next to the Entities group
+             * below), we do NOT take over the whole list here — EntityFinder
+             * composes several independent sources (pages/butlers/sessions
+             * /state/actions), so blanking the entire palette over one
+             * source's error would be too heavy-handed. */}
             {!isLoading && !isEmptyQuery && isError && entityResults.length === 0 && (
               <div
                 className="py-6 text-center text-sm text-destructive"
@@ -646,6 +654,21 @@ export default function EntityFinder() {
               // that a keystroke was re-searching. Dim the stale-but-visible
               // rows for the duration of that background fetch.
               <FetchingDim isFetching={entityFetching && !isLoading}>
+                {/* bu-1ukzt: a background refetch on a query that previously
+                 * succeeded (placeholderData keeps entityResults populated)
+                 * must never render as a truthful all-clear. Surface the
+                 * degraded source inline instead of silently keeping the
+                 * stale rows with zero error indication. */}
+                {!isLoading && isError && (
+                  <div data-testid="entity-finder-search-degraded">
+                    <SourceDegradedNote
+                      label="Entities"
+                      detail="search failed — showing previous results"
+                      className="mb-1"
+                      onRetry={() => refetchEntitySearch()}
+                    />
+                  </div>
+                )}
                 <Command.Group
                   heading="Entities"
                   className="mb-1"

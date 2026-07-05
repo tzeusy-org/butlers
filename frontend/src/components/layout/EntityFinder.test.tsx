@@ -410,6 +410,92 @@ describe("EntityFinder", () => {
   });
 
   // -------------------------------------------------------------------------
+  // bu-1ukzt: useEntityFinderSearch pairs placeholderData with the debounced
+  // query key, so a background refetch failure on a previously-successful
+  // (cache-hit) query keeps entityResults populated — isError must still
+  // surface, not be silently swallowed behind the stale rows.
+  // -------------------------------------------------------------------------
+
+  it("surfaces the error state instead of masking it behind stale results", async () => {
+    const refetch = vi.fn();
+    vi.mocked(useEntityFinderSearch).mockReturnValue({
+      data: {
+        results: [
+          {
+            entity_id: "uuid-alice",
+            canonical_name: "Alice",
+            entity_type: "person",
+            score: 100,
+            match_kind: "prefix",
+          },
+        ],
+        total: 1,
+        q: "ali",
+        limit: 8,
+      },
+      isLoading: false,
+      isFetching: false,
+      isError: true,
+      refetch,
+    } as unknown as UseEntityFinderSearchResult);
+
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    // Stale results still render — this is the never-blank floor (bu-nhcp5)
+    // working as intended.
+    const items = document.body.querySelectorAll(
+      "[data-testid='entity-finder-entity-item']",
+    );
+    expect(items.length).toBe(1);
+    expect(items[0].textContent).toContain("Alice");
+
+    // But the error must ALSO surface — not be swallowed because
+    // entityResults.length > 0. The hard "Search failed" full-list banner is
+    // reserved for the no-fallback-data case; here a degraded note sits next
+    // to the (still visible) stale rows.
+    const degraded = document.body.querySelector(
+      "[data-testid='entity-finder-search-degraded']",
+    );
+    expect(degraded).toBeTruthy();
+    expect(degraded?.textContent).toContain("search failed");
+
+    // The degraded note's Retry action must be wired to the query's own
+    // refetch, so a transient failure is recoverable without retyping.
+    const retryButton = degraded?.querySelector("button");
+    expect(retryButton).toBeTruthy();
+    await act(async () => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+    expect(refetch).toHaveBeenCalledTimes(1);
+
+    // The full-blanking "Search failed. Try again in a moment." banner must
+    // NOT render here — the stale rows are still useful and other sources
+    // (pages/butlers/etc) are unaffected by the entity search failure.
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-search-error']"),
+    ).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
 
   it("closes when backdrop is clicked", async () => {
     const qc = new QueryClient({
