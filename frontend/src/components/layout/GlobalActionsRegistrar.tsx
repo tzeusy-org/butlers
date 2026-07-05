@@ -19,6 +19,15 @@ import { triggerButler } from "@/api/index";
 import { useButlers } from "@/hooks/use-butlers";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 
+/**
+ * Complexity tier used for the palette's quick-trigger action. Must be one of
+ * the backend's valid tiers (reasoning/workhorse/cheap/specialty/local/legacy
+ * -- see model_settings.py:_COMPLEXITY_TIERS); "workhorse" mirrors the
+ * backend TriggerRequest default (matches ButlerDetailActions.tsx's
+ * DEFAULT_COMPLEXITY, bu-86c4c.18).
+ */
+const DEFAULT_COMPLEXITY = "workhorse";
+
 export function GlobalActionsRegistrar() {
   const { data: butlersResponse } = useButlers();
   const navigate = useNavigate();
@@ -31,7 +40,11 @@ export function GlobalActionsRegistrar() {
       keywords: ["trigger", "run", "force run", b.name],
       perform: async () => {
         try {
-          const response = await triggerButler(b.name, "Run your scheduled tick now.", "medium");
+          const response = await triggerButler(
+            b.name,
+            "Run your scheduled tick now.",
+            DEFAULT_COMPLEXITY,
+          );
           toast.success(`Triggered ${b.name}`);
           if (response.session_id) navigate(`/sessions/${response.session_id}`);
         } catch {

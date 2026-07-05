@@ -96,7 +96,7 @@ function ScheduleFormFields({
   const [jobArgsRaw, setJobArgsRaw] = useState(
     schedule?.job_args ? JSON.stringify(schedule.job_args, null, 2) : "",
   );
-  const [complexity, setComplexity] = useState(schedule?.complexity ?? "medium");
+  const [complexity, setComplexity] = useState(schedule?.complexity ?? "workhorse");
 
   const parsedJobArgs = parseJobArgs(jobArgsRaw);
   const isPromptMode = dispatchMode === "prompt";

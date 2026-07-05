@@ -117,7 +117,7 @@ function setupDefaultHooks(mutateFn = vi.fn()) {
     data: {
       data: {
         butler_name: "general",
-        complexity: "medium",
+        complexity: "workhorse",
         runtime_type: "codex",
         model_id: "claude-opus-4-8",
         extra_args: [],
@@ -393,6 +393,11 @@ describe("§1 model display + session timeout", () => {
     expect(screen.queryByText("configured")).toBeNull();
   });
 
+  it("resolves the model preview with a valid backend complexity tier, not 'medium' (bu-jlhk5)", () => {
+    renderTab();
+    expect(useResolveModel).toHaveBeenCalledWith("general", "workhorse");
+  });
+
   it("surfaces the resolved session timeout and a link to the Models tab", () => {
     renderTab();
     expect(screen.getByText("1800s")).toBeTruthy();
@@ -404,7 +409,7 @@ describe("§1 model display + session timeout", () => {
       data: {
         data: {
           butler_name: "general",
-          complexity: "medium",
+          complexity: "workhorse",
           runtime_type: null,
           model_id: null,
           extra_args: [],

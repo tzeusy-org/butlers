@@ -25,6 +25,16 @@ interface Props {
   butlerName: string;
 }
 
+/**
+ * Complexity tier used for the read-only "resolved model" preview in §1
+ * Identity & routing. Must be one of the backend's valid tiers
+ * (reasoning/workhorse/cheap/specialty/local/legacy -- see
+ * model_settings.py:_COMPLEXITY_TIERS); "workhorse" mirrors the backend
+ * TriggerRequest default (matches ButlerDetailActions.tsx's
+ * DEFAULT_COMPLEXITY, bu-86c4c.18).
+ */
+const DEFAULT_COMPLEXITY = "workhorse";
+
 // ---------------------------------------------------------------------------
 // Primitives
 // ---------------------------------------------------------------------------
@@ -158,9 +168,9 @@ function ConfigRow({ label, value }: { label: string; value: React.ReactNode }) 
 function IdentitySection({ butlerName }: { butlerName: string }) {
   // Model + per-session timeout are owned by the model catalog (resolved per
   // complexity tier), not runtime_config — core_073 moved session_timeout_s onto
-  // public.model_catalog. We surface the resolved "medium"-tier model read-only
-  // here and defer all model/timeout editing to the Models tab.
-  const { data: resolved, isLoading } = useResolveModel(butlerName, "medium");
+  // public.model_catalog. We surface the resolved DEFAULT_COMPLEXITY-tier model
+  // read-only here and defer all model/timeout editing to the Models tab.
+  const { data: resolved, isLoading } = useResolveModel(butlerName, DEFAULT_COMPLEXITY);
   const r = resolved?.data;
 
   return (
@@ -168,7 +178,7 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
       <div className="grid grid-cols-2 gap-8">
         <div>
           <div className="mb-2 flex items-baseline justify-between gap-3">
-            <MonoCaption>model · medium tier</MonoCaption>
+            <MonoCaption>model · {DEFAULT_COMPLEXITY} tier</MonoCaption>
             <Link
               to={`/butlers/${butlerName}?tab=models`}
               className="font-mono text-[10px] text-muted-foreground underline underline-offset-4 hover:text-foreground"

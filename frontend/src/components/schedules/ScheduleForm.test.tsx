@@ -110,7 +110,7 @@ describe("ScheduleForm dual-mode behavior", () => {
       cron: "0 9 * * *",
       dispatch_mode: "prompt",
       prompt: "Run daily review",
-      complexity: "medium",
+      complexity: "workhorse",
     });
   });
 
@@ -164,7 +164,7 @@ describe("ScheduleForm dual-mode behavior", () => {
       dispatch_mode: "job",
       job_name: "switchboard.eligibility_sweep",
       job_args: { policy_tier: "default" },
-      complexity: "medium",
+      complexity: "workhorse",
     });
   });
 

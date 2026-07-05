@@ -1140,7 +1140,13 @@ export function deleteButlerState(
 // Trigger
 // ---------------------------------------------------------------------------
 
-/** Trigger a CC session for a specific butler. */
+/**
+ * Trigger a CC session for a specific butler. When `complexity` is omitted,
+ * defaults to "workhorse" -- must be one of the backend's valid tiers
+ * (reasoning/workhorse/cheap/specialty/local/legacy -- see
+ * model_settings.py:_COMPLEXITY_TIERS), matching the backend TriggerRequest
+ * default (bu-86c4c.18 / bu-jlhk5).
+ */
 export function triggerButler(
   name: string,
   prompt: string,
@@ -1150,7 +1156,7 @@ export function triggerButler(
     `/butlers/${encodeURIComponent(name)}/trigger`,
     {
       method: "POST",
-      body: JSON.stringify({ prompt, complexity: complexity ?? "medium" }),
+      body: JSON.stringify({ prompt, complexity: complexity ?? "workhorse" }),
     },
   );
 }
