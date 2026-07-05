@@ -53,6 +53,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -642,7 +643,7 @@ function EntityTable({
 
   if (searchFailed) {
     return (
-      <EmptyState
+      <ErrorState
         title="Search failed."
         description="The entity search could not be completed. Try again in a moment."
       />
@@ -652,6 +653,7 @@ function EntityTable({
   if (entities.length === 0) {
     return (
       <EmptyState
+        variant="page"
         title="No entities found."
         description="Entities appear as the butler builds the knowledge graph."
       />

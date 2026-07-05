@@ -260,6 +260,7 @@ export function ConversationList({
         ) : conversations.length === 0 ? (
           collapsed ? null : (
             <EmptyState
+              variant="page"
               title="No conversations yet."
               description={
                 isSearchActive

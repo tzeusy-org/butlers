@@ -26,6 +26,7 @@ import type { ConcentrationEntry, ConcentrationResponse, PredicateTab } from "@/
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { Page } from "@/components/ui/page";
 import {
   ProvenanceMarks,
@@ -400,7 +401,7 @@ function ConcentrationList({
   if (error != null) {
     return (
       <div data-testid="concentration-error">
-        <EmptyState
+        <ErrorState
           title="Could not load concentration data"
           description="Owner access is required, or no relational predicates are registered."
           action={
@@ -442,6 +443,7 @@ function ConcentrationList({
       {/* Entity list */}
       {data.items.length === 0 ? (
         <EmptyState
+          variant="page"
           title="No entities yet."
           description={`No active triples found for predicate "${effectivePredicate}". They will appear here once the butler builds the knowledge graph.`}
         />

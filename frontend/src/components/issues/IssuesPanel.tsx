@@ -7,6 +7,7 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { EmptyState } from '../ui/empty-state'
+import { ErrorState } from '../ui/error-state'
 import { Skeleton } from '../ui/skeleton'
 import type { AuditLogEntry, Issue } from '../../api/types'
 
@@ -182,7 +183,7 @@ export default function IssuesPanel({
           <CardTitle>Issues</CardTitle>
         </CardHeader>
         <CardContent>
-          <EmptyState
+          <ErrorState
             title="Could not load issues."
             description="The issues feed is unavailable right now. Retrying automatically; check the backend if this persists."
           />
@@ -199,6 +200,7 @@ export default function IssuesPanel({
         </CardHeader>
         <CardContent>
           <EmptyState
+            variant="page"
             title={dismissedView ? 'No acknowledged issues.' : 'No issues recorded.'}
             description={
               dismissedView

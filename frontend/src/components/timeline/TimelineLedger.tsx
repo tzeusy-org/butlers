@@ -23,6 +23,7 @@ import { useState } from "react";
 import { Link } from "react-router";
 
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
+import { ErrorState as ErrorStateUI } from "@/components/ui/error-state";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
@@ -337,6 +338,7 @@ function LedgerSkeleton() {
 function EmptyState() {
   return (
     <EmptyStateUI
+      variant="page"
       title="No events found."
       description="Events appear as butlers process sessions and deliver notifications."
     />
@@ -377,9 +379,9 @@ function EventNotFoundNotice({ eventId, onClose }: { eventId: string; onClose: (
 function ErrorState({ onRetry }: { onRetry?: () => void }) {
   return (
     <div data-testid="timeline-error">
-      <EmptyStateUI
+      <ErrorStateUI
         title="Could not load the timeline."
-        description="The event stream failed to load. This is not the same as having no activity. Please try again."
+        description="The event stream failed to load. This is not the same as having no activity."
         action={
           onRetry ? (
             <Button variant="outline" size="sm" onClick={onRetry}>

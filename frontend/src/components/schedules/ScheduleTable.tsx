@@ -87,6 +87,7 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyScheduleState() {
   return (
     <EmptyState
+      variant="page"
       title="No schedules found."
       description="Add a schedule to run this butler on a recurring basis."
     />

@@ -58,6 +58,7 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyRoutingLogState() {
   return (
     <EmptyState
+      variant="page"
       title="No routing log entries found."
       description="Entries appear as inter-butler requests pass through the switchboard."
     />

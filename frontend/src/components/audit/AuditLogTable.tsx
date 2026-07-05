@@ -1,4 +1,5 @@
 import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { Fragment, useState } from "react";
 import type { MouseEvent } from "react";
 import { Link } from "react-router";
@@ -151,7 +152,7 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
   // explicit error state rather than an honest-looking "no entries" empty state.
   if (!isLoading && isError) {
     return (
-      <EmptyState
+      <ErrorState
         title="Audit log unavailable."
         description="Failed to load audit log entries. The audit log may be temporarily unavailable. Try again shortly."
       />
@@ -161,6 +162,7 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
   if (!isLoading && entries.length === 0) {
     return (
       <EmptyState
+        variant="page"
         title="No audit entries found."
         description="Audit log entries appear as butlers perform operations."
       />

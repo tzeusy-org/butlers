@@ -443,8 +443,9 @@ export default function CirclesPage() {
         </div>
       ) : isError ? null : total === 0 ? (
         <EmptyState
+          variant="page"
           title="No circles yet."
-          description='Ask the relationship butler to create one (e.g. "group my family") — circles appear here as the butler organizes contacts into groups.'
+          description='Ask the relationship butler to create one (e.g. "group my family"); circles appear here as the butler organizes contacts into groups.'
         />
       ) : groups.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">

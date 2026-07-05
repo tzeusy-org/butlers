@@ -484,6 +484,7 @@ export function Page({
             />
           )}
           <EmptyState
+            variant="page"
             title={empty.title}
             description={empty.description}
             icon={empty.icon}

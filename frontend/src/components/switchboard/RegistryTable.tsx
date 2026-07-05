@@ -43,6 +43,7 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
 function EmptyRegistryState() {
   return (
     <EmptyState
+      variant="page"
       title="No butlers registered in the switchboard."
       description="Butlers appear here when they connect to the switchboard."
     />

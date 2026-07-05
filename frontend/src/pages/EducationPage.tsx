@@ -54,6 +54,7 @@ export default function EducationPage() {
       <div className="space-y-6">
         <h1 className="text-2xl font-bold tracking-tight">Education</h1>
         <EmptyState
+          variant="page"
           title="No curriculums yet."
           description="Request one to start adaptive learning."
           action={

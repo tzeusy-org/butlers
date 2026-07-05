@@ -100,6 +100,7 @@ function EmptyState({ hasActiveFilters = false }: { hasActiveFilters?: boolean }
 
   return (
     <EmptyStateUI
+      variant="page"
       title="No notifications found."
       description={description}
     />
