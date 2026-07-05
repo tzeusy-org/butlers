@@ -200,6 +200,98 @@ async def test_pipeline_stats_ttl_cache_second_request_served_from_cache(app):
     )
 
 
+async def test_pipeline_stats_backlog_counts_default_unavailable(app):
+    """GET /api/ingestion/pipeline reports backlog_available=false with None
+    counts when no DatabaseManager has been wired (default test app state) —
+    never a fabricated 0 that would misreport an outage as "no backlog"."""
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["backlog_available"] is False
+    assert body["failed_total"] is None
+    assert body["replay_pending_total"] is None
+    assert body["written_off_total"] is None
+
+
+def _backlog_row(status: str, cnt: int, is_written_off: bool = False):
+    """Build a mock asyncpg record for the backlog-count grouped fetch."""
+    row = MagicMock()
+    data = {"status": status, "cnt": cnt, "is_written_off": is_written_off}
+    row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+    return row
+
+
+async def test_pipeline_stats_backlog_counts_healthy(app):
+    """GET /api/ingestion/pipeline surfaces failed/replay_pending totals from
+    public.ingestion_events (DB truth) independently of Prometheus, splitting
+    out written-off rows so they don't masquerade as pending losses (bu-g4oiu:
+    a reviewed write-off of confirmed-recoverable-but-never-triaged events must
+    stay visibly distinct from a genuine unresolved failure)."""
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    rows = [
+        _backlog_row("failed", 24, is_written_off=False),
+        _backlog_row("failed", 99, is_written_off=True),
+        _backlog_row("replay_pending", 2),
+    ]
+    pool = _make_shared_pool(rows=rows)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = pool
+    app.dependency_overrides[_pip_mod._get_db_manager_optional] = lambda: mock_db
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["backlog_available"] is True
+    assert body["failed_total"] == 24
+    assert body["written_off_total"] == 99
+    assert body["replay_pending_total"] == 2
+    # Independent of the (degraded, no-Prometheus) funnel stats.
+    assert body["aggregates_available"] is False
+
+
+async def test_pipeline_stats_backlog_counts_query_error(app):
+    """A backlog-count query failure degrades only the backlog fields, never
+    a 500 — mirrors the Prometheus degraded-mode contract."""
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("connection lost"))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = pool
+    app.dependency_overrides[_pip_mod._get_db_manager_optional] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/ingestion/pipeline?window=24h")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["backlog_available"] is False
+    assert body["failed_total"] is None
+    assert body["written_off_total"] is None
+    assert body["replay_pending_total"] is None
+
+
 async def test_pipeline_stats_invalid_window_400(app):
     """GET /api/ingestion/pipeline?window=invalid returns HTTP 422 (FastAPI Literal validation)."""
     async with httpx.AsyncClient(
