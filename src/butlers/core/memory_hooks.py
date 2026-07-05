@@ -49,6 +49,10 @@ _memory_context_hook: Callable[..., Coroutine[Any, Any, str | None]] | None = No
 #: Registered by modules.memory on startup.
 _memory_store_episode_hook: Callable[..., Coroutine[Any, Any, bool]] | None = None
 
+#: ``async (pool, query, *, limit, mode) -> list[dict]``
+#: Registered by modules.memory on startup.
+_catalog_search_hook: Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]] | None = None
+
 
 # ---------------------------------------------------------------------------
 # Registration API (called by modules.memory)
@@ -92,6 +96,19 @@ def register_memory_store_episode(
     """
     global _memory_store_episode_hook
     _memory_store_episode_hook = fn
+
+
+def register_catalog_search(
+    fn: Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]],
+) -> None:
+    """Register the ``public.memory_catalog`` search implementation from ``modules.memory``.
+
+    Args:
+        fn: Async callable with signature
+            ``(pool, query, *, limit, mode) -> list[dict]``.
+    """
+    global _catalog_search_hook
+    _catalog_search_hook = fn
 
 
 # ---------------------------------------------------------------------------
@@ -146,3 +163,23 @@ async def store_session_episode(
     if _memory_store_episode_hook is None:
         return False
     return await _memory_store_episode_hook(pool, butler_name, session_output, session_id)
+
+
+async def search_memory_catalog(
+    pool: Any,
+    query: str,
+    *,
+    limit: int = 1,
+    mode: str = "hybrid",
+) -> list[dict[str, Any]]:
+    """Hybrid-search ``public.memory_catalog``. Returns ``[]`` if not loaded.
+
+    Delegates to the hook registered by ``modules.memory`` (which resolves the
+    embedding engine internally, mirroring ``fetch_memory_context`` above).
+    Used by ``core.delegation_ledger.resolve_target_via_catalog`` (bu-gxmfx)
+    to resolve "whose domain covers this question" via the shared catalog
+    discovery index without core importing ``modules.memory`` directly.
+    """
+    if _catalog_search_hook is None:
+        return []
+    return await _catalog_search_hook(pool, query, limit=limit, mode=mode)

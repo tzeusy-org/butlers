@@ -165,6 +165,11 @@ UNIVERSAL_CORE_TOOL_NAMES: frozenset[str] = frozenset(
         # registered on every butler — any butler can be the classification
         # or pinned-target destination of a dashboard conversation.
         "conversation_reply",
+        # bu-gxmfx: cross-butler delegation ledger; non-STAFFER only, same
+        # gate as notify/remind above.
+        "delegate_ask",
+        "delegate_receive",
+        "delegate_answer",
     }
 )
 

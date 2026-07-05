@@ -7,6 +7,7 @@ from typing import Any
 
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._conversation_reply import register_conversation_reply_tool
+from butlers.core_tools._delegation import register_delegation_tools
 from butlers.core_tools._infra import register_infra_tools
 from butlers.core_tools._media import register_media_tools
 from butlers.core_tools._memory_access import register_memory_access_tool
@@ -40,7 +41,8 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
       12. Memory-access tool (memory_access) — always registered, degrades gracefully
       13. Conversation-reply tool (conversation_reply) — always registered,
           dashboard chat confirm-loop reply channel
-      14. Shutdown tool (shutdown)
+      14. Delegation tools (delegate_ask, delegate_receive, delegate_answer)
+      15. Shutdown tool (shutdown)
     """
     register_state_tools(ctx, mcp, _core_tool)
     register_infra_tools(ctx, mcp, _core_tool)
@@ -55,4 +57,5 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
     register_messenger_tools(ctx, mcp, _core_tool)
     register_memory_access_tool(ctx, mcp, _core_tool)
     register_conversation_reply_tool(ctx, mcp, _core_tool)
+    register_delegation_tools(ctx, mcp, _core_tool)
     register_shutdown_tool(ctx, mcp, _core_tool)
