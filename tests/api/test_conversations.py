@@ -666,3 +666,75 @@ async def test_stream_conversation_response_times_out_gracefully(monkeypatch):
     error_idx = full_stream.index("event: error")
     done_idx = full_stream.index("event: done")
     assert error_idx < done_idx
+
+
+async def test_stream_conversation_response_emits_keepalives_then_late_reply(monkeypatch):
+    """The poller must survive several no-reply-yet iterations — emitting a
+    keepalive comment each time the interval elapses (conversations.py:364-367)
+    — and still surface the reply once it lands late, after
+    ``message_find_reply_since`` has returned ``None`` a few times
+    (conversations.py:389-393).
+
+    Every existing poller test either finds the reply on the very first poll
+    (``test_create_conversation_streams_conversation_reply_message``) or never
+    finds one at all (``test_stream_conversation_response_times_out_gracefully``).
+    Neither exercises the loop actually looping — this pins the multi-iteration
+    keepalive + late-arrival path specifically.
+    """
+    monkeypatch.setattr(conversations_router, "_SESSION_TIMEOUT_S", 10.0)
+    monkeypatch.setattr(conversations_router, "_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(conversations_router, "_KEEPALIVE_INTERVAL_S", 0.02)
+
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {
+                "request_id": request_id,
+                "status": "accepted",
+                "triage_decision": "route_to",
+                "triage_target": "finance",
+            }
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+
+    reply_row = _make_reply_row()
+    shared_pool = AsyncMock()
+    # message_find_reply_since polls four times finding nothing (the poller
+    # loop must survive all of them, emitting keepalives along the way)
+    # before the real reply lands on the fifth poll.
+    shared_pool.fetchrow = AsyncMock(side_effect=[None, None, None, None, reply_row])
+    shared_pool.execute = AsyncMock(return_value=None)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.credential_shared_pool.return_value = shared_pool
+
+    envelope = build_dashboard_envelope(
+        conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
+    )
+
+    events: list[str] = []
+    async for chunk in _stream_conversation_response(
+        request=_FakeRequest(),
+        butler_name=_SWITCHBOARD_BUTLER,
+        conversation_id=_CONV_ID,
+        message_created_at=_NOW - timedelta(seconds=1),
+        envelope=envelope,
+        db=mock_db,
+        mcp_mgr=mgr,
+    ):
+        events.append(chunk)
+
+    full_stream = "".join(events)
+    # The late-arrival path: the poller looped past multiple None polls
+    # before the reply landed.
+    assert shared_pool.fetchrow.await_count == 5
+    # The keepalive path: at least one keepalive comment fired while polling.
+    assert full_stream.count(": keepalive") >= 1
+    assert "event: token" in full_stream
+    assert "Recorded: Alice child-of Bob" in full_stream
+    assert "event: done" in full_stream
+    # Keepalives must precede the eventual reply — proves they were emitted
+    # during the wait, not after the fact.
+    assert full_stream.index(": keepalive") < full_stream.index("event: token")
