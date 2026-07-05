@@ -1368,7 +1368,7 @@ class CalendarConnectorRuntime:
                 sender_identity=organizer_email,
                 subject_or_preview=summary,
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
-                    decision.matched_rule_type or "connector_rule",
+                    "connector_rule",
                     decision.action,
                     decision.matched_rule_type or "unknown",
                 ),
@@ -1395,14 +1395,14 @@ class CalendarConnectorRuntime:
             )
             global_decision = None
 
-        if global_decision is not None and not global_decision.allowed:
+        if global_decision is not None and global_decision.action == "skip":
             self._filtered_event_buffer.record(
                 external_message_id=event_id,
                 source_channel=_CONNECTOR_CHANNEL,
                 sender_identity=organizer_email,
                 subject_or_preview=summary,
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
-                    global_decision.matched_rule_type or "global_rule",
+                    "global_rule",
                     global_decision.action,
                     global_decision.matched_rule_type or "unknown",
                 ),

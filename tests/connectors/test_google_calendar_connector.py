@@ -269,6 +269,93 @@ async def test_blocked_event_buffered_not_ingested(
     assert len(runtime._filtered_event_buffer) == 1
 
 
+async def test_global_skip_persists_to_filtered_events_not_ingested(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """A global-policy 'skip' decision must self-persist to filtered_events with a
+    global_rule:skip:* reason and never reach ingest() (bu-iq2qr).
+
+    Regression for the same silent-drop class fixed for HA in bu-416vk/PR #2986:
+    ``global_decision.allowed`` is only False when action == "block", but the global
+    policy evaluator never emits "block" (only skip/metadata_only/low_priority_queue/
+    pass_through) — so the old ``not global_decision.allowed`` check could never fire
+    for a global "skip" decision, and the event fell through to ingest().
+    """
+    runtime = CalendarConnectorRuntime(account_config)
+    skip_decision = PolicyDecision(
+        action="skip",
+        matched_rule_type="sender_domain",
+        reason="skipped",
+    )
+    event = {
+        "id": "evt-global-skip",
+        "status": "confirmed",
+        "summary": "Global Skip",
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "organizer": {"email": "skip@example.com"},
+    }
+
+    submitted: list[dict] = []
+
+    async def _capture(env: dict) -> None:
+        submitted.append(env)
+
+    with (
+        patch.object(runtime._ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime._global_ingestion_policy, "evaluate", return_value=skip_decision),
+        patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture),
+    ):
+        ingested = await runtime._process_event(event)
+
+    assert ingested is False
+    assert not submitted, "global skip must never reach ingest submission"
+    assert len(runtime._filtered_event_buffer) == 1
+    row = runtime._filtered_event_buffer._rows[0]
+    filter_reason = row[7]
+    status = row[8]
+    assert filter_reason == "global_rule:skip:sender_domain"
+    assert status == "filtered"
+
+
+async def test_global_pass_through_ingests_normally_without_double_persist(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """A pass_through (no-match) global decision must not filter or double-persist."""
+    runtime = CalendarConnectorRuntime(account_config)
+    pass_through_decision = PolicyDecision(action="pass_through")
+    event = {
+        "id": "evt-global-pass",
+        "status": "confirmed",
+        "summary": "Pass Through",
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "organizer": {"email": "pass@example.com"},
+    }
+
+    submitted: list[dict] = []
+
+    async def _capture(env: dict) -> None:
+        submitted.append(env)
+
+    with (
+        patch.object(runtime._ingestion_policy, "evaluate", return_value=None),
+        patch.object(
+            runtime._global_ingestion_policy, "evaluate", return_value=pass_through_decision
+        ),
+        patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture),
+    ):
+        ingested = await runtime._process_event(event)
+
+    assert ingested is True
+    assert len(submitted) == 1
+    assert len(runtime._filtered_event_buffer) == 0
+
+
 async def test_live_ingest_envelope_carries_canonical_idempotency_key(
     account_config: CalendarAccountConfig,
 ) -> None:
