@@ -2185,6 +2185,12 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
             task.get("job_args"),
             context=f"scheduled_tasks[{task['name']}]",
         )
+        # Coerce null/legacy-invalid complexity (e.g. the retired "medium" tier)
+        # to a valid Complexity before surfacing it to MCP tool callers, using
+        # the same safe-fallback parser the dispatch loop relies on. bu-3qbrq
+        # tracks converging this onto model_routing.coerce_complexity_tier()
+        # once that shared helper lands (see bu-h3cwc / PR #3000).
+        task["complexity"] = _parse_complexity_from_db_row(row, task["name"]).value
         tasks.append(task)
     return tasks
 

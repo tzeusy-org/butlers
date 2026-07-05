@@ -452,6 +452,31 @@ async def test_schedule_create_and_list(pool):
         await schedule_create(pool, "dup-name", "0 10 * * *", "second")
 
 
+async def test_schedule_list_coerces_null_and_legacy_complexity(pool):
+    """schedule_list coerces null/legacy-invalid stored complexity to workhorse for MCP callers;
+    valid tiers pass through unchanged. Guards bu-e0d9x (schedule_list previously returned
+    dict(row) uncoerced, leaking null/legacy 'medium' straight to LLM tool callers)."""
+    from butlers.core.scheduler import schedule_create, schedule_list
+
+    await schedule_create(
+        pool, "valid-complexity-task", "0 9 * * *", "valid", complexity="reasoning"
+    )
+    null_id = await schedule_create(pool, "null-complexity-task", "0 9 * * *", "null test")
+    legacy_id = await schedule_create(pool, "legacy-complexity-task", "0 9 * * *", "legacy test")
+
+    # schedule_create validates complexity on write, so simulate a stale/legacy
+    # stored value (NULL, or the retired "medium" tier) via a direct row update.
+    await pool.execute("UPDATE scheduled_tasks SET complexity = NULL WHERE id = $1", null_id)
+    await pool.execute("UPDATE scheduled_tasks SET complexity = 'medium' WHERE id = $1", legacy_id)
+
+    tasks = await schedule_list(pool)
+    by_name = {t["name"]: t for t in tasks}
+
+    assert by_name["valid-complexity-task"]["complexity"] == "reasoning"
+    assert by_name["null-complexity-task"]["complexity"] == "workhorse"
+    assert by_name["legacy-complexity-task"]["complexity"] == "workhorse"
+
+
 async def test_schedule_update_and_delete(pool):
     """schedule_update changes fields; schedule_delete removes runtime tasks."""
     from butlers.core.scheduler import schedule_create, schedule_delete, schedule_update
