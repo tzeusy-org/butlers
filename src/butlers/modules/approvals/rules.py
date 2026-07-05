@@ -17,7 +17,6 @@ Specificity:
 from __future__ import annotations
 
 import fnmatch
-import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -114,7 +113,7 @@ def constraint_pins_value(constraint: dict[str, Any] | str | None) -> bool:
 
 
 def parse_constraints(raw: Any) -> dict[str, Any]:
-    """Public wrapper around :func:`_parse_constraints` (JSON string or dict)."""
+    """Public wrapper around :func:`_parse_constraints`."""
     return _parse_constraints(raw)
 
 
@@ -161,9 +160,14 @@ def _args_match_constraints(
 
 
 def _parse_constraints(raw: Any) -> dict[str, Any]:
-    """Parse arg_constraints from DB value (may be JSON string or dict)."""
-    if isinstance(raw, str):
-        return json.loads(raw)
+    """Coerce the ``approval_rules.arg_constraints`` DB value to a plain dict.
+
+    Every writer now binds a native dict through asyncpg's jsonb codec (see
+    bu-c8b8e / bu-cymc4), so ``raw`` always arrives as a dict already. No
+    isinstance(str) double-encoding workaround is needed here: a live-data
+    audit across every schema with an ``approval_rules`` table (2026-07-05)
+    found zero rows, corrupted or otherwise.
+    """
     if isinstance(raw, dict):
         return raw
     return dict(raw)

@@ -1715,19 +1715,11 @@ def _generate_scope_description(tool_name: str, representative_args: dict) -> st
 
 def _row_to_autonomy_suggestion(row: dict) -> AutonomySuggestion:
     """Convert a database row to an AutonomySuggestion API model."""
+    # representative_args arrives as a dict via asyncpg's jsonb codec — every
+    # writer now binds a native dict (bu-c8b8e/bu-cymc4), and a live-data
+    # audit (2026-07-05) found zero autonomy_suggestions rows in any schema,
+    # so no isinstance(str) double-encoding workaround is needed here.
     representative_args = row.get("representative_args") or {}
-    if isinstance(representative_args, str):
-        import json as _json
-
-        try:
-            representative_args = _json.loads(representative_args)
-        except _json.JSONDecodeError:
-            logger.warning(
-                "Failed to decode representative_args JSON for autonomy suggestion row; "
-                "falling back to empty dict. Raw value: %r",
-                representative_args,
-            )
-            representative_args = {}
 
     # Redact sensitive fields before exposing them in the API response.
     redacted_args = redact_tool_args(row["tool_name"], representative_args)
@@ -1875,19 +1867,11 @@ async def confirm_suggestion(
 
     assert target_pool is not None
 
+    # representative_args arrives as a dict via asyncpg's jsonb codec — every
+    # writer now binds a native dict (bu-c8b8e/bu-cymc4), and a live-data
+    # audit (2026-07-05) found zero autonomy_suggestions rows in any schema,
+    # so no isinstance(str) double-encoding workaround is needed here.
     representative_args = row.get("representative_args") or {}
-    if isinstance(representative_args, str):
-        import json as _json
-
-        try:
-            representative_args = _json.loads(representative_args)
-        except _json.JSONDecodeError:
-            logger.warning(
-                "Failed to decode representative_args JSON in confirm_suggestion; "
-                "falling back to empty dict. Raw value: %r",
-                representative_args,
-            )
-            representative_args = {}
 
     now = datetime.now(UTC)
     actor = "dashboard:rest-api"

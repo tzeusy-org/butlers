@@ -185,13 +185,19 @@ async def mark_executed(
         return {"error": f"Invalid action_id: {action_id}"}
 
     now = datetime.now(UTC)
-    er_json = json.dumps(execution_result) if execution_result else None
+    # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+    # asyncpg's registered jsonb codec already serializes once; pre-serializing
+    # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-c8b8e; mirrors
+    # gate.py's fix, PR #2924).
+    safe_execution_result = (
+        json.loads(json.dumps(execution_result, default=str)) if execution_result else None
+    )
 
     executed_row = await pool.fetchrow(
         "UPDATE pending_actions SET status = $1, execution_result = $2, decided_at = $3 "
         "WHERE id = $4 AND status = $5 RETURNING *",
         ActionStatus.EXECUTED.value,
-        er_json,
+        safe_execution_result,
         now,
         parsed_id,
         ActionStatus.APPROVED.value,
@@ -361,6 +367,11 @@ async def create_approval_rule(
         max_uses=max_uses,
     )
 
+    # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+    # asyncpg's registered jsonb codec already serializes once; pre-serializing
+    # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-c8b8e; mirrors
+    # gate.py's fix, PR #2924).
+    safe_arg_constraints = json.loads(json.dumps(rule.arg_constraints, default=str))
     await pool.execute(
         "INSERT INTO approval_rules "
         "(id, tool_name, arg_constraints, description, created_at, "
@@ -368,7 +379,7 @@ async def create_approval_rule(
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         rule.id,
         rule.tool_name,
-        json.dumps(rule.arg_constraints),
+        safe_arg_constraints,
         rule.description,
         rule.created_at,
         rule.expires_at,
@@ -458,6 +469,11 @@ async def create_rule_from_action(
         created_at=now,
     )
 
+    # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+    # asyncpg's registered jsonb codec already serializes once; pre-serializing
+    # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-c8b8e; mirrors
+    # gate.py's fix, PR #2924).
+    safe_arg_constraints = json.loads(json.dumps(rule.arg_constraints, default=str))
     await pool.execute(
         "INSERT INTO approval_rules "
         "(id, tool_name, arg_constraints, description, created_from, created_at, "
@@ -465,7 +481,7 @@ async def create_rule_from_action(
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         rule.id,
         rule.tool_name,
-        json.dumps(rule.arg_constraints),
+        safe_arg_constraints,
         rule.description,
         rule.created_from,
         rule.created_at,

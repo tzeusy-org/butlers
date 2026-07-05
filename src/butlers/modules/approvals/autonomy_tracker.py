@@ -75,6 +75,11 @@ async def record_approval(pool: Any, action: Any) -> None:
         delta = action.decided_at - action.requested_at
         time_to_decision = delta.total_seconds()
 
+    # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+    # asyncpg's registered jsonb codec already serializes once; pre-serializing
+    # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-c8b8e; mirrors
+    # gate.py's fix, PR #2924).
+    safe_tool_args = json.loads(json.dumps(action.tool_args, default=str))
     await pool.execute(
         "INSERT INTO autonomy_approval_history "
         "(id, pattern_fingerprint, tool_name, tool_args, "
@@ -83,7 +88,7 @@ async def record_approval(pool: Any, action: Any) -> None:
         uuid.uuid4(),
         fingerprint,
         action.tool_name,
-        json.dumps(action.tool_args),
+        safe_tool_args,
         action.id,
         approved_at,
         time_to_decision,
@@ -163,9 +168,12 @@ async def check_promotion_threshold(
             tool_name,
         )
         for rule_row in active_rules:
+            # arg_constraints arrives as a dict via asyncpg's jsonb codec —
+            # every writer now binds a native dict (bu-c8b8e/bu-cymc4), and a
+            # live-data audit (2026-07-05) found zero approval_rules rows in
+            # any schema, so no isinstance(str) double-encoding workaround is
+            # needed here.
             constraints = rule_row["arg_constraints"]
-            if isinstance(constraints, str):
-                constraints = json.loads(constraints)
             if _args_match_constraints(tool_args, constraints):
                 logger.debug(
                     "Existing standing rule covers pattern %s, skipping suggestion",

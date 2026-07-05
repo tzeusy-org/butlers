@@ -82,7 +82,7 @@ class TestApprovalRuleMatching:
         rule_send_email = {
             "id": _rule_id,
             "tool_name": "send_email",
-            "arg_constraints": '{"to": "chloe@example.com"}',
+            "arg_constraints": {"to": "chloe@example.com"},
             "description": "Allow send_email to chloe",
             "active": True,
             "expires_at": None,
@@ -135,7 +135,7 @@ class TestApprovalRuleMatching:
         broad_rule = {
             "id": str(_uuid.uuid4()),
             "tool_name": "send_email",
-            "arg_constraints": "{}",  # no constraints — matches anything
+            "arg_constraints": {},  # no constraints — matches anything
             "description": "Broad allow for send_email",
             "active": True,
             "expires_at": None,
@@ -147,7 +147,7 @@ class TestApprovalRuleMatching:
         specific_rule = {
             "id": str(_uuid.uuid4()),
             "tool_name": "send_email",
-            "arg_constraints": '{"to": "chloe@example.com"}',
+            "arg_constraints": {"to": "chloe@example.com"},
             "description": "Allow send_email to chloe only",
             "active": True,
             "expires_at": None,
@@ -205,7 +205,7 @@ class TestApprovalRuleMatching:
         expired_rule = {
             "id": str(_uuid.uuid4()),
             "tool_name": "send_email",
-            "arg_constraints": "{}",
+            "arg_constraints": {},
             "description": "Expired rule",
             "active": True,
             "expires_at": datetime.now(UTC) - timedelta(hours=1),  # already expired

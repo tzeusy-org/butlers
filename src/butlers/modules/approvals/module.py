@@ -806,6 +806,11 @@ class ApprovalsModule(Module):
                 created_at=now,
                 max_uses=max_uses,
             )
+            # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast)
+            # — asyncpg's registered jsonb codec already serializes once;
+            # pre-serializing double-encodes into a jsonb-typed STRING
+            # (bu-cymc4/bu-c8b8e; mirrors gate.py's fix, PR #2924).
+            safe_arg_constraints = json.loads(json.dumps(rule.arg_constraints, default=str))
             await self._db.execute(
                 "INSERT INTO approval_rules "
                 "(id, tool_name, arg_constraints, description, created_from, created_at, "
@@ -813,7 +818,7 @@ class ApprovalsModule(Module):
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 rule.id,
                 rule.tool_name,
-                json.dumps(rule.arg_constraints),
+                safe_arg_constraints,
                 rule.description,
                 rule.created_from,
                 rule.created_at,
@@ -1018,6 +1023,11 @@ class ApprovalsModule(Module):
             max_uses=max_uses,
         )
 
+        # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+        # asyncpg's registered jsonb codec already serializes once;
+        # pre-serializing double-encodes into a jsonb-typed STRING
+        # (bu-cymc4/bu-c8b8e; mirrors gate.py's fix, PR #2924).
+        safe_arg_constraints = json.loads(json.dumps(rule.arg_constraints, default=str))
         await self._db.execute(
             "INSERT INTO approval_rules "
             "(id, tool_name, arg_constraints, description, created_at, "
@@ -1025,7 +1035,7 @@ class ApprovalsModule(Module):
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             rule.id,
             rule.tool_name,
-            json.dumps(rule.arg_constraints),
+            safe_arg_constraints,
             rule.description,
             rule.created_at,
             rule.expires_at,
@@ -1115,6 +1125,11 @@ class ApprovalsModule(Module):
             max_uses=max_uses,
         )
 
+        # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+        # asyncpg's registered jsonb codec already serializes once;
+        # pre-serializing double-encodes into a jsonb-typed STRING
+        # (bu-cymc4/bu-c8b8e; mirrors gate.py's fix, PR #2924).
+        safe_arg_constraints = json.loads(json.dumps(rule.arg_constraints, default=str))
         await self._db.execute(
             "INSERT INTO approval_rules "
             "(id, tool_name, arg_constraints, description, created_from, created_at, "
@@ -1122,7 +1137,7 @@ class ApprovalsModule(Module):
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             rule.id,
             rule.tool_name,
-            json.dumps(rule.arg_constraints),
+            safe_arg_constraints,
             rule.description,
             rule.created_from,
             rule.created_at,

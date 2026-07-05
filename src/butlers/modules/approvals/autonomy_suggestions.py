@@ -87,6 +87,11 @@ async def create_promotion_suggestion(
     now = datetime.now(UTC)
     scope_description = generate_scope_description(tool_name, representative_args)
 
+    # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+    # asyncpg's registered jsonb codec already serializes once; pre-serializing
+    # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-c8b8e; mirrors
+    # gate.py's fix, PR #2924).
+    safe_representative_args = json.loads(json.dumps(representative_args, default=str))
     await pool.execute(
         "INSERT INTO autonomy_suggestions "
         "(id, suggestion_type, pattern_fingerprint, tool_name, representative_args, status, "
@@ -96,7 +101,7 @@ async def create_promotion_suggestion(
         "promotion",
         pattern_fingerprint,
         tool_name,
-        json.dumps(representative_args),
+        safe_representative_args,
         "pending",
         approval_count,
         now,
@@ -169,6 +174,11 @@ async def create_demotion_suggestion(
     pattern_fingerprint = compute_fingerprint(action.tool_name, action.tool_args)
     scope_description = generate_scope_description(action.tool_name, action.tool_args)
 
+    # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+    # asyncpg's registered jsonb codec already serializes once; pre-serializing
+    # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-c8b8e; mirrors
+    # gate.py's fix, PR #2924).
+    safe_representative_args = json.loads(json.dumps(action.tool_args, default=str))
     await pool.execute(
         "INSERT INTO autonomy_suggestions "
         "(id, suggestion_type, pattern_fingerprint, tool_name, representative_args, status, "
@@ -178,7 +188,7 @@ async def create_demotion_suggestion(
         "demotion",
         pattern_fingerprint,
         action.tool_name,
-        json.dumps(action.tool_args),
+        safe_representative_args,
         "pending",
         0,
         now,
@@ -267,11 +277,11 @@ async def confirm_suggestion(
 
     suggestion_type = row["suggestion_type"]
     tool_name = row["tool_name"]
-    representative_args_raw = row["representative_args"]
-    if isinstance(representative_args_raw, str):
-        representative_args = json.loads(representative_args_raw)
-    else:
-        representative_args = dict(representative_args_raw)
+    # representative_args arrives as a dict via asyncpg's jsonb codec — every
+    # writer now binds a native dict (bu-c8b8e/bu-cymc4), and a live-data
+    # audit (2026-07-05) found zero autonomy_suggestions rows in any schema,
+    # so no isinstance(str) double-encoding workaround is needed here.
+    representative_args = dict(row["representative_args"])
 
     referenced_rule_id_raw = (
         row.get("resulting_rule_id") if hasattr(row, "get") else row["resulting_rule_id"]
@@ -296,13 +306,18 @@ async def confirm_suggestion(
         scope_description = generate_scope_description(tool_name, representative_args)
         description = f"Auto-created from promotion suggestion: {scope_description}"
 
+        # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+        # asyncpg's registered jsonb codec already serializes once;
+        # pre-serializing double-encodes into a jsonb-typed STRING
+        # (bu-cymc4/bu-c8b8e; mirrors gate.py's fix, PR #2924).
+        safe_arg_constraints = json.loads(json.dumps(arg_constraints, default=str))
         await pool.execute(
             "INSERT INTO approval_rules "
             "(id, tool_name, arg_constraints, description, created_at, max_uses, active) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7)",
             new_rule_id,
             tool_name,
-            json.dumps(arg_constraints),
+            safe_arg_constraints,
             description,
             now,
             None,
@@ -564,11 +579,12 @@ async def supersede_matching_suggestions(
     now = datetime.now(UTC)
 
     for row in rows:
-        representative_args_raw = row["representative_args"]
-        if isinstance(representative_args_raw, str):
-            rep_args = json.loads(representative_args_raw)
-        else:
-            rep_args = dict(representative_args_raw)
+        # representative_args arrives as a dict via asyncpg's jsonb codec —
+        # every writer now binds a native dict (bu-c8b8e/bu-cymc4), and a
+        # live-data audit (2026-07-05) found zero autonomy_suggestions rows in
+        # any schema, so no isinstance(str) double-encoding workaround is
+        # needed here.
+        rep_args = dict(row["representative_args"])
 
         if _suggestion_covered_by_constraints(rep_args, arg_constraints):
             suggestion_id = row["id"]
@@ -628,10 +644,12 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     if row is None:
         return {}
 
+    # representative_args arrives as a dict via asyncpg's jsonb codec — every
+    # writer now binds a native dict (bu-c8b8e/bu-cymc4), and a live-data
+    # audit (2026-07-05) found zero autonomy_suggestions rows in any schema,
+    # so no isinstance(str) double-encoding workaround is needed here.
     representative_args_raw = row["representative_args"] if hasattr(row, "__getitem__") else None
-    if isinstance(representative_args_raw, str):
-        representative_args = json.loads(representative_args_raw)
-    elif representative_args_raw is None:
+    if representative_args_raw is None:
         representative_args = {}
     else:
         representative_args = dict(representative_args_raw)

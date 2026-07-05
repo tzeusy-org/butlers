@@ -94,7 +94,9 @@ class MockDB:
         row = {
             "id": rule_id,
             "tool_name": kwargs.get("tool_name", "test_tool"),
-            "arg_constraints": json.dumps(kwargs.get("arg_constraints", {})),
+            # arg_constraints arrives as a native dict via asyncpg's jsonb
+            # codec (bu-c8b8e/bu-cymc4) — no json.dumps() pre-serialization.
+            "arg_constraints": kwargs.get("arg_constraints", {}),
             "description": kwargs.get("description", "test rule"),
             "created_from": kwargs.get("created_from"),
             "created_at": kwargs.get("created_at", datetime.now(UTC)),
@@ -249,7 +251,7 @@ class MockDB:
             row_r: dict[str, Any] = {
                 "id": rule_id,
                 "tool_name": args[1] if len(args) > 1 else "unknown",
-                "arg_constraints": args[2] if len(args) > 2 else "{}",
+                "arg_constraints": args[2] if len(args) > 2 else {},
                 "description": args[3] if len(args) > 3 else "",
                 "created_from": args[4] if len(args) > 4 else None,
                 "created_at": datetime.now(UTC),
@@ -538,12 +540,13 @@ class TestRuleMatching:
     def _make_rule_dict(
         self, tool_name: str, constraints: dict, *, expires_at=None, max_uses=None, use_count=0
     ) -> dict:
-        import json
-
+        # arg_constraints arrives as a native dict via asyncpg's jsonb codec
+        # (bu-c8b8e/bu-cymc4) — no json.dumps() pre-serialization here, that
+        # would simulate the double-encoding bug this bead fixed.
         return {
             "id": str(uuid.uuid4()),
             "tool_name": tool_name,
-            "arg_constraints": json.dumps(constraints),
+            "arg_constraints": constraints,
             "description": "test",
             "created_at": datetime.now(UTC),
             "expires_at": expires_at,  # pass datetime object, not ISO string

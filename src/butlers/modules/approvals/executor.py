@@ -205,8 +205,14 @@ async def execute_approved_action(
                 executed_at=now,
             )
 
-        # 2. Build the execution_result JSONB payload
-        er_json = json.dumps(execution_result.to_dict())
+        # 2. Build the execution_result JSONB payload. Bind the sanitized dict
+        # directly (no json.dumps, no ::jsonb cast) — asyncpg's registered
+        # jsonb codec already serializes once; pre-serializing double-encodes
+        # into a jsonb-typed STRING (bu-cymc4/bu-c8b8e; mirrors gate.py's fix,
+        # PR #2924). The json.dumps/loads round-trip also sanitizes any
+        # non-JSON-native values (UUID/datetime) that a tool's raw result may
+        # contain, via default=str.
+        safe_execution_result = json.loads(json.dumps(execution_result.to_dict(), default=str))
 
         # 3. Update the pending_action row to 'executed' (CAS on approved)
         await pool.execute(
@@ -214,7 +220,7 @@ async def execute_approved_action(
             "SET status = $1, execution_result = $2, decided_at = $3 "
             "WHERE id = $4 AND status = $5",
             ActionStatus.EXECUTED.value,
-            er_json,
+            safe_execution_result,
             now,
             action_id,
             ActionStatus.APPROVED.value,
