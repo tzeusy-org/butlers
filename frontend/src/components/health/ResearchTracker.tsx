@@ -55,11 +55,11 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
       {Array.from({ length: count }, (_, i) => (
         <div key={i} className="grid grid-cols-[1fr_auto] items-start gap-3 py-3">
           <div className="space-y-1.5">
-            <div className="bg-muted h-3.5 w-48 animate-pulse rounded" />
-            <div className="bg-muted h-2.5 w-32 animate-pulse rounded" />
-            <div className="bg-muted h-3 w-full max-w-md animate-pulse rounded" />
+            <div className="bg-muted h-3.5 w-48 rounded" />
+            <div className="bg-muted h-2.5 w-32 rounded" />
+            <div className="bg-muted h-3 w-full max-w-md rounded" />
           </div>
-          <div className="bg-muted h-7 w-24 animate-pulse rounded" />
+          <div className="bg-muted h-7 w-24 rounded" />
         </div>
       ))}
     </div>

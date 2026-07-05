@@ -4,13 +4,17 @@
  *
  * Renders one of three states, driven by useEventStream's connection status
  * (not by whether *any* data happens to be loaded):
- *   - connected    (status === "open")            — solid green, pulsing
- *   - reconnecting (status === "reconnecting")     — amber, pulsing
- *   - down         (status === "connecting" | "closed") — muted, static
+ *   - connected    (status === "open")            — solid green
+ *   - reconnecting (status === "reconnecting")     — amber
+ *   - down         (status === "connecting" | "closed") — muted
  *
  * "connecting" (the very first attempt, before ever reaching open) reads as
  * "down" rather than "reconnecting" — there is nothing to reconnect *to*
  * yet, and the owner should not read a cold page load as a fleet problem.
+ *
+ * The dot never animates (bu-yykif, skeleton-pulse retirement) — color alone
+ * carries the state, per the motion vocabulary in
+ * openspec/specs/dashboard-design-language/spec.md § Motion Vocabulary.
  *
  * Renders on every viewport, including mobile (bu-qvnce.10) — it used to be
  * `hidden sm:inline-flex`, so the degraded-stream signal vanished entirely
@@ -25,25 +29,22 @@ export interface LiveIndicatorProps {
 
 const STATE_META: Record<
   'connected' | 'reconnecting' | 'down',
-  { label: string; dotClass: string; textClass: string; pulse: boolean }
+  { label: string; dotClass: string; textClass: string }
 > = {
   connected: {
     label: 'Live',
     dotClass: 'bg-[var(--green)]',
     textClass: 'text-muted-foreground',
-    pulse: true,
   },
   reconnecting: {
     label: 'Reconnecting',
     dotClass: 'bg-[var(--amber)]',
     textClass: 'text-[var(--amber-text)]',
-    pulse: true,
   },
   down: {
     label: 'Offline',
     dotClass: 'bg-muted-foreground/40',
     textClass: 'text-muted-foreground/70',
-    pulse: false,
   },
 }
 
@@ -65,7 +66,7 @@ export function LiveIndicator({ status }: LiveIndicatorProps) {
       data-live-state={state}
     >
       <span
-        className={`size-1.5 rounded-full ${meta.dotClass} ${meta.pulse ? 'animate-pulse' : ''}`}
+        className={`size-1.5 rounded-full ${meta.dotClass}`}
         aria-hidden="true"
       />
       {meta.label}

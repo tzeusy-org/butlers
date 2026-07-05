@@ -178,6 +178,36 @@ const HANDROLLED_OVERLAY_SELECTORS = [
   },
 ]
 
+// bu-yykif: ban `animate-pulse` (Tailwind's shimmer/pulse loading utility).
+// The Motion Vocabulary in openspec/specs/dashboard-design-language/spec.md §
+// Motion Vocabulary explicitly forbids "skeleton-pulse" — only four named
+// animations exist program-wide, and this is not one of them. All ~55
+// pre-existing sites (loading skeletons, "live" status dots) were migrated to
+// static (non-animating) placeholders in the same change that adds this rule
+// (bu-qvnce.7 slice 5) — see components/ui/skeleton.tsx and the shared
+// skeleton components under components/skeletons/ for the canonical static
+// treatment. A background-refetch dim (as opposed to an initial-load
+// placeholder) should use FetchingDim (components/ui/fetching-dim.tsx)
+// instead of any pulse/shimmer animation.
+const ANIMATE_PULSE_SELECTORS = [
+  {
+    selector: 'Literal[value=/\\banimate-pulse\\b/]',
+    message:
+      'animate-pulse is forbidden (bu-yykif, bu-qvnce.7 slice 5) — the Motion Vocabulary ' +
+      '(dashboard-design-language spec § Motion Vocabulary) explicitly bans skeleton-pulse. ' +
+      'Use a static (non-animating) placeholder block for an initial-load skeleton, or ' +
+      'FetchingDim (components/ui/fetching-dim.tsx) for a background-refetch dim.',
+  },
+  {
+    selector: 'TemplateElement[value.raw=/\\banimate-pulse\\b/]',
+    message:
+      'animate-pulse is forbidden (bu-yykif, bu-qvnce.7 slice 5) — the Motion Vocabulary ' +
+      '(dashboard-design-language spec § Motion Vocabulary) explicitly bans skeleton-pulse. ' +
+      'Use a static (non-animating) placeholder block for an initial-load skeleton, or ' +
+      'FetchingDim (components/ui/fetching-dim.tsx) for a background-refetch dim.',
+  },
+]
+
 // bu-qvnce.14 slice 3: poll-policy lint. A bare numeric refetchInterval
 // hides whether an interval is the PRIMARY update path or a safety-net
 // reconciliation sweep sitting behind a live bus event -- see
@@ -306,7 +336,12 @@ export default defineConfig([
     // components) can ever fire here — only the theme-token guards apply.
     files: ['**/*.ts'],
     rules: {
-      'no-restricted-syntax': ['error', ...HSL_VAR_SELECTORS, ...STATUS_COLOR_SELECTORS],
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
+      ],
     },
   },
   {
@@ -322,6 +357,7 @@ export default defineConfig([
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,
         ...HANDROLLED_OVERLAY_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
       ],
     },
   },
@@ -336,6 +372,7 @@ export default defineConfig([
         ...HSL_VAR_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
       ],
     },
   },
@@ -354,6 +391,7 @@ export default defineConfig([
         ...HSL_VAR_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
       ],
     },
   },
@@ -373,6 +411,7 @@ export default defineConfig([
         ...PRIMITIVE_REDECLARATION_SELECTORS,
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
+        ...ANIMATE_PULSE_SELECTORS,
       ],
     },
   },

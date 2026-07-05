@@ -333,7 +333,7 @@ export default function TopologyGraph({
           <CardTitle>Ecosystem Topology</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-96 animate-pulse rounded bg-muted" />
+          <div className="h-96 rounded bg-muted" data-testid="topology-graph-skeleton" />
         </CardContent>
       </Card>
     );

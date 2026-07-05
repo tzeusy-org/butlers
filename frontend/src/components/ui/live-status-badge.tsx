@@ -93,7 +93,7 @@ export function LiveStatusBadge({ latestReceivedAt, isDown = false }: LiveStatus
   if (status === "checking") {
     return (
       <span className="inline-flex items-center gap-1.5 font-mono text-[11px] tracking-[0.01em] text-muted-foreground">
-        <span className="size-1.5 rounded-full bg-muted-foreground animate-pulse" />
+        <span className="size-1.5 rounded-full bg-muted-foreground" />
         checking…
       </span>
     );
@@ -107,7 +107,7 @@ export function LiveStatusBadge({ latestReceivedAt, isDown = false }: LiveStatus
         data-testid="live-status-badge-live"
       >
         <span
-          className="size-1.5 rounded-full animate-pulse"
+          className="size-1.5 rounded-full"
           style={{ backgroundColor: "var(--green, theme(colors.emerald.600))" }}
         />
         Live

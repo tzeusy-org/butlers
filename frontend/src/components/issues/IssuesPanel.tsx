@@ -177,7 +177,7 @@ export default function IssuesPanel({
         <CardContent>
           <div className="space-y-3">
             {Array.from({ length: 2 }).map((_, i) => (
-              <div key={i} className="h-12 animate-pulse rounded bg-muted" />
+              <div key={i} className="h-12 rounded bg-muted" />
             ))}
           </div>
         </CardContent>

@@ -329,7 +329,7 @@ describe("EntitiesIndexPage — entity table", () => {
     // Table should not be present, skeletons should be
     expect(container.querySelector("[data-testid='entity-table']")).toBeNull();
     // At least one skeleton div should be rendered
-    const skeletons = container.querySelectorAll("[class*='animate-pulse']");
+    const skeletons = container.querySelectorAll("[data-slot='skeleton']");
     expect(skeletons.length).toBeGreaterThan(0);
   });
 

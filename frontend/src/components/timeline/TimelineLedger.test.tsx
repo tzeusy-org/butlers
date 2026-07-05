@@ -68,7 +68,7 @@ afterEach(() => {
 describe("TimelineLedger — states", () => {
   it("renders loading skeleton", () => {
     renderLedger({ isLoading: true });
-    expect(container.querySelectorAll('[class*="animate-pulse"]').length).toBeGreaterThan(0);
+    expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBeGreaterThan(0);
   });
 
   it("renders the error state, not the empty state, on fetch failure", () => {

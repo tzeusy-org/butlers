@@ -168,7 +168,7 @@ export function PrioritySendersBlock({
       {!loaded && (
         <div className="mt-4 space-y-2">
           {[1, 2].map((i) => (
-            <div key={i} className="h-10 bg-foreground/5 animate-pulse" />
+            <div key={i} className="h-10 bg-foreground/5" />
           ))}
         </div>
       )}

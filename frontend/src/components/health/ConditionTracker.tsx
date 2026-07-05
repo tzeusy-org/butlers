@@ -60,12 +60,12 @@ function SkeletonRows({ count = 5 }: { count?: number }) {
     <div className="divide-y divide-border/60 border-y border-border/60">
       {Array.from({ length: count }, (_, i) => (
         <div key={i} className="grid grid-cols-[10px_1fr_auto] items-start gap-3 py-3">
-          <span className="bg-muted mt-1.5 h-2 w-2 shrink-0 animate-pulse rounded-full" />
+          <span className="bg-muted mt-1.5 h-2 w-2 shrink-0 rounded-full" />
           <div className="space-y-1.5">
-            <div className="bg-muted h-3.5 w-40 animate-pulse rounded" />
-            <div className="bg-muted h-2.5 w-24 animate-pulse rounded" />
+            <div className="bg-muted h-3.5 w-40 rounded" />
+            <div className="bg-muted h-2.5 w-24 rounded" />
           </div>
-          <div className="bg-muted h-7 w-24 animate-pulse rounded" />
+          <div className="bg-muted h-7 w-24 rounded" />
         </div>
       ))}
     </div>

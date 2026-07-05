@@ -109,8 +109,8 @@ function DailyTotals({ since, until }: DailyTotalsProps) {
         <div className="flex flex-col gap-2">
           {Array.from({ length: 4 }, (_, i) => (
             <div key={i} className="flex justify-between border-b border-border/40 py-1.5">
-              <span className="h-3 w-14 rounded bg-muted animate-pulse" />
-              <span className="h-3 w-10 rounded bg-muted animate-pulse" />
+              <span className="h-3 w-14 rounded bg-muted" />
+              <span className="h-3 w-10 rounded bg-muted" />
             </div>
           ))}
         </div>

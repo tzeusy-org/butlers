@@ -291,7 +291,7 @@ describe("QaPatrolDetailPage — not-found", () => {
     } as UseQaPatrolResult);
     const html = renderPage();
     expect(html.match(/<h1[^>]*>/g) ?? []).toHaveLength(0);
-    expect(html).toContain("animate-pulse");
+    expect(html).toContain('data-testid="qa-patrol-detail-skeleton"');
   });
 });
 

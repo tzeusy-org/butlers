@@ -539,7 +539,7 @@ describe("StatusBoardCell: ActivityStripe embedded", () => {
       <StatusBoardCell row={makeRow({ hourlyStripeLoading: true })} />,
     )
     // Skeleton replaces both the SESS·24H number and the stripe bars
-    expect(html).toContain("animate-pulse")
+    expect(html).toContain('data-slot="skeleton"')
     // The 24 bar cells should NOT appear — stripe is hidden during load
     expect(html).not.toContain("flex gap-px h-[22px]")
   })

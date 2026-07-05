@@ -902,7 +902,7 @@ export function ContactChannelCard({
         className="space-y-2"
       >
         <h2 className="text-lg font-semibold">Channels</h2>
-        <div className="animate-pulse space-y-2">
+        <div className="space-y-2" data-testid="contact-channel-card-skeleton">
           <div className="h-8 bg-muted rounded" />
           <div className="h-8 bg-muted rounded" />
         </div>

@@ -165,7 +165,7 @@ describe("ButlerHeartbeatTile -- loading state", () => {
 
   it("renders a loading skeleton, not a list", () => {
     const html = render();
-    expect(html).toContain("animate-pulse");
+    expect(html).toContain('data-testid="butler-heartbeat-skeleton"');
     expect(html).not.toContain("No butlers registered");
   });
 
@@ -194,7 +194,7 @@ describe("ButlerHeartbeatTile -- error state", () => {
   it("does not render a butler list on error", () => {
     const html = render();
     expect(html).not.toContain("No butlers registered");
-    expect(html).not.toContain("animate-pulse");
+    expect(html).not.toContain('data-testid="butler-heartbeat-skeleton"');
   });
 });
 

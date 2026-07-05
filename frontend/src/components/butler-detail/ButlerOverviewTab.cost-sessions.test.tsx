@@ -312,8 +312,8 @@ describe("ButlerOverviewTab — spend panel", () => {
     const html = renderTab();
     expect(html).toContain('data-testid="panel-spend"');
     expect(html).not.toContain("$0.05");
-    // There should be skeleton elements (class="...animate-pulse...")
-    expect(html.toLowerCase()).toContain("skeleton");
+    // There should be skeleton elements (data-slot="skeleton")
+    expect(html).toContain('data-slot="skeleton"');
   });
 
   it("renders the spend panel testid", () => {

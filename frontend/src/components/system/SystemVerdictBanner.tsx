@@ -64,7 +64,7 @@ export function SystemVerdictBanner() {
   if (stillLoading) {
     return (
       <div
-        className="mb-4 h-12 animate-pulse rounded bg-muted"
+        className="mb-4 h-12 rounded bg-muted"
         data-testid="verdict-banner-skeleton"
         aria-label="Loading instance verdict"
       />

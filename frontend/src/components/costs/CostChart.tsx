@@ -53,7 +53,7 @@ export default function CostChart({
           <CardTitle>Spending Over Time</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-64 animate-pulse rounded bg-muted" />
+          <div className="h-64 rounded bg-muted" />
         </CardContent>
       </Card>
     );

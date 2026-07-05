@@ -29,7 +29,7 @@ export function ActivitySparkline({ entityId }: { entityId: string }) {
     return (
       <div
         data-testid="sparkline-loading"
-        className="h-8 w-full animate-pulse rounded bg-muted/40"
+        className="h-8 w-full rounded bg-muted/40"
       />
     );
   }

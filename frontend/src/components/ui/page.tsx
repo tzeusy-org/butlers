@@ -77,8 +77,8 @@ export interface PageProps {
 function HeadingBlockSkeleton() {
   return (
     <div className="space-y-2">
-      <div className="h-8 w-48 animate-pulse rounded bg-muted" />
-      <div className="h-4 w-64 animate-pulse rounded bg-muted" />
+      <div className="h-8 w-48 rounded bg-muted" />
+      <div className="h-4 w-64 rounded bg-muted" />
     </div>
   );
 }
@@ -216,14 +216,14 @@ function DetailSkeleton() {
   return (
     <>
       <CardSkeleton />
-      <div className="h-10 w-full animate-pulse rounded bg-muted" />
-      <div className="h-48 w-full animate-pulse rounded bg-muted" />
+      <div className="h-10 w-full rounded bg-muted" />
+      <div className="h-48 w-full rounded bg-muted" />
     </>
   );
 }
 
 function WorkspaceSkeleton() {
-  return <div className="h-96 w-full animate-pulse rounded-lg bg-muted" />;
+  return <div data-testid="workspace-skeleton" className="h-96 w-full rounded-lg bg-muted" />;
 }
 
 function EditorSkeleton({ count }: { count: number }) {
@@ -244,15 +244,15 @@ function StatusBoardSkeleton() {
   return (
     <div className="flex flex-col gap-4">
       {/* Header line */}
-      <div className="h-14 w-full animate-pulse rounded bg-muted" />
+      <div className="h-14 w-full rounded bg-muted" />
       {/* 2-column × 4-row cell grid */}
       <div className="grid grid-cols-2 gap-4">
         {Array.from({ length: 8 }, (_, i) => (
-          <div key={i} className="h-56 w-full animate-pulse rounded bg-muted" />
+          <div key={i} className="h-56 w-full rounded bg-muted" />
         ))}
       </div>
       {/* Footer band */}
-      <div className="h-16 w-full animate-pulse rounded bg-muted" />
+      <div className="h-16 w-full rounded bg-muted" />
     </div>
   );
 }

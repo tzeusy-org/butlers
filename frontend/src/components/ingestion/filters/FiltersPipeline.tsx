@@ -299,7 +299,7 @@ export function FiltersPipeline() {
     return (
       <div className="space-y-4 py-6">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="h-16 bg-foreground/5 animate-pulse" />
+          <div key={i} className="h-16 bg-foreground/5" />
         ))}
       </div>
     )

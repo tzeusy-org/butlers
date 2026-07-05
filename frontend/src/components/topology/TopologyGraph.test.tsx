@@ -62,7 +62,7 @@ function render(props: Parameters<typeof TopologyGraph>[0]): string {
 describe("TopologyGraph -- loading and empty states", () => {
   it("renders a loading skeleton when isLoading", () => {
     const html = render({ butlers: [], isLoading: true });
-    expect(html).toContain("animate-pulse");
+    expect(html).toContain('data-testid="topology-graph-skeleton"');
     expect(html).not.toContain('data-testid="reactflow"');
   });
 

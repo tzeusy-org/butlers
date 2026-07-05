@@ -36,7 +36,7 @@ function ConceptNode({ data }: { data: Record<string, unknown> }) {
     <div className="relative">
       {isFrontier && (
         <div
-          className="absolute -inset-2 animate-pulse rounded-lg opacity-40"
+          className="absolute -inset-2 rounded-lg opacity-40"
           style={{ border: `2px solid ${color}` }}
         />
       )}

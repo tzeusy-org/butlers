@@ -191,7 +191,7 @@ export function ButlerHeartbeatTile() {
           <CardTitle className="text-sm font-medium">Butler Heartbeats</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-16 animate-pulse rounded bg-muted" />
+          <div className="h-16 rounded bg-muted" data-testid="butler-heartbeat-skeleton" />
         </CardContent>
       </Card>
     );

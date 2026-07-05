@@ -254,7 +254,7 @@ function SystemPromptSection({ butlerName }: { butlerName: string }) {
       }
     >
       {isLoading ? (
-        <div className="h-20 w-full animate-pulse rounded bg-muted" />
+        <div className="h-20 w-full rounded bg-muted" />
       ) : (
         <>
           <div className="max-w-[72ch] rounded border border-border bg-muted/20 px-4 py-3 font-serif text-sm leading-relaxed text-foreground">
@@ -376,7 +376,7 @@ function PromptDiffModal({
           </button>
         </div>
         {isLoading ? (
-          <div className="h-40 w-full animate-pulse rounded bg-muted" />
+          <div className="h-40 w-full rounded bg-muted" />
         ) : !current || !previous ? (
           <p className="font-mono text-[11px] text-muted-foreground">
             Could not load both versions to diff.
@@ -498,7 +498,7 @@ function ToolsSection({ butlerName }: { butlerName: string }) {
       }
     >
       {isLoading ? (
-        <div className="h-24 w-full animate-pulse rounded bg-muted" />
+        <div className="h-24 w-full rounded bg-muted" />
       ) : tools.length === 0 ? (
         <p className="font-mono text-[11px] text-muted-foreground">
           No tool grants configured for this butler.
@@ -550,7 +550,7 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
   return (
     <Section n={4} title="Memory access" hint="which tiers this butler may read, write, and owns">
       {isLoading ? (
-        <div className="h-20 w-full animate-pulse rounded bg-muted" />
+        <div className="h-20 w-full rounded bg-muted" />
       ) : (
         <div className="grid grid-cols-2 gap-8">
           <div className="grid grid-cols-3 divide-x divide-border rounded border border-border">

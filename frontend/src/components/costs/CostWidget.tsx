@@ -36,7 +36,7 @@ export default function CostWidget({
           <CardTitle>Cost Today</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="h-16 animate-pulse rounded bg-muted" />
+          <div className="h-16 rounded bg-muted" />
         </CardContent>
       </Card>
     );

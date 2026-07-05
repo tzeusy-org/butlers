@@ -533,7 +533,7 @@ describe("ContactChannelCard — loading state", () => {
     setLinkedContacts([], { isLoading: true });
     const html = renderCard();
     expect(html).toContain("Channels");
-    expect(html).toContain("animate-pulse");
+    expect(html).toContain('data-testid="contact-channel-card-skeleton"');
   });
 });
 
