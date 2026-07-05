@@ -23,6 +23,12 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.attention_ledger import (
+    URGENT_PRIORITY_THRESHOLD,
+    get_suppressing_context_signal,
+    record_attention_event,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -760,12 +766,20 @@ async def delivery_cycle(
         "effective_budget": 0,
     }
 
-    # Step 1: Check quiet hours
+    # Step 1: Check quiet hours + context bus (bu-qvnce.8 slices 1-2). Both are
+    # deterministic, non-LLM reads. Neither suppresses a candidate at or above
+    # URGENT_PRIORITY_THRESHOLD (RFC 0011 Amendment 1: fail-open for urgent,
+    # budgeted for routine) — that check happens below, once pending
+    # candidates are known, so a single urgent candidate doesn't skip the
+    # whole cycle's suppression bookkeeping.
     settings = await get_insight_settings(pool)
-    if _is_quiet_hours(settings, now=now):
-        logger.info("insight-delivery-cycle: quiet hours active, skipping")
-        result["skipped"] = True
-        return result
+    _quiet_hours_active = _is_quiet_hours(settings, now=now)
+    _context_signal = await get_suppressing_context_signal(pool)
+    _suppression_reason: str | None = None
+    if _quiet_hours_active:
+        _suppression_reason = "quiet_hours"
+    elif _context_signal is not None:
+        _suppression_reason = f"context_bus:{_context_signal}"
 
     # Check verbosity=off early
     configured_budget = _get_configured_budget(settings)
@@ -780,7 +794,8 @@ async def delivery_cycle(
         result["skipped"] = True
         return result
 
-    # Step 2: Expire candidates
+    # Step 2: Expire candidates. Runs unconditionally — expiry bookkeeping
+    # must not stall just because this cycle is (or may be) suppressed.
     expired = await expire_candidates(pool, now=now)
     result["expired"] = expired
 
@@ -796,6 +811,45 @@ async def delivery_cycle(
 
     if not pending_ids:
         return result
+
+    if _suppression_reason is not None:
+        urgent_rows = await pool.fetch(
+            """
+            SELECT id FROM insight_candidates
+            WHERE id = ANY($1::uuid[]) AND priority >= $2
+            """,
+            pending_ids,
+            URGENT_PRIORITY_THRESHOLD,
+        )
+        if not urgent_rows:
+            logger.info(
+                "insight-delivery-cycle: suppressed (%s), no urgent (priority>=%d) "
+                "candidates pending — skipping",
+                _suppression_reason,
+                URGENT_PRIORITY_THRESHOLD,
+            )
+            await record_attention_event(
+                pool,
+                origin_butler="switchboard",
+                source="insight",
+                outcome="suppressed",
+                intent="insight",
+                reason=_suppression_reason,
+            )
+            result["skipped"] = True
+            return result
+        # At least one urgent candidate is pending — narrow this cycle's
+        # working set to urgent candidates only. Routine (sub-threshold)
+        # candidates remain 'pending' untouched for a later, non-suppressed
+        # cycle rather than being silently dropped.
+        logger.info(
+            "insight-delivery-cycle: suppressed (%s) but %d urgent (priority>=%d) "
+            "candidate(s) pending — bypassing suppression for those only",
+            _suppression_reason,
+            len(urgent_rows),
+            URGENT_PRIORITY_THRESHOLD,
+        )
+        pending_ids = [str(row["id"]) for row in urgent_rows]
 
     # Step 3: Filter by cooldown
     eligible_ids = await filter_by_cooldown(pool, pending_ids, now=now)
@@ -907,6 +961,23 @@ async def delivery_cycle(
 
         # Step 9: Record engagement
         await record_engagement_rows(pool, selected_ids, delivered_at=delivered_at)
+
+        # Attention ledger: one row per delivered candidate. A single-candidate
+        # delivery is "delivered"; a batched digest (deliver_count > 1) folds
+        # every candidate into one composed message, so each is "coalesced".
+        _ledger_outcome = "delivered" if deliver_count == 1 else "coalesced"
+        for _c in selected:
+            await record_attention_event(
+                pool,
+                origin_butler=_c.get("origin_butler") or "unknown",
+                source="insight",
+                outcome=_ledger_outcome,
+                channel=delivery_channel or _c.get("channel"),
+                intent="insight",
+                priority=_c.get("priority"),
+                dedup_key=_c.get("dedup_key"),
+                notification_ref=str(_c["id"]),
+            )
     else:
         # Delivery failed — increment attempt counter; filter candidates that have
         # reached the 3-consecutive-failure threshold

@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from butlers.config import ButlerType
+from butlers.core.attention_ledger import get_suppressing_context_signal, record_attention_event
 from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
@@ -560,6 +561,17 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 priority,
                                 _deliver_at.isoformat(),
                             )
+                            await record_attention_event(
+                                _notify_pool,
+                                origin_butler=butler_name,
+                                source="notify",
+                                outcome="deferred",
+                                channel=channel,
+                                intent=intent,
+                                priority=priority,
+                                reason="delivery_preferences_quiet_hours",
+                                notification_ref=_notif_id,
+                            )
                             return {
                                 "status": "deferred",
                                 "notification_id": _notif_id,
@@ -603,6 +615,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     )
                     _policy = None
 
+                _quiet_hours_suppress = False
+                _policy_tz_name = "UTC"
                 if _policy is not None:
                     _policy_tz_name = _policy.get("timezone", "UTC")
                     try:
@@ -611,25 +625,69 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         _policy_tz = _PZoneInfo("UTC")
                     _policy_now_local = _pdatetime.now(_PUTC).astimezone(_policy_tz)
                     _policy_current_hour = _policy_now_local.hour
+                    _quiet_hours_suppress = should_suppress_by_policy(
+                        _policy, current_hour=_policy_current_hour
+                    )
 
-                    if should_suppress_by_policy(_policy, current_hour=_policy_current_hour):
-                        logger.info(
-                            "notify() suppressed owner page during quiet hours "
-                            "(policy tz=%s hour=%d quiet=%s-%s channel=%s butler=%s)",
-                            _policy_tz_name,
-                            _policy_current_hour,
-                            _policy.get("quiet_start_hour"),
-                            _policy.get("quiet_end_hour"),
-                            channel,
-                            butler_name,
-                        )
-                        return {
-                            "status": "suppressed_quiet_hours",
-                            "channel": channel,
-                            "quiet_start_hour": _policy.get("quiet_start_hour"),
-                            "quiet_end_hour": _policy.get("quiet_end_hour"),
-                            "timezone": _policy_tz_name,
-                        }
+                if _quiet_hours_suppress:
+                    logger.info(
+                        "notify() suppressed owner page during quiet hours "
+                        "(policy tz=%s hour=%d quiet=%s-%s channel=%s butler=%s)",
+                        _policy_tz_name,
+                        _policy_current_hour,
+                        _policy.get("quiet_start_hour"),
+                        _policy.get("quiet_end_hour"),
+                        channel,
+                        butler_name,
+                    )
+                    await record_attention_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="suppressed",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        reason="quiet_hours",
+                    )
+                    return {
+                        "status": "suppressed_quiet_hours",
+                        "channel": channel,
+                        "quiet_start_hour": _policy.get("quiet_start_hour"),
+                        "quiet_end_hour": _policy.get("quiet_end_hour"),
+                        "timezone": _policy_tz_name,
+                    }
+
+                # Context-bus gating (bu-qvnce.8 slice 2): deterministic dnd/sleeping
+                # check, only reached when quiet hours did NOT already suppress
+                # (avoids a redundant DB round-trip on the already-decided path).
+                # Scoped identically to the quiet-hours gate above: owner-default
+                # path only, send/insight intents, non-high priority (fail-open
+                # for urgent traffic).
+                _context_signal = await get_suppressing_context_signal(_notify_pool)
+                if _context_signal is not None:
+                    logger.info(
+                        "notify() suppressed owner page: context bus signal %r active "
+                        "(channel=%s butler=%s)",
+                        _context_signal,
+                        channel,
+                        butler_name,
+                    )
+                    await record_attention_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="suppressed",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        reason=f"context_bus:{_context_signal}",
+                    )
+                    return {
+                        "status": "suppressed_context_bus",
+                        "channel": channel,
+                        "context_signal": _context_signal,
+                    }
 
             client = daemon.switchboard_client
             if client is None and butler_name != "switchboard":
@@ -951,6 +1009,18 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             "error": result.get("error", "Delivery failed"),
                         }
                     _emit_notification_event()
+                    await record_attention_event(
+                        pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="delivered",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        notification_ref=result.get("notification_id")
+                        if isinstance(result, dict)
+                        else None,
+                    )
                     return {"status": "ok", "result": result}
                 except Exception as exc:
                     logger.warning(
@@ -983,6 +1053,18 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         "notification_id": data.get("notification_id"),
                     }
                 _emit_notification_event()
+                await record_attention_event(
+                    daemon.db.pool if daemon.db is not None else None,
+                    origin_butler=butler_name,
+                    source="notify",
+                    outcome="delivered",
+                    channel=channel,
+                    intent=intent,
+                    priority=priority,
+                    notification_ref=(
+                        data.get("notification_id") if isinstance(data, dict) else None
+                    ),
+                )
                 return {"status": "ok", "result": data}
             except TimeoutError:
                 logger.warning(
