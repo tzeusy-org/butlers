@@ -760,6 +760,24 @@ def _infer_provider_from_type(entity_type: str) -> str:
     return entity_type[:idx] if idx > 0 else entity_type
 
 
+def _provider_like_patterns(provider: str) -> list[str]:
+    """LIKE patterns matching entity_info.type for a display provider slug.
+
+    Reverse of _infer_provider_from_type: the frontend addresses user
+    credentials by display slug (``homeassistant``, ``telegram_bot``), but the
+    stored ``entity_info.type`` values keep their own spellings
+    (``home_assistant_token``, ``telegram_user_session``). A raw
+    ``LIKE '<slug>_%'`` therefore misses every aliased provider and 404s
+    ("Credential not found") on probe/rotate/disconnect. Every {provider}
+    path-param lookup must match through this reverse mapping.
+    """
+    prefixes = [provider]
+    for prefix, slug in _USER_TYPE_PREFIX_ALIASES.items():
+        if slug == provider and prefix not in prefixes:
+            prefixes.append(prefix)
+    return [f"{escape_like_pattern(p)}\\_%" for p in prefixes]
+
+
 async def _fetch_scopes_required_by_provider(pool: Any) -> dict[str, list[str]]:
     """Union public.provider_feature_catalogue.required_scopes per provider.
 
@@ -1429,12 +1447,15 @@ async def _fetch_single_user_secret(
 ) -> UserSecretDetail | None:
     """Fetch a single entity_info row matching the given provider.
 
-    The provider maps to entity_info.type via a LIKE '<provider>_%' prefix
-    match (e.g. 'google' matches 'google_oauth_refresh').  When identity is
-    provided, filters to that entity; otherwise uses the owner entity.
+    The provider display slug maps to entity_info.type through the
+    alias-aware patterns from ``_provider_like_patterns`` (e.g. 'google'
+    matches 'google_oauth_refresh', 'homeassistant' matches
+    'home_assistant_token').  When identity is provided, filters to that
+    entity; otherwise uses the owner entity.
 
     Returns None when no matching row exists.
     """
+    patterns = _provider_like_patterns(provider)
     try:
         if identity is not None:
             row = await pool.fetchrow(
@@ -1452,13 +1473,13 @@ async def _fetch_single_user_secret(
                     ei.last_test_message
                 FROM public.entity_info ei
                 WHERE ei.entity_id = $1
-                  AND ei.type LIKE $2
+                  AND ei.type LIKE ANY($2::text[])
                   AND ei.secured = true
                 ORDER BY ei.created_at DESC
                 LIMIT 1
                 """,
                 identity,
-                f"{escape_like_pattern(provider)}_%",
+                patterns,
             )
         else:
             row = await pool.fetchrow(
@@ -1477,12 +1498,12 @@ async def _fetch_single_user_secret(
                 FROM public.entity_info ei
                 JOIN public.entities e ON e.id = ei.entity_id
                 WHERE 'owner' = ANY(e.roles)
-                  AND ei.type LIKE $1
+                  AND ei.type LIKE ANY($1::text[])
                   AND ei.secured = true
                 ORDER BY ei.created_at DESC
                 LIMIT 1
                 """,
-                f"{escape_like_pattern(provider)}_%",
+                patterns,
             )
     except Exception as exc:  # noqa: BLE001
         msg = str(exc).lower()
@@ -2692,7 +2713,12 @@ async def _verify_oauth_credential(
     # ------------------------------------------------------------------
     # Home Assistant: dispatch to custom handler
     # ------------------------------------------------------------------
-    if provider == "home_assistant" and credential_type == "home_assistant_token":
+    # Accept both the raw spelling and the display slug the frontend sends as
+    # the {provider} path param ('homeassistant', per _infer_provider_from_type).
+    if (
+        provider in ("home_assistant", "homeassistant")
+        and credential_type == "home_assistant_token"
+    ):
         return await _verify_home_assistant_credential(refresh_token, shared_pool)
 
     # ------------------------------------------------------------------
@@ -3228,28 +3254,56 @@ async def probe_user_credential(
             probe_message = detail.failure_tail if not probe_ok else None
         probe_code = None
 
+    # The passport groups all rows of one provider under a single credential
+    # (e.g. telegram_api_hash + telegram_user_session → 'telegram_bot') and
+    # merges their states pessimistically, so the probe outcome must be
+    # written to every sibling row of the group — updating only the picked
+    # row would leave the merged chip stuck at "needs probe" forever.
+    # Scoped to ONE entity, so multi-account providers (one entity per
+    # account) never cross-contaminate.
+    sibling_ids: list[UUID] = [UUID(detail.id)]
+    sibling_types: list[str] = [credential_key]
+    try:
+        _sibling_rows = await shared_pool.fetch(
+            """
+            SELECT id, type FROM public.entity_info
+            WHERE entity_id = $1
+              AND type LIKE ANY($2::text[])
+              AND secured = true
+            """,
+            UUID(detail.entity_id),
+            _provider_like_patterns(provider),
+        )
+        if _sibling_rows:
+            sibling_ids = [r["id"] for r in _sibling_rows]
+            sibling_types = sorted({r["type"] for r in _sibling_rows})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "probe_user_credential: sibling lookup failed for provider=%s: %s", provider, exc
+        )
+
     # Execute probe_log insert + entity_info cache update in one transaction.
     try:
         async with shared_pool.acquire() as conn:
             async with conn.transaction():
-                # 1. Insert probe log row.
-                await conn.execute(
-                    """
-                    INSERT INTO public.secret_probe_log
-                        (credential_scope, credential_key, ok, code, message, latency_ms)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    """,
-                    "user",
-                    credential_key,
-                    probe_ok,
-                    probe_code,
-                    probe_message,
-                    probe_latency_ms,
-                )
+                # 1. Insert one probe log row per credential type in the group
+                # (the per-type "last test" displays all read this table).
+                for _probe_type in sibling_types:
+                    await conn.execute(
+                        """
+                        INSERT INTO public.secret_probe_log
+                            (credential_scope, credential_key, ok, code, message, latency_ms)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        """,
+                        "user",
+                        _probe_type,
+                        probe_ok,
+                        probe_code,
+                        probe_message,
+                        probe_latency_ms,
+                    )
 
-                # 2. Update test-state cache columns on entity_info.
-                # Use the primary key from the fetched row — safer than entity_id+LIKE
-                # which could match multiple rows in multi-account scenarios.
+                # 2. Update test-state cache columns on every row of the group.
                 # last_verified is set only on success (per spec §Cache write on probe).
                 await conn.execute(
                     """
@@ -3259,12 +3313,12 @@ async def probe_user_credential(
                         last_test_code = $2,
                         last_test_message = $3,
                         last_verified = CASE WHEN $1 THEN now() ELSE last_verified END
-                    WHERE id = $4
+                    WHERE id = ANY($4::uuid[])
                     """,
                     probe_ok,
                     probe_code,
                     probe_message,
-                    UUID(detail.id),
+                    sibling_ids,
                 )
 
     except UndefinedTableError as exc:

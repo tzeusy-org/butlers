@@ -683,20 +683,23 @@ def test_user_credential_provider_percent_does_not_match_google_oauth_refresh():
     # %25 is URL-encoded % — FastAPI decodes it back to 'goog%' before routing.
     client.get("/api/secrets/user/goog%25")
 
-    # Verify the LIKE pattern arg was escaped: must be 'goog\%_%' (literal backslash)
-    # not 'goog%_%'.  Check the actual string values in the captured args tuples.
+    # Verify the LIKE pattern arg was escaped: must be 'goog\%\_%' (literal
+    # backslash) not 'goog%_%'.  Patterns are now passed as a text[] parameter
+    # (alias-aware matching via _provider_like_patterns).
     all_params = [arg for args_tuple in captured for arg in args_tuple]
-    assert r"goog\%_%" in all_params, (
-        f"Expected escaped LIKE pattern 'goog\\%_%' in SQL params, got: {all_params}"
+    pattern_lists = [p for p in all_params if isinstance(p, list)]
+    assert any(r"goog\%\_%" in patterns for patterns in pattern_lists), (
+        f"Expected escaped LIKE pattern 'goog\\%\\_%' in SQL params, got: {all_params}"
     )
 
 
 def test_user_credential_provider_underscore_does_not_match_google_oauth_refresh():
-    """Provider 'g_ogle' with escaping must produce 'g\\_ogle_%' as the LIKE parameter.
+    """Provider 'g_ogle' with escaping must produce 'g\\_ogle\\_%' as the LIKE pattern.
 
     Without escaping, 'g_ogle_%' would be sent and would match 'google_oauth_refresh'
-    (the _ matches 'o').  With escaping, 'g\\_ogle_%' only matches literal 'g_ogle_<anything>'.
-    We verify the SQL parameter contains the escaped backslash-underscore sequence.
+    (the _ matches 'o').  With escaping, 'g\\_ogle\\_%' only matches literal
+    'g_ogle_<anything>'.  Patterns are now passed as a text[] parameter
+    (alias-aware matching via _provider_like_patterns).
     """
     row = _make_entity_info_row(info_type="google_oauth_refresh")
     mock_db, captured = _make_capturing_db_manager(user_row=row)
@@ -705,13 +708,14 @@ def test_user_credential_provider_underscore_does_not_match_google_oauth_refresh
     client.get("/api/secrets/user/g_ogle")
 
     all_params = [arg for args_tuple in captured for arg in args_tuple]
-    assert r"g\_ogle_%" in all_params, (
-        f"Expected escaped LIKE pattern 'g\\_ogle_%' in SQL params, got: {all_params}"
+    pattern_lists = [p for p in all_params if isinstance(p, list)]
+    assert any(r"g\_ogle\_%" in patterns for patterns in pattern_lists), (
+        f"Expected escaped LIKE pattern 'g\\_ogle\\_%' in SQL params, got: {all_params}"
     )
 
 
 def test_user_credential_clean_provider_passes_unmodified():
-    """Provider 'google' (no metacharacters) produces 'google_%' LIKE pattern unchanged."""
+    """Provider 'google' (no metacharacters) produces the single 'google\\_%' pattern."""
     row = _make_entity_info_row(info_type="google_oauth_refresh")
     mock_db, captured = _make_capturing_db_manager(user_row=row)
     client = _build_app(mock_db)
@@ -720,6 +724,7 @@ def test_user_credential_clean_provider_passes_unmodified():
     assert resp.status_code == 200
 
     all_params = [arg for args_tuple in captured for arg in args_tuple]
-    assert "google_%" in all_params, (
-        f"Expected LIKE pattern 'google_%' in SQL params, got: {all_params}"
+    pattern_lists = [p for p in all_params if isinstance(p, list)]
+    assert any(r"google\_%" in patterns for patterns in pattern_lists), (
+        f"Expected LIKE pattern 'google\\_%' in SQL params, got: {all_params}"
     )

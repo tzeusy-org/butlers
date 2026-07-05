@@ -809,3 +809,39 @@ def test_github_pat_type_not_accepted_for_google(monkeypatch):
     # Falls back to local state: last_test_ok=True → probe_ok=True.
     assert data["ok"] is True
     assert not http_calls, f"No HTTP calls expected; got: {http_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Provider slug → entity_info.type pattern mapping (aliased providers)
+# ---------------------------------------------------------------------------
+
+
+def test_provider_like_patterns_alias_homeassistant():
+    """'homeassistant' must match home_assistant_* rows.
+
+    Regression [2026-07-05]: the raw LIKE 'homeassistant_%' missed
+    home_assistant_token and the probe 404'd ("Credential not found").
+    """
+    from butlers.api.routers.secrets_v2 import _provider_like_patterns
+
+    assert _provider_like_patterns("homeassistant") == [
+        "homeassistant\\_%",
+        "home\\_assistant\\_%",
+    ]
+
+
+def test_provider_like_patterns_alias_telegram_bot():
+    """'telegram_bot' must match telegram_* rows (api hash, user session)."""
+    from butlers.api.routers.secrets_v2 import _provider_like_patterns
+
+    assert _provider_like_patterns("telegram_bot") == [
+        "telegram\\_bot\\_%",
+        "telegram\\_%",
+    ]
+
+
+def test_provider_like_patterns_plain_provider_unchanged():
+    """Un-aliased providers keep the single '<provider>_%' pattern."""
+    from butlers.api.routers.secrets_v2 import _provider_like_patterns
+
+    assert _provider_like_patterns("google") == ["google\\_%"]
