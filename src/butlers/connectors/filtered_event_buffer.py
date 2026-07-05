@@ -442,6 +442,21 @@ class FilteredEventBuffer:
         """
         return "submission_error"
 
+    @staticmethod
+    def reason_source_poll_error() -> str:
+        """Return filter reason for an upstream source-API poll/fetch failure.
+
+        Distinct from :meth:`reason_submission_error`: this covers errors
+        fetching data *from* the third-party provider (rate limits, network
+        errors, HTTP errors from the provider's own API) — not errors
+        submitting the resulting envelope *to* the Switchboard. Conflating
+        the two makes operational triage misleading (a poll failure against
+        a third party looks like an internal ingest outage).
+
+        Status should be ``"error"`` when using this reason.
+        """
+        return "source_poll_error"
+
     # ------------------------------------------------------------------
     # Full-payload helper
     # ------------------------------------------------------------------
