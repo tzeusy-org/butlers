@@ -45,6 +45,11 @@ Filter-reason format helpers
 ``reason_submission_error()``
     ``submission_error``
 
+``reason_discretion_ignore(kind)``
+    ``discretion:ignore:<kind>``  e.g. ``discretion:ignore:auth_failure_default``
+    — see :func:`butlers.connectors.discretion.classify_ignore_kind` for the
+    canonical ``kind`` values.
+
 Full-payload shape
 ------------------
 ``full_payload(...)`` returns a dict shaped as an ``ingest.v1`` envelope
@@ -441,6 +446,28 @@ class FilteredEventBuffer:
         Status should be ``"error"`` when using this reason.
         """
         return "submission_error"
+
+    @staticmethod
+    def reason_discretion_ignore(kind: str) -> str:
+        """Return filter reason for a discretion-layer IGNORE outcome.
+
+        Format: ``discretion:ignore:<kind>``
+        Examples: ``discretion:ignore:llm_verdict``,
+        ``discretion:ignore:auth_failure_default``,
+        ``discretion:ignore:failover_exhausted``.
+
+        Distinguishing ``kind`` matters here specifically: a bare
+        ``"discretion:IGNORE"`` reason (the pre-bu-n0336 behaviour) cannot tell
+        a genuine LLM-judged IGNORE apart from a fail-closed default (e.g. a
+        provider/auth failure silently dropping every low-trust sender's
+        messages) without re-sampling the raw payloads — see bu-ofo3i/bu-cicgb.
+
+        Args:
+            kind: See :func:`butlers.connectors.discretion.classify_ignore_kind`
+                for the canonical kind values derived from a
+                ``DiscretionResult``.
+        """
+        return f"discretion:ignore:{kind}"
 
     @staticmethod
     def reason_source_poll_error() -> str:

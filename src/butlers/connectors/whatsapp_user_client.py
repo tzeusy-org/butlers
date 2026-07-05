@@ -66,6 +66,7 @@ from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.discretion import (
     ContactWeightResolver,
     DiscretionEvaluator,
+    classify_ignore_kind,
 )
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -1448,7 +1449,9 @@ class WhatsAppUserClientConnector:
                     self._record_batch_filtered_event(
                         chat_jid=chat_jid,
                         batch_event_id=batch_event_id,
-                        filter_reason="discretion:IGNORE",
+                        filter_reason=FilteredEventBuffer.reason_discretion_ignore(
+                            classify_ignore_kind(d_result)
+                        ),
                         subject_or_preview=normalized_text[:200] if normalized_text else None,
                     )
                     await self._flush_and_drain()

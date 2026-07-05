@@ -61,6 +61,7 @@ from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.discretion import (
     ContactWeightResolver,
     DiscretionEvaluator,
+    classify_ignore_kind,
 )
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -966,7 +967,9 @@ class TelegramUserClientConnector:
                     self._record_batch_filtered_event(
                         chat_id=chat_id,
                         batch_event_id=batch_event_id,
-                        filter_reason="discretion:IGNORE",
+                        filter_reason=FilteredEventBuffer.reason_discretion_ignore(
+                            classify_ignore_kind(d_result)
+                        ),
                         subject_or_preview=normalized_text[:200] if normalized_text else None,
                     )
                     await self._flush_and_drain()
@@ -1325,7 +1328,9 @@ class TelegramUserClientConnector:
                             source_channel=self._config.channel,
                             sender_identity=self._extract_sender_identity(message),
                             subject_or_preview=self._extract_preview(message),
-                            filter_reason="discretion:IGNORE",
+                            filter_reason=FilteredEventBuffer.reason_discretion_ignore(
+                                classify_ignore_kind(d_result)
+                            ),
                             full_payload=FilteredEventBuffer.full_payload(
                                 channel=self._config.channel,
                                 provider=self._config.provider,

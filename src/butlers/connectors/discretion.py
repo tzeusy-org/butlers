@@ -21,6 +21,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 from prometheus_client import Counter
 
+from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.identity import _CHANNEL_TYPE_TO_PREDICATE, _resolve_entity_by_triple
 
 logger = logging.getLogger(__name__)
@@ -296,6 +297,71 @@ def _build_user_prompt(context_entries: list[ContextEntry], entry: ContextEntry)
     )
 
 
+def _classify_default_error(exc: Exception) -> str:
+    """Classify a discretion-call exception for the fail-open/fail-closed reason string.
+
+    Distinguishes two systemic failure modes that would otherwise collapse into
+    an opaque exception class name (bu-n0336, from bu-ofo3i's diagnosis that
+    weight<0.5 senders silently fail-closed on a never-provisioned CLI auth
+    token with zero discrimination from any other error):
+
+    - ``"failover_exhausted"``: every same-tier model candidate failed (the
+      ``RuntimeError`` :class:`~butlers.connectors.discretion_dispatcher.DiscretionDispatcher`
+      raises when its own same-tier failover loop is exhausted).
+    - ``"auth_failure"``: a provider/auth-classified failure (e.g. a missing or
+      revoked CLI auth token). Reuses
+      :func:`~butlers.core.failover_classifier.classify_failover_eligibility` —
+      the same default-closed marker list ``DiscretionDispatcher``'s same-tier
+      failover and connector ``/status`` auth health already key off — so the
+      marker patterns live in exactly one place.
+
+    Falls back to the raw exception class name for anything else. Timeouts and
+    unparseable responses are classified by their own call sites, not here.
+    """
+    if str(exc).startswith("same_tier_failover_exhausted"):
+        return "failover_exhausted"
+    decision = classify_failover_eligibility(FailoverContext(exception=exc))
+    if decision.reason.startswith("provider_auth_error"):
+        return "auth_failure"
+    return type(exc).__name__
+
+
+def classify_ignore_kind(result: DiscretionResult) -> str:
+    """Classify an IGNORE :class:`DiscretionResult` into a stable filter-reason kind.
+
+    Distinguishes a genuine LLM-judged IGNORE from the various fail-closed
+    default outcomes so ``connectors.filtered_events`` rows are queryable
+    without re-sampling raw payloads (bu-n0336, from bu-ofo3i/bu-cicgb: the
+    WhatsApp 90%-drop audit could not tell "the LLM judged this noise" apart
+    from "Codex CLI 401'd and the low-trust default kicked in").
+
+    Only meaningful when ``result.verdict == "IGNORE"``; callers should check
+    the verdict first. Returns one of:
+
+    - ``"llm_verdict"`` — the LLM actually ran and returned IGNORE.
+    - ``"auth_failure_default"`` — fail-closed default from a provider/auth
+      failure (e.g. a missing or revoked CLI auth token).
+    - ``"failover_exhausted"`` — fail-closed default after every same-tier
+      model candidate failed.
+    - ``"timeout_default"`` — fail-closed default from an LLM call timeout.
+    - ``"parse_error_default"`` — fail-closed default from an unparseable LLM
+      response.
+    - ``"error_default"`` — fail-closed default from any other exception.
+    """
+    reason = result.reason
+    if not reason:
+        return "llm_verdict"
+    if reason.startswith("fail-closed: auth_failure"):
+        return "auth_failure_default"
+    if reason.startswith("fail-closed: failover_exhausted"):
+        return "failover_exhausted"
+    if reason.startswith("fail-closed: timeout"):
+        return "timeout_default"
+    if reason.startswith("fail-closed: parse_error"):
+        return "parse_error_default"
+    return "error_default"
+
+
 def _parse_verdict(raw_response: str) -> tuple[Verdict, str]:
     """Parse the LLM response into a (verdict, reason) tuple.
 
@@ -509,7 +575,7 @@ class DiscretionEvaluator:
             ).inc()
             return DiscretionResult(
                 verdict=fail_verdict,
-                reason=f"{fail_label}: {type(exc).__name__}",
+                reason=f"{fail_label}: {_classify_default_error(exc)}",
                 is_fail_open=fail_open,
             )
 

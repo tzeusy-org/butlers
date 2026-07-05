@@ -168,6 +168,79 @@ class TestConnectorBridgeAndIngest:
             envelope = payload_arg
         assert "schema_version" in (envelope or payload_arg or {})
 
+    async def test_flush_records_llm_verdict_ignore_with_labeled_reason(self):
+        """A genuine LLM-judged IGNORE (bu-n0336) must persist as
+        ``discretion:ignore:llm_verdict`` — distinguishable from a fail-closed
+        default — and must not submit to Switchboard or double-persist."""
+        connector = _make_connector()
+        mock_mcp = AsyncMock()
+        mock_mcp.call_tool = AsyncMock(return_value={"status": "ok"})
+        connector._mcp_client = mock_mcp
+        connector._ingestion_policy = MagicMock()
+        connector._ingestion_policy.evaluate.return_value = MagicMock(allowed=True)
+        connector._ingestion_policy.ensure_loaded = AsyncMock()
+        connector._global_ingestion_policy = MagicMock()
+        connector._global_ingestion_policy.evaluate.return_value = MagicMock(action="pass")
+        connector._global_ingestion_policy.ensure_loaded = AsyncMock()
+        connector._discretion_dispatcher = AsyncMock()
+        connector._discretion_dispatcher.call = AsyncMock(return_value="IGNORE")
+        connector._weight_resolver = AsyncMock()
+        connector._weight_resolver.resolve = AsyncMock(return_value=0.7)
+        connector._save_checkpoint = AsyncMock()
+        connector._flush_and_drain = AsyncMock()
+
+        await connector._handle_bridge_event(
+            _make_bridge_sse_event(
+                message_id="msg-ignore-1", chat_jid="300@s.whatsapp.net", text="ambient chatter"
+            )
+        )
+        await connector._flush_chat_buffer("300@s.whatsapp.net")
+
+        mock_mcp.call_tool.assert_not_awaited()
+        rows = connector._filtered_event_buffer._rows
+        assert len(rows) == 1
+        assert rows[0][7] == "discretion:ignore:llm_verdict"
+
+    async def test_flush_records_auth_failure_default_ignore_distinctly(self):
+        """A provider/auth-classified failure (bu-ofo3i: never-provisioned CLI
+        auth token) under weight<0.5 fail-closed must persist as
+        ``discretion:ignore:auth_failure_default`` — not the bare
+        ``discretion:IGNORE`` that made the WhatsApp 90%-drop audit
+        (bu-cicgb) impossible to attribute — and must self-persist exactly
+        once (fabricated-calm rule: the drop must be visible)."""
+        connector = _make_connector()
+        mock_mcp = AsyncMock()
+        mock_mcp.call_tool = AsyncMock(return_value={"status": "ok"})
+        connector._mcp_client = mock_mcp
+        connector._ingestion_policy = MagicMock()
+        connector._ingestion_policy.evaluate.return_value = MagicMock(allowed=True)
+        connector._ingestion_policy.ensure_loaded = AsyncMock()
+        connector._global_ingestion_policy = MagicMock()
+        connector._global_ingestion_policy.evaluate.return_value = MagicMock(action="pass")
+        connector._global_ingestion_policy.ensure_loaded = AsyncMock()
+        connector._discretion_dispatcher = AsyncMock()
+        connector._discretion_dispatcher.call = AsyncMock(
+            side_effect=RuntimeError(
+                "Codex CLI exited with code 1: unexpected status 401 Unauthorized"
+            )
+        )
+        connector._weight_resolver = AsyncMock()
+        connector._weight_resolver.resolve = AsyncMock(return_value=0.1)
+        connector._save_checkpoint = AsyncMock()
+        connector._flush_and_drain = AsyncMock()
+
+        await connector._handle_bridge_event(
+            _make_bridge_sse_event(
+                message_id="msg-ignore-2", chat_jid="400@s.whatsapp.net", text="low-trust sender"
+            )
+        )
+        await connector._flush_chat_buffer("400@s.whatsapp.net")
+
+        mock_mcp.call_tool.assert_not_awaited()
+        rows = connector._filtered_event_buffer._rows
+        assert len(rows) == 1
+        assert rows[0][7] == "discretion:ignore:auth_failure_default"
+
     async def test_bridge_binary_not_found_raises_runtime_error(self):
         """BridgeSubprocessManager raises RuntimeError when binary is missing."""
         from butlers.connectors.bridge_manager import BridgeConfig, BridgeSubprocessManager
