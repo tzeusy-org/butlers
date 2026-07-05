@@ -61,6 +61,9 @@ _D1_PAIRS: list[tuple[str, str, str | None, str]] = [
     ("comms.message_bursts", "social_episode", None, "social"),
     # ActivityWatch desktop-activity screen episodes (bu-whhll.6) → Work lane.
     ("activitywatch.window", "screen_episode", None, "tasks"),
+    # Occupation-block inference from enabled routine windows (bu-whhll.10)
+    # → its own 'occupation' category, still folding into the Work lane.
+    ("chronicler.occupation_inferred", "occupation_block", None, "occupation"),
 ]
 
 
@@ -105,6 +108,7 @@ _LANE_BY_CATEGORY: dict[str, str] = {
     "travel": "travel",
     "sleep": "sleep",
     "social": "social",
+    "occupation": "work",
 }
 
 
@@ -139,6 +143,11 @@ def test_lane_for_activity_counts_activity_layer() -> None:
     # core.sessions conversations + tasks both count as Work.
     assert lane_for_activity("activity", "core.sessions", "work", trigger_source="route") == "work"
     assert lane_for_activity("activity", "core.sessions", "work") == "work"
+    # Inferred occupation blocks (bu-whhll.10) also fold into Work.
+    assert (
+        lane_for_activity("activity", "chronicler.occupation_inferred", "occupation_block")
+        == "work"
+    )
 
 
 def test_lane_for_activity_drops_intent_and_evidence() -> None:

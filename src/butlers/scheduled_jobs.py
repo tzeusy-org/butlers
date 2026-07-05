@@ -1251,6 +1251,16 @@ async def _run_chronicler_project_exercise_inferred_job(
     return await run_project_exercise_inferred(pool, job_args)
 
 
+async def _run_chronicler_project_occupation_inferred_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's inferred occupation-block projection job."""
+    from butlers.chronicler.jobs import run_project_occupation_inferred
+
+    return await run_project_occupation_inferred(pool, job_args)
+
+
 async def _run_chronicler_project_comms_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1482,6 +1492,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_reading_inferred": _run_chronicler_project_reading_inferred_job,
             "chronicler_project_spotify": _run_chronicler_project_spotify_job,
             "chronicler_project_exercise_inferred": (_run_chronicler_project_exercise_inferred_job),
+            "chronicler_project_occupation_inferred": (
+                _run_chronicler_project_occupation_inferred_job
+            ),
             "chronicler_project_comms": _run_chronicler_project_comms_job,
             "chronicler_routines_mine": _run_chronicler_routines_mine_job,
         },

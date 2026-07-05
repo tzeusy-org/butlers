@@ -36,6 +36,7 @@ CATEGORIES: frozenset[str] = frozenset(
         "home",
         "workout",
         "social",
+        "occupation",
         "other",
     }
 )
@@ -68,6 +69,12 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     # is the closest existing category and directly addresses the epic's
     # motivating gap (10-12h weekday desktop work previously invisible).
     ("activitywatch.window", "screen_episode"): "tasks",
+    # Occupation-block inference from enabled routine windows (bu-whhll.10,
+    # epic bu-whhll Tier 2). Has its own dedicated 'occupation' category
+    # (-> Work lane) rather than folding into 'tasks', so it can be split
+    # from butler-session Work time independently of direct-measurement
+    # sources (tasks.md epic bu-whhll.14).
+    ("chronicler.occupation_inferred", "occupation_block"): "occupation",
 }
 
 # trigger_source values that represent user→butler conversations.
@@ -140,6 +147,7 @@ _CATEGORY_TO_LANE: dict[str, str] = {
     "travel": "travel",
     "sleep": "sleep",
     "social": "social",
+    "occupation": "work",
 }
 
 

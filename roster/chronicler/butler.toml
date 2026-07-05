@@ -112,6 +112,12 @@ dispatch_mode = "job"
 job_name = "chronicler_project_exercise_inferred"
 
 [[butler.schedule]]
+name = "chronicler_project_occupation_inferred"
+cron = "20 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_occupation_inferred"
+
+[[butler.schedule]]
 name = "chronicler_project_spotify"
 cron = "*/30 * * * *"
 dispatch_mode = "job"

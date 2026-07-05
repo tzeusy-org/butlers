@@ -230,6 +230,26 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=True,
     ),
+    # Occupation-block inference from enabled routine windows (bu-whhll.10,
+    # epic bu-whhll Tier 2). Emits occupation_block episodes on weekday
+    # routine windows corroborated by a weak signal (desk-Spotify listening,
+    # owner-outbound messages) with no contradictor (movement/travel,
+    # gaming, all-day leave/holiday calendar block).
+    SourceAdapterState(
+        source_name="chronicler.occupation_inferred",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface=(
+            "chronicler.routines + chronicler.episodes + chronicler.point_events (own-schema)"
+        ),
+        boundary_semantics=(
+            "one occupation_block episode per (enabled routine, matching weekday) "
+            "in the lookback window; (start_at, end_at) are the routine's "
+            "(window_start_local, window_end_local) in its own timezone; "
+            "requires >=1 weak corroborator and no contradictor; "
+            "layer=activity, confidence=low, precision=hour"
+        ),
+        optional_schema=False,
+    ),
     # Explicitly not time-bearing.
     SourceAdapterState(
         source_name="core.session_process_logs",

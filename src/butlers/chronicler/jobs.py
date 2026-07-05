@@ -21,6 +21,7 @@ from butlers.chronicler.adapters import (
     GoogleHealthWorkoutAdapter,
     HomeAssistantHistoryAdapter,
     MealsAdapter,
+    OccupationInferredAdapter,
     OwnerOutboundMessageAdapter,
     OwnTracksPointAdapter,
     ReadingInferredAdapter,
@@ -391,6 +392,20 @@ async def run_project_exercise_inferred(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_occupation_inferred(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Derive occupation_block episodes from enabled routine windows."""
+    options = _parse_job_args(
+        "chronicler_project_occupation_inferred",
+        job_args,
+        supported_fields=("lookback_days",),
+    )
+    adapter = OccupationInferredAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 async def run_project_comms(
     db_pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -457,6 +472,7 @@ __all__ = [
     "run_project_google_health_workout",
     "run_project_home_assistant",
     "run_project_meals",
+    "run_project_occupation_inferred",
     "run_project_owner_outbound",
     "run_project_owntracks",
     "run_project_reading_inferred",
