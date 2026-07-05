@@ -292,7 +292,7 @@ async def _fetch_recent_days(
     _, range_end_utc = day_window_utc(local_dates[0], tz_name)
     episodes = await _fetch_window_episodes(pool, range_start_utc, range_end_utc)
 
-    from butlers.chronicler.aggregations import category_for
+    from butlers.chronicler.aggregations import lane_for_activity, union_seconds
 
     out: list[RecentDay] = []
     for d in local_dates:
@@ -307,22 +307,35 @@ async def _fetch_recent_days(
                 RecentDay(date=d.isoformat(), total_minutes=0, top_lane=None, episode_count=0)
             )
             continue
-        # Compute totals per lane and overall episode count.
-        lane_seconds: dict[str, float] = {}
+        # total_minutes/episode_count cover every episode touching the day
+        # (unchanged). top_lane, however, mirrors _compute_kpi's counting seam
+        # (bu-whhll.1 / bu-m4e3d): only activity-layer episodes are eligible
+        # (lane_for_activity drops intent/calendar and evidence rows), and
+        # overlapping same-lane intervals are unioned rather than summed, so
+        # an uncorroborated all-day calendar block can never win "top lane".
+        lane_intervals: dict[str, list[tuple[datetime, datetime]]] = {}
         total_seconds = 0.0
         for r in day_episodes:
-            cat = category_for(
-                r["source_name"],
-                r["episode_type"],
-                trigger_source=r["trigger_source"],
-            )
             s_at = r["s_at"]
             e_at = r["e_at"] or d_end_utc
             clipped_start = max(s_at, d_start_utc)
             clipped_end = min(e_at, d_end_utc)
             secs = max(0.0, (clipped_end - clipped_start).total_seconds())
-            lane_seconds[cat] = lane_seconds.get(cat, 0.0) + secs
             total_seconds += secs
+            if secs <= 0.0:
+                continue
+            lane = lane_for_activity(
+                r["layer"],
+                r["source_name"],
+                r["episode_type"],
+                trigger_source=r["trigger_source"],
+            )
+            if lane is None:
+                continue
+            lane_intervals.setdefault(lane, []).append((clipped_start, clipped_end))
+        lane_seconds = {
+            lane: union_seconds(intervals) for lane, intervals in lane_intervals.items()
+        }
         top_lane = max(lane_seconds.items(), key=lambda kv: kv[1])[0] if lane_seconds else None
         out.append(
             RecentDay(

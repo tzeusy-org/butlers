@@ -364,6 +364,94 @@ async def test_fetch_recent_days_batches_episode_query() -> None:
     assert len(conn.fetch_calls) == 1
 
 
+# ── _fetch_recent_days top_lane (bu-m4e3d: intent-leak regression) ─────────
+#
+# Same counting seam as _compute_kpi (bu-whhll.1 / PR #2918): top_lane must be
+# picked from activity-layer episodes only (lane_for_activity drops intent/
+# calendar and evidence rows), with overlapping same-lane intervals unioned
+# via union_seconds rather than summed. total_minutes/episode_count are
+# unaffected (they still cover every episode touching the day).
+
+
+@pytest.mark.asyncio
+async def test_fetch_recent_days_all_day_calendar_block_never_becomes_top_lane() -> None:
+    """An all-day intent-layer (calendar) episode must not win top_lane."""
+    conn = _FetchConn(
+        rows=[
+            _FakeRow(
+                s_at=datetime(2026, 5, 8, 0, 0, tzinfo=UTC),
+                e_at=datetime(2026, 5, 9, 0, 0, tzinfo=UTC),
+                source_name="google_calendar.completed",
+                episode_type="scheduled_block",
+                layer="intent",
+                trigger_source=None,
+            ),
+        ]
+    )
+
+    days = await _fetch_recent_days(
+        _FetchPool(conn),
+        datetime(2026, 5, 9, 0, 0, tzinfo=UTC),
+        days=1,
+        tz_name="UTC",
+    )
+
+    assert len(days) == 1
+    assert days[0].top_lane is None
+    assert days[0].episode_count == 1
+    assert days[0].total_minutes == 24 * 60
+
+
+@pytest.mark.asyncio
+async def test_fetch_recent_days_overlapping_same_lane_episodes_counted_once() -> None:
+    """Overlapping same-lane episodes must union, not sum, when ranking lanes.
+
+    Naive summation would let the 'work' lane's overlapping episodes (2h + 3h
+    raw = 5h) outrank the single non-overlapping 'exercise' episode (4.5h),
+    even though the *unioned* work total is only 4h (09:00-13:00 counted
+    once). Correct behaviour: 'exercise' (4.5h) wins top_lane.
+    """
+    conn = _FetchConn(
+        rows=[
+            _FakeRow(
+                s_at=datetime(2026, 5, 8, 9, 0, tzinfo=UTC),
+                e_at=datetime(2026, 5, 8, 11, 0, tzinfo=UTC),
+                source_name="chronicler.focus_inferred",
+                episode_type="focus_block",
+                layer="activity",
+                trigger_source=None,
+            ),
+            _FakeRow(
+                s_at=datetime(2026, 5, 8, 10, 0, tzinfo=UTC),
+                e_at=datetime(2026, 5, 8, 13, 0, tzinfo=UTC),
+                source_name="core.sessions",
+                episode_type="work",
+                layer="activity",
+                trigger_source="trigger",
+            ),
+            _FakeRow(
+                s_at=datetime(2026, 5, 8, 14, 0, tzinfo=UTC),
+                e_at=datetime(2026, 5, 8, 18, 30, tzinfo=UTC),
+                source_name="google_health.measurements",
+                episode_type="workout_episode",
+                layer="activity",
+                trigger_source=None,
+            ),
+        ]
+    )
+
+    days = await _fetch_recent_days(
+        _FetchPool(conn),
+        datetime(2026, 5, 9, 0, 0, tzinfo=UTC),
+        days=1,
+        tz_name="UTC",
+    )
+
+    assert len(days) == 1
+    assert days[0].top_lane == "exercise"
+    assert days[0].episode_count == 3
+
+
 @pytest.mark.asyncio
 async def test_compute_streaks_batches_presence_query() -> None:
     conn = _FetchConn()
