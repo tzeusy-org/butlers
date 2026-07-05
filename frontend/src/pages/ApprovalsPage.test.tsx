@@ -36,6 +36,30 @@ vi.mock("sonner", () => {
   return { toast: toastFn };
 });
 
+// Records every navigate(to, options) call while forwarding to the real
+// react-router navigate so actual routing behavior (used by most tests in
+// this file) is unaffected -- purely a tap for the history-replace
+// regression test below (bu-2nnhj). vi.hoisted keeps `navigateCalls`
+// initialized before the mock factory runs (import hoisting would otherwise
+// evaluate the factory before a plain `const` had been assigned).
+const { navigateCalls } = vi.hoisted(() => ({
+  navigateCalls: [] as Array<[string, { replace?: boolean } | undefined]>,
+}));
+vi.mock("react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router")>();
+  return {
+    ...actual,
+    useNavigate: () => {
+      const realNavigate = actual.useNavigate();
+      return ((to: unknown, options?: { replace?: boolean }) => {
+        navigateCalls.push([String(to), options]);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return (realNavigate as any)(to, options);
+      }) as ReturnType<typeof actual.useNavigate>;
+    },
+  };
+});
+
 // Mock the API module — we only need getApprovalsFlat + getApprovalsHistory +
 // getApprovalsPolicy for these tests. Others are stubs to satisfy imports.
 vi.mock("@/api/index.ts", () => ({
@@ -1506,6 +1530,57 @@ describe("ApprovalsPage — keyboard triage (bu-86c4c.14)", () => {
     expect(
       vi.mocked(getApprovalDetail).mock.calls.filter((c) => c[0] === "a1").length,
     ).toBeGreaterThan(1);
+  });
+
+  // -------------------------------------------------------------------
+  // History-spam regression (bu-2nnhj) -- same defect family as PR #2928's
+  // follow-up (bu-k14bg, free-text filter inputs) and bu-wlku1 (SessionsPage's
+  // ?selected= mirroring): j/k roving selection navigated via a bare
+  // navigate(), which defaults to react-router's PUSH behavior and spams one
+  // browser-history entry per keypress -- Back then takes one click per item
+  // triaged instead of one click to leave the page. The top-of-file
+  // "react-router" mock taps every navigate(to, options) call (forwarding to
+  // the real implementation) so this asserts the actual options object react
+  // -router receives, not just the resulting route.
+  // -------------------------------------------------------------------
+  it("j/k roving selection navigates with {replace: true}, not a bare push", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1"), makeSummary("a2"), makeSummary("a3")]) as AnyMock,
+    );
+
+    renderAt("/approvals/a1");
+    await flushUntilFake(
+      () =>
+        container.querySelectorAll('[data-testid="rail-item"]').length === 3 &&
+        vi.mocked(getApprovalDetail).mock.calls.length > 0,
+    );
+
+    // Clear mount-time navigation noise -- only j/k-triggered navigations
+    // matter for this assertion.
+    navigateCalls.length = 0;
+
+    await pressKey("j");
+    await flushUntilFake(() =>
+      vi.mocked(getApprovalDetail).mock.calls.some((c) => c[0] === "a2"),
+    );
+    await pressKey("j");
+    await flushUntilFake(() =>
+      vi.mocked(getApprovalDetail).mock.calls.some((c) => c[0] === "a3"),
+    );
+    await pressKey("k");
+    await flushUntilFake(
+      () =>
+        vi
+          .mocked(getApprovalDetail)
+          .mock.calls.filter((c) => c[0] === "a2").length > 1,
+    );
+
+    expect(navigateCalls.length).toBeGreaterThan(0);
+    expect(navigateCalls).toEqual([
+      ["/approvals/a2", { replace: true }],
+      ["/approvals/a3", { replace: true }],
+      ["/approvals/a2", { replace: true }],
+    ]);
   });
 
   it("ignores j/k/a/d/x while typing in an input (deny-reason field)", async () => {

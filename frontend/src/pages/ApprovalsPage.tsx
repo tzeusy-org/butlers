@@ -1328,7 +1328,13 @@ export default function ApprovalsPage() {
   const { hints: triageHints } = useListTriage({
     ids: pendingIds,
     selectedId: effectiveSelected,
-    onSelect: (id) => navigate(`/approvals/${id}`),
+    // replace: true -- j/k roves the rail one keypress at a time, and a
+    // default push here would spam one history entry per keypress, the same
+    // "N Back-clicks to leave the page" defect PR #2928's follow-up
+    // (bu-k14bg) fixed for free-text filter inputs and bu-wlku1 fixed for
+    // SessionsPage's ?selected= mirroring. RailItem's click-select below
+    // gets the same treatment for the same reason (bu-2nnhj).
+    onSelect: (id) => navigate(`/approvals/${id}`, { replace: true }),
     verbs: approvalVerbs,
   });
 
@@ -1425,7 +1431,7 @@ export default function ApprovalsPage() {
                   key={summary.id}
                   summary={summary}
                   selected={summary.id === effectiveSelected}
-                  onSelect={() => navigate(`/approvals/${summary.id}`)}
+                  onSelect={() => navigate(`/approvals/${summary.id}`, { replace: true })}
                   pendingVerb={scheduledDecisions.get(summary.id)?.verb ?? null}
                   onUndo={() => cancelDecision(summary.id)}
                 />
