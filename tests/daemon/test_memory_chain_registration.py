@@ -75,6 +75,7 @@ class TestMemoryChainRegistration:
             "004_embedding_model_version.py",
             "005_drop_embedding_versions.py",
             "006_drop_rule_applications.py",
+            "007_hnsw_embedding_indexes.py",
         ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
@@ -86,6 +87,7 @@ class TestMemoryChainRegistration:
             ("004_embedding_model_version.py", "mem_004", "mem_003"),
             ("005_drop_embedding_versions.py", "mem_005", "mem_004"),
             ("006_drop_rule_applications.py", "mem_006", "mem_005"),
+            ("007_hnsw_embedding_indexes.py", "mem_007", "mem_006"),
         ]
 
         def _load_migration(filename: str):
@@ -111,13 +113,21 @@ class TestMemoryChainRegistration:
         root = _load_migration(_EXPECTED_CHAIN[0][0])
         assert root.branch_labels == ("memory",)
         assert len(revisions) == len(set(revisions))
-        current = "mem_006"
+        current = "mem_007"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
             path.append(current)
         path.reverse()
-        assert path == ["mem_001", "mem_002", "mem_003", "mem_004", "mem_005", "mem_006"]
+        assert path == [
+            "mem_001",
+            "mem_002",
+            "mem_003",
+            "mem_004",
+            "mem_005",
+            "mem_006",
+            "mem_007",
+        ]
 
 
 class TestRelationshipChainRegistration:

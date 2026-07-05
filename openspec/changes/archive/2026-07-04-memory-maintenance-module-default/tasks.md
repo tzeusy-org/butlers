@@ -49,5 +49,6 @@
       facts/rules (today `cc_spawner=None` means only claim/lease happens —
       true for the 5 already-scheduled butlers too, not introduced by this
       change)
-- [ ] 5.2 ivfflat → HNSW index migration + synthetic-scale recall harness
-      (pursuit slice 4 — deferred as out of scope for this change)
+- [x] 5.2 ivfflat → HNSW index migration + synthetic-scale recall harness
+      (pursuit slice 4 — deferred as out of scope for this change; implemented
+      in bu-4ftb2 via mem_007 + tests/migrations/test_memory_hnsw_recall_nightly.py)
