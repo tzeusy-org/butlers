@@ -38,10 +38,12 @@ from fastapi.testclient import TestClient
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.secrets_v2 import (
+    DEFAULT_EXPIRING_LEAD_TIME,
     _derive_state,
     _fetch_audit_bulk,
     _fetch_cli_secrets,
     _fetch_google_granted_scopes,
+    _fetch_google_test_mode_expiry,
     _fetch_identity_info,
     _fetch_probe_log,
     _fetch_probe_logs_bulk,
@@ -267,14 +269,51 @@ def test_fingerprint_none_on_empty_value(empty):
         (True, True, None, "ok"),
         (True, False, None, "failing"),
         (True, True, _NOW - timedelta(days=1), "expired"),
-        (True, None, _NOW + timedelta(days=1), "warn"),  # not expired, no probe
+        # Within the default 7-day lead time (bu-1lb5j): flips amber ahead of
+        # dying, whether or not a probe has ever run.
+        (True, None, _NOW + timedelta(days=1), "expiring"),
+        (True, True, _NOW + timedelta(days=1), "expiring"),
+        # A hard probe failure is more urgent than a soon-but-not-yet-dead
+        # expiry — failing wins even inside the expiring window.
+        (True, False, _NOW + timedelta(days=1), "failing"),
+        # Outside the lead time: not yet expiring.
+        (True, None, _NOW + timedelta(days=30), "warn"),
+        (True, True, _NOW + timedelta(days=30), "ok"),
     ],
-    ids=["never_set", "warn-no-probe", "ok", "failing", "expired", "warn-future-expiry"],
+    ids=[
+        "never_set",
+        "warn-no-probe",
+        "ok",
+        "failing",
+        "expired",
+        "expiring-no-probe",
+        "expiring-ok",
+        "failing-beats-expiring",
+        "warn-future-expiry-outside-window",
+        "ok-future-expiry-outside-window",
+    ],
 )
 def test_derive_state(is_set, last_test_ok, expires_at, expected):
     assert (
         _derive_state(is_set=is_set, last_test_ok=last_test_ok, expires_at=expires_at) == expected
     )
+
+
+def test_derive_state_expiring_lead_time_is_configurable():
+    """A shorter lead time should not flag a 1-day-out expiry as expiring."""
+    assert (
+        _derive_state(
+            is_set=True,
+            last_test_ok=True,
+            expires_at=_NOW + timedelta(days=1),
+            expiring_lead_time=timedelta(hours=1),
+        )
+        == "ok"
+    )
+
+
+def test_default_expiring_lead_time_is_seven_days():
+    assert DEFAULT_EXPIRING_LEAD_TIME == timedelta(days=7)
 
 
 def test_format_probe_time_today():
@@ -1275,6 +1314,10 @@ def _make_google_inventory_pool(
     - SQL containing 'granted_scopes' (the real-scopes lookup added for bu-6v1hx)
       → [] — checked BEFORE the 'google_accounts' branch below since that query
       also references public.google_accounts but selects different columns.
+    - SQL containing 'last_token_refresh_at' (the test-mode synthetic-expiry
+      lookup added for bu-1lb5j) → [] — same reason: also references
+      public.google_accounts but selects different columns, and none of these
+      google-account-flow fixtures set up test-mode metadata.
     """
     identity_rows = identity_rows or {}
     entity_rows = entity_rows or []
@@ -1288,6 +1331,10 @@ def _make_google_inventory_pool(
             return []
         if "granted_scopes" in sql:
             # bu-6v1hx: real per-account scopes-granted lookup. Not exercised by
+            # these google-account-flow tests — return no rows (honest empty).
+            return []
+        if "last_token_refresh_at" in sql:
+            # bu-1lb5j: test-mode synthetic-expiry lookup. Not exercised by
             # these google-account-flow tests — return no rows (honest empty).
             return []
         if "entity_id = $1" in sql and args:
@@ -2073,6 +2120,36 @@ async def test_fetch_google_granted_scopes_empty_when_no_entity_ids():
     pool.fetch.assert_not_called()
 
 
+async def test_fetch_google_test_mode_expiry_computes_seven_day_window():
+    """A test-mode account's synthetic expiry is last_token_refresh_at + 7d."""
+    eid = str(uuid4())
+    refreshed_at = _NOW - timedelta(days=3)
+    row = _make_row(entity_id=eid, last_token_refresh_at=refreshed_at)
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[row])
+
+    result = await _fetch_google_test_mode_expiry(pool, [eid])
+    assert result[eid] == refreshed_at + timedelta(days=7)
+
+
+async def test_fetch_google_test_mode_expiry_empty_when_no_entity_ids():
+    pool = AsyncMock()
+    pool.fetch = AsyncMock()
+    result = await _fetch_google_test_mode_expiry(pool, [])
+    assert result == {}
+    pool.fetch.assert_not_called()
+
+
+async def test_fetch_google_test_mode_expiry_empty_when_table_missing():
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        side_effect=UndefinedTableError("relation public.google_accounts does not exist")
+    )
+    result = await _fetch_google_test_mode_expiry(pool, [str(uuid4())])
+    assert result == {}
+
+
 async def test_fetch_audit_bulk_returns_recent_rows_per_target_newest_first():
     """Bulk audit fetch returns real audit_log rows, newest first, per target."""
     older = _make_row(
@@ -2198,6 +2275,56 @@ async def test_fetch_user_secrets_includes_real_issued_scopes_and_audit():
     assert secret.scopes_granted == ["https://www.googleapis.com/auth/calendar"]
     assert len(secret.audit) == 1
     assert secret.audit[0]["action"] == "verified"
+
+
+async def test_fetch_user_secrets_google_test_mode_account_flips_to_expiring():
+    """bu-1lb5j: a Google test-mode account close to its 7-day expiry reads 'expiring'.
+
+    Wires last_token_refresh_at 5 days ago through the synthetic-expiry helper
+    so the derived state machine flips from the previously dead 'expired'/'ok'
+    binary to the amber 'expiring' state before the token actually dies.
+    """
+    eid = str(uuid4())
+    refreshed_at = _NOW - timedelta(days=5)
+    google_row = _make_row(
+        id=uuid4(),
+        entity_id=eid,
+        type="google_oauth_refresh",
+        value="tok",
+        label=None,
+        created_at=_NOW - timedelta(days=90),
+        last_verified=None,
+        last_test_ok=True,
+        last_test_code=None,
+        last_test_message=None,
+    )
+    test_mode_row = _make_row(entity_id=eid, last_token_refresh_at=refreshed_at)
+
+    pool = AsyncMock()
+
+    async def _fetch(sql, *args):
+        if "secret_probe_log" in sql:
+            return []
+        if "audit_log" in sql:
+            return []
+        if "provider_feature_catalogue" in sql:
+            return []
+        if "last_token_refresh_at" in sql:
+            return [test_mode_row]
+        if "granted_scopes" in sql:
+            return []
+        if "entity_info" in sql:
+            return [google_row]
+        return []
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
+
+    results = await _fetch_user_secrets(pool, identity=UUID(eid))
+
+    assert len(results) == 1
+    secret = results[0]
+    assert secret.state == "expiring"
+    assert secret.expires == refreshed_at + timedelta(days=7)
 
 
 async def test_fetch_user_secrets_scopes_required_matches_across_catalogue_alias_spelling():

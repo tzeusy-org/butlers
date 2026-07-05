@@ -4,16 +4,22 @@ Move 8 (2026-07-04 JARVIS pursuit, slice 1/2) — bu-qvnce.8. See RFC 0011
 Amendment 1 (``about/legends-and-lore/rfcs/0011-proactive-insight-delivery.md``)
 for the design rationale.
 
-Every proactive message that could reach the owner passes through exactly two
-choke points today:
+Every proactive message that could reach the owner passes through one of a
+small, known set of egress paths:
 
 - ``notify()`` (``butlers.core_tools._notifications``) — the core MCP tool
   every non-STAFFER butler registers, for direct owner-facing sends.
 - ``delivery_cycle()`` (``roster/switchboard/tools/switchboard/insight/broker.py``)
   — the daily insight-delivery-cycle job that arbitrates ``insight_candidates``.
+- ``butlers.jobs.secrets_lifecycle`` (bu-1lb5j) — a scheduled scan running
+  inside the dashboard-api process, a process boundary away from any butler
+  daemon's ``notify()`` closure. It cannot call ``notify()`` itself, so it
+  composes the same gating (``get_suppressing_context_signal``,
+  ``approvals_policy``) and dispatch (``switchboard.notification.deliver``)
+  primitives ``notify()`` calls, rather than re-deriving their logic.
 
-Both call :func:`record_attention_event` at each terminal decision point so a
-notification is never silently dropped: it is recorded as delivered,
+All three call :func:`record_attention_event` at each terminal decision point
+so a notification is never silently dropped: it is recorded as delivered,
 coalesced (folded into a digest), deferred (retryable later), or suppressed
 (quiet hours / context bus), always with a machine-readable ``reason``.
 

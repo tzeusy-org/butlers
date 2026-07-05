@@ -7526,6 +7526,13 @@ export interface SecretsUserRaw {
   fingerprint: string | null;
   /** entity_info.created_at (real; bu-6v1hx). */
   issued?: string | null;
+  /**
+   * Real only for Google test-mode accounts, synthesized server-side from
+   * google_accounts.last_token_refresh_at + the known 7-day test-mode
+   * lifetime (bu-1lb5j). entity_info has no expires_at column of its own, so
+   * every other provider stays null — no fabricated expiry.
+   */
+  expires?: string | null;
   last_verified: string | null;
   test: SecretsProbeResult | null;
   /**

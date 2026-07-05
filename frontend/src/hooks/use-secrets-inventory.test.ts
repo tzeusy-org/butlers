@@ -98,6 +98,32 @@ describe("adaptInventoryResponse: user credential state", () => {
 
     expect(result.user.map((credential) => credential.state)).toEqual(["warn", "failed"]);
   });
+
+  it("passes through raw.expires when the backend supplies a real value (bu-1lb5j)", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({
+          entity_id: "tze",
+          state: "expiring",
+          expires: "2026-07-12T00:00:00Z",
+        }),
+      ],
+      identities: [],
+    });
+    expect(result.user[0].expires).toBe("2026-07-12T00:00:00Z");
+  });
+
+  it("defaults expires to null when the backend omits it (non-Google providers)", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [makeUser({ entity_id: "tze", state: "ok" })],
+      identities: [],
+    });
+    expect(result.user[0].expires).toBeNull();
+  });
 });
 
 describe("adaptInventoryResponse: user provider derivation", () => {

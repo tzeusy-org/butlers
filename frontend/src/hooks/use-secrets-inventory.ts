@@ -201,8 +201,11 @@ function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, Secr
     fingerprint:    raw.fingerprint ?? null,
     // Real (bu-6v1hx): entity_info.created_at.
     issued:         raw.issued ?? null,
-    // No real source yet: entity_info has no expires_at column.
-    expires:        null,
+    // Real only for Google test-mode accounts (bu-1lb5j), synthesized
+    // server-side from google_accounts.last_token_refresh_at + the known
+    // 7-day test-mode lifetime. entity_info has no expires_at column of its
+    // own, so every other provider stays honestly null.
+    expires:        raw.expires ?? null,
     lastVerified:   raw.last_verified ?? null,
     lastUsed:       null,
     // Real (bu-6v1hx): union of provider_feature_catalogue.required_scopes.

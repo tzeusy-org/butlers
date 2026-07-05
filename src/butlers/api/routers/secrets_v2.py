@@ -183,7 +183,7 @@ import logging
 import secrets as _secrets_mod
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote, urlencode
 from uuid import UUID
@@ -272,6 +272,12 @@ class UserSecret(BaseModel):
     state: str  # 'ok' | 'warn' | 'failing' | 'expired' | 'never_set'
     fingerprint: str | None = None  # sha256[:8] hex, computed on-read
     issued: datetime | None = None  # entity_info.created_at (real; was absent from this model)
+    # entity_info has no expires_at column of its own (bu-1lb5j). Real only for
+    # Google test-mode accounts, where it's synthesized from
+    # google_accounts.last_token_refresh_at + the known 7-day test-mode
+    # lifetime (see _fetch_google_test_mode_expiry). Every other provider has
+    # no known expiry and stays honestly None.
+    expires: datetime | None = None
     last_verified: datetime | None = None
     last_test_ok: bool | None = None
     last_test_code: int | None = None
@@ -475,34 +481,69 @@ def _fingerprint(value: str | None) -> str | None:
 # State derivation
 # ---------------------------------------------------------------------------
 
+# Lead-time window before expires_at during which a credential flips to the
+# amber 'expiring' state (bu-1lb5j) instead of staying silently 'ok'/'warn'
+# until it crosses into 'expired'. Default applies to every category unless
+# overridden below.
+DEFAULT_EXPIRING_LEAD_TIME = timedelta(days=7)
+
+# Per-category override, keyed on butler_secrets.category (system/cli families)
+# or the resolved provider slug (user family — see _expiring_lead_time_for_provider).
+# Empty today: every known category/provider is well served by the 7-day
+# default (in particular, Google's test-mode unified tokens have their ENTIRE
+# 7-day lifetime inside the default window, which is intentional — those
+# tokens should read as 'expiring' from the moment they're minted). Add an
+# entry here if a future category needs a materially different lead time.
+EXPIRING_LEAD_TIME_BY_CATEGORY: dict[str, timedelta] = {}
+
+
+def _expiring_lead_time(category: str | None) -> timedelta:
+    """Resolve the expiring-state lead time for a butler_secrets category."""
+    return EXPIRING_LEAD_TIME_BY_CATEGORY.get(category or "", DEFAULT_EXPIRING_LEAD_TIME)
+
 
 def _derive_state(
     *,
     is_set: bool,
     last_test_ok: bool | None,
     expires_at: datetime | None = None,
+    expiring_lead_time: timedelta = DEFAULT_EXPIRING_LEAD_TIME,
 ) -> str:
     """Derive a display state string from credential metadata.
 
-    State machine
-    -------------
+    State machine (most to least severe)
+    -------------------------------------
     never_set   → is_set is False and no probe result
     expired     → expires_at is in the past
     failing     → most recent probe was not ok
-    ok          → most recent probe was ok
+    expiring    → expires_at is within expiring_lead_time of now (bu-1lb5j:
+                  the frontend passport catalog has styled this state since
+                  before it was ever emitted — this is the "dead state" fix)
     warn        → set, no probe result (unknown state)
+    ok          → most recent probe was ok, and not within the expiring window
     """
     if not is_set:
         return "never_set"
+
+    effective_expires: datetime | None = None
     if expires_at is not None:
         now = datetime.now(tz=UTC)
         # Ensure expires_at is tz-aware for comparison
         effective_expires = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=UTC)
         if effective_expires <= now:
             return "expired"
+
+    if last_test_ok is False:
+        return "failing"
+
+    if effective_expires is not None:
+        now = datetime.now(tz=UTC)
+        if effective_expires - now <= expiring_lead_time:
+            return "expiring"
+
     if last_test_ok is None:
         return "warn"
-    return "ok" if last_test_ok else "failing"
+    return "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -845,6 +886,55 @@ async def _fetch_google_granted_scopes(
     return {str(row["entity_id"]): list(row["granted_scopes"] or []) for row in rows}
 
 
+# Google's test-mode OAuth refresh tokens are documented to expire ~7 days
+# after issue (see core_078 / the FE test-mode banner in
+# frontend/src/lib/google-health-test-mode.ts). entity_info has no expires_at
+# column of its own (bu-1lb5j), so this is the one provider where a synthetic
+# expires_at can be derived from data that already exists:
+# google_accounts.last_token_refresh_at + this window.
+GOOGLE_TEST_MODE_TOKEN_LIFETIME = timedelta(days=7)
+
+
+async def _fetch_google_test_mode_expiry(
+    pool: Any,
+    entity_ids: list[str],
+) -> dict[str, datetime]:
+    """Derive a synthetic expires_at for Google test-mode accounts.
+
+    Only accounts with ``metadata->>'google_health_test_mode' = 'true'`` AND a
+    recorded ``last_token_refresh_at`` get an entry — every other Google
+    account (production OAuth client, never refreshed) has no known expiry and
+    is honestly absent rather than assigned a fabricated one.
+
+    Returns a dict keyed by entity_id (string) mapping to the computed
+    expires_at, mirroring _fetch_google_granted_scopes's shape. Returns an
+    empty dict when public.google_accounts does not exist yet or entity_ids
+    is empty.
+    """
+    if not entity_ids:
+        return {}
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT entity_id, last_token_refresh_at
+            FROM public.google_accounts
+            WHERE entity_id = ANY($1::uuid[])
+              AND COALESCE(metadata->>'google_health_test_mode', 'false') = 'true'
+              AND last_token_refresh_at IS NOT NULL
+            """,
+            entity_ids,
+        )
+    except UndefinedTableError:
+        return {}
+    except PostgresError as exc:
+        logger.debug("google_accounts test-mode expiry lookup failed: %s", exc)
+        return {}
+    return {
+        str(row["entity_id"]): row["last_token_refresh_at"] + GOOGLE_TEST_MODE_TOKEN_LIFETIME
+        for row in rows
+    }
+
+
 # ---------------------------------------------------------------------------
 # Per-family query helpers
 # ---------------------------------------------------------------------------
@@ -910,6 +1000,7 @@ async def _fetch_system_secrets(
             is_set=bool(secret_value),
             last_test_ok=last_test_ok,
             expires_at=expires_at,
+            expiring_lead_time=_expiring_lead_time(row["category"]),
         )
         fp = _fingerprint(secret_value)
 
@@ -1117,18 +1208,21 @@ async def _fetch_user_secrets(
         if provider == "google"
     ]
     google_scopes_map = await _fetch_google_granted_scopes(pool, google_entity_ids)
+    google_expiry_map = await _fetch_google_test_mode_expiry(pool, google_entity_ids)
 
     results: list[UserSecret] = []
     for row, provider in zip(rows, providers_by_row):
         value: str | None = row["value"]
         last_test_ok: bool | None = row["last_test_ok"]
+        entity_id = str(row["entity_id"])
+        expires_at = google_expiry_map.get(entity_id) if provider == "google" else None
 
         state = _derive_state(
             is_set=bool(value),
             last_test_ok=last_test_ok,
+            expires_at=expires_at,
         )
         fp = _fingerprint(value)
-        entity_id = str(row["entity_id"])
 
         results.append(
             UserSecret(
@@ -1139,6 +1233,7 @@ async def _fetch_user_secrets(
                 state=state,
                 fingerprint=fp,
                 issued=row["created_at"],
+                expires=expires_at,
                 last_verified=row["last_verified"],
                 last_test_ok=last_test_ok,
                 last_test_code=row["last_test_code"],
@@ -1210,6 +1305,7 @@ async def _fetch_cli_secrets(
             is_set=bool(value),
             last_test_ok=last_test_ok,
             expires_at=expires_at,
+            expiring_lead_time=_expiring_lead_time(row["category"]),
         )
         fp = _fingerprint(value)
 
@@ -1518,20 +1614,27 @@ async def _fetch_single_user_secret(
 
     value: str | None = row["value"]
     last_test_ok: bool | None = row["last_test_ok"]
+    entity_id = str(row["entity_id"])
 
-    state = _derive_state(is_set=bool(value), last_test_ok=last_test_ok)
+    expires_at: datetime | None = None
+    if provider == "google":
+        expiry_map = await _fetch_google_test_mode_expiry(pool, [entity_id])
+        expires_at = expiry_map.get(entity_id)
+
+    state = _derive_state(is_set=bool(value), last_test_ok=last_test_ok, expires_at=expires_at)
     fp = _fingerprint(value)
     test = await _fetch_probe_log(pool, "user", row["type"])
 
     return UserSecretDetail(
         id=str(row["id"]),
-        entity_id=str(row["entity_id"]),
+        entity_id=entity_id,
         type=row["type"],
         provider=provider,
         label=row["label"],
         state=state,
         fingerprint=fp,
         issued=row["created_at"],
+        expires=expires_at,
         last_verified=row["last_verified"],
         failure_tail=row["last_test_message"],
         test=test,
@@ -1585,6 +1688,7 @@ async def _fetch_single_system_secret(
         is_set=bool(secret_value),
         last_test_ok=last_test_ok,
         expires_at=expires_at,
+        expiring_lead_time=_expiring_lead_time(row["category"]),
     )
     fp = _fingerprint(secret_value)
     test = await _fetch_probe_log(pool, "system", key)
@@ -1652,6 +1756,7 @@ async def _fetch_single_cli_secret(
         is_set=bool(value),
         last_test_ok=last_test_ok,
         expires_at=expires_at,
+        expiring_lead_time=_expiring_lead_time(row["category"]),
     )
     fp = _fingerprint(value)
     test = await _fetch_probe_log(pool, "cli", credential_id)

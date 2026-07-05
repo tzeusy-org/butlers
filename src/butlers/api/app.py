@@ -9,6 +9,8 @@ The app factory creates a FastAPI instance with:
 - Optional static file serving for production (frontend/dist/)
 """
 
+import asyncio
+import contextlib
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -115,8 +117,21 @@ from butlers.db import (
     has_insecure_infra_defaults,
     is_grafana_anon_outside_dev,
 )
+from butlers.jobs.secrets_lifecycle import (
+    DEFAULT_SCAN_INTERVAL_S,
+    run_secrets_lifecycle_loop,
+)
 
 logger = logging.getLogger(__name__)
+
+_SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV = "SECRETS_LIFECYCLE_SCAN_INTERVAL_S"
+
+# Strong references to fire-and-forget background tasks spawned from lifespan.
+# asyncio only holds a weak reference to a running Task once its creating
+# scope returns nothing that keeps it alive; without this, a task can be
+# garbage-collected mid-execution. Entries are removed via add_done_callback
+# once the task completes (normally or via cancellation).
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
 @asynccontextmanager
@@ -155,6 +170,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize DB pools for all discovered butlers
     butler_configs = get_butler_configs()
+    secrets_lifecycle_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
         # Wire DB dependencies for both static and dynamic routers
@@ -178,6 +194,31 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.debug("CLI auth token restoration skipped", exc_info=True)
 
+        # Proactive secrets lifecycle notifications (bu-1lb5j): a periodic
+        # background scan for credentials that newly transitioned into an
+        # 'expiring'/'failing'/'expired' state, pushed to the owner instead
+        # of waiting for a /secrets page visit. Only started once the
+        # DatabaseManager is actually available; sleeps before its first
+        # scan (see run_secrets_lifecycle_loop) so it never fires mid-test.
+        try:
+            scan_interval_s = float(
+                os.environ.get(_SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV, str(DEFAULT_SCAN_INTERVAL_S))
+            )
+            if scan_interval_s <= 0:
+                raise ValueError("interval must be a positive number")
+        except ValueError:
+            logger.warning(
+                "%s is not a valid positive number; falling back to default %ss",
+                _SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV,
+                DEFAULT_SCAN_INTERVAL_S,
+            )
+            scan_interval_s = DEFAULT_SCAN_INTERVAL_S
+        secrets_lifecycle_task = asyncio.create_task(
+            run_secrets_lifecycle_loop(get_db_manager(), interval_s=scan_interval_s)
+        )
+        _BACKGROUND_TASKS.add(secrets_lifecycle_task)
+        secrets_lifecycle_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
     except Exception:
         logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
 
@@ -189,6 +230,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     app.state.ready = False
+    if secrets_lifecycle_task is not None:
+        secrets_lifecycle_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await secrets_lifecycle_task
     await shutdown_db_manager()
     await shutdown_dependencies()
 
