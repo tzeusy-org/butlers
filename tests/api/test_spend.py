@@ -357,6 +357,88 @@ async def test_cost_breakdown_by_butler_reports_unavailable_butlers(app):
     assert data["unavailable_butlers"] == ["broken"]
 
 
+def _mock_ledger_pool(rows: list[dict]):
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=rows)
+    return pool
+
+
+async def test_cost_breakdown_by_purpose_prices_ledger_rows(app):
+    """``by=purpose`` prices token_usage_ledger rows grouped by (purpose, model_id).
+
+    Unlike butler/model/feature, this dimension reads the shared ledger directly
+    (bu-og0j2/bu-qvnce.12) rather than fanning out per-butler MCP calls.
+    """
+    rows = [
+        {
+            "purpose": "classification",
+            "model_id": "claude-sonnet-4-20250514",
+            "input_tokens": 10000,
+            "output_tokens": 5000,
+            "cached_input_tokens": 0,
+            "cache_creation_tokens": 0,
+        },
+        {
+            "purpose": "discretion",
+            "model_id": "claude-haiku-35-20241022",
+            "input_tokens": 8000,
+            "output_tokens": 4000,
+            "cached_input_tokens": 0,
+            "cache_creation_tokens": 0,
+        },
+        # Same purpose, second model_id -- costs must accumulate, not overwrite.
+        {
+            "purpose": "classification",
+            "model_id": "claude-haiku-35-20241022",
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cached_input_tokens": 0,
+            "cache_creation_tokens": 0,
+        },
+    ]
+    db = _mock_db({"switchboard": _mock_ledger_pool(rows)})
+    _wire_db(app, db)
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/breakdown?by=purpose")
+    data = resp.json()["data"]
+    assert data["by"] == "purpose"
+    assert data["source_error"] is False
+    assert data["breakdown"]["classification"] == pytest.approx(0.1078, abs=1e-4)
+    assert data["breakdown"]["discretion"] == pytest.approx(0.0224, abs=1e-4)
+
+
+async def test_cost_breakdown_by_purpose_no_db_reports_source_error(app):
+    """Without a DatabaseManager there is no MCP fallback for the ledger -- report it."""
+    app.dependency_overrides.pop(_costs_get_db, None)
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/breakdown?by=purpose")
+    data = resp.json()["data"]
+    assert data["breakdown"] == {}
+    assert data["source_error"] is True
+
+
+async def test_cost_breakdown_by_purpose_query_failure_reports_source_error(app):
+    """A ledger query failure must surface as source_error, never a truthful empty result."""
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("connection reset"))
+    db = _mock_db({"switchboard": pool})
+    _wire_db(app, db)
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/breakdown?by=purpose")
+    data = resp.json()["data"]
+    assert data["breakdown"] == {}
+    assert data["source_error"] is True
+
+
 async def test_cost_summary_tiered_pricing(app):
     configs = [ButlerConnectionInfo(name="t", port=41100)]
 
@@ -1784,6 +1866,38 @@ def test_spend_rule_condition_rejects_invalid_tier() -> None:
     # Valid tiers (incl. case-insensitive) and list pass.
     assert SpendRuleCondition(complexity="WORKHORSE").complexity == "WORKHORSE"
     assert SpendRuleCondition(tier=["workhorse", "cheap"]).tier == ["workhorse", "cheap"]
+
+
+def test_spend_rule_condition_accepts_purpose() -> None:
+    """purpose (bu-og0j2) accepts scalar and list values, same as trigger, unvalidated."""
+    from butlers.api.routers.spend import SpendRuleCondition
+
+    assert SpendRuleCondition(purpose="discretion").purpose == "discretion"
+    assert SpendRuleCondition(purpose=["healing", "discretion"]).purpose == [
+        "healing",
+        "discretion",
+    ]
+
+
+def test_spend_rule_condition_rejects_trigger_and_purpose_together() -> None:
+    """trigger and purpose alias the same trigger_source value (bu-og0j2/bu-qvnce.12).
+
+    A condition setting both can never match at dispatch (they're ANDed against the
+    same underlying value), so it is rejected at create/update time (422) instead of
+    silently persisting a rule that fails closed forever.
+    """
+    from pydantic import ValidationError
+
+    from butlers.api.routers.spend import SpendRuleCondition
+
+    with pytest.raises(ValidationError):
+        SpendRuleCondition(trigger="route", purpose="discretion")
+    # Same value on both keys is still rejected -- redundant, not a legitimate use.
+    with pytest.raises(ValidationError):
+        SpendRuleCondition(trigger="route", purpose="route")
+    # Either alone is fine.
+    assert SpendRuleCondition(trigger="route").trigger == "route"
+    assert SpendRuleCondition(purpose="route").purpose == "route"
 
 
 def test_spend_rule_create_accepts_new_dims() -> None:

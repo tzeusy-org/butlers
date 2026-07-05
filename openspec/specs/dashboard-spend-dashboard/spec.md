@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `/settings/spend` page is the operator's view into system cost: total spend, breakdowns by butler/model/feature, a hand-rolled SVG forecast chart projecting month-end land, store-and-evaluate routing rules with per-rule 7-day savings, a monthly ceiling, and a live per-call spend stream. It is part of the Console-direction redesign of `/settings` and is rendered in the Dispatch design language already shipped on `/overview`, `/butlers`, and `/qa`. It is backed by the spend endpoints (`/api/spend/*`) served by `spend.py` (the renamed `costs.py` router), including rules CRUD, the monthly ceiling, and the `WS /api/spend/stream` ticker. No charting library is loaded for this page.
+The `/settings/spend` page is the operator's view into system cost: total spend, breakdowns by butler/model/feature/purpose, a hand-rolled SVG forecast chart projecting month-end land, store-and-evaluate routing rules with per-rule 7-day savings, a monthly ceiling, and a live per-call spend stream. It is part of the Console-direction redesign of `/settings` and is rendered in the Dispatch design language already shipped on `/overview`, `/butlers`, and `/qa`. It is backed by the spend endpoints (`/api/spend/*`) served by `spend.py` (the renamed `costs.py` router), including rules CRUD, the monthly ceiling, and the `WS /api/spend/stream` ticker. No charting library is loaded for this page.
 
 ## Requirements
 
@@ -15,7 +15,7 @@ The dashboard SHALL have a page at `/settings/spend` rendered in the Dispatch de
   - **Page header**: title "Spend" rendered via the shared `Page` overview shell. The page does not render a mono eyebrow "system · cost" or a clock.
   - **4-cell KPI strip**: `MTD Spend`, `Projected EOM`, `Monthly Ceiling`, `Days in Month`. Mega-number in sans 500 tabular-nums, mono sub-label. There is no `today` cell, and sub-labels show context such as days elapsed/remaining, not a delta vs. prior period.
   - **Forecast chart**: hand-rolled SVG. Solid line for MTD daily series, dashed line for projection from today to month end, hairline horizontal at the ceiling. No charting library.
-  - **Breakdown section**: bars by `butler`, `model`, `feature` via tabbed picker. Each bar is plain CSS (≤ 8 lines per bar), no library.
+  - **Breakdown section**: bars by `butler`, `model`, `feature`, `purpose` via tabbed picker. Each bar is plain CSS (≤ 8 lines per bar), no library.
   - **Routing rules table**: rule rows in evaluation order with drag-to-reorder; columns `condition · action · saved 7d`. Order is top-to-bottom; first match wins at runtime.
   - **Anomaly section**: deferred. The page carries only a source-code TODO comment in the forecast section; no anomaly copy is rendered to the user.
 - **AND** no recharts or other chart library is loaded for this page.
@@ -31,12 +31,25 @@ The dashboard SHALL expose the spend endpoints.
 - **WHEN** `GET /api/spend/breakdown?by=butler|model|feature` is called
 - **THEN** the response is `ApiResponse[{by: str, breakdown: {key: cost_usd}}]`, a flat key-to-cost map for the current month (MTD). The client sorts descending and renders the bars; the API returns no `share` field and no guaranteed order.
 
+#### Scenario: Spend breakdown by purpose
+- **WHEN** `GET /api/spend/breakdown?by=purpose` is called
+- **THEN** the response is `ApiResponse[{by: "purpose", breakdown: {key: cost_usd}, source_error: bool}]`, priced directly from `public.token_usage_ledger.purpose` (bu-qvnce.12/core_156) grouped with `model_catalog` for pricing — NOT a per-butler MCP fan-out like the other three dimensions
+- **AND** `purpose` keys are the dispatch `trigger_source` values (`route`/`schedule`/`classification`/`healing`/`qa`/`extraction`/`external`/`retry`/`tick`) plus `discretion` (connector discretion screening, which has no `trigger_source` equivalent); ledger rows with a `NULL` purpose (pre-migration or unattributed) are grouped under `"unknown"`
+- **AND** `source_error: true` when the DB-backed path is unavailable or the ledger query fails (no MCP fallback exists for this dimension) — the frontend renders a `SourceDegradedNote` instead of reading an empty breakdown as "no purpose-tagged spend this month".
+
 #### Scenario: Spend forecast (naive estimator v1)
 - **WHEN** `GET /api/spend/forecast` is called
 - **THEN** the response is `{days: {date, cost_usd, projected}[], projected_eom_usd: float, days_in_month: int, days_elapsed: int, mtd_usd: float, ceiling_usd: float | null, projection_confidence: "low" | "normal"}` (the field is `days` not `daily`, and per-day cost is `cost_usd` not `usd`)
 - **AND** `projected_eom_usd = mtd_total_usd / max(days_elapsed, 1) × days_in_month`
 - **AND** `projection_confidence = "low"` when `days_elapsed < 3`, else `"normal"`. This signals to the Console aggregator NOT to fire a "spend near ceiling" attention item from a low-confidence projection.
 - **AND** a code-level TODO marks the location of the smarter estimator for a future change.
+
+#### Scenario: Spend rule condition dimensions
+- **WHEN** a rule `condition` is created or updated
+- **THEN** the supported dimensions are `butler` (identity name), `complexity`/`tier` (alias pair — canonical complexity tier), and `trigger`/`purpose` (alias pair — the dispatch `trigger_source`, matching the same vocabulary `/spend/breakdown?by=purpose` and `token_usage_ledger.purpose` use for this dimension)
+- **AND** each dimension accepts a scalar (exact match) or a list (membership match); all supplied dimensions are ANDed; an unknown key is rejected at create/update time (`422`), and at dispatch-evaluation time causes the rule to fail-closed (never match)
+- **AND** `trigger`/`purpose` cannot match when the dispatch has no trigger-source context (fail-closed, not catch-all).
+- **AND** a condition MUST NOT set both `trigger` and `purpose` (they alias the same underlying value and could never legitimately hold two different values at once) — rejected at create/update time (`422`).
 
 #### Scenario: Spend rules CRUD
 - **WHEN** `GET /api/spend/rules` is called

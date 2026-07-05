@@ -9,7 +9,7 @@ Routes (§5.0):
   GET  /api/spend/daily            — daily time series (was /api/costs/daily)
   GET  /api/spend/top-sessions     — costliest sessions (was /api/costs/top-sessions)
   GET  /api/spend/by-schedule      — per-schedule cost analysis (was /api/costs/by-schedule)
-  GET  /api/spend/breakdown?by=    — §5.2 butler|model|feature breakdown
+  GET  /api/spend/breakdown?by=    — §5.2 butler|model|feature|purpose breakdown
   GET  /api/spend/forecast         — §5.2 naive linear extrapolation MTD → EOM
   GET  /api/spend/rules            — §5.2 list routing rules
   POST /api/spend/rules            — §5.2 create routing rule
@@ -1044,6 +1044,64 @@ async def get_costs_by_schedule(
     return ApiResponse[list[ScheduleCost]](data=all_costs)
 
 
+# Aggregate current-month token usage per (purpose, model_id) directly from the
+# shared cross-butler ledger (bu-qvnce.12/core_156).  Unlike butler/model/feature,
+# this dimension is not a per-butler fan-out -- ``purpose`` lives on
+# ``public.token_usage_ledger`` itself, so a single query against any pool that can
+# see ``public`` (the "switchboard" pool, matching ``spend_rules``/``spend_ceiling``
+# elsewhere in this router) answers it for the whole fleet.  Mirrors
+# ``model_routing._MTD_USAGE_BY_MODEL_SQL`` with an added ``purpose`` grouping key.
+_MTD_USAGE_BY_PURPOSE_SQL = """
+SELECT
+    COALESCE(tul.purpose, 'unknown') AS purpose,
+    mc.model_id AS model_id,
+    COALESCE(SUM(tul.input_tokens), 0)  AS input_tokens,
+    COALESCE(SUM(tul.output_tokens), 0) AS output_tokens,
+    COALESCE(SUM(tul.cached_input_tokens), 0)   AS cached_input_tokens,
+    COALESCE(SUM(tul.cache_creation_tokens), 0) AS cache_creation_tokens
+FROM public.token_usage_ledger tul
+JOIN public.model_catalog mc ON mc.id = tul.catalog_entry_id
+WHERE tul.recorded_at >= date_trunc('month', now() AT TIME ZONE 'UTC')
+GROUP BY COALESCE(tul.purpose, 'unknown'), mc.model_id
+"""
+
+
+async def _get_spend_breakdown_by_purpose(
+    db: DatabaseManager | None,
+    pricing: PricingConfig,
+) -> dict:
+    """Return the ``by=purpose`` breakdown payload, priced from the shared ledger.
+
+    Returns ``breakdown={}`` with ``source_error=True`` when the DB-backed path is
+    unavailable (no ``DatabaseManager``) or the ledger query fails -- there is no MCP
+    fallback for this dimension (no per-butler tool exposes ``token_usage_ledger``
+    rows), so a failure here must never be mistaken for "genuinely no purpose-tagged
+    spend this month" (see butlers/CLAUDE.md degraded-mode envelope convention).
+    """
+    if db is None:
+        return {"by": "purpose", "breakdown": {}, "source_error": True}
+    try:
+        pool = db.pool("switchboard")
+        rows = await pool.fetch(_MTD_USAGE_BY_PURPOSE_SQL)
+    except Exception:
+        logger.warning("Failed to fetch purpose spend breakdown", exc_info=True)
+        return {"by": "purpose", "breakdown": {}, "source_error": True}
+
+    breakdown: dict[str, float] = {}
+    for row in rows:
+        cost = estimate_session_cost(
+            pricing,
+            row["model_id"] or "unknown",
+            int(row["input_tokens"]),
+            int(row["output_tokens"]),
+            cached_input_tokens=int(row["cached_input_tokens"]),
+            cache_creation_tokens=int(row["cache_creation_tokens"]),
+        )
+        label = row["purpose"]
+        breakdown[label] = round(breakdown.get(label, 0.0) + cost, 6)
+    return {"by": "purpose", "breakdown": breakdown, "source_error": False}
+
+
 # ---------------------------------------------------------------------------
 # §5.2 — Breakdown endpoint
 # ---------------------------------------------------------------------------
@@ -1051,7 +1109,7 @@ async def get_costs_by_schedule(
 
 @router.get("/breakdown", response_model=ApiResponse[dict])
 async def get_spend_breakdown(
-    by: Literal["butler", "model", "feature"] = Query(
+    by: Literal["butler", "model", "feature", "purpose"] = Query(
         "butler", description="Dimension to break spend down by"
     ),
     db: DatabaseManager | None = Depends(_get_db_manager),
@@ -1059,12 +1117,19 @@ async def get_spend_breakdown(
     pricing: PricingConfig = Depends(get_pricing),
     mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[dict]:
-    """Return spend broken down by butler, model, or feature for the current month.
+    """Return spend broken down by butler, model, feature, or purpose for the current month.
 
     Uses the MTD (month-to-date) summary from each butler.  The ``feature``
     dimension currently mirrors the ``by_schedule`` breakdown — a richer
-    feature taxonomy is deferred to a future revision.
+    feature taxonomy is deferred to a future revision.  The ``purpose`` dimension
+    (bu-qvnce.12/core_156 -- ``route``/``schedule``/``classification``/``healing``/
+    ``discretion``/... -- the "why" a dispatch happened) is priced directly from
+    ``public.token_usage_ledger`` rather than the per-butler fan-out the other three
+    dimensions use; see ``_get_spend_breakdown_by_purpose``.
     """
+    if by == "purpose":
+        return ApiResponse[dict](data=await _get_spend_breakdown_by_purpose(db, pricing))
+
     # Reuse the existing MTD summary across all butlers
     tracker = DegradedSources(logger)
     tasks = [
@@ -1279,8 +1344,13 @@ class SpendRuleCondition(BaseModel):
     be persisted and then silently fail-closed at dispatch.  All keys are optional; an
     empty condition ``{}`` is a valid catch-all.  Supported dimensions mirror exactly
     what ``model_routing.apply_spend_routing_rules`` can evaluate at the dispatch call
-    site: ``butler``, ``complexity`` (alias ``tier``), and ``trigger`` (the dispatch
-    ``trigger_source``).  Each may be a scalar or a list (membership match).
+    site: ``butler``, ``complexity`` (alias ``tier``), and ``trigger`` (alias
+    ``purpose`` — both evaluate against the dispatch ``trigger_source``; ``purpose``
+    matches the vocabulary ``/spend/breakdown?by=purpose`` and
+    ``public.token_usage_ledger.purpose`` use for the same dimension, see bu-qvnce.12).
+    Each may be a scalar or a list (membership match).  ``trigger`` and ``purpose`` are
+    mutually exclusive within one condition (422 if both are set) since they alias the
+    same underlying value and could never both hold at once.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1289,6 +1359,22 @@ class SpendRuleCondition(BaseModel):
     complexity: str | list[str] | None = None
     tier: str | list[str] | None = None
     trigger: str | list[str] | None = None
+    purpose: str | list[str] | None = None
+
+    @model_validator(mode="after")
+    def _validate_trigger_purpose_alias(self) -> SpendRuleCondition:
+        # trigger and purpose both evaluate against the same dispatch trigger_source
+        # (see _rule_condition_matches) -- a condition specifying both can never match
+        # unless their values happen to agree, which is never a legitimate rule intent.
+        # Reject at create/update time (422) rather than persist a rule that silently
+        # fails closed forever at dispatch.
+        if self.trigger is not None and self.purpose is not None:
+            raise ValueError(
+                "condition cannot set both 'trigger' and 'purpose' -- they are aliases "
+                "for the same dispatch trigger_source dimension; a rule combining both "
+                "could never match"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_tiers(self) -> SpendRuleCondition:

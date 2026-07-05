@@ -84,6 +84,11 @@ interface SpendRule {
 interface BreakdownData {
   by: string
   breakdown: Record<string, number>
+  // Set only on the "purpose" dimension (bu-og0j2): true when the ledger-backed
+  // query failed or the dashboard DB pool is unavailable -- there is no per-butler
+  // MCP fallback for this dimension, so an empty breakdown must never be read as
+  // "genuinely no purpose-tagged spend this month" (see SourceDegradedNote below).
+  source_error?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +99,9 @@ function fetchForecast(): Promise<{ data: ForecastData }> {
   return apiFetch<{ data: ForecastData }>("/spend/forecast")
 }
 
-function fetchBreakdown(by: "butler" | "model" | "feature"): Promise<{ data: BreakdownData }> {
+function fetchBreakdown(
+  by: "butler" | "model" | "feature" | "purpose",
+): Promise<{ data: BreakdownData }> {
   return apiFetch<{ data: BreakdownData }>(`/spend/breakdown?by=${by}`)
 }
 
@@ -578,7 +585,7 @@ function BreakdownBar({ label, value, maxValue, href }: BreakdownBarProps) {
   )
 }
 
-type BreakdownBy = "butler" | "model" | "feature"
+type BreakdownBy = "butler" | "model" | "feature" | "purpose"
 
 function BreakdownSection() {
   const [by, setBy] = useState<BreakdownBy>("butler")
@@ -593,13 +600,14 @@ function BreakdownSection() {
     return Object.entries(breakdown).sort(([, a], [, b]) => b - a)
   }, [data])
   const maxValue = entries[0]?.[1] ?? 0
+  const sourceError = by === "purpose" && data?.data?.source_error === true
 
   return (
     <section className="border border-border">
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
         <Eyebrow>Spend Breakdown · 30d</Eyebrow>
         <div className="flex gap-1">
-          {(["butler", "model", "feature"] as BreakdownBy[]).map((dim) => (
+          {(["butler", "model", "feature", "purpose"] as BreakdownBy[]).map((dim) => (
             <Button
               key={dim}
               variant={by === dim ? "default" : "ghost"}
@@ -619,6 +627,8 @@ function BreakdownSection() {
               <Skeleton key={i} className="h-4 w-full" />
             ))}
           </div>
+        ) : sourceError ? (
+          <SourceDegradedNote label="Purpose breakdown" detail="spend source unavailable" />
         ) : entries.length === 0 ? (
           <p className="font-serif italic text-muted-foreground text-sm">
             No spend has been recorded yet.
@@ -803,7 +813,7 @@ function fmtConstraintValue(value: unknown): string {
 }
 
 function conditionChips(condition: Record<string, unknown>): { label: string; value: string }[] {
-  const order = ["butler", "complexity", "tier", "trigger"]
+  const order = ["butler", "complexity", "tier", "trigger", "purpose"]
   const keys = Object.keys(condition).sort(
     (a, b) => order.indexOf(a) - order.indexOf(b) || a.localeCompare(b),
   )
@@ -952,6 +962,12 @@ const TRIGGER_SOURCES: string[] = [
   "external",
 ]
 
+// Purpose is an alias dimension for the same dispatch trigger_source (bu-og0j2 /
+// bu-qvnce.12) -- see model_routing._rule_condition_matches. Offers the same
+// vocabulary plus "discretion", the one purpose value stamped by a path
+// (connectors.discretion_dispatcher) that has no equivalent trigger_source.
+const PURPOSE_VALUES: string[] = [...TRIGGER_SOURCES, "discretion"]
+
 interface CreateRuleFormProps {
   onCancel: () => void
   onCreated: () => void
@@ -964,6 +980,7 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
   const [butler, setButler] = useState("")
   const [complexity, setComplexity] = useState<"" | ComplexityTier>("")
   const [trigger, setTrigger] = useState("")
+  const [purpose, setPurpose] = useState("")
   const [model, setModel] = useState("")
   const [maxCostPerCall, setMaxCostPerCall] = useState("")
 
@@ -1004,6 +1021,7 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
     if (butler.trim()) condition.butler = butler.trim()
     if (complexity) condition.complexity = complexity
     if (trigger) condition.trigger = trigger
+    if (purpose) condition.purpose = purpose
     createMutation.mutate({ condition, action })
   }
 
@@ -1014,11 +1032,12 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
   }, [catalogData])
 
   const conditionSummary =
-    butler.trim() || complexity || trigger
+    butler.trim() || complexity || trigger || purpose
       ? [
           butler.trim() ? `butler = ${butler.trim()}` : null,
           complexity ? `complexity = ${complexity}` : null,
           trigger ? `trigger = ${trigger}` : null,
+          purpose ? `purpose = ${purpose}` : null,
         ]
           .filter(Boolean)
           .join(" and ")
@@ -1038,7 +1057,7 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
       className="mb-4 flex flex-col gap-3 border border-border/60 p-3"
     >
       <Eyebrow>Condition (all optional, ANDed)</Eyebrow>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <label className="flex flex-col gap-1">
           <Eyebrow>Butler</Eyebrow>
           <input
@@ -1078,6 +1097,22 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
             {TRIGGER_SOURCES.map((t) => (
               <option key={t} value={t}>
                 {t}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <Eyebrow>Purpose</Eyebrow>
+          <select
+            aria-label="Purpose condition"
+            className="text-xs border rounded px-2 py-1 bg-background"
+            value={purpose}
+            onChange={(e) => setPurpose(e.target.value)}
+          >
+            <option value="">any purpose</option>
+            {PURPOSE_VALUES.map((p) => (
+              <option key={p} value={p}>
+                {p}
               </option>
             ))}
           </select>

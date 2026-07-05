@@ -513,6 +513,71 @@ describe("SpendPage — what changed", () => {
   })
 })
 
+describe("SpendPage — spend breakdown", () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+    setHooks()
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it("fetches and renders the purpose dimension when its button is clicked", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/breakdown?by=purpose") {
+        return Promise.resolve({
+          data: {
+            by: "purpose",
+            breakdown: { classification: 1.2, discretion: 0.4 },
+            source_error: false,
+          },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "purpose" }))
+    })
+
+    await waitFor(() => {
+      expect(
+        apiFetchMock.mock.calls.some((c) => c[0] === "/spend/breakdown?by=purpose"),
+      ).toBe(true)
+    })
+    expect(await screen.findByText("classification")).toBeTruthy()
+  })
+
+  it("shows a degraded-source note when the purpose breakdown source errors", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/breakdown?by=purpose") {
+        return Promise.resolve({
+          data: { by: "purpose", breakdown: {}, source_error: true },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "purpose" }))
+    })
+
+    const note = await screen.findByRole("alert")
+    expect(note.textContent).toContain("Purpose breakdown")
+  })
+})
+
 describe("SpendPage — why (evidence layer)", () => {
   beforeEach(() => {
     apiFetchMock.mockReset()
@@ -629,6 +694,38 @@ describe("SpendPage — routing rules", () => {
       expect(postCall).toBeTruthy()
       expect(JSON.parse(postCall![1].body as string)).toEqual({
         condition: { butler: "general", complexity: "workhorse" },
+        action: { model: "claude-sonnet" },
+      })
+    })
+  })
+
+  it("includes the purpose condition dim in the created rule (bu-og0j2)", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("add-rule-button"))
+    })
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Purpose condition"), {
+        target: { value: "discretion" },
+      })
+      fireEvent.change(screen.getByLabelText("Target model"), { target: { value: "claude-sonnet" } })
+    })
+
+    await act(async () => {
+      fireEvent.submit(screen.getByTestId("create-rule-form"))
+    })
+
+    await waitFor(() => {
+      const postCall = apiFetchMock.mock.calls.find(
+        (c) => c[0] === "/spend/rules" && c[1]?.method === "POST",
+      )
+      expect(postCall).toBeTruthy()
+      expect(JSON.parse(postCall![1].body as string)).toEqual({
+        condition: { purpose: "discretion" },
         action: { model: "claude-sonnet" },
       })
     })

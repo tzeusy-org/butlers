@@ -291,6 +291,65 @@ def test_rule_condition_trigger_dim() -> None:
 
 
 @pytest.mark.unit
+def test_rule_condition_purpose_dim_aliases_trigger() -> None:
+    """The ``purpose`` condition dim is an alias for ``trigger`` (bu-og0j2/bu-qvnce.12).
+
+    Both evaluate against the same ``trigger_source`` value passed to
+    ``_rule_condition_matches`` -- ``purpose`` just matches the vocabulary the
+    ``/spend`` breakdown and ``token_usage_ledger.purpose`` use for this dimension.
+    """
+    # Exact purpose match (case-insensitive), same semantics as trigger.
+    assert _rule_condition_matches(
+        {"purpose": "discretion"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="discretion",
+    )
+    assert _rule_condition_matches(
+        {"purpose": "CLASSIFICATION"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="classification",
+    )
+    # Non-matching purpose.
+    assert not _rule_condition_matches(
+        {"purpose": "discretion"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="route",
+    )
+    # List membership on purpose.
+    assert _rule_condition_matches(
+        {"purpose": ["healing", "discretion"]},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="discretion",
+    )
+    # Purpose constraint present but no trigger context → fail closed.
+    assert not _rule_condition_matches(
+        {"purpose": "discretion"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source=None,
+    )
+    # AND with other dims.
+    assert _rule_condition_matches(
+        {"butler": "general", "purpose": "discretion"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="discretion",
+    )
+    # trigger and purpose target the SAME context value, so a rule combining
+    # both with conflicting values can never match (documented AND semantics).
+    assert not _rule_condition_matches(
+        {"trigger": "route", "purpose": "discretion"},
+        butler_name="general",
+        complexity_tier="workhorse",
+        trigger_source="route",
+    )
+
+
+@pytest.mark.unit
 def test_parse_max_cost_per_call() -> None:
     """action.max_cost_per_call parsing: positive float kept, malformed/non-positive dropped."""
     assert _parse_max_cost_per_call({"max_cost_per_call": 0.05}, "r1") == pytest.approx(0.05)
@@ -1449,3 +1508,49 @@ async def test_spend_rule_trigger_condition_at_dispatch(pool: asyncpg.Pool) -> N
     )
     assert routed_healing.resolved[1] == "cheap-model"
     assert str(routed_healing.resolved[3]) == cheap_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_purpose_condition_at_dispatch(pool: asyncpg.Pool) -> None:
+    """The ``purpose`` dim gates a rule at dispatch identically to ``trigger`` (bu-og0j2).
+
+    ``purpose`` is stamped onto ``token_usage_ledger`` using the same
+    ``trigger_source`` value passed here, including ``"discretion"`` -- a value that
+    has no equivalent named ``trigger_source`` constant but IS a real dispatch
+    context (connectors.discretion_dispatcher). A rule authored against ``purpose``
+    must gate on it exactly as a ``trigger`` rule would.
+    """
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    await _insert_catalog_entry(
+        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+    )
+    cheap_id = await _insert_catalog_entry(
+        pool, alias="cheap", model_id="cheap-model", complexity_tier="workhorse", priority=1
+    )
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+
+    # Rule matches only discretion-purposed dispatches.
+    await _insert_spend_rule(
+        pool, position=0, condition={"purpose": "discretion"}, action={"model": "cheap-model"}
+    )
+
+    # No trigger context → rule does not match.
+    no_trigger = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    assert no_trigger.resolved[1] == "base-model"
+
+    # Non-matching purpose → rule does not match.
+    routed_other = await apply_spend_routing_rules(
+        pool, "general", Complexity.WORKHORSE, resolved, trigger_source="route"
+    )
+    assert routed_other.resolved[1] == "base-model"
+
+    # Matching purpose → rule re-routes.
+    routed_discretion = await apply_spend_routing_rules(
+        pool, "general", Complexity.WORKHORSE, resolved, trigger_source="discretion"
+    )
+    assert routed_discretion.resolved[1] == "cheap-model"
+    assert str(routed_discretion.resolved[3]) == cheap_id

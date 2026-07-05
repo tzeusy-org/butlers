@@ -461,13 +461,19 @@ def _rule_condition_matches(
 
     - ``butler`` — the butler identity name (e.g. ``"general"``).
     - ``complexity`` / ``tier`` — the canonical complexity tier (e.g. ``"workhorse"``).
-    - ``trigger`` — the dispatch trigger source available at the spawner call site
-      (e.g. ``"route"``, ``"qa"``, ``"healing"``, ``"schedule:<task>"``, ``"extraction"``).
-      Chosen because it is the richest dispatch-context dimension actually plumbed to
-      ``apply_spend_routing_rules`` — no synthetic "feature" tag exists at that call
-      site, so the rule never matches on data that isn't really present.  When the
-      caller does not supply a trigger source, a ``trigger`` constraint cannot be
-      evaluated and the rule does NOT match (fail-closed).
+    - ``trigger`` / ``purpose`` — the dispatch trigger source available at the spawner
+      call site (e.g. ``"route"``, ``"qa"``, ``"healing"``, ``"schedule:<task>"``,
+      ``"extraction"``).  Chosen because it is the richest dispatch-context dimension
+      actually plumbed to ``apply_spend_routing_rules`` — no synthetic "feature" tag
+      exists at that call site, so the rule never matches on data that isn't really
+      present.  ``purpose`` is an alias for the same value: it is the same
+      ``trigger_source`` string that ``core.spawner._run()`` stamps onto
+      ``public.token_usage_ledger.purpose`` (bu-qvnce.12/core_156), so a rule written
+      against either key evaluates identically at dispatch time — ``purpose`` just
+      matches the vocabulary spend-analysis surfaces (``/spend`` breakdown) use for the
+      same dimension.  When the caller does not supply a trigger source, a
+      ``trigger``/``purpose`` constraint cannot be evaluated and the rule does NOT
+      match (fail-closed).
 
     Each constraint value may be a scalar (exact match) or a list (membership match).
     Matching is case-insensitive on string values.  Unknown constraint keys cause the
@@ -479,10 +485,11 @@ def _rule_condition_matches(
         "complexity": complexity_tier,
         "tier": complexity_tier,
         "trigger": trigger_source,
+        "purpose": trigger_source,
     }
     for key, expected in condition.items():
-        if key == "trigger" and trigger_source is None:
-            # Trigger constraint present but no trigger context to evaluate it against.
+        if key in ("trigger", "purpose") and trigger_source is None:
+            # Trigger/purpose constraint present but no trigger context to evaluate it against.
             return False
         if key not in context:
             # Unknown constraint dimension — cannot evaluate; do not match.
@@ -770,8 +777,9 @@ async def apply_spend_routing_rules(
     --------------
     - ``condition`` (JSONB object): constraints ANDed together; an empty ``{}`` is a
       catch-all.  Supported keys: ``butler``, ``complexity`` (alias ``tier``), and
-      ``trigger`` (the dispatch ``trigger_source``).  Values may be scalars (exact
-      match) or lists (membership).  See ``_rule_condition_matches``.
+      ``trigger`` (alias ``purpose``) — both evaluate against the dispatch
+      ``trigger_source``.  Values may be scalars (exact match) or lists (membership).
+      See ``_rule_condition_matches``.
     - ``action.model`` (str, optional): the priced ``model_id`` to route TO.  The
       matched model is re-resolved against ``public.model_catalog`` (honoring per-butler
       overrides) to the highest-priority enabled, non-failed entry for that ``model_id``
