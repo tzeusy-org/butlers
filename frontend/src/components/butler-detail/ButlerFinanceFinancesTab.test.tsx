@@ -919,6 +919,91 @@ describe("ButlerFinanceFinancesTab — loading state", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests: never-blank floor (bu-nhcp5) — placeholderData + FetchingDim
+//
+// This tab's windows are fixed at mount (no user-navigable date picker), so
+// the only source of a background refetch today is the 60s poll on each
+// hook. placeholderData keeps `data` populated through that poll; FetchingDim
+// dims the whole panel grid for its duration instead of leaving zero visual
+// signal that a refresh is in flight.
+// ---------------------------------------------------------------------------
+
+describe("ButlerFinanceFinancesTab — never-blank floor (bu-nhcp5)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupWithData();
+  });
+
+  afterEach(() => cleanup());
+
+  it("dims the panel grid while a background refetch is in flight", () => {
+    vi.mocked(useFinanceTransactions).mockReturnValue({
+      data: { data: TRANSACTIONS, meta: { total: 2, offset: 0, limit: 15 } },
+      isLoading: false,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceTransactions>);
+
+    renderTab();
+    const tab = screen.getByTestId("finance-finances-tab");
+    // FetchingDim wraps the grid container from the outside.
+    expect(tab.parentElement?.className).toContain("opacity-60");
+  });
+
+  it("does not dim when no query is fetching", () => {
+    renderTab();
+    const tab = screen.getByTestId("finance-finances-tab");
+    expect(tab.parentElement?.className).not.toContain("opacity-60");
+  });
+
+  it("keeps rendering the previous data while a background refetch is in flight (never blanks)", () => {
+    vi.mocked(useFinanceAccounts).mockReturnValue({
+      data: { data: ACCOUNTS, meta: { total: 2, offset: 0, limit: 50 } },
+      isLoading: false,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceAccounts>);
+
+    renderTab();
+    expect(screen.getByText("Everyday Checking")).toBeDefined();
+  });
+
+  it("does not dim during the very first load (each panel already shows its own loading line)", () => {
+    setupLoading();
+    // setupLoading's isLoading:true implies isFetching:true too in real
+    // react-query output; assert the wrapper stays undimmed so the initial
+    // per-panel <LoadingLine/> isn't itself dimmed.
+    vi.mocked(useFinanceTransactions).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceTransactions>);
+    vi.mocked(useFinanceSubscriptions).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceSubscriptions>);
+    vi.mocked(useFinanceUpcomingBills).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceUpcomingBills>);
+    vi.mocked(useFinanceSpendingSummary).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceSpendingSummary>);
+    vi.mocked(useFinanceAccounts).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isFetching: true,
+    } as ReturnType<typeof useFinanceAccounts>);
+
+    renderTab();
+    const tab = screen.getByTestId("finance-finances-tab");
+    expect(tab.parentElement?.className).not.toContain("opacity-60");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests: getAllTabs includes finance finances tab
 // ---------------------------------------------------------------------------
 

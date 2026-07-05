@@ -24,6 +24,7 @@ import { useSearchParams } from "react-router";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { useChroniclesBriefing } from "@/hooks/use-chronicles-briefing";
 import { Page } from "@/components/ui/page";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
 import { Headline } from "@/components/overview/Headline";
@@ -262,16 +263,23 @@ export default function ChroniclesPage() {
             ) : null}
           </div>
 
-          <Headline greet={headlineLines.greet} body={headlineLines.body} />
+          {/* Never-blank floor (bu-nhcp5): with placeholderData, `data` keeps
+              showing the previous day's briefing the instant the day-step
+              stepper fires; this wrapper dims it instead of the page falling
+              back to the full skeleton. Elaboration's own isFetching dim is
+              disabled here (false) so the two treatments don't compound. */}
+          <FetchingDim isFetching={isFetching} className="space-y-6">
+            <Headline greet={headlineLines.greet} body={headlineLines.body} />
 
-          <Elaboration
-            text={data?.voice_paragraph ?? "The day is still being composed."}
-            isFetching={isFetching}
-          />
+            <Elaboration
+              text={data?.voice_paragraph ?? "The day is still being composed."}
+              isFetching={false}
+            />
+          </FetchingDim>
         </div>
 
         {/* Right column: attention leads, then KPI strip, then recent days */}
-        <div className="space-y-8">
+        <FetchingDim isFetching={isFetching} className="space-y-8">
           <Section eyebrow="Attention">
             <AttentionList items={adaptAttention(data?.attention_items ?? [])} />
           </Section>
@@ -281,7 +289,7 @@ export default function ChroniclesPage() {
             selectedDate={selectedDate}
             onSelect={selectDate}
           />
-        </div>
+        </FetchingDim>
       </div>
 
       <ChroniclesDrilldownPanel date={selectedDate} tz={ownerTz} />

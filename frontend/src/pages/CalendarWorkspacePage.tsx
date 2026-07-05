@@ -89,6 +89,7 @@ import { Mono } from "@/components/ui/Mono";
 import { Row } from "@/components/ui/Row";
 import { StateDot } from "@/components/ui/StateDot";
 import { Voice } from "@/components/ui/Voice";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { cn } from "@/lib/utils";
 import {
   dateTimeLocalToIso,
@@ -4541,7 +4542,13 @@ export default function CalendarWorkspacePage() {
                 </span>
               </p>
             </div>
-          ) : view === "butler" ? (
+          ) : (
+            // Never-blank floor (bu-nhcp5): placeholderData on useCalendarWorkspace
+            // keeps the outgoing window's entries rendered the instant week/day
+            // navigation fires a new query key; this dims them instead of the
+            // grid replacing itself with "Drawing the calendar…" on every step.
+            <FetchingDim isFetching={workspaceQuery.isFetching}>
+              {view === "butler" ? (
             /* ---- Butler lanes ---- */
             butlerLaneRows.length === 0 ? (
               <Voice variant="italic" className="text-[var(--mfg)]">
@@ -5336,6 +5343,8 @@ export default function CalendarWorkspacePage() {
                 ));
               })()}
             </div>
+          )}
+            </FetchingDim>
           )}
         </div>
 

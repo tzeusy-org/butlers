@@ -38,6 +38,7 @@ import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { Time } from "@/components/ui/time";
 import {
@@ -603,22 +604,65 @@ export default function ButlerFinanceFinancesTab() {
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
   const thirtyDaysAgoStr = formatInTimeZone(thirtyDaysAgo, tz, "yyyy-MM-dd");
 
-  const { data: txResp, isLoading: txLoading } = useFinanceTransactions({ limit: 15 });
-  const { data: subResp, isLoading: subLoading } = useFinanceSubscriptions();
-  const { data: upcomingResp, isLoading: upcomingLoading } = useFinanceUpcomingBills({
+  const {
+    data: txResp,
+    isLoading: txLoading,
+    isFetching: txFetching,
+  } = useFinanceTransactions({ limit: 15 });
+  const {
+    data: subResp,
+    isLoading: subLoading,
+    isFetching: subFetching,
+  } = useFinanceSubscriptions();
+  const {
+    data: upcomingResp,
+    isLoading: upcomingLoading,
+    isFetching: upcomingFetching,
+  } = useFinanceUpcomingBills({
     days_ahead: 30,
   });
-  const { data: monthlySummary, isLoading: monthlyLoading } = useFinanceSpendingSummary({
+  const {
+    data: monthlySummary,
+    isLoading: monthlyLoading,
+    isFetching: monthlyFetching,
+  } = useFinanceSpendingSummary({
     start_date: monthStart,
     end_date: monthEnd,
     group_by: "category",
   });
-  const { data: categorySummary, isLoading: categoryLoading } = useFinanceSpendingSummary({
+  const {
+    data: categorySummary,
+    isLoading: categoryLoading,
+    isFetching: categoryFetching,
+  } = useFinanceSpendingSummary({
     start_date: thirtyDaysAgoStr,
     end_date: monthEnd,
     group_by: "category",
   });
-  const { data: accountsResp, isLoading: accountsLoading } = useFinanceAccounts();
+  const {
+    data: accountsResp,
+    isLoading: accountsLoading,
+    isFetching: accountsFetching,
+  } = useFinanceAccounts();
+
+  // Never-blank floor (bu-nhcp5): this tab's windows are fixed at mount (this
+  // month / trailing 30 days — no user-navigable date picker exists here
+  // today), so placeholderData mostly earns its keep on the 60s background
+  // refetchInterval: previously that poll swapped in new data with zero
+  // visual signal. Dim the panel grid for the duration of any in-flight
+  // background refetch (excluding the very first load, which each panel
+  // already renders its own <LoadingLine/> for) so a background refresh
+  // reads as "updating", not silently stale.
+  const isInitialLoad =
+    txLoading || subLoading || upcomingLoading || monthlyLoading || categoryLoading || accountsLoading;
+  const isRefetching =
+    !isInitialLoad &&
+    (txFetching ||
+      subFetching ||
+      upcomingFetching ||
+      monthlyFetching ||
+      categoryFetching ||
+      accountsFetching);
 
   // Memoized so the applyBulk useCallback below has a stable transactions dep.
   const transactions = useMemo(() => txResp?.data ?? [], [txResp]);
@@ -758,10 +802,15 @@ export default function ButlerFinanceFinancesTab() {
   const topCategorySub = topCategory ? titleCase(topCategory.key) : undefined;
 
   return (
-    <div
-      className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
-      data-testid="finance-finances-tab"
-    >
+    // Never-blank floor (bu-nhcp5): dims the whole panel grid during any
+    // in-flight background refetch instead of leaving a stale render with no
+    // visual cue. Wraps the grid container from the outside (rather than
+    // replacing it) so its own layout classes and data-testid are untouched.
+    <FetchingDim isFetching={isRefetching}>
+      <div
+        className="grid grid-cols-1 lg:grid-cols-4 border-t border-l border-border/60"
+        data-testid="finance-finances-tab"
+      >
       {/* Row 1: KPI strip — 4 cells */}
       <div
         className="col-span-1 lg:col-span-4 grid grid-cols-2 lg:grid-cols-4"
@@ -825,6 +874,7 @@ export default function ButlerFinanceFinancesTab() {
       {/* Row 4: Subscriptions (span-2) + Accounts (span-2) */}
       <SubscriptionsPanel subscriptions={subscriptions} isLoading={subLoading} />
       <AccountsPanel accounts={accounts} isLoading={accountsLoading} />
-    </div>
+      </div>
+    </FetchingDim>
   );
 }

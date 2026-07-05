@@ -37,14 +37,16 @@ vi.mock("@/components/ui/timezone-context", () => ({
 
 let _briefing: ChroniclesBriefing | undefined;
 let _briefingArgs: { date?: string; tz?: string } | undefined;
+let _isFetching = false;
+let _isError = false;
 
 vi.mock("@/hooks/use-chronicles-briefing", () => ({
   useChroniclesBriefing: (args: { date?: string; tz?: string } = {}) => {
     _briefingArgs = args;
     return {
       data: _briefing,
-      isFetching: false,
-      isError: false,
+      isFetching: _isFetching,
+      isError: _isError,
       refetch: vi.fn(),
     };
   },
@@ -133,6 +135,8 @@ describe("ChroniclesPage editorial archetype", () => {
   beforeEach(() => {
     _briefing = undefined;
     _briefingArgs = undefined;
+    _isFetching = false;
+    _isError = false;
   });
 
   afterEach(() => {
@@ -324,5 +328,46 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(html).toContain("above 6h waking");
     // urgent state predicate, with the most-recent-day subject.
     expect(html).toContain("had loose ends.");
+  });
+
+  // ---------------------------------------------------------------------
+  // Never-blank floor (bu-nhcp5): day-step navigation must keep the
+  // outgoing day's content on screen (dimmed), never fall back to the full
+  // WorkspaceSkeleton, and never let a dimmed stale render mask a real error.
+  // ---------------------------------------------------------------------
+
+  it("keeps the previous day's content visible (not the full skeleton) while the next day is fetching", () => {
+    _briefing = buildBriefing({ headline: "Quiet day." });
+    _isFetching = true;
+    const html = renderPage();
+    // placeholderData means `data` is still populated during the day-step
+    // refetch, so the page must not fall back to the editorial WorkspaceSkeleton.
+    expect(html).not.toContain("animate-pulse");
+    expect(html).toContain("Quiet day.");
+  });
+
+  it("dims the stale content with FetchingDim while a day-step refetch is in flight", () => {
+    _briefing = buildBriefing();
+    _isFetching = true;
+    const html = renderPage();
+    expect(html).toContain("opacity-60");
+  });
+
+  it("undims once the new day's data settles", () => {
+    _briefing = buildBriefing();
+    _isFetching = false;
+    const html = renderPage();
+    expect(html).not.toContain("opacity-60");
+  });
+
+  it("surfaces the error state instead of masking it behind dimmed stale data", () => {
+    // Stale data can still be present in the cache (e.g. a previous day's
+    // briefing) when a day-step request fails; the error must win, not the
+    // dimmed stale render.
+    _briefing = buildBriefing({ headline: "Quiet day." });
+    _isError = true;
+    _isFetching = false;
+    const html = renderPage();
+    expect(html).toContain("Something went wrong");
   });
 });

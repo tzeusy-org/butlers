@@ -902,6 +902,103 @@ describe("EntityFinder", () => {
 
     expect(getRecents().some((r) => r.kind === "page")).toBe(true);
   });
+
+  // -------------------------------------------------------------------------
+  // Never-blank floor (bu-nhcp5): useEntityFinderSearch already pairs
+  // placeholderData with the query, so isLoading stays false after the first
+  // keystroke — but nothing signalled that a keystroke was re-searching. The
+  // Entities group must keep showing the previous keystroke's rows, dimmed,
+  // instead of a silent stale-to-fresh swap or a blank.
+  // -------------------------------------------------------------------------
+
+  it("dims the Entities group while a re-search is in flight (isFetching, not the first load)", async () => {
+    vi.mocked(useEntityFinderSearch).mockReturnValue({
+      data: {
+        results: [
+          {
+            entity_id: "uuid-alice",
+            canonical_name: "Alice",
+            entity_type: "person",
+            score: 100,
+            match_kind: "prefix",
+          },
+        ],
+        total: 1,
+        q: "ali",
+        limit: 8,
+      },
+      isLoading: false,
+      isFetching: true,
+      isError: false,
+    } as UseEntityFinderSearchResult);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    // Never blanks: the stale-but-visible row stays on screen.
+    const item = document.body.querySelector(
+      "[data-testid='entity-finder-entity-item']",
+    );
+    expect(item?.textContent).toContain("Alice");
+
+    // Dims: the FetchingDim wrapper around the Entities group carries the
+    // opacity-60 treatment while the re-search is in flight.
+    const group = document.body.querySelector(
+      "[data-testid='entity-finder-entity-group']",
+    );
+    expect(group?.parentElement?.className).toContain("opacity-60");
+  });
+
+  it("does not dim the Entities group once the re-search settles", async () => {
+    mockSearchResults({
+      results: [
+        {
+          entity_id: "uuid-alice",
+          canonical_name: "Alice",
+          entity_type: "person",
+          score: 100,
+          match_kind: "prefix",
+        },
+      ],
+      total: 1,
+      q: "ali",
+      limit: 8,
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const group = document.body.querySelector(
+      "[data-testid='entity-finder-entity-group']",
+    );
+    expect(group?.parentElement?.className).not.toContain("opacity-60");
+  });
 });
 
 // ---------------------------------------------------------------------------

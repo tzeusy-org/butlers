@@ -106,6 +106,12 @@ export function useCalendarWorkspace(
     queryFn: () => fetchAllWorkspacePages(params),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 30_000,
+    // Never-blank floor (bu-nhcp5): the query key includes the visible
+    // start/end window, so stepping week-to-week/day-to-day is a brand-new
+    // cache entry. Keep the outgoing window's entries on screen while the
+    // new window loads — the page dims them via FetchingDim instead of
+    // swapping the grid for "Drawing the calendar…" on every navigation.
+    placeholderData: (previousData) => previousData,
   });
 }
 

@@ -728,6 +728,52 @@ describe("CalendarWorkspacePage", () => {
     expect(getSearchText()).toContain("range=list");
   });
 
+  // -------------------------------------------------------------------------
+  // Never-blank floor (bu-nhcp5): week/day-nav must keep the outgoing
+  // window's entries on screen (dimmed), never fall back to "Drawing the
+  // calendar…" on every step, and never let dimmed stale entries mask a
+  // real error.
+  // -------------------------------------------------------------------------
+
+  it("keeps the outgoing window's entries visible while the next window is fetching", () => {
+    setWorkspaceState({ isFetching: true });
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+
+    expect(container.textContent).toContain("Morning planning");
+    expect(container.textContent).not.toContain("Drawing the calendar…");
+  });
+
+  it("dims the grid with FetchingDim while a window navigation refetch is in flight", () => {
+    setWorkspaceState({ isFetching: true });
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+
+    expect(container.innerHTML).toContain("opacity-60");
+  });
+
+  it("undims once the new window's data settles", () => {
+    setWorkspaceState({ isFetching: false });
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+
+    expect(container.innerHTML).not.toContain("opacity-60");
+  });
+
+  it("surfaces the error state instead of masking it behind dimmed stale entries", () => {
+    // Stale entries can still be cached (e.g. the previous week's window)
+    // when a navigation request fails; the error must win, not the dimmed
+    // stale grid.
+    setWorkspaceState({
+      isError: true,
+      isFetching: false,
+      error: new Error("workspace fetch failed"),
+    });
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+
+    expect(container.textContent).toContain(
+      "The calendar workspace failed to load.",
+    );
+    expect(container.textContent).not.toContain("Morning planning");
+  });
+
   it("renders event times in the configured workspace timezone, not browser-local", async () => {
     // The sole entry is at 09:00Z; in Asia/Singapore (UTC+8) that is 17:00.
     // Asserting 17:00 (and the absence of the raw 09:00) proves the workspace

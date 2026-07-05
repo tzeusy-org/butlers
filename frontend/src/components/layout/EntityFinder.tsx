@@ -64,6 +64,7 @@ import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { EntityMark } from "@/components/ui/EntityMark";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { KbMono } from "@/components/ui/KbMono";
 import type {
   EntityFinderSearchResult,
@@ -259,7 +260,12 @@ export default function EntityFinder() {
       active: open,
     });
 
-  const { data: searchData, isLoading, isError } = useEntityFinderSearch(query, {
+  const {
+    data: searchData,
+    isLoading,
+    isFetching: entityFetching,
+    isError,
+  } = useEntityFinderSearch(query, {
     limit: 8,
   });
 
@@ -373,7 +379,7 @@ export default function EntityFinder() {
   // included, see matchKindLabel's "contact_fact" case) and a second,
   // differently-ranked entity list would just be a confusing duplicate.
   // -------------------------------------------------------------------------
-  const { data: genericSearchData } = useSearch(trimmedQuery);
+  const { data: genericSearchData, isFetching: genericFetching } = useSearch(trimmedQuery);
   const sessionMatches = genericSearchData?.data?.sessions ?? [];
   const stateMatches = genericSearchData?.data?.state ?? [];
 
@@ -634,40 +640,47 @@ export default function EntityFinder() {
              * (70) > substring (50) > predicate (30).
              * --------------------------------------------------------------- */}
             {entityResults.length > 0 && (
-              <Command.Group
-                heading="Entities"
-                className="mb-1"
-                data-testid="entity-finder-entity-group"
-              >
-                {entityResults.map((result) => (
-                  <Command.Item
-                    key={result.entity_id}
-                    value={`entity:${result.entity_id}:${result.canonical_name}`}
-                    onSelect={() => openEntity(result.entity_id, result.canonical_name, result.entity_type)}
-                    className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
-                    data-testid="entity-finder-entity-item"
-                  >
-                    <EntityMark
-                      name={result.canonical_name}
-                      entityType={result.entity_type}
-                      size={28}
-                    />
+              // Never-blank floor (bu-nhcp5): useEntityFinderSearch already
+              // pairs placeholderData with the debounced query, so isLoading
+              // stays false after the first keystroke — but nothing signalled
+              // that a keystroke was re-searching. Dim the stale-but-visible
+              // rows for the duration of that background fetch.
+              <FetchingDim isFetching={entityFetching && !isLoading}>
+                <Command.Group
+                  heading="Entities"
+                  className="mb-1"
+                  data-testid="entity-finder-entity-group"
+                >
+                  {entityResults.map((result) => (
+                    <Command.Item
+                      key={result.entity_id}
+                      value={`entity:${result.entity_id}:${result.canonical_name}`}
+                      onSelect={() => openEntity(result.entity_id, result.canonical_name, result.entity_type)}
+                      className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
+                      data-testid="entity-finder-entity-item"
+                    >
+                      <EntityMark
+                        name={result.canonical_name}
+                        entityType={result.entity_type}
+                        size={28}
+                      />
 
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium">
-                        {result.canonical_name}
-                      </p>
-                      <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
-                        matched on {matchKindLabel(result.match_kind)}
-                      </p>
-                    </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium">
+                          {result.canonical_name}
+                        </p>
+                        <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
+                          matched on {matchKindLabel(result.match_kind)}
+                        </p>
+                      </div>
 
-                    <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
-                      score {result.score}
-                    </span>
-                  </Command.Item>
-                ))}
-              </Command.Group>
+                      <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
+                        score {result.score}
+                      </span>
+                    </Command.Item>
+                  ))}
+                </Command.Group>
+              </FetchingDim>
             )}
 
             {/* ---------------------------------------------------------------
@@ -732,50 +745,59 @@ export default function EntityFinder() {
              * SESSIONS / STATE GROUPS — absorbed from the legacy
              * CommandPalette (GET /api/search, debounced).
              * --------------------------------------------------------------- */}
-            {sessionMatches.length > 0 && (
-              <Command.Group heading="Sessions">
-                {sessionMatches.map((s) => (
-                  <Command.Item
-                    key={s.id}
-                    value={`session:${s.id}:${s.title}`}
-                    onSelect={() => openPage(s.url, s.title)}
-                    className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
-                    data-testid="entity-finder-session-item"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium">{s.title}</p>
-                      {s.snippet && (
-                        <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
-                          {s.snippet}
-                        </p>
-                      )}
-                    </div>
-                  </Command.Item>
-                ))}
-              </Command.Group>
-            )}
+            {/* Never-blank floor (bu-nhcp5): useSearch now pairs
+             * placeholderData with its debounced query key, so these groups
+             * keep the previous keystroke's rows on screen instead of
+             * blanking between debounce-settle and fetch-resolve. Dim them
+             * while the new fetch is in flight. */}
+            {(sessionMatches.length > 0 || stateMatches.length > 0) && (
+              <FetchingDim isFetching={genericFetching}>
+                {sessionMatches.length > 0 && (
+                  <Command.Group heading="Sessions">
+                    {sessionMatches.map((s) => (
+                      <Command.Item
+                        key={s.id}
+                        value={`session:${s.id}:${s.title}`}
+                        onSelect={() => openPage(s.url, s.title)}
+                        className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
+                        data-testid="entity-finder-session-item"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium">{s.title}</p>
+                          {s.snippet && (
+                            <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
+                              {s.snippet}
+                            </p>
+                          )}
+                        </div>
+                      </Command.Item>
+                    ))}
+                  </Command.Group>
+                )}
 
-            {stateMatches.length > 0 && (
-              <Command.Group heading="State">
-                {stateMatches.map((s) => (
-                  <Command.Item
-                    key={s.id}
-                    value={`state:${s.id}:${s.title}`}
-                    onSelect={() => openPage(s.url, s.title)}
-                    className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
-                    data-testid="entity-finder-state-item"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-medium">{s.title}</p>
-                      {s.snippet && (
-                        <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
-                          {s.snippet}
-                        </p>
-                      )}
-                    </div>
-                  </Command.Item>
-                ))}
-              </Command.Group>
+                {stateMatches.length > 0 && (
+                  <Command.Group heading="State">
+                    {stateMatches.map((s) => (
+                      <Command.Item
+                        key={s.id}
+                        value={`state:${s.id}:${s.title}`}
+                        onSelect={() => openPage(s.url, s.title)}
+                        className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
+                        data-testid="entity-finder-state-item"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium">{s.title}</p>
+                          {s.snippet && (
+                            <p className="truncate font-mono text-[10px] uppercase text-muted-foreground">
+                              {s.snippet}
+                            </p>
+                          )}
+                        </div>
+                      </Command.Item>
+                    ))}
+                  </Command.Group>
+                )}
+              </FetchingDim>
             )}
 
             {/* ---------------------------------------------------------------

@@ -24,5 +24,11 @@ export function useSearch(query: string, options?: { limit?: number }) {
     queryKey: ["search", debouncedQuery, options?.limit],
     queryFn: () => searchAll(debouncedQuery, options?.limit ?? DEFAULT_LIMIT),
     enabled: debouncedQuery.length >= MIN_QUERY_LENGTH,
+    // Never-blank floor (bu-nhcp5): each debounced keystroke is a new query
+    // key, so without this the Sessions/State result groups would flash
+    // empty between the debounce settling and the new fetch resolving. Keep
+    // the previous keystroke's results visible (dimmed via FetchingDim at the
+    // call site) instead.
+    placeholderData: (previousData) => previousData,
   });
 }

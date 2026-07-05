@@ -21,12 +21,18 @@ import type {
   FinanceUpcomingBillsParams,
 } from "@/api/index.ts";
 
+// Never-blank floor (bu-nhcp5): every read hook below sets placeholderData so
+// a params change (e.g. a future date-range/filter control) keeps rendering
+// the outgoing window's rows instead of flashing back to a loading state.
+// Paired with <FetchingDim isFetching> at the consuming call site.
+
 /** List transactions with optional filters. Refreshes every 60s. */
 export function useFinanceTransactions(params?: FinanceTransactionListParams) {
   return useQuery({
     queryKey: ["finance", "transactions", params],
     queryFn: () => getFinanceTransactions(params),
     refetchInterval: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -36,6 +42,7 @@ export function useFinanceSubscriptions(params?: FinanceSubscriptionListParams) 
     queryKey: ["finance", "subscriptions", params],
     queryFn: () => getFinanceSubscriptions(params),
     refetchInterval: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -45,6 +52,7 @@ export function useFinanceBills(params?: FinanceBillListParams) {
     queryKey: ["finance", "bills", params],
     queryFn: () => getFinanceBills(params),
     refetchInterval: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -54,6 +62,7 @@ export function useFinanceUpcomingBills(params?: FinanceUpcomingBillsParams) {
     queryKey: ["finance", "upcoming-bills", params],
     queryFn: () => getFinanceUpcomingBills(params),
     refetchInterval: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -63,6 +72,7 @@ export function useFinanceSpendingSummary(params?: FinanceSpendingSummaryParams)
     queryKey: ["finance", "spending-summary", params],
     queryFn: () => getFinanceSpendingSummary(params),
     refetchInterval: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -72,6 +82,7 @@ export function useFinanceAccounts(params?: FinanceAccountListParams) {
     queryKey: ["finance", "accounts", params],
     queryFn: () => getFinanceAccounts(params),
     refetchInterval: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -81,6 +92,7 @@ export function useFinanceDistinctMerchants(params?: FinanceDistinctMerchantsPar
     queryKey: ["finance", "distinct-merchants", params],
     queryFn: () => getFinanceDistinctMerchants(params),
     refetchInterval: 60_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
