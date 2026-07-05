@@ -656,6 +656,68 @@ def test_compute_window_steady_state_uses_tight_trailing_window() -> None:
 
 
 # ---------------------------------------------------------------------------
+# dailyRollUp request body [bu-tyavf]
+#
+# Per the v4 discovery doc's ``DailyRollUpDataPointsRequest`` schema, Google
+# validates ``windowSizeDays * pageSize`` against a per-data-type max
+# duration (90 days for ``steps``, 14 days for ``active-minutes``) and
+# rejects the request with 400 INVALID_ROLLUP_QUERY_DURATION if it is
+# exceeded — confirmed live against the real API. The previous hardcoded
+# ``pageSize=10000`` implied a 10,000-day query for any 1-day window and
+# always 400'd. ``pageSize`` must instead equal the number of rollup windows
+# the requested range actually covers.
+# ---------------------------------------------------------------------------
+
+
+def test_build_post_body_page_size_matches_number_of_days() -> None:
+    from datetime import UTC, datetime
+
+    connector = _make_connector()
+    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == "activity")
+    since = datetime(2026, 6, 20, tzinfo=UTC)
+    until = datetime(2026, 6, 23, tzinfo=UTC)  # 3-day window
+
+    body = connector._build_post_body(bundle, state=None, since=since, until=until)
+
+    assert body["windowSizeDays"] == 1
+    assert body["pageSize"] == 3
+    # windowSizeDays * pageSize must respect the tightest per-data-type cap
+    # (active-minutes: 14 days) since the primary+secondary rollup share body.
+    assert body["windowSizeDays"] * body["pageSize"] <= 14
+    assert body["range"]["start"]["date"] == {"year": 2026, "month": 6, "day": 20}
+    assert body["range"]["end"]["date"] == {"year": 2026, "month": 6, "day": 23}
+
+
+def test_build_post_body_clamps_and_sizes_page_size_at_14_day_boundary() -> None:
+    """A first-run 30-day backfill clamps to 14 days; pageSize must track it exactly."""
+    from datetime import UTC, datetime, timedelta
+
+    connector = _make_connector()
+    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == "activity")
+    until = datetime(2026, 7, 6, tzinfo=UTC)
+    since = until - timedelta(days=30)  # first-run backfill window
+
+    body = connector._build_post_body(bundle, state=None, since=since, until=until)
+
+    # Clamped to the active-minutes 14-day cap, not the full 30-day backfill.
+    assert body["pageSize"] == 14
+    assert body["windowSizeDays"] * body["pageSize"] == 14
+
+
+def test_build_post_body_same_day_window_requests_single_page() -> None:
+    """A zero-width (same-day) window must still request >=1 page, not 0."""
+    from datetime import UTC, datetime
+
+    connector = _make_connector()
+    bundle = next(b for b in RESOURCE_BUNDLES if b.resource == "activity")
+    now = datetime(2026, 7, 6, 8, 0, tzinfo=UTC)
+
+    body = connector._build_post_body(bundle, state=None, since=now, until=now)
+
+    assert body["pageSize"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Resource state cursor advance
 # ---------------------------------------------------------------------------
 
@@ -1896,6 +1958,96 @@ async def test_main_loop_token_revoked_error_marks_account_revoked(
 
     assert ctx_a.auth_error is True
     revoke_mock.assert_awaited_with(_UUID_A)
+
+
+@pytest.mark.asyncio
+async def test_main_loop_tracks_per_resource_consecutive_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resource that raises a generic (non-credential/403/429/precondition) error
+    increments its OWN ResourceState.consecutive_failures — and that record must
+    survive sibling resources succeeding in the same poll cycle.
+
+    Before bu-tyavf, the connector only tracked failure via the shared
+    ``_last_source_api_ok`` flag, which any OTHER resource's success in the same
+    cycle flips back to healthy — silently masking a resource that always fails
+    (e.g. dailyRollUp's malformed request body).
+    """
+    connector, ctx = _make_connector_with_account()
+    connector._running = True
+    connector._mcp_client = MagicMock()
+
+    monkeypatch.setattr(connector, "_drain_replay", AsyncMock())
+    monkeypatch.setattr(connector, "_flush_filtered_events", AsyncMock())
+    monkeypatch.setattr(connector, "_resolve_owner_and_scopes", AsyncMock())
+
+    polled: list[str] = []
+
+    async def _poll(_acct_id: uuid.UUID, state: ResourceState) -> None:
+        polled.append(state.bundle.resource)
+        if state.bundle.resource == "activity":
+            raise httpx.HTTPStatusError(
+                "400 Bad Request", request=MagicMock(), response=MagicMock(status_code=400)
+            )
+        # Simulate the real _poll_resource success path's side effect on the
+        # shared flag, so later successes can mask an earlier failure.
+        connector._last_source_api_ok = True
+        connector._source_api_error_message = None
+        if len(polled) >= len(RESOURCE_BUNDLES):
+            connector._shutdown_event.set()
+
+    monkeypatch.setattr(connector, "_poll_resource", _poll)
+
+    await connector._main_loop()
+
+    activity_state = connector._resources[(ctx.account_id, "activity")]
+    assert activity_state.consecutive_failures == 1
+    assert activity_state.last_error is not None
+    assert activity_state.last_error_at is not None
+
+    # A sibling resource never touched its own failure counter.
+    sleep_state = connector._resources[(ctx.account_id, "sleep")]
+    assert sleep_state.consecutive_failures == 0
+    assert sleep_state.last_error is None
+
+    # The connector-wide flag IS masked by later sibling successes (existing,
+    # documented behavior) — this is precisely why per-resource tracking above
+    # is necessary for honest observability.
+    assert connector._last_source_api_ok is True
+
+
+@pytest.mark.asyncio
+async def test_main_loop_resource_failure_streak_resets_on_next_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resource's consecutive_failures resets to 0 once IT polls successfully again."""
+    connector, ctx = _make_connector_with_account()
+    connector._running = True
+    connector._mcp_client = MagicMock()
+
+    monkeypatch.setattr(connector, "_drain_replay", AsyncMock())
+    monkeypatch.setattr(connector, "_flush_filtered_events", AsyncMock())
+    monkeypatch.setattr(connector, "_resolve_owner_and_scopes", AsyncMock())
+
+    state = connector._resources[(ctx.account_id, "activity")]
+    state.consecutive_failures = 2
+    state.last_error = "previous failure"
+    state.last_error_at = MagicMock()  # any truthy sentinel; overwritten on success
+
+    polled: list[str] = []
+
+    async def _poll(_acct_id: uuid.UUID, poll_state: ResourceState) -> None:
+        polled.append(poll_state.bundle.resource)
+        if len(polled) >= len(RESOURCE_BUNDLES):
+            connector._shutdown_event.set()
+
+    monkeypatch.setattr(connector, "_poll_resource", _poll)
+
+    await connector._main_loop()
+
+    assert state.consecutive_failures == 0
+    assert state.last_error is None
+    assert state.last_error_at is None
 
 
 @pytest.mark.asyncio

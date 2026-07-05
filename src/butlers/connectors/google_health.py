@@ -177,6 +177,12 @@ _DEFAULT_SCOPE_RECHECK_S = 300
 _DEFAULT_HEALTH_PORT = 40086
 _DEFAULT_MAX_INFLIGHT = 8
 
+# Consecutive poll failures for a single (account, resource) before it is
+# flagged as ``resource_degraded`` in ``/health`` — a couple of transient
+# blips should not trip it, but a resource that never recovers must not stay
+# silently masked by sibling resources' successful polls.
+_RESOURCE_DEGRADED_FAILURE_THRESHOLD = 3
+
 
 # ---------------------------------------------------------------------------
 # Google Health-specific Prometheus metrics
@@ -608,6 +614,16 @@ class ResourceState:
     last_poll_at: datetime | None = None
     last_cursor: str | None = None
     backfill_done: bool = False
+    # Per-resource failure tracking. A connector-wide ``_last_source_api_ok``
+    # flag is not enough to surface a resource that consistently errors: any
+    # OTHER resource's successful poll in the same cycle flips that shared
+    # flag back to healthy, silently masking the failing one (see bu-tyavf).
+    # These fields track failures per (account, resource) so a persistently
+    # broken resource stays visible in ``/health`` even while siblings poll
+    # fine.
+    last_error: str | None = None
+    last_error_at: datetime | None = None
+    consecutive_failures: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1679,10 +1695,20 @@ class GoogleHealthConnector:
                 except Exception as exc:  # noqa: BLE001
                     self._last_source_api_ok = False
                     self._source_api_error_message = "source_api_unreachable"
+                    # Per-resource tracking: a sibling resource's success this
+                    # same cycle will flip ``_last_source_api_ok`` back to
+                    # True below, so record the failure on the resource
+                    # itself too — otherwise a persistently-erroring resource
+                    # (e.g. a malformed dailyRollUp body) reads as healthy.
+                    state.consecutive_failures += 1
+                    state.last_error = str(exc)
+                    state.last_error_at = datetime.now(UTC)
                     logger.warning(
-                        "GoogleHealthConnector: poll error account=%s resource=%s (non-fatal): %s",
+                        "GoogleHealthConnector: poll error account=%s resource=%s "
+                        "(non-fatal, consecutive_failures=%d): %s",
                         ctx.email,
                         state.bundle.resource,
+                        state.consecutive_failures,
                         exc,
                     )
                     google_health_polls_total.labels(
@@ -1697,6 +1723,10 @@ class GoogleHealthConnector:
                     next_due = min(next_due, state.next_poll_monotonic)
                     continue
                 else:
+                    # Successful poll clears this resource's failure streak.
+                    state.consecutive_failures = 0
+                    state.last_error = None
+                    state.last_error_at = None
                     interval = self._config.poll_intervals.get(
                         state.bundle.resource, state.bundle.default_interval_s
                     )
@@ -1882,19 +1912,36 @@ class GoogleHealthConnector:
         since: datetime,
         until: datetime,
     ) -> dict[str, Any]:
-        """Build a daily-rollup JSON body for POST resources."""
+        """Build a daily-rollup JSON body for POST resources.
+
+        Per the v4 discovery doc (``DailyRollUpDataPointsRequest``), Google
+        validates ``windowSizeDays * pageSize`` against a per-data-type max
+        duration (90 days for ``steps``, 14 days for ``active-minutes``) and
+        rejects the request with 400 ``INVALID_ROLLUP_QUERY_DURATION`` if the
+        product exceeds it — confirmed live: a body with the previous
+        hardcoded ``pageSize=10000`` (implying a 10,000-day query with
+        ``windowSizeDays=1``) always 400s, even for a 1-day range. ``pageSize``
+        must instead bound the actual number of rollup windows the range can
+        produce, one per day covered.
+        """
         del bundle, state
         # Google caps active-minutes rollups at 14 days; activity envelopes
         # merge active-minutes with steps, so clamp that source to avoid a
         # whole-poll 400 on first-run backfills.
         since = max(since, until - timedelta(days=14))
+        start_date = since.date()
+        end_date = until.date()
+        window_size_days = 1
+        # One rollup window per day in [start_date, end_date); at least 1 so a
+        # same-day (zero-width) range still requests a single window.
+        page_size = max((end_date - start_date).days, 1)
         return {
             "range": {
-                "start": {"date": _date_message(since.date())},
-                "end": {"date": _date_message(until.date())},
+                "start": {"date": _date_message(start_date)},
+                "end": {"date": _date_message(end_date)},
             },
-            "windowSizeDays": 1,
-            "pageSize": 10000,
+            "windowSizeDays": window_size_days,
+            "pageSize": page_size,
         }
 
     # ------------------------------------------------------------------
@@ -2089,16 +2136,31 @@ class GoogleHealthConnector:
             accounts_snapshot = dict(self._accounts)
             # Per-account resource state for observability.
             resources_by_account: dict[str, dict[str, Any]] = {}
+            # Resources that have failed consistently enough to be flagged —
+            # a bespoke fleet-convention field (see CLAUDE.md degraded-mode
+            # envelope) so a resource that always errors (e.g. a malformed
+            # dailyRollUp body) cannot hide behind sibling resources'
+            # successful polls resetting the connector-wide health flag.
+            resources_degraded: list[str] = []
             for (acct_id, resource_name), state_ in resources_snapshot:
                 ctx = accounts_snapshot.get(acct_id)
                 acct_label = ctx.email if ctx else str(acct_id)
+                is_degraded = state_.consecutive_failures >= _RESOURCE_DEGRADED_FAILURE_THRESHOLD
                 resources_by_account.setdefault(acct_label, {})[resource_name] = {
                     "last_poll_at": state_.last_poll_at.isoformat()
                     if state_.last_poll_at
                     else None,
                     "last_cursor": state_.last_cursor,
                     "backfill_done": state_.backfill_done,
+                    "consecutive_failures": state_.consecutive_failures,
+                    "last_error": state_.last_error,
+                    "last_error_at": state_.last_error_at.isoformat()
+                    if state_.last_error_at
+                    else None,
+                    "resource_degraded": is_degraded,
                 }
+                if is_degraded:
+                    resources_degraded.append(f"{acct_label}/{resource_name}")
             # Per-account auth_error summary for observability.
             accounts_auth_errors: dict[str, Any] = {
                 ctx.email: {
@@ -2120,6 +2182,7 @@ class GoogleHealthConnector:
                 "accounts": list(accounts_snapshot.keys()),
                 "accounts_auth_errors": accounts_auth_errors,
                 "resources_by_account": resources_by_account,
+                "resources_degraded": resources_degraded,
                 "error": error,
             }
 
