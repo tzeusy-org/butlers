@@ -287,29 +287,18 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             )
 
         # Mark the ingestion event as failed/replay_failed, or complete a
-        # pending replay back to ingested.
-        if routing_failed:
-            try:
-                from butlers.core.ingestion_events import ingestion_event_mark_failed
+        # pending replay back to ingested. Shielded (see
+        # ingestion_event_reconcile_after_processing) so cancelling this
+        # fire-and-forget create_task (e.g. on daemon shutdown) cannot strand
+        # the ingestion_events row after processing already succeeded.
+        from butlers.core.ingestion_events import ingestion_event_reconcile_after_processing
 
-                await ingestion_event_mark_failed(pool, request_id, _routing_error_detail)
-            except Exception:
-                logger.warning(
-                    "Ingest: failed to mark ingestion event failed for request_id=%s",
-                    request_id,
-                )
-        else:
-            try:
-                from butlers.core.ingestion_events import (
-                    ingestion_event_mark_replay_complete,
-                )
-
-                await ingestion_event_mark_replay_complete(pool, request_id)
-            except Exception:
-                logger.warning(
-                    "Ingest: failed to mark replay complete for request_id=%s",
-                    request_id,
-                )
+        await ingestion_event_reconcile_after_processing(
+            pool,
+            request_id,
+            routing_failed=routing_failed,
+            error_detail=_routing_error_detail,
+        )
 
         # Fire ✅ or 👾 reaction after pipeline processing (telegram only).
         if _telegram_mod is not None:

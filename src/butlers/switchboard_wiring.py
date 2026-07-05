@@ -227,29 +227,19 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
             )
 
         # Mark the ingestion event as failed/replay_failed, or complete a
-        # pending replay back to ingested.
-        if routing_failed:
-            try:
-                from butlers.core.ingestion_events import ingestion_event_mark_failed
+        # pending replay back to ingested. Shielded (see
+        # ingestion_event_reconcile_after_processing) so a worker cancelled by
+        # DurableBuffer.stop()'s shutdown drain timeout — a real risk for
+        # slower, multi-target dispatches like email digests — cannot strand
+        # the ingestion_events row after processing already succeeded.
+        from butlers.core.ingestion_events import ingestion_event_reconcile_after_processing
 
-                await ingestion_event_mark_failed(pool, ref.request_id, _routing_error_detail)
-            except Exception:
-                logger.warning(
-                    "DurableBuffer: failed to mark ingestion event failed for request_id=%s",
-                    ref.request_id,
-                )
-        else:
-            try:
-                from butlers.core.ingestion_events import (
-                    ingestion_event_mark_replay_complete,
-                )
-
-                await ingestion_event_mark_replay_complete(pool, ref.request_id)
-            except Exception:
-                logger.warning(
-                    "DurableBuffer: failed to mark replay complete for request_id=%s",
-                    ref.request_id,
-                )
+        await ingestion_event_reconcile_after_processing(
+            pool,
+            ref.request_id,
+            routing_failed=routing_failed,
+            error_detail=_routing_error_detail,
+        )
 
         # Fire terminal reaction after pipeline processing (telegram_bot only).
         if channel == "telegram_bot" and telegram_mod is not None:

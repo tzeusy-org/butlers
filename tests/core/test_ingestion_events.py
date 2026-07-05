@@ -17,6 +17,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import uuid
 from datetime import UTC, datetime
@@ -1369,3 +1370,121 @@ async def test_ingestion_events_histogram_event_ids_filter() -> None:
     )
     sql3 = pool3.calls[0][1]
     assert "id = ANY(" not in sql3
+
+
+class _SlowFakePool:
+    """Fake pool whose ``execute`` takes ``delay_s`` to finish.
+
+    Used to prove that ``ingestion_event_reconcile_after_processing`` shields
+    its write from cancellation of the calling task: the write must still
+    reach ``completed_calls`` even when the caller is cancelled mid-flight.
+    """
+
+    def __init__(self, delay_s: float = 0.05) -> None:
+        self._delay_s = delay_s
+        self.started_calls: list[tuple[str, tuple]] = []
+        self.completed_calls: list[tuple[str, tuple]] = []
+
+    async def execute(self, sql, *args):
+        self.started_calls.append((sql, args))
+        await asyncio.sleep(self._delay_s)
+        self.completed_calls.append((sql, args))
+        return "UPDATE 1"
+
+
+async def test_reconcile_after_processing_marks_replay_complete_on_success() -> None:
+    """routing_failed=False routes to mark_replay_complete's ingested UPDATE."""
+    from butlers.core.ingestion_events import ingestion_event_reconcile_after_processing
+
+    event_id = uuid.uuid4()
+    pool = _FakePool()
+
+    result = await ingestion_event_reconcile_after_processing(pool, event_id, routing_failed=False)
+
+    assert result is True
+    assert len(pool.calls) == 1
+    _, sql, args = pool.calls[0]
+    assert "status = 'ingested'" in sql
+    assert "status = 'replay_pending'" in sql
+    assert args[0] == event_id
+
+
+async def test_reconcile_after_processing_marks_failed_on_failure() -> None:
+    """routing_failed=True routes to mark_failed with the given error_detail."""
+    from butlers.core.ingestion_events import ingestion_event_reconcile_after_processing
+
+    event_id = uuid.uuid4()
+    pool = _FakePool()
+
+    result = await ingestion_event_reconcile_after_processing(
+        pool, event_id, routing_failed=True, error_detail="failed_targets: ['general']"
+    )
+
+    assert result is True
+    assert len(pool.calls) == 1
+    _, sql, args = pool.calls[0]
+    assert "replay_failed" in sql
+    assert args[0] == event_id
+    assert args[1] == "failed_targets: ['general']"
+
+
+async def test_reconcile_after_processing_swallows_write_errors() -> None:
+    """A DB error during reconciliation is logged and returns False, not raised.
+
+    Mirrors the pre-existing behavior of the two call sites (DurableBuffer
+    worker and the ingest create_task fallback) that must never let a
+    reconciliation failure crash message processing.
+    """
+    from butlers.core.ingestion_events import ingestion_event_reconcile_after_processing
+
+    class _ExplodingPool:
+        async def execute(self, sql, *args):
+            raise RuntimeError("connection reset")
+
+    result = await ingestion_event_reconcile_after_processing(
+        _ExplodingPool(), uuid.uuid4(), routing_failed=False
+    )
+    assert result is False
+
+
+async def test_reconcile_after_processing_shields_write_from_cancellation() -> None:
+    """Cancelling the caller must not abort the reconciliation write.
+
+    Regression test for bu-nqkha: DurableBuffer.stop() force-cancels any
+    worker task still running once its shutdown drain grace period elapses.
+    Slower, multi-target dispatches (e.g. an email digest routed to several
+    butlers) are the most likely to still be in flight at that point. Before
+    this fix, a bare ``except Exception`` around the reconciliation call did
+    not catch ``asyncio.CancelledError``, so a cancelled worker whose message
+    had *already* finished processing successfully would permanently strand
+    the ingestion_events row in ``replay_pending``. asyncio.shield() must let
+    the write finish in the background even though cancellation still
+    propagates to the caller.
+    """
+    from butlers.core.ingestion_events import ingestion_event_reconcile_after_processing
+
+    pool = _SlowFakePool(delay_s=0.05)
+    event_id = uuid.uuid4()
+
+    task = asyncio.ensure_future(
+        ingestion_event_reconcile_after_processing(pool, event_id, routing_failed=False)
+    )
+    # Let the coroutine run far enough to enter the shielded write.
+    await asyncio.sleep(0.01)
+    assert pool.started_calls, "write should have started before cancellation"
+    assert not pool.completed_calls, "test is racy if the write already finished"
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Cancellation must propagate to the caller promptly, without waiting for
+    # the shielded write...
+    assert not pool.completed_calls
+
+    # ...but the write itself must still complete shortly after, unblocked.
+    await asyncio.sleep(0.1)
+    assert pool.completed_calls, (
+        "shielded reconciliation write should still complete after the "
+        "caller was cancelled — this is the bu-nqkha fix"
+    )

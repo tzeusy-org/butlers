@@ -27,12 +27,16 @@ ingestion_events_sessions_for_ids — ONE grouped fan-out for a whole page of id
 ingestion_events_list_enrichment — aggregate per-event tokens/cost/sessions from bulk fan-out
 ingestion_event_rollup          — aggregate cost/token totals from the fan-out result
 ingestion_event_mark_replay_complete — transition replay_pending → ingested on success
+ingestion_event_reconcile_after_processing — shared, cancellation-safe post-processing
+                                  reconciliation used by both the DurableBuffer worker and
+                                  the create_task ingest fallback (bu-nqkha)
 ingestion_event_replay_request  — mark a filtered event as replay_pending
 ingestion_event_replay_history  — query public.audit_log for replay attempts on an event
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -827,6 +831,80 @@ async def ingestion_event_mark_replay_complete(
         event_id,
     )
     return result.endswith("1")
+
+
+async def ingestion_event_reconcile_after_processing(
+    pool: asyncpg.Pool,
+    event_id: str | UUID,
+    *,
+    routing_failed: bool,
+    error_detail: str | None = None,
+) -> bool:
+    """Reconcile an ingestion event's status after a buffer/ingest processing attempt.
+
+    This is the single shared call site used by both the DurableBuffer worker
+    (``switchboard_wiring._buffer_process``) and the unbounded-``create_task``
+    fallback (``core_tools._switchboard._process_ingested_message``) to flip
+    ``ingestion_events`` to ``failed``/``replay_failed`` or back to ``ingested``
+    once ``pipeline.process()`` has returned.
+
+    The write is wrapped in ``asyncio.shield`` because ``DurableBuffer.stop()``
+    (invoked on every graceful daemon shutdown/restart) drains in-flight queue
+    items for only a fixed grace period (``drain_timeout_s``, default 10s)
+    before force-cancelling any worker task still running.  A bare
+    ``except Exception`` does not catch ``asyncio.CancelledError`` (a
+    ``BaseException`` subclass), so a worker whose message had *already*
+    finished processing (sessions created, ``message_inbox`` reached a
+    terminal lifecycle state) but was cancelled while awaiting this
+    reconciliation write would silently strand the ``ingestion_events`` row in
+    ``replay_pending``/``ingested`` forever — no other consumer watches for
+    that specific cross-table mismatch. Shielding lets the write finish in the
+    background even though the cancellation still propagates to the caller
+    (worker shutdown is not delayed).
+
+    Slower, multi-target dispatches — e.g. an email digest routed to several
+    butlers, producing several sessions — are disproportionately likely to
+    still be mid-flight when a shutdown's drain window expires, which is the
+    practical trigger even though the underlying gap is channel-agnostic.
+
+    Args:
+        pool: asyncpg connection pool with access to ``public.ingestion_events``.
+        event_id: UUID of the ingestion event (matches ``request_id``).
+        routing_failed: Whether the processing attempt failed. When ``True``,
+            transitions to ``failed``/``replay_failed``. When ``False``,
+            transitions a pending replay back to ``ingested`` (a no-op for
+            events that were not being replayed).
+        error_detail: Human-readable failure description (only used when
+            ``routing_failed`` is ``True``).
+
+    Returns:
+        ``True`` if the row was updated, ``False`` otherwise (including on
+        error, so callers should treat this as best-effort).
+    """
+    write = (
+        ingestion_event_mark_failed(pool, event_id, error_detail)
+        if routing_failed
+        else ingestion_event_mark_replay_complete(pool, event_id)
+    )
+    try:
+        return await asyncio.shield(write)
+    except asyncio.CancelledError:
+        logger.warning(
+            "ingestion_event_reconcile_after_processing: cancelled while reconciling "
+            "event_id=%s (routing_failed=%s); shielded write continues in the background",
+            event_id,
+            routing_failed,
+        )
+        raise
+    except Exception:
+        logger.warning(
+            "ingestion_event_reconcile_after_processing: failed to reconcile event_id=%s "
+            "(routing_failed=%s)",
+            event_id,
+            routing_failed,
+            exc_info=True,
+        )
+        return False
 
 
 async def ingestion_event_replay_request(
