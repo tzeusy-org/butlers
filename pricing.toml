@@ -137,17 +137,67 @@ output_price_per_token = 0.000003   # $3.00 / 1M tokens
 input_price_per_token = 0.00000095  # $0.95 / 1M tokens
 output_price_per_token = 0.000004   # $4.00 / 1M tokens
 
-[models."opencode-go/qwen3.6-plus"]
+# Prices reconciled against the OpenCode Go price sheet (2026-07-05).
+
+[models."opencode-go/glm-5.2"]
+input_price_per_token = 0.0000014   # $1.40 / 1M tokens
+output_price_per_token = 0.0000044  # $4.40 / 1M tokens
+
+[models."opencode-go/kimi-k2.7-code"]
+input_price_per_token = 0.00000095  # $0.95 / 1M tokens
+output_price_per_token = 0.000004   # $4.00 / 1M tokens
+
+[models."opencode-go/mimo-v2.5"]
+input_price_per_token = 0.00000014  # $0.14 / 1M tokens
+output_price_per_token = 0.00000028  # $0.28 / 1M tokens
+
+[models."opencode-go/mimo-v2.5-pro"]
+input_price_per_token = 0.00000174  # $1.74 / 1M tokens
+output_price_per_token = 0.00000348  # $3.48 / 1M tokens
+
+[models."opencode-go/minimax-m3"]
+input_price_per_token = 0.0000003   # $0.30 / 1M tokens
+output_price_per_token = 0.0000012  # $1.20 / 1M tokens
+
+# Qwen3.7 Plus — context-tiered at 256K tokens.
+[[models."opencode-go/qwen3.7-plus".tiers]]
+context_threshold = 0               # <= 256K tokens
+input_price_per_token = 0.0000004   # $0.40 / 1M tokens
+output_price_per_token = 0.0000016  # $1.60 / 1M tokens
+cached_input_price_per_token = 0.00000004  # $0.04 / 1M tokens
+[[models."opencode-go/qwen3.7-plus".tiers]]
+context_threshold = 256000          # > 256K tokens
+input_price_per_token = 0.0000012   # $1.20 / 1M tokens
+output_price_per_token = 0.0000048  # $4.80 / 1M tokens
+cached_input_price_per_token = 0.00000012  # $0.12 / 1M tokens
+
+[models."opencode-go/qwen3.7-max"]
+input_price_per_token = 0.0000025   # $2.50 / 1M tokens
+output_price_per_token = 0.0000075  # $7.50 / 1M tokens
+
+# Qwen3.6 Plus — context-tiered at 256K tokens.
+[[models."opencode-go/qwen3.6-plus".tiers]]
+context_threshold = 0               # <= 256K tokens
 input_price_per_token = 0.0000005   # $0.50 / 1M tokens
 output_price_per_token = 0.000003   # $3.00 / 1M tokens
+cached_input_price_per_token = 0.00000005  # $0.05 / 1M tokens
+[[models."opencode-go/qwen3.6-plus".tiers]]
+context_threshold = 256000          # > 256K tokens
+input_price_per_token = 0.000002    # $2.00 / 1M tokens
+output_price_per_token = 0.000006   # $6.00 / 1M tokens
+cached_input_price_per_token = 0.0000002  # $0.20 / 1M tokens
 
 [models."opencode-go/qwen3.5-plus"]
 input_price_per_token = 0.0000002   # $0.20 / 1M tokens
 output_price_per_token = 0.0000012  # $1.20 / 1M tokens
 
 [models."opencode-go/deepseek-v4-pro"]
-input_price_per_token = 0.00000055  # $0.55 / 1M tokens (sourced from opencode.ai/docs/zen, 2026-06-16)
-output_price_per_token = 0.0000022  # $2.20 / 1M tokens
+input_price_per_token = 0.00000174  # $1.74 / 1M tokens (sourced from OpenCode Go price sheet, 2026-07-05)
+output_price_per_token = 0.00000348  # $3.48 / 1M tokens
+
+[models."opencode-go/deepseek-v4-flash"]
+input_price_per_token = 0.00000014  # $0.14 / 1M tokens (sourced from OpenCode Go price sheet, 2026-07-05)
+output_price_per_token = 0.00000028  # $0.28 / 1M tokens
 
 # Ollama (local/self-hosted) — zero cost
 # Model IDs match the ollama/ prefix used in model_catalog_defaults.toml
