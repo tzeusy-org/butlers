@@ -1295,6 +1295,7 @@ class SteamAccountPoller:
             return
 
         poll_ts = _now_iso()
+        submission_error: Exception | None = None
 
         if prev_snapshot is not None:
             # Detect change
@@ -1311,7 +1312,24 @@ class SteamAccountPoller:
                     prev_game_extra_info=prev_game,
                     poll_ts=poll_ts,
                 )
-                await self._maybe_submit(envelope, data_type="online_status")
+                try:
+                    await self._maybe_submit(envelope, data_type="online_status")
+                except Exception as exc:
+                    # Do NOT let a submission failure abort the cursor update
+                    # below (bu-a25j4, sibling to bu-a38da's recently_played
+                    # fix). status_change's external_event_id embeds poll_ts,
+                    # so it is never deduped downstream by external_event_id —
+                    # a stale cursor would regenerate and resubmit the
+                    # identical status change on every subsequent poll until
+                    # one finally succeeds. Save the cursor unconditionally
+                    # and re-raise after, so _poller_loop still degrades
+                    # health/backs off.
+                    logger.warning(
+                        "Steam online_status: submission failed for endpoint=%s: %s",
+                        self._state.endpoint_identity,
+                        exc,
+                    )
+                    submission_error = exc
 
         new_cursor = SteamCursor(
             endpoint_identity=self._state.endpoint_identity,
@@ -1322,6 +1340,12 @@ class SteamAccountPoller:
         )
         self._state.cursors["online_status"] = new_cursor
         await _save_steam_cursor(self._db_pool, new_cursor)
+
+        if submission_error is not None:
+            raise RuntimeError(
+                f"Steam online_status: submission failed for endpoint="
+                f"{self._state.endpoint_identity}: {submission_error}"
+            ) from submission_error
 
     # ------------------------------------------------------------------
     # Achievements poller

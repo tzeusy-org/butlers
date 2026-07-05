@@ -22,7 +22,7 @@ zero rows ever landed in ``public.ingestion_events``. Fixed via
 convention every other connector (e.g. ``telegram_bot._submit_to_ingest``)
 already follows.
 
-[bu-35fm7] [bu-a38da]
+[bu-35fm7] [bu-a38da] [bu-a25j4]
 """
 
 from __future__ import annotations
@@ -550,3 +550,179 @@ async def test_recently_played_partial_submission_failure_still_persists_and_adv
         "730": {"playtime_2weeks": 120, "playtime_forever": 500},
         "440": {"playtime_2weeks": 90, "playtime_forever": 300},
     }
+
+
+# ---------------------------------------------------------------------------
+# Sibling-poller audit (bu-a25j4, follow-up to the bu-a38da/#2970 review):
+# _poll_achievements, _poll_friends, _poll_game_library, and _poll_online_status
+# share _poll_recently_played's "loop, then save cursor once at the end" shape.
+# A mid-batch submission failure raises before the cursor save, so the next
+# poll recomputes the same diff against a stale snapshot.
+#
+# The consequence differs by event type because it depends on whether
+# ``control.idempotency_key`` (what the Switchboard's ``ingest`` tool actually
+# dedupes on — see ``_compute_dedupe_key`` in
+# roster/switchboard/tools/ingestion/ingest.py) is stable across polls:
+#
+# - achievement_unlock / friend_change / game_purchase: idempotency_key has no
+#   poll_ts component (see the "_stable_across_polls" tests below), so a
+#   resubmission of an already-recorded event collides with the same
+#   server-side dedupe_key and comes back ``duplicate: True`` — a safe no-op.
+#   The hazard is COSMETIC for these three: no duplicate row lands in
+#   ``public.ingestion_events``, only a redundant network round-trip and (a
+#   pre-existing, separate issue) an inflated ``steam_events_submitted_total``
+#   count. No poller-loop code change applied for these three.
+# - status_change (_poll_online_status) embeds poll_ts in idempotency_key (see
+#   "_varies_by_poll_ts" below), so no downstream dedupe is possible — a
+#   resubmission mints a brand-new key every time, or (if state has drifted
+#   back to the stale cursor's value) the transition is silently dropped
+#   entirely. This hazard is REAL; _poll_online_status is fixed above to mirror
+#   _poll_recently_played's isolate-and-persist-regardless shape.
+# ---------------------------------------------------------------------------
+
+
+async def test_online_status_partial_submission_failure_still_persists_and_advances_cursor() -> (
+    None
+):
+    """A submission failure must not stall the online_status cursor.
+
+    status_change's idempotency_key embeds poll_ts (see
+    test_status_change_idempotency_key_varies_by_poll_ts below), so — unlike
+    achievement_unlock/friend_change/game_purchase — there is no downstream
+    dedupe safety net. A stale cursor after a failed submission would either
+    resubmit a distinct status_change every subsequent poll, or silently drop
+    the transition if persona state happens to revert to the stale cursor's
+    value before the next poll succeeds. The cursor must advance regardless of
+    submission outcome, and the failure must still surface so _poller_loop
+    degrades health/backs off.
+    """
+    mcp_client = AsyncMock()
+    mcp_client.call_tool.side_effect = ConnectionError("switchboard unreachable")
+    poller = _make_poller(mcp_client)
+    poller._steam_client.get_player_summaries = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"personastate": 1, "gameextrainfo": "Counter-Strike 2"}]
+    )
+    poller._state.cursors["online_status"] = SteamCursor(
+        endpoint_identity=_ENDPOINT,
+        data_type="online_status",
+        state_hash="stale-hash-does-not-match-new-state",
+        state_snapshot={"persona_state": 0, "game_extra_info": None},
+    )
+
+    with patch(
+        "butlers.connectors.steam._save_steam_cursor", new_callable=AsyncMock
+    ) as save_cursor_mock:
+        with pytest.raises(RuntimeError, match="submission failed"):
+            await poller._poll_online_status()
+
+    save_cursor_mock.assert_awaited_once()
+    assert poller._state.cursors["online_status"].state_snapshot == {
+        "persona_state": 1,
+        "game_extra_info": "Counter-Strike 2",
+    }
+
+
+def test_achievement_unlock_idempotency_key_stable_across_polls() -> None:
+    """No poll_ts component — a same-content resubmission on a later poll dedupes safely."""
+    kwargs: dict[str, Any] = dict(
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        app_id=730,
+        game_name="CS2",
+        achievement_api_name="FIRST_WIN",
+        achievement_display_name="First Win",
+        achievement_description="Win your first match",
+        unlock_time=1708012800,
+    )
+    e1 = build_achievement_unlock_envelope(poll_ts="2026-03-26T10:00:00+00:00", **kwargs)
+    e2 = build_achievement_unlock_envelope(poll_ts="2026-03-26T10:05:00+00:00", **kwargs)
+    assert e1["control"]["idempotency_key"] == e2["control"]["idempotency_key"]
+
+
+def test_friend_change_idempotency_key_stable_across_polls() -> None:
+    """No poll_ts component — a same-content resubmission on a later poll dedupes safely."""
+    kwargs: dict[str, Any] = dict(
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        friend_steam_id="76561198000000001",
+        friend_name="A Friend",
+        direction="added",
+        relationship="friend",
+    )
+    e1 = build_friend_change_envelope(poll_ts="2026-03-26T10:00:00+00:00", **kwargs)
+    e2 = build_friend_change_envelope(poll_ts="2026-03-26T10:05:00+00:00", **kwargs)
+    assert e1["control"]["idempotency_key"] == e2["control"]["idempotency_key"]
+
+
+def test_game_purchase_idempotency_key_stable_across_polls() -> None:
+    """No poll_ts component — a same-content resubmission on a later poll dedupes safely."""
+    kwargs: dict[str, Any] = dict(
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        app_id=730,
+        game_name="CS2",
+        playtime_forever=10,
+    )
+    e1 = build_game_purchase_envelope(poll_ts="2026-03-26T10:00:00+00:00", **kwargs)
+    e2 = build_game_purchase_envelope(poll_ts="2026-03-26T10:05:00+00:00", **kwargs)
+    assert e1["control"]["idempotency_key"] == e2["control"]["idempotency_key"]
+
+
+def test_status_change_idempotency_key_varies_by_poll_ts() -> None:
+    """poll_ts IS embedded — no downstream dedupe is possible across polls.
+
+    Contrast with the "_stable_across_polls" tests above: this is exactly why
+    a mid-item submission failure in _poll_online_status cannot rely on
+    ingest-level idempotency dedupe to absorb a resubmission, and must instead
+    isolate the failure and persist the cursor unconditionally (see
+    test_online_status_partial_submission_failure_still_persists_and_advances_cursor).
+    """
+    kwargs: dict[str, Any] = dict(
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        persona_state=1,
+        game_extra_info="Counter-Strike 2",
+        prev_persona_state=0,
+        prev_game_extra_info=None,
+    )
+    e1 = build_status_change_envelope(poll_ts="2026-03-26T10:00:00+00:00", **kwargs)
+    e2 = build_status_change_envelope(poll_ts="2026-03-26T10:05:00+00:00", **kwargs)
+    assert e1["control"]["idempotency_key"] != e2["control"]["idempotency_key"]
+
+
+async def test_submit_envelope_treats_duplicate_response_as_success() -> None:
+    """A ``duplicate: True`` response (ingest-level idempotency dedupe) must not raise.
+
+    Evidence for the bu-a25j4 audit: achievement_unlock/friend_change/
+    game_purchase envelopes carry a poll_ts-free idempotency_key (see the
+    "_stable_across_polls" tests above), so a resubmission of an
+    already-recorded event — exactly what happens when
+    _poll_achievements/_poll_friends/_poll_game_library retry a batch after a
+    mid-batch abort — collides with the same server-side dedupe_key and comes
+    back as ``duplicate: True``, not an error. This is why those three
+    pollers' mid-batch-abort hazard is cosmetic (a redundant network call, not
+    a duplicate ingestion_events row), and why no poller-loop code change was
+    applied for them.
+    """
+    mcp_client = AsyncMock()
+    mcp_client.call_tool.return_value = {
+        "request_id": "33333333-3333-7333-8333-333333333333",
+        "status": "accepted",
+        "duplicate": True,
+    }
+    poller = _make_poller(mcp_client)
+    envelope = build_achievement_unlock_envelope(
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        app_id=730,
+        game_name="CS2",
+        achievement_api_name="FIRST_WIN",
+        achievement_display_name="First Win",
+        achievement_description="Win your first match",
+        unlock_time=1708012800,
+        poll_ts=_POLL_TS,
+    )
+
+    await poller._submit_envelope(envelope)  # must not raise
+
+    mcp_client.call_tool.assert_awaited_once()
