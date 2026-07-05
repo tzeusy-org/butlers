@@ -366,8 +366,15 @@ checks. Per-rule spot-check:
 - A rolling agreement score per rule (last 20 spot-checks,
   `verdict_action`/`verdict_target` match vs. mismatch) below a threshold
   (default <90%) creates a **demotion** suggestion in
-  `rule_promotion_suggestions` (`status` reused, or a `suggestion_kind`
-  discriminator — see spec delta) — mirrors the existing
+  `rule_promotion_suggestions` — **[decided, bu-l6vbd, bead 2/sw_020]**: an
+  explicit `suggestion_kind` column (`'promotion' | 'demotion'`), not a
+  `status` value. `status` tracks the suggestion's own review lifecycle
+  (`pending_review`/`confirmed`/`dismissed`/`superseded`), identical in shape
+  for both kinds; `suggestion_kind` is the discriminator beads 4/5 filter and
+  render on, and a `chk_rule_promotion_suggestions_kind_shape` CHECK ties it
+  to column population (promotion rows: sender/condition/action triple, no
+  `target_rule_id`; demotion rows: `target_rule_id`, none of the
+  proposed-rule columns) — mirrors the existing
   execution-failure-triggers-demotion pattern in `autonomy-suggestions`
   (`openspec/specs/autonomy-suggestions/spec.md:115-134`), applied to
   verdict drift instead of tool-call failure.
