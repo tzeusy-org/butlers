@@ -146,6 +146,53 @@ async def test_metadata_tier_envelope_has_null_raw(
 
 
 # ---------------------------------------------------------------------------
+# Sender identity normalization at ingest (bu-qeaou)
+# ---------------------------------------------------------------------------
+
+
+async def test_full_tier_sender_identity_is_normalized_to_bare_address(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """A raw 'Name <addr>' From header must be reduced to a bare lowercased
+    address in envelope.sender.identity — the display name remains recoverable
+    from payload.raw.payload.headers for Tier 1 (full) envelopes only."""
+    message = _make_message(from_addr="John Doe <John.Doe@Example.com>")
+
+    envelope = await gmail_runtime._build_ingest_envelope(message)
+
+    assert envelope["sender"]["identity"] == "john.doe@example.com"
+    # Display name still recoverable from the untouched raw payload.
+    headers = envelope["payload"]["raw"]["payload"]["headers"]
+    from_header = next(h["value"] for h in headers if h["name"] == "From")
+    assert from_header == "John Doe <John.Doe@Example.com>"
+
+
+async def test_metadata_tier_sender_identity_is_normalized_to_bare_address(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """Same normalization applies to the Tier 2 (metadata-only) envelope."""
+    from butlers.connectors.gmail_policy import (
+        INGESTION_TIER_METADATA,
+        MessagePolicyResult,
+    )
+
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    policy_result = MessagePolicyResult(
+        should_ingest=True,
+        ingestion_tier=INGESTION_TIER_METADATA,
+        policy_tier="passive",
+        assignment_rule="test",
+        filter_reason="label_allowed",
+        triage_action="pass_through",
+    )
+    message = _make_message(from_addr="Jane Roe <Jane.Roe@Example.com>")
+
+    envelope = await runtime._build_ingest_envelope(message, policy_result=policy_result)
+
+    assert envelope["sender"]["identity"] == "jane.roe@example.com"
+
+
+# ---------------------------------------------------------------------------
 # Global triage action -> ingestion tier wiring (bu-59ock)
 # ---------------------------------------------------------------------------
 

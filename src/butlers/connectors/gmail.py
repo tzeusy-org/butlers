@@ -86,6 +86,7 @@ from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
     load_google_credentials,
 )
+from butlers.identity import normalize_email_sender
 from butlers.ingestion_policy import (
     IngestionEnvelope,
     IngestionPolicyEvaluator,
@@ -2481,7 +2482,13 @@ class GmailConnectorRuntime:
                     "observed_at": observed_at.isoformat(),
                 },
                 "sender": {
-                    "identity": from_address,
+                    # Normalized to a bare lowercased address (bu-qeaou) so
+                    # downstream identity resolution / has-email fact matching
+                    # never has to parse the raw RFC-5322 "Name <addr>" form.
+                    # The display name is still recoverable from
+                    # payload.raw.payload.headers on Tier 1 (full) envelopes;
+                    # Tier 2 (metadata) envelopes never carried it either way.
+                    "identity": normalize_email_sender(from_address),
                 },
                 "payload": {
                     "raw": None,
@@ -2537,7 +2544,11 @@ class GmailConnectorRuntime:
                 "observed_at": observed_at.isoformat(),
             },
             "sender": {
-                "identity": from_address,
+                # Normalized to a bare lowercased address (bu-qeaou); see the
+                # Tier 2 branch above for rationale. The raw "From" header
+                # (with display name) remains recoverable from
+                # payload.raw.payload.headers for Tier 1 envelopes.
+                "identity": normalize_email_sender(from_address),
             },
             "payload": {
                 "raw": message_data,

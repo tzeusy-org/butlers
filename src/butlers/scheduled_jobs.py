@@ -911,6 +911,24 @@ async def _run_relationship_entity_dedup_curation_job(
     return await mod.run_entity_dedup_curation(pool)
 
 
+async def _run_relationship_email_identity_enrichment_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run relationship butler email identity enrichment job (bu-qeaou).
+
+    Scans public.ingestion_events for recurring human email correspondents not
+    yet linked to an entity via a has-email fact, and surfaces each candidate
+    as a pending_actions proposal (entity creation/linking + has-email fact)
+    for owner review. No fact is ever written without approval.
+    """
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_email_identity_enrichment(pool)
+
+
 async def _run_relationship_episodic_predicate_curation_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1468,6 +1486,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "fact_retraction_curation": _run_relationship_fact_retraction_curation_job,
             "entity_dedup_curation": _run_relationship_entity_dedup_curation_job,
             "episodic_predicate_curation": _run_relationship_episodic_predicate_curation_job,
+            "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },

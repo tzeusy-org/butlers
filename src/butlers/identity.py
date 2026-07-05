@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from email.utils import parseaddr
 from typing import Any
 from uuid import UUID
 
@@ -60,6 +61,28 @@ def _telegram_prefixed_value(channel_value: str) -> str:
         bare = bare[len("telegram:") :]
     bare = bare.lstrip("@")
     return f"telegram:{bare}"
+
+
+def normalize_email_sender(raw: str) -> str:
+    """Reduce a raw email ``From:`` header (or bare address) to a lowercased address.
+
+    Ingestion connectors and identity/backfill code paths need ONE canonical
+    form for an email sender identity so that grouping, deduplication, and
+    ``has-email`` fact matching all agree.  A raw RFC-5322 header looks like
+    ``"John Doe <john@example.com>"``; ``has-email`` facts (and
+    ``entity_facts``-driven matching generally) store bare, lowercased
+    addresses.  This is the single shared normalizer for that reduction —
+    used at ingest (``connectors/gmail.py``), by the chronicler comms
+    projection adapter, and by the email identity enrichment/backfill jobs
+    (bu-qeaou).
+
+    Falls back to the stripped/lowercased raw value when no ``<...>``-
+    delimited address is present — :func:`email.utils.parseaddr` already
+    handles the bare-address case by returning it verbatim in the second
+    tuple slot, so calling this on an already-normalized address is a no-op.
+    """
+    _, address = parseaddr(raw or "")
+    return (address or raw or "").strip().lower()
 
 
 def channel_value_for_storage(channel_type: str, channel_value: str) -> str:
@@ -908,6 +931,7 @@ __all__ = [
     "ResolvedContact",
     "build_identity_preamble",
     "create_temp_contact",
+    "normalize_email_sender",
     "resolve_contact_by_channel",
     "resolve_contacts_by_channel_bulk",
     "resolve_outbound_channel",

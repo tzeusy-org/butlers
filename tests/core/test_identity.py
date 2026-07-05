@@ -37,6 +37,7 @@ from butlers.identity import (
     build_identity_preamble,
     channel_value_for_storage,
     create_temp_contact,
+    normalize_email_sender,
     resolve_contact_by_channel,
     resolve_contacts_by_channel_bulk,
 )
@@ -896,3 +897,27 @@ class TestTelegramUsernameResolutionNormalization:
         result = await resolve_contact_by_channel(pool, "telegram", "@nobody")
 
         assert result is None
+
+
+class TestNormalizeEmailSender:
+    """normalize_email_sender (bu-qeaou): raw 'From:' header -> bare lowercased address."""
+
+    def test_extracts_address_from_display_name_header(self) -> None:
+        assert normalize_email_sender("John Doe <John.Doe@Example.com>") == "john.doe@example.com"
+
+    def test_bare_address_is_idempotent(self) -> None:
+        """Already-normalized input must round-trip unchanged (idempotency)."""
+        assert normalize_email_sender("jane@example.com") == "jane@example.com"
+
+    def test_uppercase_bare_address_is_lowercased(self) -> None:
+        assert normalize_email_sender("Jane@Example.COM") == "jane@example.com"
+
+    def test_quoted_display_name_with_special_chars(self) -> None:
+        assert normalize_email_sender('"Doe, John" <john@example.com>') == "john@example.com"
+
+    def test_missing_header_falls_back_to_stripped_lowered_raw(self) -> None:
+        """No '<...>' present and parseaddr can't find an address: input passes through."""
+        assert normalize_email_sender("unknown") == "unknown"
+
+    def test_empty_string_returns_empty(self) -> None:
+        assert normalize_email_sender("") == ""

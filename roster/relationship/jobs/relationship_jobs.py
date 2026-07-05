@@ -3226,6 +3226,337 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Email identity enrichment job (bu-qeaou): raise email sender -> entity match
+# rate by proposing entity creation/linking for recurring human correspondents.
+# ---------------------------------------------------------------------------
+
+_EMAIL_ENRICHMENT_STATE_KEY = "email_identity_enrichment.last_run_at"
+_EMAIL_ENRICHMENT_PRIORITY = 40
+_EMAIL_ENRICHMENT_EXPIRES_DAYS = 7
+_EMAIL_ENRICHMENT_INSIGHT_COOLDOWN_DAYS = 30
+
+# Heuristics (bu-qeaou spec): "not noreply/bulk" (is_bulk_or_noreply_address),
+# ">= N threads", and "appears in both to+from directions". The third signal
+# is NOT implemented as literal to+from evidence: this job can only read
+# public.ingestion_events (inbound-only; outbound sends are recorded as
+# pending_actions scattered across whichever butler's schema originated them,
+# not centrally queryable — see the module docstring below for the full
+# rationale). It is approximated instead by requiring recurrence *across
+# multiple distinct days*, which a single inbound burst (e.g. one newsletter
+# issue fanning out several list-footer requests) cannot satisfy. Every
+# candidate that clears these heuristics still only ever reaches a human via
+# the approvals queue — a heuristic miss costs one skipped candidate, not a
+# silently written fact.
+_EMAIL_ENRICHMENT_MIN_THREADS = 3
+_EMAIL_ENRICHMENT_MIN_DISTINCT_DAYS = 2
+
+
+async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Propose entity creation/linking for recurring human email correspondents.
+
+    **bu-qeaou — identity enrichment loop.**
+
+    Scans ``public.ingestion_events`` (email channel) for senders that do not
+    yet resolve to an entity via an active ``has-email`` fact, filters out
+    automated/bulk senders and one-off contacts, and for every sender that
+    clears the recurrence heuristics:
+
+    * looks for exactly one existing, real (non-placeholder) ``person`` entity
+      whose name matches the sender's derived display name and proposes
+      *linking* to it, or
+    * creates a new ``public.entities`` row tagged
+      ``metadata.proposed_from_address`` (not a fact — plain entity creation is
+      not sensitive; see rationale below) and proposes *linking* to that.
+
+    In both cases the actual ``has-email`` fact write is NEVER performed here —
+    a ``pending_actions`` row is inserted with
+    ``tool_name='relationship_assert_fact'`` so the owner must explicitly
+    approve it via the approvals queue (mirrors ``run_entity_dedup_curation``'s
+    ``entity_merge`` proposals immediately above). An insight candidate is also
+    submitted so the owner is notified.
+
+    Design notes (see also ``email_identity_matching.py``'s module docstring):
+
+    * Display names are *derived* from the address local-part, not read from
+      the raw ``From:`` header — this job's DB role can only read
+      ``public.ingestion_events`` (``public`` schema) and
+      ``relationship.entity_facts``/``public.entities`` (this butler's own
+      schema + ``public``), never ``switchboard.message_inbox`` (a different
+      butler's private schema). A human reviewer can rename the proposed
+      entity after approval.
+    * Eagerly creating an entity for a "create" proposal (rather than waiting
+      for approval) mirrors the existing ``create_temp_contact`` pattern
+      (switchboard ingress already eagerly mints "Unknown (...)" placeholder
+      entities for unresolved senders) and is required because
+      ``relationship_assert_fact``'s ``subject`` must reference an existing
+      entity. If the proposal is later rejected, the entity is left behind
+      tagged with ``proposed_from_address`` — this job's idempotency guard
+      (below) means it is never re-proposed, but nothing today auto-archives
+      it. Filed as a discovered follow-up rather than solved here.
+    * Idempotent / safe to run on every cron tick: skips addresses that
+      already have an active has-email fact, already have a pending
+      ``relationship_assert_fact`` proposal for ``predicate='has-email'``, or
+      already have an entity tagged with ``proposed_from_address`` for that
+      address (covers the rejected-proposal case above).
+
+    Args:
+        db_pool: Database connection pool (relationship butler schema context).
+
+    Returns:
+        Dictionary with keys: senders_scanned, already_linked, filtered_bulk,
+        insufficient_evidence, already_pending, already_proposed, linked_existing,
+        created_new, errors, truncated (True if the underlying scan hit its row cap).
+    """
+    from butlers.modules.contacts.email_identity_matching import (
+        derive_display_name_from_address,
+        fetch_active_has_email_addresses,
+        fetch_email_sender_stats,
+        is_bulk_or_noreply_address,
+        match_existing_person_entity,
+    )
+    from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+    logger.info("Running email_identity_enrichment job")
+
+    stats: dict[str, Any] = {
+        "senders_scanned": 0,
+        "already_linked": 0,
+        "filtered_bulk": 0,
+        "insufficient_evidence": 0,
+        "already_pending": 0,
+        "already_proposed": 0,
+        "linked_existing": 0,
+        "created_new": 0,
+        "errors": 0,
+        "truncated": False,
+    }
+
+    now_utc = datetime.now(UTC)
+
+    try:
+        scan = await fetch_email_sender_stats(db_pool)
+    except Exception:
+        logger.exception("email_identity_enrichment: failed to scan ingestion_events")
+        stats["errors"] += 1
+        return stats
+
+    stats["senders_scanned"] = len(scan.stats)
+    stats["truncated"] = scan.truncated
+    if scan.truncated:
+        logger.warning(
+            "email_identity_enrichment: sender scan hit its row cap — some senders "
+            "were not considered this run (will be picked up on a future run as the "
+            "lookback window/ordering shifts)"
+        )
+
+    if not scan.stats:
+        logger.info("email_identity_enrichment: no email senders found — nothing to do")
+        try:
+            await state_set(db_pool, _EMAIL_ENRICHMENT_STATE_KEY, now_utc.isoformat())
+        except Exception:
+            logger.warning("email_identity_enrichment: failed to write checkpoint", exc_info=True)
+        return stats
+
+    try:
+        already_linked = await fetch_active_has_email_addresses(
+            db_pool, [c.address for c in scan.stats]
+        )
+    except Exception:
+        logger.exception("email_identity_enrichment: failed to fetch active has-email facts")
+        stats["errors"] += 1
+        return stats
+
+    expires_at = now_utc + timedelta(days=_EMAIL_ENRICHMENT_EXPIRES_DAYS)
+
+    for candidate in scan.stats:
+        address = candidate.address
+
+        if address in already_linked:
+            stats["already_linked"] += 1
+            continue
+
+        if is_bulk_or_noreply_address(address):
+            stats["filtered_bulk"] += 1
+            continue
+
+        if (
+            candidate.distinct_threads < _EMAIL_ENRICHMENT_MIN_THREADS
+            or candidate.distinct_days < _EMAIL_ENRICHMENT_MIN_DISTINCT_DAYS
+        ):
+            stats["insufficient_evidence"] += 1
+            continue
+
+        try:
+            already_pending_id = await db_pool.fetchval(
+                """
+                SELECT id FROM pending_actions
+                 WHERE tool_name = 'relationship_assert_fact'
+                   AND status    = 'pending'
+                   AND (tool_args ->> 'predicate') = 'has-email'
+                   AND (tool_args ->> 'object')    = $1
+                 LIMIT 1
+                """,
+                address,
+            )
+            if already_pending_id is not None:
+                stats["already_pending"] += 1
+                continue
+
+            already_proposed_entity = await db_pool.fetchval(
+                """
+                SELECT id FROM public.entities
+                 WHERE metadata ->> 'proposed_from_address' = $1
+                 LIMIT 1
+                """,
+                address,
+            )
+            if already_proposed_entity is not None:
+                stats["already_proposed"] += 1
+                continue
+
+            display_name = derive_display_name_from_address(address)
+            matched_entity_id = await match_existing_person_entity(db_pool, display_name)
+
+            if matched_entity_id is not None:
+                entity_id = matched_entity_id
+                action_kind = "link"
+                canonical_name_for_why = display_name
+            else:
+                entity_id = await db_pool.fetchval(
+                    """
+                    INSERT INTO public.entities
+                        (canonical_name, entity_type, aliases, metadata, roles)
+                    VALUES ($1, 'person', '{}',
+                            jsonb_build_object(
+                                'proposed_from_address', $2::text,
+                                'proposed_source', 'email_identity_enrichment'
+                            ),
+                            '{}')
+                    RETURNING id
+                    """,
+                    display_name,
+                    address,
+                )
+                action_kind = "create"
+                canonical_name_for_why = display_name
+
+            action_id = uuid.uuid4()
+            pending_now = datetime.now(UTC)
+            action_expires_at = pending_now + timedelta(days=_EMAIL_ENRICHMENT_EXPIRES_DAYS)
+
+            why = (
+                "Email identity enrichment detected a recurring human correspondent "
+                f"not yet linked to an entity.\n"
+                f"Address: {address}\n"
+                f"Evidence: {candidate.distinct_threads} distinct thread(s) across "
+                f"{candidate.distinct_days} distinct day(s) "
+                f"({candidate.first_seen.date()} .. {candidate.last_seen.date()}), "
+                f"{candidate.event_count} message(s) total. Not a noreply/bulk-looking "
+                "address.\n"
+                f"Proposed action: {action_kind} to entity {canonical_name_for_why!r} "
+                f"(id={entity_id}).\n\n"
+                "Approving will assert a has-email fact linking this address to the "
+                "entity above. Rejecting leaves the address unlinked (it will not be "
+                "re-proposed)."
+            )
+            evidence = [
+                "source=email_identity_enrichment",
+                f"address={address}",
+                f"action_kind={action_kind}",
+                f"distinct_threads={candidate.distinct_threads}",
+                f"distinct_days={candidate.distinct_days}",
+                f"event_count={candidate.event_count}",
+                f"entity_id={entity_id}",
+            ]
+
+            await db_pool.execute(
+                "INSERT INTO pending_actions "
+                "(id, tool_name, tool_args, agent_summary, session_id, status, "
+                "requested_at, expires_at, why, evidence) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                action_id,
+                "relationship_assert_fact",
+                {
+                    "subject": str(entity_id),
+                    "predicate": "has-email",
+                    "object": address,
+                    "object_kind": "literal",
+                    "primary": True,
+                },
+                f"Link email {address!r} to entity {canonical_name_for_why!r} ({action_kind})",
+                None,
+                "pending",
+                pending_now,
+                action_expires_at,
+                why,
+                evidence,
+            )
+
+            if action_kind == "link":
+                stats["linked_existing"] += 1
+            else:
+                stats["created_new"] += 1
+
+            insight_message = (
+                f"New recurring email correspondent detected: {address}\n"
+                f"({candidate.distinct_threads} threads across "
+                f"{candidate.distinct_days} days)\n\n"
+                f"Proposed: {action_kind} to entity {canonical_name_for_why!r}. "
+                "Review via pending_actions to approve or reject."
+            )
+            dedup_key = f"relationship:email-identity-enrichment:{address}"
+            try:
+                result = await propose_insight_candidate(
+                    db_pool,
+                    origin_butler="relationship",
+                    priority=_EMAIL_ENRICHMENT_PRIORITY,
+                    category="email-identity-enrichment",
+                    dedup_key=dedup_key,
+                    message=insight_message,
+                    expires_at=expires_at,
+                    cooldown_days=_EMAIL_ENRICHMENT_INSIGHT_COOLDOWN_DAYS,
+                )
+                if result.get("status") not in ("accepted", "filtered"):
+                    logger.warning(
+                        "email_identity_enrichment: propose_insight_candidate error "
+                        "for address %s: %s",
+                        address,
+                        result.get("reason", "unknown"),
+                    )
+            except Exception:
+                logger.exception(
+                    "email_identity_enrichment: error surfacing insight for address %s",
+                    address,
+                )
+        except Exception:
+            logger.exception(
+                "email_identity_enrichment: error processing candidate address %s", address
+            )
+            stats["errors"] += 1
+
+    try:
+        await state_set(db_pool, _EMAIL_ENRICHMENT_STATE_KEY, now_utc.isoformat())
+    except Exception:
+        logger.warning("email_identity_enrichment: failed to write checkpoint", exc_info=True)
+
+    logger.info(
+        "email_identity_enrichment complete: scanned=%d already_linked=%d filtered_bulk=%d "
+        "insufficient_evidence=%d already_pending=%d already_proposed=%d "
+        "linked_existing=%d created_new=%d errors=%d",
+        stats["senders_scanned"],
+        stats["already_linked"],
+        stats["filtered_bulk"],
+        stats["insufficient_evidence"],
+        stats["already_pending"],
+        stats["already_proposed"],
+        stats["linked_existing"],
+        stats["created_new"],
+        stats["errors"],
+    )
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Episodic predicate curation job (behavior #5: episodic predicates leaking into
 # the durable fact store)
 # ---------------------------------------------------------------------------

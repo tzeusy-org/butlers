@@ -65,6 +65,7 @@ from butlers.api.routers.general_settings import router as general_settings_rout
 from butlers.api.routers.google_health import router as google_health_router
 from butlers.api.routers.healing import router as healing_router
 from butlers.api.routers.home_assistant import router as home_assistant_router
+from butlers.api.routers.identity import router as identity_router
 from butlers.api.routers.ingestion_connectors import router as ingestion_connectors_router
 from butlers.api.routers.ingestion_events import rollup_router as ingestion_rollup_router
 from butlers.api.routers.ingestion_events import router as ingestion_events_router
@@ -431,6 +432,7 @@ def create_app(
     app.include_router(state_router)
     app.include_router(ingestion_events_router)
     app.include_router(ingestion_rollup_router)
+    app.include_router(identity_router)
     app.include_router(ingestion_connectors_router)
     app.include_router(ingestion_pipeline_router)
     app.include_router(priority_contacts_router)

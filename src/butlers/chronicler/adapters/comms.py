@@ -55,8 +55,13 @@ Participant resolution and graceful degradation
 For each burst group, the sender identity is normalized into the same
 ``has-email``/``has-handle`` object encoding ``relationship`` uses when
 writing ``entity_facts`` (see ``roster/relationship/tools/relationship_assert_fact.py``
-and migrations 019/027/028): Gmail's raw ``From:`` header is reduced to a bare
-lowercased email address; Telegram identities are ``telegram:``-prefixed;
+and migrations 019/027/028): email addresses are reduced to a bare lowercased
+address via ``butlers.identity.normalize_email_sender`` (bu-qeaou). Gmail's
+``source_sender_identity`` is normalized to this bare form at ingest time
+(``connectors/gmail.py``), but this adapter still applies the same
+normalization defensively — it is a no-op on already-normalized rows and keeps
+historical pre-bu-qeaou rows (raw ``"Name <addr>"`` headers) matching
+correctly. Telegram identities are ``telegram:``-prefixed;
 Discord/WhatsApp identities are matched verbatim (no channel prefix — those
 two channels are not currently auto-linked by ingress, so verbatim match is a
 best-effort lookup that only succeeds if the owner separately registered a
@@ -78,7 +83,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from email.utils import parseaddr
 from typing import Any
 from uuid import UUID
 
@@ -107,6 +111,7 @@ from butlers.chronicler.storage import (
     upsert_episode,
     upsert_point_event,
 )
+from butlers.identity import normalize_email_sender as _normalize_email_sender
 
 logger = logging.getLogger(__name__)
 
@@ -150,20 +155,6 @@ _TELEGRAM_CHANNELS: frozenset[str] = frozenset({"telegram_bot", "telegram_user_c
 
 def _channel_label(channel: str) -> str:
     return _CHANNEL_LABELS.get(channel, channel)
-
-
-def _normalize_email_sender(raw: str) -> str:
-    """Reduce a raw ``From:`` header (or bare address) to a lowercased email.
-
-    Gmail's ``source_sender_identity`` is the raw RFC-822 ``From`` header
-    (e.g. ``"John Doe <john@example.com>"``), not a bare address. ``has-email``
-    facts store bare, lowercased addresses, so this must be normalized before
-    matching. Falls back to the stripped/lowercased raw value when no
-    ``<...>``-delimited address is present (``parseaddr`` already handles the
-    bare-address case by returning it verbatim in the second tuple slot).
-    """
-    _, address = parseaddr(raw)
-    return (address or raw).strip().lower()
 
 
 def _match_object_for(channel: str, sender_identity: str) -> str:
