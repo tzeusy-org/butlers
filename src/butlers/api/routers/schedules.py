@@ -47,6 +47,26 @@ _SCHEDULE_COLUMNS = (
 )
 _DISPATCH_MODE_PROMPT = "prompt"
 _DISPATCH_MODE_JOB = "job"
+_DEFAULT_COMPLEXITY_TIER = "workhorse"
+# "medium" was never a valid complexity tier (valid: reasoning/workhorse/cheap/
+# specialty/local/legacy) but was used as this function's erroneous fallback
+# value before bu-fev4q. Old rows may still have the literal string "medium"
+# persisted from that era, so coerce it explicitly on read rather than just
+# fixing the fallback -- this keeps the API from ever surfacing an invalid
+# tier to callers (bu-65nop: the frontend dropdown has no "medium" entry).
+_LEGACY_COMPLEXITY_COERCIONS = {"medium": _DEFAULT_COMPLEXITY_TIER}
+
+
+def _coerce_complexity(value: str | None) -> str:
+    """Coerce a stored complexity value to a valid tier.
+
+    Missing/null values default to ``_DEFAULT_COMPLEXITY_TIER``. Known-invalid
+    legacy values (see ``_LEGACY_COMPLEXITY_COERCIONS``) are remapped to a
+    valid tier instead of being passed through unchanged.
+    """
+    if not value:
+        return _DEFAULT_COMPLEXITY_TIER
+    return _LEGACY_COMPLEXITY_COERCIONS.get(value, value)
 
 
 def _row_value(row, key: str, default=None):
@@ -91,7 +111,7 @@ def _row_to_schedule(row) -> Schedule:
         prompt=_row_value(row, "prompt"),
         job_name=_row_value(row, "job_name"),
         job_args=_normalize_job_args(_row_value(row, "job_args")),
-        complexity=_row_value(row, "complexity", "medium"),
+        complexity=_coerce_complexity(_row_value(row, "complexity")),
         timezone=_row_value(row, "timezone"),
         start_at=_row_value(row, "start_at"),
         end_at=_row_value(row, "end_at"),

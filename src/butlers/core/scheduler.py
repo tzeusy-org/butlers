@@ -206,7 +206,7 @@ def _normalize_dispatch_mode(value: Any, *, context: str) -> str:
 
 
 def _normalize_complexity(value: Any, *, context: str) -> str:
-    """Normalize and validate a complexity value; default to medium when None."""
+    """Normalize and validate a complexity value; default to workhorse when None."""
     if value is None:
         return _DEFAULT_COMPLEXITY
     if not isinstance(value, str):
@@ -224,7 +224,7 @@ def _normalize_complexity(value: Any, *, context: str) -> str:
 
 
 def _parse_complexity_from_db_row(row: asyncpg.Record, task_name: str) -> Complexity:
-    """Parse complexity from a DB row, falling back to MEDIUM on missing or invalid values.
+    """Parse complexity from a DB row, falling back to WORKHORSE on missing or invalid values.
 
     Logs a warning on invalid values — complexity is DB-serialized by this codebase but
     could be stale (e.g. old migration, manual edit), so a visible warning is appropriate.

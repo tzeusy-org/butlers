@@ -17,7 +17,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.routers.schedules import _get_db_manager
+from butlers.api.routers.schedules import _coerce_complexity, _get_db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -108,6 +108,28 @@ async def test_list_returns_paginated_structure(app):
     assert "data" in body
     assert len(body["data"]) == 2
     assert body["data"][0]["name"] == "task-a"
+
+
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        (None, "workhorse"),  # missing/null column defaults to workhorse, not medium
+        ("medium", "workhorse"),  # legacy invalid tier coerced on read (bu-fev4q/bu-65nop)
+        ("reasoning", "reasoning"),  # valid tiers pass through unchanged
+    ],
+)
+def test_coerce_complexity(stored, expected):
+    assert _coerce_complexity(stored) == expected
+
+
+async def test_list_coerces_legacy_medium_complexity(app):
+    _wire_db(app, fetch_rows=[_make_row(name="legacy", complexity="medium")])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/butlers/atlas/schedules")
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["complexity"] == "workhorse"
 
 
 async def test_list_503_when_db_unavailable(app):
