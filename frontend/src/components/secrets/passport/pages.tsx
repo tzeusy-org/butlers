@@ -2588,7 +2588,9 @@ export function PageCli({
               <ProbeResult
                 test={
                   testResult
-                    ? { ok: testResult.success, code: null, latencyMs: 0, at: "just now", message: testResult.detail || undefined }
+                    // latencyMs null, not 0 — the cli-auth test response carries
+                    // no latency, and 0ms is a fabricated measurement (bu-6v1hx).
+                    ? { ok: testResult.success, code: null, latencyMs: null, at: "just now", message: testResult.detail || undefined }
                     : credential.test
                 }
                 onProbe={!isMissing ? handleTest : undefined}
