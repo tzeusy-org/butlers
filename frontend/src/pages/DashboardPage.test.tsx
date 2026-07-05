@@ -978,6 +978,161 @@ describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-8
 });
 
 // ---------------------------------------------------------------------------
+// j/k list-triage on the Needs-attention list (bu-qvnce.11 slice 4):
+// DashboardPage adopts the shared useListTriage hook extracted from
+// ApprovalsPage's own former hand-rolled j/k/a/d/x implementation. Only the
+// wiring is covered here -- useListTriage's own navigation/act-key
+// mechanics are unit-tested directly in use-list-triage.test.tsx.
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 slice 4)", () => {
+  let container: HTMLDivElement | undefined;
+  let root: Root | undefined;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root!.unmount();
+      });
+    }
+    container?.remove();
+    container = undefined;
+    root = undefined;
+  });
+
+  function renderLive() {
+    const queryClient = new QueryClient();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const r = root;
+    act(() => {
+      r.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <DashboardPage />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  function press(key: string) {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  }
+
+  /** Only healthy butler rows (bu-qvnce.4's own "Nothing waiting" fixture)
+   *  so the attention list contains exactly the pending approval below --
+   *  no runtime/butler-health row competing for the j/k idx-0 slot. */
+  function useOnlyHealthyBoardRows() {
+    vi.mocked(useButlersBoard).mockReturnValue({
+      data: {
+        data: {
+          rows: [
+            boardRow({ name: "general", activity: "running", active_session_count: 1 }),
+            boardRow({ name: "health", activity: "idle" }),
+          ],
+          aggregates: {},
+          generated_at: "2026-05-14T12:00:00.000Z",
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+  }
+
+  it("j selects the first attention row, moving focus onto it", () => {
+    vi.mocked(usePendingApprovalsFlat).mockReturnValue({
+      data: {
+        data: [
+          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    renderLive();
+    act(() => press("j"));
+
+    const rows = container!.querySelectorAll('[data-testid="attention-item"]');
+    expect(rows.length).toBeGreaterThan(0);
+    const first = rows[0] as HTMLElement;
+    expect(first.getAttribute("data-item-id")).toBe(document.activeElement?.getAttribute("data-item-id"));
+  });
+
+  it("a approves the selected row via the shared decision mutation", () => {
+    const approveMutate = vi.fn();
+    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+      approveMut: { mutate: approveMutate, isPending: false, variables: undefined },
+      denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
+      scheduledDecisions: new Map(),
+      scheduleDecision: (_id: string, _verb: string, run: () => void) => {
+        run();
+        return true;
+      },
+      cancelDecision: vi.fn(),
+    } as AnyMock);
+    useOnlyHealthyBoardRows();
+    vi.mocked(usePendingApprovalsFlat).mockReturnValue({
+      data: {
+        data: [
+          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    renderLive();
+    act(() => press("j")); // select the (only) row
+    act(() => press("a")); // approve it
+
+    expect(approveMutate).toHaveBeenCalledWith("a1");
+  });
+
+  it("renders the footer hint strip advertising the exact bound keys", () => {
+    useOnlyHealthyBoardRows();
+    vi.mocked(usePendingApprovalsFlat).mockReturnValue({
+      data: {
+        data: [
+          { id: "a1", butler: "general", tool_name: "send_email", status: "pending", created_at: "2026-05-14T10:00:00Z", expires_at: null, why: null },
+        ],
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    renderLive();
+    act(() => press("j"));
+
+    expect(container!.textContent).toContain("Next item");
+    expect(container!.textContent).toContain("Previous item");
+    expect(container!.textContent).toContain("Approve selected");
+  });
+
+  it("renders no footer hint strip when the attention list is empty", () => {
+    useOnlyHealthyBoardRows();
+    renderLive();
+    expect(container!.querySelector('[aria-label="Keyboard shortcuts for this list"]')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Shared undo-window contract wiring (bu-qvnce.4): a decision made from the
 // dashboard's one-click attention list must be just as undoable as one made
 // on /approvals -- clicking Approve/Deny/Defer schedules the decision

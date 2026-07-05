@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 
 import type { NotificationParams } from "@/api/types";
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
+import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { Page } from "@/components/ui/page";
 import {
   Select,
@@ -21,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import {
   useAcknowledgeAllFailed,
   useMarkNotificationRead,
@@ -157,7 +159,7 @@ export default function NotificationsPage() {
   const markReadMutation = useMarkNotificationRead();
   const ackAllMutation = useAcknowledgeAllFailed();
 
-  const notifications = notificationsResponse?.data ?? [];
+  const notifications = useMemo(() => notificationsResponse?.data ?? [], [notificationsResponse]);
   const meta = notificationsResponse?.meta;
   const total = meta?.total ?? 0;
   // has_more is a computed property on the backend; derive it client-side as a
@@ -232,6 +234,42 @@ export default function NotificationsPage() {
   const handleAcknowledgeAll = useCallback(() => {
     ackAllMutation.mutate();
   }, [ackAllMutation]);
+
+  // j/k roving selection + a=mark-read act key over the notification rows
+  // (bu-qvnce.11 slice 4 -- useListTriage, extracted from ApprovalsPage's own
+  // former hand-rolled version of this exact pattern). Selection is
+  // ephemeral component state, not URL-backed (bu-qvnce.13's filters/page own
+  // the URL; a row cursor is not shareable state the way a filter is).
+  const [selectedNotificationId, setSelectedNotificationId] = useState<string | null>(null);
+  const notificationIds = useMemo(() => notifications.map((n) => n.id), [notifications]);
+  const notificationVerbs = useMemo<ListTriageVerb[]>(() => {
+    const notification = notifications.find((n) => n.id === selectedNotificationId);
+    if (!notification) return [];
+    // Mirrors NotificationFeed's own gating: an already-read row has nothing
+    // left to triage, so no act key is offered for it.
+    const displayStatus = notification.effective_status ?? notification.status;
+    if (displayStatus === "read") return [];
+    return [{ key: "a", description: "Mark read", handler: () => handleMarkRead(notification.id) }];
+  }, [notifications, selectedNotificationId, handleMarkRead]);
+  const { hints: notificationTriageHints } = useListTriage({
+    ids: notificationIds,
+    selectedId: selectedNotificationId,
+    onSelect: setSelectedNotificationId,
+    verbs: notificationVerbs,
+  });
+
+  // Keep DOM focus in sync with the current selection, mirroring
+  // ApprovalsPage's identical rail-focus effect.
+  useEffect(() => {
+    if (!selectedNotificationId) return;
+    const nodes = document.querySelectorAll<HTMLElement>('[data-testid="notification-row"]');
+    for (const node of nodes) {
+      if (node.getAttribute("data-notification-id") === selectedNotificationId) {
+        node.focus({ preventScroll: true });
+        break;
+      }
+    }
+  }, [selectedNotificationId]);
 
   // Compute whether there are any failed notifications in the stats
   const failedCount = statsResponse?.data?.failed ?? 0;
@@ -406,10 +444,14 @@ export default function NotificationsPage() {
                 onMarkRead={handleMarkRead}
                 onDismiss={handleDismiss}
                 pendingAckIds={pendingAckIds}
+                selectedId={selectedNotificationId}
               />
             </FetchingDim>
           )}
         </CardContent>
+        {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
+            EXACT j/k/a bindings useListTriage just registered. */}
+        <ListTriageFooterHint bindings={notificationTriageHints} />
       </Card>
 
       {/* Pagination */}

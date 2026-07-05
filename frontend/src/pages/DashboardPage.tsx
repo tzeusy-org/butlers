@@ -47,7 +47,7 @@
  *                 rows share the same undo-window grace contract as /approvals.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
@@ -63,10 +63,12 @@ import {
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
 import { useTimeline } from "@/hooks/use-timeline";
+import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 
 import CostWidget from "@/components/costs/CostWidget";
 import TopSessionsTable from "@/components/costs/TopSessionsTable";
 
+import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { AttentionList, type AttentionListItem } from "@/components/overview/AttentionList";
 import { BriefingStatus } from "@/components/overview/BriefingStatus";
 import { ButlerIndex } from "@/components/overview/ButlerIndex";
@@ -198,6 +200,47 @@ export default function DashboardPage() {
     ],
   );
 
+  // j/k roving selection + a/d/x/u act keys over the Needs-attention list
+  // (bu-qvnce.11 slice 4 -- useListTriage, extracted from ApprovalsPage's
+  // own former hand-rolled version of this exact pattern). Selection is
+  // ephemeral component state, not URL-backed -- unlike /approvals there is
+  // no per-row URL here to select via routing, and this list is a "what
+  // needs a look" preview rather than the full triage queue.
+  const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
+  const attentionIds = useMemo(() => attentionRows.map((row) => row.id), [attentionRows]);
+  const attentionVerbs = useMemo<ListTriageVerb[]>(() => {
+    const row = attentionRows.find((r) => r.id === selectedAttentionId);
+    if (!row) return [];
+    if (row.onUndoDecision) {
+      return [{ key: "u", description: "Undo scheduled decision", handler: row.onUndoDecision }];
+    }
+    const verbs: ListTriageVerb[] = [];
+    if (row.onApprove) verbs.push({ key: "a", description: "Approve selected", handler: row.onApprove });
+    if (row.onDeny) verbs.push({ key: "d", description: "Deny selected", handler: row.onDeny });
+    if (row.onDefer) verbs.push({ key: "x", description: "Defer selected", handler: row.onDefer });
+    return verbs;
+  }, [attentionRows, selectedAttentionId]);
+  const { hints: attentionHints } = useListTriage({
+    ids: attentionIds,
+    selectedId: selectedAttentionId,
+    onSelect: setSelectedAttentionId,
+    verbs: attentionVerbs,
+  });
+
+  // Keep DOM focus in sync with the current selection, mirroring
+  // ApprovalsPage's identical rail-focus effect -- the browser's native
+  // focus-visible ring visibly tracks j/k roving focus.
+  useEffect(() => {
+    if (!selectedAttentionId) return;
+    const nodes = document.querySelectorAll<HTMLElement>('[data-testid="attention-item"]');
+    for (const node of nodes) {
+      if (node.getAttribute("data-item-id") === selectedAttentionId) {
+        node.focus({ preventScroll: true });
+        break;
+      }
+    }
+  }, [selectedAttentionId]);
+
   // Briefing headline and greet with safe fallbacks. A failed briefing fetch
   // must never render the indefinite "Checking in." / "check back in a
   // moment" copy forever -- that reads as still-loading when it is actually
@@ -248,7 +291,10 @@ export default function DashboardPage() {
           <Elaboration text={elaboration} isFetching={briefingFetching} />
 
           <Section eyebrow="Needs attention">
-            <AttentionList items={attentionRows} />
+            <AttentionList items={attentionRows} selectedId={selectedAttentionId} />
+            {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
+                EXACT j/k/a/d/x/u bindings useListTriage just registered. */}
+            <ListTriageFooterHint bindings={attentionHints} />
           </Section>
 
           <RuntimeSummaryKpi

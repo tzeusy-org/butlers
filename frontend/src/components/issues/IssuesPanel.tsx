@@ -3,6 +3,7 @@ import { Link } from 'react-router'
 import { ButlerMark } from '@/components/ui/ButlerMark'
 import { DisclosureRow } from '@/components/ui/DisclosureRow'
 import { Time } from '@/components/ui/time'
+import { cn } from '@/lib/utils'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
@@ -74,6 +75,13 @@ interface IssuesPanelProps {
   occurrencesLoading?: boolean
   /** True if the occurrences fetch for the expanded issue failed. */
   occurrencesError?: boolean
+  /**
+   * `issue_key` of the row currently selected by j/k list-triage
+   * (bu-qvnce.11 slice 4, `useListTriage` on IssuesPage). Highlights that
+   * row and gives it the `issue-row` testid + `data-issue-key` so IssuesPage
+   * can sync DOM focus to it, mirroring ApprovalsPage's RailItem selection.
+   */
+  selectedIssueKey?: string | null
 }
 
 /**
@@ -158,6 +166,7 @@ export default function IssuesPanel({
   occurrences = [],
   occurrencesLoading,
   occurrencesError,
+  selectedIssueKey = null,
 }: IssuesPanelProps) {
   if (isLoading) {
     return (
@@ -331,7 +340,16 @@ export default function IssuesPanel({
             )
 
             return (
-            <div key={issue.issue_key} className="rounded-md border">
+            <div
+              key={issue.issue_key}
+              data-testid="issue-row"
+              data-issue-key={issue.issue_key}
+              tabIndex={-1}
+              className={cn(
+                'rounded-md border',
+                selectedIssueKey === issue.issue_key && 'border-foreground/40 bg-muted/40',
+              )}
+            >
               {drillable ? (
                 <DisclosureRow
                   expanded={expanded}

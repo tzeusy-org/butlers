@@ -1,12 +1,20 @@
+// @vitest-environment jsdom
 /**
  * Regression tests for the Notifications page.
  *
  * Covers the mismatch bug where summary stats showed non-zero counts but the
  * list panel rendered "No notifications found" due to sentinel filter values
  * ("all", "") being forwarded to the backend as literal WHERE conditions.
+ *
+ * The j/k list-triage describe block below (bu-qvnce.11 slice 4) needs a
+ * real DOM (createRoot + keydown dispatch + document.activeElement), hence
+ * the jsdom environment pragma -- the rest of this file's tests only ever
+ * used renderToStaticMarkup, which doesn't need one.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 
@@ -60,6 +68,21 @@ const NOTIFICATION_2 = {
   session_id: null,
   trace_id: null,
   created_at: "2026-02-19T08:00:00Z",
+};
+
+const NOTIFICATION_READ = {
+  id: "notif-ccc",
+  source_butler: "switchboard",
+  channel: "telegram",
+  recipient: "@user",
+  message: "Already acknowledged",
+  metadata: null,
+  status: "read",
+  effective_status: "read",
+  error: null,
+  session_id: null,
+  trace_id: null,
+  created_at: "2026-02-18T08:00:00Z",
 };
 
 function setNotificationsState(state: Partial<UseNotificationsResult>) {
@@ -243,5 +266,126 @@ describe("NotificationsPage", () => {
     const callArgs = vi.mocked(useNotifications).mock.calls[0][0];
     // PAGE_SIZE is 20 (see NotificationsPage.tsx); page 2 -> offset 40.
     expect(callArgs?.offset).toBe(40);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// j/k list-triage over notification rows (bu-qvnce.11 slice 4):
+// NotificationsPage adopts the shared useListTriage hook extracted from
+// ApprovalsPage's own former hand-rolled j/k/a/d/x implementation. Only the
+// wiring is covered here -- useListTriage's own navigation/act-key mechanics
+// are unit-tested directly in use-list-triage.test.tsx.
+// ---------------------------------------------------------------------------
+
+describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
+  let container: HTMLDivElement | undefined;
+  let root: Root | undefined;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useAcknowledgeAllFailed).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
+    setStatsState({
+      data: { data: { total: 2, sent: 1, failed: 1, by_channel: {}, by_butler: {} }, meta: {} },
+    });
+    setNotificationsState({
+      data: {
+        data: [NOTIFICATION_1, NOTIFICATION_2],
+        meta: { total: 2, offset: 0, limit: 20, has_more: false },
+      },
+    });
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => root!.unmount());
+    }
+    container?.remove();
+    container = undefined;
+    root = undefined;
+  });
+
+  function renderLive(initialPath = "/notifications") {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const r = root;
+    act(() => {
+      r.render(
+        <MemoryRouter initialEntries={[initialPath]}>
+          <NotificationsPage />
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  function press(key: string) {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  }
+
+  it("j selects the first notification row, moving focus onto it", () => {
+    renderLive();
+    act(() => press("j"));
+
+    const rows = container!.querySelectorAll('[data-testid="notification-row"]');
+    expect(rows.length).toBe(2);
+    const first = rows[0] as HTMLElement;
+    expect(first.getAttribute("data-notification-id")).toBe(
+      document.activeElement?.getAttribute("data-notification-id"),
+    );
+  });
+
+  it("a marks the selected row read via the shared mutation", () => {
+    const markReadMutate = vi.fn();
+    vi.mocked(useMarkNotificationRead).mockReturnValue({
+      mutate: markReadMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useMarkNotificationRead>);
+
+    renderLive();
+    act(() => press("j")); // select NOTIFICATION_1 (sent, actionable)
+    act(() => press("a"));
+
+    expect(markReadMutate).toHaveBeenCalledWith(NOTIFICATION_1.id, expect.anything());
+  });
+
+  it("renders the footer hint strip advertising the exact bound keys", () => {
+    renderLive();
+    act(() => press("j"));
+
+    expect(container!.textContent).toContain("Next item");
+    expect(container!.textContent).toContain("Previous item");
+    expect(container!.textContent).toContain("Mark read");
+  });
+
+  it("renders no footer hint strip when there are no notifications", () => {
+    setNotificationsState({
+      data: { data: [], meta: { total: 0, offset: 0, limit: 20, has_more: false } },
+    });
+    renderLive();
+    expect(container!.querySelector('[aria-label="Keyboard shortcuts for this list"]')).toBeNull();
+  });
+
+  it("skips the mark-read act key for an already-read row (mirrors the feed's own gating)", () => {
+    const markReadMutate = vi.fn();
+    vi.mocked(useMarkNotificationRead).mockReturnValue({
+      mutate: markReadMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useMarkNotificationRead>);
+    setNotificationsState({
+      data: {
+        data: [NOTIFICATION_READ],
+        meta: { total: 1, offset: 0, limit: 20, has_more: false },
+      },
+    });
+
+    renderLive();
+    act(() => press("j")); // select the (only, already-read) row
+    act(() => press("a"));
+
+    expect(markReadMutate).not.toHaveBeenCalled();
+    expect(container!.textContent).not.toContain("Mark read");
   });
 });

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
@@ -6,6 +6,7 @@ import IssuesPanel from "@/components/issues/IssuesPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Page } from "@/components/ui/page";
+import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { cn } from "@/lib/utils";
 import { useForceButlerTick, usePingButler } from "@/hooks/use-butlers";
 import {
@@ -15,6 +16,7 @@ import {
   useUndismissIssue,
 } from "@/hooks/use-issues";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import type { Issue } from "@/api/types";
 
 // ---------------------------------------------------------------------------
@@ -172,6 +174,54 @@ export default function IssuesPage() {
   function handleDismiss(issue: Issue) {
     dismiss.mutate({ issueKey: issue.issue_key, lastSeenAt: issue.last_seen_at });
   }
+
+  // j/k roving selection + a=acknowledge/restore act key over the issue rows
+  // (bu-qvnce.11 slice 4 -- useListTriage, extracted from ApprovalsPage's own
+  // former hand-rolled version of this exact pattern). Selection is
+  // ephemeral component state, not URL-backed (bu-qvnce.13's window/severity/
+  // butler/q filters already own the URL; a row cursor is not shareable
+  // state the way a filter is).
+  const [selectedIssueKey, setSelectedIssueKey] = useState<string | null>(null);
+  const issueKeys = useMemo(() => issues.map((issue) => issue.issue_key), [issues]);
+  const issueVerbs = useMemo<ListTriageVerb[]>(() => {
+    const issue = issues.find((i) => i.issue_key === selectedIssueKey);
+    if (!issue) return [];
+    if (showDismissed) {
+      return [
+        {
+          key: "a",
+          description: "Restore selected",
+          handler: () => undismiss.mutate(issue.issue_key),
+        },
+      ];
+    }
+    return [
+      {
+        key: "a",
+        description: "Acknowledge selected",
+        handler: () => dismiss.mutate({ issueKey: issue.issue_key, lastSeenAt: issue.last_seen_at }),
+      },
+    ];
+  }, [issues, selectedIssueKey, showDismissed, dismiss, undismiss]);
+  const { hints: issueTriageHints } = useListTriage({
+    ids: issueKeys,
+    selectedId: selectedIssueKey,
+    onSelect: setSelectedIssueKey,
+    verbs: issueVerbs,
+  });
+
+  // Keep DOM focus in sync with the current selection, mirroring
+  // ApprovalsPage's identical rail-focus effect.
+  useEffect(() => {
+    if (!selectedIssueKey) return;
+    const nodes = document.querySelectorAll<HTMLElement>('[data-testid="issue-row"]');
+    for (const node of nodes) {
+      if (node.getAttribute("data-issue-key") === selectedIssueKey) {
+        node.focus({ preventScroll: true });
+        break;
+      }
+    }
+  }, [selectedIssueKey]);
 
   // Ping butler (JARVIS audit move 6, bu-86c4c.15): a real live MCP ping via
   // GET /api/butlers/{name}. HONEST-PENDING -- the owner sees the real
@@ -354,7 +404,11 @@ export default function IssuesPage() {
         occurrences={occurrencesQuery.data?.data ?? []}
         occurrencesLoading={occurrencesQuery.isLoading}
         occurrencesError={occurrencesQuery.isError}
+        selectedIssueKey={selectedIssueKey}
       />
+      {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
+          EXACT j/k/a bindings useListTriage just registered. */}
+      <ListTriageFooterHint bindings={issueTriageHints} />
     </Page>
   );
 }

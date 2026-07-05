@@ -41,7 +41,10 @@ function useChordShortcuts(): ShortcutRow[] {
   );
 }
 
-function Kbd({ children }: { children: React.ReactNode }) {
+/** Shared key-cap chip -- exported so other renderers of binding hints (the
+ * list-triage footer strip, bu-qvnce.11 slice 4) draw from the same visual
+ * vocabulary as this help sheet instead of a second hand-rolled `<kbd>`. */
+export function Kbd({ children }: { children: React.ReactNode }) {
   return (
     <kbd className="pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground">
       {children}

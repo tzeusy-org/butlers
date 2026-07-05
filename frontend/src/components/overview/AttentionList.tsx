@@ -65,6 +65,13 @@ export interface AttentionListItem {
 
 interface AttentionListProps {
   items: AttentionListItem[];
+  /**
+   * Id of the row currently selected by j/k list-triage (bu-qvnce.11 slice
+   * 4, `useListTriage` on DashboardPage). Highlights that row and gives it
+   * the `attention-item` testid + `data-item-id` so DashboardPage can sync
+   * DOM focus to it, mirroring ApprovalsPage's RailItem selection.
+   */
+  selectedId?: string | null;
 }
 
 /**
@@ -99,7 +106,7 @@ function severityGlyph(severity: string): { char: string; color: string } {
   }
 }
 
-export function AttentionList({ items }: AttentionListProps) {
+export function AttentionList({ items, selectedId = null }: AttentionListProps) {
   if (items.length === 0) {
     return (
       <p
@@ -129,6 +136,7 @@ export function AttentionList({ items }: AttentionListProps) {
         const hasInlineActions = Boolean(
           item.onApprove || item.onDeny || item.onDefer || item.pendingDecisionLabel,
         );
+        const isSelected = selectedId != null && item.id === selectedId;
         const rowGridStyle: CSSProperties = {
           display: "grid",
           gridTemplateColumns: "24px 1fr auto",
@@ -138,6 +146,7 @@ export function AttentionList({ items }: AttentionListProps) {
           paddingBottom: "18px",
           borderTop: i === 0 ? "1px solid var(--border)" : undefined,
           borderBottom: "1px solid var(--border)",
+          backgroundColor: isSelected ? "var(--muted)" : undefined,
         };
 
         const rowContent = (
@@ -308,6 +317,14 @@ export function AttentionList({ items }: AttentionListProps) {
               to={item.href}
               role="listitem"
               aria-label={`View: ${item.title}`}
+              data-testid="attention-item"
+              data-item-id={item.id}
+              // No tabIndex override here (unlike the plain-div branch below):
+              // this renders a real <a href>, already Tab-reachable by
+              // default -- forcing tabIndex=-1 would silently remove it from
+              // the keyboard Tab order for anyone not using j/k. Programmatic
+              // .focus() from the roving-selection effect works on any
+              // focusable element regardless of tabIndex.
               style={{ ...rowGridStyle, color: "inherit", textDecoration: "none" }}
             >
               {rowContent}
@@ -316,7 +333,14 @@ export function AttentionList({ items }: AttentionListProps) {
         }
 
         return (
-          <div key={item.id} role="listitem" style={rowGridStyle}>
+          <div
+            key={item.id}
+            role="listitem"
+            data-testid="attention-item"
+            data-item-id={item.id}
+            tabIndex={-1}
+            style={rowGridStyle}
+          >
             {rowContent}
           </div>
         );

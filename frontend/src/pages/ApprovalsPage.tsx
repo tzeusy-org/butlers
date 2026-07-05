@@ -44,7 +44,8 @@ import {
   updateApprovalsPolicy,
 } from "@/api/index.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
-import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
+import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
+import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
 import {
@@ -1287,63 +1288,49 @@ export default function ApprovalsPage() {
   }
 
   // j/k roving focus + a/d/x decision verbs + u=undo, active anywhere on the
-  // page (not just while a rail item has DOM focus) -- migrated onto the
-  // shared page-scoped shortcut registry (bu-qvnce.11), which also publishes
-  // these to the '?' help sheet's "On this page" section (previously zero
-  // hints existed anywhere in the product for the approvals triage keys,
-  // the fleet's best interaction) and centrally guards against a pending
-  // g-chord / editable fields / open overlays.
-  function moveSelection(delta: 1 | -1) {
-    if (pending.length === 0) return;
-    const idx = pending.findIndex((p) => p.id === effectiveSelected);
-    const nextIdx = idx === -1 ? 0 : Math.min(Math.max(idx + delta, 0), pending.length - 1);
-    const next = pending[nextIdx];
-    if (next && next.id !== effectiveSelected) navigate(`/approvals/${next.id}`);
-  }
+  // page (not just while a rail item has DOM focus) -- built on the shared
+  // useListTriage hook (bu-qvnce.11 slice 4, extracted from this page's own
+  // former hand-rolled moveSelection/shortcutBindings). useListTriage itself
+  // registers through the shared page-scoped shortcut registry, which
+  // publishes these to the '?' help sheet's "On this page" section
+  // (previously zero hints existed anywhere in the product for the
+  // approvals triage keys, the fleet's best interaction) and centrally
+  // guards against a pending g-chord / editable fields / open overlays.
+  const pendingIds = useMemo(() => pending.map((p) => p.id), [pending]);
 
-  const shortcutBindings = useMemo<ShortcutBinding[]>(() => {
-    if (pending.length === 0) return [];
-    const bindings: ShortcutBinding[] = [
-      { key: "j", display: ["j"], description: "Next approval", handler: () => moveSelection(1) },
-      { key: "k", display: ["k"], description: "Previous approval", handler: () => moveSelection(-1) },
-    ];
-    if (!effectiveSelected) return bindings;
+  const approvalVerbs = useMemo<ListTriageVerb[]>(() => {
+    if (!effectiveSelected) return [];
     const id = effectiveSelected;
     if (scheduledDecisions.has(id)) {
-      bindings.push({
-        key: "u",
-        display: ["u"],
-        description: "Undo scheduled decision",
-        handler: () => cancelDecision(id),
-      });
-      return bindings;
+      return [{ key: "u", description: "Undo scheduled decision", handler: () => cancelDecision(id) }];
     }
-    bindings.push(
+    return [
       {
         key: "a",
-        display: ["a"],
         description: "Approve selected",
         handler: () => scheduleDecision(id, "approve", () => approveMut.mutate(id)),
       },
       {
         key: "d",
-        display: ["d"],
         description: "Deny selected",
         handler: () => scheduleDecision(id, "deny", () => denyMut.mutate({ id })),
       },
       {
         key: "x",
-        display: ["x"],
         description: "Defer selected",
         handler: () =>
           scheduleDecision(id, "defer", () => deferMut.mutate({ id, hours: KEYBOARD_DEFER_HOURS })),
       },
-    );
-    return bindings;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- moveSelection/scheduleDecision close over pending/effectiveSelected/navigate directly; listing pending/effectiveSelected/scheduledDecisions (which those closures actually depend on) is what keeps this memo fresh each render.
-  }, [pending, effectiveSelected, scheduledDecisions, approveMut, denyMut, deferMut, cancelDecision]);
+    ];
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scheduleDecision closes over scheduledDecisions/effectiveSelected directly and is recreated every render; listing the actual dependencies (effectiveSelected, scheduledDecisions, the mutations, cancelDecision) is what keeps this memo fresh without recomputing on every unrelated render.
+  }, [effectiveSelected, scheduledDecisions, approveMut, denyMut, deferMut, cancelDecision]);
 
-  useRegisterShortcut(shortcutBindings);
+  const { hints: triageHints } = useListTriage({
+    ids: pendingIds,
+    selectedId: effectiveSelected,
+    onSelect: (id) => navigate(`/approvals/${id}`),
+    verbs: approvalVerbs,
+  });
 
   // Keep DOM focus in sync with the current selection so the browser's
   // native focus-visible ring (RailItem's focus-visible:outline classes)
@@ -1413,54 +1400,60 @@ export default function ApprovalsPage() {
       {/* Two-pane body */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Left rail */}
-        <div className="w-72 shrink-0 border-r border-border overflow-y-auto">
-          <QueryBoundary
-            isLoading={isLoading}
-            isError={isError}
-            error={error}
-            isEmpty={pending.length === 0}
-            onRetry={() => void refetch()}
-            sourceLabel="the approvals queue"
-            loadingFallback={
-              <div className="p-4 text-sm text-muted-foreground font-mono">
-                loading…
-              </div>
-            }
-            emptyFallback={
-              <div className="p-4 text-sm text-muted-foreground font-mono">
-                No pending approvals.
-              </div>
-            }
-          >
-            {pending.map((summary) => (
-              <RailItem
-                key={summary.id}
-                summary={summary}
-                selected={summary.id === effectiveSelected}
-                onSelect={() => navigate(`/approvals/${summary.id}`)}
-                pendingVerb={scheduledDecisions.get(summary.id)?.verb ?? null}
-                onUndo={() => cancelDecision(summary.id)}
-              />
-            ))}
-            {/* Load more — shown only when the previous response was full */}
-            {hasMore && (
-              <div className="p-3 border-t border-border">
-                <button
-                  onClick={handleLoadMore}
-                  disabled={isFetching}
-                  className={[
-                    "w-full py-1.5 px-3 rounded text-xs font-mono border border-border",
-                    "text-muted-foreground transition-colors",
-                    isFetching
-                      ? "opacity-50 cursor-not-allowed"
-                      : "hover:border-foreground/40 hover:text-foreground",
-                  ].join(" ")}
-                >
-                  {isFetching ? "loading…" : "Load more"}
-                </button>
-              </div>
-            )}
-          </QueryBoundary>
+        <div className="w-72 shrink-0 border-r border-border flex flex-col min-h-0">
+          <div className="flex-1 overflow-y-auto">
+            <QueryBoundary
+              isLoading={isLoading}
+              isError={isError}
+              error={error}
+              isEmpty={pending.length === 0}
+              onRetry={() => void refetch()}
+              sourceLabel="the approvals queue"
+              loadingFallback={
+                <div className="p-4 text-sm text-muted-foreground font-mono">
+                  loading…
+                </div>
+              }
+              emptyFallback={
+                <div className="p-4 text-sm text-muted-foreground font-mono">
+                  No pending approvals.
+                </div>
+              }
+            >
+              {pending.map((summary) => (
+                <RailItem
+                  key={summary.id}
+                  summary={summary}
+                  selected={summary.id === effectiveSelected}
+                  onSelect={() => navigate(`/approvals/${summary.id}`)}
+                  pendingVerb={scheduledDecisions.get(summary.id)?.verb ?? null}
+                  onUndo={() => cancelDecision(summary.id)}
+                />
+              ))}
+              {/* Load more — shown only when the previous response was full */}
+              {hasMore && (
+                <div className="p-3 border-t border-border">
+                  <button
+                    onClick={handleLoadMore}
+                    disabled={isFetching}
+                    className={[
+                      "w-full py-1.5 px-3 rounded text-xs font-mono border border-border",
+                      "text-muted-foreground transition-colors",
+                      isFetching
+                        ? "opacity-50 cursor-not-allowed"
+                        : "hover:border-foreground/40 hover:text-foreground",
+                    ].join(" ")}
+                  >
+                    {isFetching ? "loading…" : "Load more"}
+                  </button>
+                </div>
+              )}
+            </QueryBoundary>
+          </div>
+          {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the
+              EXACT j/k/a/d/x/u bindings useListTriage just registered, so the
+              rail's keyboard triage is discoverable without opening '?'. */}
+          <ListTriageFooterHint bindings={triageHints} />
         </div>
 
         {/* Right dossier pane */}

@@ -173,3 +173,80 @@ describe("IssuesPage — occurrences drill-down wiring", () => {
     container.remove();
   });
 });
+
+// ---------------------------------------------------------------------------
+// j/k list-triage over issue rows (bu-qvnce.11 slice 4): IssuesPage adopts
+// the shared useListTriage hook extracted from ApprovalsPage's own former
+// hand-rolled j/k/a/d/x implementation. Only the wiring is covered here --
+// useListTriage's own navigation/act-key mechanics are unit-tested directly
+// in use-list-triage.test.tsx.
+// ---------------------------------------------------------------------------
+
+describe("IssuesPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
+  function press(key: string) {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  }
+
+  it("j selects the first issue row, moving focus onto it", () => {
+    setupDefaults([makeIssue(), makeIssue({ issue_key: "k2", description: "unrelated (health)" })]);
+    const { container, root } = renderPage("/issues");
+
+    act(() => press("j"));
+
+    const rows = container.querySelectorAll('[data-testid="issue-row"]');
+    expect(rows.length).toBe(2);
+    const first = rows[0] as HTMLElement;
+    expect(first.getAttribute("data-issue-key")).toBe(
+      document.activeElement?.getAttribute("data-issue-key"),
+    );
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("a acknowledges the selected row via dismiss.mutate", () => {
+    const issue = makeIssue();
+    setupDefaults([issue]);
+    const dismissMutate = vi.fn();
+    vi.mocked(useDismissIssue).mockReturnValue({
+      mutate: dismissMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useDismissIssue>);
+    const { container, root } = renderPage("/issues");
+
+    act(() => press("j"));
+    act(() => press("a"));
+
+    expect(dismissMutate).toHaveBeenCalledWith({
+      issueKey: issue.issue_key,
+      lastSeenAt: issue.last_seen_at,
+    });
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("renders the footer hint strip advertising the exact bound keys", () => {
+    setupDefaults([makeIssue()]);
+    const { container, root } = renderPage("/issues");
+
+    act(() => press("j"));
+
+    expect(container.textContent).toContain("Next item");
+    expect(container.textContent).toContain("Previous item");
+    expect(container.textContent).toContain("Acknowledge selected");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("renders no footer hint strip when there are no issues", () => {
+    setupDefaults([]);
+    const { container, root } = renderPage("/issues");
+
+    expect(container.querySelector('[aria-label="Keyboard shortcuts for this list"]')).toBeNull();
+
+    act(() => root.unmount());
+    container.remove();
+  });
+});

@@ -36,6 +36,13 @@ export interface NotificationFeedProps {
   onDismiss?: (notificationId: string) => void;
   /** Set of notification IDs currently being acknowledged (shows loading state). */
   pendingAckIds?: Set<string>;
+  /**
+   * Id of the row currently selected by j/k list-triage (bu-qvnce.11 slice
+   * 4, `useListTriage` on NotificationsPage). Highlights that row and gives
+   * it the `notification-row` testid + `data-notification-id` so
+   * NotificationsPage can sync DOM focus to it.
+   */
+  selectedId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +125,7 @@ export function NotificationFeed({
   onMarkRead,
   onDismiss,
   pendingAckIds,
+  selectedId = null,
 }: NotificationFeedProps) {
   // Triage controls render whenever a triage handler is wired.
   const hasTriageControls = Boolean(onMarkRead || onDismiss);
@@ -149,7 +157,13 @@ export function NotificationFeed({
           return (
           <TableRow
             key={n.id}
-            className={cn(displayStatus === "failed" && "bg-destructive/5")}
+            data-testid="notification-row"
+            data-notification-id={n.id}
+            tabIndex={-1}
+            className={cn(
+              displayStatus === "failed" && "bg-destructive/5",
+              selectedId === n.id && "bg-muted/60",
+            )}
           >
             <TableCell>{statusBadge(displayStatus)}</TableCell>
             <TableCell className="font-medium">{n.source_butler}</TableCell>
