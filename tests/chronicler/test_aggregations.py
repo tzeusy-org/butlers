@@ -57,6 +57,8 @@ _D1_PAIRS: list[tuple[str, str, str | None, str]] = [
     ("chronicler.exercise_inferred", "exercise_episode", None, "workout"),
     # Comms message bursts (bu-jc6htw.1) → Social lane.
     ("comms.message_bursts", "social_episode", None, "social"),
+    # ActivityWatch desktop-activity screen episodes (bu-whhll.6) → Work lane.
+    ("activitywatch.window", "screen_episode", None, "tasks"),
 ]
 
 

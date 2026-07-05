@@ -450,6 +450,37 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ActivityWatch runs on the owner's desktop/laptop, not inside this stack.
+  # ACTIVITYWATCH_BASE_URL must point at that machine's AW REST API (e.g. a
+  # Tailscale MagicDNS hostname); ACTIVITYWATCH_MACHINE_ID identifies which
+  # machine this connector instance polls. Multi-machine setups (e.g. a
+  # separate work laptop) need one additional service block per machine —
+  # not templated here (see bu-whhll.6 follow-ups).
+  connector-activitywatch:
+    image: butlers-app:${BUTLERS_APP_TAG:-latest}
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/activitywatch", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.activitywatch"]
+    command: []
+    environment:
+      <<: *connector-env
+      CONNECTOR_PROVIDER: activitywatch
+      CONNECTOR_CHANNEL: activitywatch
+      CONNECTOR_HEALTH_PORT: "40092"
+      ACTIVITYWATCH_BASE_URL: ${ACTIVITYWATCH_BASE_URL:-http://localhost:5600}
+      ACTIVITYWATCH_MACHINE_ID: ${ACTIVITYWATCH_MACHINE_ID:-desktop}
+    ports:
+      - "127.0.0.1:${ACTIVITYWATCH_HOST_PORT:-40092}:40092"
+    volumes:
+      - ./logs:/app/logs
+    networks: [db, backend, egress]
+    depends_on:
+      log-init:
+        condition: service_completed_successfully
+      migrations:
+        condition: service_completed_successfully
+      butlers-up:
+        condition: service_healthy
+    restart: unless-stopped
+
   connector-home-assistant:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/home_assistant", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.home_assistant"]

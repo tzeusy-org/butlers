@@ -199,6 +199,22 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=False,
     ),
+    # ActivityWatch desktop-activity window-focus events (bu-whhll.6, epic
+    # bu-whhll Tier 1). App-class-only projection; window titles are never
+    # read past the connector's evidence table (privacy — see the adapter
+    # module docstring).
+    SourceAdapterState(
+        source_name="activitywatch.window",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.activitywatch_events",
+        boundary_semantics=(
+            "one app_focus point event per non-AFK window-focus row; "
+            "contiguous active rows within 10 min -> screen_episode rollup "
+            "with a per-app-class (ide/terminal/browser/other) duration "
+            "breakdown"
+        ),
+        optional_schema=True,
+    ),
     # Explicitly not time-bearing.
     SourceAdapterState(
         source_name="core.session_process_logs",

@@ -74,6 +74,13 @@ scrape_configs:
         labels:
           connector: owntracks
 
+  # ── Connector: ActivityWatch ──────────────────────────────────────────
+  - job_name: connector-activitywatch
+    static_configs:
+      - targets: ["connector-activitywatch:40092"]
+        labels:
+          connector: activitywatch
+
   # ── Connector: Home Assistant ─────────────────────────────────────────
   - job_name: connector-home-assistant
     static_configs:

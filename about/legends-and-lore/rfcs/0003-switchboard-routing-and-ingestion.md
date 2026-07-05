@@ -47,7 +47,7 @@ Connectors submit events using this canonical envelope:
 
 **Field contracts:**
 
-- `source.channel` and `source.provider` MUST use canonical pairings: `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`, `gaming/steam`, `wellness/google_health`, `wellness/home_assistant` (see Amendment 1).
+- `source.channel` and `source.provider` MUST use canonical pairings: `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`, `gaming/steam`, `wellness/google_health`, `wellness/home_assistant` (see Amendment 1), `activitywatch/activitywatch` (see Amendment 2).
 - `source.endpoint_identity` is auto-resolved from the source API at connector startup (e.g., Telegram `getMe()` yields `telegram:bot:@username`; Gmail yields `gmail:user:email`).
 - `event.external_event_id` is REQUIRED when the source provides a stable event identifier (Telegram `update_id`, email `Message-ID`).
 - `sender.identity` is the provider-native identifier used for identity resolution (see RFC 0004).
@@ -271,6 +271,35 @@ additional provider simply becomes valid for the channel.
 envelopes validate and route exactly as before. Any provider other than
 `google_health` or `home_assistant` on the `wellness` channel is still rejected
 at `IngestSourceV1` validation with the `invalid_source_provider` error.
+
+### Amendment 2 (2026-07-05) — ActivityWatch Desktop-Activity Channel
+
+Applied per bu-whhll.6 (epic bu-whhll, Chronicler workday-visibility Tier 1).
+
+**Summary:** A new `activitywatch` channel/provider pair is registered for
+the ActivityWatch desktop-activity connector
+(`src/butlers/connectors/activitywatch.py`). Like OwnTracks (Amendment
+predecessor, sw_006) and Home Assistant (sw_010), ActivityWatch events are
+high-frequency and their value lives in the durable evidence table
+(`connectors.activitywatch_events`) consumed directly by the Chronicler
+`activitywatch.window` projection adapter — not in LLM-classified natural
+language. A global `source_channel='activitywatch'` skip rule (sw_018)
+bypasses LLM classification for these events.
+
+**Changes made:**
+- §"Field contracts" canonical pairings list now records
+  `activitywatch/activitywatch`.
+- `SourceChannel` / `SourceProvider` Literals and
+  `_ALLOWED_PROVIDERS_BY_CHANNEL["activitywatch"]` in
+  `roster/switchboard/tools/routing/contracts.py` expanded to include
+  `activitywatch`.
+- `VALID_CONNECTOR_TYPES` in `roster/switchboard/tools/connector/heartbeat.py`
+  expanded to include `activitywatch`.
+- New Alembic migration `sw_018_switchboard_activitywatch_skip.py` seeds the
+  global skip rule (mirrors sw_006 / sw_010).
+
+**Backward compatibility:** Additive only. No existing channel/provider pair
+is affected.
 
 ## Alternatives Considered
 

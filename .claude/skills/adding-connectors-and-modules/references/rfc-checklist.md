@@ -13,7 +13,7 @@ Check:
 
 If any are missing, create a task to amend RFC 0003 before implementation.
 
-**Existing channel/provider pairs:** `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`, `voice/live-listener`, `google_calendar/google_calendar`, `dashboard/internal`, `owntracks/owntracks`
+**Existing channel/provider pairs:** `telegram/telegram`, `email/gmail`, `email/imap`, `api/internal`, `mcp/internal`, `voice/live-listener`, `google_calendar/google_calendar`, `dashboard/internal`, `owntracks/owntracks`, `activitywatch/activitywatch`
 
 ## RFC 0004 — Identity and Contact Resolution
 

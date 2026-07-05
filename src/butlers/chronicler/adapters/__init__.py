@@ -14,6 +14,7 @@ and project approved source surfaces into ``point_events`` and/or
 
 from __future__ import annotations
 
+from butlers.chronicler.adapters.activitywatch import ActivityWatchWindowAdapter
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
 from butlers.chronicler.adapters.comms import CommsSocialAdapter
@@ -34,6 +35,7 @@ from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 from butlers.chronicler.adapters.steam import SteamPlayAdapter
 
 __all__ = [
+    "ActivityWatchWindowAdapter",
     "AdapterResult",
     "CalendarCompletedAdapter",
     "CommsSocialAdapter",

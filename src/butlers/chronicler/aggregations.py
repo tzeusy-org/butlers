@@ -62,6 +62,12 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     # Comms message bursts (bu-jc6htw.1) fold into the 'social' category
     # (-> Social lane).
     ("comms.message_bursts", "social_episode"): "social",
+    # ActivityWatch desktop-activity screen episodes (bu-whhll.6) fold into
+    # 'tasks' (-> Work lane). No dedicated 'occupation' category exists yet
+    # (epic bu-whhll Tier 2 introduces routine/occupation inference); 'tasks'
+    # is the closest existing category and directly addresses the epic's
+    # motivating gap (10-12h weekday desktop work previously invisible).
+    ("activitywatch.window", "screen_episode"): "tasks",
 }
 
 # trigger_source values that represent user→butler conversations.

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 
 from butlers.chronicler.adapters import (
+    ActivityWatchWindowAdapter,
     CalendarCompletedAdapter,
     CommsSocialAdapter,
     CoreSessionsAdapter,
@@ -207,6 +208,20 @@ async def run_project_owntracks(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_activitywatch(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project ActivityWatch desktop-activity window-focus events into Chronicler."""
+    options = _parse_job_args(
+        "chronicler_project_activitywatch",
+        job_args,
+        supported_fields=("batch_limit", "screen_gap_minutes"),
+    )
+    adapter = ActivityWatchWindowAdapter(**options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 async def run_project_steam(
     db_pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -378,6 +393,7 @@ async def run_project_comms(
 __all__ = [
     "_DEFAULT_CALENDAR_SCHEMAS",
     "_DEFAULT_SESSION_SCHEMAS",
+    "run_project_activitywatch",
     "run_project_calendar",
     "run_project_comms",
     "run_project_exercise_inferred",

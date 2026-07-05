@@ -963,6 +963,13 @@ _CONNECTOR_CATALOG: list[dict[str, Any]] = [
         "display_name": "Google Health",
         "supports_backfill": True,
     },
+    {
+        "connector_type": "activitywatch",
+        "channel": "activitywatch",
+        "provider": "activitywatch",
+        "display_name": "ActivityWatch",
+        "supports_backfill": False,
+    },
 ]
 
 

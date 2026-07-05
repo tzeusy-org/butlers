@@ -40,6 +40,12 @@ dispatch_mode = "job"
 job_name = "chronicler_project_owntracks"
 
 [[butler.schedule]]
+name = "chronicler_project_activitywatch"
+cron = "*/15 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_activitywatch"
+
+[[butler.schedule]]
 name = "chronicler_project_steam"
 cron = "*/30 * * * *"
 dispatch_mode = "job"

@@ -54,6 +54,10 @@ async def test_available_connectors_schema(app):
     [
         ("gmail", {"channel": "email", "provider": "google", "supports_backfill": True}),
         ("telegram_bot", {"channel": "telegram"}),
+        (
+            "activitywatch",
+            {"channel": "activitywatch", "provider": "activitywatch", "supports_backfill": False},
+        ),
     ],
 )
 async def test_available_connectors_catalog_membership(app, connector_type, expected):
