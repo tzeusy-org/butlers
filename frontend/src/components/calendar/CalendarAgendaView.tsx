@@ -10,8 +10,15 @@
  * Print isolation lives in `index.css` (`@media print` keyed on
  * `[data-agenda-print-root]`): printing while the agenda is open shows just the
  * agenda. Interactive chrome (Print / Close) is marked `data-agenda-no-print`.
+ *
+ * Focus choreography (bu-qvnce.10): this already carried `role="dialog"
+ * aria-modal="true"` but NO focus trap and no focus-in/restore — arguably
+ * worse than no ARIA at all, since assistive tech was promised a modal
+ * contract the component didn't keep. useModalChoreography now backs that
+ * promise with a real Tab trap, focus-in on open, and focus-restore on close.
  */
 
+import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import type { UnifiedCalendarEntry } from "@/api/types.ts";
 import { groupEntriesByDay, timeLabel } from "@/lib/calendar-agenda.ts";
 
@@ -38,19 +45,28 @@ export function CalendarAgendaView({
   onClose,
 }: CalendarAgendaViewProps) {
   const days = groupEntriesByDay(entries);
+  const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLHeadingElement>({
+    onClose,
+  });
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- role="dialog" + onKeyDown (Escape + Tab-trap via useModalChoreography) is the standard WAI-ARIA APG modal dialog pattern; jsx-a11y's "non-interactive roles" list includes "dialog", which is a false positive here.
     <div
+      ref={rootRef}
       data-agenda-print-root
       role="dialog"
       aria-modal="true"
       aria-label="Printable agenda"
+      // eslint-disable-next-line no-restricted-syntax -- wired through useModalChoreography above (rootRef/initialFocusRef/onKeyDown) — this is the one overlay contract, not a hand-rolled one (bu-qvnce.10).
       className="fixed inset-0 z-50 overflow-y-auto bg-[var(--bg)] p-8"
+      onKeyDown={onKeyDown}
     >
       <div className="mx-auto max-w-3xl">
         <div className="mb-6 flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-2xl font-semibold text-[var(--fg)]">Agenda · {rangeLabel}</h1>
+            <h1 ref={initialFocusRef} tabIndex={-1} className="text-2xl font-semibold text-[var(--fg)] focus:outline-none">
+              Agenda · {rangeLabel}
+            </h1>
             <p className="mt-1 text-sm text-[var(--dim)]">
               {view === "butler" ? "Butler" : "User"} view · {timezone} · {entries.length}{" "}
               {entries.length === 1 ? "event" : "events"}

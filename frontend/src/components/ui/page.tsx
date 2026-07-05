@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { CardSkeleton } from "@/components/skeletons/card-skeleton";
 import { StatsSkeleton } from "@/components/skeletons/stats-skeleton";
 import { TableSkeleton } from "@/components/skeletons/table-skeleton";
+import { announce } from "@/lib/shell-announcer";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -335,10 +336,14 @@ export function Page({
 }: PageProps) {
   const { setSupplyingBreadcrumbs } = useBreadcrumbsControl();
 
-  // Manage document.title automatically; restore previous title on unmount
+  // Manage document.title automatically; restore previous title on unmount.
+  // Also feeds the shell's sr-only announcer (bu-qvnce.10) — a route change
+  // otherwise has no screen-reader-audible signal at all in a client-routed
+  // SPA (the browser's own "page loaded" announcement never fires).
   useEffect(() => {
     const previousTitle = document.title;
     document.title = `${title} | Butlers`;
+    announce(`Page: ${title}`);
     return () => {
       document.title = previousTitle;
     };

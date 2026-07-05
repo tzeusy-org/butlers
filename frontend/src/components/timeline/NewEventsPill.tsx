@@ -9,7 +9,10 @@
  * back to now.
  */
 
+import { useEffect } from "react";
 import { ArrowUp } from "lucide-react";
+
+import { announce } from "@/lib/shell-announcer";
 
 export interface NewEventsPillProps {
   count: number;
@@ -17,6 +20,13 @@ export interface NewEventsPillProps {
 }
 
 export function NewEventsPill({ count, onClick }: NewEventsPillProps) {
+  // Feed the shell's sr-only announcer (bu-qvnce.10) — the pill itself is a
+  // purely visual live-tail affordance today, so a screen-reader user pinned
+  // to the live head never learned new events had arrived.
+  useEffect(() => {
+    if (count > 0) announce(`${count} new ${count === 1 ? "event" : "events"} available`);
+  }, [count]);
+
   if (count <= 0) return null;
 
   return (

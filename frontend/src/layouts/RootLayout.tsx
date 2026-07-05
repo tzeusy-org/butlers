@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Outlet } from 'react-router'
 import Shell from '../components/layout/Shell'
 import PageHeader from '../components/layout/PageHeader'
@@ -10,8 +11,39 @@ import { CommandRegistryProvider } from '../lib/command-registry'
 import { PageContextProvider } from '../lib/page-context'
 import { useKeyboardShortcuts } from '../hooks/use-keyboard-shortcuts'
 import { ShortcutHints } from '../components/ui/shortcut-hints'
-import { useEventStream } from '../hooks/use-event-stream'
+import { useEventStream, type EventStreamStatus } from '../hooks/use-event-stream'
 import { FloatingChatWidget } from '../components/chat/FloatingChatWidget'
+import { announce, useShellAnnouncement } from '../lib/shell-announcer'
+
+// Same connected/reconnecting/down grouping LiveIndicator renders, so the
+// shell's sr-only announcement always says the same thing sighted users see.
+const STREAM_EDGE_LABEL: Record<'connected' | 'reconnecting' | 'down', string> = {
+  connected: 'Fleet event stream connected',
+  reconnecting: 'Fleet event stream reconnecting',
+  down: 'Fleet event stream offline',
+}
+
+function toStreamEdge(status: EventStreamStatus): 'connected' | 'reconnecting' | 'down' {
+  if (status === 'open') return 'connected'
+  if (status === 'reconnecting') return 'reconnecting'
+  return 'down'
+}
+
+/**
+ * Shell-level sr-only aria-live region (bu-qvnce.10). Mounted once so every
+ * route shares one announcer instead of each page rolling its own. Fed by:
+ *   - useEventStream status edges (below)
+ *   - the Page primitive's document.title effect (components/ui/page.tsx)
+ *   - the ingestion ledger's NewEventsPill live-tail count
+ */
+function ShellAnnouncerRegion() {
+  const message = useShellAnnouncement()
+  return (
+    <span role="status" aria-live="polite" className="sr-only" data-testid="shell-announcer">
+      {message}
+    </span>
+  )
+}
 
 export default function RootLayout() {
   useKeyboardShortcuts()
@@ -23,6 +55,20 @@ export default function RootLayout() {
   // into PageHeader so the shell's Live indicator reflects actual socket
   // health.
   const { status: eventStreamStatus } = useEventStream()
+
+  // Announce stream-state EDGES only (not "connecting", the cold-start state
+  // — a fresh page load reading as a fleet problem to a screen-reader user
+  // would be worse than saying nothing). The ref starts null so the very
+  // first transition into a real state doesn't announce either; only actual
+  // changes after that do.
+  const prevEdgeRef = useRef<'connected' | 'reconnecting' | 'down' | null>(null)
+  useEffect(() => {
+    const edge = toStreamEdge(eventStreamStatus)
+    if (prevEdgeRef.current !== null && prevEdgeRef.current !== edge) {
+      announce(STREAM_EDGE_LABEL[edge])
+    }
+    prevEdgeRef.current = edge
+  }, [eventStreamStatus])
 
   return (
     <BreadcrumbsControlProvider>
@@ -51,6 +97,10 @@ export default function RootLayout() {
               command. Mounted here (not inside Shell.tsx) since Shell has no
               floating layer. */}
           <FloatingChatWidget />
+          {/* Shell-level sr-only announcer (bu-qvnce.10) — one aria-live
+              region for stream-state edges, page-title changes, and the
+              ingestion ledger's new-event counts. */}
+          <ShellAnnouncerRegion />
         </PageContextProvider>
       </CommandRegistryProvider>
     </BreadcrumbsControlProvider>

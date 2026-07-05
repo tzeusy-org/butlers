@@ -11,6 +11,10 @@
  * "connecting" (the very first attempt, before ever reaching open) reads as
  * "down" rather than "reconnecting" — there is nothing to reconnect *to*
  * yet, and the owner should not read a cold page load as a fleet problem.
+ *
+ * Renders on every viewport, including mobile (bu-qvnce.10) — it used to be
+ * `hidden sm:inline-flex`, so the degraded-stream signal vanished entirely
+ * below the `sm` breakpoint.
  */
 
 import type { EventStreamStatus } from '@/hooks/use-event-stream'
@@ -55,7 +59,7 @@ export function LiveIndicator({ status }: LiveIndicatorProps) {
 
   return (
     <span
-      className={`hidden items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] sm:inline-flex ${meta.textClass}`}
+      className={`inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] ${meta.textClass}`}
       title={`Fleet event stream: ${meta.label}`}
       data-testid="shell-live-indicator"
       data-live-state={state}

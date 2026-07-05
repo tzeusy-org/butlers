@@ -144,6 +144,40 @@ const PRIMITIVE_REDECLARATION_SELECTORS = [
   },
 ]
 
+// bu-qvnce.10: ban hand-rolled fixed-inset overlays. Before this bead,
+// EntityFinder/CalendarAgendaView/ButlerManagementTab's ModalBackdrop each
+// hand-rolled a `fixed inset-0` scrim div with an inconsistent (or missing)
+// subset of dialog semantics — no role, no focus trap, no focus-restore.
+// `useModalChoreography` (src/hooks/use-modal-choreography.tsx) is now the
+// one overlay contract; a NEW `fixed inset-0` div is almost always either a
+// missed opportunity to reuse the canonical Dialog/Sheet primitives
+// (components/ui/dialog.tsx, sheet.tsx — Radix-backed, already correct) or a
+// hand-rolled overlay that will repeat the same gaps. Scoped to the "fixed
+// ... inset-0" idiom specifically (not just "fixed") — that combination is
+// the hallmark of a full-viewport scrim; an anchored floating element (e.g.
+// FloatingChatWidget's `fixed bottom-20 right-4`) is a different shape
+// entirely and does not match.
+const HANDROLLED_OVERLAY_SELECTORS = [
+  {
+    selector: 'Literal[value=/\\bfixed\\b[^"]*\\binset-0\\b/]',
+    message:
+      'Hand-rolled fixed-inset overlay (bu-qvnce.10). Wire it through useModalChoreography ' +
+      '(src/hooks/use-modal-choreography.tsx) for focus-in/Tab-trap/Escape/focus-restore, or ' +
+      'use the canonical Dialog/Sheet primitives (components/ui/dialog.tsx, sheet.tsx) which ' +
+      'already do. If this is genuinely not a dialog/overlay (no focus semantics apply), add a ' +
+      'line-level eslint-disable-next-line with a one-line reason.',
+  },
+  {
+    selector: 'TemplateElement[value.raw=/\\bfixed\\b[^`]*\\binset-0\\b/]',
+    message:
+      'Hand-rolled fixed-inset overlay (bu-qvnce.10). Wire it through useModalChoreography ' +
+      '(src/hooks/use-modal-choreography.tsx) for focus-in/Tab-trap/Escape/focus-restore, or ' +
+      'use the canonical Dialog/Sheet primitives (components/ui/dialog.tsx, sheet.tsx) which ' +
+      'already do. If this is genuinely not a dialog/overlay (no focus semantics apply), add a ' +
+      'line-level eslint-disable-next-line with a one-line reason.',
+  },
+]
+
 export default defineConfig([
   globalIgnores(['dist']),
   {
@@ -234,6 +268,7 @@ export default defineConfig([
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
         ...PRIMITIVE_REDECLARATION_SELECTORS,
+        ...HANDROLLED_OVERLAY_SELECTORS,
       ],
     },
   },

@@ -10,13 +10,14 @@
  *   §6  Kill switch          — 30s grace confirmation
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
 
 import { useButlerMemoryAccess, useButlerPrompt, useButlerPromptHistory, useButlerTools, useKillButler, useUpdateButlerPrompt } from "@/hooks/use-butler-management";
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
 import { useResolveModel } from "@/hooks/use-model-catalog";
+import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { cn } from "@/lib/utils";
 import RuntimeConfigCard from "./RuntimeConfigCard";
 
@@ -29,31 +30,48 @@ interface Props {
 // ---------------------------------------------------------------------------
 
 /**
- * ModalBackdrop — click-outside-to-close overlay with Escape support.
+ * ModalBackdrop — click-outside-to-close overlay with the one overlay
+ * contract (bu-qvnce.10: focus-in, Tab trap, Escape, focus-restore) via
+ * useModalChoreography. Previously: Escape-to-close only, no focus-in, no
+ * trap, no restore.
  *
  * Clicking the backdrop itself (never a descendant, via the target check
- * below) or pressing Escape calls `onClose`. Children never need their own
- * stopPropagation click handler, so only this one element carries the
- * mouse-only backdrop-dismiss gesture — Escape is its real keyboard
- * equivalent (bu-86c4c.16: a div that only ever receives synthetic-target
- * clicks has no sensible focus target of its own for Enter/Space).
+ * below) calls `onClose`. Children never need their own stopPropagation
+ * click handler, so only this one element carries the mouse-only
+ * backdrop-dismiss gesture — Escape is its real keyboard equivalent
+ * (bu-86c4c.16: a div that only ever receives synthetic-target clicks has no
+ * sensible focus target of its own for Enter/Space).
  */
-function ModalBackdrop({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+function ModalBackdrop({
+  onClose,
+  label,
+  children,
+}: {
+  onClose: () => void;
+  /** Accessible name for the dialog root (e.g. "Edit system prompt · general"). */
+  label: string;
+  children: React.ReactNode;
+}) {
+  // focusRoot: true — the root itself is both the Tab-trap boundary and the
+  // initial-focus target (tabIndex={-1} below), since ModalBackdrop doesn't
+  // own any particular element inside `children` to focus instead (callers
+  // supply arbitrary panel content).
+  const { rootRef, onKeyDown } = useModalChoreography<HTMLDivElement>({ onClose, focusRoot: true });
 
   return (
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- backdrop-dismiss is a mouse-only convenience; Escape (handled above) is the real keyboard equivalent, and the overlay is not a focusable target.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- role="dialog" + tabIndex={-1} + onClick/onKeyDown is the standard WAI-ARIA APG modal dialog pattern (backdrop-dismiss on click, Escape + Tab-trap via useModalChoreography's onKeyDown); jsx-a11y's "non-interactive roles" list includes "dialog", which is a false positive here, not a real a11y gap.
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      ref={rootRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      tabIndex={-1}
+      // eslint-disable-next-line no-restricted-syntax -- wired through useModalChoreography above (rootRef/initialFocusRef/onKeyDown) — one overlay contract, not a hand-rolled one (bu-qvnce.10).
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 focus:outline-none"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
+      onKeyDown={onKeyDown}
     >
       {children}
     </div>
@@ -343,7 +361,7 @@ function PromptDiffModal({
     current && previous ? diffLines(previous.prompt, current.prompt) : [];
 
   return (
-    <ModalBackdrop onClose={onClose}>
+    <ModalBackdrop onClose={onClose} label={`Prompt diff · v${currentVersion - 1} to v${currentVersion} · ${butlerName}`}>
       <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border border-border bg-background p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <span className="font-mono text-[11px] uppercase tracking-[0.10em] text-muted-foreground">
@@ -419,7 +437,7 @@ function PromptEditModal({
   }
 
   return (
-    <ModalBackdrop onClose={onClose}>
+    <ModalBackdrop onClose={onClose} label={`Edit system prompt · ${butlerName}`}>
       <div className="w-full max-w-2xl rounded-lg border border-border bg-background p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <span className="font-mono text-[11px] uppercase tracking-[0.10em] text-muted-foreground">
@@ -677,7 +695,7 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
       </div>
 
       {showConfirm && (
-        <ModalBackdrop onClose={() => setShowConfirm(false)}>
+        <ModalBackdrop onClose={() => setShowConfirm(false)} label={`Confirm kill switch · ${butlerName}`}>
           <div className="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-xl">
             <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.10em] text-muted-foreground">
               confirm kill

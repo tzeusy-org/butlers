@@ -14,6 +14,12 @@
  *
  * Design: hairline-divided, no card chrome — matches the Dispatch visual
  * language used by the ingestion ledger this surface is rebuilt on.
+ *
+ * Focus choreography (bu-qvnce.10): focus-in on mount, Escape-to-close, and
+ * focus-restore to the triggering row on close, via useModalChoreography —
+ * this drawer previously had NO keyboard handling at all (Escape didn't
+ * close it). `trapFocus: false` since it's an inline disclosure panel
+ * (rendered below the ledger, no scrim) rather than a modal overlay.
  */
 
 import { Link } from "react-router";
@@ -21,6 +27,7 @@ import { X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
+import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import type { TimelineEvent } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -122,13 +129,29 @@ export interface TimelineEventDrawerProps {
 }
 
 export function TimelineEventDrawer({ event, onClose }: TimelineEventDrawerProps) {
+  // trapFocus: false — this is an inline disclosure panel below the ledger,
+  // not a scrim-covering dialog, so Tab should stay free to leave it.
+  const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLHeadingElement>({
+    onClose,
+    trapFocus: false,
+  });
+
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onKeyDown here is Escape-to-close only (trapFocus: false — no Tab handling), matching the same accepted pattern as the ingestion EventDrawer this hook was extracted from.
     <div
+      ref={rootRef}
       className="border-t border-border bg-background"
       data-testid="timeline-event-drawer"
       role="complementary"
       aria-label="Event detail drawer"
+      onKeyDown={onKeyDown}
     >
+      {/* Focus lands here on open (tabIndex=-1: programmatically focusable,
+          not a Tab stop); visually hidden since the header row below already
+          carries the same information for sighted users. */}
+      <h2 ref={initialFocusRef} tabIndex={-1} className="sr-only focus:outline-none">
+        Event detail: {event.butler}, {event.type}
+      </h2>
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
         <span className="font-mono text-[11px] text-muted-foreground">{event.butler}</span>
         <span className="font-mono text-[11px] text-muted-foreground">{event.type}</span>

@@ -42,7 +42,7 @@
  *   Esc          — close
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Command } from "cmdk";
 import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
@@ -60,6 +60,7 @@ import { ALL_ROUTES } from "@/lib/route-registry";
 import { useCommandMenuActions } from "@/lib/command-registry";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
+import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { KbMono } from "@/components/ui/KbMono";
 import type {
@@ -244,8 +245,17 @@ export default function EntityFinder() {
   const [query, setQuery] = useState("");
   // cmdk's currently-highlighted item value (drives the preview pane).
   const [activeValue, setActiveValue] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
+
+  // One overlay contract (bu-qvnce.10): focus-in, Tab trap, Escape, and
+  // focus-restore. EntityFinder stays mounted and toggles its own visibility
+  // (returns `null` while closed) rather than being conditionally mounted by
+  // a parent, so `active: open` is required — see the hook's doc comment.
+  const { rootRef, initialFocusRef: inputRef, onKeyDown: choreographyKeyDown } =
+    useModalChoreography<HTMLInputElement>({
+      onClose: () => setOpen(false),
+      active: open,
+    });
 
   const { data: searchData, isLoading, isError } = useEntityFinderSearch(query, {
     limit: 8,
@@ -283,7 +293,9 @@ export default function EntityFinder() {
       setOpen(true);
       setQuery("");
       setActiveValue("");
-      requestAnimationFrame(() => inputRef.current?.focus());
+      // Focus-in is handled by useModalChoreography's `active: open` effect
+      // once this state flip commits — no rAF needed, useEffect already
+      // defers to after the DOM update.
     }
     window.addEventListener(OPEN_ENTITY_FINDER_EVENT, handleOpen);
     return () =>
@@ -429,27 +441,35 @@ export default function EntityFinder() {
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- backdrop-dismiss is a mouse-only convenience; Escape (handled on the Command panel below) is the real keyboard equivalent, and the overlay is not a focusable target.
     <div
+      // eslint-disable-next-line no-restricted-syntax -- the scrim itself; the actual dialog (Command below) is wired through useModalChoreography (rootRef/onKeyDown) — one overlay contract, not a hand-rolled one (bu-qvnce.10).
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[15vh]"
       onClick={() => setOpen(false)}
       data-testid="entity-finder-backdrop"
     >
       <Command
+        ref={rootRef}
+        role="dialog"
+        aria-modal="true"
         label="Command Menu"
+        aria-label="Command Menu"
         onValueChange={setActiveValue}
         className="relative mx-auto flex w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.preventDefault();
-            setOpen(false);
-            return;
-          }
-          // Tab = hop into the active result. cmdk does not consume Tab, so we
-          // claim it here (only when a real entity row is active).
+          // Tab = hop into the active result when a real entity row is
+          // active (cmdk does not consume Tab, so we claim it here first).
+          // Only when there is NO active result does Tab fall through to the
+          // choreography's generic trap — this is what fixes the
+          // activeResult-null Tab leak (Pages/Butlers/Sessions/State/Actions
+          // rows, or a truly empty result set, used to let Tab escape to
+          // whatever rendered after the overlay in the DOM, e.g. the
+          // floating chat widget button).
           if (e.key === "Tab" && activeResult) {
             e.preventDefault();
             hopEntity(activeResult.entity_id);
+            return;
           }
+          choreographyKeyDown(e);
         }}
         shouldFilter={false}
       >
