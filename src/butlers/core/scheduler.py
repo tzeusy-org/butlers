@@ -420,6 +420,23 @@ def _dict_to_jsonb(value: dict[str, Any] | None) -> Any:
     return json.loads(json.dumps(value, default=str))
 
 
+def _list_to_jsonb(value: list[Any] | None) -> Any:
+    """Convert a list payload to a JSON-safe Python value for JSONB binding.
+
+    Mirrors :func:`_dict_to_jsonb` but for list-shaped JSONB columns (e.g.
+    ``scheduled_tasks.fired_thresholds``). Bind the returned value directly
+    into the query with no ``json.dumps()`` at the call site and no
+    ``::jsonb`` cast in the SQL: every asyncpg pool in this codebase
+    registers ``register_jsonb_codec()`` (src/butlers/db.py), whose encoder
+    expects a Python object and calls ``json.dumps()`` on it itself. Passing
+    an already-serialized JSON string double-encodes the value into a
+    jsonb-typed STRING instead of an ARRAY (bu-xfcpf).
+    """
+    if value is None:
+        return None
+    return json.loads(json.dumps(value, default=str))
+
+
 def _prepend_seasonal_context(prompt: str, active_seasons: list[dict[str, Any]] | None) -> str:
     """Prepend a seasonal context prefix to *prompt* when active seasons exist.
 
@@ -1155,6 +1172,10 @@ async def _tick_deadline_pass(
             current_status=current_status,
             fired_threshold=threshold,
         )
+        # Bind fired_thresholds as a plain list, NOT a json.dumps() string: see
+        # _list_to_jsonb's docstring (bu-xfcpf). No ::jsonb cast in the SQL
+        # either -- Postgres infers the parameter's jsonb type from the target
+        # column.
         await pool.execute(
             """
             UPDATE scheduled_tasks
@@ -1164,7 +1185,7 @@ async def _tick_deadline_pass(
             """,
             task_id,
             new_status,
-            json.dumps(new_fired),
+            _list_to_jsonb(new_fired),
             now,
         )
 
@@ -1190,8 +1211,6 @@ async def _fire_chain(
         now: Current tick timestamp.
         trigger_label: Log label describing what triggered this chain.
     """
-    import json as _json
-
     from butlers.core.temporal.event_chains import materialize_chain_actions
 
     tasks = materialize_chain_actions(
@@ -1202,6 +1221,10 @@ async def _fire_chain(
 
     for task in tasks:
         try:
+            # Bind job_args as a plain dict, NOT a json.dumps() string: see
+            # _dict_to_jsonb's docstring (bu-cymc4/bu-xfcpf). No ::jsonb cast
+            # in the SQL either -- Postgres infers the parameter's jsonb type
+            # from the target column.
             await pool.execute(
                 """
                 INSERT INTO scheduled_tasks
@@ -1216,7 +1239,7 @@ async def _fire_chain(
                 task["dispatch_mode"],
                 task.get("prompt"),
                 task.get("job_name"),
-                _json.dumps(task.get("job_args")) if task.get("job_args") else None,
+                _dict_to_jsonb(task.get("job_args")) if task.get("job_args") else None,
                 task["next_run_at"],
                 task["until_at"],
             )
