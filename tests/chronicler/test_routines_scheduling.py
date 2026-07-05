@@ -129,9 +129,11 @@ async def test_chronicler_module_registers_routines_mine_default_schedule(monkey
 
     await module._register_default_schedules(fake_db)
 
-    assert len(calls) == 1
-    assert calls[0]["name"] == "chronicler_routines_mine"
-    assert calls[0]["job_name"] == "chronicler_routines_mine"
+    # chronicler_rollup_daily (bu-u30as) is also a module-default schedule;
+    # find this one by name rather than asserting an exact count so this test
+    # doesn't need updating every time another default schedule is added.
+    routines_call = next(c for c in calls if c["name"] == "chronicler_routines_mine")
+    assert routines_call["job_name"] == "chronicler_routines_mine"
 
 
 async def test_chronicler_module_none_db_is_a_noop() -> None:
@@ -170,5 +172,5 @@ async def test_chronicler_module_on_startup_registers_schedule(monkeypatch) -> N
 
     await module.on_startup(config=None, db=fake_db)
 
-    assert len(calls) == 1
-    assert calls[0]["name"] == "chronicler_routines_mine"
+    routines_call = next(c for c in calls if c["name"] == "chronicler_routines_mine")
+    assert routines_call["job_name"] == "chronicler_routines_mine"

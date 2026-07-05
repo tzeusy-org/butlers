@@ -75,6 +75,21 @@ _DEFAULT_SCHEDULES: tuple[dict[str, Any], ...] = (
         "cron": "30 3 * * 0",
         "job_name": "chronicler_routines_mine",
     },
+    {
+        # Hourly, 15 past (bu-u30as, telemetry-distillation bead 3): rolls up
+        # any local calendar day whose window has fully elapsed into
+        # `chronicler.daily_rollups`, reusing the exact same
+        # `aggregations.lane_for_activity`/`union_seconds` rules
+        # `GET /aggregate/by-category` uses. Registered here (module
+        # self-registration) rather than a `[[butler.schedule]]` TOML block
+        # because it is a full-rescan summary materializer over chronicler's
+        # own schema — the same job shape as `chronicler_routines_mine`
+        # above — not a per-source incremental `ProjectionAdapter`, which is
+        # what the TOML-block jobs are. No LLM.
+        "name": "chronicler_rollup_daily",
+        "cron": "15 * * * *",
+        "job_name": "chronicler_rollup_daily",
+    },
 )
 
 

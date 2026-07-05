@@ -22,6 +22,7 @@ from butlers.chronicler.models import (
     Confidence,
     CorrectedEpisode,
     CorrectedPointEvent,
+    DailyRollup,
     Episode,
     Layer,
     LinkRelation,
@@ -1157,6 +1158,82 @@ async def update_routine(
     return _row_to_routine(row)
 
 
+# ── Daily rollups (bu-u30as, telemetry-distillation bead 3) ────────────────
+
+
+def _row_to_daily_rollup(row: asyncpg.Record) -> DailyRollup:
+    return DailyRollup(
+        id=row["id"],
+        local_date=row["local_date"],
+        timezone=row["timezone"],
+        lane=row["lane"],
+        seconds=row["seconds"],
+        episode_count=row["episode_count"],
+        distinct_place_count=row["distinct_place_count"],
+        computed_at=row["computed_at"],
+    )
+
+
+async def upsert_daily_rollup(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    local_date: Any,
+    lane: str,
+    seconds: int,
+    episode_count: int,
+    timezone: str = "Asia/Singapore",
+    distinct_place_count: int | None = None,
+) -> DailyRollup:
+    """Idempotent upsert of a per-(local_date, lane) rollup row.
+
+    Targets the ``UNIQUE (local_date, lane)`` constraint added by migration
+    ``chronicler_019``: re-running the materializer for a date it already
+    rolled up (e.g. after a late-arriving correction/override) recomputes the
+    row in place rather than creating a duplicate.
+    """
+    row = await conn.fetchrow(
+        """
+        INSERT INTO daily_rollups (
+            local_date, timezone, lane, seconds, episode_count, distinct_place_count
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (local_date, lane) DO UPDATE SET
+            timezone = EXCLUDED.timezone,
+            seconds = EXCLUDED.seconds,
+            episode_count = EXCLUDED.episode_count,
+            distinct_place_count = EXCLUDED.distinct_place_count,
+            computed_at = now()
+        RETURNING *
+        """,
+        local_date,
+        timezone,
+        lane,
+        seconds,
+        episode_count,
+        distinct_place_count,
+    )
+    return _row_to_daily_rollup(row)
+
+
+async def list_daily_rollups(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    local_date: Any | None = None,
+) -> list[DailyRollup]:
+    """List rollup rows, optionally filtered to a single ``local_date``.
+
+    Ordered by ``local_date DESC, lane ASC`` for deterministic output.
+    """
+    if local_date is not None:
+        rows = await conn.fetch(
+            "SELECT * FROM daily_rollups WHERE local_date = $1 ORDER BY lane ASC",
+            local_date,
+        )
+    else:
+        rows = await conn.fetch("SELECT * FROM daily_rollups ORDER BY local_date DESC, lane ASC")
+    return [_row_to_daily_rollup(r) for r in rows]
+
+
 __all__: Sequence[str] = (
     "get_carryover",
     "get_checkpoint",
@@ -1166,6 +1243,7 @@ __all__: Sequence[str] = (
     "get_source_state",
     "insert_override",
     "link_event_to_episode",
+    "list_daily_rollups",
     "list_episode_events",
     "list_episodes",
     "list_overlapping_episodes",
@@ -1179,6 +1257,7 @@ __all__: Sequence[str] = (
     "update_routine",
     "upsert_checkpoint",
     "upsert_checkpoint_subsource",
+    "upsert_daily_rollup",
     "upsert_episode",
     "upsert_mined_routine",
     "upsert_point_event",

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Any
 from uuid import UUID
 
@@ -290,6 +290,29 @@ class Routine:
     id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+@dataclass
+class DailyRollup:
+    """Row in `chronicler.daily_rollups` (bu-u30as, telemetry-distillation
+    bead 3) — one persisted per-lane summary for a closed local calendar day.
+
+    ``seconds``/``episode_count`` are computed by
+    ``rollups.compute_daily_lane_rollup`` from the exact same
+    ``aggregations.lane_for_activity``/``union_seconds`` counting rules the
+    live ``GET /aggregate/by-category`` endpoint uses, so the two surfaces
+    can never diverge. ``distinct_place_count`` is nullable and unpopulated
+    as of this bead (no writer sets it yet).
+    """
+
+    local_date: date
+    lane: str
+    seconds: int = 0
+    episode_count: int = 0
+    timezone: str = "Asia/Singapore"
+    distinct_place_count: int | None = None
+    id: UUID | None = None
+    computed_at: datetime | None = None
 
 
 @dataclass

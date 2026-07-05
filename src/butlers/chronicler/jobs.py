@@ -514,6 +514,52 @@ async def run_routines_mine(
     return await mine_routines(db_pool, weeks=weeks, timezone=timezone)
 
 
+async def run_rollup_daily(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Materialize per-lane daily rollups for every fully-elapsed local day
+    in the trailing lookback window (bu-u30as, telemetry-distillation bead 3).
+
+    Deterministic, no LLM — reuses ``aggregations.lane_for_activity``/
+    ``union_seconds`` exactly as ``GET /aggregate/by-category`` does. Not
+    watermark-incremental, same convention as ``run_routines_mine``: each run
+    re-processes the trailing ``lookback_days`` window and upserts
+    idempotently on ``(local_date, lane)``.
+    """
+    from butlers.chronicler.rollups import (
+        DEFAULT_LOOKBACK_DAYS,
+        DEFAULT_TIMEZONE,
+        materialize_daily_rollups,
+    )
+
+    supported_fields = ("lookback_days", "timezone")
+    lookback_days = DEFAULT_LOOKBACK_DAYS
+    timezone = DEFAULT_TIMEZONE
+    if job_args:
+        unknown_fields = sorted(set(job_args) - set(supported_fields))
+        if unknown_fields:
+            raise RuntimeError(
+                f"chronicler_rollup_daily job only supports {', '.join(supported_fields)}; "
+                f"received unsupported keys: {unknown_fields}"
+            )
+        if "lookback_days" in job_args:
+            lookback_days = _normalize_positive_int(
+                job_args["lookback_days"],
+                job_name="chronicler_rollup_daily",
+                field_name="lookback_days",
+            )
+        if "timezone" in job_args:
+            raw_timezone = job_args["timezone"]
+            if not isinstance(raw_timezone, str) or not raw_timezone:
+                raise RuntimeError(
+                    "chronicler_rollup_daily job_args.timezone must be a non-empty string"
+                )
+            timezone = raw_timezone
+
+    return await materialize_daily_rollups(db_pool, timezone=timezone, lookback_days=lookback_days)
+
+
 __all__ = [
     "_DEFAULT_CALENDAR_SCHEMAS",
     "_DEFAULT_SESSION_SCHEMAS",
@@ -537,5 +583,6 @@ __all__ = [
     "run_project_sessions",
     "run_project_spotify",
     "run_project_steam",
+    "run_rollup_daily",
     "run_routines_mine",
 ]
