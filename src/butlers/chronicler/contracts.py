@@ -120,6 +120,21 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=True,
     ),
+    # OwnTracks GPS place clustering — independent of and complementary to
+    # owntracks.points' movement_episode rollup (bu-ac2pg, epic bu-p2d0f).
+    # Coordinate source_name/episode_type with bu-whhll.5 (Wi-Fi SSID
+    # presence adapter) at implementation time — see design doc §6.2.
+    SourceAdapterState(
+        source_name="owntracks.place_cluster",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.owntracks_points",
+        boundary_semantics=(
+            "contiguous stationary point runs (radius+dwell clustering) → "
+            "place_episode; (start_at, end_at) span the dwell; labeled "
+            "against owner-declared reference points or 'place_unknown'"
+        ),
+        optional_schema=True,
+    ),
     SourceAdapterState(
         source_name="home_assistant.history",
         chronicler_compatibility=Compatibility.SUPPORTED,

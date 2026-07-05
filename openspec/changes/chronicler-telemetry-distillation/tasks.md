@@ -27,16 +27,23 @@
 
 ## 3. OwnTracks place-cluster adapter (independent, no deps)
 
-- [ ] 3.1 New adapter module: radius/dwell-time clustering over
-  `connectors.owntracks_points` into `place_episode` rows.
-- [ ] 3.2 Deterministic place labeling against owner-declared reference
+- [x] 3.1 New adapter module: radius/dwell-time clustering over
+  `connectors.owntracks_points` into `place_episode` rows. (bu-ac2pg —
+  `owntracks.place_cluster` / `place_episode`)
+- [x] 3.2 Deterministic place labeling against owner-declared reference
   points (home/work lat-lon); unlabeled recurring clusters surface as
-  `place_unknown`.
+  `place_unknown`. (bu-ac2pg — `OWNTRACKS_PLACE_REFERENCES` env var, no
+  migration)
 - [ ] 3.3 Coordinate `source_name`/`episode_type` with `bu-whhll.5` (Wi-Fi
   SSID presence adapter) so both can appear side by side in
-  `occupation.py`'s corroborator list without collision.
-- [ ] 3.4 Tests: cluster formation over synthetic point fixtures; stable
-  labeling across days; no geocoding/external API calls.
+  `occupation.py`'s corroborator list without collision. bu-ac2pg landed
+  first with `owntracks.place_cluster` / `place_episode`; bu-whhll.5 (or
+  whichever lands second) adds its own distinct pair plus the
+  `occupation.py` corroborator wiring for both.
+- [x] 3.4 Tests: cluster formation over synthetic point fixtures (radius/dwell
+  edges, singleton points, teleport outliers, gaps, cross-batch carryover);
+  stable labeling across days; no geocoding/external API calls. (bu-ac2pg —
+  unit + real-Postgres integration coverage)
 
 ## 4. Daily rollup materializer (depends on §1)
 

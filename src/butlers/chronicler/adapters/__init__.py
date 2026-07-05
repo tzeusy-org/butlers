@@ -34,6 +34,7 @@ from butlers.chronicler.adapters.meals import MealsAdapter
 from butlers.chronicler.adapters.occupation import OccupationInferredAdapter
 from butlers.chronicler.adapters.owner_outbound import OwnerOutboundMessageAdapter
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
+from butlers.chronicler.adapters.owntracks_place_cluster import OwnTracksPlaceClusterAdapter
 from butlers.chronicler.adapters.reading import ReadingInferredAdapter
 from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
@@ -55,6 +56,7 @@ __all__ = [
     "HomeAssistantSensorActivityAdapter",
     "MealsAdapter",
     "OccupationInferredAdapter",
+    "OwnTracksPlaceClusterAdapter",
     "OwnTracksPointAdapter",
     "OwnerOutboundMessageAdapter",
     "ProjectionAdapter",

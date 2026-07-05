@@ -146,3 +146,59 @@ async def test_project_owntracks_rejects_unsupported_job_args() -> None:
 
     with pytest.raises(RuntimeError, match="unsupported keys"):
         await run_project_owntracks(object(), {"oops": 1})
+
+
+async def test_project_owntracks_place_cluster_malformed_env_degrades_gracefully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed ``OWNTRACKS_PLACE_REFERENCES`` must not crash the job — this
+    is re-read every scheduled tick (unlike HA_WELLNESS_RULES_EXTRA, which is
+    only validated once at daemon startup), so a fail-fast raise here would
+    wedge the job on every run until an operator notices."""
+    monkeypatch.setenv("OWNTRACKS_PLACE_REFERENCES", "{not valid json")
+
+    pool = object()
+    adapter = AsyncMock()
+    adapter.run.return_value = AdapterResult(
+        source_name="owntracks.place_cluster", rows_projected=0
+    )
+    seed_registry = AsyncMock()
+
+    with (
+        patch("butlers.chronicler.jobs.seed_source_registry", seed_registry),
+        patch(
+            "butlers.chronicler.jobs.OwnTracksPlaceClusterAdapter", return_value=adapter
+        ) as adapter_cls,
+    ):
+        from butlers.chronicler.jobs import run_project_owntracks_place_cluster
+
+        await run_project_owntracks_place_cluster(pool, None)
+
+    adapter_cls.assert_called_once_with(reference_points=())
+
+
+async def test_project_owntracks_place_cluster_parses_valid_env() -> None:
+    from butlers.chronicler.adapters.owntracks_place_cluster import PlaceReference
+
+    pool = object()
+    adapter = AsyncMock()
+    adapter.run.return_value = AdapterResult(
+        source_name="owntracks.place_cluster", rows_projected=0
+    )
+    seed_registry = AsyncMock()
+
+    raw = '[{"label": "home", "lat": 1.3, "lon": 103.8}]'
+    with (
+        patch.dict("os.environ", {"OWNTRACKS_PLACE_REFERENCES": raw}),
+        patch("butlers.chronicler.jobs.seed_source_registry", seed_registry),
+        patch(
+            "butlers.chronicler.jobs.OwnTracksPlaceClusterAdapter", return_value=adapter
+        ) as adapter_cls,
+    ):
+        from butlers.chronicler.jobs import run_project_owntracks_place_cluster
+
+        await run_project_owntracks_place_cluster(pool, None)
+
+    adapter_cls.assert_called_once_with(
+        reference_points=(PlaceReference(label="home", lat=1.3, lon=103.8),)
+    )

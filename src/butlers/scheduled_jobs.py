@@ -1162,6 +1162,16 @@ async def _run_chronicler_project_owntracks_job(
     return await run_project_owntracks(pool, job_args)
 
 
+async def _run_chronicler_project_owntracks_place_cluster_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's OwnTracks GPS place-cluster projection job (bu-ac2pg)."""
+    from butlers.chronicler.jobs import run_project_owntracks_place_cluster
+
+    return await run_project_owntracks_place_cluster(pool, job_args)
+
+
 async def _run_chronicler_project_activitywatch_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1523,6 +1533,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
+            "chronicler_project_owntracks_place_cluster": (
+                _run_chronicler_project_owntracks_place_cluster_job
+            ),
             "chronicler_project_activitywatch": _run_chronicler_project_activitywatch_job,
             "chronicler_project_owner_outbound": _run_chronicler_project_owner_outbound_job,
             "chronicler_project_steam": _run_chronicler_project_steam_job,

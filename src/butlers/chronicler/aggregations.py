@@ -50,6 +50,12 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     ("spotify.session_summary", "listening_episode"): "music",
     ("steam.play_history", "play_episode"): "gaming",
     ("owntracks.points", "movement_episode"): "travel",
+    # GPS place-cluster dwells (bu-ac2pg) fold into 'home' -> 'rest', same as
+    # HA person-domain presence, regardless of the cluster's derived label
+    # (home/work/place_unknown) — deliberately NEVER 'occupation'/'work' (see
+    # design doc §6.2 lane-discipline note); a future explicit corroborator
+    # wiring in occupation.py is a separate, coordinated change.
+    ("owntracks.place_cluster", "place_episode"): "home",
     ("google_health.measurements", "sleep_episode"): "sleep",
     ("google_health.measurements", "workout_episode"): "workout",
     ("health.meals", "eating_event"): "meal",
