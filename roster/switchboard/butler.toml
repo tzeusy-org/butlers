@@ -84,3 +84,15 @@ name = "spend-rule-savings"
 cron = "15 4 * * *"
 dispatch_mode = "job"
 job_name = "spend_rule_savings"
+
+# Rule promotion trigger (bu-wuwy9, rule-promotion bead 3 of 7) — scans
+# switchboard.routing_verdict_log for repeated LLM agreement per sender and
+# proposes rule_promotion_suggestions rows (never mints ingestion_rules
+# directly). Hourly, offset to :50 past the hour to avoid colliding with
+# eligibility_sweep (*/5), insight-urgent-subcycle (:30), and
+# spend-rule-savings (04:15).
+[[butler.schedule]]
+name = "rule-promotion-trigger"
+cron = "50 * * * *"
+dispatch_mode = "job"
+job_name = "rule_promotion_trigger"

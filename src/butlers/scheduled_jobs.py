@@ -79,6 +79,40 @@ async def _run_switchboard_eligibility_sweep_job(
     return await run_eligibility_sweep_job(pool)
 
 
+@functools.lru_cache(maxsize=1)
+def _load_switchboard_rule_promotion_trigger_job() -> Callable[
+    [asyncpg.Pool, dict[str, Any] | None], Awaitable[dict[str, Any]]
+]:
+    """Load the switchboard rule-promotion trigger job from roster/ by file path."""
+    import importlib.util as _ilu
+
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "roster"
+        / "switchboard"
+        / "jobs"
+        / "rule_promotion_trigger.py"
+    )
+    module_name = "roster_switchboard_rule_promotion_trigger_job"
+    spec = _ilu.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            f"Unable to load switchboard rule promotion trigger job from {module_path}"
+        )
+    module = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run_rule_promotion_trigger_job
+
+
+async def _run_switchboard_rule_promotion_trigger_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the switchboard rule-promotion trigger deterministic schedule job."""
+    run_rule_promotion_trigger_job = _load_switchboard_rule_promotion_trigger_job()
+    return await run_rule_promotion_trigger_job(pool, job_args)
+
+
 def _build_switchboard_insight_notify_fn(
     pool: asyncpg.Pool,
 ) -> Any:
@@ -1632,6 +1666,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
             "insight_urgent_subcycle": _run_switchboard_insight_urgent_subcycle_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
+            "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
