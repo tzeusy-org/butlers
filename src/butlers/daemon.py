@@ -1444,6 +1444,13 @@ class ButlerDaemon:
             now = _dt.now(_UTC)
             expires_at = now + _td(hours=expiry_hours)
 
+            # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast):
+            # every asyncpg pool here registers register_jsonb_codec() (db.py),
+            # whose encoder already calls json.dumps() once. Passing a
+            # pre-serialized string double-encodes it into a jsonb-typed STRING
+            # instead of an OBJECT (bu-cymc4/bu-bstqu; mirrors gate.py's fix).
+            safe_tool_args = json.loads(json.dumps(tool_args, default=str))
+
             await pool.execute(
                 "INSERT INTO pending_actions "
                 "(id, tool_name, tool_args, agent_summary, session_id, status, "
@@ -1451,7 +1458,7 @@ class ButlerDaemon:
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 action_id,
                 tool_name,
-                json.dumps(tool_args),
+                safe_tool_args,
                 agent_summary,
                 get_current_runtime_session_id(),
                 ActionStatus.PENDING.value,

@@ -213,6 +213,10 @@ async def check_email_recipient(
             try:
                 from butlers.modules.approvals.models import ActionStatus
 
+                # Bind the sanitized dict directly (no json.dumps, no ::jsonb
+                # cast) — asyncpg's registered jsonb codec already serializes
+                # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
+                safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
                 await pool.execute(
                     "INSERT INTO pending_actions "
                     "(id, tool_name, tool_args, agent_summary, session_id, status, "
@@ -220,7 +224,7 @@ async def check_email_recipient(
                     "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                     action_id,
                     park_tool_name,
-                    json.dumps(park_tool_args),
+                    safe_park_tool_args,
                     mismatch_summary,
                     normalized_session_id,
                     ActionStatus.PENDING.value,
@@ -293,6 +297,7 @@ async def check_email_recipient(
     normalized_session_id = _normalize_session_id(session_id)
 
     try:
+        safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
         await pool.execute(
             "INSERT INTO pending_actions "
             "(id, tool_name, tool_args, agent_summary, session_id, status, "
@@ -300,7 +305,7 @@ async def check_email_recipient(
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             action_id,
             park_tool_name,
-            json.dumps(park_tool_args),
+            safe_park_tool_args,
             park_summary,
             normalized_session_id,
             ActionStatus.PENDING.value,
@@ -450,6 +455,7 @@ async def check_recipient(
     normalized_session_id = _normalize_session_id(session_id)
 
     try:
+        safe_park_tool_args = json.loads(json.dumps(park_tool_args, default=str))
         await pool.execute(
             "INSERT INTO pending_actions "
             "(id, tool_name, tool_args, agent_summary, session_id, status, "
@@ -457,7 +463,7 @@ async def check_recipient(
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             action_id,
             park_tool_name,
-            json.dumps(park_tool_args),
+            safe_park_tool_args,
             park_summary,
             normalized_session_id,
             ActionStatus.PENDING.value,

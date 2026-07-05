@@ -2115,9 +2115,13 @@ async def approve_approval(
             raw_args = action_row["tool_args"]
             tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
             tool_args.update(request.edits)
+            # Bind the sanitized dict directly (no json.dumps, no ::jsonb
+            # cast) — asyncpg's registered jsonb codec already serializes
+            # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
+            safe_tool_args = json.loads(json.dumps(tool_args, default=str))
             await conn.execute(
                 "UPDATE pending_actions SET tool_args = $1 WHERE id = $2",
-                json.dumps(tool_args),
+                safe_tool_args,
                 parsed_id,
             )
 

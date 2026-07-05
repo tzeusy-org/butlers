@@ -296,21 +296,16 @@ async def test_rotate_token_credential_masking(app):
         f"{all_execute_args!r}"
     )
 
-    # Also verify the tool_args JSON stored in pending_actions has no credential field
-    # The 3rd positional arg (index 2) of execute() is the tool_args JSON string
+    # Also verify the tool_args dict stored in pending_actions has no credential field.
+    # bu-bstqu: tool_args is now bound as a native dict (no json.dumps pre-serialization,
+    # which used to double-encode the jsonb column — see bu-cymc4/PR #2924), so it is
+    # found directly among the execute() positional args rather than parsed from a string.
     if execute_call_args and execute_call_args.args:
-        # Find the tool_args JSON in the execute call arguments
         for arg in execute_call_args.args:
-            if isinstance(arg, str) and arg.startswith("{"):
-                try:
-                    tool_args = json.loads(arg)
-                    for field_name in _FAKE_TOKEN:
-                        assert _FAKE_TOKEN not in str(tool_args), (
-                            f"CREDENTIAL LEAK: fake token found in pending_action tool_args JSON: "
-                            f"{tool_args!r}"
-                        )
-                except json.JSONDecodeError:
-                    pass
+            if isinstance(arg, dict):
+                assert _FAKE_TOKEN not in str(arg), (
+                    f"CREDENTIAL LEAK: fake token found in pending_action tool_args: {arg!r}"
+                )
 
     # 3. Grep the audit.append() call args for the fake token
     if mock_audit.called:
@@ -378,9 +373,14 @@ async def test_rotate_token_creates_pending_action_with_is_sensitive(app):
 
     pool.execute.assert_awaited_once()
     call_args = pool.execute.call_args
-    # The 3rd positional arg is the tool_args JSON string
-    tool_args_json = call_args.args[3]  # INSERT VALUES: $1=id, $2=tool_name, $3=tool_args, ...
-    tool_args = json.loads(tool_args_json)
+    # bu-bstqu: tool_args is now bound as a native dict (no json.dumps
+    # pre-serialization — see bu-cymc4/PR #2924 for why that double-encoded
+    # the jsonb column), so no json.loads() round-trip is needed here.
+    tool_args = call_args.args[3]  # INSERT VALUES: $1=id, $2=tool_name, $3=tool_args, ...
+    assert isinstance(tool_args, dict), (
+        f"tool_args arrived as {type(tool_args).__name__!r}, not a dict — "
+        "the jsonb column was double-encoded into a string."
+    )
     assert tool_args.get("is_sensitive") is True, (
         f"rotate-token pending_action tool_args must have is_sensitive=True; got: {tool_args!r}"
     )

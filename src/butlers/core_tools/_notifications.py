@@ -673,6 +673,21 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             f"To resolve, assert a channel triple for this entity in the "
                             f"entity graph and re-trigger the notification."
                         )
+                        # Bind the sanitized dict directly (no json.dumps, no
+                        # ::jsonb cast) — asyncpg's registered jsonb codec
+                        # already serializes once; pre-serializing double-
+                        # encodes into a jsonb-typed STRING (bu-cymc4/bu-bstqu).
+                        safe_park_tool_args = json.loads(
+                            json.dumps(
+                                {
+                                    "channel": channel,
+                                    "message": message,
+                                    "entity_id": str(entity_id),
+                                    "intent": intent,
+                                },
+                                default=str,
+                            )
+                        )
                         await pool.execute(
                             "INSERT INTO pending_actions "
                             "(id, tool_name, tool_args, agent_summary, session_id, status, "
@@ -680,14 +695,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                             action_id,
                             "notify",
-                            json.dumps(
-                                {
-                                    "channel": channel,
-                                    "message": message,
-                                    "entity_id": str(entity_id),
-                                    "intent": intent,
-                                }
-                            ),
+                            safe_park_tool_args,
                             agent_summary,
                             get_current_runtime_session_id(),
                             "pending",  # ActionStatus.PENDING — literal avoids approvals import

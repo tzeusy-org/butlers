@@ -623,6 +623,10 @@ async def disconnect_connector(
     now = datetime.now(UTC)
     target = f"{connector_type}/{endpoint_identity}"
     tool_args = {"connector_type": connector_type, "endpoint_identity": endpoint_identity}
+    # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+    # asyncpg's registered jsonb codec already serializes once; pre-serializing
+    # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-bstqu).
+    safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
     # 72-hour expiry for lifecycle approval actions
     expires_at = now + timedelta(hours=72)
@@ -634,7 +638,7 @@ async def disconnect_connector(
             " VALUES ($1, $2, $3, $4, $5, $6, $7)",
             action_id,
             "connector_disconnect",
-            json.dumps(tool_args),
+            safe_tool_args,
             f"Disconnect connector '{target}' (soft-delete)",
             "pending",
             now,
@@ -764,6 +768,10 @@ async def rotate_connector_token(
         "is_sensitive": True,
         # NOTE: no token/credential field here — credential is never logged
     }
+    # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
+    # asyncpg's registered jsonb codec already serializes once; pre-serializing
+    # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-bstqu).
+    safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
     # 72-hour expiry for lifecycle approval actions
     expires_at = now + timedelta(hours=72)
@@ -775,7 +783,7 @@ async def rotate_connector_token(
             " VALUES ($1, $2, $3, $4, $5, $6, $7)",
             action_id,
             "connector_rotate_token",
-            json.dumps(tool_args),
+            safe_tool_args,
             f"Rotate credential for connector '{target}' [SENSITIVE — credential redacted]",
             "pending",
             now,
