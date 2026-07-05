@@ -313,6 +313,70 @@ def test_rotate_cli_no_body_still_generates_and_requires_existing():
     assert resp.status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# Tests: cli-auth/* auto-generate rejection — bu-xn1sr
+#
+# cli-auth/<provider> rows mirror an external CLI's auth.json. Minting a
+# random value server-side would desync the mirror (nothing external
+# recognizes it). Auto-generate (no body / empty value) must 400 for these
+# ids; paste-to-save (an owner-supplied value) must still work verbatim.
+# Bare ids (no cli-auth/ prefix — genuinely self-issued tokens) are
+# unaffected by this guard.
+# ---------------------------------------------------------------------------
+
+
+def test_rotate_cli_auto_generate_rejected_for_cli_auth_mirror_row():
+    """Auto-generate (no value) on a cli-auth/* id returns 400, not a minted token."""
+    cli_row = _make_cli_row(key="cli-auth/codex", value="real_auth_json_blob")
+    mock_db = _make_db(cli_row=cli_row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/cli/cli-auth/codex/rotate")
+    assert resp.status_code == 400
+    assert "cli-auth" in resp.json()["detail"].lower()
+
+
+def test_rotate_cli_auto_generate_rejected_for_cli_auth_mirror_row_empty_value():
+    """An empty/whitespace value on a cli-auth/* id also hits the auto-generate
+    guard (empty is normalized to 'no value supplied')."""
+    cli_row = _make_cli_row(key="cli-auth/codex", value="real_auth_json_blob")
+    mock_db = _make_db(cli_row=cli_row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/cli/cli-auth/codex/rotate", json={"value": "   "})
+    assert resp.status_code == 400
+
+
+def test_rotate_cli_paste_still_allowed_for_cli_auth_mirror_row():
+    """Paste-to-save (owner-supplied value) on a cli-auth/* id is unaffected —
+    only the no-value auto-generate path is rejected."""
+    cli_row = _make_cli_row(key="cli-auth/codex", value="real_auth_json_blob")
+    mock_db = _make_db(cli_row=cli_row)
+    client = _build_app(mock_db)
+
+    supplied = "fresh-real-auth-json-blob"
+    resp = client.post(
+        "/api/secrets/cli/cli-auth/codex/rotate",
+        json={"value": supplied},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["value"] == supplied
+
+
+def test_rotate_cli_auto_generate_still_allowed_for_bare_self_issued_id():
+    """Bare ids (no cli-auth/ prefix) — genuinely self-issued tokens — keep the
+    auto-generate behavior unchanged."""
+    cli_row = _make_cli_row(key="generic-token", value="old_generic_value")
+    mock_db = _make_db(cli_row=cli_row)
+    client = _build_app(mock_db)
+
+    resp = client.post("/api/secrets/cli/generic-token/rotate")
+    assert resp.status_code == 200
+    new_value = resp.json()["data"]["value"]
+    assert new_value
+    assert new_value != "old_generic_value"
+
+
 def test_rotate_cli_get_does_not_return_raw_value_after_rotate():
     """Subsequent GET /api/secrets/cli/<id> does NOT return a raw value field.
 

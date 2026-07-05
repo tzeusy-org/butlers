@@ -251,6 +251,32 @@ function ActionArrow({
   );
 }
 
+/**
+ * ProvenanceLine — "where to get this" sourcing hint for a secret template.
+ *
+ * Rendered in the add-panel and the rotate/set-value inline panels for keys
+ * whose SECRET_TEMPLATES entry carries a `provenance` (label + URL). Static
+ * data only — no LLM narration. Absent entirely when there's nothing to link.
+ */
+function ProvenanceLine({ provenance }: { provenance: { label: string; url: string } | undefined }) {
+  if (!provenance) return null;
+  return (
+    <div data-provenance-line="true">
+      <Mono size={10} color="var(--dim)">
+        where to get this ·{" "}
+        <a
+          href={provenance.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "var(--fg)", textDecoration: "underline", textUnderlineOffset: 3 }}
+        >
+          {provenance.label}
+        </a>
+      </Mono>
+    </div>
+  );
+}
+
 // ── PageGoogleAccounts — Google-specific multi-account drawer ────────────────
 
 /**
@@ -1635,6 +1661,8 @@ export function PageSystem({
   const isMissing = credential.rowState === "missing";
   const isLocal = credential.rowState === "local";
   const isPlain = !!credential.plainValue;
+  // "Where to get this" sourcing hint (bu-xn1sr), when this key has one.
+  const systemTemplate = SECRET_TEMPLATES.find((t) => t.key === credential.key);
   // The Google OAuth app keys get a dedicated editor that writes via the oauth
   // PUT endpoint (the correct shared/public location). The generic mutate
   // controls are suppressed for them.
@@ -1972,6 +2000,7 @@ export function PageSystem({
           <Mono size={9} upper tracking="0.14em" color="var(--dim)">
             {isMissing ? "new value" : "replacement value (shared)"}
           </Mono>
+          <ProvenanceLine provenance={systemTemplate?.provenance} />
           <textarea
             rows={3}
             value={setValue}
@@ -2302,11 +2331,20 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
  * PageCli — CLI runtime credential page.
  *
  * Wired actions [bu-ayp6v.5]:
- *   rotate         — useRotateCliRuntime; returned value shown once in copy-once panel
+ *   rotate         — danger confirm (bu-xn1sr) → useRotateCliRuntime; returned
+ *                    value shown once in copy-once panel. Generate is the only
+ *                    mis-click on this page that irrecoverably destroys the old
+ *                    value, so it is gated behind the same two-pill confirm as
+ *                    revoke. Only offered for bare ids (genuinely self-issued
+ *                    tokens) — see isCliAuthMirror below.
  *   revoke         — danger confirm → useRevokeCliRuntime
  *   test           — useTestCLIAuthApiKey (works for all auth modes via /cli-auth/{p}/test)
  *   set token      — value-entry panel → useRotateCliRuntime (token-mode) OR
- *                    useSaveCLIAuthApiKey (api-key mode, e.g. Claude)
+ *                    useSaveCLIAuthApiKey (api-key mode, e.g. Claude). This is
+ *                    also the ONLY rotation path for cli-auth/* rows without a
+ *                    live device_code/api_key match (isCliAuthMirror, bu-xn1sr)
+ *                    — those rows mirror an external CLI's own auth.json, so a
+ *                    server-minted random value would desync the mirror.
  *   api-key save   — useSaveCLIAuthApiKey; api-key mode providers can paste key
  *   api-key delete — useDeleteCLIAuthApiKey
  *
@@ -2347,6 +2385,16 @@ export function PageCli({
   // or "codex" from "cli-auth/codex").
   const providerName = deviceAuth?.providerName ?? cliAuthProviderName(credential.id);
   const isApiKeyMode = deviceAuth?.isApiKeyMode ?? false;
+  // cli-auth/* rows mirror an external CLI's own auth.json (bu-xn1sr) — a
+  // server-minted random value would desync the mirror from the real
+  // credential, since nothing external ever sees or accepts it. Device-code
+  // and api-key mode providers already never reach the generate button below
+  // (they get re-authorize / save-key instead); this additionally covers a
+  // cli-auth/* row whose provider isn't registered in the live auth-mode
+  // lookup (deviceAuth reports neither supported nor isApiKeyMode) — it must
+  // still fall back to paste, never mint. Bare ids (no cli-auth/ prefix) are
+  // genuinely self-issued tokens and keep the generate path.
+  const isCliAuthMirror = credential.id.startsWith("cli-auth/");
 
   const allScopes = Array.from(
     new Set([...credential.scopesGranted, ...credential.scopesRequired]),
@@ -2360,9 +2408,26 @@ export function PageCli({
   const rotateMutation = useRotateCliRuntime();
   const [rotatedSecret, setRotatedSecret] = React.useState<string | null>(null);
 
+  // Generate is the only mis-click on this page that irrecoverably destroys
+  // the old value (bu-xn1sr) — gate it behind the same two-pill confirm
+  // pattern as revoke, rather than firing on a single click.
+  const [generateConfirm, setGenerateConfirm] = React.useState(false);
+
+  function handleGenerateOpen() {
+    setGenerateConfirm(true);
+    setSetTokenOpen(false);
+    setRevokeConfirm(false);
+  }
+
+  function handleGenerateCancel() {
+    setGenerateConfirm(false);
+    rotateMutation.reset();
+  }
+
   // Rotate (true server-generated): no value → backend mints a random token.
   function handleRotate() {
     if (rotateMutation.isPending) return;
+    setGenerateConfirm(false);
     setRotatedSecret(null);
     rotateMutation.mutate(
       { id: credential.id },
@@ -2436,6 +2501,7 @@ export function PageCli({
   function handleSetTokenOpen() {
     setSetTokenOpen(true);
     setRevokeConfirm(false);
+    setGenerateConfirm(false);
   }
 
   function handleSetTokenCancel() {
@@ -2698,6 +2764,39 @@ export function PageCli({
         </div>
       )}
 
+      {/* Generate confirm — the only mis-click on this page that irrecoverably
+          destroys the old value (bu-xn1sr); same two-pill pattern as revoke. */}
+      {generateConfirm && (
+        <div
+          className="flex flex-col gap-3 p-3.5"
+          style={{ border: "1px solid var(--red)", background: "var(--bg-elev)" }}
+          data-generate-confirm="true"
+        >
+          <Mono size={11} color="var(--red)">
+            Generate a new token? The current value will be replaced and cannot be recovered.
+          </Mono>
+          {rotateMutation.error && (
+            <Mono size={11} color="var(--red)">
+              {rotateMutation.error instanceof Error
+                ? rotateMutation.error.message
+                : "Rotate failed."}
+            </Mono>
+          )}
+          <div className="flex gap-2">
+            <PillBtn
+              variant="danger"
+              onClick={handleRotate}
+              disabled={rotateMutation.isPending}
+            >
+              {rotateMutation.isPending ? "generating…" : "yes, generate"}
+            </PillBtn>
+            <PillBtn onClick={handleGenerateCancel} disabled={rotateMutation.isPending}>
+              cancel
+            </PillBtn>
+          </div>
+        </div>
+      )}
+
       {/* Revoke inline confirm */}
       {revokeConfirm && (
         <div
@@ -2786,12 +2885,31 @@ export function PageCli({
             >
               set token
             </PillBtn>
+          ) : isCliAuthMirror ? (
+            // cli-auth/* mirror with no live device_code/api_key match (e.g. the
+            // provider registry entry is missing) — never offer generate; the
+            // only rotation path is pasting the real value (bu-xn1sr).
+            <>
+              <PillBtn
+                variant={credential.state === "expiring" ? "commit" : "pill"}
+                onClick={handleSetTokenOpen}
+                disabled={setTokenOpen}
+              >
+                update token
+              </PillBtn>
+              <PillBtn
+                onClick={handleTest}
+                disabled={testMutation.isPending}
+              >
+                {testMutation.isPending ? "testing…" : "test"}
+              </PillBtn>
+            </>
           ) : (
             <>
               <PillBtn
                 variant={credential.state === "expiring" ? "commit" : "pill"}
-                onClick={handleRotate}
-                disabled={rotateMutation.isPending}
+                onClick={handleGenerateOpen}
+                disabled={generateConfirm || rotateMutation.isPending}
               >
                 {rotateMutation.isPending ? "rotating…" : "rotate"}
               </PillBtn>
@@ -2809,7 +2927,7 @@ export function PageCli({
             {!isMissing && !isApiKeyMode && (
               <PillBtn
                 variant="danger"
-                onClick={() => { setRevokeConfirm(true); setSetTokenOpen(false); }}
+                onClick={() => { setRevokeConfirm(true); setSetTokenOpen(false); setGenerateConfirm(false); }}
                 disabled={revokeConfirm}
               >
                 revoke
@@ -3155,6 +3273,9 @@ export function PassportAddPanel({
                 <option key={t.key} value={t.key}>{t.description}</option>
               ))}
             </datalist>
+            <ProvenanceLine
+              provenance={SECRET_TEMPLATES.find((t) => t.key === systemKey.trim().toUpperCase())?.provenance}
+            />
           </div>
 
           {/* Value field */}

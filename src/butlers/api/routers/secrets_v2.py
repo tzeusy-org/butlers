@@ -5013,6 +5013,16 @@ async def rotate_cli_credential(
       server-minted tokens.  Auto-generate still requires the token to already
       exist (404 on unknown id).
 
+      **Not available for ``cli-auth/*`` ids** (bu-xn1sr): those rows mirror an
+      external CLI's own ``auth.json`` (``butlers.cli_auth.persistence``) —
+      minting a random value here would desync the mirror from the real
+      credential, since nothing external ever sees or accepts the generated
+      value. Auth-mode credentials rotate via re-authorize (device-code) or by
+      pasting the real value (api-key / token set). Requesting auto-generate
+      for a ``cli-auth/*`` id returns 400. Bare ids (category ``cli``,
+      created by this endpoint itself for genuinely self-issued tokens) are
+      unaffected.
+
     The raw value is returned **exactly once** in this response body.
     No GET endpoint exposes raw values (fingerprint-only), so this is the
     sole opportunity for the owner to record the value.
@@ -5043,6 +5053,17 @@ async def rotate_cli_credential(
         # token, so 404 when there is nothing to rotate.
         if existing is None:
             raise HTTPException(status_code=404, detail="CLI credential not found")
+        # cli-auth/* rows mirror an external CLI's auth.json — a server-minted
+        # random value would desync the mirror from the real credential (see
+        # docstring). Reject; the UI never offers this path for these ids.
+        if credential_id.startswith("cli-auth/"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Auto-generate is not supported for auth-mode CLI credentials "
+                    "(cli-auth/*). Re-authorize or paste the real token instead."
+                ),
+            )
         new_value = _secrets_mod.token_urlsafe(32)
         audit_note = "Value regenerated via rotate endpoint"
     else:

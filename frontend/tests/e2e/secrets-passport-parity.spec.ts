@@ -607,7 +607,7 @@ test.describe("PageCli (C22–C28)", () => {
     await expect(revealBtn).not.toBeAttached({ timeout: 2_000 });
   });
 
-  test("C23: CLI rotate -- fires rotate mutation, shows copy-once panel with new token", async ({ page }) => {
+  test("C23: CLI rotate -- confirms before generate, shows copy-once panel with new token", async ({ page }) => {
     // Covers C23 -- rotate (non-device_code, non-api_key mode)
     // Add a generic-token CLI credential that has no auth provider entry,
     // so useCliDeviceAuth returns supported=false, isApiKeyMode=false.
@@ -630,14 +630,48 @@ test.describe("PageCli (C22–C28)", () => {
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
     await page.locator('[data-page="cli"]').waitFor({ timeout: 5_000 });
 
-    // In non-device-code, non-api_key mode, "rotate" fires the rotation mutation directly
+    // In non-device-code, non-api_key mode, "rotate" opens a danger confirm
+    // first (bu-xn1sr) -- it does not fire the mutation on the first click.
     const rotateBtn = page.locator('[data-page="cli"] button', { hasText: /^rotate$/ });
     await expect(rotateBtn).toBeAttached({ timeout: 5_000 });
     await rotateBtn.click();
 
+    await expect(page.locator('[data-generate-confirm="true"]')).toBeAttached({ timeout: 3_000 });
+    await expect(page.locator('[data-rotated-secret-panel="true"]')).not.toBeAttached();
+
+    const confirmBtn = page.locator('[data-generate-confirm="true"] button', { hasText: /yes, generate/ });
+    await confirmBtn.click();
+
     // The rotate mock returns { data: { fingerprint: ..., value: "new-rotated-token-value" } }
     // After success, rotatedSecret is set and the copy-once panel appears
     await expect(page.locator('[data-rotated-secret-panel="true"]')).toBeAttached({ timeout: 5_000 });
+  });
+
+  test("C23b: CLI rotate -- cli-auth/* mirror rows never offer generate (bu-xn1sr)", async ({ page }) => {
+    // cli-auth/<provider> rows mirror an external CLI's own auth.json; minting
+    // a random value would desync the mirror. No provider registry entry for
+    // this id, so device-code/api-key detection also misses -- the only
+    // rotation path offered must be paste ("update token"), never generate.
+    await mockAllSecretRoutes(page);
+    const inventoryWithMirror = JSON.parse(JSON.stringify(MOCK_INVENTORY_RESPONSE));
+    inventoryWithMirror.data.cli.push({
+      key: "cli-auth/orphan-provider",
+      category: "cli-auth",
+      description: "Orphaned CLI auth mirror",
+      state: "ok",
+      fingerprint: "sha256:orphan01",
+      last_verified: "13:00 today",
+      test: { ok: true, code: 200, at: "13:00 today" },
+    });
+    await page.route("**/api/secrets/inventory**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(inventoryWithMirror) })
+    );
+    await page.goto("/secrets?focus=c:cli-auth/orphan-provider", { timeout: 15_000 });
+    await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
+    await page.locator('[data-page="cli"]').waitFor({ timeout: 5_000 });
+
+    await expect(page.locator('[data-page="cli"] button', { hasText: /^rotate$/ })).not.toBeAttached({ timeout: 2_000 });
+    await expect(page.locator('[data-page="cli"] button', { hasText: /^update token$/ })).toBeAttached({ timeout: 3_000 });
   });
 
   test("C24: CLI revoke -- opens confirm, fires revoke mutation (danger confirm flow)", async ({ page }) => {

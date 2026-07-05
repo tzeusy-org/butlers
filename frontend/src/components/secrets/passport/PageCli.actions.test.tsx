@@ -3,11 +3,14 @@
 // PageCli — action-wiring tests [bu-ayp6v.5]
 //
 // Coverage:
-//   - rotate: calls useRotateCliRuntime and shows copy-once panel on success
+//   - rotate: opens a danger confirm (bu-xn1sr) before calling
+//     useRotateCliRuntime; shows copy-once panel on success
 //   - revoke: shows danger confirm; calls useRevokeCliRuntime on confirm
 //   - api-key save (isApiKeyMode): opens set-token panel, calls useSaveCLIAuthApiKey
 //   - api-key delete (isApiKeyMode): calls useDeleteCLIAuthApiKey
 //   - test button: calls useTestCLIAuthApiKey
+//   - cli-auth/* mirror rows (bu-xn1sr): no rotate/generate button; paste-only
+//     "update token" instead
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, afterEach } from "vitest";
@@ -97,15 +100,36 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("PageCli: rotate action", () => {
-  it("rotate button triggers rotateCliCredential and shows copy-once panel", async () => {
+  it("rotate button opens a danger confirm before calling rotateCliCredential", () => {
+    renderWithQuery(<PageCli credential={cred()} />);
+
+    const rotateBtn = screen.getByRole("button", { name: /^rotate$/i });
+    fireEvent.click(rotateBtn);
+
+    expect(document.querySelector("[data-generate-confirm]")).toBeTruthy();
+    expect(screen.getByText(/cannot be recovered/i)).toBeTruthy();
+    expect(apiClient.rotateCliCredential).not.toHaveBeenCalled();
+  });
+
+  it("cancel on the generate confirm closes it without calling rotateCliCredential", () => {
+    renderWithQuery(<PageCli credential={cred()} />);
+    fireEvent.click(screen.getByRole("button", { name: /^rotate$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    expect(document.querySelector("[data-generate-confirm]")).toBeNull();
+    expect(apiClient.rotateCliCredential).not.toHaveBeenCalled();
+  });
+
+  it("confirming generate triggers rotateCliCredential and shows copy-once panel", async () => {
     vi.mocked(apiClient.rotateCliCredential).mockResolvedValueOnce(
       { data: { fingerprint: "abc123", value: "new-tok-xyz" } } as ReturnType<typeof apiClient.rotateCliCredential> extends Promise<infer T> ? T : never,
     );
 
     renderWithQuery(<PageCli credential={cred()} />);
-
-    const rotateBtn = screen.getByRole("button", { name: /^rotate$/i });
-    await act(async () => { fireEvent.click(rotateBtn); });
+    fireEvent.click(screen.getByRole("button", { name: /^rotate$/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /yes, generate/i }));
+    });
 
     expect(apiClient.rotateCliCredential).toHaveBeenCalledWith("claude-cli");
     // Copy-once panel rendered with the new value
@@ -119,7 +143,10 @@ describe("PageCli: rotate action", () => {
     );
 
     renderWithQuery(<PageCli credential={cred()} />);
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^rotate$/i })); });
+    fireEvent.click(screen.getByRole("button", { name: /^rotate$/i }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /yes, generate/i }));
+    });
 
     await waitFor(() => expect(screen.getByText("sec-tok")).toBeTruthy());
     // Both copy and dismiss present
@@ -134,6 +161,47 @@ describe("PageCli: rotate action", () => {
   it("rotate panel is absent before rotate is called", () => {
     renderWithQuery(<PageCli credential={cred()} />);
     expect(document.querySelector("[data-rotated-secret-panel]")).toBeNull();
+    expect(document.querySelector("[data-generate-confirm]")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cli-auth/* mirror rows: no generate, paste-only (bu-xn1sr defect 2)
+// ---------------------------------------------------------------------------
+
+describe("PageCli: cli-auth/* mirror rows never offer generate", () => {
+  it("shows 'update token' instead of 'rotate' for a cli-auth/* id", () => {
+    renderWithQuery(<PageCli credential={cred({ id: "cli-auth/some-provider" })} />);
+
+    expect(screen.queryByRole("button", { name: /^rotate$/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^update token$/i })).toBeTruthy();
+  });
+
+  it("'update token' opens the paste panel and persists the exact pasted value", async () => {
+    vi.mocked(apiClient.rotateCliCredential).mockResolvedValueOnce(
+      { data: { fingerprint: "fp", value: "real-auth-json" } } as ReturnType<typeof apiClient.rotateCliCredential> extends Promise<infer T> ? T : never,
+    );
+
+    renderWithQuery(<PageCli credential={cred({ id: "cli-auth/some-provider" })} />);
+    fireEvent.click(screen.getByRole("button", { name: /^update token$/i }));
+
+    const panel = document.querySelector("[data-set-token-panel]");
+    expect(panel).toBeTruthy();
+    const textarea = panel!.querySelector("textarea")!;
+    fireEvent.change(textarea, { target: { value: "real-auth-json" } });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    });
+
+    expect(apiClient.rotateCliCredential).toHaveBeenCalledWith("cli-auth/some-provider", "real-auth-json");
+  });
+
+  it("bare (non cli-auth/*) ids still get the generate/rotate path", () => {
+    renderWithQuery(<PageCli credential={cred({ id: "generic-token" })} />);
+
+    expect(screen.getByRole("button", { name: /^rotate$/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^update token$/i })).toBeNull();
   });
 });
 
