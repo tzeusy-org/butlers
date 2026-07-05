@@ -493,18 +493,27 @@ export const API_REQUEST_TIMEOUT_MS = 15_000;
  */
 export async function apiFetch<T>(
   path: string,
-  options?: RequestInit,
+  options?: RequestInit & {
+    /**
+     * Per-call override of {@link API_REQUEST_TIMEOUT_MS} for endpoints whose
+     * happy path is legitimately slow (e.g. the CLI credential test runs a
+     * provider subprocess with a 30s backend budget). Not part of RequestInit
+     * — stripped before the fetch call.
+     */
+    timeoutMs?: number;
+  },
 ): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
+  const { timeoutMs = API_REQUEST_TIMEOUT_MS, ...fetchOptions } = options ?? {};
 
   const controller = new AbortController();
   let timedOut = false;
   const timeoutId = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, API_REQUEST_TIMEOUT_MS);
+  }, timeoutMs);
 
-  const callerSignal = options?.signal;
+  const callerSignal = fetchOptions.signal;
   const forwardAbort = () => controller.abort();
   if (callerSignal) {
     if (callerSignal.aborted) controller.abort();
@@ -514,12 +523,12 @@ export async function apiFetch<T>(
   let response: Response;
   try {
     response = await fetch(url, {
-      ...options,
+      ...fetchOptions,
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
-        ...options?.headers,
+        ...fetchOptions.headers,
       },
     });
   } catch (err) {
@@ -529,7 +538,7 @@ export async function apiFetch<T>(
     if (timedOut) {
       throw new ApiError(
         "TIMEOUT",
-        `Request timed out after ${API_REQUEST_TIMEOUT_MS / 1000}s`,
+        `Request timed out after ${timeoutMs / 1000}s`,
         0,
       );
     }
@@ -3880,10 +3889,16 @@ export function deleteCLIAuthApiKey(provider: string): Promise<{ status: string 
   });
 }
 
-/** Test a stored API key by running the provider's test command. */
+/** Test a stored API key by running the provider's test command.
+ *
+ * The backend runs the provider's real test subprocess (an LLM prompt for
+ * api_key providers, a live auth probe for device_code providers) with a 30s
+ * budget — the default 15s apiFetch timeout would abort legitimate runs.
+ */
 export function testCLIAuthApiKey(provider: string): Promise<CLIAuthTestResponse> {
   return apiFetch<CLIAuthTestResponse>(`/cli-auth/${provider}/test`, {
     method: "POST",
+    timeoutMs: 45_000,
   });
 }
 

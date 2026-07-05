@@ -156,17 +156,22 @@ _register(
         binary_name="opencode",
         # Token is stored inside the shared opencode auth.json
         token_path=Path.home() / ".local" / "share" / "opencode" / "auth.json",
-        # Test: run a minimal prompt with an OpenCode Go model
+        # Test: run a minimal prompt with an OpenCode Go model.
+        # Plain output (no --format json): the NDJSON event stream never put
+        # the model's reply in the first chars the ok-pattern is matched
+        # against, so every test "failed" despite a working key.
+        # Model ids rot as the roster evolves (minimax-m2.5 was retired
+        # 2026-07 and made every test fail with "model not found") — if this
+        # fails with a suggestions list, repin to a current id from
+        # `opencode models | grep opencode-go`.
         test_command=[
             "opencode",
             "run",
-            "--format",
-            "json",
             "--model",
-            "opencode-go/minimax-m2.5",
-            "respond with ok",
+            "opencode-go/minimax-m3",
+            "respond with only the word ok",
         ],
-        test_ok_pattern=re.compile(r"(?:ok|OK|Ok)", re.IGNORECASE),
+        test_ok_pattern=re.compile(r"\bok\b", re.IGNORECASE),
     )
 )
 
