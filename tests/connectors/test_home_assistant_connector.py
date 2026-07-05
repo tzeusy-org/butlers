@@ -265,27 +265,33 @@ async def test_pipeline_filters_excluded_domain() -> None:
 
 @pytest.mark.asyncio
 async def test_pipeline_passes_person_entity() -> None:
-    """person.* entities pass the domain filter (person not in default allowlist — excluded)."""
+    """person.* entities pass the domain filter by default.
+
+    "person" powers the Chronicler presence_episode projector, which reads
+    domain == "person" rows from connectors.home_assistant_history (see
+    _dispatch). It must be in the default domain allowlist or that table
+    (and presence_episodes) stay permanently empty regardless of connectivity
+    (bu-whhll.3).
+    """
     from butlers.connectors.home_assistant_pipeline import HAFilterPipeline, HAFilterPipelineConfig
 
-    # person is NOT in the default allowlist — but the dispatch adds person to track for history
-    # The pipeline itself will filter it out since person is not in default allowlist.
-    # This test verifies the expected behavior: person events are filtered by domain unless
-    # the domain allowlist includes 'person'.
     pipeline = HAFilterPipeline(config=HAFilterPipelineConfig(), evaluator=None, metrics=None)
-    result = await pipeline.run(entity_id="person.tzeusy", domain="person")
-    # person is not in default allowlist → domain_filter
-    assert result.verdict == "filtered"
-    assert result.stage == "domain_filter"
+    result = await pipeline.run(
+        entity_id="person.tzeusy",
+        domain="person",
+        old_state_str="not_home",
+        new_state_str="home",  # binary-style state → always passes Layer 2
+    )
+    assert result.verdict == "pass"
 
 
 @pytest.mark.asyncio
-async def test_pipeline_passes_person_entity_with_custom_allowlist() -> None:
-    """person.* passes when 'person' is added to the domain allowlist."""
+async def test_pipeline_filters_person_entity_when_excluded_from_allowlist() -> None:
+    """person.* is filtered by domain when explicitly excluded from the allowlist."""
     from butlers.connectors.home_assistant import _DEFAULT_DOMAIN_ALLOWLIST
     from butlers.connectors.home_assistant_pipeline import HAFilterPipeline, HAFilterPipelineConfig
 
-    allowlist = frozenset(_DEFAULT_DOMAIN_ALLOWLIST | {"person"})
+    allowlist = frozenset(_DEFAULT_DOMAIN_ALLOWLIST - {"person"})
     pipeline = HAFilterPipeline(
         config=HAFilterPipelineConfig(domain_allowlist=allowlist),
         evaluator=None,
@@ -295,6 +301,32 @@ async def test_pipeline_passes_person_entity_with_custom_allowlist() -> None:
         entity_id="person.tzeusy",
         domain="person",
         old_state_str="not_home",
-        new_state_str="home",  # binary-style state → always passes Layer 2
+        new_state_str="home",
     )
-    assert result.verdict == "pass"
+    assert result.verdict == "filtered"
+    assert result.stage == "domain_filter"
+
+
+def test_main_waits_for_switchboard_ready_before_ws_ingress() -> None:
+    """_main() must probe Switchboard readiness before starting WS ingress.
+
+    Every other connector (owntracks, gmail, telegram_bot, google_health,
+    google_calendar, steam, spotify, live_listener) guards its ingress loop
+    with ``wait_for_switchboard_ready`` so the initial burst of upstream
+    events isn't delivered into a ConnectionError while the Switchboard
+    butler (butlers-up) is still starting up. home_assistant was missing this
+    call (bu-whhll.3); this pins the fix so it can't silently regress.
+    """
+    import inspect
+
+    from butlers.connectors import home_assistant
+
+    assert home_assistant.wait_for_switchboard_ready is not None
+
+    source = inspect.getsource(home_assistant._main)
+    wait_idx = source.index("wait_for_switchboard_ready(")
+    ws_task_idx = source.index("asyncio.create_task(ws_client.run())")
+    assert wait_idx < ws_task_idx, (
+        "wait_for_switchboard_ready(...) must be awaited before the WS client "
+        "task is created, or HA events race Switchboard startup again"
+    )

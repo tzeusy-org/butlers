@@ -28,9 +28,11 @@ Environment variables:
 - CONNECTOR_HEALTH_PORT (default: 40087)
 - HA_BASE_URL: HA instance base URL (overrides entity_info)
 - HA_ACCESS_TOKEN: HA long-lived access token (overrides entity_info)
-- HA_DOMAIN_ALLOWLIST: comma-separated domain allowlist (default does NOT include
-  ``person``; add ``person`` to capture presence/location data into
-  ``connectors.home_assistant_history``)
+- HA_DOMAIN_ALLOWLIST: comma-separated domain allowlist (default now includes
+  ``person`` — see ``_DEFAULT_DOMAIN_ALLOWLIST``, bu-whhll.3 — which feeds
+  presence/location data into ``connectors.home_assistant_history``; setting
+  this variable REPLACES the entire default list, so omitting ``person`` here
+  silently re-drops presence data)
 - HA_POLL_INTERVAL_S (default: 60): REST fallback poll interval
 - HA_CHECKPOINT_OVERLAP_S (default: 30): checkpoint resume safety margin
 - HA_WS_PING_INTERVAL_S (default: 30): WebSocket keepalive ping interval
@@ -79,7 +81,7 @@ from butlers.connectors.home_assistant_wellness import (
     WellnessRule,
     parse_rules_extra,
 )
-from butlers.connectors.mcp_client import CachedMCPClient
+from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 
 if TYPE_CHECKING:
@@ -126,6 +128,14 @@ _DEFAULT_DOMAIN_ALLOWLIST = frozenset(
         "binary_sensor",
         "automation",
         "script",
+        # "person" powers the presence_episode projector (Chronicler): the
+        # dispatcher only persists home_assistant_history rows for domain ==
+        # "person" (see _dispatch), and the significance filter already
+        # bypasses "home"/"away" as binary states — this domain was omitted
+        # from the default allowlist, silently dropping every person.* event
+        # at Layer 1 and leaving connectors.home_assistant_history permanently
+        # empty regardless of connectivity (bu-whhll.3).
+        "person",
     }
 )
 
@@ -1874,6 +1884,18 @@ async def _main() -> None:
             return
         except Exception:
             logger.warning("ha-connector: reorder flush loop error", exc_info=True)
+
+    # Wait for Switchboard readiness before starting event ingress. Without
+    # this, the WS client (which connects to Home Assistant directly and can
+    # start delivering events within milliseconds) races the Switchboard
+    # butler's own startup and delivers the initial burst of HA events into a
+    # ConnectionError from CachedMCPClient — every other connector (owntracks,
+    # gmail, telegram_bot, etc.) already guards its ingress loop with this
+    # probe; home_assistant was the one gap (bu-whhll.3).
+    try:
+        await wait_for_switchboard_ready(config.switchboard_mcp_url)
+    except TimeoutError:
+        logger.warning("HAConnector: Switchboard readiness probe timed out; proceeding anyway")
 
     # Run the WS client; stop when a signal arrives
     ws_task = asyncio.create_task(ws_client.run())

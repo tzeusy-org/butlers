@@ -477,6 +477,9 @@ class HAFilterPipelineConfig:
                 "binary_sensor",
                 "automation",
                 "script",
+                # Keep in sync with home_assistant.py::_DEFAULT_DOMAIN_ALLOWLIST —
+                # "person" powers the presence_episode projector.
+                "person",
             }
         )
     )
