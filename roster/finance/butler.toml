@@ -42,127 +42,40 @@ groups = ["core", "entity"]
 [modules.finance]
 groups = ["core", "subscriptions", "bills", "analytics", "bulk", "intelligence", "budgets"]
 
-[[butler.schedule]]
-name = "upcoming-bills-check"
-cron = "15 21 * * 0"
-prompt = """
-Weekly bills check. Follow the upcoming-bills-check skill for the full protocol.
-
-STEP 0 — Reconciliation sweep (FIRST): call reconcile_bills(lookback_days=90) to auto-settle
-any bills matched by existing payment transactions (backstop for the inline hook). Capture
-auto_settled (bills just paid) and candidates (ambiguous matches needing confirmation).
-
-STEP 1 — Fetch bills: call upcoming_bills(days_ahead=14, include_overdue=true) and
-predict_bills(days_ahead=30). These now reflect the post-reconciliation state.
-
-STEP 2 — Early exit: if reconcile_bills returned nothing AND upcoming_bills is empty AND
-predict_bills has no untracked patterns, do not send a message.
-
-STEP 3 — Compose urgency-ranked digest including:
-  - ✅ AUTO-SETTLED: bills settled in this sweep (reconcile_bills.auto_settled)
-  - ❓ CONFIRM NEEDED: ambiguous matches (reconcile_bills.candidates)
-  - 🚨 OVERDUE / 🔴 DUE TODAY / 🟠 DUE SOON / 🟡 UPCOMING: remaining unpaid bills
-  - Total still due (unpaid only)
-  - 📈 PREDICTED: untracked recurring patterns from predict_bills
-
-Send via notify(channel="telegram", intent="send", message=<digest>).
-If no content across all sections, do not send a message.
-"""
-
-[[butler.schedule]]
-name = "subscription-renewal-alerts"
-cron = "20 21 * * 0"
-prompt = """
-Weekly subscription renewal scan. Check for subscriptions renewing within the next 7 days.
-For each upcoming renewal, include the service name, amount, and renewal date.
-
-Also call detect_price_changes(days_back=60) to identify subscriptions where the recent charge
-amount differs from the recorded subscription amount. Flag any price changes — include the
-previous amount, new amount, and percentage change so the owner can decide whether to accept
-the new price or cancel.
-
-Flag any subscriptions where the user may want to review before auto-renewal.
-If any renewals are approaching or price changes are detected, send the summary via
-notify(channel="telegram", intent="send", message=<renewal_summary>).
-If no renewals are upcoming and no price changes detected, do not send a message.
-"""
-
-[[butler.schedule]]
-name = "monthly-spending-summary"
-cron = "0 9 1 * *"
-prompt = """
-Monthly spending summary. Use spending_summary for the previous calendar month, grouped by category.
-Include:
-- Total spend for the month
-- Top spending categories with amounts
-- Notable changes compared to the prior month using spending_trends(comparison="month_over_month", months=2)
-- Budget status: call budget_status() and include per-category utilization and any warning/exceeded categories
-- Anomaly count: call anomaly_scan(days_back=30) and report the number of anomalies flagged, with a brief summary of the most significant ones
-- Subscription audit summary: call subscription_audit() and report total active subscriptions, annual cost projection, and any new or changed subscriptions detected since last audit
-- Net worth update prompt: remind owner to run net_worth_snapshot() if account balances have changed
-- Any outstanding obligations carried forward
-
-Send the formatted monthly overview via
-notify(channel="telegram", intent="send", message=<monthly_overview>).
-"""
-
-[[butler.schedule]]
-name = "anomaly-digest"
-cron = "0 21 * * *"
-prompt = """
-Daily anomaly digest. Call anomaly_scan(days_back=1, sensitivity="medium") to check for
-spending anomalies in the past 24 hours. Anomaly types to detect: unusually large transactions
-(vs merchant or category baseline), new merchants not seen before, and category velocity spikes.
-
-If anomalies are found, notify the owner via Telegram with a concise list:
-- Anomaly type and severity
-- Merchant and amount
-- Why it was flagged (brief explanation)
-
-Use notify(channel="telegram", intent="send", message=<formatted_digest>).
-If no anomalies are detected, do not send a message.
-"""
-
-[[butler.schedule]]
-name = "budget-status-check"
-cron = "0 9 * * 1"
-prompt = """
-Weekly budget status check. Call budget_status() to get the current spending status for all
-active budget categories. Review each category for:
-- warning: spending has reached the warn_threshold percentage
-- exceeded: spending has surpassed the alert_threshold or budget limit
-
-If any category is in warning or exceeded status, notify the owner via Telegram with:
-- Category name
-- Budget amount and current spend
-- Utilization percentage
-- Status (warning or exceeded)
-
-Use notify(channel="telegram", intent="send", message=<formatted_status>).
-If all categories are on_track, do not send a message.
-"""
-
-[[butler.schedule]]
-name = "subscription-audit-monthly"
-cron = "0 10 1 * *"
-prompt = """
-Monthly subscription audit. Call subscription_audit() to get a complete picture of all active
-subscriptions and detected recurring charges. The audit should include:
-- Total active subscriptions and their combined monthly and annual cost projections
-- Any subscriptions where the price has changed since the last audit
-- Any newly detected recurring charges not yet tracked as subscriptions
-- Any subscriptions that appear to have lapsed or been cancelled
-
-Notify the owner via Telegram with a structured audit summary.
-Use notify(channel="telegram", intent="send", message=<formatted_audit>).
-Always send the audit summary — this is a monthly review that should always fire.
-"""
-
+# bu-rvz2o: the six direct-notify prompt-mode tasks that used to live here
+# (upcoming-bills-check, subscription-renewal-alerts, monthly-spending-summary,
+# anomaly-digest, budget-status-check, subscription-audit-monthly) called
+# notify() directly, bypassing the insight broker's dedup/cooldown/quiet-hours/
+# owner-verbosity machinery entirely. They have been absorbed into
+# insight-scan (budget thresholds now respect each budget's own configured
+# warn/alert thresholds; subscription price-change detection added) plus
+# three new deterministic jobs below (bill-reconciliation-sweep,
+# anomaly-insight-scan, monthly-finance-digest) that propose insight
+# candidates instead of composing an LLM digest. See PR description for the
+# full task -> disposition mapping.
 [[butler.schedule]]
 name = "insight-scan"
-cron = "0 7 30 * *"
+cron = "0 7 * * *"
 dispatch_mode = "job"
 job_name = "insight_scan"
+
+[[butler.schedule]]
+name = "bill-reconciliation-sweep"
+cron = "15 21 * * 0"
+dispatch_mode = "job"
+job_name = "bill_reconciliation_sweep"
+
+[[butler.schedule]]
+name = "anomaly-insight-scan"
+cron = "0 21 * * *"
+dispatch_mode = "job"
+job_name = "anomaly_insight_scan"
+
+[[butler.schedule]]
+name = "monthly-finance-digest"
+cron = "0 9 1 * *"
+dispatch_mode = "job"
+job_name = "monthly_finance_digest"
 
 [[butler.schedule]]
 name = "daily_briefing_contribution"

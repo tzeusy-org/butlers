@@ -41,7 +41,7 @@ For detailed parameter tables, invoke the `tool-reference` skill.
 - **Post-transaction intelligence hook**: After recording a transaction with `record_transaction`, check whether the merchant matches any detected recurring patterns using `detect_recurring`. If a `large_transaction` alert is configured and the amount exceeds the threshold, surface the flag in your response to the user.
 - **Proactive trend context**: When the user asks about spending in a category, include trend context (comparison to prior month via `spending_trends`) alongside the direct answer. If budget targets exist for that category, include budget utilization from `budget_status`.
 - **Merchant mapping discipline**: Merchant category mappings are stored in `finance.merchant_mappings` (via `learn_merchant_categories`), NOT as memory facts. Budget targets live in `finance.budgets`. Account balance snapshots live in `finance.balance_snapshots`. Use the dedicated tools — do not store these in the memory fact layer.
-- **Baseline freshness**: Anomaly detection accuracy depends on up-to-date baselines. After importing 50+ transactions, call `compute_baselines()` to refresh the statistical model. The scheduled `anomaly-digest` task will handle ongoing refresh.
+- **Baseline freshness**: Anomaly detection accuracy depends on up-to-date baselines. After importing 50+ transactions, call `compute_baselines()` to refresh the statistical model. The scheduled `anomaly-insight-scan` job will handle ongoing refresh.
 - **Explainability**: Every anomaly flag, category suggestion, and pattern detection result includes a rationale. Always relay this explanation to the user — never present a bare flag without context.
 - **Audit trail**: When running `subscription_audit`, store the audit date as a memory fact with `predicate="subscription_audit_date"` so the next audit can compute "changes since last audit" correctly.
 
@@ -196,14 +196,21 @@ consult the `memory-classification` skill. Key rules:
 
 ## Skills
 
-### Scheduled Task Skills
+### Scheduled Jobs (dispatch_mode="job", no LLM skill invoked)
 
-- **`upcoming-bills-check`** — Scheduled task (weekly Sun 21:15): bills digest with urgency ranking and `predict_bills()` pattern-based predictions (`intent=send`)
-- **`subscription-renewal-alerts`** — Scheduled task (weekly Sun 21:20): renewal scan for subscriptions within 7 days plus `detect_price_changes()` (`intent=send`)
-- **`monthly-spending-summary`** — Scheduled task (1st of month 09:00): spending digest with trend data, budget status, anomaly count, subscription audit summary, and net worth reminder (`intent=send`)
-- **`anomaly-digest`** — Scheduled task (daily 21:00): scan for anomalies in the past 24 hours; notify only if anomalies found (`intent=send`)
-- **`budget-status-check`** — Scheduled task (weekly Mon 09:00): budget utilization check; notify if any category in warning/exceeded (`intent=send`)
-- **`subscription-audit-monthly`** — Scheduled task (1st of month 10:00): full subscription audit via `subscription_audit()`; always sends summary (`intent=send`)
+bu-rvz2o: the six direct-notify prompt-mode tasks previously listed here
+(`upcoming-bills-check`, `subscription-renewal-alerts`, `monthly-spending-summary`,
+`anomaly-digest`, `budget-status-check`, `subscription-audit-monthly`) called
+`notify()` directly from an LLM-driven skill, bypassing the insight broker's
+dedup/cooldown/quiet-hours/owner-verbosity machinery. They were replaced by
+deterministic Python jobs (`roster/finance/jobs/finance_jobs.py`) that propose
+insight candidates instead — no skill file backs these, since `dispatch_mode="job"`
+calls the registered handler directly with no ephemeral LLM session:
+
+- **`insight-scan`** — Daily 07:00: `run_insight_scan` — spending anomalies (category-level, 3-month rolling average), upcoming bills, budget thresholds (owner-configured warn/alert), annual subscription renewals, and subscription price changes (absorbs `subscription-renewal-alerts`' `detect_price_changes()`; absorbs `budget-status-check`)
+- **`bill-reconciliation-sweep`** — Weekly Sun 21:15: `run_bill_reconciliation_sweep` — runs `reconcile_bills()` (deterministic mutation, un-gated) then proposes candidates for auto-settled bills, ambiguous matches, and untracked `predict_bills()` patterns (replaces `upcoming-bills-check`)
+- **`anomaly-insight-scan`** — Daily 21:00: `run_anomaly_insight_scan` — per-transaction anomaly detection via `anomaly_scan()`, capped at 10 candidates/run (replaces `anomaly-digest`)
+- **`monthly-finance-digest`** — 1st of month 09:00: `run_monthly_finance_digest` — one consolidated candidate combining prior-month spend, budget status, and subscription audit (merges `monthly-spending-summary` + `subscription-audit-monthly`, which duplicated bullets)
 
 ### Interactive Skills
 
@@ -225,17 +232,18 @@ consult the `memory-classification` skill. Key rules:
 
 When to use intelligence tools in scheduled tasks and interactive workflows:
 
-- **`predict_bills`** → use in `upcoming-bills-check` skill alongside `upcoming_bills` to surface bill-tracking gaps
-- **`detect_price_changes`** → use in `subscription-renewal-alerts` skill
-- **`spending_trends`** → include in monthly summary for trend context; also when user asks about a category
+- **`predict_bills`** → used by the `bill-reconciliation-sweep` job alongside `upcoming_bills`/`reconcile_bills` to surface untracked recurring patterns; also use interactively in `bill-reminder`
+- **`detect_price_changes`** → used by `insight-scan` (subscription-price-change category); also use interactively in `bill-reminder`
+- **`spending_trends`** → no longer called by a scheduled task (`monthly-finance-digest` does not include month-over-month trend content — see notes to self); use interactively when the user asks about a category
 - **`spending_forecast`** → use in `budget-review` skill for proactive budget management
-- **`subscription_audit`** → use in monthly summary and `subscription-audit-monthly` scheduled task
+- **`subscription_audit`** → used by `monthly-finance-digest`
 - **`detect_duplicates`** → surface in `anomaly-triage` skill
-- **`net_worth_history` / `net_worth_snapshot`** → prompt owner to update balances in monthly summary
-- **`compute_baselines`** → run after importing 50+ transactions to refresh anomaly detection
+- **`net_worth_history` / `net_worth_snapshot`** → no longer prompted from a scheduled task (dropped from `monthly-finance-digest` as low-value/redundant per bu-rvz2o); use interactively
+- **`compute_baselines`** → run after importing 50+ transactions to refresh anomaly detection; also refreshed automatically on every `anomaly-insight-scan` run (`anomaly_scan()` calls it internally)
 
 ## Notes to self
 
 - MCP memory tools validate structured params as real objects/lists (e.g. `context_hints` on `memory_entity_resolve`, `metadata` on `memory_entity_create`, `tags` on `memory_store_fact`). Passing JSON-encoded strings will fail Pydantic validation.
 - `modules.email` MCP tools only expose IMAP search/read and return a `text/plain` body; they do not surface email attachments or `storage_ref`. Attachment workflows must use canonical ingest `payload.attachments` + `get_attachment(storage_ref)` (or add explicit attachment support).
 - Schema changes need TWO updates: the Alembic migration in `roster/finance/migrations/` AND the inline `CREATE TABLE` DDL in `roster/finance/tests/test_integration.py` (it provisions tables by hand via `_provision_all_tables`, NOT via migrations). `test_tools.py`/`test_reconciliation.py`/`test_track_c_hook.py` use `create_migrated_test_db(chains=["core","finance"])` so they DO pick up new migrations; `test_jobs.py` uses its own isolated inline DDL. Add new columns/constraints to the test_integration DDL or its bills tests fail with `UndefinedColumnError`.
+- (bu-rvz2o) The six direct-notify prompt-mode scheduled tasks (`upcoming-bills-check`, `subscription-renewal-alerts`, `monthly-spending-summary`, `anomaly-digest`, `budget-status-check`, `subscription-audit-monthly`) were replaced by four `dispatch_mode="job"` entries in `butler.toml` (`insight-scan`, `bill-reconciliation-sweep`, `anomaly-insight-scan`, `monthly-finance-digest`, all in `roster/finance/jobs/finance_jobs.py`) that propose insight candidates instead of calling `notify()` directly. `finance_jobs.py` still contains three now-dead functions predating this migration (`run_upcoming_bills_check`, `run_subscription_renewal_alerts`, `run_monthly_spending_summary`) that were never wired into the scheduler registry (`src/butlers/scheduled_jobs.py`) even before bu-rvz2o — they're only reachable from `test_jobs.py`'s own direct imports; candidates for removal. Also note: `run_monthly_finance_digest` does not include the month-over-month "notable changes" trend content the old `monthly-spending-summary` task used to send (and `openspec/specs/finance-alerts/spec.md`'s "Enhanced monthly spending summary" scenario still requires) — this was dropped silently alongside the disclosed net-worth/outstanding-obligations cuts. The `openspec/specs/{finance-alerts,butler-finance,finance-crud-operations}/spec.md` files still describe the old six-task schedule verbatim (cron expressions included) and need a spec-sync pass.

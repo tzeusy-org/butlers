@@ -713,6 +713,42 @@ async def _run_finance_insight_scan_job(
     return await mod.run_insight_scan(pool)
 
 
+async def _run_finance_bill_reconciliation_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run finance butler weekly bill-reconciliation sweep job (bu-rvz2o)."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("finance")
+    return await mod.run_bill_reconciliation_sweep(pool)
+
+
+async def _run_finance_anomaly_insight_scan_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run finance butler daily anomaly insight scan job (bu-rvz2o)."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("finance")
+    return await mod.run_anomaly_insight_scan(pool)
+
+
+async def _run_finance_monthly_finance_digest_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run finance butler monthly finance digest job (bu-rvz2o)."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("finance")
+    return await mod.run_monthly_finance_digest(pool)
+
+
 async def _run_relationship_briefing_contribution_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1492,6 +1528,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "daily_briefing_contribution": _run_finance_briefing_contribution_job,
             "calendar_overlay_contribution": _run_finance_calendar_overlay_contribution_job,
             "insight_scan": _run_finance_insight_scan_job,
+            "bill_reconciliation_sweep": _run_finance_bill_reconciliation_sweep_job,
+            "anomaly_insight_scan": _run_finance_anomaly_insight_scan_job,
+            "monthly_finance_digest": _run_finance_monthly_finance_digest_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "relationship": {

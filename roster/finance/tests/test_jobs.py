@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS finance.transactions (
     external_ref      TEXT,
     metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at        TIMESTAMPTZ
 )
 """
 
@@ -1103,14 +1104,19 @@ async def test_insight_scan_bill_cooldown_days_is_1(provisioned_postgres_pool):
 
 
 async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
-    """Budget at 90%+ utilisation gets priority 70."""
+    """Budget at 90%+ utilisation (per its own configured alert_threshold) gets priority 70.
+
+    bu-rvz2o: insight_scan now reads each budget's configured warn_threshold/
+    alert_threshold instead of hardcoded 80%/90% — this budget explicitly
+    configures alert_threshold=0.90 to preserve the original test scenario.
+    """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
 
-        # Budget: $500 for groceries this month
-        await _insert_budget(pool, category="groceries", amount="500.00")
+        # Budget: $500 for groceries this month, exceeded at 90% (not the 100% default)
+        await _insert_budget(pool, category="groceries", amount="500.00", alert_threshold="0.9000")
 
         # Spend $460 (92%) this month
         today = _today()
@@ -1190,6 +1196,80 @@ async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres
         candidates = await _fetch_candidates(pool)
         budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
         assert len(budget_cands) == 0
+
+
+async def test_insight_scan_budget_default_thresholds_92pct_is_warning(
+    provisioned_postgres_pool,
+):
+    """bu-rvz2o: with DEFAULT thresholds (warn=80%, alert=100%), 92% utilisation
+    is 'warning' (priority 50), not 'exceeded' — the old hardcoded 90% breakpoint
+    did not match the real default alert_threshold of 100%.
+    """
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_budget(pool, category="groceries", amount="500.00")
+
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Whole Foods",
+            amount="460.00",
+            direction="debit",
+            category="groceries",
+            posted_at=tx_date,
+        )
+
+        await run_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
+        assert len(budget_cands) == 1
+        assert budget_cands[0]["priority"] == 50
+
+
+async def test_insight_scan_budget_custom_warn_threshold_respected(provisioned_postgres_pool):
+    """bu-rvz2o: a budget with a custom (lower) warn_threshold flags earlier
+    than the 80% default — absorbing budget-status-check's per-category
+    warn_threshold/alert_threshold semantics, not a hardcoded percentage.
+    """
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_budget(
+            pool,
+            category="entertainment",
+            amount="200.00",
+            warn_threshold="0.5000",
+            alert_threshold="0.9000",
+        )
+
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
+        # $120 of $200 = 60% — above the custom 50% warn_threshold, but the
+        # default (80%) would have missed it entirely.
+        await _insert_transaction(
+            pool,
+            merchant="Cinema",
+            amount="120.00",
+            direction="debit",
+            category="entertainment",
+            posted_at=tx_date,
+        )
+
+        await run_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
+        assert len(budget_cands) == 1
+        assert budget_cands[0]["priority"] == 50
 
 
 async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
@@ -1667,3 +1747,452 @@ async def test_insight_scan_multiple_categories_all_submitted(provisioned_postgr
         assert result["submitted"] == 2
         assert result["accepted"] == 2
         assert result["early_exit"] is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_insight_scan — subscription price-change (bu-rvz2o)
+# ---------------------------------------------------------------------------
+
+
+async def test_insight_scan_price_change_large_increase_priority_75(provisioned_postgres_pool):
+    """A >=20% price increase on a tracked subscription generates priority 75."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(pool, service="Spotify", amount="10.00", frequency="monthly")
+        await _insert_transaction(
+            pool,
+            merchant="Spotify Premium",
+            amount="15.00",
+            direction="debit",
+            category="subscriptions",
+            posted_at=_utcnow(),
+        )
+
+        await run_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        price_cands = [c for c in candidates if c["category"] == "subscription-price-change"]
+        assert len(price_cands) == 1
+        assert price_cands[0]["priority"] == 75
+
+
+async def test_insight_scan_price_change_mid_increase_priority_60(provisioned_postgres_pool):
+    """A 10-20% price change generates priority 60."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(pool, service="Hulu", amount="10.00", frequency="monthly")
+        await _insert_transaction(
+            pool,
+            merchant="Hulu",
+            amount="11.50",
+            direction="debit",
+            category="subscriptions",
+            posted_at=_utcnow(),
+        )
+
+        await run_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        price_cands = [c for c in candidates if c["category"] == "subscription-price-change"]
+        assert len(price_cands) == 1
+        assert price_cands[0]["priority"] == 60
+
+
+async def test_insight_scan_price_change_below_5pct_no_candidate(provisioned_postgres_pool):
+    """A <=5% change is below detect_price_changes' own floor — no candidate."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(pool, service="Disney Plus", amount="10.00", frequency="monthly")
+        await _insert_transaction(
+            pool,
+            merchant="Disney Plus",
+            amount="10.20",
+            direction="debit",
+            category="subscriptions",
+            posted_at=_utcnow(),
+        )
+
+        await run_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        price_cands = [c for c in candidates if c["category"] == "subscription-price-change"]
+        assert len(price_cands) == 0
+
+
+async def test_insight_scan_price_change_no_matching_transaction_no_candidate(
+    provisioned_postgres_pool,
+):
+    """A subscription with no matching charge in the lookback window is a no-op."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(pool, service="Paramount Plus", amount="10.00")
+
+        await run_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        price_cands = [c for c in candidates if c["category"] == "subscription-price-change"]
+        assert len(price_cands) == 0
+
+
+async def test_insight_scan_price_change_dedup_key_format(provisioned_postgres_pool):
+    """Price-change dedup_key matches finance:subscription-price-change:{slug}:{year-month}."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_subscription(pool, service="YouTube Premium", amount="12.00")
+        await _insert_transaction(
+            pool,
+            merchant="YouTube Premium",
+            amount="18.00",
+            direction="debit",
+            category="subscriptions",
+            posted_at=_utcnow(),
+        )
+
+        await run_insight_scan(pool)
+
+        candidates = await _fetch_candidates(pool)
+        price_cands = [c for c in candidates if c["category"] == "subscription-price-change"]
+        year_month = _today().strftime("%Y-%m")
+        assert (
+            price_cands[0]["dedup_key"]
+            == f"finance:subscription-price-change:youtube-premium:{year_month}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_bill_reconciliation_sweep (bu-rvz2o)
+# ---------------------------------------------------------------------------
+
+
+def _fj_module():
+    import sys
+
+    return sys.modules["butlers.jobs._roster.finance_jobs"]
+
+
+async def test_bill_reconciliation_sweep_empty_no_candidates(
+    provisioned_postgres_pool, monkeypatch
+):
+    """No auto-settled/candidate/predicted results -> no insight candidates."""
+    fj = _fj_module()
+
+    async def _fake_reconcile(conn, lookback_days=90):
+        return {"auto_settled": [], "candidates": []}
+
+    async def _fake_predict(conn, days_ahead=30):
+        return {"predictions": []}
+
+    monkeypatch.setattr(fj, "reconcile_bills", _fake_reconcile)
+    monkeypatch.setattr(fj, "predict_bills", _fake_predict)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await fj.run_bill_reconciliation_sweep(pool)
+
+        assert result["auto_settled_count"] == 0
+        assert result["confirm_candidates_count"] == 0
+        assert result["predicted_count"] == 0
+        assert await _count_candidates(pool) == 0
+
+
+async def test_bill_reconciliation_sweep_auto_settled_generates_candidate(
+    provisioned_postgres_pool, monkeypatch
+):
+    """Auto-settled bills generate one low-priority informational candidate."""
+    fj = _fj_module()
+
+    async def _fake_reconcile(conn, lookback_days=90):
+        return {
+            "auto_settled": [
+                {"bill_id": "b1", "payee": "Electric Co", "amount": "50.00", "txn_id": "t1"},
+            ],
+            "candidates": [],
+        }
+
+    async def _fake_predict(conn, days_ahead=30):
+        return {"predictions": []}
+
+    monkeypatch.setattr(fj, "reconcile_bills", _fake_reconcile)
+    monkeypatch.setattr(fj, "predict_bills", _fake_predict)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await fj.run_bill_reconciliation_sweep(pool)
+
+        assert result["auto_settled_count"] == 1
+        candidates = await _fetch_candidates(pool)
+        settled_cands = [c for c in candidates if c["category"] == "bill-reconciled"]
+        assert len(settled_cands) == 1
+        assert settled_cands[0]["priority"] == 35
+
+
+async def test_bill_reconciliation_sweep_confirm_candidate_priority_55(
+    provisioned_postgres_pool, monkeypatch
+):
+    """Ambiguous matches needing confirmation generate an actionable candidate."""
+    fj = _fj_module()
+
+    async def _fake_reconcile(conn, lookback_days=90):
+        return {
+            "auto_settled": [],
+            "candidates": [
+                {"bill_id": "b2", "payee": "Internet Co", "due_date": _today(), "amount": "80.00"},
+            ],
+        }
+
+    async def _fake_predict(conn, days_ahead=30):
+        return {"predictions": []}
+
+    monkeypatch.setattr(fj, "reconcile_bills", _fake_reconcile)
+    monkeypatch.setattr(fj, "predict_bills", _fake_predict)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await fj.run_bill_reconciliation_sweep(pool)
+
+        assert result["confirm_candidates_count"] == 1
+        candidates = await _fetch_candidates(pool)
+        confirm_cands = [c for c in candidates if c["category"] == "bill-reconcile-candidate"]
+        assert len(confirm_cands) == 1
+        assert confirm_cands[0]["priority"] == 55
+
+
+async def test_bill_reconciliation_sweep_predicted_untracked_only(
+    provisioned_postgres_pool, monkeypatch
+):
+    """Only untracked (is_tracked=False) predictions become bill-predicted candidates."""
+    fj = _fj_module()
+
+    async def _fake_reconcile(conn, lookback_days=90):
+        return {"auto_settled": [], "candidates": []}
+
+    async def _fake_predict(conn, days_ahead=30):
+        return {
+            "predictions": [
+                {"payee": "Gym Membership", "is_tracked": False},
+                {"payee": "Already Tracked Bill", "is_tracked": True},
+            ]
+        }
+
+    monkeypatch.setattr(fj, "reconcile_bills", _fake_reconcile)
+    monkeypatch.setattr(fj, "predict_bills", _fake_predict)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await fj.run_bill_reconciliation_sweep(pool)
+
+        assert result["predicted_count"] == 1
+        candidates = await _fetch_candidates(pool)
+        predicted_cands = [c for c in candidates if c["category"] == "bill-predicted"]
+        assert len(predicted_cands) == 1
+        assert predicted_cands[0]["priority"] == 30
+        assert "Gym Membership" in predicted_cands[0]["message"]
+        assert "Already Tracked Bill" not in predicted_cands[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_anomaly_insight_scan (bu-rvz2o)
+# ---------------------------------------------------------------------------
+
+
+async def test_anomaly_insight_scan_insufficient_data_no_candidates(
+    provisioned_postgres_pool, monkeypatch
+):
+    """status='insufficient_data' is a clean no-op, not an error."""
+    fj = _fj_module()
+
+    async def _fake_anomaly_scan(conn, days_back=1, sensitivity="medium"):
+        return {"anomalies": [], "total_flagged": 0, "status": "insufficient_data"}
+
+    monkeypatch.setattr(fj, "anomaly_scan", _fake_anomaly_scan)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await fj.run_anomaly_insight_scan(pool)
+
+        assert result["status"] == "insufficient_data"
+        assert result["anomalies_found"] == 0
+        assert await _count_candidates(pool) == 0
+
+
+async def test_anomaly_insight_scan_severity_priority_mapping(
+    provisioned_postgres_pool, monkeypatch
+):
+    """Each anomaly's severity maps to its own priority: high=75, medium=55, low=35."""
+    fj = _fj_module()
+
+    async def _fake_anomaly_scan(conn, days_back=1, sensitivity="medium"):
+        return {
+            "status": "ok",
+            "anomalies": [
+                {
+                    "transaction_id": "t1",
+                    "merchant": "Big Store",
+                    "amount": "500.00",
+                    "type": "amount_anomaly",
+                    "severity": "high",
+                    "explanation": "way above baseline",
+                },
+                {
+                    "transaction_id": "t2",
+                    "merchant": "Mid Store",
+                    "amount": "80.00",
+                    "type": "amount_anomaly",
+                    "severity": "medium",
+                    "explanation": "somewhat above baseline",
+                },
+                {
+                    "transaction_id": "t3",
+                    "merchant": "New Cafe",
+                    "amount": "12.00",
+                    "type": "new_merchant",
+                    "severity": "low",
+                    "explanation": "first time seeing this merchant",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(fj, "anomaly_scan", _fake_anomaly_scan)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await fj.run_anomaly_insight_scan(pool)
+
+        assert result["anomalies_found"] == 3
+        candidates = await _fetch_candidates(pool)
+        anomaly_cands = {
+            c["dedup_key"]: c["priority"]
+            for c in candidates
+            if c["category"] == "spending-anomaly-transaction"
+        }
+        assert len(anomaly_cands) == 3
+        priorities = sorted(anomaly_cands.values(), reverse=True)
+        assert priorities == [75, 55, 35]
+
+
+async def test_anomaly_insight_scan_caps_at_max_per_run(provisioned_postgres_pool, monkeypatch):
+    """More than _MAX_ANOMALY_CANDIDATES_PER_RUN anomalies are truncated, not dropped silently."""
+    fj = _fj_module()
+
+    anomalies = [
+        {
+            "transaction_id": f"t{i}",
+            "merchant": f"Store {i}",
+            "amount": "10.00",
+            "type": "amount_anomaly",
+            "severity": "low",
+            "explanation": "minor",
+        }
+        for i in range(fj._MAX_ANOMALY_CANDIDATES_PER_RUN + 5)
+    ]
+
+    async def _fake_anomaly_scan(conn, days_back=1, sensitivity="medium"):
+        return {"status": "ok", "anomalies": anomalies}
+
+    monkeypatch.setattr(fj, "anomaly_scan", _fake_anomaly_scan)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await fj.run_anomaly_insight_scan(pool)
+
+        assert result["anomalies_found"] == len(anomalies)
+        assert result["truncated"] == 5
+        assert await _count_candidates(pool) == fj._MAX_ANOMALY_CANDIDATES_PER_RUN
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_monthly_finance_digest (bu-rvz2o)
+# ---------------------------------------------------------------------------
+
+
+async def test_monthly_finance_digest_proposes_one_candidate(
+    provisioned_postgres_pool, monkeypatch
+):
+    """One consolidated monthly-finance-digest candidate is always proposed."""
+    fj = _fj_module()
+
+    async def _fake_budget_status(conn):
+        return {"items": [], "count": 0}
+
+    async def _fake_subscription_audit(conn):
+        return {"entries": [], "total_annual_cost": "0", "changes_since_last_audit": []}
+
+    monkeypatch.setattr(fj, "budget_status", _fake_budget_status)
+    monkeypatch.setattr(fj, "subscription_audit", _fake_subscription_audit)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        result = await fj.run_monthly_finance_digest(pool)
+
+        assert result["status"] == "accepted"
+        candidates = await _fetch_candidates(pool)
+        digest_cands = [c for c in candidates if c["category"] == "monthly-finance-digest"]
+        assert len(digest_cands) == 1
+        assert digest_cands[0]["priority"] == 55
+        assert digest_cands[0]["dedup_key"] == f"finance:monthly-digest:{result['period']}"
+
+
+async def test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions(
+    provisioned_postgres_pool, monkeypatch
+):
+    """The digest message surfaces flagged budget categories and subscription counts."""
+    fj = _fj_module()
+
+    async def _fake_budget_status(conn):
+        return {
+            "items": [
+                {"category": "dining", "status": "exceeded", "utilization_pct": 105.0},
+                {"category": "groceries", "status": "on_track", "utilization_pct": 40.0},
+            ],
+            "count": 2,
+        }
+
+    async def _fake_subscription_audit(conn):
+        return {
+            "entries": [
+                {"service": "Netflix", "status": "tracked_active"},
+                {"service": "Unknown Merchant", "status": "detected_untracked"},
+            ],
+            "total_annual_cost": "150.00",
+            "changes_since_last_audit": [],
+        }
+
+    monkeypatch.setattr(fj, "budget_status", _fake_budget_status)
+    monkeypatch.setattr(fj, "subscription_audit", _fake_subscription_audit)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await fj.run_monthly_finance_digest(pool)
+
+        candidates = await _fetch_candidates(pool)
+        digest_cands = [c for c in candidates if c["category"] == "monthly-finance-digest"]
+        assert len(digest_cands) == 1
+        message = digest_cands[0]["message"]
+        assert "dining exceeded" in message
+        assert "1 active" in message
+        assert "150.00" in message
+        assert "1 untracked pattern" in message

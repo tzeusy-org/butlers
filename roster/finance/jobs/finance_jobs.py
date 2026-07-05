@@ -11,15 +11,40 @@ Each job handler:
 from __future__ import annotations
 
 import logging
+import re
+from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import asyncpg
 
+from butlers.tools.finance.alerts import detect_price_changes
+from butlers.tools.finance.anomaly_detection import anomaly_scan
+from butlers.tools.finance.budgets import budget_status
+from butlers.tools.finance.overview import subscription_audit
+from butlers.tools.finance.pattern_recognition import predict_bills
+from butlers.tools.finance.reconciliation import reconcile_bills
 from butlers.tools.switchboard.insight.broker import propose_insight_candidate
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _finance_scoped_connection(db_pool: asyncpg.Pool):
+    """Acquire a connection with ``search_path`` forced to ``finance, public``.
+
+    The finance tool-layer functions this module calls (``detect_price_changes``,
+    ``anomaly_scan``, ``budget_status``, ``subscription_audit``, ``reconcile_bills``,
+    ``predict_bills``) use bare, unqualified table names — they assume an ambient
+    ``finance`` schema, which the daemon's per-butler pool already sets in
+    production. Generic test pools do not set this, so this helper makes the
+    calls schema-safe in both contexts without touching the shared tool code.
+    """
+    async with db_pool.acquire() as conn:
+        await conn.execute("SET search_path TO finance, public")
+        yield conn
+
 
 # ---------------------------------------------------------------------------
 # Insight scan constants
@@ -45,6 +70,27 @@ _BUDGET_PRIORITY_WARNING = 50  # 80–90% utilisation
 
 _SUBSCRIPTION_PRIORITY_CRITICAL = 75  # renewal within 3 days
 _SUBSCRIPTION_PRIORITY_SOON = 55  # renewal within 14 days
+
+# Subscription price-change thresholds (bu-rvz2o: absorbs subscription-renewal-alerts'
+# detect_price_changes() call). detect_price_changes() only returns changes > 5%.
+_PRICE_CHANGE_PRIORITY_HIGH = 75  # >=20% change
+_PRICE_CHANGE_PRIORITY_MID = 60  # 10-20% change
+_PRICE_CHANGE_PRIORITY_LOW = 45  # 5-10% change (detect_price_changes' own floor)
+_PRICE_CHANGE_THRESHOLD_HIGH = Decimal("20")
+_PRICE_CHANGE_THRESHOLD_MID = Decimal("10")
+
+# bu-rvz2o: absorbs the daily anomaly-digest direct-notify task. anomaly_scan()
+# severities are "high"/"medium"/"low" — map onto the insight priority scale.
+_ANOMALY_SEVERITY_PRIORITY: dict[str, int] = {"high": 75, "medium": 55, "low": 35}
+_MAX_ANOMALY_CANDIDATES_PER_RUN = 10
+
+# bu-rvz2o: absorbs upcoming-bills-check's reconciliation sweep.
+_BILL_RECONCILED_PRIORITY = 35  # informational — already happened
+_BILL_RECONCILE_CANDIDATE_PRIORITY = 55  # actionable — owner confirmation needed
+_BILL_PREDICTED_PRIORITY = 30  # advisory — untracked recurring pattern
+
+# bu-rvz2o: absorbs monthly-spending-summary + subscription-audit-monthly.
+_MONTHLY_DIGEST_PRIORITY = 55
 
 
 async def run_upcoming_bills_check(db_pool: asyncpg.Pool) -> dict:
@@ -593,6 +639,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         budget_rows = await conn.fetch(
             """
             SELECT b.id, b.category, b.amount AS budget_amount,
+                   b.warn_threshold, b.alert_threshold,
                    COALESCE(SUM(ABS(t.amount)), 0) AS spent
             FROM finance.budgets b
             LEFT JOIN finance.transactions t
@@ -602,7 +649,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                AND t.posted_at < $2
             WHERE b.is_active = true
               AND b.period = 'monthly'
-            GROUP BY b.id, b.category, b.amount
+            GROUP BY b.id, b.category, b.amount, b.warn_threshold, b.alert_threshold
             """,
             datetime(month_start.year, month_start.month, month_start.day, tzinfo=UTC),
             datetime(
@@ -623,11 +670,18 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         spent = Decimal(str(row["spent"]))
         utilisation = spent / budget_amount
 
-        # Spec thresholds: 80% → warning (P50), 90%+ → exceeded (P70)
-        if utilisation < Decimal("0.80"):
+        # bu-rvz2o: use the budget's OWN configured warn/alert thresholds
+        # (finance.budgets.warn_threshold/alert_threshold) instead of hardcoded
+        # 80%/90% — this is what budget_status() (the tool the old direct-notify
+        # budget-status-check task called) already respects, and what the owner
+        # actually configured per category. Defaults are 0.80/1.00 respectively.
+        warn_threshold = Decimal(str(row["warn_threshold"]))
+        alert_threshold = Decimal(str(row["alert_threshold"]))
+
+        if utilisation < warn_threshold:
             continue
 
-        if utilisation >= Decimal("0.90"):
+        if utilisation >= alert_threshold:
             priority = _BUDGET_PRIORITY_EXCEEDED
         else:
             priority = _BUDGET_PRIORITY_WARNING
@@ -719,6 +773,61 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             logger.info("Finance insight scan: verbosity=off early exit (subscription renewals)")
             return {**counts, "early_exit": True}
 
+    # ------------------------------------------------------------------
+    # 5. Subscription price changes (bu-rvz2o: absorbs subscription-renewal-alerts'
+    #    detect_price_changes() call — the one piece of that weekly digest not
+    #    already covered by the renewal check above).
+    # ------------------------------------------------------------------
+    async with _finance_scoped_connection(db_pool) as conn:
+        price_change_result = await detect_price_changes(conn, days_back=60)
+
+    for change in price_change_result.get("changes", []):
+        service = change["service"]
+        change_pct = change.get("change_pct")
+        direction = change.get("direction", "increase")
+        currency = change.get("currency", "USD")
+        tracked_amount = change.get("tracked_amount")
+        recent_charge = change.get("recent_charge")
+
+        if change_pct is None:
+            priority = _PRICE_CHANGE_PRIORITY_LOW
+            pct_label = "a new charge amount"
+        else:
+            abs_pct = Decimal(str(abs(change_pct)))
+            if abs_pct >= _PRICE_CHANGE_THRESHOLD_HIGH:
+                priority = _PRICE_CHANGE_PRIORITY_HIGH
+            elif abs_pct >= _PRICE_CHANGE_THRESHOLD_MID:
+                priority = _PRICE_CHANGE_PRIORITY_MID
+            else:
+                priority = _PRICE_CHANGE_PRIORITY_LOW
+            pct_label = f"{abs_pct:.0f}% {direction}"
+
+        message = (
+            f"Subscription price change detected: {service} — {pct_label} "
+            f"(was {currency} {tracked_amount}, now {currency} {recent_charge})"
+        )
+        service_slug = re.sub(r"[^a-z0-9]+", "-", service.lower()).strip("-") or "unknown"
+        dedup_key = f"finance:subscription-price-change:{service_slug}:{year_month}"
+
+        keep_going = await _submit(
+            priority=priority,
+            category="subscription-price-change",
+            dedup_key=dedup_key,
+            message=message,
+            expires_at=month_end_dt,
+            cooldown_days=30,
+            metadata={
+                "service": service,
+                "tracked_amount": tracked_amount,
+                "recent_charge": recent_charge,
+                "change_pct": change_pct,
+                "currency": currency,
+            },
+        )
+        if not keep_going:
+            logger.info("Finance insight scan: verbosity=off early exit (price changes)")
+            return {**counts, "early_exit": True}
+
     logger.info(
         "Finance insight scan complete: submitted=%d accepted=%d filtered=%d errors=%d",
         counts["submitted"],
@@ -727,3 +836,369 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         counts["errors"],
     )
     return {**counts, "early_exit": False}
+
+
+# ---------------------------------------------------------------------------
+# run_bill_reconciliation_sweep (bu-rvz2o: absorbs upcoming-bills-check)
+# ---------------------------------------------------------------------------
+
+
+async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Run the weekly bill-reconciliation sweep and surface results as insights.
+
+    Replaces the old ``upcoming-bills-check`` prompt-mode cron task. The
+    reconciliation itself (``reconcile_bills``) is a deterministic, mutating
+    action — it stays a first-class job step, not gated by insight verbosity.
+    Its *results* (auto-settled bills, ambiguous matches needing confirmation,
+    and untracked recurring patterns from ``predict_bills``) are surfaced as
+    insight candidates instead of an LLM-composed digest, so they flow through
+    the same budget/dedup/quiet-hours machinery as everything else.
+
+    The routine "bill due soon" digest that used to live in this same prompt
+    is intentionally NOT reproduced here — ``run_insight_scan`` already emits
+    a ``bill-due`` candidate per overdue/upcoming bill on its own (now-daily)
+    cadence, so repeating it here would just double-notify.
+
+    Returns
+    -------
+    dict
+        ``{auto_settled_count, confirm_candidates_count, predicted_count,
+        submitted, accepted, filtered, errors}``
+    """
+    logger.info("Running finance bill reconciliation sweep job")
+
+    today = date.today()
+    counts: dict[str, int] = {"submitted": 0, "accepted": 0, "filtered": 0, "errors": 0}
+
+    async def _submit(**kwargs: Any) -> bool:
+        counts["submitted"] += 1
+        status = await _propose(db_pool, **kwargs)
+        if status == "filtered":
+            counts["filtered"] += 1
+            return False
+        elif status == "error":
+            counts["errors"] += 1
+        else:
+            counts["accepted"] += 1
+        return True
+
+    async with _finance_scoped_connection(db_pool) as conn:
+        reconcile_result = await reconcile_bills(conn, lookback_days=90)
+    auto_settled = reconcile_result.get("auto_settled", [])
+    confirm_candidates = reconcile_result.get("candidates", [])
+
+    async with _finance_scoped_connection(db_pool) as conn:
+        predict_result = await predict_bills(conn, days_ahead=30)
+    untracked_predictions = [
+        p for p in predict_result.get("predictions", []) if not p.get("is_tracked", False)
+    ]
+
+    if auto_settled:
+        payees = ", ".join(sorted({item["payee"] for item in auto_settled}))
+        message = f"Auto-settled {len(auto_settled)} bill(s) from matched transactions: {payees}"
+        keep_going = await _submit(
+            priority=_BILL_RECONCILED_PRIORITY,
+            category="bill-reconciled",
+            dedup_key=f"finance:bill-reconciled:{today.isoformat()}",
+            message=message,
+            expires_at=datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=3),
+            cooldown_days=1,
+            metadata={"count": len(auto_settled), "bill_ids": [i["bill_id"] for i in auto_settled]},
+        )
+        if not keep_going:
+            return {
+                "auto_settled_count": len(auto_settled),
+                "confirm_candidates_count": len(confirm_candidates),
+                "predicted_count": len(untracked_predictions),
+                **counts,
+            }
+
+    if confirm_candidates:
+        payees = ", ".join(sorted({item["payee"] for item in confirm_candidates}))
+        message = (
+            f"{len(confirm_candidates)} bill(s) have ambiguous transaction matches "
+            f"needing confirmation: {payees}"
+        )
+        keep_going = await _submit(
+            priority=_BILL_RECONCILE_CANDIDATE_PRIORITY,
+            category="bill-reconcile-candidate",
+            dedup_key=f"finance:bill-reconcile-candidate:{today.isoformat()}",
+            message=message,
+            expires_at=datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=7),
+            cooldown_days=1,
+            metadata={
+                "count": len(confirm_candidates),
+                "bill_ids": [i["bill_id"] for i in confirm_candidates],
+            },
+        )
+        if not keep_going:
+            return {
+                "auto_settled_count": len(auto_settled),
+                "confirm_candidates_count": len(confirm_candidates),
+                "predicted_count": len(untracked_predictions),
+                **counts,
+            }
+
+    if untracked_predictions:
+        payees = ", ".join(sorted({item["payee"] for item in untracked_predictions}))
+        message = (
+            f"{len(untracked_predictions)} untracked recurring payment pattern(s) detected: "
+            f"{payees}"
+        )
+        await _submit(
+            priority=_BILL_PREDICTED_PRIORITY,
+            category="bill-predicted",
+            dedup_key=f"finance:bill-predicted:{today.isoformat()}",
+            message=message,
+            expires_at=datetime(today.year, today.month, today.day, tzinfo=UTC)
+            + timedelta(days=30),
+            cooldown_days=7,
+            metadata={"count": len(untracked_predictions)},
+        )
+
+    logger.info(
+        "Finance bill reconciliation sweep complete: auto_settled=%d candidates=%d "
+        "predicted=%d submitted=%d accepted=%d",
+        len(auto_settled),
+        len(confirm_candidates),
+        len(untracked_predictions),
+        counts["submitted"],
+        counts["accepted"],
+    )
+    return {
+        "auto_settled_count": len(auto_settled),
+        "confirm_candidates_count": len(confirm_candidates),
+        "predicted_count": len(untracked_predictions),
+        **counts,
+    }
+
+
+# ---------------------------------------------------------------------------
+# run_anomaly_insight_scan (bu-rvz2o: absorbs anomaly-digest)
+# ---------------------------------------------------------------------------
+
+
+async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Run the daily per-transaction anomaly scan and propose insight candidates.
+
+    Replaces the old ``anomaly-digest`` prompt-mode cron task. This is a
+    genuinely different signal than ``run_insight_scan``'s category-level
+    ``spending-anomaly`` (a monthly-average comparison): ``anomaly_scan()``
+    flags individual transactions (amount outliers, first-time merchants,
+    category velocity spikes) and must keep its daily cadence to stay useful.
+
+    Each anomaly becomes its own dedupeable, priority-scored insight candidate
+    (severity high/medium/low -> priority 75/55/35) instead of an always-fire
+    LLM-composed digest. A run is capped at
+    ``_MAX_ANOMALY_CANDIDATES_PER_RUN`` candidates (most severe first) so a
+    pathological day cannot flood the owner or the insight budget; anything
+    beyond the cap is reported in ``truncated`` rather than silently dropped.
+
+    Returns
+    -------
+    dict
+        ``{anomalies_found, submitted, accepted, filtered, errors, truncated,
+        status}``
+    """
+    logger.info("Running finance anomaly insight scan job")
+
+    async with _finance_scoped_connection(db_pool) as conn:
+        result = await anomaly_scan(conn, days_back=1, sensitivity="medium")
+    status = result.get("status", "ok")
+
+    if status == "insufficient_data":
+        logger.info("Finance anomaly insight scan: insufficient baseline data, skipping")
+        return {
+            "anomalies_found": 0,
+            "submitted": 0,
+            "accepted": 0,
+            "filtered": 0,
+            "errors": 0,
+            "truncated": 0,
+            "status": status,
+        }
+
+    today = date.today()
+    anomalies = result.get("anomalies", [])
+
+    severity_order = {"high": 0, "medium": 1, "low": 2}
+    sorted_anomalies = sorted(
+        anomalies, key=lambda a: severity_order.get(a.get("severity", "low"), 3)
+    )
+    truncated = max(0, len(sorted_anomalies) - _MAX_ANOMALY_CANDIDATES_PER_RUN)
+    selected = sorted_anomalies[:_MAX_ANOMALY_CANDIDATES_PER_RUN]
+
+    counts: dict[str, int] = {"submitted": 0, "accepted": 0, "filtered": 0, "errors": 0}
+
+    for anomaly in selected:
+        severity = anomaly.get("severity", "low")
+        priority = _ANOMALY_SEVERITY_PRIORITY.get(severity, 35)
+        txn_id = anomaly.get("transaction_id")
+        category = anomaly.get("category")
+        identity = txn_id or (f"category-{category}" if category else anomaly.get("type", "n-a"))
+        dedup_key = f"finance:anomaly:{identity}:{today.isoformat()}"
+
+        merchant = anomaly.get("merchant")
+        explanation = anomaly.get("explanation", "")
+        subject = merchant or category or anomaly.get("type", "transaction")
+        message = f"Spending anomaly ({severity}): {subject} — {explanation}"
+
+        counts["submitted"] += 1
+        status_result = await _propose(
+            db_pool,
+            priority=priority,
+            category="spending-anomaly-transaction",
+            dedup_key=dedup_key,
+            message=message,
+            expires_at=datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=2),
+            cooldown_days=1,
+            metadata={"anomaly_type": anomaly.get("type"), "severity": severity},
+        )
+        if status_result == "filtered":
+            counts["filtered"] += 1
+            logger.info("Finance anomaly insight scan: verbosity=off early exit")
+            break
+        elif status_result == "error":
+            counts["errors"] += 1
+        else:
+            counts["accepted"] += 1
+
+    logger.info(
+        "Finance anomaly insight scan complete: found=%d submitted=%d accepted=%d truncated=%d",
+        len(anomalies),
+        counts["submitted"],
+        counts["accepted"],
+        truncated,
+    )
+    return {
+        "anomalies_found": len(anomalies),
+        "truncated": truncated,
+        "status": status,
+        **counts,
+    }
+
+
+# ---------------------------------------------------------------------------
+# run_monthly_finance_digest (bu-rvz2o: absorbs monthly-spending-summary +
+# subscription-audit-monthly — their "subscription audit" bullets were
+# literally duplicated across both prompts, so they are merged into one
+# deterministic monthly candidate rather than two competing LLM prompts.)
+# ---------------------------------------------------------------------------
+
+
+async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Compose and propose one consolidated monthly finance digest insight.
+
+    Combines the prior calendar month's spending summary (total spend, top 3
+    categories) with the current budget status and subscription audit — the
+    two pieces of content that ``monthly-spending-summary`` and
+    ``subscription-audit-monthly`` both independently generated every month.
+
+    This is proposed as a single, medium-priority, month-scoped insight
+    candidate rather than delivered unconditionally: per repo doctrine,
+    insights flow through candidates -> broker -> delivery under the owner's
+    own verbosity preference, even for periodic "always fire" reports.
+
+    Returns
+    -------
+    dict
+        ``{status, period}`` — the ``propose_insight_candidate`` result status
+        and the ``YYYY-MM`` period label this digest covers.
+    """
+    logger.info("Running finance monthly digest job")
+
+    today = date.today()
+    first_of_this_month = today.replace(day=1)
+    last_month_end = first_of_this_month
+    last_month_start = (first_of_this_month - timedelta(days=1)).replace(day=1)
+    period_label = last_month_start.strftime("%Y-%m")
+
+    async with db_pool.acquire() as conn:
+        category_rows = await conn.fetch(
+            """
+            SELECT category, SUM(ABS(amount)) AS total
+            FROM finance.transactions
+            WHERE direction = 'debit'
+              AND posted_at >= $1
+              AND posted_at < $2
+            GROUP BY category
+            ORDER BY total DESC
+            LIMIT 3
+            """,
+            last_month_start,
+            last_month_end,
+        )
+
+    total_spend = Decimal("0.00")
+    async with db_pool.acquire() as conn:
+        total_row = await conn.fetchrow(
+            """
+            SELECT COALESCE(SUM(ABS(amount)), 0) AS total
+            FROM finance.transactions
+            WHERE direction = 'debit'
+              AND posted_at >= $1
+              AND posted_at < $2
+            """,
+            last_month_start,
+            last_month_end,
+        )
+    if total_row:
+        total_spend = Decimal(str(total_row["total"]))
+
+    top_categories = ", ".join(
+        f"{row['category']} (${Decimal(str(row['total'])):.2f})" for row in category_rows
+    )
+
+    async with _finance_scoped_connection(db_pool) as conn:
+        budget_result = await budget_status(conn)
+    flagged = [item for item in budget_result.get("items", []) if item.get("status") != "on_track"]
+    if flagged:
+        budget_summary = "; ".join(
+            f"{item['category']} {item['status']} ({item['utilization_pct']:.0f}%)"
+            for item in flagged
+        )
+    else:
+        budget_summary = "all categories on track"
+
+    async with _finance_scoped_connection(db_pool) as conn:
+        audit_result = await subscription_audit(conn)
+    active_count = sum(
+        1 for e in audit_result.get("entries", []) if e.get("status") == "tracked_active"
+    )
+    untracked_count = sum(
+        1 for e in audit_result.get("entries", []) if e.get("status") == "detected_untracked"
+    )
+    total_annual_cost = audit_result.get("total_annual_cost", "0")
+
+    message = (
+        f"Monthly finance digest for {period_label}: "
+        f"total spend ${total_spend:.2f}"
+        + (f", top categories: {top_categories}" if top_categories else "")
+        + f". Budget status: {budget_summary}. "
+        f"Subscriptions: {active_count} active (${total_annual_cost}/yr projected)"
+        + (f", {untracked_count} untracked pattern(s) detected" if untracked_count else "")
+        + "."
+    )
+
+    result = await propose_insight_candidate(
+        db_pool,
+        origin_butler=_INSIGHT_BUTLER,
+        priority=_MONTHLY_DIGEST_PRIORITY,
+        category="monthly-finance-digest",
+        dedup_key=f"finance:monthly-digest:{period_label}",
+        message=message,
+        expires_at=_end_of_month(today),
+        cooldown_days=25,
+        metadata={
+            "period": period_label,
+            "total_spend": str(total_spend),
+            "budget_flagged_count": len(flagged),
+            "subscription_active_count": active_count,
+            "subscription_untracked_count": untracked_count,
+        },
+    )
+
+    logger.info(
+        "Finance monthly digest complete: period=%s status=%s", period_label, result["status"]
+    )
+    return {"status": result["status"], "period": period_label}

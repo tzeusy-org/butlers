@@ -1,7 +1,10 @@
 """Scheduled jobs for the Finance butler."""
 
 from .finance_jobs import (
+    run_anomaly_insight_scan,
+    run_bill_reconciliation_sweep,
     run_insight_scan,
+    run_monthly_finance_digest,
     run_monthly_spending_summary,
     run_subscription_renewal_alerts,
     run_upcoming_bills_check,
@@ -12,4 +15,7 @@ __all__ = [
     "run_subscription_renewal_alerts",
     "run_monthly_spending_summary",
     "run_insight_scan",
+    "run_bill_reconciliation_sweep",
+    "run_anomaly_insight_scan",
+    "run_monthly_finance_digest",
 ]

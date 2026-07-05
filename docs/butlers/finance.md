@@ -23,11 +23,16 @@ The Finance Butler does not offer investment advice, initiate payments, file tax
 
 ## Schedule
 
+All scheduled tasks are deterministic `dispatch_mode="job"` handlers (no LLM prompt) that propose
+insight candidates through the Switchboard insight broker rather than notifying directly; delivery
+is subject to the owner's insight verbosity/budget/quiet-hours settings.
+
 | Task | Cron | Description |
 |------|------|-------------|
-| `upcoming-bills-check` | `15 21 * * 0` | Surface bills due in the next 14 days, ranked by urgency (overdue first, then due today, this week, within 14 days). Delivered via Telegram. |
-| `subscription-renewal-alerts` | `20 21 * * 0` | Scan for subscriptions renewing within 7 days. Flag services where the user may want to review before auto-renewal. Delivered via Telegram. |
-| `monthly-spending-summary` | `0 9 1 * *` | Monthly spending summary for the previous calendar month, grouped by category, with top spend drivers and month-over-month comparison. Delivered via Telegram. |
+| `insight-scan` | `0 7 * * *` | Spending anomalies (category-level), upcoming bills, budget thresholds, annual subscription renewals, and subscription price changes. |
+| `bill-reconciliation-sweep` | `15 21 * * 0` | Runs `reconcile_bills()` (auto-settle matched bills), then surfaces auto-settled bills, ambiguous matches, and untracked recurring patterns as candidates. |
+| `anomaly-insight-scan` | `0 21 * * *` | Per-transaction anomaly detection (amount outliers, new merchants, category velocity spikes), capped at 10 candidates/run. |
+| `monthly-finance-digest` | `0 9 1 * *` | Consolidated monthly candidate: prior-month total spend, top 3 categories, budget status, and subscription audit summary. |
 
 ## Tools
 
@@ -104,7 +109,7 @@ psql -h localhost -U butlers -d butlers -c \
 # 4. Verify scheduled tasks are seeded from butler.toml
 psql -h localhost -U butlers -d butlers -c \
   "SELECT name, cron, source, enabled FROM finance.scheduled_tasks ORDER BY name;"
-# Expected: monthly-spending-summary, subscription-renewal-alerts, upcoming-bills-check
+# Expected: anomaly-insight-scan, bill-reconciliation-sweep, insight-scan, monthly-finance-digest
 # all present with source='toml' and enabled=true
 
 # 5. Confirm source_message_id deduplication is indexed for email provenance
