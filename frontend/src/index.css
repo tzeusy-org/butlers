@@ -23,7 +23,12 @@
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
+  /* bu-qvnce.7: shadcn primitive aliased to the Dispatch surface token —
+   * --card and --bg-elev already carry the identical literal in both
+   * themes; this alias makes --bg-elev the single source of truth instead
+   * of two names for one value (custom-property resolution does not
+   * require --bg-elev to be declared earlier in this same :root block). */
+  --card: var(--bg-elev);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
@@ -32,10 +37,19 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  /* bu-qvnce.7: shadcn primitive aliased to --mfg, the AA-contrast-fixed
+   * Dispatch muted-text token (bu-86c4c.16 darkened --mfg to clear 4.5:1;
+   * the old literal here never got that fix, so ~1,378 text-muted-foreground
+   * sites were still on the pre-fix gray). Aliasing snaps every one of them
+   * to the canonical value in this one diff. */
+  --muted-foreground: var(--mfg);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
+  /* bu-qvnce.7: shadcn primitive aliased to --red, the canonical Dispatch
+   * state-red token, so destructive UI (buttons, badges, borders) and
+   * attention-rail red speak the same hue instead of two independently
+   * tuned reds. */
+  --destructive: var(--red);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -435,7 +449,8 @@ body {
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  /* bu-qvnce.7: aliased to --bg-elev — see the :root alias comment above. */
+  --card: var(--bg-elev);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
@@ -444,10 +459,12 @@ body {
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
+  /* bu-qvnce.7: aliased to --mfg — see the :root alias comment above. */
+  --muted-foreground: var(--mfg);
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
+  /* bu-qvnce.7: aliased to --red — see the :root alias comment above. */
+  --destructive: var(--red);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);

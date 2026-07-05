@@ -61,6 +61,20 @@ export function relativeLuminance(color: Oklch): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
+/**
+ * Converts an OKLCH color to gamma-encoded 8-bit sRGB channels (0-255,
+ * gamut-clamped), for callers that need a literal `rgb()` string rather than
+ * a relative-luminance number — e.g. WebGL/canvas contexts (MapLibre GL,
+ * `<canvas>`) that parse color strings themselves and cannot resolve CSS
+ * custom properties or `color-mix()` the way a real DOM style engine can.
+ * See `chart-colors.ts`'s `neutralDensityColor` for the motivating caller.
+ */
+export function oklchToSrgb255(color: Oklch): [number, number, number] {
+  const [rLin, gLin, bLin] = oklchToLinearSrgb(color)
+  const toByte = (c: number) => Math.round(linearToGammaChannel(c) * 255)
+  return [toByte(rLin), toByte(gLin), toByte(bLin)]
+}
+
 /** WCAG contrast ratio (1:1 to 21:1) between two OKLCH colors, order-independent. */
 export function contrastRatio(a: Oklch, b: Oklch): number {
   const lumA = relativeLuminance(a)

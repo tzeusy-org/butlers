@@ -12,9 +12,16 @@
 //     does not recompute the heatmap.
 //   - Rendered as a single FillLayer — MapLibre uploads the geometry to the
 //     GPU once and pans/zooms without per-frame JS work.
+//
+// Cell fill color: bu-qvnce.7 moved this off a bespoke red->amber->green
+// ramp (borrowed from health/severity signaling — density/visit-frequency is
+// not a state signal) onto chart-colors.ts's neutralDensityColor(), the
+// shared achromatic neutral-density-ramp channel.
 // ---------------------------------------------------------------------------
 
 import { latLngToCell, cellToBoundary } from "h3-js"
+
+import { neutralDensityColor } from "@/lib/chart-colors"
 
 /**
  * H3 resolution. 8 ≈ 460 m edge length — a sensible default for personal
@@ -23,44 +30,6 @@ import { latLngToCell, cellToBoundary } from "h3-js"
  * Reference: https://h3geo.org/docs/core-library/restable
  */
 export const HEX_RESOLUTION = 8
-
-/**
- * Red → yellow → green stops, matching property_agent's ACCESSIBILITY palette.
- * `at` is the normalized intensity in [0,1]; `r/g/b` are 0–255 sRGB channels.
- *
- * For Chronicles: low density = red (rare visit), high density = green (frequent).
- */
-const COLOR_STOPS: ReadonlyArray<{ at: number; r: number; g: number; b: number }> = [
-  { at: 0, r: 220, g: 38, b: 38 },     // red
-  { at: 0.5, r: 245, g: 190, b: 11 },  // amber
-  { at: 1, r: 22, g: 163, b: 74 },     // green
-]
-
-function clamp01(v: number): number {
-  if (v < 0) return 0
-  if (v > 1) return 1
-  return v
-}
-
-/** Linearly interpolate between two stops in sRGB. */
-function interpolateColor(normalized: number): string {
-  const t = clamp01(normalized)
-  for (let i = 0; i < COLOR_STOPS.length - 1; i++) {
-    const lo = COLOR_STOPS[i]
-    const hi = COLOR_STOPS[i + 1]
-    if (t >= lo.at && t <= hi.at) {
-      const span = hi.at - lo.at || 1
-      const f = (t - lo.at) / span
-      const r = Math.round(lo.r + (hi.r - lo.r) * f)
-      const g = Math.round(lo.g + (hi.g - lo.g) * f)
-      const b = Math.round(lo.b + (hi.b - lo.b) * f)
-      return `rgb(${r}, ${g}, ${b})`
-    }
-  }
-  // Fallback to the final stop.
-  const last = COLOR_STOPS[COLOR_STOPS.length - 1]
-  return `rgb(${last.r}, ${last.g}, ${last.b})`
-}
 
 /** Per-cell properties carried inside each hex Feature. */
 export interface HexCellProperties {
@@ -135,7 +104,7 @@ export function buildHexHeatmap(
         cell,
         count,
         intensity,
-        color: interpolateColor(intensity),
+        color: neutralDensityColor(intensity),
       },
     })
   }

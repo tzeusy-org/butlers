@@ -5,6 +5,7 @@ import { useBreadcrumbsControl } from "@/components/ui/breadcrumbs-control";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Title } from "@/components/ui/Title";
 import { CardSkeleton } from "@/components/skeletons/card-skeleton";
 import { StatsSkeleton } from "@/components/skeletons/stats-skeleton";
 import { TableSkeleton } from "@/components/skeletons/table-skeleton";
@@ -104,7 +105,7 @@ function HeadingBlock({
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
+            <Title as="h1">{title}</Title>
             {status && <div className="flex items-center gap-2">{status}</div>}
           </div>
           {description && (
