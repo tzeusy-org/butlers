@@ -30,6 +30,7 @@ ix_secret_probe_log_lookup) and is noted here as a static-check only.
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -41,6 +42,7 @@ from fastapi.testclient import TestClient
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.degraded import DegradedSources
 from butlers.api.routers.secrets_v2 import (
     DEFAULT_EXPIRING_LEAD_TIME,
     _dedupe_most_severe,
@@ -60,6 +62,7 @@ from butlers.api.routers.secrets_v2 import (
     _format_probe_time,
     _get_db_manager,
     _infer_provider_from_type,
+    _is_missing_secrets_schema_error,
     _row_to_test_result,
     _unverified_count,
 )
@@ -565,6 +568,188 @@ async def test_fetch_system_secrets_missing_table_logs_debug_only(caplog):
         rows = await _fetch_system_secrets(pool, "general")
     assert rows == []
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+# ---------------------------------------------------------------------------
+# bu-38ae1: classifier + DegradedSources tracker wiring.
+#
+# get_inventory silently zero-filled per-butler system-secrets errors with
+# only a backend WARNING log — a genuine failure rendered as a truthful-
+# looking empty result (fabricated calm). _is_missing_secrets_schema_error
+# classifies "legitimately absent" (no table yet) from "genuine failure"
+# (schema drift, dropped connection, permission error); only the latter is
+# tracked via DegradedSources and surfaced as meta.sources_degraded.
+# ---------------------------------------------------------------------------
+
+
+def test_classifier_missing_table_is_not_degraded():
+    """UndefinedTableError (no butler_secrets table yet) is a legitimate
+    absence, not a degraded source."""
+    exc = UndefinedTableError('relation "butler_secrets" does not exist')
+    assert _is_missing_secrets_schema_error(exc) is True
+
+
+def test_classifier_missing_column_is_degraded():
+    """UndefinedColumnError on an EXISTING table is schema drift — a genuine
+    failure that must be flagged, not folded into the table-missing case."""
+    exc = UndefinedColumnError('column "last_verified" does not exist')
+    assert _is_missing_secrets_schema_error(exc) is False
+
+
+def test_classifier_connection_error_is_degraded():
+    """A dropped connection / generic Postgres error is a genuine failure."""
+    exc = Exception("connection reset by peer")
+    assert _is_missing_secrets_schema_error(exc) is False
+
+
+async def test_fetch_system_secrets_missing_table_does_not_mark_tracker():
+    """The classifier split at the tracker layer: a missing table must not
+    show up in tracker.names even though the fetch failed."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        side_effect=UndefinedTableError('relation "butler_secrets" does not exist')
+    )
+    tracker = DegradedSources(logging.getLogger("test"))
+    rows = await _fetch_system_secrets(pool, "general", tracker=tracker)
+    assert rows == []
+    assert tracker.failed is False
+    assert tracker.names == []
+
+
+async def test_fetch_system_secrets_column_error_marks_tracker():
+    """A genuine schema-drift failure marks the tracker with the butler name
+    (not the raw exception string) so the FE banner can name the source."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        side_effect=UndefinedColumnError('column "last_verified" does not exist')
+    )
+    tracker = DegradedSources(logging.getLogger("test"))
+    rows = await _fetch_system_secrets(pool, "finance", tracker=tracker)
+    assert rows == []
+    assert tracker.failed is True
+    assert tracker.names == ["finance"]
+
+
+async def test_fetch_system_secrets_connection_error_marks_tracker():
+    """A dropped-connection-style failure is also genuine and tracked."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=Exception("connection reset by peer"))
+    tracker = DegradedSources(logging.getLogger("test"))
+    rows = await _fetch_system_secrets(pool, "email", tracker=tracker)
+    assert rows == []
+    assert tracker.failed is True
+    assert tracker.names == ["email"]
+
+
+def test_inventory_no_sources_degraded_when_all_butlers_healthy():
+    """The common all-healthy case keeps the leaner envelope: no
+    sources_degraded key at all (not an empty list)."""
+    mock_db = _make_db_manager(butler_names=["switchboard"])
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    assert "sources_degraded" not in resp.json()["meta"]
+
+
+def test_inventory_surfaces_sources_degraded_for_genuine_per_butler_failure():
+    """One butler's schema drifts (UndefinedColumnError on an existing table)
+    while another butler is fine: the healthy butler's rows still show up,
+    and meta.sources_degraded names the failing butler (bu-38ae1)."""
+    row_a = _make_system_row(key="A_KEY", value="va", last_test_ok=True)
+
+    pool_ok = AsyncMock()
+
+    async def _pool_ok_fetch(sql, *args):
+        if "secret_probe_log" in sql or "audit_log" in sql:
+            return []
+        return [row_a]
+
+    pool_ok.fetch = AsyncMock(side_effect=_pool_ok_fetch)
+    pool_ok.fetchrow = AsyncMock(return_value=None)
+
+    pool_broken = AsyncMock()
+
+    async def _pool_broken_fetch(sql, *args):
+        if "butler_secrets" in sql:
+            raise UndefinedColumnError('column "last_verified" does not exist')
+        return []
+
+    pool_broken.fetch = AsyncMock(side_effect=_pool_broken_fetch)
+    pool_broken.fetchrow = AsyncMock(return_value=None)
+
+    shared_pool = AsyncMock()
+    shared_pool.fetch = AsyncMock(return_value=[])
+    shared_pool.fetchrow = AsyncMock(return_value=None)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["alpha", "beta"]
+    mock_db.pool = MagicMock(side_effect=lambda name: pool_ok if name == "alpha" else pool_broken)
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # The healthy butler's row is still present — one source failing must not
+    # hide data from the others.
+    assert {row["key"] for row in body["data"]["system"]} == {"A_KEY"}
+
+    # The failing butler is named (butler identifier, not an exception string).
+    assert body["meta"]["sources_degraded"] == ["beta"]
+
+
+def test_inventory_no_sources_degraded_when_butler_has_no_table_yet():
+    """A butler that legitimately has no butler_secrets table (UndefinedTableError)
+    must NOT appear in sources_degraded — it is an absence, not a failure."""
+    pool_no_table = AsyncMock()
+
+    async def _pool_no_table_fetch(sql, *args):
+        if "butler_secrets" in sql:
+            raise UndefinedTableError('relation "butler_secrets" does not exist')
+        return []
+
+    pool_no_table.fetch = AsyncMock(side_effect=_pool_no_table_fetch)
+    pool_no_table.fetchrow = AsyncMock(return_value=None)
+
+    shared_pool = AsyncMock()
+    shared_pool.fetch = AsyncMock(return_value=[])
+    shared_pool.fetchrow = AsyncMock(return_value=None)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["freshbutler"]
+    mock_db.pool = MagicMock(return_value=pool_no_table)
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["system"] == []
+    assert "sources_degraded" not in body["meta"]
+
+
+def test_inventory_surfaces_sources_degraded_for_shared_pool_failure():
+    """A genuine failure fetching the shared-pool system secrets (public.butler_secrets)
+    is tracked as 'shared-public', matching the butler_name tag _fetch_system_secrets
+    already uses for that pool elsewhere in the response."""
+    mock_db = _make_db_manager(butler_names=[])
+    shared_pool = mock_db.credential_shared_pool()
+
+    async def _shared_fetch_broken(sql, *args):
+        # Match only the system-secrets scan (no CLI category filter) so the
+        # separate CLI-family fetch against the same shared pool is unaffected.
+        if "butler_secrets" in sql and "category IN" not in sql:
+            raise UndefinedColumnError('column "last_verified" does not exist')
+        return []
+
+    shared_pool.fetch = AsyncMock(side_effect=_shared_fetch_broken)
+
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["meta"]["sources_degraded"] == ["shared-public"]
 
 
 # ---------------------------------------------------------------------------

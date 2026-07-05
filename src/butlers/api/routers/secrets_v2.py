@@ -204,6 +204,7 @@ from pydantic import BaseModel, Field
 
 from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
+from butlers.api.degraded import DegradedSources
 from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.models.cli_auth import CLIAuthSessionState
 from butlers.api.routers import audit as audit_router
@@ -1044,11 +1045,29 @@ async def _fetch_google_test_mode_expiry(
 # ---------------------------------------------------------------------------
 
 
+def _is_missing_secrets_schema_error(exc: Exception) -> bool:
+    """Return whether *exc* indicates the butler simply has no secrets table yet.
+
+    Mirrors ``memory.py::_is_missing_memory_schema_error``. A butler that has
+    never had ``butler_secrets`` created (no table yet) is the expected,
+    common case — NOT a degraded source. Any other failure (an unexpected
+    COLUMN error from schema drift, e.g. bu-urcwx; a dropped connection; a
+    permission error) is genuine and must be tracked via ``tracker`` in
+    ``_fetch_system_secrets`` so a real per-butler failure is never mistaken
+    for a truthful empty result (bu-38ae1).
+    """
+    if isinstance(exc, UndefinedTableError):
+        return True
+    msg = str(exc).lower()
+    return "does not exist" in msg and ("relation" in msg or "table" in msg)
+
+
 async def _fetch_system_secrets(
     pool: Any,
     butler_name: str,
     *,
     read_only: bool = False,
+    tracker: DegradedSources | None = None,
 ) -> list[SystemSecret]:
     """Fetch all butler_secrets rows from a single butler's schema pool.
 
@@ -1057,6 +1076,12 @@ async def _fetch_system_secrets(
     ``read_only`` marks the returned rows as managed in the shared credential
     pool (see :class:`SystemSecret.read_only`); set it when scanning the shared
     pool rather than a per-butler schema.
+
+    ``tracker``, when provided, is marked with ``butler_name`` for any failure
+    that is NOT classified as "no secrets table yet" by
+    ``_is_missing_secrets_schema_error`` — see that function's docstring for
+    the classification rule. Callers should surface ``tracker.names`` in the
+    response envelope (e.g. ``ApiMeta(sources_degraded=...)``).
     """
     try:
         rows = await pool.fetch(
@@ -1078,14 +1103,20 @@ async def _fetch_system_secrets(
             ORDER BY category, secret_key
             """
         )
-    except UndefinedTableError:
-        logger.debug("butler_secrets not found for butler %s", butler_name)
-        return []
     except Exception as exc:  # noqa: BLE001
-        # A missing COLUMN (schema drift, e.g. test-state columns absent) must
-        # not be silently treated as "table not found" — it hides every row in
-        # this scan from the inventory (bu-urcwx).
-        logger.warning("Failed to fetch system secrets for butler %s: %s", butler_name, exc)
+        if _is_missing_secrets_schema_error(exc):
+            logger.debug("butler_secrets not found for butler %s", butler_name)
+        else:
+            # A missing COLUMN (schema drift, e.g. test-state columns absent) or
+            # any other genuine failure must not be silently treated as "table
+            # not found" — it hides every row in this scan from the inventory
+            # (bu-urcwx) with zero API signal (bu-38ae1).
+            if tracker is not None:
+                tracker.mark(
+                    butler_name,
+                    msg=f"Failed to fetch system secrets for butler {butler_name!r}",
+                )
+            logger.warning("Failed to fetch system secrets for butler %s: %s", butler_name, exc)
         return []
 
     # Bulk-fetch probe logs for all keys in a single query (eliminates N+1).
@@ -1629,13 +1660,19 @@ async def get_inventory(
         shared_pool = None
 
     # --- Fetch system secrets across all butler schemas + the shared pool ---
+    # tracker records genuine per-butler fetch failures (schema drift, dropped
+    # connections, etc. — see _is_missing_secrets_schema_error) so they are
+    # surfaced via meta.sources_degraded instead of silently zero-filling
+    # (bu-38ae1). A butler with no pool wired at all (KeyError below) is a
+    # configuration fact, not a degraded source, and is not tracked.
+    tracker = DegradedSources(logger)
     system_secrets: list[SystemSecret] = []
     for butler_name in db.butler_names:
         try:
             pool = db.pool(butler_name)
         except KeyError:
             continue
-        butler_rows = await _fetch_system_secrets(pool, butler_name)
+        butler_rows = await _fetch_system_secrets(pool, butler_name, tracker=tracker)
         system_secrets.extend(butler_rows)
 
     # Shared application config (Google OAuth app credentials, butler email /
@@ -1652,7 +1689,9 @@ async def get_inventory(
     #
     # read_only=False: these rows are now editable via target="shared-public".
     if shared_pool is not None:
-        shared_system = await _fetch_system_secrets(shared_pool, "shared-public", read_only=False)
+        shared_system = await _fetch_system_secrets(
+            shared_pool, "shared-public", read_only=False, tracker=tracker
+        )
         system_secrets.extend(s for s in shared_system if s.category not in ("cli", "cli-auth"))
 
     # --- Fetch user secrets from shared pool ---
@@ -1713,7 +1752,18 @@ async def get_inventory(
     # the deduplicated row set (bu-976n0 tri-state split — replaces the prior
     # single meta.needs_hand_count, which conflated genuine failures with
     # merely-unverified rows and double-counted per-butler duplicates).
-    meta = ApiMeta(failing_count=failing, unverified_count=unverified, severity=severity)
+    # meta.sources_degraded (bu-38ae1) names any butler/pool whose system-secrets
+    # fetch genuinely failed (fleet-wide degraded-envelope convention — see
+    # CLAUDE.md "API Conventions"); only set when non-empty so the common
+    # all-healthy case keeps the leaner envelope the existing tests assert on.
+    meta_kwargs: dict[str, Any] = {
+        "failing_count": failing,
+        "unverified_count": unverified,
+        "severity": severity,
+    }
+    if tracker.failed:
+        meta_kwargs["sources_degraded"] = tracker.names
+    meta = ApiMeta(**meta_kwargs)
 
     return ApiResponse[InventoryData](data=data, meta=meta)
 
