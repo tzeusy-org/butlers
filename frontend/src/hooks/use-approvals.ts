@@ -29,6 +29,7 @@ import type {
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
 } from "@/api/index.ts";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 
 // Query keys
 export const approvalKeys = {
@@ -89,7 +90,7 @@ export function useApprovalMetrics() {
     // Live path: the fleet event bus (bu-86c4c.8) invalidates this key on
     // every approval state-transition event. Polling is now a 5-minute
     // reconciliation sweep — a safety net, not the primary update path.
-    refetchInterval: 5 * 60_000,
+    refetchInterval: POLL_BUS_RECONCILE_MS,
     staleTime: 30_000,
   });
 }

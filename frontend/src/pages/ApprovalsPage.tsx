@@ -45,8 +45,8 @@ import {
 } from "@/api/index.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
-import { useApprovalsStream } from "@/hooks/use-approvals-stream.ts";
 import {
   useAutonomySuggestions,
   useConfirmAutonomySuggestion,
@@ -1159,18 +1159,20 @@ export default function ApprovalsPage() {
   const navigate = useNavigate();
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
 
-  // Live updates via WebSocket stream (§8.3), also fanned onto the
-  // multiplexed fleet event bus (bu-86c4c.8) which the shell keeps connected
-  // app-wide via RootLayout's useEventStream(). Cache invalidation is handled
-  // by both; the refetchInterval below is now a 5-minute reconciliation
-  // sweep — a safety net for the rare case both live paths are down, not the
-  // primary update path.
-  useApprovalsStream();
-
+  // Live updates come from the shared fleet event bus (bu-86c4c.8, wired
+  // app-wide via RootLayout's EventBusProvider, bu-qvnce.14) — its
+  // event-cache-registry.ts approvalPatch invalidates this page's flat /
+  // history / detail / metrics keys on every approval state-transition
+  // event. The bespoke useApprovalsStream WebSocket that used to live here
+  // was deleted (bu-qvnce.14 slice 1): it duplicated that exact invalidation
+  // (approvalPatch is a strict superset) and never used its own onEvent
+  // callback for anything else. refetchInterval below is a reconciliation
+  // sweep — a safety net for the rare case the bus is down, not the primary
+  // update path.
   const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: Q.pending(pendingLimit),
     queryFn: () => getApprovalsFlat("waiting", pendingLimit),
-    refetchInterval: 5 * 60_000,
+    refetchInterval: POLL_BUS_RECONCILE_MS,
     // Keep previous data visible while the expanded list is fetching to
     // prevent layout shifts when the limit is bumped (v5: keepPreviousData).
     placeholderData: (prev) => prev,

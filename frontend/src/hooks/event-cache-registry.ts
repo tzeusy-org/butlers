@@ -61,11 +61,19 @@ const approvalPatch: CachePatch = (qc, event) => {
   }
 };
 
-/** spend — mirrors use-spend.ts's cost-summary / daily-costs / top-sessions keys. */
+/**
+ * spend — mirrors use-spend.ts's cost-summary / daily-costs / top-sessions /
+ * costs-by-schedule keys (bu-qvnce.14 slice 3 added costs-by-schedule: a
+ * schedule's per-run cost analysis changes on the same spend call events as
+ * the other three, so it was demoted onto the same POLL_BUS_RECONCILE_MS
+ * reconciliation cadence and needed the matching invalidation here to
+ * actually be bus-covered rather than just sharing the interval's magnitude).
+ */
 const spendPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["cost-summary"] });
   qc.invalidateQueries({ queryKey: ["daily-costs"] });
   qc.invalidateQueries({ queryKey: ["top-sessions"] });
+  qc.invalidateQueries({ queryKey: ["costs-by-schedule"] });
 };
 
 /**
@@ -95,12 +103,21 @@ const sessionPatch: CachePatch = (qc, event) => {
 /**
  * notification — a notify() delivery attempt; refreshes the messenger health
  * surfaces and the fleet chronicle's timeline (notification is one of its
- * event sources — see sessionPatch's comment above).
+ * event sources — see sessionPatch's comment above), PLUS the notifications
+ * feed itself (bu-qvnce.14 slice 5 fix): ["notifications"] / ["butler-
+ * notifications"] (use-notifications.ts's list hooks) and
+ * ["notification-stats"] (aggregate counts) were never invalidated here --
+ * the exact gap the 2026-07-04 JARVIS pursuit doc names as "the proven
+ * instance" of a surface silently going event-dead. See
+ * event-cache-registry.coverage.test.ts for the regression test.
  */
 const notificationPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["messenger-delivery-stats"] });
   qc.invalidateQueries({ queryKey: ["messenger-queue-depth"] });
   qc.invalidateQueries({ queryKey: ["timeline"] });
+  qc.invalidateQueries({ queryKey: ["notifications"] });
+  qc.invalidateQueries({ queryKey: ["butler-notifications"] });
+  qc.invalidateQueries({ queryKey: ["notification-stats"] });
 };
 
 /**

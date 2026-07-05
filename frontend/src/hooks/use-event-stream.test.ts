@@ -163,7 +163,7 @@ describe("useEventStream", () => {
       getLastWsInstance()?.simulateMessage(event);
     });
     expect(mockApplyFleetEvent).toHaveBeenCalledWith(mockQueryClient, event);
-    expect(onEvent).toHaveBeenCalledWith(event);
+    expect(onEvent).toHaveBeenCalledWith(event, { replayed: false });
   });
 
   it("replays each buffered event in a snapshot through applyFleetEvent and onEvent", () => {
@@ -180,8 +180,8 @@ describe("useEventStream", () => {
     });
     expect(mockApplyFleetEvent).toHaveBeenCalledWith(mockQueryClient, bufferedA);
     expect(mockApplyFleetEvent).toHaveBeenCalledWith(mockQueryClient, bufferedB);
-    expect(onEvent).toHaveBeenCalledWith(bufferedA);
-    expect(onEvent).toHaveBeenCalledWith(bufferedB);
+    expect(onEvent).toHaveBeenCalledWith(bufferedA, { replayed: true });
+    expect(onEvent).toHaveBeenCalledWith(bufferedB, { replayed: true });
     expect(mockApplyFleetEvent).toHaveBeenCalledTimes(2);
   });
 

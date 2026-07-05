@@ -22,8 +22,17 @@
  * This replaces the prior reliance on a 30 s `refetchInterval` poll; the query
  * remains only as the initial-load / cold-start fetch.
  *
- * Mirrors the connection/back-off pattern of `use-spend-stream.ts` and
- * `use-approvals-stream.ts`.
+ * NOT ported onto the shared EventBusProvider (bu-qvnce.14 slice 2): this
+ * hook's wire protocol (header_delta/attention_add/attention_remove) has no
+ * equivalent on the unified `/api/events/stream` bus today -- the backend
+ * never fans these deltas onto it (see
+ * src/butlers/api/routers/settings_console.py, which computes them from its
+ * own polling loop, independent of `emit_event`). Porting this needs a new
+ * backend event type plus wiring calls at whatever mutates header
+ * counts/attention items across several subsystems -- out of scope for a
+ * frontend-only change; tracked as a bu-qvnce.14 follow-up. This remains its
+ * own WebSocket for now (mirrors the connection/back-off pattern the deleted
+ * `use-approvals-stream.ts` and `use-spend-stream.ts` also used).
  */
 
 import { useEffect, useRef, useState } from "react";

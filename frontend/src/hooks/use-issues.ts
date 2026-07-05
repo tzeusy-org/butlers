@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { dismissIssue, getIssueOccurrences, getIssues, undismissIssue } from "@/api/index.ts";
 import type { ApiResponse, Issue } from "@/api/types";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 
 /** Query key for the active issues feed. */
 const ACTIVE_ISSUES_KEY = ["issues", { dismissed: false }] as const;
@@ -37,7 +38,7 @@ export function useIssues(options: UseIssuesOptions = {}) {
     // Live path: the fleet event bus (bu-86c4c.8) invalidates ["issues"] on
     // every new audit-log error. Polling is now a 5-minute reconciliation
     // sweep — a safety net, not the primary update path.
-    refetchInterval: 5 * 60_000,
+    refetchInterval: POLL_BUS_RECONCILE_MS,
   });
 }
 

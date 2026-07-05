@@ -27,10 +27,10 @@
  *     GET /api/spend/breakdown, GET /api/spend/rules, PUT /api/spend/ceiling,
  *     GET /api/spend/daily, GET /api/spend (summary, used for the movers
  *     strip), GET /api/spend/top-sessions, GET /api/spend/by-schedule.
- *   - WebSocket: page.routeWebSocket() for /api/spend/stream, returns an
- *     immediate empty snapshot so the hook settles in a deterministic state
- *     without blocking page load.
- *   - No real backend or DB required.
+ *   - No real backend or DB required. The live spend ticker now subscribes to
+ *     the shared fleet event bus (bu-qvnce.14) rather than opening its own
+ *     /api/spend/stream socket; these tests don't assert on the ticker so no
+ *     WebSocket mock is needed here.
  */
 
 import { test, expect, Page } from "@playwright/test";
@@ -196,14 +196,6 @@ async function installBaseMocks(page: Page) {
     } else {
       route.continue();
     }
-  });
-
-  // WebSocket spend stream - return an empty snapshot immediately so the
-  // useSpendStream hook settles without blocking page interaction.
-  // Note: Playwright's WebSocketRoute handler fires on connection; there is no
-  // onopen event. Call ws.send() directly to deliver the initial snapshot.
-  await page.routeWebSocket("**/api/spend/stream", (ws) => {
-    ws.send(JSON.stringify({ kind: "snapshot", events: [] }));
   });
 }
 

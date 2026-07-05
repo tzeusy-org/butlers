@@ -30,8 +30,12 @@ export interface UseEventStreamOptions {
   /** Disable the hook (no-op when false). Defaults to true. */
   enabled?: boolean;
   /** Called for every incoming event, including snapshot-replayed ones and
-   *  heartbeats. Cache patching happens regardless of whether this is set. */
-  onEvent?: (event: FleetEvent) => void;
+   *  heartbeats. Cache patching happens regardless of whether this is set.
+   *  `meta.replayed` is true for events replayed from the server's
+   *  ring-buffer snapshot on (re)connect rather than observed live -- see
+   *  EventBusProvider (src/lib/event-bus.tsx), the primary consumer of this
+   *  distinction. */
+  onEvent?: (event: FleetEvent, meta: { replayed: boolean }) => void;
 }
 
 export interface UseEventStreamResult {
@@ -155,13 +159,13 @@ export function useEventStream({
         // snapshot may carry state changes missed while the socket was down.
         for (const replayed of payload.events) {
           applyFleetEvent(qc, replayed);
-          onEventRef.current?.(replayed);
+          onEventRef.current?.(replayed, { replayed: true });
         }
         return;
       }
 
       applyFleetEvent(qc, payload);
-      onEventRef.current?.(payload);
+      onEventRef.current?.(payload, { replayed: false });
     };
 
     ws.onerror = () => {

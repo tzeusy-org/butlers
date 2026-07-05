@@ -16,14 +16,21 @@ import {
   patchRuntimeConfig,
 } from "@/api/index.ts";
 import type { RuntimeConfigPatch } from "@/api/index.ts";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
+
+// Not bus-covered (bu-qvnce.14 slice 3): no fleet-bus event maps to the bare
+// butlers list or a single butler's per-module health -- unlike
+// ["butlers","board"] below, these stay a primary-path poll rather than a
+// reconciliation sweep.
+const BUTLERS_POLL_MS = 30_000;
 
 /** Fetch all butlers with live status. */
 export function useButlers() {
   return useQuery({
     queryKey: ["butlers"],
     queryFn: () => getButlers(),
-    refetchInterval: 30_000,
-    staleTime: 30_000,
+    refetchInterval: BUTLERS_POLL_MS,
+    staleTime: BUTLERS_POLL_MS,
   });
 }
 
@@ -44,7 +51,11 @@ export function useButlersBoard() {
   return useQuery({
     queryKey: ["butlers", "board"],
     queryFn: () => getButlersBoard(),
-    refetchInterval: 30_000,
+    // Bus-covered (bu-qvnce.14 slice 3): event-cache-registry.ts's
+    // sessionPatch invalidates this exact key on every session started/ended
+    // event -- this interval is now a reconciliation sweep, not the primary
+    // update path.
+    refetchInterval: POLL_BUS_RECONCILE_MS,
   });
 }
 
@@ -72,7 +83,7 @@ export function useButlerModules(name: string) {
     queryKey: ["butlers", name, "modules"],
     queryFn: () => getButlerModules(name),
     enabled: !!name,
-    refetchInterval: 30_000,
+    refetchInterval: BUTLERS_POLL_MS,
   });
 }
 

@@ -178,6 +178,40 @@ const HANDROLLED_OVERLAY_SELECTORS = [
   },
 ]
 
+// bu-qvnce.14 slice 3: poll-policy lint. A bare numeric refetchInterval
+// hides whether an interval is the PRIMARY update path or a safety-net
+// reconciliation sweep sitting behind a live bus event -- see
+// src/lib/poll-policy.ts. Scoped to exactly the files already migrated onto
+// named tokens (POLL_BUS_RECONCILE_MS or an equally-named local constant)
+// rather than repo-wide: ~140 other refetchInterval call sites across the
+// app (use-health.ts, use-memory.ts, use-finance.ts, use-whatsapp.ts, etc.)
+// have not been migrated yet -- broadening this list is tracked as a
+// bu-qvnce.14 follow-up, not silently expanded here (a blanket rule would
+// break CI on every one of those pre-existing, legitimate intervals).
+const POLL_POLICY_FILES = [
+  'src/hooks/use-butlers.ts',
+  'src/hooks/use-timeline.ts',
+  'src/hooks/use-messenger.ts',
+  'src/hooks/use-sessions.ts',
+  'src/hooks/use-approvals.ts',
+  'src/hooks/use-spend.ts',
+  'src/hooks/use-issues.ts',
+]
+
+const POLL_POLICY_SELECTORS = [
+  {
+    // Descendant (not direct-child) combinator: also catches a numeric
+    // literal nested inside `options?.refetchInterval ?? 30_000` or
+    // `5 * 60_000`, not just a bare `refetchInterval: 30_000`.
+    selector: 'Property[key.name="refetchInterval"] Literal[value=/^[0-9]/]',
+    message:
+      'refetchInterval must use a named poll-policy token (POLL_BUS_RECONCILE_MS from ' +
+      'src/lib/poll-policy.ts, or an equally-named local constant), not a raw numeric ' +
+      'literal -- a bare number hides whether this interval is a bus-covered reconciliation ' +
+      'sweep or the primary update path (bu-qvnce.14 slice 3).',
+  },
+]
+
 export default defineConfig([
   globalIgnores(['dist']),
   {
@@ -250,6 +284,15 @@ export default defineConfig([
       'react-refresh/only-export-components': 'off',
     },
   },
+  {
+    // Same tradeoff again: EventBusProvider plus its accompanying hooks
+    // (useEventBus, useBusEvent) are one tightly-coupled unit (bu-qvnce.14
+    // slice 1) — mirrors command-registry.tsx's shape deliberately.
+    files: ['src/lib/event-bus.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
   // ---------------------------------------------------------------------------
   // Chart color plumbing guard (bu-86c4c.5) + one-visual-language guards
   // (bu-86c4c.6). Split into three non-overlapping file-sets — see the
@@ -293,6 +336,40 @@ export default defineConfig([
         ...HSL_VAR_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
+      ],
+    },
+  },
+  {
+    // bu-qvnce.14 slice 3: poll-policy token enforcement, .ts hook files.
+    // Every one of these files has been fully migrated off raw numeric
+    // refetchInterval -- see the POLL_POLICY_FILES comment above for why
+    // this is scoped rather than repo-wide. Must repeat the base .ts
+    // selectors (HSL/STATUS) here too: flat config's `no-restricted-syntax`
+    // does NOT merge across matching blocks for the same file, so this block
+    // fully replaces (not adds to) the generic '**/*.ts' block for these files.
+    files: POLL_POLICY_FILES,
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
+      ],
+    },
+  },
+  {
+    // Same poll-policy enforcement for ApprovalsPage.tsx (a .tsx file, so it
+    // must instead repeat the general '**/*.tsx' block's full selector set).
+    files: ['src/pages/ApprovalsPage.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...HSL_VAR_SELECTORS,
+        ...STATUS_COLOR_SELECTORS,
+        ...HEX_COLOR_SELECTORS,
+        ...PRIMITIVE_REDECLARATION_SELECTORS,
+        ...HANDROLLED_OVERLAY_SELECTORS,
+        ...POLL_POLICY_SELECTORS,
       ],
     },
   },

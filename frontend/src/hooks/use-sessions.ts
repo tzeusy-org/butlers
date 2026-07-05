@@ -4,6 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { SessionParams } from "@/api/types.ts";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 
 import {
   getButlerSession,
@@ -26,7 +27,7 @@ export function useSessions(params?: SessionParams, options?: SessionQueryOption
     // reconciliation sweep — a safety net, not the primary update path.
     // Callers that pass their own refetchInterval (e.g. an explicit
     // auto-refresh control) are unaffected.
-    refetchInterval: options?.refetchInterval ?? 5 * 60_000,
+    refetchInterval: options?.refetchInterval ?? POLL_BUS_RECONCILE_MS,
     // Keep the previous page/filter's rows visible while the new cursor/filter
     // combination fetches, instead of blanking to a loading skeleton
     // (JARVIS audit move 10 — never-blank lists).
@@ -50,7 +51,7 @@ export function useSessionAggregate(params?: SessionParams, options?: SessionQue
     queryKey: ["session-aggregate", filterParams],
     queryFn: () => getSessionAggregate(filterParams),
     // See useSessions above: fleet-event-bus-driven, poll is now a safety net.
-    refetchInterval: options?.refetchInterval ?? 5 * 60_000,
+    refetchInterval: options?.refetchInterval ?? POLL_BUS_RECONCILE_MS,
   });
 }
 
@@ -61,7 +62,7 @@ export function useButlerSessions(name: string, params?: SessionParams) {
     queryFn: () => getButlerSessions(name, params),
     enabled: !!name,
     // See useSessions above: fleet-event-bus-driven, poll is now a safety net.
-    refetchInterval: 5 * 60_000,
+    refetchInterval: POLL_BUS_RECONCILE_MS,
     placeholderData: (prev) => prev,
   });
 }

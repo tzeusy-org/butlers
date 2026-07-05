@@ -31,10 +31,10 @@ vi.mock("@/api/client", () => ({
   apiFetch: (...args: Parameters<typeof import("@/api/client").apiFetch>) => apiFetchMock(...args),
 }))
 
-const mockUseSpendStream = vi.fn()
+const mockUseSpendTicker = vi.fn()
 
-vi.mock("@/hooks/use-spend-stream", () => ({
-  useSpendStream: () => mockUseSpendStream(),
+vi.mock("@/hooks/use-spend-ticker", () => ({
+  useSpendTicker: () => mockUseSpendTicker(),
 }))
 
 vi.mock("@/hooks/use-model-catalog", () => ({
@@ -172,7 +172,7 @@ function setHooks({
   currentError?: boolean
   priorError?: boolean
 } = {}) {
-  mockUseSpendStream.mockReturnValue({ streamedCostUsd: 0 })
+  mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
 
   // useSpendSummary is called twice per render: current window, prior window.
   let call = 0
@@ -346,7 +346,7 @@ describe("SpendPage — live MTD stream merge", () => {
 
   it("adds live streamed spend on top of the polled MTD baseline", async () => {
     apiFetchMock.mockImplementation((path: string) => defaultApiFetch(path))
-    mockUseSpendStream.mockReturnValue({ streamedCostUsd: 0 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { rerender } = render(
@@ -361,7 +361,7 @@ describe("SpendPage — live MTD stream merge", () => {
     })
 
     // $3 of live spend streams in before the next poll.
-    mockUseSpendStream.mockReturnValue({ streamedCostUsd: 3 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 3 })
     rerender(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
@@ -387,7 +387,7 @@ describe("SpendPage — live MTD stream merge", () => {
       }
       return defaultApiFetch(path)
     })
-    mockUseSpendStream.mockReturnValue({ streamedCostUsd: 0 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
 
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const { rerender } = render(
@@ -402,7 +402,7 @@ describe("SpendPage — live MTD stream merge", () => {
     })
 
     // $3 streams in live, ahead of the next poll.
-    mockUseSpendStream.mockReturnValue({ streamedCostUsd: 3 })
+    mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 3 })
     rerender(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>

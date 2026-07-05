@@ -24,10 +24,6 @@ import ApprovalsPage from "@/pages/ApprovalsPage";
 // Mocks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/hooks/use-approvals-stream", () => ({
-  useApprovalsStream: vi.fn(),
-}));
-
 vi.mock("sonner", () => {
   // sonner's real export is a CALLABLE function (toast(msg, opts)) that also
   // carries .success/.error/.warning statics -- the undo-toast path

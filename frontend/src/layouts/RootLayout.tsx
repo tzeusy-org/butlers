@@ -12,7 +12,8 @@ import { ShortcutRegistryProvider } from '../hooks/use-register-shortcut'
 import { PageContextProvider } from '../lib/page-context'
 import { useKeyboardShortcuts } from '../hooks/use-keyboard-shortcuts'
 import { ShortcutHints } from '../components/ui/shortcut-hints'
-import { useEventStream, type EventStreamStatus } from '../hooks/use-event-stream'
+import { type EventStreamStatus } from '../hooks/use-event-stream'
+import { EventBusProvider, useEventBus } from '../lib/event-bus'
 import { FloatingChatWidget } from '../components/chat/FloatingChatWidget'
 import { announce, useShellAnnouncement } from '../lib/shell-announcer'
 
@@ -47,15 +48,24 @@ function ShellAnnouncerRegion() {
 }
 
 export default function RootLayout() {
+  // EventBusProvider (bu-qvnce.14 slice 1) owns the single app-wide fleet
+  // event-stream connection (bu-86c4c.8, §JARVIS audit move 5) and re-exposes
+  // it as a subscribe(type, cb) API via useBusEvent -- so a page that needs
+  // the RAW events (not just the cache invalidation every subscriber gets
+  // for free) no longer has to open its own second WebSocket to get them.
+  return (
+    <EventBusProvider>
+      <RootLayoutInner />
+    </EventBusProvider>
+  )
+}
+
+function RootLayoutInner() {
   useKeyboardShortcuts()
 
-  // Single app-wide fleet event-stream connection (bu-86c4c.8, §JARVIS audit
-  // move 5). Mounted once here — not per-page — so every route shares one
-  // socket, one reconnect back-off, and one declarative cache-patch registry
-  // pass, rather than each page opening its own. `status` is threaded down
-  // into PageHeader so the shell's Live indicator reflects actual socket
-  // health.
-  const { status: eventStreamStatus } = useEventStream()
+  // `status` is threaded down into PageHeader so the shell's Live indicator
+  // reflects actual socket health.
+  const { status: eventStreamStatus } = useEventBus()
 
   // Announce stream-state EDGES only (not "connecting", the cold-start state
   // — a fresh page load reading as a fleet problem to a screen-reader user

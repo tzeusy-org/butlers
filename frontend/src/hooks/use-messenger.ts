@@ -7,8 +7,12 @@
  *   useMessengerQueueDepth     — pending/in-progress queue depth
  *   useMessengerDeadLetters    — recent dead-letter entries
  *
- * Circuit-status and queue-depth refresh every 15s (live operational data).
- * Delivery-stats and dead-letters refresh every 30s (aggregate / archive).
+ * Circuit-status refreshes every 15s (live operational data, not bus-covered).
+ * Dead-letters refreshes every 30s (archive, not bus-covered).
+ * Delivery-stats and queue-depth are bus-covered (bu-qvnce.14 slice 3):
+ * event-cache-registry.ts's notificationPatch invalidates both keys on every
+ * "notification" bus event, so their refetchInterval is now a 5-minute
+ * reconciliation sweep (POLL_BUS_RECONCILE_MS), not the primary update path.
  *
  * bead: bu-iuol4.34
  */
@@ -25,9 +29,10 @@ import type {
   MessengerDeadLettersParams,
   MessengerDeliveryStatsParams,
 } from "@/api/index.ts";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 
-const STALE_TIME_AGGREGATE = 30_000; // 30s — delivery stats, dead letters
-const STALE_TIME_LIVE = 15_000; // 15s — circuit status, queue depth
+const STALE_TIME_AGGREGATE = 30_000; // 30s — dead letters (not bus-covered)
+const STALE_TIME_LIVE = 15_000; // 15s — circuit status (not bus-covered)
 
 // ---------------------------------------------------------------------------
 // useMessengerDeliveryStats
@@ -42,7 +47,7 @@ export function useMessengerDeliveryStats(params?: MessengerDeliveryStatsParams)
     queryKey: ["messenger-delivery-stats", params],
     queryFn: () => getMessengerDeliveryStats(params),
     staleTime: STALE_TIME_AGGREGATE,
-    refetchInterval: STALE_TIME_AGGREGATE,
+    refetchInterval: POLL_BUS_RECONCILE_MS,
   });
 }
 
@@ -72,14 +77,15 @@ export function useMessengerCircuitStatus() {
 
 /**
  * Fetch outbound queue depth by channel and priority.
- * Refreshes frequently as the queue changes in real time.
+ *
+ * Bus-covered (bu-qvnce.14 slice 3) -- see the file-header comment.
  */
 export function useMessengerQueueDepth() {
   return useQuery({
     queryKey: ["messenger-queue-depth"],
     queryFn: () => getMessengerQueueDepth(),
     staleTime: STALE_TIME_LIVE,
-    refetchInterval: STALE_TIME_LIVE,
+    refetchInterval: POLL_BUS_RECONCILE_MS,
   });
 }
 

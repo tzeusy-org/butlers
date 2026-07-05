@@ -52,11 +52,16 @@ describe("EVENT_CACHE_REGISTRY", () => {
     expect(called.some((k) => Array.isArray(k) && k[1] === "detail")).toBe(false);
   });
 
-  it("spend: invalidates cost-summary, daily-costs, top-sessions", () => {
+  it("spend: invalidates cost-summary, daily-costs, top-sessions, costs-by-schedule", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "spend", ts: 1, data: { butler: "atlas" } });
     expect(keys(invalidateQueries)).toEqual(
-      expect.arrayContaining([["cost-summary"], ["daily-costs"], ["top-sessions"]]),
+      expect.arrayContaining([
+        ["cost-summary"],
+        ["daily-costs"],
+        ["top-sessions"],
+        ["costs-by-schedule"],
+      ]),
     );
   });
 
@@ -86,7 +91,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
     expect(called.some((k) => Array.isArray(k) && k[0] === "session-detail")).toBe(false);
   });
 
-  it("notification: invalidates messenger delivery stats, queue depth, and the timeline", () => {
+  it("notification: invalidates messenger delivery stats, queue depth, the timeline, and the notifications feed itself", () => {
     const { qc, invalidateQueries } = makeQc();
     applyFleetEvent(qc, { type: "notification", ts: 1, data: {} });
     expect(keys(invalidateQueries)).toEqual(
@@ -94,6 +99,9 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["messenger-delivery-stats"],
         ["messenger-queue-depth"],
         ["timeline"],
+        ["notifications"],
+        ["butler-notifications"],
+        ["notification-stats"],
       ]),
     );
   });

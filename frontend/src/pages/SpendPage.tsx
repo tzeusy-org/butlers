@@ -46,7 +46,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Eyebrow } from "@/components/ui/Eyebrow"
 import { toast } from "sonner"
 import { apiFetch } from "@/api/client"
-import { useSpendStream } from "@/hooks/use-spend-stream"
+import { useSpendTicker } from "@/hooks/use-spend-ticker"
 import { useModelCatalog } from "@/hooks/use-model-catalog"
 import {
   useSpendSummary,
@@ -1259,10 +1259,11 @@ export default function SpendPage() {
   })
   const forecast = forecastData?.data
 
-  // §5.3 — Connect to the spend stream and update KPIs incrementally.
-  // streamedCostUsd is a monotonic cumulative counter of live "call" events
-  // received since mount — it never resets on its own.
-  const { streamedCostUsd } = useSpendStream()
+  // §5.3 — Subscribe to the shared fleet event bus's "spend" events (bu-qvnce.14
+  // slice 2; formerly its own /api/spend/stream socket) and update KPIs
+  // incrementally. streamedCostUsd is a monotonic cumulative counter of live
+  // "call" events received since mount — it never resets on its own.
+  const { streamedCostUsd } = useSpendTicker()
 
   // Each polled forecast (every 120s) is a fresh MTD baseline that already
   // reflects any spend that streamed in before that poll landed. Pin the
