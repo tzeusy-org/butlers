@@ -1,0 +1,276 @@
+# Switchboard Rule Promotion — Delta
+
+## ADDED Requirements
+
+### Requirement: Routing Verdict Log
+
+The system SHALL record every triage-layer decision — however it was reached —
+in a `switchboard.routing_verdict_log` table, so that repeated agreement can be
+mined without excavating per-butler `sessions.tool_calls` JSONB.
+
+The table MUST have columns: `id` (UUID PK), `ingestion_event_id` (UUID, FK to
+`public.ingestion_events`), `sender_key` (TEXT, normalized lowercase sender
+address), `source_channel` (TEXT), `verdict_source` (TEXT, one of `llm`,
+`rule`, `pinned`, `spot_check`), `verdict_action` (TEXT, one of `route_to`,
+`skip`, `metadata_only`, `pass_through`, `block`), `verdict_target` (TEXT,
+nullable, butler name when `verdict_action = 'route_to'`), `matched_rule_id`
+(UUID, nullable, FK to `switchboard.ingestion_rules`), `session_id` (UUID,
+nullable, FK to `switchboard.sessions`), `decided_at` (TIMESTAMPTZ).
+
+A row MUST be written at each of: the pipeline's existing rule-bypass sites
+(`route_to`/`skip`/`metadata_only`, `verdict_source='rule'`), the LLM verdict
+resolution site after `route_to_butler` tool calls are parsed
+(`verdict_source='llm'`), the dashboard pinned-target bypass
+(`verdict_source='pinned'`), and demotion spot-checks (`verdict_source
+='spot_check'`, see Requirement: Demotion via Spot-Check Sampling).
+
+#### Scenario: LLM verdict recorded
+
+- **WHEN** the LLM classification session for an inbound email resolves a
+  `route_to_butler` call targeting `finance`
+- **THEN** a `routing_verdict_log` row MUST be written with
+  `verdict_source='llm'`, `verdict_action='route_to'`,
+  `verdict_target='finance'`, and `session_id` set to the classification
+  session's id
+
+#### Scenario: Rule-bypass verdict recorded
+
+- **WHEN** an inbound event matches an existing `ingestion_rules` row with
+  `action='skip'` and the pipeline takes the bypass (no LLM session spawned)
+- **THEN** a `routing_verdict_log` row MUST still be written, with
+  `verdict_source='rule'`, `verdict_action='skip'`, `matched_rule_id` set to
+  the matched rule, and `session_id` NULL
+
+#### Scenario: Pinned-target verdict excluded from mining
+
+- **WHEN** an event is routed via an explicit dashboard `control.pinned_target`
+  override
+- **THEN** a `routing_verdict_log` row MUST be written with
+  `verdict_source='pinned'`
+- **AND** rows with `verdict_source='pinned'` MUST be excluded from the
+  promotion-trigger scan (Requirement: Promotion Trigger)
+
+### Requirement: Promotion Trigger
+
+The system SHALL periodically scan `routing_verdict_log` grouped by
+`(sender_key, source_channel)` and propose a new ingestion rule when evidence
+of consistent LLM agreement crosses a configurable threshold.
+
+A sender/channel pair becomes promotion-eligible when: no `enabled` (and not
+soft-deleted) `ingestion_rules` row already covers it, no `pending_review`
+suggestion already exists for it (existing suggestions instead have their
+`evidence_count` incremented and `last_evidence_at` updated), the most recent N
+`routing_verdict_log` rows with `verdict_source='llm'` (N configurable, default
+3) all agree on the same `(verdict_action, verdict_target)` pair, and those N
+rows' `decided_at` values span at least 2 distinct calendar days.
+
+The 2-distinct-days requirement is a mandatory evidence-quality gate, not an
+optional tuning parameter — it exists specifically to reject a burst of
+near-simultaneous, superficially-repeated verdicts (e.g. several near-identical
+automated notifications arriving within minutes of each other) as insufficient
+evidence for a standing rule.
+
+"Distinct calendar days" MUST be computed against a pinned timezone anchor
+(UTC, matching `decided_at`'s `TIMESTAMPTZ` storage) and MUST NOT be
+implementable as a bare date-difference check with no minimum-elapsed-time
+floor — a naive `decided_at::date` comparison lets a burst straddling a
+day boundary (e.g. two verdicts 2 minutes apart at 23:59 and 00:01) satisfy
+the "2 distinct days" count on the exact single-burst evidence shape this
+gate exists to reject. The implementation MUST additionally enforce a
+minimum elapsed-time floor between `first_evidence_at` and
+`last_evidence_at` (see design.md D5) so a midnight-adjacent burst cannot
+qualify.
+
+#### Scenario: Promotion-eligible pattern creates a suggestion
+
+- **WHEN** a sender has 3 `routing_verdict_log` rows with
+  `verdict_source='llm'`, all `verdict_action='route_to'` /
+  `verdict_target='finance'`, with `decided_at` timestamps on 3 different
+  calendar days
+- **THEN** a `switchboard.rule_promotion_suggestions` row MUST be created with
+  `status='pending_review'`, `proposed_rule_type='sender_address'`,
+  `proposed_action='route_to:finance'`, and `evidence_count=3`
+
+#### Scenario: Single-burst evidence does not trigger promotion
+
+- **WHEN** a sender has 3 `routing_verdict_log` rows with matching
+  `verdict_source='llm'` verdicts, all with `decided_at` within the same
+  10-minute window on a single calendar day
+- **THEN** no suggestion MUST be created, regardless of the count meeting the
+  numeric threshold
+
+#### Scenario: Midnight-boundary burst does not trigger promotion
+
+- **WHEN** a sender has 3 `routing_verdict_log` rows with matching
+  `verdict_source='llm'` verdicts, all within a 10-minute span that happens to
+  straddle a UTC calendar-day boundary (e.g. 23:59 and 00:01 the next day)
+- **THEN** no suggestion MUST be created — a naive count of distinct
+  `decided_at::date` values crossing midnight MUST NOT be treated as
+  satisfying the evidence-quality gate; the minimum-elapsed-time floor
+  applies regardless of how many calendar dates the timestamps nominally fall
+  on
+
+#### Scenario: Existing rule suppresses re-proposal
+
+- **WHEN** a sender/channel pair already has an `enabled` `ingestion_rules` row
+  covering it
+- **THEN** the promotion trigger MUST NOT create a new suggestion for that
+  sender/channel, even if fresh LLM verdicts continue to accumulate
+
+#### Scenario: Repeated evidence bumps an existing pending suggestion
+
+- **WHEN** a sender/channel pair already has a `pending_review` suggestion and
+  a new matching LLM verdict is recorded
+- **THEN** the existing suggestion's `evidence_count` MUST be incremented and
+  `last_evidence_at` updated, rather than a duplicate suggestion being created
+
+### Requirement: Rule Promotion Suggestion Data Model
+
+The `switchboard.rule_promotion_suggestions` table MUST exist with columns:
+`id` (UUID PK), `sender_key` (TEXT), `source_channel` (TEXT),
+`proposed_rule_type` (TEXT, `sender_address` or `sender_domain`),
+`proposed_condition` (JSONB), `proposed_action` (TEXT), `evidence_count`
+(INTEGER), `first_evidence_at` / `last_evidence_at` (TIMESTAMPTZ),
+`is_clearly_automated` (BOOLEAN, default FALSE), `status` (TEXT, one of
+`pending_review`, `confirmed`, `dismissed`, `superseded`, `demoted`),
+`created_rule_id` (UUID, nullable, FK to `ingestion_rules`),
+`dismissal_reason` (TEXT, nullable), `cooldown_until` (TIMESTAMPTZ, nullable),
+`created_at` / `decided_at` (TIMESTAMPTZ), `decided_by` (TEXT, nullable).
+
+A unique partial index MUST exist on `(sender_key, source_channel) WHERE
+status = 'pending_review'` so at most one pending suggestion can exist per
+sender/channel at a time.
+
+#### Scenario: Table enforces one pending suggestion per sender/channel
+
+- **WHEN** the promotion trigger attempts to create a second `pending_review`
+  suggestion for a `(sender_key, source_channel)` pair that already has one
+- **THEN** the unique partial index MUST prevent the duplicate insert, and the
+  trigger's upsert path MUST update the existing row instead
+
+### Requirement: Clearly-Automated Sender Classification
+
+The system SHALL classify a promotion suggestion's `is_clearly_automated` flag
+using the same bulk-mail signal vocabulary already seeded as `ingestion_rules`
+in the initial routing migration: presence of a `List-Unsubscribe` header,
+`Precedence: bulk` or `Precedence: list`, `Auto-Submitted: auto-generated`, or
+a sender local-part matching `noreply`/`no-reply`/`notifications`/`alerts`
+(case-insensitive prefix) on the evidence events backing the suggestion.
+
+#### Scenario: Automated sender flagged
+
+- **WHEN** a suggestion's evidence events all carry a `List-Unsubscribe` header
+- **THEN** `is_clearly_automated` MUST be `TRUE` on the created suggestion
+
+#### Scenario: Non-automated sender not flagged
+
+- **WHEN** a suggestion's evidence events carry none of the bulk-mail signals
+  and the sender's local part does not match a known automated prefix
+- **THEN** `is_clearly_automated` MUST be `FALSE`
+
+### Requirement: Owner-Confirmed Promotion (No Unattended Auto-Write)
+
+The system SHALL require an explicit owner (or authenticated human actor)
+confirmation for every `rule_promotion_suggestions` row, regardless of
+`is_clearly_automated` or proposed action, before a corresponding
+`switchboard.ingestion_rules` row is created. The system MUST NOT transition a
+suggestion from `pending_review` to `confirmed` (or create the resulting rule)
+without an explicit confirm call.
+
+`is_clearly_automated = TRUE` suggestions with `proposed_action` in (`skip`,
+`metadata_only`) MAY be confirmed in a single batched operation covering
+multiple suggestions at once (see dashboard-approvals delta, "bulk-confirm").
+This reduces confirmation UX cost to one action per batch; it does not remove
+the requirement for an explicit human-initiated confirm call.
+
+#### Scenario: Confirming a suggestion creates the rule
+
+- **WHEN** an authenticated human actor calls confirm on a `pending_review`
+  suggestion
+- **THEN** a new `ingestion_rules` row MUST be created with `created_by
+  ='promotion'`, `promoted_from_suggestion_id` set to the suggestion's id, and
+  `condition`/`action` copied from `proposed_condition`/`proposed_action`
+- **AND** the suggestion MUST transition to `status='confirmed'` with
+  `decided_at` and `decided_by` set
+
+#### Scenario: No rule is created without a confirm call
+
+- **WHEN** a suggestion sits in `pending_review` with `is_clearly_automated
+  =TRUE` and `proposed_action='skip'`, and no confirm or bulk-confirm call has
+  been made
+- **THEN** no `ingestion_rules` row MUST exist referencing that suggestion, no
+  matter how long the suggestion has been pending or how high its
+  `evidence_count` has grown
+
+#### Scenario: Batched confirm for automated senders
+
+- **WHEN** an authenticated human actor calls bulk-confirm with a list of
+  `pending_review` suggestion ids, all `is_clearly_automated=TRUE` with
+  `proposed_action` in (`skip`, `metadata_only`)
+- **THEN** each suggestion in the list MUST be confirmed and its corresponding
+  rule created in one operation, with per-suggestion failures reported
+  individually rather than failing the whole batch silently
+
+### Requirement: Rule Provenance
+
+`switchboard.ingestion_rules` SHALL gain a nullable `promoted_from_suggestion_id
+UUID` column, a foreign key to `switchboard.rule_promotion_suggestions(id)`.
+The existing `created_by` column (already unconstrained TEXT) gains a
+conventional value `'promotion'` for rules minted through this flow.
+
+#### Scenario: Promoted rule carries provenance
+
+- **WHEN** a rule is created via suggestion confirmation
+- **THEN** the created `ingestion_rules` row MUST have `created_by='promotion'`
+  and `promoted_from_suggestion_id` set to the originating suggestion's id
+
+#### Scenario: Manually-created rules are unaffected
+
+- **WHEN** a rule is created via the existing dashboard CRUD API (not through
+  suggestion confirmation)
+- **THEN** `promoted_from_suggestion_id` MUST be NULL and `created_by` MUST
+  retain its existing `'dashboard'` value — this requirement does not change
+  behavior for human-authored rules
+
+### Requirement: Demotion via Spot-Check Sampling
+
+The evaluator SHALL sample a configurable fraction (1-in-K matches, default
+K=20) of events matching an `ingestion_rules` row with
+`created_by='promotion'` that would otherwise bypass the LLM, routing them
+through normal LLM classification instead and comparing the fresh LLM verdict
+to the rule's action. `IngestionPolicyEvaluator`'s `PolicyDecision` gains a
+`spot_check` boolean field, set when a promoted rule matched but the sampled
+event is being routed through the LLM instead of bypassed.
+
+The system SHALL maintain a rolling per-rule agreement score over the most
+recent 20 spot-checks. When the agreement score for a rule drops below a
+configurable threshold (default 90%), the system MUST create a
+`rule_promotion_suggestions` row (or equivalent demotion record) proposing
+revocation of that rule, surfaced through the same dashboard suggestions
+surface as promotion suggestions. Demotion MUST require the same
+owner-confirmed action as promotion — the system MUST NOT auto-disable a
+promoted rule based on spot-check disagreement alone.
+
+#### Scenario: Spot-check samples a promoted rule's match
+
+- **WHEN** an event matches an `ingestion_rules` row with
+  `created_by='promotion'` and the 1-in-K sample is hit
+- **THEN** the event MUST be routed through normal LLM classification instead
+  of the rule bypass
+- **AND** a `routing_verdict_log` row MUST be written with
+  `verdict_source='spot_check'` and `matched_rule_id` set to the rule that
+  would have fired
+
+#### Scenario: Sustained disagreement creates a demotion suggestion
+
+- **WHEN** a promoted rule's rolling spot-check agreement score drops below
+  90% over its last 20 spot-checks
+- **THEN** a demotion suggestion MUST be created for that rule, requiring
+  owner confirmation before the rule is disabled
+
+#### Scenario: Rule is never auto-disabled
+
+- **WHEN** a promoted rule's agreement score is below threshold and no owner
+  confirmation of the demotion suggestion has occurred
+- **THEN** the rule MUST remain `enabled` and continue to be evaluated
+  normally
