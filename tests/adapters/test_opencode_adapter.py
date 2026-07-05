@@ -121,6 +121,47 @@ def test_parse_opencode_unique_events():
         assert len(tool_calls) == 1 and tool_calls[0]["name"] == "do_thing"
 
 
+def test_parse_step_finish_reports_cache_buckets_separately():
+    """step_finish tokens map to the runtime usage contract (base.py).
+
+    input_tokens must be the UNCACHED bucket only — cache read/write are
+    reported separately, never folded into input, so cost estimation can
+    price each bucket at its own rate.
+    """
+    events = [
+        {
+            "type": "step_finish",
+            "sessionID": "s1",
+            "part": {
+                "tokens": {
+                    "input": 63,
+                    "output": 40,
+                    "cache": {"read": 40_000, "write": 8_000},
+                }
+            },
+        },
+        {
+            "type": "step_finish",
+            "sessionID": "s1",
+            "part": {
+                "tokens": {
+                    "input": 100,
+                    "output": 60,
+                    "cache": {"read": 5_000, "write": 0},
+                }
+            },
+        },
+    ]
+    stdout = "\n".join(json.dumps(e) for e in events)
+    _, _, usage = _parse_opencode_output(stdout, "", 0)
+    assert usage == {
+        "input_tokens": 163,
+        "output_tokens": 100,
+        "cache_read_input_tokens": 45_000,
+        "cache_creation_input_tokens": 8_000,
+    }
+
+
 # ---------------------------------------------------------------------------
 # _looks_like_tool_call_event and _extract_opencode_tool_call
 # ---------------------------------------------------------------------------

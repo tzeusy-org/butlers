@@ -3,23 +3,40 @@
 #
 # Prices sourced from vendor public pricing pages.
 # Update this file when new models are released or prices change.
+#
+# Cache pricing fields (both optional, per model or per tier):
+#   cached_input_price_per_token   — prompt-cache READS
+#   cache_creation_price_per_token — prompt-cache WRITES
+# When absent, the bucket bills at the full input rate (conservative
+# fallback for vendors that don't discount cached tokens or whose
+# discount is unknown).
+#
+# Anthropic: cache reads = 0.1x input, 5-minute cache writes = 1.25x input.
 
 [models]
 
 [models."claude-sonnet-4-5-20250929"]
 input_price_per_token = 0.000003    # $3 / 1M tokens
+cached_input_price_per_token = 0.0000003   # $0.30 / 1M tokens (0.1x input)
+cache_creation_price_per_token = 0.00000375  # $3.75 / 1M tokens (1.25x input)
 output_price_per_token = 0.000015   # $15 / 1M tokens
 
 [models."claude-sonnet-4-6"]
 input_price_per_token = 0.000003    # $3 / 1M tokens
+cached_input_price_per_token = 0.0000003   # $0.30 / 1M tokens (0.1x input)
+cache_creation_price_per_token = 0.00000375  # $3.75 / 1M tokens (1.25x input)
 output_price_per_token = 0.000015   # $15 / 1M tokens
 
 [models."claude-haiku-4-5-20251001"]
 input_price_per_token = 0.000001    # $1 / 1M tokens
+cached_input_price_per_token = 0.0000001   # $0.10 / 1M tokens (0.1x input)
+cache_creation_price_per_token = 0.00000125  # $1.25 / 1M tokens (1.25x input)
 output_price_per_token = 0.000005   # $5 / 1M tokens
 
 [models."claude-opus-4-6"]
 input_price_per_token = 0.000005    # $5 / 1M tokens
+cached_input_price_per_token = 0.0000005   # $0.50 / 1M tokens (0.1x input)
+cache_creation_price_per_token = 0.00000625  # $6.25 / 1M tokens (1.25x input)
 output_price_per_token = 0.000025   # $25 / 1M tokens
 
 # Google — sourced from https://cloud.google.com/vertex-ai/generative-ai/pricing (2026-03-23)
@@ -50,6 +67,7 @@ output_price_per_token = 0.00018    # $180.00 / 1M tokens
 
 [models."gpt-5.4"]
 input_price_per_token = 0.0000025   # $2.50 / 1M tokens (<272K context)
+cached_input_price_per_token = 0.00000025  # $0.25 / 1M tokens (assumed 10% of input, matching gpt-5.5 / gpt-5.4-mini)
 output_price_per_token = 0.000015   # $15.00 / 1M tokens (<272K context)
 
 [models."gpt-5.4-pro"]
@@ -65,30 +83,37 @@ output_price_per_token = 0.0000045   # $4.50 / 1M tokens
 
 [models."gpt-5.3-codex"]
 input_price_per_token = 0.00000175  # $1.75 / 1M tokens
+cached_input_price_per_token = 0.000000175  # $0.175 / 1M tokens (assumed 10% of input)
 output_price_per_token = 0.000014   # $14.00 / 1M tokens
 
 [models."gpt-5.3-codex-spark"]
 input_price_per_token = 0.00000175  # $1.75 / 1M tokens (assumed same as gpt-5.3-codex)
+cached_input_price_per_token = 0.000000175  # $0.175 / 1M tokens (assumed 10% of input)
 output_price_per_token = 0.000014   # $14.00 / 1M tokens (assumed same as gpt-5.3-codex)
 
 [models."gpt-5.2"]
 input_price_per_token = 0.00000175  # $1.75 / 1M tokens
+cached_input_price_per_token = 0.000000175  # $0.175 / 1M tokens (assumed 10% of input)
 output_price_per_token = 0.000014   # $14.00 / 1M tokens
 
 [models."gpt-5.1"]
 input_price_per_token = 0.00000125  # $1.25 / 1M tokens
+cached_input_price_per_token = 0.000000125  # $0.125 / 1M tokens (10% of input)
 output_price_per_token = 0.00001    # $10.00 / 1M tokens
 
 [models."gpt-5"]
 input_price_per_token = 0.00000125  # $1.25 / 1M tokens
+cached_input_price_per_token = 0.000000125  # $0.125 / 1M tokens (10% of input)
 output_price_per_token = 0.00001    # $10.00 / 1M tokens
 
 [models."gpt-5-mini"]
 input_price_per_token = 0.00000025  # $0.25 / 1M tokens
+cached_input_price_per_token = 0.000000025  # $0.025 / 1M tokens (10% of input)
 output_price_per_token = 0.000002   # $2.00 / 1M tokens
 
 [models."gpt-5-nano"]
 input_price_per_token = 0.00000005  # $0.05 / 1M tokens
+cached_input_price_per_token = 0.000000005  # $0.005 / 1M tokens (10% of input)
 output_price_per_token = 0.0000004  # $0.40 / 1M tokens
 
 # OpenCode Zen — sourced from https://opencode.ai/docs/zen/ (2026-04-24)

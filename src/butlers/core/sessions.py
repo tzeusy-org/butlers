@@ -241,6 +241,8 @@ async def session_complete(
     cost: dict[str, Any] | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    cached_input_tokens: int | None = None,
+    cache_creation_tokens: int | None = None,
     butler_name: str | None = None,
 ) -> None:
     """Mark a session as completed with its outcome data.
@@ -256,8 +258,12 @@ async def session_complete(
         success: Whether the session completed successfully.
         error: Error message if the session failed, None otherwise.
         cost: Optional cost/token usage dict (serialised as JSONB).
-        input_tokens: Optional count of input tokens consumed by the session.
+        input_tokens: Optional count of UNCACHED input tokens consumed by the
+            session (cache reads/writes are tracked separately — see the
+            runtime usage contract in ``butlers.core.runtimes.base``).
         output_tokens: Optional count of output tokens produced by the session.
+        cached_input_tokens: Optional count of prompt-cache READ tokens.
+        cache_creation_tokens: Optional count of prompt-cache WRITE tokens.
         butler_name: Optional owning butler name, used only to enrich the
             ``session`` event emitted onto the fleet event bus (bu-86c4c.8);
             not persisted.
@@ -284,6 +290,8 @@ async def session_complete(
             error         = $7,
             input_tokens  = $8,
             output_tokens = $9,
+            cached_input_tokens   = $10,
+            cache_creation_tokens = $11,
             completed_at  = now()
         WHERE id = $1
         RETURNING id
@@ -297,6 +305,8 @@ async def session_complete(
         safe_error,
         input_tokens,
         output_tokens,
+        cached_input_tokens,
+        cache_creation_tokens,
     )
     if row is None:
         raise ValueError(f"Session {session_id} not found")
@@ -428,7 +438,8 @@ async def sessions_list(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error,
-               input_tokens, output_tokens, request_id, ingestion_event_id,
+               input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens,
+               request_id, ingestion_event_id,
                complexity, resolution_source, started_at, completed_at
         FROM sessions
         ORDER BY started_at DESC
@@ -486,7 +497,8 @@ async def sessions_get(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error,
-               input_tokens, output_tokens, request_id, ingestion_event_id,
+               input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens,
+               request_id, ingestion_event_id,
                complexity, resolution_source, started_at, completed_at
         FROM sessions
         WHERE id = $1
@@ -574,7 +586,9 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
         SELECT
             COUNT(*)::bigint AS total_sessions,
             COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
-            COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens
+            COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens,
+            COALESCE(SUM(cached_input_tokens), 0)::bigint AS total_cached_input_tokens,
+            COALESCE(SUM(cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens
         FROM sessions
         WHERE started_at >= $1
         """,
@@ -586,7 +600,9 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
         SELECT
             model,
             COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
-            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+            COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+            COALESCE(SUM(cache_creation_tokens), 0)::bigint AS cache_creation_tokens
         FROM sessions
         WHERE started_at >= $1 AND model IS NOT NULL AND model <> ''
         GROUP BY model
@@ -600,6 +616,8 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
         by_model[str(row["model"])] = {
             "input_tokens": int(row["input_tokens"]),
             "output_tokens": int(row["output_tokens"]),
+            "cached_input_tokens": int(row["cached_input_tokens"]),
+            "cache_creation_tokens": int(row["cache_creation_tokens"]),
         }
 
     if totals is None:
@@ -608,6 +626,8 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
             "total_sessions": 0,
             "total_input_tokens": 0,
             "total_output_tokens": 0,
+            "total_cached_input_tokens": 0,
+            "total_cache_creation_tokens": 0,
             "by_model": by_model,
         }
 
@@ -616,6 +636,8 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
         "total_sessions": int(totals["total_sessions"]),
         "total_input_tokens": int(totals["total_input_tokens"]),
         "total_output_tokens": int(totals["total_output_tokens"]),
+        "total_cached_input_tokens": int(totals["total_cached_input_tokens"]),
+        "total_cache_creation_tokens": int(totals["total_cache_creation_tokens"]),
         "by_model": by_model,
     }
 
@@ -640,7 +662,9 @@ async def sessions_daily(
             (started_at AT TIME ZONE 'UTC')::date AS day,
             COUNT(*)::bigint AS sessions,
             COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
-            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+            COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+            COALESCE(SUM(cache_creation_tokens), 0)::bigint AS cache_creation_tokens
         FROM sessions
         WHERE started_at >= $1 AND started_at < $2
         GROUP BY day
@@ -656,7 +680,9 @@ async def sessions_daily(
             (started_at AT TIME ZONE 'UTC')::date AS day,
             model,
             COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
-            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+            COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+            COALESCE(SUM(cache_creation_tokens), 0)::bigint AS cache_creation_tokens
         FROM sessions
         WHERE started_at >= $1
           AND started_at < $2
@@ -675,6 +701,8 @@ async def sessions_daily(
         by_day_model.setdefault(day_key, {})[str(row["model"])] = {
             "input_tokens": int(row["input_tokens"]),
             "output_tokens": int(row["output_tokens"]),
+            "cached_input_tokens": int(row["cached_input_tokens"]),
+            "cache_creation_tokens": int(row["cache_creation_tokens"]),
         }
 
     days: list[dict[str, Any]] = []
@@ -686,6 +714,8 @@ async def sessions_daily(
                 "sessions": int(row["sessions"]),
                 "input_tokens": int(row["input_tokens"]),
                 "output_tokens": int(row["output_tokens"]),
+                "cached_input_tokens": int(row["cached_input_tokens"]),
+                "cache_creation_tokens": int(row["cache_creation_tokens"]),
                 "by_model": by_day_model.get(day_key, {}),
             }
         )
@@ -767,7 +797,9 @@ async def schedule_costs(
             s.model,
             COUNT(s.id)::bigint AS total_runs,
             COALESCE(SUM(s.input_tokens), 0)::bigint AS total_input_tokens,
-            COALESCE(SUM(s.output_tokens), 0)::bigint AS total_output_tokens
+            COALESCE(SUM(s.output_tokens), 0)::bigint AS total_output_tokens,
+            COALESCE(SUM(s.cached_input_tokens), 0)::bigint AS total_cached_input_tokens,
+            COALESCE(SUM(s.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens
         FROM scheduled_tasks AS st
         LEFT JOIN sessions AS s
             ON s.trigger_source = ('schedule:' || st.name)
@@ -791,6 +823,8 @@ async def schedule_costs(
                 "total_runs": int(row["total_runs"]),
                 "total_input_tokens": int(row["total_input_tokens"]),
                 "total_output_tokens": int(row["total_output_tokens"]),
+                "total_cached_input_tokens": int(row["total_cached_input_tokens"]),
+                "total_cache_creation_tokens": int(row["total_cache_creation_tokens"]),
                 "runs_per_day": _estimate_runs_per_day(cron),
             }
         )

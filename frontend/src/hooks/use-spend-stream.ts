@@ -21,8 +21,13 @@ export interface SpendCallEvent {
   ts: number
   butler: string
   model: string
+  /** Uncached input tokens — prompt-cache reads/writes are the fields below. */
   tokens_in: number
   tokens_out: number
+  /** Prompt-cache read tokens (older events may omit these two fields). */
+  tokens_cached?: number
+  /** Prompt-cache write tokens. */
+  tokens_cache_write?: number
   cost_usd: number
   session_id?: string
   extra?: Record<string, unknown>

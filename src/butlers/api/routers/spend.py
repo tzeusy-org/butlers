@@ -260,6 +260,7 @@ def _cost_stats_from_session_summary(
             stats.get("input_tokens", 0),
             stats.get("output_tokens", 0),
             cached_input_tokens=stats.get("cached_input_tokens", 0),
+            cache_creation_tokens=stats.get("cache_creation_tokens", 0),
             context_tokens=stats.get("context_tokens"),
         )
         total_cost += cost
@@ -335,6 +336,7 @@ async def _get_butler_session_stats_for_range_from_db(
                 stats.get("input_tokens", 0),
                 stats.get("output_tokens", 0),
                 cached_input_tokens=stats.get("cached_input_tokens", 0),
+                cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                 context_tokens=stats.get("context_tokens"),
             )
             total_cost += cost
@@ -374,6 +376,7 @@ async def _get_butler_daily_stats_from_db(
                 stats.get("input_tokens", 0),
                 stats.get("output_tokens", 0),
                 cached_input_tokens=stats.get("cached_input_tokens", 0),
+                cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                 context_tokens=stats.get("context_tokens"),
             )
         days.append(
@@ -497,6 +500,7 @@ async def _get_butler_session_stats_for_range(
                             stats.get("input_tokens", 0),
                             stats.get("output_tokens", 0),
                             cached_input_tokens=stats.get("cached_input_tokens", 0),
+                            cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                             context_tokens=stats.get("context_tokens"),
                         )
                         total_cost += cost
@@ -683,6 +687,7 @@ async def _get_butler_daily_stats(
                             stats.get("input_tokens", 0),
                             stats.get("output_tokens", 0),
                             cached_input_tokens=stats.get("cached_input_tokens", 0),
+                            cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                             context_tokens=stats.get("context_tokens"),
                         )
                     days.append(
@@ -855,6 +860,7 @@ async def _get_butler_top_sessions(
                         input_tokens,
                         output_tokens,
                         cached_input_tokens=s.get("cached_input_tokens", 0),
+                        cache_creation_tokens=s.get("cache_creation_tokens", 0),
                         context_tokens=s.get("context_tokens"),
                     )
                     sessions.append(
@@ -973,6 +979,7 @@ async def _get_butler_schedule_costs(
                         input_tokens,
                         output_tokens,
                         cached_input_tokens=entry.get("total_cached_input_tokens", 0),
+                        cache_creation_tokens=entry.get("total_cache_creation_tokens", 0),
                         context_tokens=entry.get("context_tokens"),
                     )
                     total_runs = entry.get("total_runs", 0)

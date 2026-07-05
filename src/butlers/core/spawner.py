@@ -906,6 +906,8 @@ class Spawner:
         # upstream provider on invocation regardless of later failure.
         _ledger_input_tokens: int | None = None
         _ledger_output_tokens: int | None = None
+        _ledger_cached_input_tokens: int = 0
+        _ledger_cache_creation_tokens: int = 0
 
         # Prepend context to prompt if provided
         final_prompt = prompt
@@ -1740,17 +1742,25 @@ class Spawner:
 
             duration_ms = int((time.monotonic() - t0) * 1000)
 
-            # Extract token counts from usage dict (if provided by adapter)
+            # Extract token counts from usage dict (if provided by adapter).
+            # input_tokens is the UNCACHED bucket; cache reads/writes are
+            # separate buckets (runtime usage contract, runtimes/base.py).
             input_tokens: int | None = None
             output_tokens: int | None = None
+            cached_input_tokens: int | None = None
+            cache_creation_tokens: int | None = None
             if usage:
                 input_tokens = usage.get("input_tokens")
                 output_tokens = usage.get("output_tokens")
+                cached_input_tokens = usage.get("cache_read_input_tokens")
+                cache_creation_tokens = usage.get("cache_creation_input_tokens")
                 # Capture immediately for ledger recording in finally block; ensures
                 # the ledger receives token data even if post-invoke processing fails.
                 if input_tokens is not None:
                     _ledger_input_tokens = input_tokens
                     _ledger_output_tokens = output_tokens or 0
+                    _ledger_cached_input_tokens = cached_input_tokens or 0
+                    _ledger_cache_creation_tokens = cache_creation_tokens or 0
 
             # ------------------------------------------------------------------
             # Guardrail checks — run after tool-call merge and token extraction.
@@ -1822,6 +1832,8 @@ class Spawner:
                     error=_undelivered_reason,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    cached_input_tokens=cached_input_tokens,
+                    cache_creation_tokens=cache_creation_tokens,
                     butler_name=self._config.name,
                 )
 
@@ -2213,6 +2225,8 @@ class Spawner:
                     session_id=session_id,
                     input_tokens=_ledger_input_tokens,
                     output_tokens=_ledger_output_tokens or 0,
+                    cached_input_tokens=_ledger_cached_input_tokens,
+                    cache_creation_tokens=_ledger_cache_creation_tokens,
                 )
             # Emit per-call cost event to the live WS spend stream.
             # Uses the same token counts as the DB ledger (best-effort early capture).
@@ -2233,6 +2247,8 @@ class Spawner:
                         model or "unknown",
                         _ledger_input_tokens,
                         _ledger_output_tokens or 0,
+                        cached_input_tokens=_ledger_cached_input_tokens,
+                        cache_creation_tokens=_ledger_cache_creation_tokens,
                     )
                     emit_spend_event(
                         {
@@ -2242,6 +2258,8 @@ class Spawner:
                             "model": model or "unknown",
                             "tokens_in": _ledger_input_tokens,
                             "tokens_out": _ledger_output_tokens or 0,
+                            "tokens_cached": _ledger_cached_input_tokens,
+                            "tokens_cache_write": _ledger_cache_creation_tokens,
                             "cost_usd": _cost_usd,
                             "session_id": str(session_id) if session_id else "",
                             "extra": {},

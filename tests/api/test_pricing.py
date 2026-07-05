@@ -30,6 +30,11 @@ output_price_per_token = 0.000015
 [models."claude-haiku-4-5-20251001"]
 input_price_per_token = 0.0000008
 output_price_per_token = 0.000004
+[models."cached-model"]
+input_price_per_token = 0.000003
+cached_input_price_per_token = 0.0000003
+cache_creation_price_per_token = 0.00000375
+output_price_per_token = 0.000015
 """
 
 _TIERED_TOML = """\
@@ -77,7 +82,7 @@ def tiered_config(tmp_path):
 
 class TestLoadPricing:
     def test_loads_flat_and_tiered_models(self, config, tiered_config):
-        assert len(config.model_ids) == 2
+        assert len(config.model_ids) == 3
         assert isinstance(config.get_model_pricing("claude-sonnet-4-5-20250929"), ModelPricing)
         assert isinstance(tiered_config.get_model_pricing("gpt-5.4"), TieredModelPricing)
         assert isinstance(tiered_config.get_model_pricing("flat-model"), ModelPricing)
@@ -177,6 +182,51 @@ class TestEstimateCost:
             "gpt-5.4", 0, 0, cached_input_tokens=1_000_000
         ) == pytest.approx(0.25)
 
+    def test_flat_cache_buckets_priced_at_configured_rates(self, config):
+        # 1M cache reads * $0.30/1M + 1M cache writes * $3.75/1M = $4.05
+        assert config.estimate_cost(
+            "cached-model",
+            0,
+            0,
+            cached_input_tokens=1_000_000,
+            cache_creation_tokens=1_000_000,
+        ) == pytest.approx(4.05)
+
+    def test_flat_cache_buckets_fall_back_to_input_rate(self, config):
+        # No cache rates configured → cached + creation bill at the full
+        # input rate ($3/1M), never at $0.
+        assert config.estimate_cost(
+            "claude-sonnet-4-5-20250929",
+            0,
+            0,
+            cached_input_tokens=1_000_000,
+            cache_creation_tokens=1_000_000,
+        ) == pytest.approx(6.0)
+
+    def test_tiered_cache_creation_falls_back_to_input_rate(self, tiered_config):
+        # gpt-5.4 tier 0 defines no cache_creation price → input rate $2.5/1M.
+        assert tiered_config.estimate_cost(
+            "gpt-5.4", 0, 0, cache_creation_tokens=1_000_000
+        ) == pytest.approx(2.5)
+
+    def test_session_cost_passes_cache_buckets(self, config):
+        direct = config.estimate_cost(
+            "cached-model",
+            1000,
+            500,
+            cached_input_tokens=2000,
+            cache_creation_tokens=300,
+        )
+        helper = estimate_session_cost(
+            config,
+            "cached-model",
+            1000,
+            500,
+            cached_input_tokens=2000,
+            cache_creation_tokens=300,
+        )
+        assert direct == helper
+
     def test_session_cost_unknown_model_returns_zero(self, config):
         assert estimate_session_cost(config, "nonexistent", 1000, 500) == 0.0
 
@@ -215,3 +265,17 @@ class TestPricingDependency:
     def test_loads_repo_default_pricing_toml(self):
         cfg = load_pricing()
         assert len(cfg.model_ids) >= 1
+
+    def test_repo_default_claude_models_have_cache_rates(self):
+        # Regression guard: cached_input_price_per_token on FLAT entries was
+        # previously silently dropped by the parser. Claude models must carry
+        # both cache rates (reads 0.1x input, writes 1.25x input).
+        cfg = load_pricing()
+        entry = cfg.get_model_pricing("claude-sonnet-4-6")
+        assert isinstance(entry, ModelPricing)
+        assert entry.cached_input_price_per_token == pytest.approx(
+            entry.input_price_per_token * 0.1
+        )
+        assert entry.cache_creation_price_per_token == pytest.approx(
+            entry.input_price_per_token * 1.25
+        )

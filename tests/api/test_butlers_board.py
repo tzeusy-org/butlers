@@ -91,6 +91,8 @@ class _FakeButlerPool:
                 "total_sessions": 1,
                 "total_input_tokens": self.cost_input_tokens,
                 "total_output_tokens": self.cost_output_tokens,
+                "total_cached_input_tokens": 0,
+                "total_cache_creation_tokens": 0,
             }
         raise AssertionError(f"unexpected fetchrow SQL: {sql}")
 
@@ -118,6 +120,8 @@ class _FakeButlerPool:
                     "model": self.cost_model,
                     "input_tokens": self.cost_input_tokens,
                     "output_tokens": self.cost_output_tokens,
+                    "cached_input_tokens": 0,
+                    "cache_creation_tokens": 0,
                 }
             ]
         raise AssertionError(f"unexpected fetch SQL: {sql}")

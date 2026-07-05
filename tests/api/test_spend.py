@@ -135,6 +135,8 @@ def _mock_db_pool(*, summary: dict | None = None, daily: list[dict] | None = Non
                 "total_sessions": summary["total_sessions"],
                 "total_input_tokens": summary["total_input_tokens"],
                 "total_output_tokens": summary["total_output_tokens"],
+                "total_cached_input_tokens": summary.get("total_cached_input_tokens", 0),
+                "total_cache_creation_tokens": summary.get("total_cache_creation_tokens", 0),
             }
         )
         pool.fetch = AsyncMock(
@@ -143,6 +145,8 @@ def _mock_db_pool(*, summary: dict | None = None, daily: list[dict] | None = Non
                     "model": model,
                     "input_tokens": stats.get("input_tokens", 0),
                     "output_tokens": stats.get("output_tokens", 0),
+                    "cached_input_tokens": stats.get("cached_input_tokens", 0),
+                    "cache_creation_tokens": stats.get("cache_creation_tokens", 0),
                 }
                 for model, stats in summary.get("by_model", {}).items()
             ]
@@ -156,6 +160,8 @@ def _mock_db_pool(*, summary: dict | None = None, daily: list[dict] | None = Non
                         "sessions": day["sessions"],
                         "input_tokens": day["input_tokens"],
                         "output_tokens": day["output_tokens"],
+                        "cached_input_tokens": day.get("cached_input_tokens", 0),
+                        "cache_creation_tokens": day.get("cache_creation_tokens", 0),
                     }
                     for day in daily
                 ],
@@ -165,6 +171,8 @@ def _mock_db_pool(*, summary: dict | None = None, daily: list[dict] | None = Non
                         "model": model,
                         "input_tokens": stats.get("input_tokens", 0),
                         "output_tokens": stats.get("output_tokens", 0),
+                        "cached_input_tokens": stats.get("cached_input_tokens", 0),
+                        "cache_creation_tokens": stats.get("cache_creation_tokens", 0),
                     }
                     for day in daily
                     for model, stats in day.get("by_model", {}).items()

@@ -59,7 +59,7 @@ The dashboard SHALL emit per-call spend events over `WS /api/spend/stream`.
 
 #### Scenario: Stream event shape
 - **WHEN** the runtime records a completed LLM call
-- **THEN** an event `{kind: "call", ts, butler, model, tokens_in, tokens_out, cost_usd, session_id, extra}` is broadcast to `WS /api/spend/stream` subscribers (token fields are `tokens_in`/`tokens_out`, and cost is `cost_usd` in dollars, not `cost_cents`)
+- **THEN** an event `{kind: "call", ts, butler, model, tokens_in, tokens_out, tokens_cached, tokens_cache_write, cost_usd, session_id, extra}` is broadcast to `WS /api/spend/stream` subscribers (token fields are `tokens_in`/`tokens_out` for the uncached buckets plus `tokens_cached`/`tokens_cache_write` for prompt-cache reads/writes, and cost is `cost_usd` in dollars, not `cost_cents`)
 - **AND** the frontend appends events to the forecast chart series without re-fetching.
 
 ### Requirement: Spend Rules Savings Job

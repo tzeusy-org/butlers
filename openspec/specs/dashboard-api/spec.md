@@ -630,15 +630,17 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 #### Scenario: Pricing config loading
 - **WHEN** `load_pricing()` is called at startup
 - **THEN** the `pricing.toml` file is parsed from the repo root
-- **AND** each `[models.<model_id>]` section is loaded into a `ModelPricing(input_price_per_token, output_price_per_token)` dataclass
+- **AND** each `[models.<model_id>]` section is loaded into a `ModelPricing(input_price_per_token, output_price_per_token, cached_input_price_per_token, cache_creation_price_per_token)` dataclass, where both cache prices are optional (`None` when absent)
 
 #### Scenario: Cost estimation
-- **WHEN** `estimate_cost(model_id, input_tokens, output_tokens)` is called
-- **THEN** the cost is calculated as `(input_price * input_tokens) + (output_price * output_tokens)`
+- **WHEN** `estimate_cost(model_id, input_tokens, output_tokens, cached_input_tokens=, cache_creation_tokens=)` is called
+- **THEN** the cost is calculated as `(input_price * input_tokens) + (cached_rate * cached_input_tokens) + (cache_creation_rate * cache_creation_tokens) + (output_price * output_tokens)`
+- **AND** `cached_rate`/`cache_creation_rate` fall back to the full input price when the model defines no cache price (a missing discount must never bill cached tokens at $0)
+- **AND** `input_tokens` is the UNCACHED input bucket only — runtime adapters report cache reads/writes separately per the usage contract in `butlers.core.runtimes.base`
 - **AND** `None` is returned for unknown model IDs
 
 #### Scenario: Session cost estimation
-- **WHEN** `estimate_session_cost(config, model_id, input_tokens, output_tokens)` is called
+- **WHEN** `estimate_session_cost(config, model_id, input_tokens, output_tokens, cached_input_tokens=, cache_creation_tokens=)` is called
 - **THEN** it returns the estimated USD cost, or `0.0` for unknown models
 - **AND** a warning is logged once per unknown model ID
 

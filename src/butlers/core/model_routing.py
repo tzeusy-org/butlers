@@ -369,8 +369,9 @@ SELECT 1 FROM public.token_limits WHERE catalog_entry_id = $1 LIMIT 1
 
 _LEDGER_INSERT_SQL = """
 INSERT INTO public.token_usage_ledger
-    (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens)
-VALUES ($1, $2, $3, $4, $5)
+    (catalog_entry_id, butler_name, session_id, input_tokens, output_tokens,
+     cached_input_tokens, cache_creation_tokens)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 """
 
 # Read the configured monthly spend ceiling (singleton row id=1).
@@ -386,7 +387,9 @@ _MTD_USAGE_BY_MODEL_SQL = """
 SELECT
     mc.model_id AS model_id,
     COALESCE(SUM(tul.input_tokens), 0)  AS input_tokens,
-    COALESCE(SUM(tul.output_tokens), 0) AS output_tokens
+    COALESCE(SUM(tul.output_tokens), 0) AS output_tokens,
+    COALESCE(SUM(tul.cached_input_tokens), 0)   AS cached_input_tokens,
+    COALESCE(SUM(tul.cache_creation_tokens), 0) AS cache_creation_tokens
 FROM public.token_usage_ledger tul
 JOIN public.model_catalog mc ON mc.id = tul.catalog_entry_id
 WHERE tul.recorded_at >= date_trunc('month', now() AT TIME ZONE 'UTC')
@@ -1060,6 +1063,8 @@ async def check_monthly_ceiling(
                 row["model_id"] or "unknown",
                 int(row["input_tokens"]),
                 int(row["output_tokens"]),
+                cached_input_tokens=int(row["cached_input_tokens"]),
+                cache_creation_tokens=int(row["cache_creation_tokens"]),
             )
 
         return CeilingStatus(
@@ -1084,6 +1089,8 @@ async def record_token_usage(
     session_id: uuid.UUID | None,
     input_tokens: int,
     output_tokens: int,
+    cached_input_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ) -> None:
     """Record token usage to ``public.token_usage_ledger``.
 
@@ -1102,9 +1109,14 @@ async def record_token_usage(
     session_id:
         UUID of the spawner session, or ``None`` for discretion dispatcher calls.
     input_tokens:
-        Number of input tokens reported by the adapter.
+        Number of UNCACHED input tokens reported by the adapter (see the
+        runtime usage contract in ``butlers.core.runtimes.base``).
     output_tokens:
         Number of output tokens reported by the adapter.
+    cached_input_tokens:
+        Prompt-cache READ tokens reported by the adapter.
+    cache_creation_tokens:
+        Prompt-cache WRITE tokens reported by the adapter.
     """
     try:
         await pool.execute(
@@ -1114,6 +1126,8 @@ async def record_token_usage(
             session_id,
             input_tokens,
             output_tokens,
+            cached_input_tokens,
+            cache_creation_tokens,
         )
     except Exception:
         logger.warning(

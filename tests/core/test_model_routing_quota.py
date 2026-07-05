@@ -53,7 +53,15 @@ async def test_check_monthly_ceiling_unit_behaviors() -> None:
     pool_zero.fetch.assert_not_called()
 
     # Ceiling configured; price the ledger via estimate_session_cost.
-    usage_rows = [{"model_id": "claude-haiku", "input_tokens": 1000, "output_tokens": 500}]
+    usage_rows = [
+        {
+            "model_id": "claude-haiku",
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cached_input_tokens": 0,
+            "cache_creation_tokens": 0,
+        }
+    ]
 
     # Under ceiling → allowed.
     pool_under = MagicMock()

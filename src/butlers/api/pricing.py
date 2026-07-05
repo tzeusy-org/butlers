@@ -34,20 +34,66 @@ class PricingError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ModelPricing:
-    """Per-token prices (USD) for a single model (flat pricing)."""
+    """Per-token prices (USD) for a single model (flat pricing).
+
+    ``cached_input_price_per_token`` (cache reads) and
+    ``cache_creation_price_per_token`` (cache writes) default to ``None``,
+    which bills those buckets at the full input rate — a conservative
+    fallback for models whose vendor does not discount cached tokens or
+    whose discount is unknown.
+    """
 
     input_price_per_token: float
     output_price_per_token: float
+    cached_input_price_per_token: float | None = None
+    cache_creation_price_per_token: float | None = None
+
+    @property
+    def effective_cached_input_price(self) -> float:
+        return (
+            self.cached_input_price_per_token
+            if self.cached_input_price_per_token is not None
+            else self.input_price_per_token
+        )
+
+    @property
+    def effective_cache_creation_price(self) -> float:
+        return (
+            self.cache_creation_price_per_token
+            if self.cache_creation_price_per_token is not None
+            else self.input_price_per_token
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class PricingTier:
-    """Per-token prices (USD) for a single context-size tier."""
+    """Per-token prices (USD) for a single context-size tier.
+
+    Cache prices follow the same ``None`` → full-input-rate fallback as
+    :class:`ModelPricing`.
+    """
 
     context_threshold: int  # tier applies when total context >= this many tokens
     input_price_per_token: float
     output_price_per_token: float
-    cached_input_price_per_token: float = 0.0
+    cached_input_price_per_token: float | None = None
+    cache_creation_price_per_token: float | None = None
+
+    @property
+    def effective_cached_input_price(self) -> float:
+        return (
+            self.cached_input_price_per_token
+            if self.cached_input_price_per_token is not None
+            else self.input_price_per_token
+        )
+
+    @property
+    def effective_cache_creation_price(self) -> float:
+        return (
+            self.cache_creation_price_per_token
+            if self.cache_creation_price_per_token is not None
+            else self.input_price_per_token
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,15 +148,25 @@ class PricingConfig:
         output_tokens: int,
         *,
         cached_input_tokens: int = 0,
+        cache_creation_tokens: int = 0,
         context_tokens: int | None = None,
     ) -> float | None:
         """Estimate the USD cost of a request.
 
         Parameters
         ----------
+        input_tokens:
+            Uncached input tokens only — cache reads/writes are passed
+            separately (see the runtime usage contract in
+            ``butlers.core.runtimes.base``).
         cached_input_tokens:
-            Tokens served from cache (charged at a lower rate for tiered
-            models that define ``cached_input_price_per_token``).
+            Tokens served from a prompt cache (cache reads). Billed at the
+            model's cached rate, or the full input rate when no cached rate
+            is configured.
+        cache_creation_tokens:
+            Tokens written to a prompt cache (cache writes). Billed at the
+            model's cache-write rate, or the full input rate when not
+            configured.
         context_tokens:
             Total context size in tokens — used to select the correct tier
             for tiered models.  Defaults to ``0`` (cheapest tier) when not
@@ -123,16 +179,17 @@ class PricingConfig:
             return None
 
         if isinstance(pricing, TieredModelPricing):
-            tier = pricing.tier_for_context(context_tokens if context_tokens is not None else 0)
-            return (
-                tier.input_price_per_token * input_tokens
-                + tier.cached_input_price_per_token * cached_input_tokens
-                + tier.output_price_per_token * output_tokens
+            rates: ModelPricing | PricingTier = pricing.tier_for_context(
+                context_tokens if context_tokens is not None else 0
             )
+        else:
+            rates = pricing
 
         return (
-            pricing.input_price_per_token * input_tokens
-            + pricing.output_price_per_token * output_tokens
+            rates.input_price_per_token * input_tokens
+            + rates.effective_cached_input_price * cached_input_tokens
+            + rates.effective_cache_creation_price * cache_creation_tokens
+            + rates.output_price_per_token * output_tokens
         )
 
 
@@ -152,7 +209,12 @@ def _parse_tiered_model(model_id: str, values: dict) -> TieredModelPricing:
                     context_threshold=int(td["context_threshold"]),
                     input_price_per_token=float(td["input_price_per_token"]),
                     output_price_per_token=float(td["output_price_per_token"]),
-                    cached_input_price_per_token=float(td.get("cached_input_price_per_token", 0.0)),
+                    cached_input_price_per_token=_optional_price(
+                        td, "cached_input_price_per_token"
+                    ),
+                    cache_creation_price_per_token=_optional_price(
+                        td, "cache_creation_price_per_token"
+                    ),
                 )
             )
         except KeyError as exc:
@@ -166,12 +228,22 @@ def _parse_tiered_model(model_id: str, values: dict) -> TieredModelPricing:
     return TieredModelPricing(tiers=tuple(parsed))
 
 
+def _optional_price(values: dict, key: str) -> float | None:
+    """Return ``float(values[key])`` or ``None`` when the key is absent."""
+    raw = values.get(key)
+    return None if raw is None else float(raw)
+
+
 def _parse_flat_model(model_id: str, values: dict) -> ModelPricing:
     """Parse a flat (non-tiered) pricing entry from TOML data."""
     try:
         return ModelPricing(
             input_price_per_token=float(values["input_price_per_token"]),
             output_price_per_token=float(values["output_price_per_token"]),
+            cached_input_price_per_token=_optional_price(values, "cached_input_price_per_token"),
+            cache_creation_price_per_token=_optional_price(
+                values, "cache_creation_price_per_token"
+            ),
         )
     except KeyError as exc:
         raise PricingError(f"Missing required field {exc} for model '{model_id}'") from exc
@@ -238,6 +310,7 @@ def estimate_session_cost(
     output_tokens: int,
     *,
     cached_input_tokens: int = 0,
+    cache_creation_tokens: int = 0,
     context_tokens: int | None = None,
 ) -> float:
     """Estimate cost for a session, returning 0.0 for unknown models."""
@@ -246,6 +319,7 @@ def estimate_session_cost(
         input_tokens,
         output_tokens,
         cached_input_tokens=cached_input_tokens,
+        cache_creation_tokens=cache_creation_tokens,
         context_tokens=context_tokens,
     )
     if cost is None:
