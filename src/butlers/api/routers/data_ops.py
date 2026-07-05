@@ -396,16 +396,29 @@ async def export_data(
         f"?scope={body.scope}&issued_at={issued_at}&token={token}"
     )
 
-    # Audit + production webhook dispatch — best effort; skip gracefully when
-    # pool or table is unavailable.
+    # data.export has no companion state mutation to roll back (the signed
+    # URL is stateless — see the module docstring), so unlike the
+    # transactional write sites there is no conn.transaction() to wrap here.
+    # But the dashboard-audit-log spec's "audit.append raises on missing
+    # table" scenario is unconditional on every audit.append() call, not just
+    # ones with a rollback: "the calling endpoint propagates the exception;
+    # the HTTP response is 503 ... {error: audit_unavailable}". The spec's
+    # Purpose section also names "data ops" explicitly as one of the
+    # endpoint families the primitive is a prerequisite for. So
+    # AuditTableNotAvailableError is intentionally NOT caught here — it
+    # propagates to the app-level handler (butlers.api.middleware), matching
+    # memory.py/butler_management.py/approvals.py/oauth.py (bu-6exf0).
+    #
+    # A missing *switchboard pool* (KeyError) is a distinct, unrelated
+    # infra-registration condition (not a missing-migration condition) and
+    # stays best-effort — out of scope for the audit-unavailable contract.
     try:
         pool = db.pool("switchboard")
-        await audit.append(pool, "owner", "data.export", note=body.scope)
-        dispatch_event(pool, "data.export", {"scope": body.scope})
     except KeyError:
         logger.warning("audit.append skipped for data.export: switchboard pool unavailable")
-    except audit.AuditTableNotAvailableError:
-        logger.warning("audit.append skipped for data.export: audit_log table not migrated")
+    else:
+        await audit.append(pool, "owner", "data.export", note=body.scope)
+        dispatch_event(pool, "data.export", {"scope": body.scope})
 
     return ApiResponse(
         data=ExportResponse(

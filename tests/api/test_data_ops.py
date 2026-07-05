@@ -35,6 +35,7 @@ from httpx import ASGITransport, AsyncClient
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.routers.audit import AuditTableNotAvailableError
 from butlers.api.routers.data_ops import (
     _DEV_EXPORT_ENCRYPTION_KEY,
     _DEV_EXPORT_SECRET,
@@ -135,6 +136,36 @@ async def test_export_calls_audit(app):
         f"got call list: {mock_audit.call_args_list}"
     )
     assert route_calls[0].kwargs["note"] == "audit"
+
+
+async def test_export_propagates_audit_unavailable_as_503(app):
+    """POST /api/data/export returns 503 {"error": "audit_unavailable"} when
+    audit.append() raises AuditTableNotAvailableError (bu-ytt9a).
+
+    The dashboard-audit-log spec's "audit.append raises on missing table"
+    scenario is unconditional on every audit.append() call: "the calling
+    endpoint propagates the exception; the HTTP response is 503 ...
+    {error: audit_unavailable}". Prior to this fix, data_ops.py caught this
+    specific exception here and returned 200 with a log warning instead,
+    unlike the memory.py/butler_management.py/approvals.py/oauth.py sites
+    fixed by bu-6exf0. export_data has no companion DB state to roll back
+    (the signed URL is stateless), so — unlike the transactional sites — this
+    test only asserts the 503 envelope, not a rollback.
+    """
+    pool = _make_pool()
+    db = _make_db(pool)
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    with patch(
+        "butlers.api.routers.data_ops.audit.append",
+        new_callable=AsyncMock,
+        side_effect=AuditTableNotAvailableError("public.audit_log is not available"),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/data/export", json={"scope": "audit"})
+
+    assert resp.status_code == 503
+    assert resp.json() == {"error": "audit_unavailable"}
 
 
 async def test_export_unknown_scope_returns_400(app):
