@@ -8,10 +8,15 @@
 //   / search                                                     ×
 //   [All] [Facts] [Rules] [Episodes]
 //
-// - The input is local state; pressing `/` anywhere on the page focuses it,
-//   `Esc` clears + blurs. Pressing Enter submits → writes `q` (+ `kind`) URL
-//   params, which drives GET /api/memory/inspect via the register area's
-//   results mode (handled by MemoryBrowser).
+// - The input is local state; `Esc` (while focused) clears + blurs. Pressing
+//   Enter submits → writes `q` (+ `kind`) URL params, which drives GET
+//   /api/memory/inspect via the register area's results mode (handled by
+//   MemoryBrowser). The leading `/` glyph is now decorative only — this
+//   component used to also bind a page-level `/`-focuses-the-input listener,
+//   but that collided with the app-wide `/` → command-menu shortcut
+//   (use-keyboard-shortcuts.ts), double-firing both on every page visit
+//   (bu-qvnce.11). `/` now does the one thing it does everywhere else in the
+//   product: opens the command menu.
 // - Kind pills scope the search to All / Facts / Rules / Episodes and write the
 //   `kind` URL param (mapped to the inspect enum: fact|rule|episode).
 // - `×` (and `Esc`) clears `q`, restoring browse mode with the prior register
@@ -25,7 +30,7 @@
 // - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2, §3d, §9 (no second box)
 // ---------------------------------------------------------------------------
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import { Pill } from "@/components/ui/Pill";
 import {
@@ -76,23 +81,6 @@ export default function MemorySearch() {
     setLastQ(state.q);
     setText(state.q ?? "");
   }
-
-  // `/` focuses the input from anywhere on the page; ignore the keystroke when
-  // the user is already typing in a field (so `/` stays literal there).
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key !== "/") return;
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      const typing =
-        tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable;
-      if (typing) return;
-      e.preventDefault();
-      inputRef.current?.focus();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
 
   const hasQuery = state.q != null;
 

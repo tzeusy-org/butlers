@@ -57,7 +57,9 @@ import {
   aggregateOwnerPinned,
 } from "@/lib/entity-finder";
 import { ALL_ROUTES } from "@/lib/route-registry";
-import { useCommandMenuActions } from "@/lib/command-registry";
+import { useCommandMenuActions, type PaletteCommand } from "@/lib/command-registry";
+import { fuzzyFilter } from "@/lib/fuzzy-match";
+import { addRecent, getRecents, type RecentEntry } from "@/lib/recents-store";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
@@ -306,8 +308,11 @@ export default function EntityFinder() {
   // Navigation
   // -------------------------------------------------------------------------
   const openEntity = useCallback(
-    (entityId: string) => {
+    (entityId: string, canonicalName?: string, entityType?: string) => {
       setOpen(false);
+      if (canonicalName) {
+        addRecent({ id: entityId, kind: "entity", label: canonicalName, entityType });
+      }
       navigate(`/entities/${encodeURIComponent(entityId)}`);
     },
     [navigate],
@@ -322,24 +327,27 @@ export default function EntityFinder() {
   );
 
   const openPage = useCallback(
-    (path: string) => {
+    (path: string, label?: string) => {
       setOpen(false);
+      if (label) addRecent({ id: path, kind: "page", label });
       navigate(path);
     },
     [navigate],
   );
 
   // -------------------------------------------------------------------------
-  // Client-side page filtering (instant, no debounce)
+  // Client-side page filtering (instant, no debounce) — shared fuzzy scorer
+  // (bu-qvnce.11) instead of `.includes()`, so e.g. "iss" ranks "Issues"
+  // (prefix match) above a coincidental substring hit elsewhere.
   // -------------------------------------------------------------------------
   const lowerQuery = trimmedQuery.toLowerCase();
   const pageMatches: PageEntry[] =
     lowerQuery.length >= 1
-      ? ALL_PAGES.filter(
-          (p) =>
-            p.label.toLowerCase().includes(lowerQuery) ||
-            p.path.toLowerCase().includes(lowerQuery),
-        ).slice(0, 8)
+      ? fuzzyFilter(trimmedQuery, ALL_PAGES, {
+          getLabel: (p) => p.label,
+          getKeywords: (p) => [p.path],
+          limit: 8,
+        })
       : [];
 
   const entityResults: EntityFinderSearchResult[] = useMemo(
@@ -354,7 +362,7 @@ export default function EntityFinder() {
   const { data: butlersResponse } = useButlers();
   const butlerMatches =
     lowerQuery.length >= 1 && butlersResponse?.data
-      ? butlersResponse.data.filter((b) => b.name.toLowerCase().includes(lowerQuery)).slice(0, 5)
+      ? fuzzyFilter(trimmedQuery, butlersResponse.data, { getLabel: (b) => b.name, limit: 5 })
       : [];
 
   // -------------------------------------------------------------------------
@@ -370,29 +378,54 @@ export default function EntityFinder() {
   const stateMatches = genericSearchData?.data?.state ?? [];
 
   // -------------------------------------------------------------------------
-  // Actions group — per-page command registration API (bu-86c4c.7). Only
-  // shown once the owner has typed something, matching Pages' behaviour, so
-  // the default (empty-query) view stays the entity-first pinned set.
+  // Actions group — per-page command registration API (bu-86c4c.7). Shown at
+  // empty query too (bu-qvnce.11 — previously verbs were invisible until the
+  // first keystroke, the exact "palette-mute" finding the JARVIS audit named
+  // against EntityFinder); a non-empty query re-ranks via the shared fuzzy
+  // scorer instead of `.includes()`.
   // -------------------------------------------------------------------------
   const allActions = useCommandMenuActions();
-  const actionMatches =
-    lowerQuery.length >= 1
-      ? allActions
-          .filter(
-            (a) =>
-              a.label.toLowerCase().includes(lowerQuery) ||
-              a.keywords?.some((k) => k.toLowerCase().includes(lowerQuery)),
-          )
-          .slice(0, 8)
-      : [];
+  const actionMatches = isEmptyQuery
+    ? allActions.slice(0, 8)
+    : fuzzyFilter(trimmedQuery, allActions, {
+        getLabel: (a) => a.label,
+        getKeywords: (a) => a.keywords,
+        limit: 8,
+      });
 
   const runAction = useCallback(
-    (perform: () => void) => {
+    (action: PaletteCommand) => {
       setOpen(false);
-      perform();
+      addRecent({ id: action.id, kind: "action", label: action.label });
+      action.perform();
     },
     [],
   );
+
+  // -------------------------------------------------------------------------
+  // Recents group — last few opened entities/pages/actions (bu-qvnce.11),
+  // shown at empty query alongside the owner-pinned entity set so the
+  // palette is browsable before typing a single character. Recomputed each
+  // time the Finder opens (not on every keystroke) so a selection made just
+  // before closing shows up next time. A stale action recent (registered by
+  // a page that's no longer mounted) is dropped rather than rendered dead.
+  // -------------------------------------------------------------------------
+  const actionById = useMemo(() => new Map(allActions.map((a) => [a.id, a])), [allActions]);
+  const recentEntries = useMemo<RecentEntry[]>(() => (open ? getRecents() : []), [open]);
+  const recentRows = useMemo(() => {
+    if (!isEmptyQuery) return [];
+    return recentEntries
+      .map((r) => {
+        if (r.kind === "action") {
+          const action = actionById.get(r.id);
+          return action ? { ...r, run: () => runAction(action) } : null;
+        }
+        if (r.kind === "page") return { ...r, run: () => openPage(r.id, r.label) };
+        return { ...r, run: () => openEntity(r.id, r.label, r.entityType) };
+      })
+      .filter((row): row is RecentEntry & { run: () => void } => row != null)
+      .slice(0, 5);
+  }, [recentEntries, isEmptyQuery, actionById, runAction, openPage, openEntity]);
 
   // The active result the preview pane mirrors. cmdk highlights the first item
   // by default and encodes the highlighted item via its `value`
@@ -428,6 +461,7 @@ export default function EntityFinder() {
     entityResults.length > 0 ||
     pageMatches.length > 0 ||
     pinned.length > 0 ||
+    recentRows.length > 0 ||
     butlerMatches.length > 0 ||
     sessionMatches.length > 0 ||
     stateMatches.length > 0 ||
@@ -522,6 +556,40 @@ export default function EntityFinder() {
             )}
 
             {/* ---------------------------------------------------------------
+             * RECENTS — last few entities/pages/actions opened via this
+             * Finder (bu-qvnce.11), so the palette is browsable before typing
+             * a single character, not just after. Shown ahead of the static
+             * owner-pinned set since it reflects what THIS owner actually
+             * just did.
+             * --------------------------------------------------------------- */}
+            {isEmptyQuery && recentRows.length > 0 && (
+              <Command.Group
+                heading="Recents"
+                className="mb-1"
+                data-testid="entity-finder-recents-group"
+              >
+                {recentRows.map((r) => (
+                  <Command.Item
+                    key={`${r.kind}:${r.id}`}
+                    value={`recent:${r.kind}:${r.id}:${r.label}`}
+                    onSelect={r.run}
+                    className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
+                    data-testid="entity-finder-recent-item"
+                  >
+                    {r.kind === "entity" ? (
+                      <EntityMark name={r.label} entityType={r.entityType ?? "person"} size={28} />
+                    ) : (
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-muted font-mono text-xs font-semibold text-muted-foreground">
+                        {r.kind === "page" ? "↗" : "⚡"}
+                      </span>
+                    )}
+                    <p className="min-w-0 flex-1 truncate font-medium">{r.label}</p>
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            )}
+
+            {/* ---------------------------------------------------------------
              * EMPTY-QUERY OWNER-PINNED SET — the owner's inner circle, top-8
              * neighbours by summed weight (spec: "Finder empty-query state").
              * Typing replaces this set with search results.
@@ -536,7 +604,7 @@ export default function EntityFinder() {
                   <Command.Item
                     key={p.entity_id}
                     value={`entity:${p.entity_id}:${p.canonical_name}`}
-                    onSelect={() => openEntity(p.entity_id)}
+                    onSelect={() => openEntity(p.entity_id, p.canonical_name, p.entity_type)}
                     className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
                     data-testid="entity-finder-pinned-item"
                   >
@@ -575,7 +643,7 @@ export default function EntityFinder() {
                   <Command.Item
                     key={result.entity_id}
                     value={`entity:${result.entity_id}:${result.canonical_name}`}
-                    onSelect={() => openEntity(result.entity_id)}
+                    onSelect={() => openEntity(result.entity_id, result.canonical_name, result.entity_type)}
                     className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
                     data-testid="entity-finder-entity-item"
                   >
@@ -615,7 +683,7 @@ export default function EntityFinder() {
                   <Command.Item
                     key={page.path}
                     value={`page:${page.path}:${page.label}`}
-                    onSelect={() => openPage(page.path)}
+                    onSelect={() => openPage(page.path, page.label)}
                     className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
                     data-testid="entity-finder-page-item"
                   >
@@ -642,7 +710,7 @@ export default function EntityFinder() {
                   <Command.Item
                     key={b.name}
                     value={`butler:${b.name}`}
-                    onSelect={() => openPage(`/butlers/${encodeURIComponent(b.name)}`)}
+                    onSelect={() => openPage(`/butlers/${encodeURIComponent(b.name)}`, b.name)}
                     className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
                     data-testid="entity-finder-butler-item"
                   >
@@ -670,7 +738,7 @@ export default function EntityFinder() {
                   <Command.Item
                     key={s.id}
                     value={`session:${s.id}:${s.title}`}
-                    onSelect={() => openPage(s.url)}
+                    onSelect={() => openPage(s.url, s.title)}
                     className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
                     data-testid="entity-finder-session-item"
                   >
@@ -693,7 +761,7 @@ export default function EntityFinder() {
                   <Command.Item
                     key={s.id}
                     value={`state:${s.id}:${s.title}`}
-                    onSelect={() => openPage(s.url)}
+                    onSelect={() => openPage(s.url, s.title)}
                     className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
                     data-testid="entity-finder-state-item"
                   >
@@ -721,7 +789,7 @@ export default function EntityFinder() {
                   <Command.Item
                     key={action.id}
                     value={`action:${action.id}:${action.label}`}
-                    onSelect={() => runAction(action.perform)}
+                    onSelect={() => runAction(action)}
                     className="flex cursor-pointer select-none items-center gap-3 rounded-md px-2 py-2 text-sm text-foreground aria-selected:bg-accent aria-selected:text-accent-foreground"
                     data-testid="entity-finder-action-item"
                   >
@@ -729,6 +797,19 @@ export default function EntityFinder() {
                       ⚡
                     </span>
                     <p className="min-w-0 flex-1 truncate font-medium">{action.label}</p>
+                    {/* Binding column (bu-qvnce.11) — display-only kbd hint
+                        for actions that pair with a page-scoped
+                        useRegisterShortcut binding (see PaletteCommand.binding). */}
+                    {action.binding && action.binding.length > 0 && (
+                      <span
+                        className="ml-auto flex shrink-0 items-center gap-1"
+                        data-testid="entity-finder-action-binding"
+                      >
+                        {action.binding.map((key, kidx) => (
+                          <KbMono key={kidx}>{key}</KbMono>
+                        ))}
+                      </span>
+                    )}
                   </Command.Item>
                 ))}
               </Command.Group>

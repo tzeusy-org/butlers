@@ -44,6 +44,7 @@ import {
   updateApprovalsPolicy,
 } from "@/api/index.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 import type { ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/index.ts";
 import { useApprovalsStream } from "@/hooks/use-approvals-stream.ts";
 import {
@@ -59,8 +60,6 @@ import {
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
-
-// `window.__pendingGNav` is declared globally by use-keyboard-shortcuts.ts.
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1274,54 +1273,64 @@ export default function ApprovalsPage() {
     });
   }
 
-  // j/k roving focus + a/d/x decision verbs, active anywhere on the page
-  // (not just while a rail item has DOM focus) -- same convention as the
-  // app-wide g-chord/`/`/`?` shortcuts in use-keyboard-shortcuts.ts, which
-  // this guards against colliding with (a pending g-chord owns the next
-  // keystroke, e.g. g+a -> /audit-log).
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (window.__pendingGNav) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+  // j/k roving focus + a/d/x decision verbs + u=undo, active anywhere on the
+  // page (not just while a rail item has DOM focus) -- migrated onto the
+  // shared page-scoped shortcut registry (bu-qvnce.11), which also publishes
+  // these to the '?' help sheet's "On this page" section (previously zero
+  // hints existed anywhere in the product for the approvals triage keys,
+  // the fleet's best interaction) and centrally guards against a pending
+  // g-chord / editable fields / open overlays.
+  function moveSelection(delta: 1 | -1) {
+    if (pending.length === 0) return;
+    const idx = pending.findIndex((p) => p.id === effectiveSelected);
+    const nextIdx = idx === -1 ? 0 : Math.min(Math.max(idx + delta, 0), pending.length - 1);
+    const next = pending[nextIdx];
+    if (next && next.id !== effectiveSelected) navigate(`/approvals/${next.id}`);
+  }
 
-      const target = e.target as HTMLElement;
-      const inEditableField =
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable;
-      if (inEditableField) return;
-      if (pending.length === 0) return;
-
-      if (e.key === "j" || e.key === "k") {
-        const idx = pending.findIndex((p) => p.id === effectiveSelected);
-        const delta = e.key === "j" ? 1 : -1;
-        const nextIdx = idx === -1 ? 0 : Math.min(Math.max(idx + delta, 0), pending.length - 1);
-        const next = pending[nextIdx];
-        if (next && next.id !== effectiveSelected) {
-          e.preventDefault();
-          navigate(`/approvals/${next.id}`);
-        }
-        return;
-      }
-
-      if (!effectiveSelected || scheduledDecisions.has(effectiveSelected)) return;
-      const id = effectiveSelected;
-
-      if (e.key === "a") {
-        e.preventDefault();
-        scheduleDecision(id, "approve", () => approveMut.mutate(id));
-      } else if (e.key === "d") {
-        e.preventDefault();
-        scheduleDecision(id, "deny", () => denyMut.mutate({ id }));
-      } else if (e.key === "x") {
-        e.preventDefault();
-        scheduleDecision(id, "defer", () => deferMut.mutate({ id, hours: KEYBOARD_DEFER_HOURS }));
-      }
+  const shortcutBindings = useMemo<ShortcutBinding[]>(() => {
+    if (pending.length === 0) return [];
+    const bindings: ShortcutBinding[] = [
+      { key: "j", display: ["j"], description: "Next approval", handler: () => moveSelection(1) },
+      { key: "k", display: ["k"], description: "Previous approval", handler: () => moveSelection(-1) },
+    ];
+    if (!effectiveSelected) return bindings;
+    const id = effectiveSelected;
+    if (scheduledDecisions.has(id)) {
+      bindings.push({
+        key: "u",
+        display: ["u"],
+        description: "Undo scheduled decision",
+        handler: () => cancelDecision(id),
+      });
+      return bindings;
     }
+    bindings.push(
+      {
+        key: "a",
+        display: ["a"],
+        description: "Approve selected",
+        handler: () => scheduleDecision(id, "approve", () => approveMut.mutate(id)),
+      },
+      {
+        key: "d",
+        display: ["d"],
+        description: "Deny selected",
+        handler: () => scheduleDecision(id, "deny", () => denyMut.mutate({ id })),
+      },
+      {
+        key: "x",
+        display: ["x"],
+        description: "Defer selected",
+        handler: () =>
+          scheduleDecision(id, "defer", () => deferMut.mutate({ id, hours: KEYBOARD_DEFER_HOURS })),
+      },
+    );
+    return bindings;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- moveSelection/scheduleDecision close over pending/effectiveSelected/navigate directly; listing pending/effectiveSelected/scheduledDecisions (which those closures actually depend on) is what keeps this memo fresh each render.
+  }, [pending, effectiveSelected, scheduledDecisions, approveMut, denyMut, deferMut, cancelDecision]);
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  });
+  useRegisterShortcut(shortcutBindings);
 
   // Keep DOM focus in sync with the current selection so the browser's
   // native focus-visible ring (RailItem's focus-visible:outline classes)
@@ -1355,6 +1364,7 @@ export default function ApprovalsPage() {
         label: "Approve next",
         keywords: ["approval", "queue"],
         perform: () => approveMut.mutate(effectiveSelected),
+        binding: ["a"],
       },
     ];
   }, [effectiveSelected, approveMut]);

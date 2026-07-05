@@ -3,7 +3,7 @@
  * Component tests for MemorySearch — the one search affordance (bu-2ix8d.6).
  *
  * Acceptance ((memory house-ledger redesign, graduated) prompts/05-search-and-rail.md Part 1):
- *   - Exactly one search input; `/` focuses it from anywhere on the page.
+ *   - Exactly one search input.
  *   - Enter submits → writes the `q` URL param (deep-linkable).
  *   - `×` / Esc clears `q`, restoring browse mode.
  *   - Kind pills write the `kind` URL param.
@@ -85,17 +85,11 @@ describe("MemorySearch", () => {
     ).toBe(1);
   });
 
-  it("focuses the input when `/` is pressed anywhere on the page", () => {
-    mounted = render();
-    const el = input(mounted.container);
-    expect(document.activeElement).not.toBe(el);
-
-    act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "/" }));
-    });
-
-    expect(document.activeElement).toBe(el);
-  });
+  // The former "`/` focuses the input from anywhere on the page" behavior was
+  // deleted (bu-qvnce.11): it double-fired alongside the app-wide `/` →
+  // command-menu shortcut (use-keyboard-shortcuts.test.tsx already covers
+  // that global binding). `/` on this page now does the same one thing it
+  // does everywhere else in the product.
 
   it("submits on Enter and writes the q URL param", () => {
     mounted = render();

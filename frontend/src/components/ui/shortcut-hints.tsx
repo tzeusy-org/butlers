@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { ALL_ROUTES } from "@/lib/route-registry";
 import { OPEN_SHORTCUT_HELP_EVENT } from "@/lib/shortcut-help";
+import { useShortcutHintEntries } from "@/hooks/use-register-shortcut";
 
 interface ShortcutRow {
   keys: readonly string[];
@@ -48,9 +49,25 @@ function Kbd({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * Rows contributed by whichever page is currently mounted, via
+ * `useRegisterShortcut` (bu-qvnce.11 — "On this page"). This is the ONLY
+ * place page-scoped shortcuts (approvals triage, chat conversation
+ * switching, ...) become discoverable at all — before this they had zero
+ * hints anywhere in the product.
+ */
+function usePageShortcuts(): ShortcutRow[] {
+  const bindings = useShortcutHintEntries();
+  return useMemo(
+    () => bindings.map((b) => ({ keys: b.display, description: b.description })),
+    [bindings],
+  );
+}
+
 export function ShortcutHints() {
   const [open, setOpen] = useState(false);
   const chordShortcuts = useChordShortcuts();
+  const pageShortcuts = usePageShortcuts();
   const shortcuts = useMemo(
     () => [...STATIC_SHORTCUTS, ...chordShortcuts],
     [chordShortcuts],
@@ -84,24 +101,45 @@ export function ShortcutHints() {
         <DialogHeader>
           <DialogTitle>Keyboard Shortcuts</DialogTitle>
         </DialogHeader>
-        <div className="space-y-3 pt-2">
-          {shortcuts.map((shortcut, idx) => (
-            <div key={idx} className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">{shortcut.description}</span>
-              <div className="flex items-center gap-1">
-                {shortcut.keys.map((key, kidx) => (
-                  <span key={kidx} className="flex items-center gap-1">
-                    {kidx > 0 && (
-                      <span className="text-xs text-muted-foreground">+</span>
-                    )}
-                    <Kbd>{key}</Kbd>
-                  </span>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+        <ShortcutRowList rows={shortcuts} />
+
+        {/* "On this page" — page-scoped shortcuts published by whichever
+            page is currently mounted, via useRegisterShortcut (bu-qvnce.11).
+            Omitted entirely (not an empty heading) when the current page
+            registers none. */}
+        {pageShortcuts.length > 0 && (
+          <section aria-labelledby="shortcut-hints-page-heading" className="pt-4">
+            <h3
+              id="shortcut-hints-page-heading"
+              className="mb-2 text-[10px] font-mono uppercase tracking-widest text-muted-foreground"
+            >
+              On this page
+            </h3>
+            <ShortcutRowList rows={pageShortcuts} />
+          </section>
+        )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Shared row renderer for both the global and "On this page" sections. */
+function ShortcutRowList({ rows }: { rows: ShortcutRow[] }) {
+  return (
+    <div className="space-y-3 pt-2" role="list">
+      {rows.map((shortcut, idx) => (
+        <div key={idx} role="listitem" className="flex items-center justify-between">
+          <span className="text-sm text-muted-foreground">{shortcut.description}</span>
+          <div className="flex items-center gap-1">
+            {shortcut.keys.map((key, kidx) => (
+              <span key={kidx} className="flex items-center gap-1">
+                {kidx > 0 && <span className="text-xs text-muted-foreground">+</span>}
+                <Kbd>{key}</Kbd>
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }

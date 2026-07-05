@@ -42,6 +42,16 @@ export interface PaletteCommand {
   keywords?: string[];
   /** Invoked when the command is selected. The menu closes itself afterward. */
   perform: () => void;
+  /**
+   * Optional keyboard-shortcut hint rendered as a kbd column next to this
+   * command in the palette's Actions group (bu-qvnce.11 — "the tenth needs no
+   * mouse"). Display-only metadata: setting this does NOT install any key
+   * handling by itself — pair it with a matching `useRegisterShortcut`
+   * binding (see `src/hooks/use-register-shortcut.tsx`) that performs the
+   * same action. E.g. `["a"]` for a single-key shortcut, or
+   * `["Ctrl", "Shift", "↑"]` for a chord.
+   */
+  binding?: string[];
 }
 
 interface CommandRegistryContextValue {

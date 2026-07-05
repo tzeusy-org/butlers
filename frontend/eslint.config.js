@@ -240,6 +240,16 @@ export default defineConfig([
       'react-refresh/only-export-components': 'off',
     },
   },
+  {
+    // Same tradeoff again: ShortcutRegistryProvider plus its accompanying
+    // hooks (useRegisterShortcut, useShortcutHintEntries) and the
+    // isShortcutTargetSuspended guard are one tightly-coupled unit
+    // (bu-qvnce.11) — mirrors command-registry.tsx's shape deliberately.
+    files: ['src/hooks/use-register-shortcut.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
   // ---------------------------------------------------------------------------
   // Chart color plumbing guard (bu-86c4c.5) + one-visual-language guards
   // (bu-86c4c.6). Split into three non-overlapping file-sets — see the

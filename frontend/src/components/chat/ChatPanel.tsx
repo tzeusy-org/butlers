@@ -42,6 +42,7 @@ import {
   useConversations,
   useConversationMessages,
 } from "@/hooks/use-conversations.ts";
+import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 
 // ---------------------------------------------------------------------------
 // ChatPanel inner content (mounted once Sheet is open)
@@ -112,27 +113,51 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     setLocalMessages(msgs);
   }, [messagesData, streaming]);
 
-  // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      if (!e.ctrlKey || !e.shiftKey) return;
-      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-      e.preventDefault();
-
-      if (conversations.length === 0) return;
-      const idx = conversations.findIndex((c) => c.id === activeConversationId);
-      if (e.key === "ArrowUp") {
-        const prev = idx <= 0 ? conversations.length - 1 : idx - 1;
-        setActiveConversationId(conversations[prev].id);
-      } else {
-        const next = idx < 0 || idx >= conversations.length - 1 ? 0 : idx + 1;
-        setActiveConversationId(conversations[next].id);
-      }
+  // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations. Migrated
+  // onto the shared page-scoped shortcut registry (bu-qvnce.11), which also
+  // publishes it to the '?' help sheet's "On this page" section — this chord
+  // previously had zero discoverability outside this source file. Both
+  // bindings set `allowWhenSuspended` since the chord is meant to work while
+  // the owner is mid-message in MessageInput (a modifier chord, so it can't
+  // collide with normal typing) — matching this handler's original
+  // no-editable-field-guard behavior.
+  function switchConversation(direction: 1 | -1) {
+    if (conversations.length === 0) return;
+    const idx = conversations.findIndex((c) => c.id === activeConversationId);
+    if (direction === -1) {
+      const prev = idx <= 0 ? conversations.length - 1 : idx - 1;
+      setActiveConversationId(conversations[prev].id);
+    } else {
+      const next = idx < 0 || idx >= conversations.length - 1 ? 0 : idx + 1;
+      setActiveConversationId(conversations[next].id);
     }
+  }
 
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [conversations, activeConversationId]);
+  const conversationShortcuts = useMemo<ShortcutBinding[]>(
+    () => [
+      {
+        key: "ArrowUp",
+        ctrlKey: true,
+        shiftKey: true,
+        display: ["Ctrl", "Shift", "↑"],
+        description: "Previous conversation",
+        handler: () => switchConversation(-1),
+        allowWhenSuspended: true,
+      },
+      {
+        key: "ArrowDown",
+        ctrlKey: true,
+        shiftKey: true,
+        display: ["Ctrl", "Shift", "↓"],
+        description: "Next conversation",
+        handler: () => switchConversation(1),
+        allowWhenSuspended: true,
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- switchConversation closes over conversations/activeConversationId directly; listing those (what it actually depends on) keeps this memo fresh each render.
+    [conversations, activeConversationId],
+  );
+  useRegisterShortcut(conversationShortcuts);
 
   // Resume the most recent conversation ONCE per mount (== once per Sheet
   // open, since ChatContent unmounts entirely when the Sheet closes via the

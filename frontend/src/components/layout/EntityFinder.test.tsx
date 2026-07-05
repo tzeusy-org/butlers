@@ -23,6 +23,8 @@ import {
   aggregateOwnerPinned,
   dispatchOpenEntityFinder,
 } from "@/lib/entity-finder";
+import { CommandRegistryProvider, useRegisterCommands } from "@/lib/command-registry";
+import { getRecents } from "@/lib/recents-store";
 import {
   useEntityFinderSearch,
   useEntityNeighbours,
@@ -155,6 +157,7 @@ describe("EntityFinder", () => {
     vi.resetAllMocks();
     mockSearchEmpty();
     mockNeighboursEmpty();
+    localStorage.clear();
 
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -741,6 +744,163 @@ describe("EntityFinder", () => {
     );
     expect(pinned.length).toBe(1);
     expect(pinned[0].textContent).toContain("Pinned One");
+  });
+
+  // -------------------------------------------------------------------------
+  // Palette browsability (bu-qvnce.11): verbs at empty query, binding kbd
+  // column, recents.
+  // -------------------------------------------------------------------------
+
+  function ActionRegistrar({ perform }: { perform: () => void }) {
+    useRegisterCommands([
+      { id: "approve-next", label: "Approve next", perform, binding: ["a"] },
+    ]);
+    return null;
+  }
+
+  it("shows registered Actions at empty query, not just after the first keystroke", async () => {
+    const perform = vi.fn();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <CommandRegistryProvider>
+              <ActionRegistrar perform={perform} />
+              <EntityFinder />
+            </CommandRegistryProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const actionItem = document.body.querySelector(
+      "[data-testid='entity-finder-action-item']",
+    );
+    expect(actionItem?.textContent).toContain("Approve next");
+  });
+
+  it("renders the action's binding as a kbd hint next to it in the palette", async () => {
+    const perform = vi.fn();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <CommandRegistryProvider>
+              <ActionRegistrar perform={perform} />
+              <EntityFinder />
+            </CommandRegistryProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const binding = document.body.querySelector(
+      "[data-testid='entity-finder-action-binding']",
+    );
+    expect(binding?.textContent).toBe("a");
+  });
+
+  it("records a selected action as a Recent and surfaces it at empty query on reopen", async () => {
+    const perform = vi.fn();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <CommandRegistryProvider>
+              <ActionRegistrar perform={perform} />
+              <EntityFinder />
+            </CommandRegistryProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const actionItem = document.body.querySelector(
+      "[data-testid='entity-finder-action-item']",
+    ) as HTMLElement;
+    await act(async () => {
+      actionItem.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(perform).toHaveBeenCalledTimes(1);
+    expect(getRecents().map((r) => r.label)).toContain("Approve next");
+
+    // Reopen — the Finder resets its own open state on each dispatch, and
+    // recents are re-read from storage at that point.
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const recentItem = document.body.querySelector(
+      "[data-testid='entity-finder-recent-item']",
+    );
+    expect(recentItem?.textContent).toContain("Approve next");
+  });
+
+  it("records a selected page as a Recent", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const input = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(input, "contacts");
+      await flush();
+    });
+
+    const pageItem = document.body.querySelector(
+      "[data-testid='entity-finder-page-item']",
+    ) as HTMLElement;
+    expect(pageItem).not.toBeNull();
+
+    await act(async () => {
+      pageItem.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(getRecents().some((r) => r.kind === "page")).toBe(true);
   });
 });
 
