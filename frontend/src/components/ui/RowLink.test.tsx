@@ -14,12 +14,18 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi } from "vitest"
-import { afterEach } from "vitest"
-import { cleanup, render, screen } from "@testing-library/react"
+import { afterEach, beforeEach } from "vitest"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { MemoryRouter } from "react-router"
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+
+vi.mock("@/api/index.ts", () => ({
+  getSession: vi.fn((id: string) => Promise.resolve({ data: { id } })),
+}))
 
 import { RowLink } from "./RowLink"
+import { PREFETCH_INTENT_DELAY_MS } from "@/hooks/use-prefetch-on-intent"
 
 afterEach(() => {
   cleanup()
@@ -171,5 +177,87 @@ describe("RowLink: hasNestedInteractive (restore-chip fallback)", () => {
       </MemoryRouter>,
     )
     expect(screen.getByTestId("row").className).toContain("cell-class")
+  })
+})
+
+describe("RowLink: prefetch on hover intent (bu-qvnce.14 slice 4)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("prefetches a mapped route's query after a pointer-enter intent delay", () => {
+    const client = new QueryClient()
+    const prefetchSpy = vi.spyOn(client, "prefetchQuery")
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <RowLink to="/sessions/abc-123" data-testid="row">
+            session row
+          </RowLink>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.pointerEnter(screen.getByTestId("row"))
+    expect(prefetchSpy).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS)
+    })
+
+    expect(prefetchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["session-detail-global", "abc-123"] }),
+    )
+  })
+
+  it("does not prefetch a route absent from the registry", () => {
+    const client = new QueryClient()
+    const prefetchSpy = vi.spyOn(client, "prefetchQuery")
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <RowLink to="/butlers/general" data-testid="row">
+            general
+          </RowLink>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.pointerEnter(screen.getByTestId("row"))
+    act(() => {
+      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS)
+    })
+
+    expect(prefetchSpy).not.toHaveBeenCalled()
+  })
+
+  it("cancels the pending prefetch on pointer-leave (pointer-sweep case)", () => {
+    const client = new QueryClient()
+    const prefetchSpy = vi.spyOn(client, "prefetchQuery")
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <RowLink to="/sessions/abc-123" data-testid="row">
+            session row
+          </RowLink>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    const row = screen.getByTestId("row")
+    fireEvent.pointerEnter(row)
+    act(() => {
+      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS / 2)
+    })
+    fireEvent.pointerLeave(row)
+    act(() => {
+      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS)
+    })
+
+    expect(prefetchSpy).not.toHaveBeenCalled()
   })
 })

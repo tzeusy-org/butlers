@@ -27,7 +27,8 @@
 
 import * as React from "react"
 
-import { cn } from "@/lib/utils"
+import { cn, composeHandlers } from "@/lib/utils"
+import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent"
 
 export interface DisclosureRowProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, "onToggle"> {
@@ -39,6 +40,14 @@ export interface DisclosureRowProps
   controlsId?: string
   /** When true, the row is not focusable/activatable (still renders normally). */
   disabled?: boolean
+  /**
+   * Optional navigation target this row's disclosed content leads to (e.g.
+   * a "View" link nested in the disclosed panel) -- hover/focus intent
+   * speculatively prefetches it via the route-registry prefetch map
+   * (bu-qvnce.14 slice 4). Omit when the row has no such target; an
+   * unmapped path is a no-op either way.
+   */
+  prefetchTo?: string | null
 }
 
 /**
@@ -59,9 +68,25 @@ export interface DisclosureRowProps
  */
 export const DisclosureRow = React.forwardRef<HTMLDivElement, DisclosureRowProps>(
   function DisclosureRow(
-    { expanded, onToggle, controlsId, disabled = false, className, onClick, onKeyDown, ...props },
+    {
+      expanded,
+      onToggle,
+      controlsId,
+      disabled = false,
+      className,
+      onClick,
+      onKeyDown,
+      prefetchTo,
+      onPointerEnter,
+      onPointerLeave,
+      onFocus,
+      onBlur,
+      ...props
+    },
     ref,
   ) {
+    const prefetch = usePrefetchOnIntent(prefetchTo)
+
     function handleClick(e: React.MouseEvent<HTMLDivElement>) {
       onClick?.(e)
       if (e.defaultPrevented || disabled) return
@@ -95,6 +120,10 @@ export const DisclosureRow = React.forwardRef<HTMLDivElement, DisclosureRowProps
         )}
         onClick={handleClick}
         onKeyDown={handleKeyDown}
+        onPointerEnter={composeHandlers(prefetch.onPointerEnter, onPointerEnter)}
+        onPointerLeave={composeHandlers(prefetch.onPointerLeave, onPointerLeave)}
+        onFocus={composeHandlers(prefetch.onFocus, onFocus)}
+        onBlur={composeHandlers(prefetch.onBlur, onBlur)}
         {...props}
       />
     )

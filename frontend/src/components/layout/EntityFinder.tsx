@@ -63,6 +63,7 @@ import { addRecent, getRecents, type RecentEntry } from "@/lib/recents-store";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
+import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
@@ -382,8 +383,53 @@ export default function EntityFinder() {
   // differently-ranked entity list would just be a confusing duplicate.
   // -------------------------------------------------------------------------
   const { data: genericSearchData, isFetching: genericFetching } = useSearch(trimmedQuery);
-  const sessionMatches = genericSearchData?.data?.sessions ?? [];
-  const stateMatches = genericSearchData?.data?.state ?? [];
+  // useMemo (not a bare `?? []`) so a stable empty-array reference doesn't
+  // churn the highlightedPath useMemo's deps below on every render.
+  const sessionMatches = useMemo(
+    () => genericSearchData?.data?.sessions ?? [],
+    [genericSearchData],
+  );
+  const stateMatches = useMemo(
+    () => genericSearchData?.data?.state ?? [],
+    [genericSearchData],
+  );
+
+  // -------------------------------------------------------------------------
+  // Palette-highlight prefetch (bu-qvnce.14 slice 4, deferred from PR #2927).
+  // cmdk's own aria-selected highlight (arrow keys or mouse-over a row) is
+  // this surface's "intent" signal — the same idea as RowLink/DisclosureRow's
+  // hover/focus, just driven by `activeValue` instead of pointer events since
+  // cmdk owns row hover itself (no separate pointerenter to hook). Only
+  // Pages/Sessions/State rows resolve to a route-registry target; Entities
+  // (already covered by PreviewPane's own neighbours prefetch above),
+  // Butlers, Recents, and Actions rows resolve to `null` and no-op.
+  // -------------------------------------------------------------------------
+  const highlightedPath = useMemo<string | null>(() => {
+    if (!activeValue) return null;
+    if (activeValue.startsWith("page:")) {
+      const rest = activeValue.slice("page:".length);
+      const sep = rest.indexOf(":");
+      return sep >= 0 ? rest.slice(0, sep) : rest;
+    }
+    if (activeValue.startsWith("session:")) {
+      const id = activeValue.slice("session:".length).split(":")[0];
+      return sessionMatches.find((s) => s.id === id)?.url ?? null;
+    }
+    if (activeValue.startsWith("state:")) {
+      const id = activeValue.slice("state:".length).split(":")[0];
+      return stateMatches.find((s) => s.id === id)?.url ?? null;
+    }
+    return null;
+  }, [activeValue, sessionMatches, stateMatches]);
+
+  const highlightPrefetch = usePrefetchOnIntent(highlightedPath);
+  useEffect(() => {
+    highlightPrefetch.schedule();
+    return highlightPrefetch.cancel;
+    // highlightPrefetch reads its target via a ref (stable identity across
+    // `to` changes) -- only the resolved path itself should retrigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightedPath]);
 
   // -------------------------------------------------------------------------
   // Actions group — per-page command registration API (bu-86c4c.7). Shown at

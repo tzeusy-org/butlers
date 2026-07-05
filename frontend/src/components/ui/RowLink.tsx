@@ -20,7 +20,8 @@
 import * as React from "react"
 import { Link, type LinkProps } from "react-router"
 
-import { cn } from "@/lib/utils"
+import { cn, composeHandlers } from "@/lib/utils"
+import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent"
 
 export interface RowLinkProps extends Omit<LinkProps, "onKeyDown"> {
   /**
@@ -64,10 +65,23 @@ export interface RowLinkProps extends Omit<LinkProps, "onKeyDown"> {
  */
 export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowLinkProps>(
   function RowLink({ hasNestedInteractive = false, onActivate, className, children, ...props }, ref) {
+    // Hover/focus intent -> speculative prefetch (bu-qvnce.14 slice 4) via the
+    // route-registry prefetch map. `to` is only ever a plain string in this
+    // codebase's call sites; a `Partial<Path>` `to` (react-router's other
+    // accepted shape) just resolves to no target, same as any unmapped route.
+    const prefetch = usePrefetchOnIntent(typeof props.to === "string" ? props.to : null)
+
     if (hasNestedInteractive) {
       // `to` is not a valid DOM attribute — it's consumed only by the <Link>
-      // branch below, and dropped here via rest destructuring.
-      const { to, ...divProps } = props
+      // branch below, and dropped here via rest destructuring. The four
+      // intent handlers are typed against LinkProps' anchor element (this
+      // branch renders a div instead) -- recast to the div's handler shape,
+      // same as the trailing `divProps` spread already does below.
+      const { to, onPointerEnter, onPointerLeave, onFocus, onBlur, ...divProps } = props as Omit<
+        RowLinkProps,
+        "hasNestedInteractive" | "onActivate" | "className" | "children"
+      > &
+        React.HTMLAttributes<HTMLDivElement>
       void to
       return (
         <div
@@ -86,6 +100,10 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
               onActivate?.()
             }
           }}
+          onPointerEnter={composeHandlers(prefetch.onPointerEnter, onPointerEnter)}
+          onPointerLeave={composeHandlers(prefetch.onPointerLeave, onPointerLeave)}
+          onFocus={composeHandlers(prefetch.onFocus, onFocus)}
+          onBlur={composeHandlers(prefetch.onBlur, onBlur)}
           {...(divProps as React.HTMLAttributes<HTMLDivElement>)}
         >
           {children}
@@ -93,8 +111,17 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
       )
     }
 
+    const { onPointerEnter, onPointerLeave, onFocus, onBlur, ...linkProps } = props
     return (
-      <Link ref={ref as React.Ref<HTMLAnchorElement>} className={className} {...props}>
+      <Link
+        ref={ref as React.Ref<HTMLAnchorElement>}
+        className={className}
+        onPointerEnter={composeHandlers(prefetch.onPointerEnter, onPointerEnter)}
+        onPointerLeave={composeHandlers(prefetch.onPointerLeave, onPointerLeave)}
+        onFocus={composeHandlers(prefetch.onFocus, onFocus)}
+        onBlur={composeHandlers(prefetch.onBlur, onBlur)}
+        {...linkProps}
+      >
         {children}
       </Link>
     )

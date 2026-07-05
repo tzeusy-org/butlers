@@ -356,6 +356,7 @@ export default function IssuesPanel({
                   onToggle={() => onToggleOccurrences?.(issue.issue_key)}
                   controlsId={`issue-occurrences-${issue.issue_key}`}
                   className="flex items-start justify-between gap-3 p-3"
+                  prefetchTo={issue.link}
                 >
                   {rowContent}
                 </DisclosureRow>
