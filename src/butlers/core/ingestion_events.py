@@ -145,7 +145,8 @@ _EVENT_COLUMNS: str = ", ".join(
 # Columns fetched from each butler's sessions table during fan-out
 _SESSION_COLUMNS = (
     "id, trigger_source, started_at, completed_at, success, "
-    "input_tokens, output_tokens, cost, trace_id, model"
+    "input_tokens, output_tokens, cached_input_tokens, cache_creation_tokens, "
+    "cost, trace_id, model"
 )
 
 # Cap on sessions embedded per event in the list-enrichment response
@@ -981,11 +982,20 @@ def _compute_session_cost_usd(
     """
     in_tok = session.get("input_tokens") or 0
     out_tok = session.get("output_tokens") or 0
+    cached_tok = session.get("cached_input_tokens") or 0
+    cache_write_tok = session.get("cache_creation_tokens") or 0
 
     if pricing is not None:
         model = session.get("model") or ""
-        if model and (in_tok or out_tok):
-            session_cost = estimate_session_cost(pricing, model, in_tok, out_tok)
+        if model and (in_tok or out_tok or cached_tok or cache_write_tok):
+            session_cost = estimate_session_cost(
+                pricing,
+                model,
+                in_tok,
+                out_tok,
+                cached_input_tokens=cached_tok,
+                cache_creation_tokens=cache_write_tok,
+            )
             if session_cost != 0.0:
                 return session_cost
             # estimate_session_cost returns 0.0 for unknown models — fall
@@ -1286,8 +1296,17 @@ def ingestion_event_rollup(
         session_cost = 0.0
         if pricing is not None:
             model = session.get("model") or ""
-            if model and (in_tok or out_tok):
-                session_cost = estimate_session_cost(pricing, model, in_tok, out_tok)
+            cached_tok = session.get("cached_input_tokens") or 0
+            cache_write_tok = session.get("cache_creation_tokens") or 0
+            if model and (in_tok or out_tok or cached_tok or cache_write_tok):
+                session_cost = estimate_session_cost(
+                    pricing,
+                    model,
+                    in_tok,
+                    out_tok,
+                    cached_input_tokens=cached_tok,
+                    cache_creation_tokens=cache_write_tok,
+                )
         if session_cost == 0.0:
             # Legacy fallback: read from cost JSONB column
             cost = session.get("cost")
@@ -1459,7 +1478,9 @@ async def ingestion_window_rollup(
                         COUNT(*) AS cnt,
                         COALESCE(model, '') AS model,
                         COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
-                        COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+                        COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens,
+                        COALESCE(SUM(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+                        COALESCE(SUM(cache_creation_tokens), 0)::bigint AS cache_creation_tokens
                     FROM sessions
                     WHERE request_id = ANY($1::text[])
                     GROUP BY model
@@ -1473,10 +1494,19 @@ async def ingestion_window_rollup(
                             model = row.get("model") or ""
                             in_tok = int(row.get("input_tokens") or 0)
                             out_tok = int(row.get("output_tokens") or 0)
-                            if model and (in_tok or out_tok):
+                            cached_tok = int(row.get("cached_input_tokens") or 0)
+                            cache_write_tok = int(row.get("cache_creation_tokens") or 0)
+                            if model and (in_tok or out_tok or cached_tok or cache_write_tok):
                                 if total_cost is None:
                                     total_cost = 0.0
-                                total_cost += estimate_session_cost(pricing, model, in_tok, out_tok)
+                                total_cost += estimate_session_cost(
+                                    pricing,
+                                    model,
+                                    in_tok,
+                                    out_tok,
+                                    cached_input_tokens=cached_tok,
+                                    cache_creation_tokens=cache_write_tok,
+                                )
                 # Pricing present but all sessions have unknown/empty model or zero tokens:
                 # initialise to 0.0 so callers can distinguish "pricing unavailable" (None)
                 # from "sessions exist but zero chargeable tokens" (0.0).

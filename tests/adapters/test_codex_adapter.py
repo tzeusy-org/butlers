@@ -1319,6 +1319,69 @@ async def test_openai_style_token_fields_are_recorded():
     assert usage == {"input_tokens": 100, "output_tokens": 50}
 
 
+@pytest.mark.parametrize(
+    "raw_usage",
+    [
+        # Codex proto shape: cached_input_tokens is a sibling counter.
+        {"input_tokens": 50_000, "cached_input_tokens": 45_000, "output_tokens": 700},
+        # OpenAI Responses shape: cached tokens nested under input_tokens_details.
+        {
+            "input_tokens": 50_000,
+            "input_tokens_details": {"cached_tokens": 45_000},
+            "output_tokens": 700,
+        },
+        # OpenAI chat-completions shape: prompt_tokens + prompt_tokens_details.
+        {
+            "prompt_tokens": 50_000,
+            "prompt_tokens_details": {"cached_tokens": 45_000},
+            "completion_tokens": 700,
+        },
+    ],
+)
+async def test_cached_tokens_subtracted_from_input(raw_usage):
+    """OpenAI-semantics input/prompt_tokens INCLUDES cached tokens.
+
+    Per the runtime usage contract (runtimes/base.py), the adapter must
+    subtract the cached bucket out of input_tokens and report it separately —
+    otherwise cache reads bill at the full input rate.
+    """
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    stdout = (
+        json.dumps({"type": "thread.started", "thread_id": "thread-c"})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"id": "msg1", "type": "agent_message", "text": "answer"},
+            }
+        )
+        + "\n"
+        + json.dumps({"type": "turn.completed", "usage": raw_usage})
+    ).encode()
+
+    async def _mock_exec(*args, **kwargs):
+        proc = AsyncMock()
+        proc.returncode = 0
+        proc.pid = 99
+        proc.communicate = AsyncMock(return_value=(stdout, b""))
+        return proc
+
+    with patch(_EXEC, side_effect=_mock_exec):
+        _, _, usage = await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    assert usage == {
+        "input_tokens": 5_000,
+        "output_tokens": 700,
+        "cache_read_input_tokens": 45_000,
+    }
+
+
 async def test_nonzero_exit_with_structured_stdout_uses_error_message():
     """Structured stdout failures should surface their message, not raw JSON events."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")

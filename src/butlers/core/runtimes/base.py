@@ -71,8 +71,21 @@ class RuntimeAdapter(abc.ABC):
         -------
         tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]
             A tuple of (result_text, tool_calls, usage). Usage is a dict
-            with keys like ``input_tokens``, ``output_tokens``, etc.,
+            with keys ``input_tokens``, ``output_tokens``, and optionally
+            ``cache_read_input_tokens`` / ``cache_creation_input_tokens``,
             or None if the runtime does not report token usage.
+
+            Token-bucket contract (all adapters MUST follow it — cost
+            estimation prices each bucket at a different rate):
+
+            - ``input_tokens``: UNCACHED input tokens only. Cache reads and
+              cache writes are excluded, even when the vendor's native
+              counter folds them in (e.g. OpenAI ``prompt_tokens`` includes
+              cached tokens — adapters must subtract them out).
+            - ``cache_read_input_tokens``: input tokens served from a
+              prompt cache.
+            - ``cache_creation_input_tokens``: input tokens written to a
+              prompt cache.
         """
         ...
 

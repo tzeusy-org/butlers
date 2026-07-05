@@ -409,3 +409,32 @@ def test_gemini_usage_is_none() -> None:
     assert len(result) == 2
     result_text, tool_calls = result
     assert result_text == "hello world" and tool_calls == []
+
+
+def test_claude_parse_reports_cache_buckets_separately() -> None:
+    """Claude CLI result usage maps to the runtime usage contract (base.py).
+
+    The Claude CLI's input_tokens is natively the UNCACHED remainder;
+    cache_read/cache_creation must surface as separate usage keys so cost
+    estimation can price them (reads 0.1x input, writes 1.25x input) —
+    previously they were dropped and billed at $0.
+    """
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "result": "Done",
+            "usage": {
+                "input_tokens": 1_200,
+                "output_tokens": 800,
+                "cache_read_input_tokens": 950_000,
+                "cache_creation_input_tokens": 42_000,
+            },
+        }
+    )
+    _, _, usage = _parse_claude_output(stdout, "", 0)
+    assert usage == {
+        "input_tokens": 1_200,
+        "output_tokens": 800,
+        "cache_read_input_tokens": 950_000,
+        "cache_creation_input_tokens": 42_000,
+    }

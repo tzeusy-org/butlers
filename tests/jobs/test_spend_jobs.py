@@ -147,8 +147,20 @@ async def test_sum_tokens_for_all_models_returns_dict_keyed_by_model():
     pool = MagicMock()
     pool.fetch = AsyncMock(
         return_value=[
-            {"model": "cheap-model", "total_input": 1_000_000, "total_output": 2_000_000},
-            {"model": "workhorse-model", "total_input": 500_000, "total_output": 300_000},
+            {
+                "model": "cheap-model",
+                "total_input": 1_000_000,
+                "total_output": 2_000_000,
+                "total_cached_input": 100,
+                "total_cache_creation": 20,
+            },
+            {
+                "model": "workhorse-model",
+                "total_input": 500_000,
+                "total_output": 300_000,
+                "total_cached_input": 0,
+                "total_cache_creation": 0,
+            },
         ]
     )
     result = await _sum_tokens_for_all_models(
@@ -158,8 +170,8 @@ async def test_sum_tokens_for_all_models_returns_dict_keyed_by_model():
         since=datetime(2026, 1, 1, tzinfo=UTC),
     )
     assert result == {
-        "cheap-model": (1_000_000, 2_000_000),
-        "workhorse-model": (500_000, 300_000),
+        "cheap-model": (1_000_000, 2_000_000, 100, 20),
+        "workhorse-model": (500_000, 300_000, 0, 0),
     }
 
 
@@ -198,9 +210,9 @@ _SAVINGS_PRICING = _pricing(
     [
         # cheap vs workhorse baseline, 1M+1M tokens:
         #   actual=5.0, baseline=18.0 → saved=13.0
-        ("cheap-model", {"cheap-model": (1_000_000, 1_000_000)}, 13.0),
+        ("cheap-model", {"cheap-model": (1_000_000, 1_000_000, 0, 0)}, 13.0),
         # expensive vs baseline, 500K+200K: actual=15.0, baseline=4.5 → saved=-10.5 (negative)
-        ("expensive-model", {"expensive-model": (500_000, 200_000)}, -10.5),
+        ("expensive-model", {"expensive-model": (500_000, 200_000, 0, 0)}, -10.5),
         # no matching sessions → (0,0) fallback → saved=0
         ("cheap-model", {}, 0.0),
     ],
@@ -295,7 +307,7 @@ async def test_compute_savings_multiple_rules_all_updated():
 
     with patch(
         "butlers.jobs.spend._sum_tokens_for_all_models",
-        return_value={"cheap-model": (1_000_000, 1_000_000)},
+        return_value={"cheap-model": (1_000_000, 1_000_000, 0, 0)},
     ):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 
@@ -325,7 +337,7 @@ async def test_compute_savings_idempotent():
 
     with patch(
         "butlers.jobs.spend._sum_tokens_for_all_models",
-        return_value={"cheap-model": (2_000_000, 1_000_000)},
+        return_value={"cheap-model": (2_000_000, 1_000_000, 0, 0)},
     ):
         result1 = await compute_spend_rule_savings(pool1, pricing=pricing)
         result2 = await compute_spend_rule_savings(pool2, pricing=pricing)
@@ -359,7 +371,7 @@ async def test_compute_savings_falls_back_to_pricing_baseline_when_catalog_unava
 
     with patch(
         "butlers.jobs.spend._sum_tokens_for_all_models",
-        return_value={"rule-model": (1_000_000, 1_000_000)},
+        return_value={"rule-model": (1_000_000, 1_000_000, 0, 0)},
     ):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
 

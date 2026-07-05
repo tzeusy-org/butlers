@@ -1083,6 +1083,18 @@ def _parse_codex_output_payload(
                 output_tokens = (
                     _raw_out if _raw_out is not None else raw_usage.get("completion_tokens")
                 )
+                # Cached-token detail: Codex proto reports cached_input_tokens;
+                # OpenAI-style payloads nest it under
+                # input_tokens_details/prompt_tokens_details.cached_tokens.
+                cached_tokens = raw_usage.get("cached_input_tokens")
+                if not isinstance(cached_tokens, int):
+                    for details_key in ("input_tokens_details", "prompt_tokens_details"):
+                        details = raw_usage.get(details_key)
+                        if isinstance(details, dict) and isinstance(
+                            details.get("cached_tokens"), int
+                        ):
+                            cached_tokens = details["cached_tokens"]
+                            break
                 # Token reporting contract: return ints when available, or None
                 # for usage entirely when token counts cannot be determined.
                 if isinstance(input_tokens, int) or isinstance(output_tokens, int):
@@ -1090,6 +1102,12 @@ def _parse_codex_output_payload(
                         "input_tokens": input_tokens if isinstance(input_tokens, int) else 0,
                         "output_tokens": output_tokens if isinstance(output_tokens, int) else 0,
                     }
+                    if isinstance(cached_tokens, int) and cached_tokens > 0:
+                        # OpenAI semantics: input/prompt_tokens INCLUDES cached
+                        # tokens. Per the runtime usage contract (base.py),
+                        # input_tokens must be the uncached bucket only.
+                        usage["cache_read_input_tokens"] = cached_tokens
+                        usage["input_tokens"] = max(usage["input_tokens"] - cached_tokens, 0)
 
         else:
             # Unknown type — check for text or content fields

@@ -75,13 +75,13 @@ async def _sum_tokens_for_all_models(
     schemas: tuple[str, ...],
     model_ids: frozenset[str],
     since: datetime,
-) -> dict[str, tuple[int, int]]:
-    """Return a mapping of model_id → (total_input_tokens, total_output_tokens).
+) -> dict[str, tuple[int, int, int, int]]:
+    """Return model_id → (input, output, cached_input, cache_creation) token totals.
 
     Fetches token aggregates for all *model_ids* in a single query using a
     UNION ALL across all butler schemas, grouped by model.  Returns an empty
     dict when no schemas are available.  Models with no sessions in the window
-    are absent from the result (callers should treat missing keys as (0, 0)).
+    are absent from the result (callers should treat missing keys as all-zero).
     """
     if not schemas or not model_ids:
         return {}
@@ -93,7 +93,9 @@ async def _sum_tokens_for_all_models(
         SELECT
             model,
             COALESCE(input_tokens, 0) AS input_tokens,
-            COALESCE(output_tokens, 0) AS output_tokens
+            COALESCE(output_tokens, 0) AS output_tokens,
+            COALESCE(cached_input_tokens, 0) AS cached_input_tokens,
+            COALESCE(cache_creation_tokens, 0) AS cache_creation_tokens
         FROM {schema}.sessions
         WHERE model = ANY($1::text[]) AND started_at >= $2
         """
@@ -104,12 +106,22 @@ async def _sum_tokens_for_all_models(
     SELECT
         model,
         COALESCE(SUM(input_tokens), 0)::bigint AS total_input,
-        COALESCE(SUM(output_tokens), 0)::bigint AS total_output
+        COALESCE(SUM(output_tokens), 0)::bigint AS total_output,
+        COALESCE(SUM(cached_input_tokens), 0)::bigint AS total_cached_input,
+        COALESCE(SUM(cache_creation_tokens), 0)::bigint AS total_cache_creation
     FROM ({union_sql}) AS combined
     GROUP BY model
     """
     rows = await pool.fetch(sql, list(model_ids), since)
-    return {row["model"]: (int(row["total_input"]), int(row["total_output"])) for row in rows}
+    return {
+        row["model"]: (
+            int(row["total_input"]),
+            int(row["total_output"]),
+            int(row["total_cached_input"]),
+            int(row["total_cache_creation"]),
+        )
+        for row in rows
+    }
 
 
 async def _get_baseline_model_id(pool: asyncpg.Pool) -> str | None:
@@ -285,10 +297,26 @@ async def compute_spend_rule_savings(
             continue
 
         try:
-            input_tok, output_tok = token_totals.get(rule_model_id, (0, 0))
+            input_tok, output_tok, cached_tok, cache_write_tok = token_totals.get(
+                rule_model_id, (0, 0, 0, 0)
+            )
 
-            actual_cost = estimate_session_cost(pricing, rule_model_id, input_tok, output_tok)
-            baseline_cost = estimate_session_cost(pricing, baseline_model_id, input_tok, output_tok)
+            actual_cost = estimate_session_cost(
+                pricing,
+                rule_model_id,
+                input_tok,
+                output_tok,
+                cached_input_tokens=cached_tok,
+                cache_creation_tokens=cache_write_tok,
+            )
+            baseline_cost = estimate_session_cost(
+                pricing,
+                baseline_model_id,
+                input_tok,
+                output_tok,
+                cached_input_tokens=cached_tok,
+                cache_creation_tokens=cache_write_tok,
+            )
             saved_7d = baseline_cost - actual_cost
 
             updates.append((saved_7d, rule_id))

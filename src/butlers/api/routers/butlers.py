@@ -555,6 +555,7 @@ async def _fetch_board_cost_today(pool: object, pricing: PricingConfig) -> float
                 stats.get("input_tokens", 0),
                 stats.get("output_tokens", 0),
                 cached_input_tokens=stats.get("cached_input_tokens", 0),
+                cache_creation_tokens=stats.get("cache_creation_tokens", 0),
                 context_tokens=stats.get("context_tokens"),
             )
         return total_cost

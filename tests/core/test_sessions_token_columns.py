@@ -12,7 +12,8 @@ import uuid
 import asyncpg
 import pytest
 
-from butlers.core.sessions import session_create
+from butlers.core.sessions import session_complete, session_create, sessions_summary
+from butlers.db import register_jsonb_codec
 from butlers.migrations import run_migrations
 
 # Skip all tests in this module if Docker is not available
@@ -71,6 +72,7 @@ async def pool_with_migrations(postgres_container):
         database=db_name,
         min_size=1,
         max_size=3,
+        init=register_jsonb_codec,
     )
     yield p
     await p.close()
@@ -152,3 +154,43 @@ class TestSessionTokenColumns:
             "SELECT parent_session_id FROM sessions WHERE id = $1", child_id
         )
         assert child_row["parent_session_id"] == parent_id
+
+    async def test_cache_token_columns_roundtrip_and_summary(self, pool_with_migrations):
+        """session_complete persists cache buckets; sessions_summary aggregates them.
+
+        Covers migration core_154 (cached_input_tokens / cache_creation_tokens
+        on sessions) end-to-end against real Postgres.
+        """
+        session_id = await session_create(
+            pool=pool_with_migrations,
+            prompt="Cache-heavy prompt",
+            trigger_source="external",
+            request_id=str(uuid.uuid4()),
+            model="claude-sonnet-4-6",
+        )
+        await session_complete(
+            pool=pool_with_migrations,
+            session_id=session_id,
+            output="done",
+            tool_calls=[],
+            duration_ms=1200,
+            success=True,
+            input_tokens=1_000,
+            output_tokens=500,
+            cached_input_tokens=40_000,
+            cache_creation_tokens=8_000,
+        )
+
+        row = await pool_with_migrations.fetchrow(
+            "SELECT cached_input_tokens, cache_creation_tokens FROM sessions WHERE id = $1",
+            session_id,
+        )
+        assert row["cached_input_tokens"] == 40_000
+        assert row["cache_creation_tokens"] == 8_000
+
+        summary = await sessions_summary(pool_with_migrations, "today")
+        assert summary["total_cached_input_tokens"] == 40_000
+        assert summary["total_cache_creation_tokens"] == 8_000
+        model_stats = summary["by_model"]["claude-sonnet-4-6"]
+        assert model_stats["cached_input_tokens"] == 40_000
+        assert model_stats["cache_creation_tokens"] == 8_000

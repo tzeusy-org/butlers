@@ -285,23 +285,15 @@ def _parse_opencode_output(
                     #   cache.write — tokens written to cache (first-time context)
                     #   total    — sum of all above
                     #
-                    # For authoritative input_tokens we must include cached
-                    # context — tokens.input alone drastically under-counts
-                    # (e.g. 63 vs 48,159 total for a single step).
+                    # Runtime usage contract (see base.py): input_tokens is
+                    # the UNCACHED bucket only; cache read/write are reported
+                    # separately so cost estimation can price each bucket at
+                    # its own rate. tokens.input maps to that directly.
                     step_out = tokens.get("output")
                     cache = tokens.get("cache")
                     cache_read = cache.get("read", 0) if isinstance(cache, dict) else 0
                     cache_write = cache.get("write", 0) if isinstance(cache, dict) else 0
-                    step_in_raw = tokens.get("input")
-
-                    # Full input = new tokens + cached context
-                    step_in: int | None = None
-                    if isinstance(step_in_raw, int):
-                        step_in = step_in_raw
-                        if isinstance(cache_read, int):
-                            step_in += cache_read
-                        if isinstance(cache_write, int):
-                            step_in += cache_write
+                    step_in = tokens.get("input")
 
                     if isinstance(step_in, int) or isinstance(step_out, int):
                         if usage is None:

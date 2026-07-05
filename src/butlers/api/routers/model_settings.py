@@ -30,7 +30,7 @@ import butlers.api.routers.audit as audit
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.pricing import ModelPricing, PricingConfig, TieredModelPricing
+from butlers.api.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
 from butlers.core.model_routing import resolve_model
 from butlers.core.runtimes.base import get_adapter
 from butlers.core.spawner import resolve_provider_config
@@ -249,10 +249,16 @@ class ModelTestResult(BaseModel):
 
 
 class ModelPricingResponse(BaseModel):
-    """Per-model pricing entry (USD per 1M tokens)."""
+    """Per-model pricing entry (USD per 1M tokens).
+
+    Cache fields are ``None`` when the model has no configured discount
+    (cache reads/writes then bill at the full input rate).
+    """
 
     input_per_million: float
     output_per_million: float
+    cached_input_per_million: float | None = None
+    cache_creation_per_million: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1513,18 +1519,29 @@ async def get_model_pricing(
         if entry is None:
             continue
 
+        rates: ModelPricing | PricingTier
         if isinstance(entry, TieredModelPricing):
             # Use the lowest tier (context_threshold=0)
-            tier = entry.tiers[0]
-            result[model_id] = ModelPricingResponse(
-                input_per_million=tier.input_price_per_token * 1_000_000,
-                output_per_million=tier.output_price_per_token * 1_000_000,
-            )
+            rates = entry.tiers[0]
         elif isinstance(entry, ModelPricing):
-            result[model_id] = ModelPricingResponse(
-                input_per_million=entry.input_price_per_token * 1_000_000,
-                output_per_million=entry.output_price_per_token * 1_000_000,
-            )
+            rates = entry
+        else:
+            continue
+
+        result[model_id] = ModelPricingResponse(
+            input_per_million=rates.input_price_per_token * 1_000_000,
+            output_per_million=rates.output_price_per_token * 1_000_000,
+            cached_input_per_million=(
+                rates.cached_input_price_per_token * 1_000_000
+                if rates.cached_input_price_per_token is not None
+                else None
+            ),
+            cache_creation_per_million=(
+                rates.cache_creation_price_per_token * 1_000_000
+                if rates.cache_creation_price_per_token is not None
+                else None
+            ),
+        )
 
     return ApiResponse[dict[str, ModelPricingResponse]](data=result)
 
