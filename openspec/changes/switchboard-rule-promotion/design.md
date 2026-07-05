@@ -35,11 +35,21 @@ Existing substrate this change composes on top of (all [Observed]):
 not `approval_rules`. Forcing this through the existing table means a
 polymorphic FK or a weakened integrity guarantee on a working, unrelated
 schema. A sibling table (`switchboard.rule_promotion_suggestions`) with the
-same lifecycle shape (`pending_review → confirmed|dismissed|superseded|
-demoted`) gets the reuse benefit (one mental model, one dashboard surface
-pattern) without contorting the existing autonomy ladder. Trade-off accepted:
-two suggestion tables exist in the system rather than one generalized table;
-judged worth it to avoid a cross-domain polymorphic FK.
+same lifecycle shape (`pending_review → confirmed|dismissed|superseded`)
+gets the reuse benefit (one mental model, one dashboard surface pattern)
+without contorting the existing autonomy ladder. Promotion and demotion
+share that one lifecycle rather than forking it: they are distinguished by a
+`suggestion_kind` discriminator column (`promotion` | `demotion`, shipped in
+sw_020, tied to column population by a kind-shape CHECK constraint) instead
+of folding a rule-outcome value like `demoted` into `status` — a promotion
+suggestion is never itself "demoted"; a *rule* gets demoted as the side
+effect of confirming a demotion-kind suggestion (see spec.md "Requirement:
+Rule Promotion Suggestion Data Model"). `superseded` remains reserved
+`status` vocabulary with no trigger condition defined by any bead so far;
+pinning that down is tracked separately (bu-2djc4), not decided here.
+Trade-off accepted: two suggestion tables exist in the system rather than
+one generalized table; judged worth it to avoid a cross-domain polymorphic
+FK.
 
 **D2 — Verdict mining substrate is a new table, not a `routing_log` extension.**
 `switchboard.routing_log` records `route.execute` dispatches but has no

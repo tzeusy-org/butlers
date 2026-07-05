@@ -127,26 +127,72 @@ qualify.
 ### Requirement: Rule Promotion Suggestion Data Model
 
 The `switchboard.rule_promotion_suggestions` table MUST exist with columns:
-`id` (UUID PK), `sender_key` (TEXT), `source_channel` (TEXT),
-`proposed_rule_type` (TEXT, `sender_address` or `sender_domain`),
-`proposed_condition` (JSONB), `proposed_action` (TEXT), `evidence_count`
-(INTEGER), `first_evidence_at` / `last_evidence_at` (TIMESTAMPTZ),
-`is_clearly_automated` (BOOLEAN, default FALSE), `status` (TEXT, one of
-`pending_review`, `confirmed`, `dismissed`, `superseded`, `demoted`),
-`created_rule_id` (UUID, nullable, FK to `ingestion_rules`),
-`dismissal_reason` (TEXT, nullable), `cooldown_until` (TIMESTAMPTZ, nullable),
-`created_at` / `decided_at` (TIMESTAMPTZ), `decided_by` (TEXT, nullable).
+`id` (UUID PK), `suggestion_kind` (TEXT, one of `promotion`, `demotion` —
+discriminates the kind of suggestion independent of its lifecycle `status`),
+`sender_key` (TEXT, nullable), `source_channel` (TEXT, nullable),
+`proposed_rule_type` (TEXT, nullable, `sender_address` or `sender_domain`),
+`proposed_condition` (JSONB, nullable), `proposed_action` (TEXT, nullable),
+`evidence_count` (INTEGER), `first_evidence_at` / `last_evidence_at`
+(TIMESTAMPTZ), `is_clearly_automated` (BOOLEAN, default FALSE), `status`
+(TEXT, one of `pending_review`, `confirmed`, `dismissed`, `superseded` — a
+pure suggestion lifecycle, identical in shape for both `suggestion_kind`
+values; see "Scenario: `superseded` has no defined trigger yet" below),
+`target_rule_id` (UUID, nullable, FK to `ingestion_rules`; the existing rule
+a `demotion` suggestion proposes to revoke), `created_rule_id` (UUID,
+nullable, FK to `ingestion_rules`; the *new* rule minted when a `promotion`
+suggestion is confirmed — deliberately distinct from `target_rule_id`),
+`dismissal_reason` (TEXT, nullable), `cooldown_until` (TIMESTAMPTZ,
+nullable), `created_at` / `decided_at` (TIMESTAMPTZ), `decided_by` (TEXT,
+nullable).
+
+A CHECK constraint MUST tie `suggestion_kind` to column population: a
+`promotion` row MUST have non-empty `sender_key`, `source_channel`,
+`proposed_rule_type`, `proposed_condition`, and `proposed_action`, and
+`target_rule_id` MUST be NULL; a `demotion` row MUST have `target_rule_id`
+set and `proposed_rule_type`, `proposed_condition`, and `proposed_action`
+MUST all be NULL. Empty-string values for `sender_key`, `source_channel`,
+and `proposed_action` MUST be rejected by the same constraint as NULL — an
+empty string is just as vacuous as no value for these required
+identity/action fields.
 
 A unique partial index MUST exist on `(sender_key, source_channel) WHERE
-status = 'pending_review'` so at most one pending suggestion can exist per
-sender/channel at a time.
+status = 'pending_review' AND suggestion_kind = 'promotion'` so at most one
+pending promotion suggestion can exist per sender/channel at a time. A
+separate unique partial index MUST exist on `target_rule_id WHERE status =
+'pending_review' AND suggestion_kind = 'demotion'` so at most one pending
+demotion suggestion can exist per rule at a time.
 
-#### Scenario: Table enforces one pending suggestion per sender/channel
+#### Scenario: Table enforces one pending promotion suggestion per sender/channel
 
-- **WHEN** the promotion trigger attempts to create a second `pending_review`
-  suggestion for a `(sender_key, source_channel)` pair that already has one
+- **WHEN** the promotion trigger attempts to create a second `pending_review`,
+  `suggestion_kind='promotion'` suggestion for a `(sender_key,
+  source_channel)` pair that already has one
 - **THEN** the unique partial index MUST prevent the duplicate insert, and the
   trigger's upsert path MUST update the existing row instead
+
+#### Scenario: Table enforces one pending demotion suggestion per rule
+
+- **WHEN** an attempt is made to create a second `pending_review`,
+  `suggestion_kind='demotion'` suggestion for a `target_rule_id` that already
+  has one
+- **THEN** the unique partial index MUST prevent the duplicate insert
+
+#### Scenario: Kind-shape CHECK rejects a malformed row
+
+- **WHEN** an insert attempts `suggestion_kind='promotion'` with
+  `target_rule_id` set, or with `sender_key`, `source_channel`, or
+  `proposed_action` NULL or an empty string
+- **THEN** the CHECK constraint MUST reject the insert
+
+#### Scenario: `superseded` has no defined trigger yet
+
+- **WHEN** any currently-specified flow (promotion trigger, confirm, dismiss,
+  or demotion spot-check) runs to completion
+- **THEN** no suggestion's `status` MUST be set to `superseded` —
+  `superseded` is reserved, CHECK-accepted vocabulary with no trigger
+  condition defined by this spec; defining that trigger is tracked
+  separately (bu-2djc4) and MUST NOT be inferred or implemented ahead of
+  that decision
 
 ### Requirement: Clearly-Automated Sender Classification
 
@@ -245,9 +291,10 @@ event is being routed through the LLM instead of bypassed.
 The system SHALL maintain a rolling per-rule agreement score over the most
 recent 20 spot-checks. When the agreement score for a rule drops below a
 configurable threshold (default 90%), the system MUST create a
-`rule_promotion_suggestions` row (or equivalent demotion record) proposing
-revocation of that rule, surfaced through the same dashboard suggestions
-surface as promotion suggestions. Demotion MUST require the same
+`rule_promotion_suggestions` row with `suggestion_kind='demotion'` and
+`target_rule_id` set to the rule under scrutiny, proposing revocation of
+that rule, surfaced through the same dashboard suggestions surface as
+promotion suggestions. Demotion MUST require the same
 owner-confirmed action as promotion — the system MUST NOT auto-disable a
 promoted rule based on spot-check disagreement alone.
 
