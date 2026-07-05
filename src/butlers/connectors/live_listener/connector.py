@@ -185,6 +185,11 @@ class LiveListenerConnector:
         self._health_thread: Thread | None = None
         self._health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", str(DEFAULT_HEALTH_PORT)))
 
+        # Discretion dispatcher: built in start() once a DB pool is available;
+        # kept as an attribute so get_health_state()/the /health endpoint can
+        # surface auth health (bu-ur7go) without threading it separately.
+        self._discretion_dispatcher: DiscretionDispatcher | None = None
+
         # Heartbeat
         self._heartbeat: ConnectorHeartbeat | None = None
 
@@ -212,6 +217,7 @@ class LiveListenerConnector:
             if self._db_pool is not None
             else None
         )
+        self._discretion_dispatcher = discretion_dispatcher
         for spec in self._config.devices:
             mic = spec.name
 
@@ -677,6 +683,16 @@ class LiveListenerConnector:
         if degraded_parts:
             return "degraded", ", ".join(degraded_parts)
 
+        if self._discretion_dispatcher is not None:
+            auth_health = self._discretion_dispatcher.get_auth_health()
+            if auth_health["status"] == "degraded":
+                return (
+                    "degraded",
+                    "discretion auth degraded: "
+                    f"runtime={auth_health['runtime_type']} "
+                    f"auth_file_present={auth_health['auth_file_present']}",
+                )
+
         # All healthy — build positive status message
         health_parts = [f"mic:{s.mic_name}=healthy" for s in states]
         return "healthy", ", ".join(health_parts)
@@ -694,12 +710,15 @@ class LiveListenerConnector:
         @app.get("/health")
         async def health() -> dict[str, Any]:
             state, error_message = connector.get_health_state()
-            return {
+            body: dict[str, Any] = {
                 "status": state,
                 "error_message": error_message,
                 "uptime_s": int(time.monotonic() - connector._start_time),
                 "timestamp": datetime.now(UTC).isoformat(),
             }
+            if connector._discretion_dispatcher is not None:
+                body["discretion_auth"] = connector._discretion_dispatcher.get_auth_health()
+            return body
 
         @app.get("/metrics")
         async def metrics() -> bytes:

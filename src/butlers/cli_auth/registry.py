@@ -189,3 +189,13 @@ _register(
         # Health probing is done via key-format validation in health.py.
     )
 )
+
+
+def providers_for_runtime(runtime_type: str) -> list[CLIAuthProviderDef]:
+    """Return all registered CLI auth providers for a given runtime adapter name.
+
+    A runtime (e.g. ``"opencode"``) may have more than one provider registered
+    against it (device-code login vs. an api_key entry sharing the same
+    on-disk token file), so this returns a list rather than a single match.
+    """
+    return [p for p in PROVIDERS.values() if p.runtime == runtime_type]

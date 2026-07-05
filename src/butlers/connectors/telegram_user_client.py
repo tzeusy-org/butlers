@@ -585,6 +585,16 @@ class TelegramUserClientConnector:
         if not self._telegram_client.is_connected():
             return ("error", "Telegram client disconnected")
 
+        if self._discretion_dispatcher is not None:
+            auth_health = self._discretion_dispatcher.get_auth_health()
+            if auth_health["status"] == "degraded":
+                return (
+                    "degraded",
+                    "discretion auth degraded: "
+                    f"runtime={auth_health['runtime_type']} "
+                    f"auth_file_present={auth_health['auth_file_present']}",
+                )
+
         return ("healthy", None)
 
     def _get_checkpoint(self) -> tuple[str | None, datetime | None]:

@@ -42,10 +42,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
+from datetime import UTC, datetime
+from typing import Any
 
 import asyncpg
+from prometheus_client import Counter
 
+from butlers.cli_auth.registry import providers_for_runtime
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
@@ -61,6 +66,18 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CONCURRENT: int = 4
 _DEFAULT_TIMEOUT_S: float = 30.0
+
+# bu-ur7go: discretion calls that fail with a provider/auth error (e.g. a
+# never-provisioned or revoked ~/.codex/auth.json — see bu-ofo3i) previously
+# vanished into the generic fail-open/fail-closed path with zero operator
+# visibility. This counter is exported on the same /metrics surface as
+# discretion_evaluations_total so a sustained run of auth failures is
+# observable without grepping connector logs.
+discretion_auth_failures_total = Counter(
+    "discretion_auth_failures_total",
+    "Total discretion LLM calls that failed with a provider/auth error, by runtime_type",
+    labelnames=["runtime_type"],
+)
 
 # Hard cap on same-tier failover attempts per call() — a defensive backstop
 # against unbounded looping, mirroring Spawner._run()'s _MAX_FAILOVER_ATTEMPTS.
@@ -140,6 +157,14 @@ class DiscretionDispatcher:
         # per-call identity= label) so per-connector identities (one per
         # Telegram chat, etc.) never blow up metric cardinality.
         self._metrics = ButlerMetrics(butler_name=butler_name)
+
+        # bu-ur7go: reactive auth-health bookkeeping, updated from real call()
+        # outcomes so connector /status can report it without an extra DB
+        # round-trip or subprocess/network probe (see get_auth_health()).
+        self._last_runtime_type: str | None = None
+        self._last_success_at: float | None = None
+        self._last_auth_failure_at: float | None = None
+        self._last_auth_failure_reason: str | None = None
 
     def _get_or_create_adapter(
         self,
@@ -275,6 +300,7 @@ class DiscretionDispatcher:
 
         while True:
             attempt_count += 1
+            self._last_runtime_type = runtime_type
 
             # Pre-call quota check: block if catalog entry token budget is exhausted.
             # Quota exhaustion is not retried across same-tier candidates here — it
@@ -364,6 +390,7 @@ class DiscretionDispatcher:
                         )
 
             if attempt_exc is None:
+                self._last_success_at = time.time()
                 return result
 
             # Invocation failed: classify for same-tier failover eligibility.
@@ -374,6 +401,16 @@ class DiscretionDispatcher:
             decision = classify_failover_eligibility(
                 FailoverContext(exception=attempt_exc, process_info=adapter.last_process_info)
             )
+
+            # bu-ur7go: a provider/auth-classified failure (e.g. a missing or
+            # revoked ~/.codex/auth.json — see bu-ofo3i) is recorded here
+            # regardless of failover eligibility so connector /status and
+            # discretion_auth_failures_total surface it instead of it
+            # disappearing into the generic fail-open/fail-closed path.
+            if decision.reason.startswith("provider_auth_error"):
+                self._last_auth_failure_at = time.time()
+                self._last_auth_failure_reason = decision.reason
+                discretion_auth_failures_total.labels(runtime_type=runtime_type).inc()
 
             if not decision.eligible:
                 logger.debug(
@@ -446,3 +483,76 @@ class DiscretionDispatcher:
             catalog_entry_id = next_catalog_entry_id
             session_timeout_s = next_session_timeout_s
             # Loop again with the updated candidate.
+
+    def get_auth_health(self) -> dict[str, Any]:
+        """Lightweight, synchronous auth-health snapshot for connector /status.
+
+        Deliberately cheap: no DB round-trip, no subprocess, no network call
+        (contrast with :func:`butlers.cli_auth.health.probe_provider`, which
+        does all three and is meant for the dashboard's on-demand CLI auth
+        probe, not a per-/status-poll check). Instead this reflects two
+        signals that cost nothing beyond an in-memory read and an
+        ``os.path.exists()`` stat:
+
+        - ``auth_file_present``: whether a device-code CLI auth provider is
+          registered for the runtime last resolved by :meth:`call` and its
+          on-disk token file exists. ``None`` when no such on-disk artifact
+          applies (runtime unresolved yet, or an api_key-mode provider with
+          no token file — e.g. Anthropic's env-var API key).
+        - ``last_discretion_success_at`` / ``last_auth_failure_at``: the most
+          recent real outcomes recorded by :meth:`call`, so a stale/revoked
+          token that still passes the file-presence check (see bu-ofo3i —
+          ``codex login status`` only inspects the file, not backend
+          validity) still surfaces once the next real call 401s.
+
+        Returns a dict with keys ``runtime_type``, ``auth_file_present``,
+        ``last_discretion_success_at``, ``last_auth_failure_at``, and
+        ``status`` (one of ``"ok"``, ``"degraded"``, ``"unknown"``).
+        ``"unknown"`` means no discretion call has been attempted yet and no
+        auth-file check applies — an idle connector must not be reported as
+        ``"ok"`` just because nothing has happened yet.
+        """
+        runtime_type = self._last_runtime_type
+        auth_file_present: bool | None = None
+
+        if runtime_type is not None:
+            candidates = [
+                provider
+                for provider in providers_for_runtime(runtime_type)
+                if provider.token_path is not None
+            ]
+            if candidates:
+                auth_file_present = any(
+                    provider.token_path.exists()  # type: ignore[union-attr]
+                    for provider in candidates
+                )
+
+        last_success_iso = (
+            datetime.fromtimestamp(self._last_success_at, UTC).isoformat()
+            if self._last_success_at is not None
+            else None
+        )
+        last_auth_failure_iso = (
+            datetime.fromtimestamp(self._last_auth_failure_at, UTC).isoformat()
+            if self._last_auth_failure_at is not None
+            else None
+        )
+
+        failure_is_current = self._last_auth_failure_at is not None and (
+            self._last_success_at is None or self._last_auth_failure_at > self._last_success_at
+        )
+
+        if auth_file_present is False or failure_is_current:
+            status = "degraded"
+        elif runtime_type is None and self._last_auth_failure_at is None:
+            status = "unknown"
+        else:
+            status = "ok"
+
+        return {
+            "runtime_type": runtime_type,
+            "auth_file_present": auth_file_present,
+            "last_discretion_success_at": last_success_iso,
+            "last_auth_failure_at": last_auth_failure_iso,
+            "status": status,
+        }

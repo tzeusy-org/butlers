@@ -1851,6 +1851,15 @@ class WhatsAppUserClientConnector:
             return ("error", "Connector not running")
         if self._bridge_manager is not None and self._bridge_manager.is_degraded:
             return ("degraded", self._bridge_manager.degraded_reason)
+        if self._discretion_dispatcher is not None:
+            auth_health = self._discretion_dispatcher.get_auth_health()
+            if auth_health["status"] == "degraded":
+                return (
+                    "degraded",
+                    "discretion auth degraded: "
+                    f"runtime={auth_health['runtime_type']} "
+                    f"auth_file_present={auth_health['auth_file_present']}",
+                )
         return ("healthy", None)
 
     def _get_checkpoint(self) -> tuple[str | None, datetime | None]:
@@ -1995,13 +2004,17 @@ async def _run_health_server(
 
             if path == b"/health" or path.startswith(b"/health?"):
                 state, error_msg = connector._get_health_state()
-                body_dict = {
+                body_dict: dict[str, Any] = {
                     "status": state,
                     "connector_type": "whatsapp_user_client",
                     "endpoint_identity": connector._config.endpoint_identity,
                 }
                 if error_msg:
                     body_dict["error"] = error_msg
+                if connector._discretion_dispatcher is not None:
+                    body_dict["discretion_auth"] = (
+                        connector._discretion_dispatcher.get_auth_health()
+                    )
                 body = json.dumps(body_dict).encode()
                 content_type = "application/json"
                 http_status = "200 OK"

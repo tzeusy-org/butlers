@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
+from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef, providers_for_runtime
 from butlers.cli_auth.session import CLIAuthSession, _strip_ansi, clear_sessions, store_session
 
 # ---------------------------------------------------------------------------
@@ -24,6 +24,22 @@ def test_claude_provider_properties():
     assert p.display_name == "Claude (Anthropic)"
     assert p.binary_name == "claude"
     assert p.token_path is None
+
+
+def test_providers_for_runtime_returns_matching_providers_only():
+    """providers_for_runtime (bu-ur7go) filters PROVIDERS by .runtime, used by
+    DiscretionDispatcher.get_auth_health() to find the on-disk auth artifact
+    for a resolved model-catalog runtime_type without hardcoding provider
+    names."""
+    codex_providers = providers_for_runtime("codex")
+    assert [p.name for p in codex_providers] == ["codex"]
+
+    # "opencode" has two registered providers (device-code + api_key) sharing
+    # the same on-disk auth.json.
+    opencode_providers = providers_for_runtime("opencode")
+    assert {p.name for p in opencode_providers} == {"opencode-openai", "opencode-go"}
+
+    assert providers_for_runtime("no-such-runtime") == []
 
 
 # ---------------------------------------------------------------------------

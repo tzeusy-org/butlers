@@ -1103,3 +1103,60 @@ async def test_sse_event_loop_retries_pending_identity_resolution_on_each_pass(
     await connector._sse_event_loop()
 
     assert connector._config.endpoint_identity == "whatsapp:+12025551234"
+
+
+# ---------------------------------------------------------------------------
+# Discretion auth health surfaced on /status (bu-ur7go)
+# ---------------------------------------------------------------------------
+
+
+def test_get_health_state_degrades_on_discretion_auth_failure(
+    owner_connector: WhatsAppUserClientConnector,
+) -> None:
+    """A degraded discretion auth-health snapshot must surface as an overall
+    "degraded" connector health state, not stay silent behind bridge/socket
+    checks alone (bu-ofo3i: /status reported healthy while every discretion
+    call 401'd)."""
+    owner_connector._running = True
+    owner_connector._bridge_manager = None
+    assert owner_connector._discretion_dispatcher is not None
+    owner_connector._discretion_dispatcher.get_auth_health = MagicMock(
+        return_value={
+            "runtime_type": "codex",
+            "auth_file_present": False,
+            "last_discretion_success_at": None,
+            "last_auth_failure_at": "2026-07-06T00:00:00+00:00",
+            "status": "degraded",
+        }
+    )
+
+    state, error_msg = owner_connector._get_health_state()
+
+    assert state == "degraded"
+    assert error_msg is not None
+    assert "discretion auth degraded" in error_msg
+    assert "codex" in error_msg
+
+
+def test_get_health_state_healthy_when_discretion_auth_ok(
+    owner_connector: WhatsAppUserClientConnector,
+) -> None:
+    """A healthy discretion auth-health snapshot must not force a degraded
+    overall state."""
+    owner_connector._running = True
+    owner_connector._bridge_manager = None
+    assert owner_connector._discretion_dispatcher is not None
+    owner_connector._discretion_dispatcher.get_auth_health = MagicMock(
+        return_value={
+            "runtime_type": "codex",
+            "auth_file_present": True,
+            "last_discretion_success_at": "2026-07-06T00:00:00+00:00",
+            "last_auth_failure_at": None,
+            "status": "ok",
+        }
+    )
+
+    state, error_msg = owner_connector._get_health_state()
+
+    assert state == "healthy"
+    assert error_msg is None

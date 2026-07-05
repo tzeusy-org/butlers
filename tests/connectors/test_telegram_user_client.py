@@ -419,3 +419,58 @@ async def test_missing_message_date_does_not_record(
         await owner_connector._record_owner_outbound_if_applicable(msg)
 
     mock_record.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Discretion auth health surfaced on /status (bu-ur7go)
+# ---------------------------------------------------------------------------
+
+
+def test_get_health_state_degrades_on_discretion_auth_failure(
+    owner_connector: TelegramUserClientConnector,
+) -> None:
+    """A degraded discretion auth-health snapshot must surface as an overall
+    "degraded" connector health state (bu-ofo3i: /status reported healthy
+    while every discretion call 401'd)."""
+    owner_connector._telegram_client = MagicMock()
+    owner_connector._telegram_client.is_connected.return_value = True
+    assert owner_connector._discretion_dispatcher is not None
+    owner_connector._discretion_dispatcher.get_auth_health = MagicMock(
+        return_value={
+            "runtime_type": "codex",
+            "auth_file_present": False,
+            "last_discretion_success_at": None,
+            "last_auth_failure_at": "2026-07-06T00:00:00+00:00",
+            "status": "degraded",
+        }
+    )
+
+    state, error_msg = owner_connector._get_health_state()
+
+    assert state == "degraded"
+    assert error_msg is not None
+    assert "discretion auth degraded" in error_msg
+
+
+def test_get_health_state_healthy_when_discretion_auth_ok(
+    owner_connector: TelegramUserClientConnector,
+) -> None:
+    """A healthy discretion auth-health snapshot must not force a degraded
+    overall state."""
+    owner_connector._telegram_client = MagicMock()
+    owner_connector._telegram_client.is_connected.return_value = True
+    assert owner_connector._discretion_dispatcher is not None
+    owner_connector._discretion_dispatcher.get_auth_health = MagicMock(
+        return_value={
+            "runtime_type": "codex",
+            "auth_file_present": True,
+            "last_discretion_success_at": "2026-07-06T00:00:00+00:00",
+            "last_auth_failure_at": None,
+            "status": "ok",
+        }
+    )
+
+    state, error_msg = owner_connector._get_health_state()
+
+    assert state == "healthy"
+    assert error_msg is None
