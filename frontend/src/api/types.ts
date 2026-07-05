@@ -7600,6 +7600,15 @@ export interface SecretsSystemRaw {
    * backends (treat missing as false).
    */
   read_only?: boolean;
+  /**
+   * Statically known consumers of this key (bu-xzaxm) — e.g. the email
+   * module for BUTLER_EMAIL_ADDRESS. Sourced from a hand-maintained
+   * key->consumer map in secrets_v2.py, not runtime tracing. Empty/absent
+   * means "no known consumer in the static map", NEVER "verified nobody
+   * depends on this" — the frontend must render that as "usage not
+   * tracked", not a confident all-clear. May be absent on older backends.
+   */
+  used_by?: string[];
 }
 
 /**

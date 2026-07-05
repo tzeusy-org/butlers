@@ -5,7 +5,10 @@
 // Coverage:
 //   - Loading state renders "loading…"
 //   - Error state renders "unavailable"
-//   - Empty catalogue renders Voice italic empty state
+//   - Empty catalogue renders "usage not tracked" (bu-xzaxm honesty fix — an
+//     empty catalogue result is a coverage gap, never a verified "nothing
+//     depends on this credential")
+//   - meta.catalogue_available === false renders the same "unavailable" state
 //   - Entries are rendered sorted by severity DESC (high → medium → low)
 //   - WhatBreaks fetches from /api/secrets/breaks-catalogue (mocked)
 //   - High-severity entries appear before medium, medium before low
@@ -14,8 +17,8 @@
 // and vi.mock to stub getBreaksCatalogue.
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi, beforeEach } from "vitest"
-import { render, screen, waitFor } from "@testing-library/react"
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest"
+import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import * as React from "react"
 
@@ -37,10 +40,13 @@ const mockGetBreaksCatalogue = vi.mocked(getBreaksCatalogue)
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function makeApiResponse(entries: BreakEntry[]): ApiResponse<BreakEntry[]> {
+function makeApiResponse(
+  entries: BreakEntry[],
+  meta: ApiResponse<BreakEntry[]>["meta"] = {},
+): ApiResponse<BreakEntry[]> {
   return {
     data: entries,
-    meta: {},
+    meta,
   }
 }
 
@@ -83,6 +89,13 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
+// This suite's new not-tracked/unavailable pair (bu-xzaxm) queries the whole
+// document by exact text, so a prior test's un-unmounted render would leak
+// into the next assertion — explicit cleanup keeps each `it` isolated.
+afterEach(() => {
+  cleanup()
+})
+
 describe("WhatBreaks: loading state", () => {
   it("renders loading… while fetching", () => {
     // Never resolves — stays in loading state
@@ -103,12 +116,24 @@ describe("WhatBreaks: error state", () => {
 })
 
 describe("WhatBreaks: empty catalogue", () => {
-  it("renders empty-state voice text when no entries", async () => {
+  it("renders 'usage not tracked' (never a confident 'nothing depends') when no entries", async () => {
     mockGetBreaksCatalogue.mockResolvedValue(makeApiResponse([]))
     renderWithQuery(<WhatBreaks provider="google" />)
     await waitFor(() => {
-      expect(screen.getByText("Nothing depends on this credential.")).toBeTruthy()
+      expect(screen.getByText("usage not tracked")).toBeTruthy()
     })
+    expect(screen.queryByText("Nothing depends on this credential.")).toBeNull()
+  })
+
+  it("renders 'unavailable' (not 'usage not tracked') when meta.catalogue_available is false", async () => {
+    mockGetBreaksCatalogue.mockResolvedValue(
+      makeApiResponse([], { catalogue_available: false }),
+    )
+    renderWithQuery(<WhatBreaks provider="google" />)
+    await waitFor(() => {
+      expect(screen.getByText("unavailable")).toBeTruthy()
+    })
+    expect(screen.queryByText("usage not tracked")).toBeNull()
   })
 })
 

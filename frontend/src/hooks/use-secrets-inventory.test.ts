@@ -470,3 +470,66 @@ describe("adaptInventoryResponse: shared-public target routing", () => {
     expect(matching[0].target).toBe("shared-public");
   });
 });
+
+// ---------------------------------------------------------------------------
+// adaptSystemCredential: usedBy (bu-xzaxm)
+//
+// The adapter used to hardcode usedBy: [] for every system row regardless of
+// what the backend sent, which the passport page rendered as a confident
+// "nobody yet" / "Nothing depends on this credential." even for keys read on
+// every request (e.g. BUTLER_EMAIL_ADDRESS). raw.used_by is now threaded
+// through so the backend's static key->consumer map actually reaches the UI.
+// ---------------------------------------------------------------------------
+
+describe("adaptInventoryResponse: system credential usedBy", () => {
+  it("threads raw.used_by through instead of hardcoding []", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({
+          key: "BUTLER_EMAIL_ADDRESS",
+          state: "shared",
+          used_by: ["email"],
+        }),
+      ],
+      user: [],
+      identities: [],
+    });
+    expect(result.system[0].usedBy).toEqual(["email"]);
+  });
+
+  it("defaults to [] (not-tracked, never a fabricated value) when raw.used_by is absent", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [makeSystem({ key: "SOME_UNTRACKED_KEY", state: "shared" })],
+      user: [],
+      identities: [],
+    });
+    expect(result.system[0].usedBy).toEqual([]);
+  });
+
+  it("unions used_by across merged rows for the same key", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({
+          key: "SHARED_KEY",
+          state: "ok",
+          butler: "shared-public",
+          used_by: ["email"],
+        }),
+        makeSystem({
+          key: "SHARED_KEY",
+          state: "warn",
+          butler: "shared-public",
+          used_by: ["telegram"],
+        }),
+      ],
+      user: [],
+      identities: [],
+    });
+    const matching = result.system.filter((c) => c.key === "SHARED_KEY");
+    expect(matching).toHaveLength(1);
+    expect(matching[0].usedBy.sort()).toEqual(["email", "telegram"]);
+  });
+});

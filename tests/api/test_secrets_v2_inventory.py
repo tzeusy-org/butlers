@@ -44,6 +44,7 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.routers.secrets_v2 import (
+    _SYSTEM_KEY_USED_BY,
     DEFAULT_EXPIRING_LEAD_TIME,
     _dedupe_most_severe,
     _derive_state,
@@ -65,6 +66,7 @@ from butlers.api.routers.secrets_v2 import (
     _is_missing_secrets_schema_error,
     _row_to_test_result,
     _unverified_count,
+    _used_by_for_key,
 )
 
 pytestmark = pytest.mark.unit
@@ -533,6 +535,64 @@ def test_inventory_shared_pool_cli_rows_excluded_from_system_family():
     assert "cli-token" not in system_keys
     # The CLI token is present exactly once, in the cli family.
     assert any(row["key"] == "cli-token" for row in body["data"]["cli"])
+
+
+# ---------------------------------------------------------------------------
+# used_by static key->consumer map (bu-xzaxm)
+#
+# The passport's "used by" band used to render a confident "nobody yet" for
+# every system credential because the frontend adapter hardcoded usedBy: []
+# — the inventory response never even had a used_by field to read. These
+# tests cover the new static map and its threading into SystemSecret rows.
+# ---------------------------------------------------------------------------
+
+
+def test_used_by_for_key_known_key_returns_static_consumers():
+    """A key present in _SYSTEM_KEY_USED_BY resolves to its known consumers."""
+    assert _used_by_for_key("BUTLER_EMAIL_ADDRESS") == ["email"]
+    assert _used_by_for_key("BUTLER_TELEGRAM_TOKEN") == ["telegram"]
+
+
+def test_used_by_for_key_unknown_key_returns_empty_list():
+    """An untracked key returns [], never a fabricated guess.
+
+    Empty means "no known consumer in the static map" — the frontend must
+    render that as "usage not tracked", never a verified "nobody depends on
+    this credential".
+    """
+    assert _used_by_for_key("SOME_RANDOM_KEY_NOT_IN_THE_MAP") == []
+
+
+def test_system_key_used_by_map_values_are_non_empty_tuples():
+    """Every map entry names at least one real consumer (no empty placeholders)."""
+    for key, consumers in _SYSTEM_KEY_USED_BY.items():
+        assert consumers, f"{key} maps to an empty consumer tuple"
+
+
+def test_inventory_populates_used_by_for_known_key():
+    """GET /api/secrets/inventory threads the static map into used_by."""
+    row = _make_system_row(key="BUTLER_EMAIL_ADDRESS", value="bot@example.com")
+    mock_db = _make_db_manager(butler_names=["messenger"], system_rows=[row])
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    system = {r["key"]: r for r in resp.json()["data"]["system"]}
+    assert system["BUTLER_EMAIL_ADDRESS"]["used_by"] == ["email"]
+
+
+def test_inventory_used_by_empty_for_untracked_key():
+    """An untracked key gets used_by=[] — not a fabricated guess.
+
+    Empty must never be read as "verified nobody depends on this" — see
+    SystemSecret.used_by's docstring.
+    """
+    row = _make_system_row(key="SOME_UNTRACKED_KEY", value="v1")
+    mock_db = _make_db_manager(butler_names=["messenger"], system_rows=[row])
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+    system = {r["key"]: r for r in resp.json()["data"]["system"]}
+    assert system["SOME_UNTRACKED_KEY"]["used_by"] == []
 
 
 # ---------------------------------------------------------------------------

@@ -1919,7 +1919,11 @@ export function PageSystem({
             <Mono size={9} upper tracking="0.14em" color="var(--dim)">used by</Mono>
             <div className="flex gap-3 flex-wrap mt-1.5">
               {credential.usedBy.length === 0 && (
-                <Mono size={11} color="var(--dim)">nobody yet</Mono>
+                // Honesty (bu-xzaxm): an empty usedBy list means the backend's
+                // static key->consumer map has no entry for this key — never
+                // a verified "nobody depends on this". Never render a
+                // confident all-clear here.
+                <Mono size={11} color="var(--dim)">usage not tracked</Mono>
               )}
               {credential.usedBy[0] === "*" && (
                 <span
@@ -1998,11 +2002,11 @@ export function PageSystem({
                 <ActionArrow href={`/audit-log?key=s:${credential.key}`}>
                   /audit?key={credential.key}
                 </ActionArrow>
-                {credential.usedBy.length > 0 && credential.usedBy[0] !== "*" && (
-                  <ActionArrow href={`/butlers/${credential.usedBy[0]}`}>
-                    /butlers/{credential.usedBy[0]}
-                  </ActionArrow>
-                )}
+                {/* No "/butlers/{slug}" cross-ref here (bu-xzaxm): usedBy for
+                    system credentials names a module/subsystem consumer
+                    (e.g. "email", "oauth", "blob_storage"), never a butler
+                    slug — see _SYSTEM_KEY_USED_BY's docstring. Linking to
+                    /butlers/{usedBy[0]} would 404 for every real entry. */}
               </>
             ),
           },

@@ -122,6 +122,13 @@ export interface SystemCredential {
   source: string;
   target: string;
   lastVerified: string | null;
+  /**
+   * Statically known consumers of this key (bu-xzaxm) — e.g. ["email"] for
+   * BUTLER_EMAIL_ADDRESS. Empty means "no known consumer in the backend's
+   * static map", NEVER "verified nobody depends on this credential" — the
+   * "used by" band must render that distinction as "usage not tracked",
+   * not a confident "nobody yet".
+   */
   usedBy: string[];
   breaks: BreakEntry[];
   test: TestResult | null;

@@ -269,7 +269,10 @@ function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
     source:       rowState === "shared" ? raw.butler : "",
     target:       mutationTarget,
     lastVerified: raw.last_verified ?? null,
-    usedBy:       [],
+    // Real (bu-xzaxm): statically known consumers from the backend's
+    // key->consumer map. Empty means "not tracked", never "verified unused"
+    // — see SystemCredential.usedBy and the "used by" band's rendering.
+    usedBy:       raw.used_by ?? [],
     breaks:       [],
     test:         adaptProbeResult(raw.test),
     // Real (bu-6v1hx): last few public.audit_log rows for this credential.

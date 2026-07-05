@@ -286,6 +286,11 @@ class SystemSecret(BaseModel):
     # target="shared-public"; the passport renders the generic editor for them.
     # Reserved for future use (e.g. externally-managed secrets).
     read_only: bool = False
+    # Statically known consumers of this key (bu-xzaxm), from
+    # _SYSTEM_KEY_USED_BY. Empty means "no known consumer in the static map",
+    # NOT "verified nobody reads this" — the frontend must render that
+    # distinction honestly (never a confident "nothing depends on this").
+    used_by: list[str] = Field(default_factory=list)
 
 
 class UserSecret(BaseModel):
@@ -452,8 +457,9 @@ class SystemSecretDetail(BaseModel):
     # Timestamps
     last_verified: datetime | None = None
 
-    # Dependents (not yet persisted)
-    used_by: list[str] = Field(default_factory=list)  # butler names
+    # Statically known consumers (bu-xzaxm) — see _SYSTEM_KEY_USED_BY. Empty
+    # means "no known consumer in the static map", not "verified unused".
+    used_by: list[str] = Field(default_factory=list)
 
     # Evidence
     breaks: list[dict] = Field(default_factory=list)  # BreakEntry[]
@@ -1062,6 +1068,62 @@ def _is_missing_secrets_schema_error(exc: Exception) -> bool:
     return "does not exist" in msg and ("relation" in msg or "table" in msg)
 
 
+# ---------------------------------------------------------------------------
+# Static key -> consumer map (bu-xzaxm)
+#
+# The passport's "used by" band previously hardcoded every system credential
+# to usedBy=[] (frontend/src/hooks/use-secrets-inventory.ts adaptSystemCredential),
+# which rendered as a confident "nobody yet" / "Nothing depends on this
+# credential." even for keys read on every request (e.g. BUTLER_EMAIL_ADDRESS
+# on every send). Runtime dependency tracing does not exist, but *which code
+# reads a given key* is statically known from the module/core source that
+# calls CredentialStore.resolve()/os.environ for it — this map records that,
+# by hand, for the keys currently known to be read somewhere in this repo.
+#
+# This is NOT a dynamic per-butler enablement graph (it does not know which
+# butlers have the consuming module turned on) — entries name the *consumer*
+# (a module name, or a core subsystem for infra that isn't a module), not a
+# butler. Keep this in sync when a module's default env var name changes;
+# an entry going stale just means a key silently reverts to "not tracked",
+# never a false positive.
+#
+# Absence of a key here means "no known consumer in this map" and must never
+# be read as "verified nobody depends on this" — see SystemSecret.used_by.
+# ---------------------------------------------------------------------------
+_SYSTEM_KEY_USED_BY: dict[str, tuple[str, ...]] = {
+    # Email module bot-scope credentials (EmailBotCredentialsConfig defaults,
+    # modules/email.py) — read on every email_send_message / IMAP poll.
+    # Butler.toml can override the env var name via address_env/password_env,
+    # so this only covers the conventional default key names.
+    "BUTLER_EMAIL_ADDRESS": ("email",),
+    "BUTLER_EMAIL_PASSWORD": ("email",),
+    # Telegram module bot-scope credential (TelegramBotCredentialsConfig
+    # default, modules/telegram.py).
+    "BUTLER_TELEGRAM_TOKEN": ("telegram",),
+    # S3-compatible blob storage — core infra wired at butler startup
+    # (lifecycle.py, api/routers/blob_storage.py), not a single opt-in module.
+    "BLOB_S3_ENDPOINT_URL": ("blob_storage",),
+    "BLOB_S3_BUCKET": ("blob_storage",),
+    "BLOB_S3_REGION": ("blob_storage",),
+    "BLOB_S3_ACCESS_KEY_ID": ("blob_storage",),
+    "BLOB_S3_SECRET_ACCESS_KEY": ("blob_storage",),
+    # Google OAuth app-level client credentials — core OAuth infra
+    # (google_credentials.py, api/routers/oauth.py, modules/calendar.py),
+    # not scoped to a single module.
+    "GOOGLE_OAUTH_CLIENT_ID": ("oauth",),
+    "GOOGLE_OAUTH_CLIENT_SECRET": ("oauth",),
+}
+
+
+def _used_by_for_key(key: str) -> list[str]:
+    """Return the statically known consumers of a system credential key.
+
+    Empty means "not tracked in the static map", never "verified unused" —
+    see _SYSTEM_KEY_USED_BY's module docstring.
+    """
+    return list(_SYSTEM_KEY_USED_BY.get(key, ()))
+
+
 async def _fetch_system_secrets(
     pool: Any,
     butler_name: str,
@@ -1154,6 +1216,7 @@ async def _fetch_system_secrets(
                 test=probe_map.get(row["secret_key"]),
                 audit=audit_map.get(normalize_credential_key("system", row["secret_key"]), []),
                 read_only=read_only,
+                used_by=_used_by_for_key(row["secret_key"]),
             )
         )
 
@@ -1942,6 +2005,7 @@ async def _fetch_single_system_secret(
         row_state="shared",
         source=butler_name,
         last_verified=row["last_verified"],
+        used_by=_used_by_for_key(row["secret_key"]),
         test=test,
         butler=butler_name,
     )
