@@ -76,6 +76,17 @@ async def record_approval_event(
     event_time = occurred_at if occurred_at is not None else datetime.now(UTC)
     event_metadata = metadata or {}
 
+    # Sanitize into a fully JSON-safe dict (UUID/datetime -> str) via a
+    # json.dumps/loads round-trip, then bind the resulting DICT directly (no
+    # second json.dumps): every asyncpg pool in this codebase registers
+    # register_jsonb_codec() (src/butlers/db.py), whose encoder expects a
+    # Python object and calls json.dumps() on it itself. Passing an
+    # ALREADY-serialized JSON string (the previous approach here) makes that
+    # encoder fire a SECOND time, double-encoding event_metadata into a
+    # jsonb-typed STRING instead of an OBJECT (bu-cymc4; see
+    # tests/relationship/test_jsonb_codec.py).
+    safe_event_metadata = json.loads(json.dumps(event_metadata, default=str))
+
     await pool.execute(
         "INSERT INTO approval_events "
         "(event_type, action_id, rule_id, actor, reason, event_metadata, occurred_at) "
@@ -85,6 +96,6 @@ async def record_approval_event(
         rule_id,
         actor,
         reason,
-        json.dumps(event_metadata),
+        safe_event_metadata,
         event_time,
     )

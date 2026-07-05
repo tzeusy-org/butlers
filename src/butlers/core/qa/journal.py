@@ -49,12 +49,26 @@ async def record_event(
 
     event_id = uuid.UUID(generate_uuid7_string())
     event_ts = ts or datetime.now(UTC)
+    # Sanitize into a fully JSON-safe dict (UUID/datetime -> str) via a
+    # json.dumps/loads round-trip, then bind the resulting DICT directly (no
+    # second json.dumps, no ::jsonb cast): every asyncpg pool in this codebase
+    # registers register_jsonb_codec() (src/butlers/db.py), whose encoder
+    # expects a Python object and calls json.dumps() on it itself. Passing an
+    # ALREADY-serialized JSON string with an explicit ::jsonb cast (the
+    # previous approach here) makes that encoder fire a SECOND time,
+    # double-encoding `data` into a jsonb-typed STRING instead of an OBJECT
+    # (bu-cymc4; see tests/relationship/test_jsonb_codec.py). Contrast with
+    # record_patrol_tick_events() below, which deliberately binds a
+    # ``text[]`` parameter and casts ``data::jsonb`` server-side inside the
+    # query — that path never touches the client-side jsonb codec and is not
+    # affected by this bug.
+    safe_data = json.loads(json.dumps(data or {}, default=str))
     await session.fetchval(
         """
         INSERT INTO public.qa_investigation_events (
             id, attempt_id, finding_id, ts, step, text, detail, data
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id
         """,
         event_id,
@@ -64,7 +78,7 @@ async def record_event(
         step,
         text,
         detail,
-        json.dumps(data or {}),
+        safe_data,
     )
     return event_id
 
@@ -292,6 +306,16 @@ async def record_patrol_tick_events(
     steps: list[str] = []
     texts: list[str] = []
     details: list[str] = []
+    # NOTE: data_values stays a list of json.dumps() strings bound as a
+    # ``$7::text[]`` parameter (see the unnest() below), never as a jsonb
+    # parameter directly — so the client-side jsonb codec (register_jsonb_codec,
+    # src/butlers/db.py) never sees these strings, and the `data::jsonb` cast
+    # inside the SELECT parses each one exactly once, server-side. This is
+    # deliberately different from record_event() above (which binds a dict
+    # straight into a jsonb column) — do NOT "simplify" this to bind dicts
+    # into a ::jsonb-cast scalar parameter; that reintroduces the
+    # double-encoding bug fixed in bu-cymc4 for the same reason record_event()
+    # had it.
     data_values: list[str] = []
 
     for row in rows:

@@ -168,11 +168,20 @@ class ButlerLogger:
         # Normalise request_id to str or None
         request_id_str: str | None = str(request_id) if request_id is not None else None
 
-        # Serialise metadata to JSON string for asyncpg JSONB binding
-        metadata_json: str | None = None
+        # Sanitize metadata into a fully JSON-safe dict (UUID/datetime -> str)
+        # via a json.dumps/loads round-trip, then bind the resulting DICT
+        # directly (no second json.dumps, no ::jsonb cast): every asyncpg pool
+        # in this codebase registers register_jsonb_codec() (src/butlers/db.py),
+        # whose encoder expects a Python object and calls json.dumps() on it
+        # itself. Passing an ALREADY-serialized JSON string with an explicit
+        # ::jsonb cast (the previous approach here) makes that encoder fire a
+        # SECOND time, double-encoding metadata into a jsonb-typed STRING
+        # instead of an OBJECT (bu-cymc4; see
+        # tests/relationship/test_jsonb_codec.py).
+        safe_metadata: dict[str, Any] | None = None
         if metadata is not None:
             try:
-                metadata_json = json.dumps(metadata)
+                safe_metadata = json.loads(json.dumps(metadata, default=str))
             except (TypeError, ValueError):
                 logger.debug(
                     "butler_logging: could not serialise metadata for schema %s", self._schema
@@ -184,26 +193,26 @@ class ButlerLogger:
                     await conn.execute(
                         """
                         INSERT INTO butler_logs (ts, level, msg, source, request_id, metadata)
-                        VALUES ($1, $2, $3, $4, $5::uuid, $6::jsonb)
+                        VALUES ($1, $2, $3, $4, $5::uuid, $6)
                         """,
                         ts,
                         norm_level,
                         msg,
                         source,
                         request_id_str,
-                        metadata_json,
+                        safe_metadata,
                     )
                 else:
                     await conn.execute(
                         """
                         INSERT INTO butler_logs (level, msg, source, request_id, metadata)
-                        VALUES ($1, $2, $3, $4::uuid, $5::jsonb)
+                        VALUES ($1, $2, $3, $4::uuid, $5)
                         """,
                         norm_level,
                         msg,
                         source,
                         request_id_str,
-                        metadata_json,
+                        safe_metadata,
                     )
         except Exception:
             logger.warning(

@@ -22,31 +22,43 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Canonical seed rows
 #
-# Each tuple: (provider, butler, feature, severity, required_scopes_json)
+# Each tuple: (provider, butler, feature, severity, required_scopes)
 #
-# Mirrors the seed in alembic/versions/core/core_107_provider_feature_catalogue.py.
-# Keep these two in sync when adding new providers or features.
+# `required_scopes` is a native Python list, bound directly (no json.dumps,
+# no ::jsonb cast) at the INSERT below: every asyncpg pool in this codebase
+# registers register_jsonb_codec() (src/butlers/db.py), whose encoder expects
+# a Python object and calls json.dumps() on it itself. Binding an
+# already-JSON-formatted string here (the previous approach) makes that
+# encoder fire a SECOND time, double-encoding required_scopes into a
+# jsonb-typed STRING instead of an ARRAY (bu-cymc4) — exactly the corruption
+# the defensive `isinstance(scopes, str)` guards in api/routers/secrets_v2.py
+# (_fetch_scopes_required_by_provider, breaks-catalogue) already work around.
+#
+# Mirrors the seed in alembic/versions/core/core_107_provider_feature_catalogue.py
+# (that seed is a raw SQL literal executed via Alembic's op.execute(), so it is
+# parsed server-side and is NOT subject to this bug). Keep these two in sync
+# when adding new providers or features.
 # ---------------------------------------------------------------------------
 
-_CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
+_CATALOGUE_SEED: tuple[tuple[str, str, str, str, list[str]], ...] = (
     # google × health
     (
         "google",
         "health",
         "Google Health ingestion",
         "high",
-        (
-            '["https://www.googleapis.com/auth/googlehealth.sleep",'
-            ' "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",'
-            ' "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements"]'
-        ),
+        [
+            "https://www.googleapis.com/auth/googlehealth.sleep",
+            "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
+            "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+        ],
     ),
     (
         "google",
         "health",
         "Google Calendar sync",
         "medium",
-        '["https://www.googleapis.com/auth/calendar"]',
+        ["https://www.googleapis.com/auth/calendar"],
     ),
     # google × messenger
     (
@@ -54,7 +66,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "messenger",
         "Gmail read and compose",
         "high",
-        '["https://www.googleapis.com/auth/gmail.modify"]',
+        ["https://www.googleapis.com/auth/gmail.modify"],
     ),
     # google × general
     (
@@ -62,7 +74,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "general",
         "Google Drive access",
         "medium",
-        '["https://www.googleapis.com/auth/drive"]',
+        ["https://www.googleapis.com/auth/drive"],
     ),
     # google × lifestyle
     (
@@ -70,7 +82,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "lifestyle",
         "Google Calendar sync",
         "medium",
-        '["https://www.googleapis.com/auth/calendar"]',
+        ["https://www.googleapis.com/auth/calendar"],
     ),
     # google × * (ecosystem-wide)
     (
@@ -78,7 +90,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "*",
         "Google account connection",
         "high",
-        "[]",
+        [],
     ),
     # telegram × * (ecosystem-wide)
     (
@@ -86,7 +98,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "*",
         "Telegram messaging",
         "high",
-        "[]",
+        [],
     ),
     # spotify × lifestyle
     (
@@ -94,7 +106,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "lifestyle",
         "Spotify listening history",
         "high",
-        "[]",
+        [],
     ),
     # home_assistant × home
     (
@@ -102,7 +114,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "home",
         "Home device control",
         "high",
-        "[]",
+        [],
     ),
     # whatsapp × messenger
     (
@@ -110,7 +122,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "messenger",
         "WhatsApp messaging",
         "high",
-        "[]",
+        [],
     ),
     # owntracks × home
     (
@@ -118,7 +130,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "home",
         "Location tracking",
         "medium",
-        "[]",
+        [],
     ),
     # steam × lifestyle
     (
@@ -126,7 +138,7 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, str], ...] = (
         "lifestyle",
         "Steam game library",
         "low",
-        "[]",
+        [],
     ),
 )
 
@@ -161,7 +173,7 @@ async def upsert_provider_feature_catalogue(pool: asyncpg.Pool) -> None:
                 """
                 INSERT INTO public.provider_feature_catalogue
                     (provider, butler, feature, severity, required_scopes)
-                VALUES ($1, $2, $3, $4, $5::jsonb)
+                VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (provider, butler, feature)
                 DO UPDATE SET
                     severity        = EXCLUDED.severity,

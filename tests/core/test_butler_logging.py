@@ -112,7 +112,13 @@ async def test_log_level_gating(min_level: str, level: str, expect_write: bool) 
 
 
 async def test_log_forwards_request_id_metadata_and_timestamp() -> None:
-    """request_id (stringified), metadata (JSON), and explicit ts pass through to the INSERT."""
+    """request_id (stringified), metadata (dict), and explicit ts pass through to the INSERT.
+
+    metadata must be bound as a plain dict, not a json.dumps() string: every
+    asyncpg pool in this codebase registers a JSONB codec that already calls
+    json.dumps() once, so binding a pre-serialized string here would
+    double-encode the column (bu-cymc4).
+    """
     from uuid import uuid4
 
     req_id = uuid4()
@@ -121,9 +127,10 @@ async def test_log_forwards_request_id_metadata_and_timestamp() -> None:
     bl = ButlerLogger(pool=pool, schema="general")
     await bl.log("WARN", "something odd", request_id=req_id, metadata={"key": "value"}, ts=ts)
     conn.execute.assert_called_once()
-    _, *args = conn.execute.call_args.args
+    sql, *args = conn.execute.call_args.args
+    assert "::jsonb" not in sql
     assert str(req_id) in args
-    assert '{"key": "value"}' in args
+    assert {"key": "value"} in args
     assert ts in args
 
 
@@ -155,19 +162,41 @@ async def test_log_nowait_schedules_task() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_metadata_serialisation_failure_drops_field() -> None:
-    """If metadata cannot be JSON-serialised, the row is still inserted without it."""
+async def test_metadata_with_non_json_native_value_is_stringified_not_dropped() -> None:
+    """A metadata value with no native JSON type is coerced via str(), not dropped.
+
+    The sanitizing round-trip is ``json.dumps(metadata, default=str)`` (matching
+    the pattern used by audit.append(), gate.py, events.py, journal.py -- see
+    bu-cymc4): arbitrary objects are stringified rather than silently dropping
+    the whole metadata dict, while still guaranteeing the value bound to the
+    JSONB parameter is a plain dict (never a pre-serialized string).
+    """
     pool, conn = _make_pool()
     bl = ButlerLogger(pool=pool, schema="general")
 
-    class _Unserializable:
-        pass
+    class _Stringifiable:
+        def __str__(self) -> str:
+            return "stringifiable-repr"
 
-    # Should not raise
-    await bl.log("INFO", "msg with bad metadata", metadata={"bad": _Unserializable()})
+    await bl.log("INFO", "msg with odd metadata", metadata={"bad": _Stringifiable()})
     conn.execute.assert_called_once()
     _, *args = conn.execute.call_args.args
-    # metadata_json is passed as None when serialisation fails
+    assert {"bad": "stringifiable-repr"} in args
+
+
+async def test_metadata_serialisation_failure_drops_field() -> None:
+    """A genuinely unserialisable value (circular reference) drops the whole field."""
+    pool, conn = _make_pool()
+    bl = ButlerLogger(pool=pool, schema="general")
+
+    circular: dict[str, object] = {}
+    circular["self"] = circular
+
+    # Should not raise
+    await bl.log("INFO", "msg with circular metadata", metadata=circular)
+    conn.execute.assert_called_once()
+    _, *args = conn.execute.call_args.args
+    # safe_metadata is passed as None when the round-trip itself raises
     assert None in args
 
 

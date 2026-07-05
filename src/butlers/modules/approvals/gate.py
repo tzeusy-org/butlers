@@ -509,6 +509,20 @@ def _make_gate_wrapper(
         # Generate agent summary
         agent_summary = f"Tool '{tool_name}' called with args: {json.dumps(tool_args)}"
 
+        # Sanitize tool_args into a fully JSON-safe dict (UUID/datetime -> str)
+        # via a json.dumps/loads round-trip, mirroring audit.append()'s pattern
+        # (api/routers/audit.py). Bind the resulting DICT directly at every
+        # ``pending_actions`` INSERT below (no json.dumps, no ::jsonb cast):
+        # every asyncpg pool in this codebase registers register_jsonb_codec()
+        # (src/butlers/db.py), whose encoder expects a Python object and calls
+        # json.dumps() on it itself. Passing an ALREADY-serialized JSON string
+        # (the previous approach here) makes that encoder fire a SECOND time,
+        # double-encoding tool_args into a jsonb-typed STRING instead of an
+        # OBJECT (bu-qvnce.6, bu-cymc4; see tests/relationship/test_jsonb_codec.py).
+        # `evidence` (built above) is already a list[str] — JSON-safe as-is —
+        # so it is bound directly too, with no round-trip needed.
+        safe_tool_args = json.loads(json.dumps(tool_args, default=str))
+
         # --- Role-based target resolution ---
         resolved_contact = await _resolve_target_contact(pool, tool_args)
         identity = _extract_channel_identity(tool_args)
@@ -545,7 +559,7 @@ def _make_gate_wrapper(
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                 action_id,
                 tool_name,
-                json.dumps(tool_args),
+                safe_tool_args,
                 agent_summary,
                 None,  # session_id
                 ActionStatus.APPROVED.value,
@@ -553,7 +567,7 @@ def _make_gate_wrapper(
                 expires_at,
                 "role:owner",
                 why,
-                json.dumps(evidence),
+                evidence,
             )
             _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(
@@ -637,7 +651,7 @@ def _make_gate_wrapper(
                 "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                 action_id,
                 tool_name,
-                json.dumps(tool_args),
+                safe_tool_args,
                 agent_summary,
                 None,  # session_id
                 ActionStatus.APPROVED.value,
@@ -646,7 +660,7 @@ def _make_gate_wrapper(
                 rule_id,
                 f"rule:{rule_id}",
                 why,
-                json.dumps(evidence),
+                evidence,
             )
             _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(
@@ -709,14 +723,14 @@ def _make_gate_wrapper(
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
             action_id,
             tool_name,
-            json.dumps(tool_args),
+            safe_tool_args,
             agent_summary,
             None,  # session_id
             ActionStatus.PENDING.value,
             now,
             expires_at,
             why,
-            json.dumps(evidence),
+            evidence,
         )
         _emit_created(action_id, ActionStatus.PENDING.value)
         await record_approval_event(

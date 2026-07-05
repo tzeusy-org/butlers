@@ -85,6 +85,11 @@ async def test_record_event_helper_inserts_uuid7_event() -> None:
     session.fetchval.assert_awaited_once()
     sql, *params = session.fetchval.await_args.args
     assert "INSERT INTO public.qa_investigation_events" in sql
+    # `data` must be bound as a plain dict (not a json.dumps() string, and no
+    # ``::jsonb`` cast in the SQL) -- see bu-cymc4. Every asyncpg pool in this
+    # codebase registers a JSONB codec that already calls json.dumps() once;
+    # binding a pre-serialized string here would double-encode the column.
+    assert "::jsonb" not in sql
     assert params == [
         event_id,
         str(attempt_id),
@@ -93,7 +98,7 @@ async def test_record_event_helper_inserts_uuid7_event() -> None:
         "flagged",
         "Failure spotted",
         "ValueError at module:1",
-        '{"fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}',
+        {"fingerprint": "a" * 64},
     ]
 
 
