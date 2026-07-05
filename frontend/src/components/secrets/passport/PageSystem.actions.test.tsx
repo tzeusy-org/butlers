@@ -12,7 +12,7 @@
 //   - 429 rate-limit handled gracefully (non-blocking hint, no crash)
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi, afterEach } from "vitest"
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, waitFor, act, cleanup } from "@testing-library/react"
 import * as React from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
@@ -28,6 +28,13 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     setSystemCredential: vi.fn(),
     probeSystemCredential: vi.fn(),
     deleteSystemCredential: vi.fn(),
+    // ConfirmImpact (bu-cyyi3) fetches the breaks catalogue whenever a
+    // delete/rotate confirm panel opens. Mock it so it resolves immediately
+    // instead of hitting the real network in jsdom — the "yes, delete" pill
+    // is disabled until this resolves, so an unmocked/slow call would hang
+    // these tests. Empty catalogue is the correct default here: these tests
+    // exercise the mutation wiring, not the catalogue contents.
+    getBreaksCatalogue: vi.fn(),
   }
 })
 
@@ -49,11 +56,13 @@ import {
   setSystemCredential,
   probeSystemCredential,
   deleteSystemCredential,
+  getBreaksCatalogue,
   ApiError,
 } from "@/api/client.ts"
 const mockSet = vi.mocked(setSystemCredential)
 const mockProbe = vi.mocked(probeSystemCredential)
 const mockDelete = vi.mocked(deleteSystemCredential)
+const mockGetBreaksCatalogue = vi.mocked(getBreaksCatalogue)
 
 // ---------------------------------------------------------------------------
 // Component + mock data
@@ -109,6 +118,14 @@ function getBtn(label: string): HTMLButtonElement {
 function queryBtn(label: string): HTMLButtonElement | null {
   return screen.queryByRole("button", { name: label }) as HTMLButtonElement | null
 }
+
+beforeEach(() => {
+  // Default: empty catalogue, resolved immediately — clears the
+  // ConfirmImpact "loading" gate on any confirm button synchronously after
+  // the panel opens. Individual tests override this if they care about the
+  // catalogue response itself.
+  mockGetBreaksCatalogue.mockResolvedValue({ data: [], meta: {} })
+})
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -368,8 +385,21 @@ describe("PageSystem: delete button", () => {
 
     fireEvent.click(getBtn("delete"))
 
-    expect(screen.getByText("Remove this shared credential? This cannot be undone.")).toBeTruthy()
+    expect(
+      screen.getByText("Remove this shared credential? The credential will be deleted and cannot be recovered."),
+    ).toBeTruthy()
     expect(getBtn("yes, delete")).toBeTruthy()
+  })
+
+  it("disables 'yes, delete' while ConfirmImpact is still loading impact — an uninformed confirm must not be clickable", () => {
+    // Breaks-catalogue fetch never resolves — ConfirmImpact stays in "loading".
+    mockGetBreaksCatalogue.mockReturnValue(new Promise(() => {}))
+    renderTelegram()
+
+    fireEvent.click(getBtn("delete"))
+
+    expect(screen.getByText("checking impact…")).toBeTruthy()
+    expect(getBtn("yes, delete").disabled).toBe(true)
   })
 
   it("calls deleteSystemCredential with target='shared' for shared credential", async () => {
@@ -377,6 +407,13 @@ describe("PageSystem: delete button", () => {
     renderTelegram()
 
     fireEvent.click(getBtn("delete"))
+
+    // ConfirmImpact gates "yes, delete" until the breaks-catalogue fetch
+    // resolves (bu-cyyi3 review follow-up) — an uninformed confirm must not
+    // be clickable while impact is still loading.
+    await waitFor(() => {
+      expect(getBtn("yes, delete").disabled).toBe(false)
+    })
 
     await act(async () => {
       fireEvent.click(getBtn("yes, delete"))
@@ -392,6 +429,10 @@ describe("PageSystem: delete button", () => {
 
     fireEvent.click(getBtn("delete"))
 
+    await waitFor(() => {
+      expect(getBtn("yes, remove override").disabled).toBe(false)
+    })
+
     await act(async () => {
       fireEvent.click(getBtn("yes, remove override"))
     })
@@ -405,7 +446,9 @@ describe("PageSystem: delete button", () => {
 
     fireEvent.click(getBtn("delete"))
 
-    expect(screen.getByText(/Remove per-butler override for calendar/)).toBeTruthy()
+    expect(
+      screen.getByText(/Remove per-butler override for calendar\? The override will be deleted/),
+    ).toBeTruthy()
   })
 
   it("shows 'deleting…' while the delete mutation is pending", async () => {
@@ -413,6 +456,10 @@ describe("PageSystem: delete button", () => {
     renderTelegram()
 
     fireEvent.click(getBtn("delete"))
+
+    await waitFor(() => {
+      expect(getBtn("yes, delete").disabled).toBe(false)
+    })
 
     await act(async () => {
       fireEvent.click(getBtn("yes, delete"))
@@ -556,6 +603,10 @@ describe("PageSystem: shared-public routing [bu-91noc]", () => {
     renderSharedPublic()
 
     fireEvent.click(getBtn("delete"))
+
+    await waitFor(() => {
+      expect(getBtn("yes, delete").disabled).toBe(false)
+    })
 
     await act(async () => {
       fireEvent.click(getBtn("yes, delete"))

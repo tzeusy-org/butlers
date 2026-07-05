@@ -98,7 +98,7 @@ interface WhatBreaksRowProps {
   capabilities?: CapabilityStatus[]
 }
 
-function WhatBreaksRow({ entry, capabilities }: WhatBreaksRowProps) {
+export function WhatBreaksRow({ entry, capabilities }: WhatBreaksRowProps) {
   const capabilityStatus = entry.capability
     ? capabilities?.find((c) => c.capability === entry.capability)
     : undefined
@@ -185,6 +185,120 @@ export function WhatBreaks({ provider, capabilities, className, ...props }: What
 
   return (
     <div className={cn("flex flex-col", className)} {...props}>
+      {entries.map((entry, idx) => (
+        <WhatBreaksRow
+          key={`${entry.butler}:${entry.feature}:${idx}`}
+          entry={entry}
+          capabilities={capabilities}
+        />
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ConfirmImpact — dependent-feature list for destructive confirm panels
+// (bu-cyyi3)
+//
+// Rendered INSIDE the delete (system) / revoke (CLI) / disconnect (user OAuth)
+// two-pill confirm panels, reusing WhatBreaksRow's exact vocabulary (severity
+// pip + butler letter-mark + feature name) so a destructive confirm is
+// informed, not just a generic "yes/cancel" pair.
+//
+// Honesty rule (same as bu-xzaxm): the provider_feature_catalogue only covers
+// a fixed set of known providers — an empty result here means "we have no
+// record of what depends on this," never "nothing depends on this." A confirm
+// surface must NEVER let that ambiguity read as an all-clear, so the empty
+// case says "impact not tracked" rather than reusing WhatBreaks' browsing-page
+// "Nothing depends on this credential." wording (which is fine on the
+// browsing page, but would imply a verified zero-impact guarantee here).
+// A catalogue-unreachable fetch failure is called out separately as
+// "unavailable" so it is never confused with a genuine (if untracked) result.
+// ---------------------------------------------------------------------------
+
+/** ConfirmImpact's four render states — also mirrored on the
+ *  `data-confirm-impact-state` DOM attribute for tests. */
+export type ConfirmImpactState = "loading" | "unavailable" | "not-tracked" | "tracked"
+
+export interface ConfirmImpactProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** Provider (or category) slug to look up in the breaks catalogue — the
+   *  same value already passed to <WhatBreaks provider={...} /> elsewhere on
+   *  the page, so this reuses the cached query result instead of refetching. */
+  provider: string
+  /** Optional live capability-probe state, forwarded to WhatBreaksRow. */
+  capabilities?: CapabilityStatus[]
+  /**
+   * Called whenever the impact-fetch state changes (including on mount).
+   * The enclosing destructive-confirm panel uses this to keep its "yes, …"
+   * button disabled while impact is still `"loading"` — an uninformed
+   * confirm (fired before the owner has seen what depends on this
+   * credential) would defeat the whole point of this component.
+   */
+  onStateChange?: (state: ConfirmImpactState) => void
+}
+
+/**
+ * ConfirmImpact — impact-aware dependent list for destructive confirms.
+ *
+ * @example
+ *   <ConfirmImpact provider="google" />
+ */
+export function ConfirmImpact({
+  provider,
+  capabilities,
+  className,
+  onStateChange,
+  ...props
+}: ConfirmImpactProps) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["secrets", "breaks-catalogue", provider],
+    queryFn: () => getBreaksCatalogue({ provider }),
+  })
+
+  const catalogueAvailable = data?.meta?.catalogue_available !== false
+  const entries = data ? sortBySeverityDesc(data.data ?? []) : []
+
+  const state: ConfirmImpactState = isLoading
+    ? "loading"
+    : isError || !data || !catalogueAvailable
+      ? "unavailable"
+      : entries.length === 0
+        ? "not-tracked"
+        : "tracked"
+
+  React.useEffect(() => {
+    onStateChange?.(state)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onStateChange is expected to be a stable setter (e.g. useState's dispatch); only re-fire when the derived state itself changes, not on every caller re-render.
+  }, [state])
+
+  if (state === "loading") {
+    return (
+      <div className={cn("py-1", className)} {...props} data-confirm-impact-state="loading">
+        <Mono muted>checking impact…</Mono>
+      </div>
+    )
+  }
+
+  if (state === "unavailable") {
+    return (
+      <div className={cn("py-1", className)} {...props} data-confirm-impact-state="unavailable">
+        <Mono style={{ color: "var(--amber,oklch(0.7_0.15_80))" }}>
+          impact unavailable — could not reach the dependency catalogue.
+        </Mono>
+      </div>
+    )
+  }
+
+  if (state === "not-tracked") {
+    return (
+      <div className={cn("py-1", className)} {...props} data-confirm-impact-state="not-tracked">
+        <Mono muted>impact not tracked for this credential.</Mono>
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn("flex flex-col", className)} {...props} data-confirm-impact-state="tracked">
       {entries.map((entry, idx) => (
         <WhatBreaksRow
           key={`${entry.butler}:${entry.feature}:${idx}`}

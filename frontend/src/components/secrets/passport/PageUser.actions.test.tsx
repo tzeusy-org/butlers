@@ -10,7 +10,7 @@
 //   - connect button on never_set credential calls reauthorizeUserCredential
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi, afterEach } from "vitest"
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, waitFor, act, cleanup } from "@testing-library/react"
 import * as React from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
@@ -29,6 +29,11 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     probeUserCredential: vi.fn(),
     rotateUserCredential: vi.fn(),
     disconnectUserCredential: vi.fn(),
+    // ConfirmImpact (bu-cyyi3) fetches the breaks catalogue whenever the
+    // disconnect confirm panel opens. Mock it so it resolves immediately
+    // instead of hitting the real network in jsdom — the "yes, disconnect"
+    // pill is disabled until this resolves.
+    getBreaksCatalogue: vi.fn(),
   }
 })
 
@@ -41,11 +46,20 @@ import {
   probeUserCredential,
   rotateUserCredential,
   disconnectUserCredential,
+  getBreaksCatalogue,
 } from "@/api/client.ts"
 const mockReauth = vi.mocked(reauthorizeUserCredential)
 const mockProbe = vi.mocked(probeUserCredential)
 const mockRotate = vi.mocked(rotateUserCredential)
 const mockDisconnect = vi.mocked(disconnectUserCredential)
+const mockGetBreaksCatalogue = vi.mocked(getBreaksCatalogue)
+
+beforeEach(() => {
+  // Default: empty catalogue, resolved immediately — clears the
+  // ConfirmImpact "loading" gate on the disconnect confirm button
+  // synchronously after the panel opens.
+  mockGetBreaksCatalogue.mockResolvedValue({ data: [], meta: {} })
+})
 
 // ---------------------------------------------------------------------------
 // Component + mock data
@@ -250,7 +264,9 @@ describe("PageUser: disconnect button (confirm panel)", () => {
 
     fireEvent.click(getBtn("disconnect"))
 
-    expect(screen.getByText("Remove this credential? This cannot be undone.")).toBeTruthy()
+    expect(
+      screen.getByText("Remove this credential? The credential will be deleted and cannot be recovered."),
+    ).toBeTruthy()
     expect(getBtn("yes, disconnect")).toBeTruthy()
   })
 
@@ -259,6 +275,13 @@ describe("PageUser: disconnect button (confirm panel)", () => {
     renderGoogle()
 
     fireEvent.click(getBtn("disconnect"))
+
+    // ConfirmImpact gates "yes, disconnect" until the breaks-catalogue fetch
+    // resolves (bu-cyyi3 review follow-up) — an uninformed confirm must not
+    // be clickable while impact is still loading.
+    await waitFor(() => {
+      expect(getBtn("yes, disconnect").disabled).toBe(false)
+    })
 
     await act(async () => {
       fireEvent.click(getBtn("yes, disconnect"))
@@ -273,6 +296,10 @@ describe("PageUser: disconnect button (confirm panel)", () => {
     renderGoogle()
 
     fireEvent.click(getBtn("disconnect"))
+
+    await waitFor(() => {
+      expect(getBtn("yes, disconnect").disabled).toBe(false)
+    })
 
     await act(async () => {
       fireEvent.click(getBtn("yes, disconnect"))

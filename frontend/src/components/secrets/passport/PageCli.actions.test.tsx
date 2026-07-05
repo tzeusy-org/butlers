@@ -13,7 +13,7 @@
 //     "update token" instead
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, act, cleanup, waitFor } from "@testing-library/react";
 import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -37,12 +37,24 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     saveCLIAuthApiKey: vi.fn(),
     deleteCLIAuthApiKey: vi.fn(),
     listCLIAuthProviders: vi.fn().mockResolvedValue([]),
+    // ConfirmImpact (bu-cyyi3) fetches the breaks catalogue whenever the
+    // revoke confirm panel opens. Mock it so it resolves immediately instead
+    // of hitting the real network in jsdom — the "yes, revoke" pill is
+    // disabled until this resolves.
+    getBreaksCatalogue: vi.fn(),
   };
 });
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // Import the mocked module AFTER vi.mock declarations so vi.mocked() works.
 import * as apiClient from "@/api/client.ts";
+
+beforeEach(() => {
+  // Default: empty catalogue, resolved immediately — clears the
+  // ConfirmImpact "loading" gate on the revoke confirm button synchronously
+  // after the panel opens.
+  vi.mocked(apiClient.getBreaksCatalogue).mockResolvedValue({ data: [], meta: {} });
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -227,6 +239,15 @@ describe("PageCli: revoke action", () => {
 
     renderWithQuery(<PageCli credential={cred()} />);
     fireEvent.click(screen.getByRole("button", { name: /^revoke$/i }));
+
+    // ConfirmImpact gates "yes, revoke" until the breaks-catalogue fetch
+    // resolves (bu-cyyi3 review follow-up) — an uninformed confirm must not
+    // be clickable while impact is still loading.
+    await waitFor(() => {
+      const btn = screen.getByRole("button", { name: /yes, revoke/i }) as HTMLButtonElement;
+      expect(btn.disabled).toBe(false);
+    });
+
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /yes, revoke/i }));
     });
