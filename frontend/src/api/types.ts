@@ -5490,6 +5490,12 @@ export interface ChroniclerCategoryBuckets {
   tz: string;
   /** Sorted by total_seconds DESC, then category ASC. */
   buckets: ChroniclerCategoryBucket[];
+  /**
+   * Waking-window seconds (owner-tz) not covered by any activity-layer
+   * episode of any lane. Optional so older cached responses / test fixtures
+   * without this field still parse; treat a missing value as 0.
+   */
+  untracked_seconds?: number;
 }
 
 /** Query parameters for GET /api/chronicler/aggregate/by-category. */

@@ -12,10 +12,20 @@
 // Tooltip shows: category label, total_seconds (formatted as H h M m),
 // episode_count, and percentage of total.
 //
-// Empty state: renders a plain text notice when buckets is empty.
+// Empty state: renders a plain text notice when buckets is empty AND there is
+// no untracked time either (nothing has been queried/recorded at all).
+//
+// Untracked slice (bu-whhll.13 — pie-chart honesty): the pie previously
+// renormalised over tracked evidence only, so e.g. a 4h-evidence day rendered
+// as a full day. `untrackedSeconds` (from `CategoryBuckets.untracked_seconds`)
+// is rendered as an extra slice sized against the same waking-window total,
+// hatched/neutral via `neutralDensityColor` — deliberately NOT a
+// `LANE_TAXONOMY` entry/lane hue, since "untracked" is a chart-only derived
+// pseudo-slice, not an Activity lane the backend ever attaches to an episode.
 // ---------------------------------------------------------------------------
 
 import type { ChroniclerCategoryBucket } from "@/api/types"
+import { neutralDensityColor } from "@/lib/chart-colors"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Button } from "@/components/ui/button"
 import { LANE_TAXONOMY } from "./lane-taxonomy"
@@ -28,6 +38,10 @@ import {
   Tooltip,
   type TooltipContentProps,
 } from "recharts"
+
+// SVG pattern id for the untracked slice's hatch fill (see <defs> below).
+const UNTRACKED_PATTERN_ID = "pie-untracked-hatch"
+const UNTRACKED_LABEL = "Untracked"
 
 // All categories sorted by sortOrder — used to render the complete legend.
 const ALL_CATEGORIES = (Object.keys(LANE_TAXONOMY) as Category[]).sort(
@@ -44,6 +58,8 @@ interface PieSliceDatum {
   hex: string
   episodeCount: number
   category: string
+  /** True only for the synthetic untracked slice (see file header). */
+  isUntracked?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +118,13 @@ function CustomTooltip({ active, payload }: TooltipContentProps<number, string>)
     >
       <p className="font-semibold">{name}</p>
       <p className="text-muted-foreground">{formatDuration(value)}</p>
-      <p className="text-muted-foreground">{slice.episodeCount} episode{slice.episodeCount !== 1 ? "s" : ""}</p>
+      {slice.isUntracked ? (
+        <p className="text-muted-foreground italic" data-testid="pie-tooltip-untracked-note">
+          No recorded evidence in this window.
+        </p>
+      ) : (
+        <p className="text-muted-foreground">{slice.episodeCount} episode{slice.episodeCount !== 1 ? "s" : ""}</p>
+      )}
       <p className="text-muted-foreground">{pct}% of total</p>
     </div>
   )
@@ -239,6 +261,13 @@ function EmptyState() {
 export interface AggregatePieChartProps {
   /** Category buckets from `useChroniclesAggregates`, already sorted by total_seconds DESC. */
   buckets: ChroniclerCategoryBucket[]
+  /**
+   * `CategoryBuckets.untracked_seconds` — waking-window seconds not covered
+   * by any activity-layer episode (bu-whhll.13). Defaults to 0 so older
+   * cached responses / stale fixtures without the field render exactly as
+   * before (no untracked slice).
+   */
+  untrackedSeconds?: number
   /** Show loading skeleton while data is being fetched. */
   isLoading?: boolean
   /** Show error fallback when the query failed. */
@@ -248,12 +277,21 @@ export interface AggregatePieChartProps {
 }
 
 /**
- * Renders a recharts PieChart with one slice per category bucket.
+ * Renders a recharts PieChart with one slice per category bucket, plus an
+ * honest hatched "Untracked" slice sized from `untrackedSeconds` when > 0.
  *
- * Slice colours come from `LANE_TAXONOMY[category].hex`.
- * Slices are displayed in API sort order (total_seconds DESC).
+ * Slice colours come from `LANE_TAXONOMY[category].hex`; the untracked slice
+ * deliberately uses a neutral-density hatch instead (see file header).
+ * Category slices are displayed in API sort order (total_seconds DESC); the
+ * untracked slice, when present, is always last.
  */
-export function AggregatePieChart({ buckets, isLoading, isError, onRetry }: AggregatePieChartProps) {
+export function AggregatePieChart({
+  buckets,
+  untrackedSeconds = 0,
+  isLoading,
+  isError,
+  onRetry,
+}: AggregatePieChartProps) {
   if (isLoading) {
     return <PieChartSkeleton />
   }
@@ -262,14 +300,36 @@ export function AggregatePieChart({ buckets, isLoading, isError, onRetry }: Aggr
     return <PieChartErrorFallback onRetry={onRetry} />
   }
 
-  if (buckets.length === 0) {
+  const untracked = Math.max(0, untrackedSeconds)
+
+  // Only genuinely empty (no tracked evidence AND no untracked time either —
+  // i.e. nothing to show at all) falls back to the empty state. A day with
+  // zero tracked evidence but a positive untracked_seconds is not "empty": it
+  // is a fully-untracked day, and should render as a 100% untracked slice
+  // rather than the "no activity" notice.
+  if (buckets.length === 0 && untracked <= 0) {
     return <EmptyState />
   }
 
-  const totalSeconds = buckets.reduce((acc, b) => acc + b.total_seconds, 0)
+  const bucketSeconds = buckets.reduce((acc, b) => acc + b.total_seconds, 0)
+  const totalSeconds = bucketSeconds + untracked
   // Attach _total to each datum so the tooltip can compute percentage without
   // closing over an external value.
-  const data = toBuckets(buckets).map((d) => ({ ...d, _total: totalSeconds }))
+  const data: Array<PieSliceDatum & { _total: number }> = toBuckets(buckets).map((d) => ({
+    ...d,
+    _total: totalSeconds,
+  }))
+  if (untracked > 0) {
+    data.push({
+      name: UNTRACKED_LABEL,
+      value: untracked,
+      hex: "", // unused for the untracked slice — it renders via the hatch pattern below
+      episodeCount: 0,
+      category: "untracked",
+      isUntracked: true,
+      _total: totalSeconds,
+    })
+  }
 
   // Build legend helpers: which categories are active, and their formatted labels.
   const activeCategories = new Set(buckets.map((b) => b.category))
@@ -282,6 +342,33 @@ export function AggregatePieChart({ buckets, isLoading, isError, onRetry }: Aggr
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
+            {/* Hatch pattern for the untracked slice — neutral-density, not a
+                lane hue or severity colour (see file header). */}
+            <defs>
+              <pattern
+                id={UNTRACKED_PATTERN_ID}
+                patternUnits="userSpaceOnUse"
+                width={8}
+                height={8}
+                patternTransform="rotate(45)"
+              >
+                <rect
+                  width={8}
+                  height={8}
+                  fill={neutralDensityColor(0.15)}
+                  fillOpacity={0.5}
+                />
+                <line
+                  x1={0}
+                  y1={0}
+                  x2={0}
+                  y2={8}
+                  stroke={neutralDensityColor(0.75)}
+                  strokeWidth={3}
+                  strokeOpacity={0.7}
+                />
+              </pattern>
+            </defs>
             <Pie
               data={data}
               dataKey="value"
@@ -295,7 +382,10 @@ export function AggregatePieChart({ buckets, isLoading, isError, onRetry }: Aggr
               labelLine={false}
             >
               {data.map((entry) => (
-                <Cell key={entry.category} fill={entry.hex} />
+                <Cell
+                  key={entry.category}
+                  fill={entry.isUntracked ? `url(#${UNTRACKED_PATTERN_ID})` : entry.hex}
+                />
               ))}
             </Pie>
             <Tooltip<number, string> content={(props) => <CustomTooltip {...props} />} />
@@ -306,6 +396,23 @@ export function AggregatePieChart({ buckets, isLoading, isError, onRetry }: Aggr
         activeCategories={activeCategories}
         categoryLabels={categoryLabels}
       />
+      {untracked > 0 && (
+        <div
+          className="flex items-center gap-1 mt-2 text-xs text-muted-foreground"
+          data-testid="pie-untracked-legend"
+          aria-label={`${UNTRACKED_LABEL}: ${formatDuration(untracked)}, no recorded evidence`}
+        >
+          <span
+            className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+            aria-hidden="true"
+            style={{
+              backgroundImage: `repeating-linear-gradient(45deg, ${neutralDensityColor(0.75)}, ${neutralDensityColor(0.75)} 1px, ${neutralDensityColor(0.15)} 1px, ${neutralDensityColor(0.15)} 3px)`,
+            }}
+          />
+          <span>{UNTRACKED_LABEL}</span>
+          <span>{formatDuration(untracked)}</span>
+        </div>
+      )}
     </div>
   )
 }

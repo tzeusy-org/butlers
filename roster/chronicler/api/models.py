@@ -49,6 +49,12 @@ class CategoryBuckets(BaseModel):
     tz: str
     buckets: list[CategoryBucket] = Field(default_factory=list)
     """Sorted by total_seconds DESC, then category ASC."""
+    untracked_seconds: float = 0.0
+    """Waking-window seconds (owner-tz, per aggregations.untracked_seconds_for_window)
+    not covered by any activity-layer episode of any lane. Lets the pie chart
+    render an honest 'untracked' slice instead of renormalising over tracked
+    evidence only (bu-whhll.13) — a 4h-evidence day no longer renders as a
+    full day."""
 
 
 class AggregateByDayRow(BaseModel):

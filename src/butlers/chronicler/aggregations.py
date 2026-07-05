@@ -8,7 +8,7 @@ See design.md §D1 for the full category taxonomy contract.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, time, timedelta, tzinfo
 
 # ── Category taxonomy ──────────────────────────────────────────────────────
 
@@ -206,6 +206,114 @@ def union_seconds(intervals: list[tuple[datetime, datetime]]) -> float:
     return total
 
 
+# ── Waking-window gap math ──────────────────────────────────────────────────
+#
+# Shared by editorial.py's waking-gap anomaly detector (sized to a single
+# inter-episode gap; ``_waking_overlap_minutes`` there now delegates to
+# ``waking_overlap_seconds`` below) and the aggregate/by-category
+# ``untracked_seconds`` slice (bu-whhll.13, sized to a whole query window).
+# Pure, deterministic, no I/O — callers own their "waking hour" tunables
+# (see editorial.WAKING_HOUR_START/WAKING_HOUR_END) and pass them in
+# explicitly so this module has no opinion about what "awake" means.
+
+
+def _local_waking_windows_utc(
+    window_start_utc: datetime,
+    window_end_utc: datetime,
+    tz: tzinfo,
+    waking_hour_start: int,
+    waking_hour_end: int,
+) -> list[tuple[datetime, datetime]]:
+    """Return the local waking-hour sub-intervals of ``[start, end)`` in UTC.
+
+    One sub-interval per local calendar day the window touches, each clipped
+    to the window itself — e.g. a 3-day window returns up to 3 disjoint
+    ``[waking_hour_start, waking_hour_end)`` local-time spans (expressed in
+    UTC), clipped to the window boundary on its first/last day.
+    """
+    if window_start_utc >= window_end_utc:
+        return []
+    local_start = window_start_utc.astimezone(tz)
+    local_end = window_end_utc.astimezone(tz)
+    cursor = local_start.date()
+    windows: list[tuple[datetime, datetime]] = []
+    while cursor <= local_end.date():
+        waking_start = datetime.combine(cursor, time(waking_hour_start), tzinfo=tz).astimezone(UTC)
+        waking_end = datetime.combine(cursor, time(waking_hour_end), tzinfo=tz).astimezone(UTC)
+        clipped_start = max(window_start_utc, waking_start)
+        clipped_end = min(window_end_utc, waking_end)
+        if clipped_start < clipped_end:
+            windows.append((clipped_start, clipped_end))
+        cursor += timedelta(days=1)
+    return windows
+
+
+def waking_overlap_seconds(
+    window_start_utc: datetime,
+    window_end_utc: datetime,
+    tz: tzinfo,
+    *,
+    waking_hour_start: int,
+    waking_hour_end: int,
+) -> float:
+    """Return seconds of ``[window_start_utc, window_end_utc)`` that fall
+    inside the local waking window on each calendar day the interval touches.
+
+    Generalizes what began as a single-gap helper in editorial.py
+    (``_waking_overlap_minutes``) to any UTC interval, including a whole
+    aggregate query window — which is what ``untracked_seconds_for_window``
+    below needs to size the "waking universe" a day's tracked/untracked split
+    is measured against.
+    """
+    return union_seconds(
+        _local_waking_windows_utc(
+            window_start_utc, window_end_utc, tz, waking_hour_start, waking_hour_end
+        )
+    )
+
+
+def untracked_seconds_for_window(
+    activity_intervals: list[tuple[datetime, datetime]],
+    window_start_utc: datetime,
+    window_end_utc: datetime,
+    tz: tzinfo,
+    *,
+    waking_hour_start: int,
+    waking_hour_end: int,
+) -> float:
+    """Return waking-window seconds not covered by any activity interval.
+
+    ``activity_intervals`` should be every ``activity``-layer episode's
+    half-open span, already clipped to ``[window_start_utc, window_end_utc)``
+    — pass every activity-layer episode regardless of whether its source
+    category resolves to a lane (``lane_for_activity`` returning ``None`` for
+    an unmapped source is a "we don't know how to bucket this" problem, not a
+    "nothing happened" one, so it should not inflate untracked time). Sleep
+    episodes are activity-layer too, so a nap inside the waking window is
+    treated as tracked without special-casing "minus sleep": once every
+    activity-layer span counts, there is nothing left to subtract.
+
+    This is the pie-chart honesty fix (bu-whhll.13): the aggregate pie
+    previously renormalised over tracked evidence only, so a 4h-evidence day
+    rendered as a full (waking-window) day. Pure, deterministic, no I/O.
+    """
+    waking_windows = _local_waking_windows_utc(
+        window_start_utc, window_end_utc, tz, waking_hour_start, waking_hour_end
+    )
+    waking_total = union_seconds(waking_windows)
+    if waking_total <= 0.0:
+        return 0.0
+    clipped_activity: list[tuple[datetime, datetime]] = []
+    for a_start, a_end in activity_intervals:
+        for w_start, w_end in waking_windows:
+            cs = max(a_start, w_start)
+            ce = min(a_end, w_end)
+            if cs < ce:
+                clipped_activity.append((cs, ce))
+    tracked = union_seconds(clipped_activity)
+    return max(0.0, waking_total - tracked)
+
+
 __all__ = [
     "CATEGORIES",
     "LANES",
@@ -213,4 +321,6 @@ __all__ = [
     "lane_for_activity",
     "lane_for_category",
     "union_seconds",
+    "untracked_seconds_for_window",
+    "waking_overlap_seconds",
 ]

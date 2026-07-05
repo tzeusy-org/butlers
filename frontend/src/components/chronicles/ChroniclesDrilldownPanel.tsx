@@ -190,6 +190,7 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
             />
             <AggregatePieChart
               buckets={categoryBuckets}
+              untrackedSeconds={byCategory.data?.data.untracked_seconds ?? 0}
               isLoading={byCategory.isLoading}
               isError={byCategory.isError}
               onRetry={handleByCategoryRetry}

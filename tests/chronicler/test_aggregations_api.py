@@ -813,6 +813,153 @@ async def test_by_category_low_confidence_zero_when_all_high():
 
 
 # ---------------------------------------------------------------------------
+# untracked_seconds (bu-whhll.13 — pie-chart honesty)
+# ---------------------------------------------------------------------------
+
+
+async def test_by_category_untracked_seconds_full_waking_window_when_no_episodes():
+    """No episodes at all -> untracked_seconds is the full 16h waking window."""
+    app, _ = _build_app([])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            _BY_CATEGORY,
+            params={"start_at": "2024-03-15T00:00:00Z", "end_at": "2024-03-16T00:00:00Z"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["untracked_seconds"] == pytest.approx(16 * 3600.0)
+
+
+async def test_by_category_untracked_seconds_reduced_by_activity_episode():
+    """A 4h activity episode reduces untracked_seconds by 4h — the regression
+    this bead fixes: a 4h-evidence day must not renormalise to a full day."""
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [_make_episode_row(start_at=day_start, end_at=day_start + timedelta(hours=4))]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            _BY_CATEGORY,
+            params={"start_at": "2024-03-15T00:00:00Z", "end_at": "2024-03-16T00:00:00Z"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["untracked_seconds"] == pytest.approx(12 * 3600.0)
+
+
+async def test_by_category_untracked_seconds_unmapped_activity_source_still_counts_as_tracked():
+    """An activity-layer episode from an unmapped source produces no bucket
+    but must still count as 'recorded' for untracked-seconds purposes."""
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        _make_episode_row(
+            source_name="totally.unknown.source",
+            episode_type="mystery",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=2),
+            layer="activity",
+        )
+    ]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            _BY_CATEGORY,
+            params={"start_at": "2024-03-15T00:00:00Z", "end_at": "2024-03-16T00:00:00Z"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["buckets"] == []
+    assert data["untracked_seconds"] == pytest.approx(14 * 3600.0)
+
+
+async def test_by_category_untracked_seconds_intent_layer_does_not_reduce_untracked():
+    """An uncorroborated calendar (intent-layer) block never reduces
+    untracked_seconds — only activity-layer episodes count as evidence."""
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        _make_episode_row(
+            source_name="google_calendar.completed",
+            episode_type="scheduled_block",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=5),
+            layer="intent",
+        )
+    ]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            _BY_CATEGORY,
+            params={"start_at": "2024-03-15T00:00:00Z", "end_at": "2024-03-16T00:00:00Z"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["untracked_seconds"] == pytest.approx(16 * 3600.0)
+
+
+async def test_by_category_untracked_seconds_tombstoned_activity_not_counted_as_tracked():
+    """A tombstoned activity episode (surfaced via include_tombstoned=true)
+    must not count as evidence for untracked-seconds purposes."""
+    day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
+    rows = [
+        _make_episode_row(
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=4),
+            tombstone_at=day_start - timedelta(hours=1),
+        )
+    ]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            _BY_CATEGORY,
+            params={
+                "start_at": "2024-03-15T00:00:00Z",
+                "end_at": "2024-03-16T00:00:00Z",
+                "include_tombstoned": "true",
+            },
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # Bucket is still populated (existing include_tombstoned contract)...
+    assert len(data["buckets"]) == 1
+    # ...but the tombstoned episode contributes nothing to "tracked" time.
+    assert data["untracked_seconds"] == pytest.approx(16 * 3600.0)
+
+
+async def test_by_category_untracked_seconds_nap_counts_as_tracked_without_special_casing():
+    """A daytime sleep episode is activity-layer too — it reduces untracked
+    like any other activity episode, no 'minus sleep' special-casing needed."""
+    day_start = datetime(2024, 3, 15, 13, 0, 0, tzinfo=_UTC)
+    rows = [
+        _make_episode_row(
+            source_name="google_health.measurements",
+            episode_type="sleep_episode",
+            start_at=day_start,
+            end_at=day_start + timedelta(hours=1),
+        )
+    ]
+    app, _ = _build_app(rows)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            _BY_CATEGORY,
+            params={"start_at": "2024-03-15T00:00:00Z", "end_at": "2024-03-16T00:00:00Z"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["untracked_seconds"] == pytest.approx(15 * 3600.0)
+
+
+# ---------------------------------------------------------------------------
 # OTel span tests
 # ---------------------------------------------------------------------------
 

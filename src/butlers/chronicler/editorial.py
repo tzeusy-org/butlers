@@ -581,22 +581,23 @@ async def _fetch_sleep_median_prior_week(
 
 
 def _waking_overlap_minutes(gap_start_utc: datetime, gap_end_utc: datetime, tz: tzinfo) -> int:
-    """Return minutes of a UTC gap that overlap local waking windows."""
-    if gap_start_utc >= gap_end_utc:
-        return 0
-    local_start = gap_start_utc.astimezone(tz)
-    local_end = gap_end_utc.astimezone(tz)
-    cursor = local_start.date()
-    total_seconds = 0.0
-    while cursor <= local_end.date():
-        waking_start = datetime.combine(cursor, time(WAKING_HOUR_START), tzinfo=tz).astimezone(UTC)
-        waking_end = datetime.combine(cursor, time(WAKING_HOUR_END), tzinfo=tz).astimezone(UTC)
-        clipped_start = max(gap_start_utc, waking_start)
-        clipped_end = min(gap_end_utc, waking_end)
-        if clipped_start < clipped_end:
-            total_seconds += (clipped_end - clipped_start).total_seconds()
-        cursor += timedelta(days=1)
-    return int(total_seconds // 60)
+    """Return minutes of a UTC gap that overlap local waking windows.
+
+    Delegates to ``aggregations.waking_overlap_seconds`` (bu-whhll.13), which
+    generalized this originally-single-gap loop into a shared helper also
+    used by the aggregate/by-category ``untracked_seconds`` slice — reuse,
+    not a fork, of the same union-based gap math.
+    """
+    from butlers.chronicler.aggregations import waking_overlap_seconds
+
+    seconds = waking_overlap_seconds(
+        gap_start_utc,
+        gap_end_utc,
+        tz,
+        waking_hour_start=WAKING_HOUR_START,
+        waking_hour_end=WAKING_HOUR_END,
+    )
+    return int(seconds // 60)
 
 
 def _detect_waking_gaps(

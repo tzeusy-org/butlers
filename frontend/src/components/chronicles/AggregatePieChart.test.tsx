@@ -76,9 +76,11 @@ function makeBucket(
   }
 }
 
-function render(buckets: ChroniclerCategoryBucket[]): string {
+function render(buckets: ChroniclerCategoryBucket[], untrackedSeconds?: number): string {
   _lastPieData = []
-  return renderToStaticMarkup(<AggregatePieChart buckets={buckets} />)
+  return renderToStaticMarkup(
+    <AggregatePieChart buckets={buckets} untrackedSeconds={untrackedSeconds} />,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -239,5 +241,73 @@ describe("AggregatePieChart — all-categories legend (bu-p4vd3)", () => {
     expect(html).not.toContain('pie-legend-empty-play')
     // Other lanes are empty.
     expect(html).toContain('pie-legend-empty-work')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Untracked slice (bu-whhll.13 — pie-chart honesty)
+// ---------------------------------------------------------------------------
+
+describe("AggregatePieChart — untracked slice (bu-whhll.13)", () => {
+  it("omits the untracked slice when untrackedSeconds is 0 or absent", () => {
+    render([makeBucket("work", 3600)])
+    expect(_lastPieData.length).toBe(1)
+    expect(_lastPieData.some((d) => d.isUntracked)).toBe(false)
+
+    render([makeBucket("work", 3600)], 0)
+    expect(_lastPieData.length).toBe(1)
+  })
+
+  it("appends an untracked slice after category slices when untrackedSeconds > 0", () => {
+    render([makeBucket("work", 3600), makeBucket("sleep", 1800)], 5400)
+    expect(_lastPieData.length).toBe(3)
+    const untrackedSlice = _lastPieData[2]
+    expect(untrackedSlice.isUntracked).toBe(true)
+    expect(untrackedSlice.category).toBe("untracked")
+    expect(untrackedSlice.value).toBe(5400)
+    expect(untrackedSlice.name).toBe("Untracked")
+  })
+
+  it("includes untrackedSeconds in _total so percentages account for it", () => {
+    render([makeBucket("work", 3600)], 3600)
+    // total = 3600 (work) + 3600 (untracked) = 7200; each slice is 50%.
+    expect(_lastPieData[0]._total).toBe(7200)
+    expect(_lastPieData[1]._total).toBe(7200)
+  })
+
+  it("renders a 100%-untracked pie (not the empty state) when buckets is empty but untrackedSeconds > 0", () => {
+    const html = render([], 57600)
+    expect(html).not.toContain("pie-empty-state")
+    expect(html).toContain("pie-chart-container")
+    expect(_lastPieData.length).toBe(1)
+    expect(_lastPieData[0].isUntracked).toBe(true)
+    expect(_lastPieData[0].value).toBe(57600)
+  })
+
+  it("still renders the empty state when both buckets and untrackedSeconds are empty/zero", () => {
+    const html = render([], 0)
+    expect(html).toContain("pie-empty-state")
+  })
+
+  it("clamps a negative untrackedSeconds to zero (no untracked slice, no crash)", () => {
+    render([makeBucket("work", 3600)], -100)
+    expect(_lastPieData.length).toBe(1)
+  })
+
+  it("renders the untracked legend chip with its formatted duration", () => {
+    const html = render([makeBucket("work", 3600)], 7200)
+    expect(html).toContain("pie-untracked-legend")
+    expect(html).toContain("Untracked")
+    expect(html).toContain("2h")
+  })
+
+  it("does not render the untracked legend chip when untrackedSeconds is 0", () => {
+    const html = render([makeBucket("work", 3600)], 0)
+    expect(html).not.toContain("pie-untracked-legend")
+  })
+
+  it("defines the untracked hatch pattern in SVG defs", () => {
+    const html = render([makeBucket("work", 3600)], 3600)
+    expect(html).toContain("pie-untracked-hatch")
   })
 })

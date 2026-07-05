@@ -42,8 +42,10 @@ from butlers.chronicler.aggregations import (
     lane_for_activity,
     lane_for_category,
     union_seconds,
+    untracked_seconds_for_window,
 )
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
+from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START
 from butlers.chronicler.storage import (
     get_routine,
     list_routines,
@@ -1173,7 +1175,7 @@ async def aggregate_by_category(
         )
 
     try:
-        zoneinfo.ZoneInfo(tz)
+        tz_info = zoneinfo.ZoneInfo(tz)
     except (zoneinfo.ZoneInfoNotFoundError, KeyError):
         return JSONResponse(
             status_code=400,
@@ -1264,6 +1266,12 @@ async def aggregate_by_category(
             }
         )
 
+        # Every non-tombstoned activity-layer episode's window-clipped span,
+        # regardless of whether its source resolves to a lane. Feeds
+        # untracked_seconds_for_window below (bu-whhll.13): "was anything
+        # recorded" is a broader question than "did it resolve to a lane".
+        activity_intervals: list[tuple[datetime, datetime]] = []
+
         for row in rows:
             ep_start: datetime = row["start_at"]
             ep_end: datetime | None = row["end_at"]
@@ -1276,8 +1284,21 @@ async def aggregate_by_category(
             ep_layer: str = row["layer"]
             ep_confidence: str = row["confidence"]
 
-            # Only activity-layer episodes count; intent (calendar) and evidence
-            # rows resolve to None and are dropped (the "calendar = 5h" fix).
+            # Clip open episodes to query_end.
+            ep_end_resolved = ep_end if ep_end is not None else end_at
+
+            # Duration = LEAST(end_at, query_end) - GREATEST(start_at, query_start), clamped at 0.
+            overlap_start = max(ep_start, start_at)
+            overlap_end = min(ep_end_resolved, end_at)
+            if overlap_end <= overlap_start:
+                continue
+
+            if ep_layer == "activity" and not is_tombstoned:
+                activity_intervals.append((overlap_start, overlap_end))
+
+            # Only activity-layer episodes count toward a lane bucket; intent
+            # (calendar) and evidence rows resolve to None and are dropped
+            # (the "calendar = 5h" fix).
             ep_lane = lane_for_activity(
                 ep_layer, source_name, episode_type, trigger_source=row_trigger_source
             )
@@ -1289,15 +1310,6 @@ async def aggregate_by_category(
                         episode_type,
                     )
                     span.set_attribute("chronicler.aggregate.unmapped_source", source_name)
-                continue
-
-            # Clip open episodes to query_end.
-            ep_end_resolved = ep_end if ep_end is not None else end_at
-
-            # Duration = LEAST(end_at, query_end) - GREATEST(start_at, query_start), clamped at 0.
-            overlap_start = max(ep_start, start_at)
-            overlap_end = min(ep_end_resolved, end_at)
-            if overlap_end <= overlap_start:
                 continue
 
             bucket_key = (ep_lane, source_name)
@@ -1367,12 +1379,26 @@ async def aggregate_by_category(
 
         span.set_attribute("chronicler.aggregate.bucket_count", len(result_buckets))
 
+        # Untracked-slice math (bu-whhll.13): waking-window seconds not covered
+        # by any activity-layer episode, so the pie can render an honest
+        # 'untracked' slice instead of renormalising over tracked evidence only.
+        untracked_seconds = untracked_seconds_for_window(
+            activity_intervals,
+            start_at,
+            end_at,
+            tz_info,
+            waking_hour_start=WAKING_HOUR_START,
+            waking_hour_end=WAKING_HOUR_END,
+        )
+        span.set_attribute("chronicler.aggregate.untracked_seconds", untracked_seconds)
+
         return ApiResponse[CategoryBuckets](
             data=CategoryBuckets(
                 start_at=start_at,
                 end_at=end_at,
                 tz=tz,
                 buckets=result_buckets,
+                untracked_seconds=untracked_seconds,
             )
         )
 

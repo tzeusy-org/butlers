@@ -23,6 +23,8 @@ from butlers.chronicler.aggregations import (
     lane_for_activity,
     lane_for_category,
     union_seconds,
+    untracked_seconds_for_window,
+    waking_overlap_seconds,
 )
 from butlers.chronicler.contracts import INITIAL_SOURCES
 from butlers.chronicler.models import Compatibility
@@ -231,6 +233,118 @@ def test_union_seconds_caps_overlapping_at_window() -> None:
     day_end = day_start + timedelta(hours=24)
     timed = (day_start + timedelta(hours=13), day_start + timedelta(hours=15))
     assert union_seconds([(day_start, day_end), timed]) == 24 * 3600
+
+
+# ── waking_overlap_seconds / untracked_seconds_for_window (bu-whhll.13) ─────
+
+
+def test_waking_overlap_seconds_full_calendar_day() -> None:
+    """A full UTC calendar day overlaps 16h of a 06:00-22:00 waking window."""
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    seconds = waking_overlap_seconds(start, end, UTC, waking_hour_start=6, waking_hour_end=22)
+    assert seconds == 16 * 3600
+
+
+def test_waking_overlap_seconds_gap_entirely_within_waking_hours() -> None:
+    seconds = waking_overlap_seconds(_dt(10), _dt(14), UTC, waking_hour_start=6, waking_hour_end=22)
+    assert seconds == 4 * 3600
+
+
+def test_waking_overlap_seconds_gap_entirely_outside_waking_hours() -> None:
+    # 23:00-05:00 overnight gap has zero overlap with 06:00-22:00.
+    gap_start = datetime(2026, 6, 19, 23, 0, tzinfo=UTC)
+    gap_end = datetime(2026, 6, 20, 5, 0, tzinfo=UTC)
+    seconds = waking_overlap_seconds(
+        gap_start, gap_end, UTC, waking_hour_start=6, waking_hour_end=22
+    )
+    assert seconds == 0.0
+
+
+def test_waking_overlap_seconds_multi_day_window() -> None:
+    """A 3-day window accumulates 16h/day of waking overlap."""
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(days=3)
+    seconds = waking_overlap_seconds(start, end, UTC, waking_hour_start=6, waking_hour_end=22)
+    assert seconds == 3 * 16 * 3600
+
+
+def test_untracked_seconds_for_window_no_activity_is_full_waking_window() -> None:
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    untracked = untracked_seconds_for_window(
+        [], start, end, UTC, waking_hour_start=6, waking_hour_end=22
+    )
+    assert untracked == 16 * 3600
+
+
+def test_untracked_seconds_for_window_full_coverage_is_zero() -> None:
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    activity = [(_dt(6), _dt(22))]
+    untracked = untracked_seconds_for_window(
+        activity, start, end, UTC, waking_hour_start=6, waking_hour_end=22
+    )
+    assert untracked == 0.0
+
+
+def test_untracked_seconds_for_window_partial_coverage() -> None:
+    """4h of evidence inside a 16h waking window leaves 12h untracked —
+    the pie-chart honesty regression (bu-whhll.13): a 4h-evidence day must
+    not renormalise to a full day."""
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    activity = [(_dt(9), _dt(13))]
+    untracked = untracked_seconds_for_window(
+        activity, start, end, UTC, waking_hour_start=6, waking_hour_end=22
+    )
+    assert untracked == 12 * 3600
+
+
+def test_untracked_seconds_for_window_activity_outside_waking_hours_is_free() -> None:
+    """An overnight activity episode (e.g. sleep) outside the waking window
+    contributes nothing to tracked time and does not reduce untracked."""
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    overnight = [(datetime(2026, 6, 19, 0, 0, tzinfo=UTC), _dt(6))]
+    untracked = untracked_seconds_for_window(
+        overnight, start, end, UTC, waking_hour_start=6, waking_hour_end=22
+    )
+    assert untracked == 16 * 3600
+
+
+def test_untracked_seconds_for_window_nap_during_waking_hours_counts_as_tracked() -> None:
+    """A daytime nap is activity-layer too — it reduces untracked without any
+    'minus sleep' special-casing (sleep is just another activity interval)."""
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    nap = [(_dt(13), _dt(14))]  # 1h nap, fully inside waking hours
+    untracked = untracked_seconds_for_window(
+        nap, start, end, UTC, waking_hour_start=6, waking_hour_end=22
+    )
+    assert untracked == 15 * 3600
+
+
+def test_untracked_seconds_for_window_overlapping_intervals_union_not_sum() -> None:
+    """Two overlapping activity spans union, not double-count, tracked time."""
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    activity = [(_dt(9), _dt(12)), (_dt(11), _dt(14))]  # union = [9,14) = 5h
+    untracked = untracked_seconds_for_window(
+        activity, start, end, UTC, waking_hour_start=6, waking_hour_end=22
+    )
+    assert untracked == 16 * 3600 - 5 * 3600
+
+
+def test_untracked_seconds_for_window_clamped_at_zero() -> None:
+    """Activity spanning the whole window never makes untracked negative."""
+    start = datetime(2026, 6, 19, 0, 0, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    activity = [(start, end)]
+    untracked = untracked_seconds_for_window(
+        activity, start, end, UTC, waking_hour_start=6, waking_hour_end=22
+    )
+    assert untracked == 0.0
 
 
 _AGGREGATIONS_MODULE = (
