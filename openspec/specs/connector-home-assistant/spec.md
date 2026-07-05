@@ -303,3 +303,10 @@ The connector persists filtered events per the base connector contract.
 - **WHEN** an HA event is filtered
 - **THEN** the `filter_reason` SHALL include the filter layer and specifics: `"domain_excluded:<domain>"` for layer 1, `"insignificant_delta:<device_class>:<delta>"` for layer 2, `"discretion_ignore"` for layer 3
 - **AND** the `full_payload` SHALL contain the complete HA event data for potential replay
+
+#### Scenario: Global ingestion policy pre-check for non-person domains
+- **WHEN** a non-`person` domain event passes all three local filter layers
+- **THEN** the connector SHALL evaluate the shared `global`-scope `IngestionPolicyEvaluator` locally, before calling Switchboard `ingest()`
+- **AND** if the resolved action is `skip`, the connector SHALL self-persist the event to `connectors.filtered_events` with `filter_reason` `"global_rule:skip:<rule_type>"` (per `connector-filtered-events`) and SHALL NOT call `ingest()`
+- **AND** any other resolved action (e.g. `pass_through`) SHALL proceed to `ingest()` unchanged
+- **AND** `person` domain events SHALL always proceed to `ingest()` regardless of the global policy, since they feed the presence/history evidence table

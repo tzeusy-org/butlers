@@ -17,6 +17,18 @@ Layer 2 — Significance threshold
 Layer 3 — Discretion evaluator
     ``"discretion_ignore"``
 
+Global ingestion policy (pre-ingest, bu-416vk)
+    ``"global_rule:skip:<rule_type>"``
+    e.g. ``"global_rule:skip:source_channel"``
+
+    Unlike the three local layers above, this is not a HA-specific filter —
+    it mirrors the pre-ingest global-policy pre-check every other multi-scope
+    connector (gmail, google_calendar, telegram_bot, telegram_user_client,
+    discord_user, whatsapp_user_client) performs locally so a "skip" decision
+    is self-persisted here instead of only reaching the Switchboard's
+    post-ingest evaluation (which drops the payload into
+    ``public.ingestion_events`` with no ``connectors.filtered_events`` trace).
+
 Usage in the HA connector::
 
     from butlers.connectors.home_assistant_filter import HAFilterPersistence
@@ -124,6 +136,18 @@ def reason_discretion_ignore() -> str:
     Format: ``"discretion_ignore"``
     """
     return "discretion_ignore"
+
+
+def reason_global_skip(rule_type: str) -> str:
+    """Return filter reason for a global ingestion-policy "skip" decision.
+
+    Format: ``"global_rule:skip:<rule_type>"``
+
+    Args:
+        rule_type: The matched global rule's ``rule_type``
+            (e.g. ``"source_channel"``), or ``"unknown"`` if unmatched.
+    """
+    return FilteredEventBuffer.reason_policy_rule("global_rule", "skip", rule_type)
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +393,60 @@ class HAFilterPersistence:
             sender_identity=entity_id,
             subject_or_preview=f"HA discretion ignore: {entity_id}",
             filter_reason=reason_discretion_ignore(),
+            full_payload=ha_full_payload(
+                endpoint_identity=self._endpoint_identity,
+                entity_id=entity_id,
+                time_fired=time_fired,
+                ha_event=ha_event,
+                friendly_name=friendly_name,
+                old_state=old_state,
+                new_state=new_state,
+                domain=domain,
+                device_class=device_class,
+                event_type=event_type,
+            ),
+        )
+
+    def record_global_skip(
+        self,
+        *,
+        entity_id: str,
+        rule_type: str,
+        ha_event: dict[str, Any],
+        time_fired: str,
+        friendly_name: str | None = None,
+        old_state: dict[str, Any] | None = None,
+        new_state: dict[str, Any] | None = None,
+        domain: str | None = None,
+        device_class: str | None = None,
+        event_type: str = "state_changed",
+    ) -> None:
+        """Record a global ingestion-policy "skip" decision (bu-416vk).
+
+        Persisted locally (pre-ingest) for non-person domains so the skip
+        decision is visible in ``connectors.filtered_events`` instead of only
+        landing payload-less in ``public.ingestion_events`` via the
+        Switchboard's post-ingest global-policy evaluation.
+
+        Args:
+            entity_id: HA entity ID.
+            rule_type: The matched global rule's ``rule_type``
+                (e.g. ``"source_channel"``), or ``"unknown"`` if unmatched.
+            ha_event: Raw HA event dict.
+            time_fired: ISO 8601 event timestamp.
+            friendly_name: Entity friendly name (optional).
+            old_state: Old state dict (optional).
+            new_state: New state dict (optional).
+            domain: Entity domain (optional; derived from entity_id if omitted).
+            device_class: Entity device class (optional).
+            event_type: HA event type (default ``"state_changed"``).
+        """
+        self._buffer.record(
+            external_message_id=f"ha:{entity_id}:{time_fired}",
+            source_channel=CONNECTOR_CHANNEL,
+            sender_identity=entity_id,
+            subject_or_preview=f"HA global policy skip: {entity_id}",
+            filter_reason=reason_global_skip(rule_type),
             full_payload=ha_full_payload(
                 endpoint_identity=self._endpoint_identity,
                 entity_id=entity_id,

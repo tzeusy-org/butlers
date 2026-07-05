@@ -83,6 +83,7 @@ from butlers.connectors.home_assistant_wellness import (
 )
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 if TYPE_CHECKING:
     pass
@@ -1817,6 +1818,15 @@ async def _main() -> None:
         submit_fn=_submit_envelope_for_replay,
     )
 
+    # Global ingestion policy evaluator (bu-416vk): pre-checked locally for
+    # non-person domains so a "skip" decision is self-persisted to
+    # connectors.filtered_events before ingest() is called, matching the
+    # pattern used by gmail/google_calendar/telegram_bot/telegram_user_client/
+    # discord_user/whatsapp_user_client. Fail-open (empty rule set) if the DB
+    # pool is unavailable.
+    global_ingestion_policy = IngestionPolicyEvaluator(scope="global", db_pool=db_pool)
+    await global_ingestion_policy.ensure_loaded()
+
     # ------------------------------------------------------------------
     # Tasks 3.1–3.6 + 5–9: Real event dispatch (WS + REST fallback share it)
     # ------------------------------------------------------------------
@@ -1830,6 +1840,7 @@ async def _main() -> None:
         endpoint_identity=endpoint_identity,
         resume_ts=resume_ts,
         ha_filter_persistence=ha_filter_persistence,
+        global_ingestion_policy=global_ingestion_policy,
     )
 
     # Reorder buffer: HA can deliver events slightly out of time_fired order
@@ -1936,6 +1947,7 @@ def _make_event_dispatcher(
     endpoint_identity: str,
     resume_ts: Any,
     ha_filter_persistence: Any,
+    global_ingestion_policy: IngestionPolicyEvaluator | None = None,
 ) -> _EventDispatch:
     """Build the HA event dispatcher shared by the WS client and REST poller.
 
@@ -2149,6 +2161,47 @@ def _make_event_dispatcher(
                 )
             await ha_filter_persistence.flush()
             return
+
+        # Non-person domains: pre-check the global ingestion policy locally so
+        # a "skip" decision is self-persisted to connectors.filtered_events
+        # instead of silently reaching Switchboard ingest() and landing
+        # payload-less in public.ingestion_events (bu-416vk). Mirrors the
+        # pre-ingest global-policy check every other multi-scope connector
+        # (gmail, google_calendar, telegram_bot, telegram_user_client,
+        # discord_user, whatsapp_user_client) already performs. The person
+        # domain is exempt: person.* events feed presence/history persistence
+        # (bu-bm2pm territory) and must always reach ingest() regardless of
+        # global policy.
+        if domain != "person" and global_ingestion_policy is not None:
+            policy_envelope = IngestionEnvelope(
+                source_channel=_CONNECTOR_CHANNEL,
+                raw_key=entity_id,
+            )
+            try:
+                global_decision = global_ingestion_policy.evaluate(policy_envelope)
+            except Exception:
+                logger.warning(
+                    "ha-connector: global policy evaluation failed for entity_id=%s",
+                    entity_id,
+                    exc_info=True,
+                )
+                global_decision = None
+
+            if global_decision is not None and global_decision.action == "skip":
+                connector.on_event_received(passed_all_filters=False)
+                ha_filter_persistence.record_global_skip(
+                    entity_id=entity_id,
+                    rule_type=global_decision.matched_rule_type or "unknown",
+                    ha_event=event,
+                    time_fired=time_fired,
+                    friendly_name=friendly_name,
+                    old_state=old_state_data or None,
+                    new_state=new_state_data or None,
+                    domain=domain,
+                    device_class=device_class,
+                )
+                await ha_filter_persistence.flush()
+                return
 
         # Event passed all filters — build envelope and submit to Switchboard
         connector.on_event_received(passed_all_filters=True)
