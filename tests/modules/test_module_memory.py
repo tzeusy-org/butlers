@@ -87,6 +87,44 @@ class TestLifecycle:
         mod._db = fake_db
         assert mod._get_pool() is fake_db.pool
 
+    async def test_on_startup_context_hook_enables_fleet_knowledge(self, monkeypatch):
+        """The real trigger-time context hook (bu-qvnce.15) requests the
+
+        Fleet Knowledge section on every call — this is the "first consumer"
+        landing for the cross-butler discovery catalog. Direct memory_context()
+        callers (MCP tool, tests) keep the conservative default=False.
+        """
+        mod = MemoryModule()
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock(name="fake_pool")
+
+        captured_hook: dict[str, Any] = {}
+
+        def _fake_register_memory_context(fn):
+            captured_hook["hook"] = fn
+
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.register_memory_context",
+            _fake_register_memory_context,
+        )
+        monkeypatch.setattr("butlers.core.memory_hooks.register_memory_forget", lambda fn: None)
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.register_memory_store_episode", lambda fn: None
+        )
+
+        await mod.on_startup(config=None, db=fake_db)
+        assert "hook" in captured_hook
+
+        mod._get_embedding_engine = MagicMock(return_value=MagicMock())
+        context_mock = AsyncMock(return_value="# Memory Context\n")
+        monkeypatch.setattr("butlers.modules.memory.tools.context.memory_context", context_mock)
+
+        result = await captured_hook["hook"](fake_db.pool, "general", "prompt")
+
+        assert result == "# Memory Context\n"
+        _, kwargs = context_mock.call_args
+        assert kwargs.get("include_fleet_knowledge") is True
+
 
 # ---------------------------------------------------------------------------
 # Tool registration
@@ -349,6 +387,7 @@ class TestToolDelegation:
 
         fake_db = MagicMock()
         fake_db.pool = MagicMock(name="fake_pool")
+        fake_db.schema = "test-butler"
 
         # Create sub-module mocks with AsyncMock defaults for all functions
         mock_writing = MagicMock()
@@ -431,8 +470,8 @@ class TestToolDelegation:
             request_context=None,
             retention_class="operational",
             sensitivity="normal",
-            enable_shared_catalog=False,
-            source_schema=None,
+            enable_shared_catalog=True,
+            source_schema="test-butler",
         )
 
     @pytest.mark.parametrize(
@@ -500,6 +539,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
         mod = MemoryModule()
         fake_db = MagicMock()
         fake_db.pool = MagicMock(name="fake_pool")
+        fake_db.schema = "test-butler"
         mock_writing = MagicMock()
 
         parent_mock = MagicMock()
@@ -583,8 +623,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             request_context=None,
             retention_class="operational",
             sensitivity="normal",
-            enable_shared_catalog=False,
-            source_schema=None,
+            enable_shared_catalog=True,
+            source_schema="test-butler",
         )
 
     async def test_explicit_entity_id_takes_precedence_over_routing_ctx(self):
@@ -623,8 +663,8 @@ class TestMemoryStoreFactSenderEntityIdFallback:
             request_context=None,
             retention_class="operational",
             sensitivity="normal",
-            enable_shared_catalog=False,
-            source_schema=None,
+            enable_shared_catalog=True,
+            source_schema="test-butler",
         )
 
     async def test_routing_ctx_missing_source_entity_id_key_rejects(self):

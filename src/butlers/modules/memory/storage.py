@@ -399,6 +399,160 @@ async def _mark_catalog_stale(
     )
 
 
+async def _backfill_facts_to_catalog(
+    pool: Pool,
+    *,
+    source_schema: str,
+    limit: int,
+) -> int:
+    """Upsert up to *limit* not-yet-cataloged active facts into public.memory_catalog.
+
+    Reuses each fact row's already-computed ``embedding`` column directly
+    (server-side, via ``INSERT ... SELECT``) rather than recomputing it with
+    an ``EmbeddingEngine`` — the original write already generated the vector,
+    and this keeps the backfill job free of any embedding-engine dependency.
+    """
+    search_text_expr = "(c.subject || ' ' || c.predicate || ' ' || c.content)"
+    sql = f"""
+        WITH candidates AS (
+            SELECT f.id, f.subject, f.predicate, f.content, f.embedding,
+                   f.entity_id, f.object_entity_id, f.scope, f.valid_at,
+                   f.confidence, f.importance, f.retention_class, f.sensitivity,
+                   f.source_butler, f.tenant_id
+            FROM facts f
+            WHERE f.validity = 'active'
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.memory_catalog mc
+                  WHERE mc.source_schema = $1
+                    AND mc.source_table = 'facts'
+                    AND mc.source_id = f.id
+              )
+            ORDER BY f.created_at
+            LIMIT $2
+        ),
+        inserted AS (
+            INSERT INTO public.memory_catalog (
+                source_schema, source_table, source_id, source_butler, tenant_id,
+                entity_id, summary, embedding, search_vector, memory_type,
+                title, predicate, scope, valid_at, confidence, importance,
+                retention_class, sensitivity, object_entity_id, updated_at
+            )
+            SELECT
+                $1, 'facts', c.id, c.source_butler, c.tenant_id,
+                c.entity_id,
+                c.subject || ' ' || c.predicate || ': ' || c.content,
+                c.embedding,
+                {tsvector_sql(search_text_expr)},
+                'fact',
+                c.subject || ' ' || c.predicate,
+                c.predicate, c.scope, c.valid_at, c.confidence, c.importance,
+                c.retention_class, c.sensitivity, c.object_entity_id, now()
+            FROM candidates c
+            ON CONFLICT (source_schema, source_table, source_id) DO NOTHING
+            RETURNING 1
+        )
+        SELECT COUNT(*) FROM inserted
+    """
+    count = await pool.fetchval(sql, source_schema, limit)
+    return int(count or 0)
+
+
+async def _backfill_rules_to_catalog(
+    pool: Pool,
+    *,
+    source_schema: str,
+    limit: int,
+) -> int:
+    """Upsert up to *limit* not-yet-cataloged, non-forgotten rules into the catalog.
+
+    Excludes rules soft-deleted via ``memory_forget`` (``metadata.forgotten =
+    true``) — those should not surface as discoverable cross-butler knowledge.
+    """
+    sql = f"""
+        WITH candidates AS (
+            SELECT r.id, r.content, r.embedding, r.scope, r.confidence,
+                   r.tenant_id, r.source_butler
+            FROM rules r
+            WHERE COALESCE(r.metadata ->> 'forgotten', 'false') <> 'true'
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.memory_catalog mc
+                  WHERE mc.source_schema = $1
+                    AND mc.source_table = 'rules'
+                    AND mc.source_id = r.id
+              )
+            ORDER BY r.created_at
+            LIMIT $2
+        ),
+        inserted AS (
+            INSERT INTO public.memory_catalog (
+                source_schema, source_table, source_id, source_butler, tenant_id,
+                entity_id, summary, embedding, search_vector, memory_type,
+                title, scope, confidence, updated_at
+            )
+            SELECT
+                $1, 'rules', c.id, c.source_butler, c.tenant_id,
+                NULL,
+                c.content,
+                c.embedding,
+                {tsvector_sql("c.content")},
+                'rule',
+                LEFT(c.content, 100), c.scope, c.confidence, now()
+            FROM candidates c
+            ON CONFLICT (source_schema, source_table, source_id) DO NOTHING
+            RETURNING 1
+        )
+        SELECT COUNT(*) FROM inserted
+    """
+    count = await pool.fetchval(sql, source_schema, limit)
+    return int(count or 0)
+
+
+async def run_memory_catalog_backfill(
+    pool: Pool,
+    *,
+    source_schema: str,
+    batch_size: int = 200,
+) -> dict[str, Any]:
+    """Idempotently backfill this butler's existing facts/rules into public.memory_catalog.
+
+    ``enable_shared_catalog`` defaulted to ``False`` for most of the catalog's
+    life (see docs/redesigns/2026-07-04-jarvis-pursuit.md #15), so facts and
+    rules written before the flip have no catalog row. This drains that
+    backlog in bounded batches — safe to call repeatedly (e.g. from a
+    recurring scheduled job): rows already present in the catalog are skipped
+    via ``NOT EXISTS`` against the ``UNIQUE(source_schema, source_table,
+    source_id)`` key, so each call only picks up the still-missing tail.
+
+    Deliberately does NOT open one giant transaction across the full backlog —
+    each table's batch is a single bounded ``INSERT ... SELECT ... LIMIT``
+    statement, so a run never holds locks across thousands of rows.
+
+    Args:
+        pool: asyncpg connection pool scoped (via search_path) to the owning
+            butler's schema — ``facts``/``rules`` are queried unqualified.
+        source_schema: The owning butler's schema name, used as the
+            catalog's ``source_schema`` provenance column. Must match the
+            value the live write-behind path uses for this butler (see
+            ``MemoryModule.register_tools``'s ``effective_catalog_source_schema``).
+        batch_size: Max rows to backfill per table per call (default 200).
+
+    Returns:
+        Dict with ``facts_backfilled``, ``rules_backfilled``, and
+        ``source_schema``.
+    """
+    facts_backfilled = await _backfill_facts_to_catalog(
+        pool, source_schema=source_schema, limit=batch_size
+    )
+    rules_backfilled = await _backfill_rules_to_catalog(
+        pool, source_schema=source_schema, limit=batch_size
+    )
+    return {
+        "source_schema": source_schema,
+        "facts_backfilled": facts_backfilled,
+        "rules_backfilled": rules_backfilled,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Public API — Storage
 # ---------------------------------------------------------------------------

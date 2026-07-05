@@ -379,6 +379,179 @@ def test_fact_supersession_marks_catalog_entry_stale(memory_migrated_db: str) ->
     assert new_id in result["after_ids"]
 
 
+async def _backfill_and_search_catalog(db_url: str) -> dict:
+    """Store a fact/rule/retracted-fact/forgotten-rule WITHOUT catalog write-behind,
+    then verify ``run_memory_catalog_backfill`` is the only path that catalogs them.
+
+    Regression coverage for bu-qvnce.15 (memory_catalog default-on + backfill):
+    the ~3,600 pre-flip facts/rules predate write-behind, so the backfill job
+    is the only mechanism that ever catalogs them.
+    """
+    from butlers.modules.memory.search import search_catalog
+    from butlers.modules.memory.storage import (
+        forget_memory,
+        run_memory_catalog_backfill,
+        store_fact,
+        store_rule,
+    )
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+
+        # Active fact/rule stored with catalog write-behind OFF — simulates the
+        # pre-flip backlog. Also a retracted fact and a forgotten rule, which
+        # backfill must never catalog.
+        fact = await store_fact(
+            pool,
+            subject="bob",
+            predicate="favorite_color",
+            content="green",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=False,
+        )
+        fact_id = fact["id"]
+
+        rule_id = await store_rule(
+            pool,
+            content="Always confirm before booking travel",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=False,
+        )
+
+        retracted_fact = await store_fact(
+            pool,
+            subject="carol",
+            predicate="favorite_color",
+            content="purple",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=False,
+        )
+        retracted_fact_id = retracted_fact["id"]
+        await forget_memory(pool, "fact", retracted_fact_id)
+
+        forgotten_rule_id = await store_rule(
+            pool,
+            content="Never mention the surprise party",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=False,
+        )
+        await forget_memory(pool, "rule", forgotten_rule_id)
+
+        # "Before" existence check for the specific rows this test cares about
+        # (the shared module-scoped fixture DB may already carry catalog rows
+        # from other tests in this module, so a table-wide COUNT would be
+        # order-dependent — check these exact ids instead).
+        fact_cataloged_before = await pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1)",
+            fact_id,
+        )
+        rule_cataloged_before = await pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1)",
+            rule_id,
+        )
+
+        result = await run_memory_catalog_backfill(pool, source_schema="public", batch_size=200)
+
+        # Idempotent re-run: nothing new to backfill the second time.
+        result_rerun = await run_memory_catalog_backfill(
+            pool, source_schema="public", batch_size=200
+        )
+
+        fact_catalog_row = await pool.fetchrow(
+            "SELECT source_id FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact_id,
+        )
+        rule_catalog_row = await pool.fetchrow(
+            "SELECT source_id FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1",
+            rule_id,
+        )
+        retracted_catalog_row = await pool.fetchrow(
+            "SELECT source_id FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            retracted_fact_id,
+        )
+        forgotten_rule_catalog_row = await pool.fetchrow(
+            "SELECT source_id FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1",
+            forgotten_rule_id,
+        )
+
+        discovered = await search_catalog(
+            pool, "bob favorite_color", engine, tenant_id="shared", mode="keyword"
+        )
+
+        return {
+            "fact_cataloged_before": bool(fact_cataloged_before),
+            "rule_cataloged_before": bool(rule_cataloged_before),
+            "result": result,
+            "result_rerun": result_rerun,
+            "fact_cataloged": fact_catalog_row is not None,
+            "rule_cataloged": rule_catalog_row is not None,
+            "retracted_fact_cataloged": retracted_catalog_row is not None,
+            "forgotten_rule_cataloged": forgotten_rule_catalog_row is not None,
+            "fact_discoverable": any(r["source_id"] == fact_id for r in discovered),
+        }
+    finally:
+        await pool.close()
+
+
+def test_catalog_backfill_is_idempotent_and_excludes_retracted_forgotten(
+    memory_migrated_db: str,
+) -> None:
+    """run_memory_catalog_backfill catalogs active facts/rules, skips on re-run,
+    and never catalogs retracted facts or forgotten rules.
+
+    Note: the module-scoped ``memory_migrated_db`` fixture is shared with
+    other tests in this file, some of which also write facts/rules without
+    catalog write-behind (pre-flip-style backlog) — so the batch this test's
+    first backfill call drains may include more than just this test's own
+    rows. Assertions therefore check this test's specific ids rather than
+    exact backfilled counts (except the second call, which is deterministic:
+    nothing new appears between the two back-to-back calls in this test).
+    """
+    result = asyncio.run(_backfill_and_search_catalog(memory_migrated_db))
+
+    assert result["fact_cataloged_before"] is False
+    assert result["rule_cataloged_before"] is False
+
+    # First run catalogs at least this test's two active items (retracted
+    # fact and forgotten rule are excluded by the backfill's own filters).
+    assert result["result"]["facts_backfilled"] >= 1
+    assert result["result"]["rules_backfilled"] >= 1
+
+    # Re-run is a no-op: NOT EXISTS against the UNIQUE key skips already-cataloged rows.
+    assert result["result_rerun"]["facts_backfilled"] == 0
+    assert result["result_rerun"]["rules_backfilled"] == 0
+
+    assert result["fact_cataloged"] is True
+    assert result["rule_cataloged"] is True
+    assert result["retracted_fact_cataloged"] is False
+    assert result["forgotten_rule_cataloged"] is False
+    assert result["fact_discoverable"] is True
+
+
 async def _forget_fact_via_correction_and_read_event(db_url: str) -> dict:
     """Store a fact, retract it via a correction, and return the audit event + fact.
 

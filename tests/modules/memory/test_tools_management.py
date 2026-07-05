@@ -178,3 +178,92 @@ class TestMemoryContext:
                 request_context={"tenant_id": "health"},
             )
         assert captured["tenant_id"] == "health"
+
+
+# ---------------------------------------------------------------------------
+# memory_context — Fleet Knowledge (cross-butler catalog) section (bu-qvnce.15)
+# ---------------------------------------------------------------------------
+
+
+def _catalog_row(source_butler: str, title: str) -> dict:
+    return {
+        "id": uuid.uuid4(),
+        "source_schema": source_butler,
+        "source_table": "facts",
+        "source_id": uuid.uuid4(),
+        "source_butler": source_butler,
+        "memory_type": "fact",
+        "title": title,
+        "summary": f"{title} summary",
+        "rrf_score": 0.5,
+    }
+
+
+class TestMemoryContextFleetKnowledge:
+    async def _pool(self) -> AsyncMock:
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+        return pool
+
+    async def test_default_off_no_catalog_search(self) -> None:
+        pool = await self._pool()
+        with (
+            patch(
+                "butlers.modules.memory.tools.context._search.recall",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "butlers.modules.memory.tools.context._search.search_catalog",
+                new_callable=AsyncMock,
+            ) as mock_catalog,
+        ):
+            result = await memory_context(pool, MagicMock(), "prompt", "general")
+
+        mock_catalog.assert_not_called()
+        assert "Fleet Knowledge" not in result
+
+    async def test_include_fleet_knowledge_adds_section_excluding_own_butler(self) -> None:
+        pool = await self._pool()
+        own_row = _catalog_row("general", "Own knowledge")
+        other_row = _catalog_row("finance", "Budget rule")
+        with (
+            patch(
+                "butlers.modules.memory.tools.context._search.recall",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "butlers.modules.memory.tools.context._search.search_catalog",
+                new_callable=AsyncMock,
+                return_value=[own_row, other_row],
+            ),
+        ):
+            result = await memory_context(
+                pool, MagicMock(), "prompt", "general", include_fleet_knowledge=True
+            )
+
+        assert "## Fleet Knowledge (cross-butler)" in result
+        assert "Budget rule" in result
+        assert "Own knowledge" not in result
+
+    async def test_catalog_search_failure_degrades_to_empty_section(self) -> None:
+        pool = await self._pool()
+        with (
+            patch(
+                "butlers.modules.memory.tools.context._search.recall",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "butlers.modules.memory.tools.context._search.search_catalog",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("catalog table missing"),
+            ),
+        ):
+            result = await memory_context(
+                pool, MagicMock(), "prompt", "general", include_fleet_knowledge=True
+            )
+
+        assert "Fleet Knowledge" not in result

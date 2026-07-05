@@ -76,6 +76,18 @@ _DEFAULT_MAINTENANCE_SCHEDULES: tuple[dict[str, Any], ...] = (
         "job_name": "memory_consolidation",
         "job_args": {"batch_size": 500},
     },
+    # Idempotent catch-up pass draining the pre-flip backlog: enable_shared_catalog
+    # defaulted False for most of the catalog's life, so ~3,600 existing facts/rules
+    # across the fleet predate write-behind and have no public.memory_catalog row.
+    # Bounded per-run batch (200 facts + 200 rules); safe to re-run — already-
+    # cataloged rows are skipped via the UNIQUE(source_schema, source_table,
+    # source_id) key (see `run_memory_catalog_backfill`). Runs every 5 minutes
+    # until the backlog fully drains, then becomes a cheap no-op steady state.
+    {
+        "name": "memory_catalog_backfill",
+        "cron": "*/5 * * * *",
+        "job_name": "memory_catalog_backfill",
+    },
 )
 
 
@@ -221,13 +233,19 @@ class MemoryModuleConfig(ToolGroupMixin, BaseModel):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
 
     # Feature flag: write summary entries to public.memory_catalog on every
-    # fact/rule store.  Defaults to False for backward compatibility.
-    # Set to True only after the core_023 migration has been applied.
-    enable_shared_catalog: bool = False
+    # fact/rule store.  Default-on (see docs/redesigns/2026-07-04-jarvis-
+    # pursuit.md #15: the discovery catalog was spec'd, built, and wired end
+    # to end, but shipped switched off with 0 rows fleet-wide). Set to False
+    # in a butler's `[modules.memory]` toml block to opt a specific butler
+    # OUT of write-behind (e.g. a deployment with no public.memory_catalog
+    # table, or a butler whose facts must never surface cross-butler).
+    enable_shared_catalog: bool = True
 
     # Butler schema name written as source_schema in catalog rows.
-    # When empty, the butler's own schema name is used.  Most deployments
-    # leave this unset and let the module infer it from context.
+    # When empty, the butler's own schema name is inferred from the module's
+    # Database handle (``db.schema``), falling back to ``butler_name`` when
+    # the handle carries no schema (legacy single-DB-per-butler topology).
+    # Most deployments leave this unset and let the module infer it.
     catalog_source_schema: str = ""
 
     # Embedding model identifier surfaced to the dashboard via the
@@ -295,7 +313,20 @@ class MemoryModule(Module):
 
             embedding_engine = await asyncio.to_thread(module._get_embedding_engine)
             result = await _context.memory_context(
-                pool, embedding_engine, prompt, butler_name, token_budget=token_budget
+                pool,
+                embedding_engine,
+                prompt,
+                butler_name,
+                token_budget=token_budget,
+                # Real trigger-time context assembly is the "first consumer"
+                # landing for the cross-butler discovery catalog (see
+                # docs/redesigns/2026-07-04-jarvis-pursuit.md #15): every
+                # spawned session now gets a best-effort ## Fleet Knowledge
+                # section surfacing relevant facts/rules from OTHER butlers'
+                # schemas. Direct memory_context()/MCP-tool callers keep the
+                # conservative include_fleet_knowledge=False default so their
+                # deterministic output is unaffected unless requested.
+                include_fleet_knowledge=True,
             )
             if isinstance(result, str) and result.strip():
                 return result
@@ -487,6 +518,16 @@ class MemoryModule(Module):
             self._config = config
         module = self  # capture for closures
         default_context_budget = self._config.retrieval.context_token_budget
+
+        # Resolve the source_schema written to public.memory_catalog rows.
+        # Precedence: explicit toml override > the Database handle's own
+        # schema (one-db/multi-schema runtime topology) > butler_name (legacy
+        # single-DB-per-butler topology, where db.schema is None).
+        effective_catalog_source_schema: str | None = (
+            self._config.catalog_source_schema
+            or (db.schema if db is not None else None)
+            or (butler_name or None)
+        )
 
         # Import sub-modules (not individual functions) to avoid name collisions
         # between the MCP closure names and the imported symbols.
@@ -781,7 +822,7 @@ class MemoryModule(Module):
                     retention_class=retention_class or "operational",
                     sensitivity=sensitivity or "normal",
                     enable_shared_catalog=module._config.enable_shared_catalog,
-                    source_schema=module._config.catalog_source_schema or None,
+                    source_schema=effective_catalog_source_schema,
                 )
             except ValueError as exc:
                 return {
@@ -825,7 +866,7 @@ class MemoryModule(Module):
                 request_context=request_context,
                 retention_class=retention_class or "rule",
                 enable_shared_catalog=module._config.enable_shared_catalog,
-                source_schema=module._config.catalog_source_schema or None,
+                source_schema=effective_catalog_source_schema,
             )
 
         # --- Reading tools ---
@@ -1105,6 +1146,16 @@ class MemoryModule(Module):
                     )
                 ),
             ] = False,
+            include_fleet_knowledge: Annotated[
+                bool,
+                Field(
+                    description=(
+                        "If True, include a ## Fleet Knowledge (cross-butler) section "
+                        "(10% of budget) searching public.memory_catalog for relevant "
+                        "facts/rules from OTHER butlers' schemas. Default False."
+                    )
+                ),
+            ] = False,
             request_context: Annotated[
                 dict[str, Any] | None,
                 Field(
@@ -1123,6 +1174,8 @@ class MemoryModule(Module):
             - ## Task-Relevant Facts (35% of budget): recall matches excluding profile facts
             - ## Active Rules (20% of budget): sorted by maturity rank then effectiveness
             - ## Recent Episodes (15% of budget): opt-in via include_recent_episodes=True
+            - ## Fleet Knowledge (10% of budget): opt-in via include_fleet_knowledge=True,
+              cross-butler facts/rules discovered via public.memory_catalog
 
             Same inputs always produce identical output (deterministic section compiler).
             """
@@ -1133,6 +1186,7 @@ class MemoryModule(Module):
                 butler,
                 token_budget=token_budget,
                 include_recent_episodes=include_recent_episodes,
+                include_fleet_knowledge=include_fleet_knowledge,
                 request_context=request_context,
             )
 

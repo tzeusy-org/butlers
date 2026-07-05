@@ -433,11 +433,96 @@ async def _run_memory_purge_superseded_job(
     return result
 
 
+async def _infer_current_schema(pool: asyncpg.Pool) -> str | None:
+    """Best-effort resolve the owning butler's schema from the pool's search_path.
+
+    The daemon connects each butler's pool with ``search_path = <schema>,
+    public`` (see ``butlers.db.schema_search_path``), so ``current_schema()``
+    resolves to the butler's own schema in the one-db/multi-schema topology.
+    Treats a resolved value of ``'public'`` as unresolved — a real butler
+    schema should never legitimately be ``public`` itself, and mis-tagging
+    catalog rows with the wrong ``source_schema`` would be worse than a
+    skipped run. Returns ``None`` (never raises) on any failure so the
+    backfill job degrades to a no-op rather than crash the scheduler.
+    """
+    try:
+        schema = await pool.fetchval("SELECT current_schema()")
+    except Exception:
+        logger.warning("memory_catalog_backfill: failed to resolve current_schema()", exc_info=True)
+        return None
+    if not schema or schema == "public":
+        return None
+    return schema
+
+
+async def _run_memory_catalog_backfill_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Backfill this butler's active facts/rules into public.memory_catalog.
+
+    Bounded, idempotent catch-up pass draining the pre-flip backlog (see
+    docs/redesigns/2026-07-04-jarvis-pursuit.md #15: ``enable_shared_catalog``
+    now defaults True, but ~3,600 facts/rules written before the flip predate
+    write-behind and have no catalog row). Safe to re-run — see
+    ``run_memory_catalog_backfill`` for the idempotency contract.
+
+    ``job_args.batch_size`` overrides the default per-table batch size (200).
+    ``job_args.source_schema`` overrides the schema inferred from the pool's
+    ``current_schema()`` — mainly useful for test topologies where memory
+    tables live directly in ``public`` (where auto-inference intentionally
+    treats the result as unresolved).
+    """
+    from butlers.modules.memory.storage import run_memory_catalog_backfill
+
+    batch_size = 200
+    source_schema: str | None = None
+    if job_args is not None:
+        unknown_args = sorted(set(job_args) - {"batch_size", "source_schema"})
+        if unknown_args:
+            raise RuntimeError(
+                "memory_catalog_backfill job only supports job_args.batch_size and "
+                f"job_args.source_schema; received unsupported keys: {unknown_args}"
+            )
+        if "batch_size" in job_args:
+            raw_batch_size = job_args["batch_size"]
+            if (
+                not isinstance(raw_batch_size, int)
+                or isinstance(raw_batch_size, bool)
+                or raw_batch_size <= 0
+            ):
+                raise RuntimeError(
+                    "memory_catalog_backfill job_args.batch_size must be a positive integer"
+                )
+            batch_size = raw_batch_size
+        if "source_schema" in job_args:
+            raw_schema = job_args["source_schema"]
+            if not isinstance(raw_schema, str) or not raw_schema.strip():
+                raise RuntimeError(
+                    "memory_catalog_backfill job_args.source_schema must be a non-empty string"
+                )
+            source_schema = raw_schema.strip()
+
+    if source_schema is None:
+        source_schema = await _infer_current_schema(pool)
+        if source_schema is None:
+            return {
+                "facts_backfilled": 0,
+                "rules_backfilled": 0,
+                "skipped": "source_schema_not_resolved",
+            }
+
+    return await run_memory_catalog_backfill(
+        pool, source_schema=source_schema, batch_size=batch_size
+    )
+
+
 _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "memory_consolidation": _run_memory_consolidation_job,
     "memory_episode_cleanup": _run_memory_episode_cleanup_job,
     "memory_purge_superseded": _run_memory_purge_superseded_job,
     "memory_decay_sweep": _run_memory_decay_sweep_job,
+    "memory_catalog_backfill": _run_memory_catalog_backfill_job,
 }
 
 

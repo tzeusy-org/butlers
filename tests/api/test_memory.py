@@ -1527,3 +1527,167 @@ async def test_get_fact_404_when_not_found(app):
         resp = await client.get(f"/api/memory/facts/{fact_id}")
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/catalog/search — fleet-knowledge cross-butler discovery
+# (bu-qvnce.15)
+# ---------------------------------------------------------------------------
+
+
+def _catalog_search_row(
+    *,
+    source_butler: str = "finance",
+    title: str = "Budget review cadence",
+    memory_type: str = "fact",
+    score_key: str = "rrf_score",
+    score: float = 0.42,
+) -> dict:
+    """Build a dict mimicking a public.memory_catalog search_catalog() result row."""
+    return {
+        "id": uuid.uuid4(),
+        "source_schema": source_butler,
+        "source_table": "facts" if memory_type == "fact" else "rules",
+        "source_id": uuid.uuid4(),
+        "source_butler": source_butler,
+        "memory_type": memory_type,
+        "title": title,
+        "summary": f"{title} summary",
+        "predicate": "budget_review_cadence" if memory_type == "fact" else None,
+        "scope": "global",
+        "entity_id": None,
+        "object_entity_id": None,
+        "valid_at": None,
+        "confidence": 1.0,
+        "importance": 6.0,
+        "retention_class": "operational",
+        "sensitivity": "normal",
+        score_key: score,
+    }
+
+
+def _wire_catalog_search_db(app) -> MagicMock:
+    """Wire app with a minimal mock DB exposing one pool for _any_pool()."""
+    db_mock = MagicMock()
+    db_mock.butler_names = ["finance"]
+    db_mock.pool = MagicMock(return_value=AsyncMock())
+    app.dependency_overrides[_get_db_manager] = lambda: db_mock
+    return db_mock
+
+
+async def test_catalog_search_returns_normalized_results(app, monkeypatch):
+    """GET /api/memory/catalog/search normalizes the mode-specific score field."""
+    from butlers.modules.memory import search as _catalog_search_module
+
+    _wire_catalog_search_db(app)
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
+    )
+
+    row = _catalog_search_row()
+    captured: dict = {}
+
+    async def _fake_search_catalog(pool, query, embedding_engine, **kwargs):
+        captured.update(kwargs)
+        captured["query"] = query
+        return [row]
+
+    monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/catalog/search", params={"query": "budget review"})
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert len(body) == 1
+    result = body[0]
+    assert result["source_butler"] == "finance"
+    assert result["title"] == "Budget review cadence"
+    assert result["memory_type"] == "fact"
+    assert result["score"] == pytest.approx(0.42)
+    # Defaults propagated through to search_catalog.
+    assert captured["query"] == "budget review"
+    assert captured["mode"] == "hybrid"
+    assert captured["limit"] == 10
+    assert captured["max_sensitivity"] == "normal"
+    assert captured["memory_type"] is None
+
+
+async def test_catalog_search_semantic_mode_uses_similarity_score(app, monkeypatch):
+    """In semantic mode, the response's score field is the row's similarity value."""
+    from butlers.modules.memory import search as _catalog_search_module
+
+    _wire_catalog_search_db(app)
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
+    )
+
+    row = _catalog_search_row(score_key="similarity", score=0.91)
+
+    async def _fake_search_catalog(pool, query, embedding_engine, **kwargs):
+        return [row]
+
+    monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/memory/catalog/search",
+            params={"query": "budget review", "mode": "semantic"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["score"] == pytest.approx(0.91)
+
+
+async def test_catalog_search_invalid_mode_returns_400(app, monkeypatch):
+    """An invalid mode value surfaces as a 400, matching search_catalog's ValueError."""
+    from butlers.modules.memory import search as _catalog_search_module
+
+    _wire_catalog_search_db(app)
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
+    )
+
+    async def _raising_search_catalog(pool, query, embedding_engine, **kwargs):
+        raise ValueError(f"Invalid mode: {kwargs['mode']!r}. Must be one of ['hybrid', ...]")
+
+    monkeypatch.setattr(_catalog_search_module, "search_catalog", _raising_search_catalog)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/memory/catalog/search",
+            params={"query": "budget review", "mode": "bogus"},
+        )
+
+    assert resp.status_code == 400
+
+
+async def test_catalog_search_empty_results(app, monkeypatch):
+    """No matches returns an empty data list, not an error."""
+    from butlers.modules.memory import search as _catalog_search_module
+
+    _wire_catalog_search_db(app)
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
+    )
+
+    async def _fake_search_catalog(pool, query, embedding_engine, **kwargs):
+        return []
+
+    monkeypatch.setattr(_catalog_search_module, "search_catalog", _fake_search_catalog)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/memory/catalog/search", params={"query": "nothing matches this"}
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []

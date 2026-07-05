@@ -37,6 +37,7 @@ from butlers.db import register_jsonb_codec
 from butlers.modules.memory import MemoryModule
 from butlers.scheduled_jobs import (
     _MEMORY_MAINTENANCE_JOB_HANDLERS,
+    _run_memory_catalog_backfill_job,
     _run_memory_consolidation_job,
     _run_memory_decay_sweep_job,
     get_deterministic_schedule_job_registry,
@@ -65,6 +66,7 @@ _EXPECTED_MEMORY_JOB_NAMES = {
     "memory_episode_cleanup",
     "memory_purge_superseded",
     "memory_decay_sweep",
+    "memory_catalog_backfill",
 }
 
 
@@ -77,6 +79,14 @@ def test_memory_decay_sweep_is_a_registered_handler() -> None:
     """memory_decay_sweep must be dispatchable — it previously had no handler at all."""
     assert _MEMORY_MAINTENANCE_JOB_HANDLERS["memory_decay_sweep"] is _run_memory_decay_sweep_job
     assert _EXPECTED_MEMORY_JOB_NAMES <= set(_MEMORY_MAINTENANCE_JOB_HANDLERS)
+
+
+def test_memory_catalog_backfill_is_a_registered_handler() -> None:
+    """memory_catalog_backfill (bu-qvnce.15) must be dispatchable."""
+    assert (
+        _MEMORY_MAINTENANCE_JOB_HANDLERS["memory_catalog_backfill"]
+        is _run_memory_catalog_backfill_job
+    )
 
 
 @pytest.mark.parametrize("butler_name", _MEMORY_ENABLED_BUTLERS)
@@ -178,6 +188,83 @@ class TestJobArgsValidation:
             await _run_memory_consolidation_job(pool=object(), job_args={"unknown": 1})
 
 
+class TestCatalogBackfillJobArgsValidation:
+    """job_args + source_schema-inference validation for memory_catalog_backfill."""
+
+    async def test_defaults_use_inferred_schema_and_default_batch_size(self, monkeypatch) -> None:
+        captured: dict[str, Any] = {}
+
+        async def _fake_backfill(pool, *, source_schema, batch_size):
+            captured["source_schema"] = source_schema
+            captured["batch_size"] = batch_size
+            return {"facts_backfilled": 0, "rules_backfilled": 0, "source_schema": source_schema}
+
+        monkeypatch.setattr(
+            "butlers.modules.memory.storage.run_memory_catalog_backfill", _fake_backfill
+        )
+
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="health")
+        result = await _run_memory_catalog_backfill_job(pool=pool, job_args=None)
+
+        assert captured["source_schema"] == "health"
+        assert captured["batch_size"] == 200
+        assert result["source_schema"] == "health"
+
+    async def test_unresolved_schema_skips_without_raising(self) -> None:
+        pool = AsyncMock()
+        # current_schema() resolves to 'public' -- treated as unresolved.
+        pool.fetchval = AsyncMock(return_value="public")
+        result = await _run_memory_catalog_backfill_job(pool=pool, job_args=None)
+        assert result == {
+            "facts_backfilled": 0,
+            "rules_backfilled": 0,
+            "skipped": "source_schema_not_resolved",
+        }
+
+    async def test_current_schema_query_failure_skips_without_raising(self) -> None:
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(side_effect=RuntimeError("connection lost"))
+        result = await _run_memory_catalog_backfill_job(pool=pool, job_args=None)
+        assert result["skipped"] == "source_schema_not_resolved"
+
+    async def test_explicit_source_schema_override_skips_inference(self, monkeypatch) -> None:
+        captured: dict[str, Any] = {}
+
+        async def _fake_backfill(pool, *, source_schema, batch_size):
+            captured["source_schema"] = source_schema
+            captured["batch_size"] = batch_size
+            return {"facts_backfilled": 1, "rules_backfilled": 2, "source_schema": source_schema}
+
+        monkeypatch.setattr(
+            "butlers.modules.memory.storage.run_memory_catalog_backfill", _fake_backfill
+        )
+
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(side_effect=AssertionError("should not be called"))
+        result = await _run_memory_catalog_backfill_job(
+            pool=pool, job_args={"source_schema": "finance", "batch_size": 50}
+        )
+
+        assert captured["source_schema"] == "finance"
+        assert captured["batch_size"] == 50
+        assert result["facts_backfilled"] == 1
+
+    async def test_invalid_batch_size_raises(self) -> None:
+        for bad_args in ({"batch_size": 0}, {"batch_size": -1}, {"batch_size": True}):
+            with pytest.raises(RuntimeError, match="positive integer"):
+                await _run_memory_catalog_backfill_job(pool=AsyncMock(), job_args=bad_args)
+
+    async def test_invalid_source_schema_raises(self) -> None:
+        for bad_args in ({"source_schema": ""}, {"source_schema": "   "}, {"source_schema": 1}):
+            with pytest.raises(RuntimeError, match="non-empty string"):
+                await _run_memory_catalog_backfill_job(pool=AsyncMock(), job_args=bad_args)
+
+    async def test_unsupported_job_args_key_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="unsupported keys"):
+            await _run_memory_catalog_backfill_job(pool=AsyncMock(), job_args={"unknown": 1})
+
+
 # ---------------------------------------------------------------------------
 # (c) MemoryModule._register_default_maintenance_schedules
 # ---------------------------------------------------------------------------
@@ -206,6 +293,9 @@ class TestRegisterDefaultMaintenanceSchedules:
         backfill = next(c for c in calls if c["name"] == "memory_consolidation_backfill")
         assert backfill["job_name"] == "memory_consolidation"
         assert backfill["job_args"] == {"batch_size": 500}
+
+        catalog_backfill = next(c for c in calls if c["name"] == "memory_catalog_backfill")
+        assert catalog_backfill["job_name"] == "memory_catalog_backfill"
 
     async def test_none_db_is_a_noop(self) -> None:
         module = MemoryModule()

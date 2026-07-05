@@ -314,3 +314,37 @@ class ReembedRunResult(BaseModel):
     """Sum across all tiers."""
     errors: list[str]
     """Non-fatal per-batch errors encountered during the run."""
+
+
+# ---------------------------------------------------------------------------
+# Cross-butler discovery catalog models
+# ---------------------------------------------------------------------------
+
+
+class MemoryCatalogSearchResult(BaseModel):
+    """One row from a public.memory_catalog cross-butler search.
+
+    A discovery pointer, not the canonical memory item — ``source_schema`` /
+    ``source_table`` / ``source_id`` identify where to fetch the full record
+    from the owning butler's own schema.
+    """
+
+    id: str
+    source_schema: str
+    source_table: str
+    source_id: str
+    source_butler: str | None = None
+    memory_type: str
+    title: str | None = None
+    summary: str
+    predicate: str | None = None
+    scope: str | None = None
+    entity_id: str | None = None
+    object_entity_id: str | None = None
+    valid_at: str | None = None
+    confidence: float | None = None
+    importance: float | None = None
+    retention_class: str | None = None
+    sensitivity: str | None = None
+    score: float | None = None
+    """Relevance score: similarity (semantic), rank (keyword), or rrf_score (hybrid)."""

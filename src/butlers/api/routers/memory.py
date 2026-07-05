@@ -35,6 +35,7 @@ from butlers.api.models.memory import (
     Episode,
     Fact,
     MemoryActivity,
+    MemoryCatalogSearchResult,
     MemoryInspectResult,
     MemoryRetentionPolicy,
     MemoryStats,
@@ -816,6 +817,105 @@ async def get_rule(
         raise HTTPException(status_code=404, detail="Rule not found")
 
     return ApiResponse[Rule](data=_row_to_rule(rows[0]))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/catalog/search — fleet-knowledge cross-butler discovery
+# ---------------------------------------------------------------------------
+
+
+def _row_to_catalog_result(r: dict, *, mode: str) -> MemoryCatalogSearchResult:
+    """Convert a public.memory_catalog search result dict to the API model.
+
+    ``r`` is a plain dict (``dict(asyncpg.Record)``, per ``search_catalog``)
+    carrying the catalog's raw columns plus a mode-specific score key
+    (``similarity``, ``rank``, or ``rrf_score``) — normalized here to a single
+    ``score`` field regardless of which search mode produced the row.
+    """
+    if mode == "semantic":
+        score = r.get("similarity")
+    elif mode == "keyword":
+        score = r.get("rank")
+    else:
+        score = r.get("rrf_score")
+
+    valid_at = r.get("valid_at")
+    return MemoryCatalogSearchResult(
+        id=str(r["id"]),
+        source_schema=r["source_schema"],
+        source_table=r["source_table"],
+        source_id=str(r["source_id"]),
+        source_butler=r.get("source_butler"),
+        memory_type=r["memory_type"],
+        title=r.get("title"),
+        summary=r.get("summary") or "",
+        predicate=r.get("predicate"),
+        scope=r.get("scope"),
+        entity_id=str(r["entity_id"]) if r.get("entity_id") else None,
+        object_entity_id=str(r["object_entity_id"]) if r.get("object_entity_id") else None,
+        valid_at=valid_at.isoformat() if hasattr(valid_at, "isoformat") else valid_at,
+        confidence=float(r["confidence"]) if r.get("confidence") is not None else None,
+        importance=float(r["importance"]) if r.get("importance") is not None else None,
+        retention_class=r.get("retention_class"),
+        sensitivity=r.get("sensitivity"),
+        score=float(score) if score is not None else None,
+    )
+
+
+@router.get("/catalog/search", response_model=ApiResponse[list[MemoryCatalogSearchResult]])
+async def search_memory_catalog(
+    query: str = Query(..., min_length=1, description="Search query text"),
+    memory_type: str | None = Query(
+        None, description="Optional filter: 'fact' or 'rule'. Omit to search both."
+    ),
+    limit: int = Query(10, ge=1, le=50, description="Max results to return"),
+    mode: str = Query(
+        "hybrid", description="Search mode: 'hybrid' (default), 'semantic', or 'keyword'."
+    ),
+    max_sensitivity: str = Query(
+        "normal",
+        description=(
+            "Highest sensitivity level to view: 'normal' (default), 'pii', or "
+            "'confidential'. Unknown values fail closed to 'normal'-only."
+        ),
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[MemoryCatalogSearchResult]]:
+    """Fleet-knowledge search across all butlers via public.memory_catalog.
+
+    Queries the shared discovery index directly. Unlike the other endpoints
+    in this router, this is deliberately NOT a per-butler fan-out:
+    ``public.memory_catalog`` already aggregates every butler's write-behind
+    entries into one table reachable from any butler's connection pool, so a
+    single query answers the whole fleet. A pool failure here is a genuine
+    outage (surfaced as a normal error response), not a per-source
+    degradation that needs folding into a degraded-envelope flag — there is
+    only one source to begin with.
+
+    Results are provenance pointers, not canonical memories — use
+    ``source_schema``/``source_table``/``source_id`` to fetch the full record
+    from the owning butler's own schema if the full item is needed.
+    """
+    from butlers.modules.memory.search import search_catalog
+    from butlers.modules.memory.tools import get_embedding_engine
+
+    pool = _any_pool(db)
+    engine = get_embedding_engine(_DEFAULT_EMBEDDING_MODEL)
+    try:
+        rows = await search_catalog(
+            pool,
+            query,
+            engine,
+            memory_type=memory_type,
+            limit=limit,
+            mode=mode,
+            max_sensitivity=max_sensitivity,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    results = [_row_to_catalog_result(r, mode=mode) for r in rows]
+    return ApiResponse[list[MemoryCatalogSearchResult]](data=results)
 
 
 # ---------------------------------------------------------------------------

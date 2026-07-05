@@ -36,6 +36,11 @@ _PROFILE_FACTS_FRAC = 0.30
 _TASK_FACTS_FRAC = 0.35
 _RULES_FRAC = 0.20
 _EPISODES_FRAC = 0.15
+_FLEET_KNOWLEDGE_FRAC = 0.10
+
+# Cross-butler catalog results to request from public.memory_catalog before
+# filtering out this butler's own entries (see _fetch_fleet_knowledge).
+_FLEET_KNOWLEDGE_QUERY_LIMIT = 10
 
 
 async def _fetch_profile_facts(
@@ -90,6 +95,42 @@ async def _fetch_recent_episodes(
         return []
 
 
+async def _fetch_fleet_knowledge(
+    pool: Pool,
+    embedding_engine,
+    trigger_prompt: str,
+    butler: str,
+    tenant_id: str,
+    *,
+    limit: int = _FLEET_KNOWLEDGE_QUERY_LIMIT,
+) -> list[dict[str, Any]]:
+    """Fetch relevant cross-butler knowledge from public.memory_catalog.
+
+    Searches the shared discovery catalog (all butlers' facts/rules) and
+    excludes rows this butler owns — Task-Relevant Facts already surfaces
+    the butler's own knowledge, so this section is additive, not duplicative.
+
+    Best-effort: any failure (catalog table absent, embedding failure, etc.)
+    is logged at debug and returns an empty list rather than failing context
+    assembly — matches ``_fetch_profile_facts``/``_fetch_recent_episodes``.
+    """
+    try:
+        results = await _search.search_catalog(
+            pool,
+            trigger_prompt,
+            embedding_engine,
+            tenant_id=tenant_id,
+            memory_type=None,
+            limit=limit,
+            mode="hybrid",
+            max_sensitivity="normal",
+        )
+    except Exception:
+        logger.debug("Fleet knowledge catalog search failed", exc_info=True)
+        return []
+    return [r for r in results if r.get("source_butler") != butler]
+
+
 def _effective_confidence(row: dict[str, Any]) -> float:
     """Compute effective (decayed) confidence for a fact or rule row."""
     confidence = row.get("confidence", 1.0) or 1.0
@@ -119,6 +160,12 @@ def _format_rule_line(r: dict[str, Any]) -> str:
     maturity = r.get("maturity", "?")
     effectiveness = r.get("effectiveness_score", 0.0)
     return f"- {content} (maturity: {maturity}, effectiveness: {effectiveness:.2f})\n"
+
+
+def _format_fleet_knowledge_line(r: dict[str, Any]) -> str:
+    source_butler = r.get("source_butler") or "?"
+    title = r.get("title") or (r.get("summary") or "")[:80]
+    return f"- [{source_butler}] {title}\n"
 
 
 def _format_episode_line(ep: dict[str, Any]) -> str:
@@ -173,6 +220,7 @@ async def memory_context(
     *,
     token_budget: int = 3000,
     include_recent_episodes: bool = False,
+    include_fleet_knowledge: bool = False,
     request_context: dict[str, Any] | None = None,
 ) -> str:
     """Build a deterministic, sectioned memory context block for CC system prompt injection.
@@ -182,6 +230,9 @@ async def memory_context(
       ## Task-Relevant Facts — 35% of budget, recall matches (excluding profile facts)
       ## Active Rules      — 20% of budget, sorted by maturity rank then effectiveness
       ## Recent Episodes   — 15% of budget, opt-in only via include_recent_episodes=True
+      ## Fleet Knowledge   — 10% of budget, opt-in only via include_fleet_knowledge=True;
+        cross-butler facts/rules discovered via public.memory_catalog, excluding
+        this butler's own entries (already covered by Task-Relevant Facts)
 
     Args:
         pool: asyncpg connection pool.
@@ -190,6 +241,10 @@ async def memory_context(
         butler: Butler name used as scope filter.
         token_budget: Maximum approximate token count (1 token ~ 4 chars).
         include_recent_episodes: If True, include Recent Episodes section.
+        include_fleet_knowledge: If True, include a Fleet Knowledge section
+            surfacing relevant cross-butler catalog entries. Best-effort —
+            a catalog search failure degrades to an empty section rather
+            than failing context assembly.
         request_context: Optional dict with 'tenant_id' and 'request_id' for
             trace correlation and tenant scoping.
 
@@ -210,6 +265,7 @@ async def memory_context(
     task_budget = int(total_chars * _TASK_FACTS_FRAC)
     rules_budget = int(total_chars * _RULES_FRAC)
     episodes_budget = int(total_chars * _EPISODES_FRAC)
+    fleet_knowledge_budget = int(total_chars * _FLEET_KNOWLEDGE_FRAC)
 
     # --- 1. Fetch profile facts (owner entity) ---
     profile_facts = await _fetch_profile_facts(pool, tenant_id)
@@ -261,6 +317,13 @@ async def memory_context(
     if include_recent_episodes:
         recent_episodes = await _fetch_recent_episodes(pool, butler, tenant_id)
 
+    # --- 5. Optionally fetch cross-butler fleet knowledge ---
+    fleet_knowledge: list[dict[str, Any]] = []
+    if include_fleet_knowledge:
+        fleet_knowledge = await _fetch_fleet_knowledge(
+            pool, embedding_engine, trigger_prompt, butler, tenant_id
+        )
+
     # --- Assemble sections ---
     preamble = "# Memory Context\n"
     sections: list[str] = [preamble]
@@ -301,5 +364,15 @@ async def memory_context(
         )
         if episodes_section:
             sections.append(episodes_section)
+
+    if include_fleet_knowledge:
+        fleet_knowledge_section = _fill_section(
+            "\n## Fleet Knowledge (cross-butler)\n",
+            fleet_knowledge,
+            _format_fleet_knowledge_line,
+            fleet_knowledge_budget,
+        )
+        if fleet_knowledge_section:
+            sections.append(fleet_knowledge_section)
 
     return "".join(sections)
