@@ -606,6 +606,218 @@ class TestMessagePipelineRoutingVerdictLog:
 
 
 # ---------------------------------------------------------------------------
+# Demotion via spot-check sampling [bu-x55k3, rule-promotion bead 5 of 7]
+# ---------------------------------------------------------------------------
+
+
+class TestMessagePipelineDemotionSpotCheck:
+    """A ``triage_spot_check=True`` request_context (set by ingest.py when
+    ``PolicyDecision.spot_check`` is True) must suppress all three bypass
+    branches and route the event through normal LLM classification, then log
+    the fresh verdict as ``verdict_source='spot_check'`` (not ``'llm'``) with
+    ``matched_rule_id`` set to the sampled rule, and trigger the rolling
+    agreement re-score.
+    """
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_spot_check_route_to_agreement_suppresses_bypass(self, mock_load):
+        """Fresh LLM verdict matches the rule's own target -> agreement."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to finance.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "finance"},
+                        "result": {"status": "ok", "butler": "finance"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with (
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+            patch(
+                "butlers.modules.pipeline.maybe_create_demotion_suggestion",
+                new_callable=AsyncMock,
+            ) as mock_demotion,
+        ):
+            result = await pipeline.process(
+                "some finance email",
+                tool_args={
+                    "source_channel": "email",
+                    "source_identity": "billing@chase.com",
+                    "request_context": {
+                        "triage_decision": "route_to",
+                        "triage_target": "finance",
+                        "triage_rule_id": "11111111-1111-1111-1111-111111111111",
+                        "triage_rule_type": "sender_domain",
+                        "triage_spot_check": True,
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000010",
+            )
+
+        # Reached via the LLM path (not the bypass), and happens to agree.
+        assert result.target_butler == "finance"
+        mock_record.assert_awaited_once()
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["verdict_source"] == "spot_check"
+        assert kwargs["verdict_action"] == "route_to"
+        assert kwargs["verdict_target"] == "finance"
+        assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
+
+        mock_demotion.assert_awaited_once()
+        assert mock_demotion.await_args.kwargs["rule_id"] == "11111111-1111-1111-1111-111111111111"
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_spot_check_route_to_disagreement_records_llm_target_not_rule_target(
+        self, mock_load
+    ):
+        """Fresh LLM verdict disagrees with the rule -> spot_check row still
+        records what the LLM actually said, not what the rule would have."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to general.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "general"},
+                        "result": {"status": "ok", "butler": "general"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with (
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+            patch(
+                "butlers.modules.pipeline.maybe_create_demotion_suggestion",
+                new_callable=AsyncMock,
+            ),
+        ):
+            result = await pipeline.process(
+                "some finance email",
+                tool_args={
+                    "source_channel": "email",
+                    "source_identity": "billing@chase.com",
+                    "request_context": {
+                        "triage_decision": "route_to",
+                        "triage_target": "finance",
+                        "triage_rule_id": "11111111-1111-1111-1111-111111111111",
+                        "triage_rule_type": "sender_domain",
+                        "triage_spot_check": True,
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000011",
+            )
+
+        assert result.target_butler == "general"
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["verdict_source"] == "spot_check"
+        assert kwargs["verdict_target"] == "general"
+        assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
+
+    async def test_spot_check_skip_suppresses_bypass(self):
+        """A spot-checked skip rule must not take the early skip return."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output="Nothing routable here.", tool_calls=[])
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.classify._load_available_butlers",
+                new_callable=AsyncMock,
+                return_value=_MOCK_BUTLERS,
+            ),
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+            patch(
+                "butlers.modules.pipeline.maybe_create_demotion_suggestion",
+                new_callable=AsyncMock,
+            ) as mock_demotion,
+        ):
+            result = await pipeline.process(
+                "bulk mail",
+                tool_args={
+                    "source_channel": "email",
+                    "request_context": {
+                        "triage_decision": "skip",
+                        "triage_rule_id": "22222222-2222-2222-2222-222222222222",
+                        "triage_rule_type": "header_condition",
+                        "triage_spot_check": True,
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000012",
+            )
+
+        # The skip bypass's early return (target_butler="skipped") must not
+        # fire; it falls through to the no-tool-calls heuristic fallback
+        # instead, which is deliberately not logged as mining evidence (see
+        # TestMessagePipelineRoutingVerdictLog.
+        # test_llm_no_tool_calls_fallback_does_not_record_llm_verdict).
+        assert result.target_butler != "skipped"
+        mock_record.assert_not_awaited()
+        mock_demotion.assert_not_awaited()
+
+    async def test_no_spot_check_flag_preserves_existing_skip_bypass(self):
+        """Regression guard: omitting triage_spot_check must not change
+        pre-existing bypass behavior."""
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            source_butler="switchboard",
+        )
+
+        with patch(
+            "butlers.modules.pipeline.record_routing_verdict",
+            new_callable=AsyncMock,
+        ):
+            result = await pipeline.process(
+                "bulk mail",
+                tool_args={
+                    "source_channel": "email",
+                    "request_context": {
+                        "triage_decision": "skip",
+                        "triage_rule_id": "22222222-2222-2222-2222-222222222222",
+                        "triage_rule_type": "header_condition",
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000013",
+            )
+
+        assert result.target_butler == "skipped"
+
+
+# ---------------------------------------------------------------------------
 # Structured tool-use classification fast lane [bu-qvnce.12 slice 3 / bu-evus6]
 # ---------------------------------------------------------------------------
 

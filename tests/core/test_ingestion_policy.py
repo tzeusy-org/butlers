@@ -66,6 +66,8 @@ def _rule(
     priority: int = 10,
     name: str | None = None,
     created_at: str = "2026-02-01T00:00:00Z",
+    created_by: str = "dashboard",
+    promoted_from_suggestion_id: str | None = None,
 ) -> dict[str, Any]:
     return {
         "id": id,
@@ -75,6 +77,8 @@ def _rule(
         "priority": priority,
         "name": name,
         "created_at": created_at,
+        "created_by": created_by,
+        "promoted_from_suggestion_id": promoted_from_suggestion_id,
     }
 
 
@@ -688,3 +692,172 @@ def test_metrics_helpers_and_telemetry_integration() -> None:
         assert data2["butlers.ingestion.rule_pass_through"][0].value == 1
     finally:
         _reset_metrics_global_state()
+
+
+# ---------------------------------------------------------------------------
+# Demotion via spot-check sampling [bu-x55k3, rule-promotion bead 5 of 7]
+# ---------------------------------------------------------------------------
+
+
+class _FixedSampler:
+    """Deterministic fake replacing random.Random for spot-check tests."""
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def randrange(self, stop: int) -> int:  # noqa: ARG002 - protocol parity
+        return self._value
+
+
+class _CyclingSampler:
+    """Deterministic fake that returns a fixed sequence of randrange() values,
+    one per call — models "every Kth match is a hit" without relying on real
+    randomness."""
+
+    def __init__(self, values: list[int]) -> None:
+        self._values = values
+        self._i = 0
+
+    def randrange(self, stop: int) -> int:  # noqa: ARG002 - protocol parity
+        v = self._values[self._i % len(self._values)]
+        self._i += 1
+        return v
+
+
+def test_spot_check_only_applies_to_promoted_rules() -> None:
+    """A non-promoted rule (created_by='dashboard') is never spot-checked,
+    even with a sampler that would always hit."""
+    ev = IngestionPolicyEvaluator(scope="global", db_pool=None, spot_check_rng=_FixedSampler(0))
+    ev._last_loaded_at = time.monotonic()
+    ev._rules = [
+        _rule(
+            rule_type="sender_domain",
+            condition={"domain": "chase.com", "match": "exact"},
+            action="route_to:finance",
+            created_by="dashboard",
+        )
+    ]
+    decision = ev.evaluate(_email_envelope(sender="alerts@chase.com"))
+    assert decision.action == "route_to"
+    assert decision.target_butler == "finance"
+    assert decision.spot_check is False
+
+
+def test_spot_check_hit_on_promoted_rule_does_not_change_action_or_target() -> None:
+    """A sampler forced to hit (randrange always returns 0) sets spot_check
+    True but leaves action/target_butler describing what the rule would have
+    done — the caller decides what to do with spot_check, not evaluate()."""
+    ev = IngestionPolicyEvaluator(scope="global", db_pool=None, spot_check_rng=_FixedSampler(0))
+    ev._last_loaded_at = time.monotonic()
+    ev._rules = [
+        _rule(
+            rule_type="sender_domain",
+            condition={"domain": "chase.com", "match": "exact"},
+            action="route_to:finance",
+            created_by="promotion",
+        )
+    ]
+    decision = ev.evaluate(_email_envelope(sender="alerts@chase.com"))
+    assert decision.action == "route_to"
+    assert decision.target_butler == "finance"
+    assert decision.spot_check is True
+
+
+def test_spot_check_miss_on_promoted_rule() -> None:
+    """A sampler forced to miss (randrange returns a non-zero value) leaves
+    spot_check False -- the rule bypasses normally."""
+    ev = IngestionPolicyEvaluator(scope="global", db_pool=None, spot_check_rng=_FixedSampler(5))
+    ev._last_loaded_at = time.monotonic()
+    ev._rules = [
+        _rule(
+            rule_type="sender_domain",
+            condition={"domain": "chase.com", "match": "exact"},
+            action="skip",
+            created_by="promotion",
+        )
+    ]
+    decision = ev.evaluate(_email_envelope(sender="alerts@chase.com"))
+    assert decision.action == "skip"
+    assert decision.spot_check is False
+
+
+def test_spot_check_k_zero_disables_sampling() -> None:
+    """spot_check_k=0 disables spot-checking entirely, even for a promoted
+    rule with a sampler that would always hit (the K==0 guard short-circuits
+    before the sampler is ever consulted)."""
+    ev = IngestionPolicyEvaluator(
+        scope="global", db_pool=None, spot_check_k=0, spot_check_rng=_FixedSampler(0)
+    )
+    ev._last_loaded_at = time.monotonic()
+    ev._rules = [
+        _rule(
+            rule_type="sender_domain",
+            condition={"domain": "chase.com", "match": "exact"},
+            action="skip",
+            created_by="promotion",
+        )
+    ]
+    decision = ev.evaluate(_email_envelope(sender="alerts@chase.com"))
+    assert decision.spot_check is False
+
+
+def test_spot_check_sampler_is_deterministically_injectable() -> None:
+    """A cycling fake sampler makes the 1-in-K hit pattern exactly
+    reproducible across repeated evaluate() calls -- proves the sampling
+    seam is testable without depending on real randomness."""
+    ev = IngestionPolicyEvaluator(
+        scope="global",
+        db_pool=None,
+        spot_check_k=3,
+        spot_check_rng=_CyclingSampler([0, 1, 2]),
+    )
+    ev._last_loaded_at = time.monotonic()
+    ev._rules = [
+        _rule(
+            rule_type="sender_domain",
+            condition={"domain": "chase.com", "match": "exact"},
+            action="route_to:finance",
+            created_by="promotion",
+        )
+    ]
+    hits = [ev.evaluate(_email_envelope(sender="alerts@chase.com")).spot_check for _ in range(6)]
+    assert hits == [True, False, False, True, False, False]
+
+
+def test_default_spot_check_k_is_20_and_sampler_defaults_to_random() -> None:
+    """Constructor defaults match design.md section 4 (K=20) without an
+    explicit spot_check_rng — a real random.Random() is used."""
+    ev = IngestionPolicyEvaluator(scope="global", db_pool=None)
+    assert ev._spot_check_k == 20
+    assert hasattr(ev._spot_check_rng, "randrange")
+
+
+async def test_load_rules_threads_created_by_and_promoted_from_suggestion_id() -> None:
+    """bu-pmqhm: _load_rules()'s SELECT must fetch created_by and
+    promoted_from_suggestion_id so evaluate() can gate spot-checking on rule
+    provenance."""
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": "rule-1",
+                "rule_type": "sender_address",
+                "condition": {"address": "alerts@chase.com"},
+                "action": "route_to:finance",
+                "priority": 10,
+                "name": None,
+                "created_at": "2026-07-01T00:00:00Z",
+                "created_by": "promotion",
+                "promoted_from_suggestion_id": "suggestion-1",
+            }
+        ]
+    )
+    ev = IngestionPolicyEvaluator(scope="global", db_pool=mock_pool)
+    await ev.ensure_loaded()
+
+    query = mock_pool.fetch.call_args[0][0]
+    assert "created_by" in query
+    assert "promoted_from_suggestion_id" in query
+
+    assert ev._rules[0]["created_by"] == "promotion"
+    assert ev._rules[0]["promoted_from_suggestion_id"] == "suggestion-1"

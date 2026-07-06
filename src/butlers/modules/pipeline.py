@@ -27,6 +27,7 @@ from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.utils import coerce_request_id as _coerce_request_id
 from butlers.modules.base import Module
+from butlers.tools.switchboard.routing.rule_demotion import maybe_create_demotion_suggestion
 from butlers.tools.switchboard.routing.telemetry import (
     get_switchboard_telemetry,
     normalize_error_class,
@@ -1889,7 +1890,22 @@ class MessagePipeline:
                     request_context.get("triage_rule_id") if request_context else None
                 )
 
-                if _triage_decision == "route_to" and _triage_target:
+                # Demotion via spot-check sampling (bu-x55k3, rule-promotion
+                # bead 5 of 7): the ingestion policy evaluator matched a
+                # *promoted* rule but sampled it for a shadow LLM check
+                # (IngestionPolicyEvaluator.evaluate()'s 1-in-K die roll, see
+                # PolicyDecision.spot_check). `_triage_decision`/`_triage_target`
+                # above still describe what the rule would have done and are
+                # kept for the disagreement comparison at the LLM-verdict
+                # site below; the three bypass branches must NOT take the
+                # bypass this event, so the guard below routes it through
+                # the same LLM classification path as an ordinary
+                # pass_through event instead.
+                _triage_spot_check = bool(
+                    request_context.get("triage_spot_check") if request_context else False
+                )
+
+                if _triage_decision == "route_to" and _triage_target and not _triage_spot_check:
                     bypass_start = time.perf_counter()
                     with tracer.start_as_current_span(
                         "butlers.switchboard.routing.policy_bypass"
@@ -2067,7 +2083,7 @@ class MessagePipeline:
                             failed_targets=failed,
                         )
 
-                if _triage_decision == "skip":
+                if _triage_decision == "skip" and not _triage_spot_check:
                     logger.info(
                         "Pipeline skipping message (global policy: skip)",
                         extra=self._log_fields(
@@ -2109,7 +2125,7 @@ class MessagePipeline:
                         route_result={"policy_bypass": True, "triage_decision": "skip"},
                     )
 
-                if _triage_decision == "metadata_only":
+                if _triage_decision == "metadata_only" and not _triage_spot_check:
                     logger.info(
                         "Pipeline metadata-only (global policy: metadata_only, no LLM)",
                         extra=self._log_fields(
@@ -2770,16 +2786,33 @@ class MessagePipeline:
                     # with noise.
                     if message_inbox_id and routed:
                         _llm_verdict_session_id = getattr(spawn_result, "session_id", None)
+                        # Demotion via spot-check sampling (bu-x55k3): this
+                        # fresh LLM verdict resolved a spot-checked promoted
+                        # rule's match rather than an ordinary pass_through —
+                        # log it under verdict_source='spot_check' with the
+                        # sampled rule's id instead of 'llm', so the rolling
+                        # agreement scorer below can compare it against what
+                        # the rule would have done.
+                        _verdict_source_for_llm = "spot_check" if _triage_spot_check else "llm"
+                        _spot_check_matched_rule_id = (
+                            _verdict_matched_rule_id if _triage_spot_check else None
+                        )
                         for _llm_verdict_target in dict.fromkeys(routed):
                             await record_routing_verdict(
                                 self._pool,
                                 ingestion_event_id=message_inbox_id,
                                 sender_identity=source_metadata.get("identity"),
                                 source_channel=source,
-                                verdict_source="llm",
+                                verdict_source=_verdict_source_for_llm,
                                 verdict_action="route_to",
                                 verdict_target=_llm_verdict_target,
+                                matched_rule_id=_spot_check_matched_rule_id,
                                 session_id=_llm_verdict_session_id,
+                            )
+                        if _triage_spot_check and _spot_check_matched_rule_id:
+                            await maybe_create_demotion_suggestion(
+                                self._pool,
+                                rule_id=_spot_check_matched_rule_id,
                             )
 
                     # Fallback: LLM called no tools → infer from summary text, else general.

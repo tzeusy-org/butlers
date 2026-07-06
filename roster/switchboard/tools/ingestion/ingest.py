@@ -391,6 +391,16 @@ def _build_request_context(
             context["triage_rule_id"] = triage_decision.matched_rule_id
         if triage_decision.matched_rule_type:
             context["triage_rule_type"] = triage_decision.matched_rule_type
+        # Demotion via spot-check sampling (bu-x55k3, rule-promotion bead 5
+        # of 7): a promoted rule matched, but the 1-in-K sample was hit.
+        # The triage_* keys above still describe what the rule *would* have
+        # done (kept for observability/debugging); this flag tells the
+        # pipeline to route the event through normal LLM classification
+        # instead of taking the bypass, and to log the fresh verdict as
+        # verdict_source='spot_check' (matched_rule_id=triage_rule_id)
+        # rather than 'llm'.
+        if triage_decision.spot_check:
+            context["triage_spot_check"] = True
 
     # Group chat metadata from RFC 0013 D3/D4.
     # These are optional additive keys; omitting them preserves existing behavior.

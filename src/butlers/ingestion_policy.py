@@ -22,10 +22,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from butlers.ingestion_policy_metrics import IngestionPolicyMetrics
 
@@ -33,6 +34,26 @@ if TYPE_CHECKING:
     import asyncpg
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SPOT_CHECK_K = 20
+"""Default 1-in-K spot-check sampling rate applied to matches on a promoted
+(``created_by='promotion'``) rule. See design.md section 4 / spec
+"Requirement: Demotion via Spot-Check Sampling" (bu-x55k3, rule-promotion
+bead 5 of 7)."""
+
+
+class SpotCheckSampler(Protocol):
+    """Injectable sampling seam for deterministic spot-check tests.
+
+    Matches the subset of :class:`random.Random`'s interface this module
+    needs. Tests inject a fake implementing this protocol (e.g. one that
+    always returns ``0`` to force a spot-check hit, or a value >=
+    ``spot_check_k`` to force a miss) instead of depending on real
+    randomness.
+    """
+
+    def randrange(self, stop: int) -> int: ...
+
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -120,6 +141,15 @@ class PolicyDecision:
 
     reason: str = ""
     """Human-readable explanation."""
+
+    spot_check: bool = False
+    """True when a promoted (``created_by='promotion'``) rule matched but the
+    1-in-K spot-check sample was hit. Callers MUST route this event through
+    normal LLM classification instead of taking the matched rule's bypass,
+    and record the resulting fresh verdict as ``verdict_source='spot_check'``
+    (with ``matched_rule_id`` set to this rule) rather than ``'llm'``. See
+    design.md section 4 / spec "Requirement: Demotion via Spot-Check
+    Sampling"."""
 
     @property
     def bypasses_llm(self) -> bool:
@@ -448,6 +478,14 @@ class IngestionPolicyEvaluator:
         the evaluator runs with an empty rule set (fail-open).
     refresh_interval_s:
         Seconds between TTL cache refreshes (default 60).
+    spot_check_k:
+        1-in-K sampling rate for promoted (``created_by='promotion'``) rule
+        matches (default 20; see design.md section 4). Set to 0 to disable
+        spot-checking entirely.
+    spot_check_rng:
+        Injectable :class:`SpotCheckSampler` (matches ``random.Random``'s
+        interface) for deterministic tests. Defaults to a real
+        ``random.Random()`` instance.
     """
 
     def __init__(
@@ -455,10 +493,16 @@ class IngestionPolicyEvaluator:
         scope: str,
         db_pool: asyncpg.Pool | None,
         refresh_interval_s: float = 60,
+        spot_check_k: int = DEFAULT_SPOT_CHECK_K,
+        spot_check_rng: SpotCheckSampler | None = None,
     ) -> None:
         self._scope = scope
         self._db_pool = db_pool
         self._refresh_interval_s = refresh_interval_s
+        self._spot_check_k = spot_check_k
+        self._spot_check_rng: SpotCheckSampler = (
+            spot_check_rng if spot_check_rng is not None else random.Random()
+        )
 
         self._rules: list[dict[str, Any]] = []
         self._last_loaded_at: float | None = None
@@ -502,7 +546,9 @@ class IngestionPolicyEvaluator:
                 action,
                 priority,
                 name,
-                created_at::text AS created_at
+                created_at::text AS created_at,
+                created_by,
+                promoted_from_suggestion_id::text AS promoted_from_suggestion_id
             FROM switchboard.ingestion_rules
             WHERE scope = $1
               AND enabled = TRUE
@@ -641,12 +687,25 @@ class IngestionPolicyEvaluator:
                 latency_ms=latency_ms,
             )
 
+            # Demotion via spot-check sampling (design.md section 4): only
+            # promoted rules are ever sampled. The die roll is O(1) — no I/O,
+            # no added latency to this synchronous call. A hit does NOT
+            # change the returned action/target (the caller still learns what
+            # the rule would have done); it only sets `spot_check=True` so
+            # the caller routes the event through normal LLM classification
+            # instead of taking the bypass, then logs the fresh verdict as
+            # `verdict_source='spot_check'` for rolling agreement scoring.
+            spot_check = False
+            if str(rule.get("created_by", "")) == "promotion" and self._spot_check_k > 0:
+                spot_check = self._spot_check_rng.randrange(self._spot_check_k) == 0
+
             return PolicyDecision(
                 action=action_name,
                 target_butler=target_butler,
                 matched_rule_id=rule_id,
                 matched_rule_type=rule_type,
                 reason=f"{rule_type} match -> {action_str}",
+                spot_check=spot_check,
             )
 
         # No match -- pass through

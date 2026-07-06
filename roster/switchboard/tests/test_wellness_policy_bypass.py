@@ -265,6 +265,51 @@ class TestWellnessPolicyContextEmbedding:
         assert context["triage_rule_type"] == "source_channel"
         assert context["triage_rule_id"] == "00000000-0000-0000-0001-000000000080"
 
+    def test_spot_check_true_sets_triage_spot_check_flag(self) -> None:
+        """bu-x55k3: PolicyDecision.spot_check=True must propagate into
+        request_context as triage_spot_check=True, alongside (not instead
+        of) the usual triage_decision/target/rule_id/rule_type fields — the
+        pipeline needs both: what the rule would have done (for the
+        disagreement comparison) and the flag telling it not to bypass."""
+        envelope = _make_wellness_envelope_v1()
+        triage_decision = PolicyDecision(
+            action="route_to",
+            target_butler="health",
+            matched_rule_id="00000000-0000-0000-0001-000000000080",
+            matched_rule_type="source_channel",
+            reason="source_channel match -> route_to:health",
+            spot_check=True,
+        )
+        context = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+            triage_decision=triage_decision,
+        )
+        assert context["triage_spot_check"] is True
+        assert context["triage_decision"] == "route_to"
+        assert context["triage_target"] == "health"
+        assert context["triage_rule_id"] == "00000000-0000-0000-0001-000000000080"
+
+    def test_spot_check_false_omits_triage_spot_check_flag(self) -> None:
+        """Regression guard: the ordinary (non-spot-checked) bypass path
+        must not gain a stray triage_spot_check key."""
+        envelope = _make_wellness_envelope_v1()
+        triage_decision = PolicyDecision(
+            action="route_to",
+            target_butler="health",
+            matched_rule_id="00000000-0000-0000-0001-000000000080",
+            matched_rule_type="source_channel",
+            reason="source_channel match -> route_to:health",
+        )
+        context = _build_request_context(
+            envelope,
+            request_id=uuid.uuid4(),
+            received_at=datetime.now(UTC),
+            triage_decision=triage_decision,
+        )
+        assert "triage_spot_check" not in context
+
     def test_source_channel_in_context(self) -> None:
         """source_channel='wellness' is present in request_context."""
         envelope = _make_wellness_envelope_v1()
