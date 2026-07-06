@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import asdict
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
@@ -103,6 +104,11 @@ def _parse_job_args(
                 field_name=field_name,
             )
     return normalized
+
+
+def _now() -> datetime:
+    """Wall-clock now, isolated for test patching (mirrors rollups.py/flags.py)."""
+    return datetime.now(UTC)
 
 
 def _dedupe_non_empty(values: list[str]) -> tuple[str, ...]:
@@ -575,9 +581,62 @@ async def run_rollup_daily(
     return result
 
 
+async def run_narrate_daily(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the bounded once-daily LLM labeling pass over yesterday's rollup
+    (bu-v9y18, telemetry-distillation bead 6, design doc §3.5/§6.6).
+
+    Unlike ``run_rollup_daily``/``run_routines_mine``, this job is not a
+    trailing-window re-scan: it operates on exactly one local calendar day —
+    "yesterday" relative to this run, in the owner's timezone — computed the
+    same way ``day_close_writer._compute_day_window`` closes the day for
+    ``chronicler_day_close``. This keeps the LLM invocation genuinely
+    bounded to at most one call per scheduled run, per the design's cost
+    constraint, rather than re-narrating a trailing window every tick the
+    way the deterministic rollup/flags jobs do.
+
+    Delegates to ``narration.narrate_daily_rollup``, which is itself a no-op
+    (no LLM call) when the day has no rollup data yet, carries a
+    ``feeder_dark`` flag, or the pass is disabled via
+    ``CHRONICLER_NARRATION_ENABLED`` — see that module's docstring for the
+    full honesty-doctrine skip/degrade contract.
+    """
+    from butlers.chronicler.narration import DEFAULT_TIMEZONE, narrate_daily_rollup
+
+    supported_fields = ("timezone",)
+    timezone = DEFAULT_TIMEZONE
+    if job_args:
+        unknown_fields = sorted(set(job_args) - set(supported_fields))
+        if unknown_fields:
+            raise RuntimeError(
+                f"chronicler_narrate_daily job only supports {', '.join(supported_fields)}; "
+                f"received unsupported keys: {unknown_fields}"
+            )
+        if "timezone" in job_args:
+            raw_timezone = job_args["timezone"]
+            if not isinstance(raw_timezone, str) or not raw_timezone:
+                raise RuntimeError(
+                    "chronicler_narrate_daily job_args.timezone must be a non-empty string"
+                )
+            timezone = raw_timezone
+
+    try:
+        tzinfo = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise RuntimeError(f"chronicler_narrate_daily: unknown timezone {timezone!r}") from exc
+
+    now = _now()
+    yesterday_local = now.astimezone(tzinfo).date() - timedelta(days=1)
+
+    return await narrate_daily_rollup(db_pool, local_date=yesterday_local, timezone=timezone)
+
+
 __all__ = [
     "_DEFAULT_CALENDAR_SCHEMAS",
     "_DEFAULT_SESSION_SCHEMAS",
+    "run_narrate_daily",
     "run_project_activitywatch",
     "run_project_calendar",
     "run_project_comms",

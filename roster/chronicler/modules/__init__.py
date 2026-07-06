@@ -90,6 +90,22 @@ _DEFAULT_SCHEDULES: tuple[dict[str, Any], ...] = (
         "cron": "15 * * * *",
         "job_name": "chronicler_rollup_daily",
     },
+    {
+        # Daily, 01:20 (bu-v9y18, telemetry-distillation bead 6): the one
+        # optional, bounded LLM call per local day, labeling the already-
+        # materialized `daily_rollups`/`daily_rollup_flags` rows for
+        # yesterday (design doc §3.5/§6.6). Scheduled after
+        # `chronicler_rollup_daily`'s hourly ":15" tick and
+        # `chronicler_day_close`'s 01:05 prompt-mode task, so yesterday's
+        # rollup + flags are already finalized by the time this runs.
+        # Presentation polish only — a skip, a disabled pass
+        # (CHRONICLER_NARRATION_ENABLED=false), or a failed LLM call never
+        # blocks or corrupts the deterministic rollup/flags rows (see
+        # `narration.py` module docstring).
+        "name": "chronicler_narrate_daily",
+        "cron": "20 1 * * *",
+        "job_name": "chronicler_narrate_daily",
+    },
 )
 
 

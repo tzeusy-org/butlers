@@ -1171,6 +1171,7 @@ def _row_to_daily_rollup(row: asyncpg.Record) -> DailyRollup:
         seconds=row["seconds"],
         episode_count=row["episode_count"],
         distinct_place_count=row["distinct_place_count"],
+        narrative=row["narrative"],
         computed_at=row["computed_at"],
     )
 
@@ -1266,6 +1267,7 @@ def _row_to_daily_rollup_flag(row: asyncpg.Record) -> DailyRollupFlag:
         flag_type=row["flag_type"],
         severity=row["severity"],
         detail=row["detail"] or {},
+        narrative=row["narrative"],
         created_at=row["created_at"],
     )
 
@@ -1366,6 +1368,65 @@ async def list_daily_rollup_flags_range(
     return [_row_to_daily_rollup_flag(r) for r in rows]
 
 
+# ── Daily rollup narration (bu-v9y18, telemetry-distillation bead 6) ───────
+
+
+async def set_daily_rollup_day_narrative(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    local_date: Any,
+    narrative: str,
+) -> int:
+    """Write the once-daily LLM day summary to every lane row for *local_date*.
+
+    ``daily_rollups`` has no single per-day row (one row per ``(local_date,
+    lane)``), so the day-level summary is broadcast identically to every
+    existing lane row for that date. A no-op (returns ``0``) if no rollup
+    rows exist yet for *local_date* — the narration orchestrator only calls
+    this after confirming rollup rows exist (see
+    ``narration.narrate_daily_rollup``), so a ``0`` here would indicate a
+    caller bug, not a normal path.
+
+    Returns the number of rows updated.
+    """
+    result = await conn.execute(
+        "UPDATE daily_rollups SET narrative = $2 WHERE local_date = $1",
+        local_date,
+        narrative,
+    )
+    # asyncpg command tags look like "UPDATE 3"; parse the trailing count.
+    return int(result.rsplit(" ", 1)[-1])
+
+
+async def set_daily_rollup_flag_narrative(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    local_date: Any,
+    flag_type: str,
+    narrative: str,
+) -> DailyRollupFlag | None:
+    """Write a short LLM label for one already-existing ``(local_date,
+    flag_type)`` flag row.
+
+    Returns the updated row, or ``None`` if no such flag row exists (the
+    narration pass never fabricates a flag — it only labels flags the
+    deterministic evaluator in ``flags.py`` already wrote).
+    """
+    row = await conn.fetchrow(
+        """
+        UPDATE daily_rollup_flags SET narrative = $3
+        WHERE local_date = $1 AND flag_type = $2
+        RETURNING *
+        """,
+        local_date,
+        flag_type,
+        narrative,
+    )
+    if row is None:
+        return None
+    return _row_to_daily_rollup_flag(row)
+
+
 __all__: Sequence[str] = (
     "delete_daily_rollup_flag",
     "get_carryover",
@@ -1390,6 +1451,8 @@ __all__: Sequence[str] = (
     "record_idempotency",
     "register_source",
     "save_carryover",
+    "set_daily_rollup_day_narrative",
+    "set_daily_rollup_flag_narrative",
     "update_routine",
     "upsert_checkpoint",
     "upsert_checkpoint_subsource",

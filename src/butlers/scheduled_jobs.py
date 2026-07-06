@@ -1422,6 +1422,16 @@ async def _run_chronicler_rollup_daily_job(
     return await run_rollup_daily(pool, job_args)
 
 
+async def _run_chronicler_narrate_daily_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's bounded once-daily LLM rollup-labeling pass (bu-v9y18)."""
+    from butlers.chronicler.jobs import run_narrate_daily
+
+    return await run_narrate_daily(pool, job_args)
+
+
 # ---------------------------------------------------------------------------
 # Retention pruner jobs (opt-in, disabled by default)
 # ---------------------------------------------------------------------------
@@ -1649,6 +1659,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_comms": _run_chronicler_project_comms_job,
             "chronicler_routines_mine": _run_chronicler_routines_mine_job,
             "chronicler_rollup_daily": _run_chronicler_rollup_daily_job,
+            "chronicler_narrate_daily": _run_chronicler_narrate_daily_job,
         },
         "home": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,

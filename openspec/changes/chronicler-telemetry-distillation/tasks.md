@@ -78,11 +78,23 @@
 
 ## 7. Optional bounded LLM labeling pass (depends on §5)
 
-- [ ] 7.1 One LLM call per local day, invoked after rollup + flags are
+- [x] 7.1 One LLM call per local day, invoked after rollup + flags are
   written, input = reduced rollup/flag rows + top episode titles only.
-- [ ] 7.2 Output written back to `daily_rollup_flags.detail`/
-  `daily_rollups.narrative`; owner-toggleable; disabling it never affects
-  rollup/flag correctness.
+  (bu-v9y18 — `narration.py::narrate_daily_rollup`, scheduled job
+  `chronicler_narrate_daily` at 01:20 local, after the `chronicler_rollup_daily`
+  hourly tick and `chronicler_day_close`'s 01:05 prompt task)
+- [x] 7.2 Output written back to `daily_rollups.narrative` (day summary) and
+  `daily_rollup_flags.narrative` (per-flag label — migration `chronicler_020`);
+  owner-toggleable via `CHRONICLER_NARRATION_ENABLED`; disabling it, a skip
+  (no rollup data / `feeder_dark`), or a failed LLM call never affects
+  rollup/flag correctness. **[decision]** dedicated `narrative` columns on
+  both tables rather than folding the per-flag label into the existing
+  `daily_rollup_flags.detail` JSONB: `flags.py`'s hourly reconciliation fully
+  overwrites `detail` on every re-run, which would silently wipe a label
+  written there within the hour — a dedicated column no other writer
+  references is the only way a label survives (see `narration.py`/migration
+  `chronicler_020` docstrings; verified in
+  `tests/integration/test_daily_rollup_narrative_integration.py::test_flag_narrative_survives_flag_reevaluation`).
 
 ## 8. Coordination follow-up (not blocking this change)
 

@@ -311,6 +311,14 @@ class DailyRollup:
     episode_count: int = 0
     timezone: str = "Asia/Singapore"
     distinct_place_count: int | None = None
+    # One-line day summary from the optional once-daily LLM labeling pass
+    # (bu-v9y18, telemetry-distillation bead 6, design doc §3.5/§6.6).
+    # NULL when the pass hasn't run, was skipped (no data / feeder-dark),
+    # or is disabled — the deterministic seconds/episode_count fields above
+    # are always complete regardless (spec.md "Disabling the labeling pass
+    # preserves correctness"). Written identically to every lane row for a
+    # given local_date (there is no single per-day row in this table).
+    narrative: str | None = None
     id: UUID | None = None
     computed_at: datetime | None = None
 
@@ -331,6 +339,16 @@ class DailyRollupFlag:
     flag_type: str
     severity: str = "info"
     detail: dict[str, Any] = field(default_factory=dict)
+    # Short natural-language label for this flag from the optional
+    # once-daily LLM labeling pass (bu-v9y18, telemetry-distillation
+    # bead 6). Deliberately a separate column from ``detail`` — the
+    # deterministic anomaly-flag evaluator (``flags.py``) fully overwrites
+    # ``detail`` on every reconciliation pass (hourly, per
+    # ``chronicler_rollup_daily``), so a label stored inside ``detail``
+    # would be silently wiped within the hour. This column is never
+    # touched by ``flags.py``, so it survives untouched across
+    # re-evaluations. NULL when unlabeled/skipped/disabled.
+    narrative: str | None = None
     id: UUID | None = None
     created_at: datetime | None = None
 
