@@ -116,7 +116,9 @@ def test_breaks_catalogue_hit_returns_rows_for_provider():
     assert data[0]["severity"] == "high"
     assert data[0]["butler"] == "health"
     assert data[0]["feature"] == "Google Health ingestion"
-    assert "https://www.googleapis.com/auth/googlehealth.sleep.readonly" in data[0]["required_scopes"]
+    assert (
+        "https://www.googleapis.com/auth/googlehealth.sleep.readonly" in data[0]["required_scopes"]
+    )
 
     # Second row is medium severity
     assert data[1]["severity"] == "medium"
