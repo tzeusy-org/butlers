@@ -10,7 +10,14 @@ against duplicate side effects on a retry.
 Eligible (pre-tool-call systemic failures):
 - Runtime binary missing or unregistered runtime type (``FileNotFoundError``,
   ``ValueError`` with runtime mismatch message)
-- Provider/auth failures (``RuntimeError`` with recognized auth/provider message patterns)
+- Provider/auth failures (``RuntimeError`` with recognized auth/credential message
+  patterns) — reason prefix ``provider_auth_error``
+- Provider/backend availability failures (``RuntimeError`` with recognized
+  connectivity/service message patterns, e.g. connection refused, service
+  unavailable, bad gateway) — reason prefix ``provider_unavailable``.  Split from
+  the auth bucket (bu-ujm9d) so a network blip is not misattributed as an
+  identity/credential rejection; eligibility is identical to the auth bucket,
+  only the reason label differs.
 - OpenCode CLI ``APIError`` payloads flagged by the adapter as pre-tool-call
 - Rate-limit before work starts (``RuntimeError`` with recognized rate-limit message)
 - MCP discovery failure before any tool was executed (``MCPToolDiscoveryError``
@@ -63,8 +70,13 @@ class FailoverDecision:
 # ---------------------------------------------------------------------------
 
 # Substrings matched (lowercased) against the exception message to detect
-# provider/auth failures that are systemic and pre-invocation.  These indicate
-# the provider rejected the request before any user work was attempted.
+# genuine provider/auth failures that are systemic and pre-invocation — the
+# provider rejected the request because of who is asking (bad/missing/expired
+# credential, insufficient scope), not because the provider itself is down.
+# This bucket feeds discretion's auth-health surface (bu-ur7go) and the
+# ``auth_failure_default`` ignore-kind (bu-n0336), so it must stay narrow: a
+# network blip here would falsely paint a healthy-but-unreachable provider as
+# an auth problem (bu-ujm9d).
 _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     # Authentication / credential failures
     "authentication",
@@ -79,6 +91,21 @@ _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     "permission denied",
     "access denied",
     "forbidden",
+)
+
+# Substrings matched (lowercased) against the exception message to detect
+# provider/backend *availability* failures that are systemic and
+# pre-invocation — the provider (or the network path to it) is unreachable or
+# erroring, independent of whether the caller's credentials are valid.  Split
+# out from ``_PROVIDER_AUTH_MARKERS`` (bu-ujm9d): a 502 from provider A says
+# nothing about whether provider A's or provider B's credentials are good, so
+# conflating "can't reach the provider" with "the provider rejected our
+# identity" mislabeled every connectivity blip as an auth failure and
+# polluted discretion's auth-health metric and the ``auth_failure_default``
+# ignore-kind taxonomy with false positives. Failover *eligibility* is
+# unchanged by this split — both buckets remain eligible — only the reason
+# label differs (``provider_auth_error`` vs ``provider_unavailable``).
+_PROVIDER_AVAILABILITY_MARKERS: tuple[str, ...] = (
     # Provider / model availability
     "model not found",
     "model unavailable",
@@ -367,12 +394,26 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
                 reason="provider_api_error: OpenCode APIError before session work started",
             )
 
-        # Provider / auth failures
+        # Provider / auth failures — genuine identity/credential rejections.
         if _matches_any(exc_msg, _PROVIDER_AUTH_MARKERS):
             logger.debug("Failover eligible: RuntimeError — provider/auth failure")
             return FailoverDecision(
                 eligible=True,
                 reason="provider_auth_error: provider or authentication failure "
+                "before session work started",
+            )
+
+        # Provider / backend availability failures — connectivity or service
+        # errors independent of credential validity. Same eligibility as the
+        # auth bucket above (bu-ujm9d): distinct reason label only, so callers
+        # keying off "provider_auth_error" (discretion auth-health, the
+        # auth_failure_default ignore-kind) do not misattribute a network
+        # blip as an auth problem.
+        if _matches_any(exc_msg, _PROVIDER_AVAILABILITY_MARKERS):
+            logger.debug("Failover eligible: RuntimeError — provider/backend availability failure")
+            return FailoverDecision(
+                eligible=True,
+                reason="provider_unavailable: provider or backend availability failure "
                 "before session work started",
             )
 

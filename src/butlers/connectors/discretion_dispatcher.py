@@ -402,11 +402,16 @@ class DiscretionDispatcher:
                 FailoverContext(exception=attempt_exc, process_info=adapter.last_process_info)
             )
 
-            # bu-ur7go: a provider/auth-classified failure (e.g. a missing or
-            # revoked ~/.codex/auth.json — see bu-ofo3i) is recorded here
-            # regardless of failover eligibility so connector /status and
-            # discretion_auth_failures_total surface it instead of it
-            # disappearing into the generic fail-open/fail-closed path.
+            # bu-ur7go: a genuine provider/auth-classified failure (e.g. a
+            # missing or revoked ~/.codex/auth.json — see bu-ofo3i) is
+            # recorded here regardless of failover eligibility so connector
+            # /status and discretion_auth_failures_total surface it instead of
+            # it disappearing into the generic fail-open/fail-closed path.
+            # bu-ujm9d split the classifier's marker buckets so a connection
+            # refused / service unavailable / bad gateway failure now carries
+            # the distinct "provider_unavailable" reason prefix and does NOT
+            # match this startswith check — a network blip must not flip the
+            # auth-health surface to "degraded" or increment this counter.
             if decision.reason.startswith("provider_auth_error"):
                 self._last_auth_failure_at = time.time()
                 self._last_auth_failure_reason = decision.reason

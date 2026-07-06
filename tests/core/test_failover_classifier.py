@@ -298,6 +298,28 @@ class TestProviderAuthErrorsEligible:
         dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
         assert _eligible(dec), f"Expected eligible for msg={msg!r}, got: {dec.reason}"
 
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "Codex CLI exited with code 1: authentication failed",
+            "Codex CLI exited with code 401: unauthorized",
+            "RuntimeError: invalid api key provided",
+            "access denied: your account lacks access",
+            "credential not found in keychain",
+            "token expired, please re-authenticate",
+            "permission denied: insufficient scope",
+        ],
+    )
+    def test_genuine_auth_message_carries_provider_auth_error_reason(self, msg: str) -> None:
+        """bu-ujm9d: genuine identity/credential failures must carry the
+        narrow ``provider_auth_error`` reason prefix, not the availability
+        bucket's ``provider_unavailable`` — these are the messages discretion's
+        auth-health surface and the ``auth_failure_default`` ignore-kind key
+        off of."""
+        dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
+        assert _eligible(dec), f"Expected eligible for msg={msg!r}, got: {dec.reason}"
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
+
     def test_connection_refused_is_eligible(self) -> None:
         """RuntimeError with 'connection refused' is eligible (provider unreachable)."""
         dec = classify_failover_eligibility(
@@ -350,6 +372,50 @@ class TestProviderAuthErrorsEligible:
         assert "default-closed" in dec.reason
 
 
+class TestProviderAvailabilityErrorsSplitFromAuth:
+    """bu-ujm9d: provider/backend availability failures (connectivity, service
+    errors) must be eligible for failover — same as genuine auth failures —
+    but carry the distinct ``provider_unavailable`` reason prefix so they are
+    never misattributed to the ``provider_auth_error`` bucket that discretion's
+    auth-health surface and the ``auth_failure_default`` ignore-kind key off
+    of. Proven repro from PR #3004 review:
+    ``_classify_default_error(RuntimeError("Connection refused: could not
+    reach provider"))`` used to return ``"auth_failure"`` before this split.
+    """
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "Connection refused: could not reach provider",
+            "Codex CLI exited with code 1: connection refused",
+            "service unavailable: provider returned 503",
+            "provider unavailable: anthropic returning 503",
+            "backend unavailable",
+            "network unreachable",
+            "OpenCode CLI exited with code 1: bad gateway",
+            "gateway timeout while contacting provider",
+            "ApiAdapter invocation failed: Connection error.",
+            "model not found in catalog",
+            "no such model: claude-opus-99",
+        ],
+    )
+    def test_availability_message_is_eligible_with_provider_unavailable_reason(
+        self, msg: str
+    ) -> None:
+        dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
+        assert _eligible(dec), f"Expected eligible for msg={msg!r}, got: {dec.reason}"
+        assert dec.reason.startswith("provider_unavailable"), dec.reason
+        assert not dec.reason.startswith("provider_auth_error"), dec.reason
+
+    def test_connection_refused_repro_is_not_classified_as_auth_failure(self) -> None:
+        """Proven repro from PR #3004 review — must NOT collapse to auth_failure."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError("Connection refused: could not reach provider"))
+        )
+        assert _eligible(dec)
+        assert dec.reason.startswith("provider_unavailable"), dec.reason
+
+
 class TestApiAdapterAnthropicSdkErrorsEligible:
     """bu-qvnce.12 (PR #2936) fail-open verification: ApiAdapter wraps every
     Anthropic SDK exception as ``RuntimeError(f"ApiAdapter invocation failed:
@@ -366,14 +432,24 @@ class TestApiAdapterAnthropicSdkErrorsEligible:
     """
 
     def test_bare_anthropic_connection_error_is_eligible(self) -> None:
-        """anthropic.APIConnectionError's exact hardcoded message must fail over."""
+        """anthropic.APIConnectionError's exact hardcoded message must fail over.
+
+        bu-ujm9d: this is a connectivity failure, not an identity/credential
+        rejection — it must carry the ``provider_unavailable`` reason prefix,
+        not ``provider_auth_error``.
+        """
         dec = classify_failover_eligibility(
             _ctx(RuntimeError("ApiAdapter invocation failed: Connection error."))
         )
         assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_unavailable"), dec.reason
 
     def test_anthropic_5xx_api_error_type_is_eligible(self) -> None:
-        """A generic Anthropic 500 (error.type == 'api_error') must fail over."""
+        """A generic Anthropic 500 (error.type == 'api_error') must fail over.
+
+        bu-ujm9d: a 5xx is a backend availability failure, not an auth
+        rejection — carries the ``provider_unavailable`` reason prefix.
+        """
         dec = classify_failover_eligibility(
             _ctx(
                 RuntimeError(
@@ -384,9 +460,11 @@ class TestApiAdapterAnthropicSdkErrorsEligible:
             )
         )
         assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_unavailable"), dec.reason
 
     def test_anthropic_missing_api_key_message_is_eligible(self) -> None:
-        """ApiAdapter's own no-credential RuntimeError must fail over."""
+        """ApiAdapter's own no-credential RuntimeError must fail over — and
+        stays in the genuine ``provider_auth_error`` bucket (bu-ujm9d)."""
         dec = classify_failover_eligibility(
             _ctx(
                 RuntimeError(
@@ -396,9 +474,11 @@ class TestApiAdapterAnthropicSdkErrorsEligible:
             )
         )
         assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
 
     def test_anthropic_401_authentication_error_is_eligible(self) -> None:
-        """A 401 (error.type == 'authentication_error') must fail over."""
+        """A 401 (error.type == 'authentication_error') must fail over — and
+        stays in the genuine ``provider_auth_error`` bucket (bu-ujm9d)."""
         dec = classify_failover_eligibility(
             _ctx(
                 RuntimeError(
@@ -409,6 +489,7 @@ class TestApiAdapterAnthropicSdkErrorsEligible:
             )
         )
         assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
 
     def test_anthropic_timeout_is_eligible(self) -> None:
         """ApiAdapter's own TimeoutError (no captured tool calls) must fail over."""

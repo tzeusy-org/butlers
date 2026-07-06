@@ -149,6 +149,42 @@ async def test_call_records_auth_failure_and_increments_metric() -> None:
     assert health["status"] == "degraded"
 
 
+async def test_call_does_not_record_auth_failure_for_availability_error() -> None:
+    """bu-ujm9d: a connectivity/availability failure (connection refused,
+    service unavailable, etc.) is failover-eligible via the classifier's
+    ``provider_unavailable`` bucket, but must NOT flip auth-health to
+    "degraded" or increment ``discretion_auth_failures_total`` — those are
+    reserved for the genuine ``provider_auth_error`` bucket. Before the
+    marker split, this exact message collapsed into the auth bucket and would
+    have falsely reported a healthy-but-unreachable provider as an auth
+    failure.
+    """
+    dispatcher = DiscretionDispatcher(pool=MagicMock())
+    catalog = ("codex", "gpt-5-codex", [], uuid.uuid4(), 30, "specialty")
+    adapter = _make_adapter(
+        side_effect=[RuntimeError("Connection refused: could not reach provider")]
+    )
+
+    before = discretion_auth_failures_total.labels(runtime_type="codex")._value.get()
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.next_same_tier_candidate", AsyncMock(return_value=None)),
+        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+    ):
+        with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
+            await dispatcher.call("hi")
+
+    after = discretion_auth_failures_total.labels(runtime_type="codex")._value.get()
+    assert after == before
+
+    health = dispatcher.get_auth_health()
+    assert health["last_auth_failure_at"] is None
+
+
 async def test_call_does_not_record_auth_failure_for_unrelated_error() -> None:
     """A non-auth business error must not be misclassified as an auth failure
     or increment discretion_auth_failures_total.

@@ -30,6 +30,7 @@ import pytest
 from butlers.connectors.discretion import (
     DiscretionEvaluator,
     DiscretionResult,
+    _classify_default_error,
     classify_ignore_kind,
 )
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
@@ -64,6 +65,17 @@ def test_fail_closed_auth_failure_reason() -> None:
     assert classify_ignore_kind(result) == "auth_failure_default"
 
 
+def test_fail_closed_provider_unavailable_reason() -> None:
+    """bu-ujm9d: a provider/backend availability failure (e.g. connection
+    refused, service unavailable) must classify to its own kind — not
+    ``auth_failure_default`` — since it is not an identity/credential
+    rejection."""
+    result = DiscretionResult(
+        verdict="IGNORE", reason="fail-closed: provider_unavailable", is_fail_open=False
+    )
+    assert classify_ignore_kind(result) == "provider_unavailable_default"
+
+
 def test_fail_closed_failover_exhausted_reason() -> None:
     result = DiscretionResult(
         verdict="IGNORE", reason="fail-closed: failover_exhausted", is_fail_open=False
@@ -88,6 +100,25 @@ def test_fail_closed_other_exception_reason_is_error_default() -> None:
         verdict="IGNORE", reason="fail-closed: ValueError", is_fail_open=False
     )
     assert classify_ignore_kind(result) == "error_default"
+
+
+# ---------------------------------------------------------------------------
+# _classify_default_error — direct marker-split coverage (bu-ujm9d)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_default_error_connection_refused_is_provider_unavailable() -> None:
+    """Proven repro from PR #3004 review: a connection-refused RuntimeError
+    used to classify as ``"auth_failure"`` before the marker split — it must
+    now classify as ``"provider_unavailable"``."""
+    exc = RuntimeError("Connection refused: could not reach provider")
+    assert _classify_default_error(exc) == "provider_unavailable"
+
+
+def test_classify_default_error_genuine_auth_is_still_auth_failure() -> None:
+    """A genuine identity/credential failure is unaffected by the split."""
+    exc = RuntimeError("Codex CLI exited with code 1: unexpected status 401 Unauthorized")
+    assert _classify_default_error(exc) == "auth_failure"
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +151,22 @@ async def test_evaluate_auth_failure_classifies_as_auth_failure_default() -> Non
     assert result.verdict == "IGNORE"
     assert result.is_fail_open is False
     assert classify_ignore_kind(result) == "auth_failure_default"
+
+
+async def test_evaluate_connection_refused_classifies_as_provider_unavailable_default() -> None:
+    """bu-ujm9d: a connectivity failure under weight<0.5 fail-closed must be
+    distinguishable from a genuine auth failure — proven repro from PR #3004
+    review, previously misclassified as ``auth_failure_default``."""
+    dispatcher = _make_dispatcher(
+        side_effect=RuntimeError("Connection refused: could not reach provider")
+    )
+    evaluator = DiscretionEvaluator(source_name="tg", dispatcher=dispatcher)
+
+    result = await evaluator.evaluate(text="spam", weight=0.1)
+
+    assert result.verdict == "IGNORE"
+    assert result.is_fail_open is False
+    assert classify_ignore_kind(result) == "provider_unavailable_default"
 
 
 async def test_evaluate_failover_exhausted_classifies_as_failover_exhausted() -> None:

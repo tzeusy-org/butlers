@@ -300,20 +300,25 @@ def _build_user_prompt(context_entries: list[ContextEntry], entry: ContextEntry)
 def _classify_default_error(exc: Exception) -> str:
     """Classify a discretion-call exception for the fail-open/fail-closed reason string.
 
-    Distinguishes two systemic failure modes that would otherwise collapse into
-    an opaque exception class name (bu-n0336, from bu-ofo3i's diagnosis that
-    weight<0.5 senders silently fail-closed on a never-provisioned CLI auth
-    token with zero discrimination from any other error):
+    Distinguishes three systemic failure modes that would otherwise collapse
+    into an opaque exception class name (bu-n0336, from bu-ofo3i's diagnosis
+    that weight<0.5 senders silently fail-closed on a never-provisioned CLI
+    auth token with zero discrimination from any other error):
 
     - ``"failover_exhausted"``: every same-tier model candidate failed (the
       ``RuntimeError`` :class:`~butlers.connectors.discretion_dispatcher.DiscretionDispatcher`
       raises when its own same-tier failover loop is exhausted).
-    - ``"auth_failure"``: a provider/auth-classified failure (e.g. a missing or
-      revoked CLI auth token). Reuses
+    - ``"auth_failure"``: a genuine provider/auth-classified failure (e.g. a
+      missing or revoked CLI auth token). Reuses
       :func:`~butlers.core.failover_classifier.classify_failover_eligibility` —
       the same default-closed marker list ``DiscretionDispatcher``'s same-tier
       failover and connector ``/status`` auth health already key off — so the
       marker patterns live in exactly one place.
+    - ``"provider_unavailable"``: a provider/backend availability failure
+      (connection refused, service unavailable, bad gateway, etc.) — distinct
+      from ``"auth_failure"`` since bu-ujm9d split the classifier's marker
+      buckets: a connectivity blip is not an identity/credential rejection and
+      must not be attributed to auth in this audit trail.
 
     Falls back to the raw exception class name for anything else. Timeouts and
     unparseable responses are classified by their own call sites, not here.
@@ -323,6 +328,8 @@ def _classify_default_error(exc: Exception) -> str:
     decision = classify_failover_eligibility(FailoverContext(exception=exc))
     if decision.reason.startswith("provider_auth_error"):
         return "auth_failure"
+    if decision.reason.startswith("provider_unavailable"):
+        return "provider_unavailable"
     return type(exc).__name__
 
 
@@ -339,8 +346,13 @@ def classify_ignore_kind(result: DiscretionResult) -> str:
     the verdict first. Returns one of:
 
     - ``"llm_verdict"`` — the LLM actually ran and returned IGNORE.
-    - ``"auth_failure_default"`` — fail-closed default from a provider/auth
-      failure (e.g. a missing or revoked CLI auth token).
+    - ``"auth_failure_default"`` — fail-closed default from a genuine
+      provider/auth failure (e.g. a missing or revoked CLI auth token).
+    - ``"provider_unavailable_default"`` — fail-closed default from a
+      provider/backend availability failure (connection refused, service
+      unavailable, bad gateway, etc.). Split from ``"auth_failure_default"``
+      (bu-ujm9d) — a connectivity blip is not an identity/credential
+      rejection and must not masquerade as one in the audit taxonomy.
     - ``"failover_exhausted"`` — fail-closed default after every same-tier
       model candidate failed.
     - ``"timeout_default"`` — fail-closed default from an LLM call timeout.
@@ -353,6 +365,8 @@ def classify_ignore_kind(result: DiscretionResult) -> str:
         return "llm_verdict"
     if reason.startswith("fail-closed: auth_failure"):
         return "auth_failure_default"
+    if reason.startswith("fail-closed: provider_unavailable"):
+        return "provider_unavailable_default"
     if reason.startswith("fail-closed: failover_exhausted"):
         return "failover_exhausted"
     if reason.startswith("fail-closed: timeout"):
