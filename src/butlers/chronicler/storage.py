@@ -1235,6 +1235,27 @@ async def list_daily_rollups(
     return [_row_to_daily_rollup(r) for r in rows]
 
 
+async def list_daily_rollups_range(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    start_date: Any,
+    end_date: Any,
+) -> list[DailyRollup]:
+    """List rollup rows for every ``local_date`` in ``[start_date, end_date]`` inclusive.
+
+    Ordered by ``local_date ASC, lane ASC``. Used by
+    ``GET /api/chronicler/rollups`` to fetch a multi-day window in a single
+    round trip instead of one ``list_daily_rollups`` call per day.
+    """
+    rows = await conn.fetch(
+        "SELECT * FROM daily_rollups WHERE local_date BETWEEN $1 AND $2"
+        " ORDER BY local_date ASC, lane ASC",
+        start_date,
+        end_date,
+    )
+    return [_row_to_daily_rollup(r) for r in rows]
+
+
 # ── Daily rollup flags (bu-v76a7, telemetry-distillation bead 4) ───────────
 
 
@@ -1323,6 +1344,28 @@ async def list_daily_rollup_flags(
     return [_row_to_daily_rollup_flag(r) for r in rows]
 
 
+async def list_daily_rollup_flags_range(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    start_date: Any,
+    end_date: Any,
+) -> list[DailyRollupFlag]:
+    """List flag rows for every ``local_date`` in ``[start_date, end_date]`` inclusive.
+
+    Ordered by ``local_date ASC, flag_type ASC``. Used by
+    ``GET /api/chronicler/rollups`` alongside
+    :func:`list_daily_rollups_range` so a multi-day window is two queries
+    total, not two-per-day.
+    """
+    rows = await conn.fetch(
+        "SELECT * FROM daily_rollup_flags WHERE local_date BETWEEN $1 AND $2"
+        " ORDER BY local_date ASC, flag_type ASC",
+        start_date,
+        end_date,
+    )
+    return [_row_to_daily_rollup_flag(r) for r in rows]
+
+
 __all__: Sequence[str] = (
     "delete_daily_rollup_flag",
     "get_carryover",
@@ -1334,7 +1377,9 @@ __all__: Sequence[str] = (
     "insert_override",
     "link_event_to_episode",
     "list_daily_rollup_flags",
+    "list_daily_rollup_flags_range",
     "list_daily_rollups",
+    "list_daily_rollups_range",
     "list_episode_events",
     "list_episodes",
     "list_overlapping_episodes",

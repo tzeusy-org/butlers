@@ -29,6 +29,7 @@ import {
   getChroniclerEpisodeEvents,
   getChroniclerEpisodes,
   getChroniclerEvents,
+  getChroniclerRollups,
   getChroniclerSourceState,
   postChroniclerEpisodeExplain,
   submitChroniclerEpisodeCorrection,
@@ -39,6 +40,7 @@ import type {
   ChroniclerDayCloseParams,
   ChroniclerEpisodesParams,
   ChroniclerEventsParams,
+  ChroniclerRollupsParams,
   SubmitCorrectionRequest,
 } from "@/api/types.ts";
 
@@ -61,6 +63,8 @@ export const chroniclesKeys = {
   byDay: (params: ChroniclerAggregateByDayParams) =>
     [...chroniclesKeys.all, "aggregate-by-day", params] as const,
   sourceState: () => [...chroniclesKeys.all, "source-state"] as const,
+  rollups: (params: ChroniclerRollupsParams) =>
+    [...chroniclesKeys.all, "rollups", params] as const,
   dayClose: (params: ChroniclerDayCloseParams) =>
     [...chroniclesKeys.all, "day-close", params] as const,
   pointEvents: (params?: ChroniclerEventsParams) =>
@@ -185,6 +189,24 @@ export function useChroniclesSourceState(options?: ChroniclesHookOptions) {
     queryFn: () => getChroniclerSourceState(),
     refetchInterval: options?.refetchInterval ?? 30_000,
     refetchOnWindowFocus: true,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Fetch daily rollups + anomaly flags for one local day or an inclusive range.
+ *
+ * A settled past window never changes, so callers driving a fixed historical
+ * range (e.g. the trend widget) should pass `refetchInterval: false`.
+ */
+export function useChroniclesRollups(
+  params: ChroniclerRollupsParams,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.rollups(params),
+    queryFn: () => getChroniclerRollups(params),
+    refetchInterval: options?.refetchInterval ?? false,
     enabled: options?.enabled !== false,
   });
 }

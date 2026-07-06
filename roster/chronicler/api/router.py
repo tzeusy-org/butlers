@@ -38,16 +38,21 @@ from butlers.chronicler.adapters.sessions import (
     EXCLUDED_TRIGGER_SOURCES,
 )
 from butlers.chronicler.aggregations import (
+    LANES,
     category_for,
     lane_for_activity,
     lane_for_category,
+    sources_for_lane,
     union_seconds,
     untracked_seconds_for_window,
 )
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START
+from butlers.chronicler.rollups import DEFAULT_TIMEZONE as ROLLUPS_DEFAULT_TIMEZONE
 from butlers.chronicler.storage import (
     get_routine,
+    list_daily_rollup_flags_range,
+    list_daily_rollups_range,
     list_routines,
     update_routine,
     upsert_tier2_cache,
@@ -89,6 +94,10 @@ if _spec is not None and _spec.loader is not None:
     CorrectionPrompts = _models.CorrectionPrompts
     RoutineRow = _models.RoutineRow
     UpdateRoutineRequest = _models.UpdateRoutineRequest
+    RollupLaneRow = _models.RollupLaneRow
+    RollupFlagRow = _models.RollupFlagRow
+    RollupDay = _models.RollupDay
+    RollupsResponse = _models.RollupsResponse
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -1706,6 +1715,241 @@ async def aggregate_by_day(
         # Sort by (day ASC, category ASC) — already guaranteed by sorted() above.
         span.set_attribute("chronicler.aggregate.bucket_count", len(result))
         return result
+
+
+# ── GET /api/chronicler/rollups ───────────────────────────────────────────
+#
+# bu-333dq, telemetry-distillation bead 5 (design doc §6.5). Reads the
+# already-materialized chronicler.daily_rollups / daily_rollup_flags tables
+# (beads 3/4) — no episode scanning here, that is the batch job's job.
+
+# Generous multi-quarter cap on the requested [start_date, end_date] span.
+# This is a single-butler own-schema read (two queries total regardless of
+# span, see list_daily_rollups_range/list_daily_rollup_flags_range below),
+# not a fan-out across pools — the cap exists to bound response size for the
+# dashboard trend widget, not to bound round trips.
+_ROLLUPS_MAX_RANGE_DAYS = 92
+
+
+@router.get("/rollups", response_model=ApiResponse[RollupsResponse])
+async def get_rollups(
+    rollup_date: date | None = Query(
+        None,
+        alias="date",
+        description=(
+            "Single local calendar day to fetch. Mutually exclusive with start_date/end_date."
+        ),
+    ),
+    start_date: date | None = Query(
+        None,
+        description="Inclusive range start (local calendar day). Must be paired with end_date.",
+    ),
+    end_date: date | None = Query(
+        None,
+        description="Inclusive range end (local calendar day). Must be paired with start_date.",
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[RollupsResponse]:
+    """Return daily rollups + deterministic anomaly flags for one day or a range.
+
+    **Local-day semantics**: ``date``/``start_date``/``end_date`` are
+    calendar dates in the rollup materializer's timezone
+    (``rollups.DEFAULT_TIMEZONE``, currently ``Asia/Singapore`` — see design
+    doc §3.3 and PR #2998). They are NOT UTC dates: ``date=2026-07-05`` means
+    the Singapore calendar day the ``chronicler_rollup_daily`` job rolls up,
+    the same local day ``/briefing`` and ``/aggregate/day-close`` already key
+    on. Every ``daily_rollups`` row also carries its own ``timezone`` column
+    (currently always the same value), echoed back per-day in the response.
+
+    Provide exactly one of ``date`` alone, or ``start_date`` + ``end_date``
+    together (both required if either is given; ``end_date`` must not be
+    before ``start_date``; span capped at 92 days).
+
+    **Three distinct "no number here" states** (classify-before-flagging,
+    design doc §2.5 — see ``RollupsResponse``/``RollupDay``/``RollupLaneRow``
+    docstrings for the full contract):
+
+    - ``RollupDay.status == "not_yet_materialized"`` — a legitimately absent
+      day (not yet fully elapsed, or the materializer job's lookback window
+      has not reached it). Not an error: ``rollups_source_error`` stays
+      ``False`` for this day.
+    - ``RollupLaneRow.unavailable == True`` — a ``feeder_dark`` flag on this
+      day names a source that contributes to this lane. The lane's
+      ``seconds``/``episode_count`` may be a truthful 0 or a stale carried
+      value; either way a client MUST render "data unavailable" for it, never
+      a false all-clear zero.
+    - ``RollupsResponse.rollups_source_error == True`` — the query itself
+      failed (e.g. a dropped connection). Every requested day is returned
+      with ``status == "unknown"`` and empty ``lanes``/``flags`` — this is
+      never a truthful empty result.
+    """
+    if rollup_date is not None and (start_date is not None or end_date is not None):
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="conflicting_parameters",
+                    message="Provide either 'date' or 'start_date'+'end_date', not both.",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    if rollup_date is not None:
+        range_start: date = rollup_date
+        range_end: date = rollup_date
+    else:
+        if (start_date is None) != (end_date is None):
+            return JSONResponse(
+                status_code=400,
+                content=ErrorResponse(
+                    error=ErrorDetail(
+                        code="missing_parameter",
+                        message="start_date and end_date must be provided together.",
+                        butler="chronicler",
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if start_date is None or end_date is None:
+            return JSONResponse(
+                status_code=400,
+                content=ErrorResponse(
+                    error=ErrorDetail(
+                        code="missing_parameter",
+                        message="Provide either 'date' or 'start_date'+'end_date'.",
+                        butler="chronicler",
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        if end_date < start_date:
+            return JSONResponse(
+                status_code=400,
+                content=ErrorResponse(
+                    error=ErrorDetail(
+                        code="invalid_time_range",
+                        message="end_date must not be before start_date.",
+                        butler="chronicler",
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        range_start, range_end = start_date, end_date
+
+    span_days = (range_end - range_start).days + 1
+    if span_days > _ROLLUPS_MAX_RANGE_DAYS:
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="range_too_large",
+                    message=(
+                        f"Requested range spans {span_days} days; max is {_ROLLUPS_MAX_RANGE_DAYS}."
+                    ),
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.rollups") as span:
+        pool = _pool(db)
+
+        rollups_source_error = False
+        try:
+            rollup_rows = await list_daily_rollups_range(
+                pool, start_date=range_start, end_date=range_end
+            )
+            flag_rows = await list_daily_rollup_flags_range(
+                pool, start_date=range_start, end_date=range_end
+            )
+        except Exception:
+            logger.exception(
+                "chronicler.rollups: query failed for range %s..%s", range_start, range_end
+            )
+            rollups_source_error = True
+            rollup_rows = []
+            flag_rows = []
+
+        span.set_attribute("chronicler.rollups.source_error", rollups_source_error)
+
+        rollups_by_date: dict[date, list[Any]] = defaultdict(list)
+        for r in rollup_rows:
+            rollups_by_date[r.local_date].append(r)
+        flags_by_date: dict[date, list[Any]] = defaultdict(list)
+        for f in flag_rows:
+            flags_by_date[f.local_date].append(f)
+
+        days: list[RollupDay] = []
+        current = range_start
+        while current <= range_end:
+            day_rollups = rollups_by_date.get(current, [])
+            day_flags = flags_by_date.get(current, [])
+
+            if rollups_source_error:
+                status = "unknown"
+            elif day_rollups:
+                status = "materialized"
+            else:
+                status = "not_yet_materialized"
+
+            if status != "materialized":
+                # Both "unknown" (query failed) and "not_yet_materialized"
+                # (legitimately no rows yet) return empty lanes/flags — the
+                # ``status`` string is what distinguishes them, not the shape
+                # of this array. Only a "materialized" day gets the
+                # zero-filled-per-LANES treatment below.
+                lane_rows: list[Any] = []
+                flag_out: list[Any] = []
+            else:
+                feeder_dark_row = next((f for f in day_flags if f.flag_type == "feeder_dark"), None)
+                dark_sources: set[str] = (
+                    set(feeder_dark_row.detail.get("dark_sources", []))
+                    if feeder_dark_row
+                    else set()
+                )
+                lanes_by_name = {r.lane: r for r in day_rollups}
+                lane_rows = [
+                    RollupLaneRow(
+                        lane=lane,
+                        seconds=lanes_by_name[lane].seconds if lane in lanes_by_name else 0,
+                        episode_count=(
+                            lanes_by_name[lane].episode_count if lane in lanes_by_name else 0
+                        ),
+                        distinct_place_count=(
+                            lanes_by_name[lane].distinct_place_count
+                            if lane in lanes_by_name
+                            else None
+                        ),
+                        unavailable=bool(sources_for_lane(lane) & dark_sources),
+                    )
+                    for lane in sorted(LANES)
+                ]
+                flag_out = [
+                    RollupFlagRow(flag_type=f.flag_type, severity=f.severity, detail=f.detail)
+                    for f in day_flags
+                ]
+
+            days.append(
+                RollupDay(
+                    local_date=current.isoformat(),
+                    timezone=day_rollups[0].timezone if day_rollups else ROLLUPS_DEFAULT_TIMEZONE,
+                    status=status,
+                    lanes=lane_rows,
+                    flags=flag_out,
+                )
+            )
+            current += timedelta(days=1)
+
+        span.set_attribute("chronicler.rollups.day_count", len(days))
+
+        return ApiResponse[RollupsResponse](
+            data=RollupsResponse(
+                start_date=range_start.isoformat(),
+                end_date=range_end.isoformat(),
+                tz=ROLLUPS_DEFAULT_TIMEZONE,
+                days=days,
+                rollups_source_error=rollups_source_error,
+            )
+        )
 
 
 # ── GET /api/chronicler/aggregate/day-close ───────────────────────────────

@@ -418,6 +418,95 @@ class CorrectionPrompts(BaseModel):
     """Low-confidence activities, ordered by start_at ASC."""
 
 
+# ── Daily rollups + flags (bu-333dq, telemetry-distillation bead 5) ────────
+
+
+class RollupLaneRow(BaseModel):
+    """One lane's totals for a single local day, from GET /api/chronicler/rollups.
+
+    Mirrors ``chronicler.daily_rollups`` (one row per ``(local_date, lane)``),
+    zero-filled for every lane in ``aggregations.LANES`` so a client never has
+    to distinguish "no row" from "zero seconds" — the same convention
+    ``rollups.compute_daily_lane_rollup`` uses server-side.
+    """
+
+    lane: str
+    seconds: int = 0
+    episode_count: int = 0
+    distinct_place_count: int | None = None
+    unavailable: bool = False
+    """True when a source contributing to this lane is flagged ``feeder_dark``
+    for this day (``daily_rollup_flags`` detail.dark_sources intersects
+    ``aggregations.sources_for_lane(lane)``). A client MUST render this as
+    "data unavailable" for the lane, never as a truthful zero — the day's
+    ``seconds``/``episode_count`` for this lane may legitimately be 0 because
+    the feeder producing them was down, not because nothing happened."""
+
+
+class RollupFlagRow(BaseModel):
+    """One deterministic anomaly-flag row from ``chronicler.daily_rollup_flags``."""
+
+    flag_type: str
+    """One of ``feeder_dark``, ``sleep_missing``, ``routine_break``,
+    ``lane_share_outlier`` (design doc §3.4)."""
+    severity: str
+    """One of ``info``, ``warning``."""
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class RollupDay(BaseModel):
+    """One local calendar day's rollup + flags, from GET /api/chronicler/rollups."""
+
+    local_date: str
+    """ISO-8601 date string (YYYY-MM-DD), local to ``timezone``."""
+    timezone: str
+    status: str
+    """One of:
+
+    - ``materialized`` — the ``chronicler_rollup_daily`` job has written this
+      day's ``daily_rollups`` rows; ``lanes``/``flags`` reflect real data.
+    - ``not_yet_materialized`` — no rows exist yet, because the day has not
+      fully elapsed or the job's lookback window has not reached it. A
+      legitimate absence, not a degraded/error state: never render this as a
+      false all-clear zero, but also never set
+      ``RollupsResponse.rollups_source_error`` for it.
+    - ``unknown`` — the query for this window failed (see
+      ``RollupsResponse.rollups_source_error``); this day's ``lanes``/
+      ``flags`` are empty because nothing could be read, not because nothing
+      happened or nothing was materialized yet."""
+    lanes: list[RollupLaneRow] = Field(default_factory=list)
+    """Empty when ``status='not_yet_materialized'``; one entry per
+    ``aggregations.LANES`` (zero-filled) when ``status='materialized'``."""
+    flags: list[RollupFlagRow] = Field(default_factory=list)
+
+
+class RollupsResponse(BaseModel):
+    """Response envelope for GET /api/chronicler/rollups.
+
+    Degraded-envelope convention (butlers/CLAUDE.md "API Conventions"): a
+    genuine query failure (e.g. the database connection drops mid-request)
+    sets ``rollups_source_error=True`` and every requested day is returned
+    with ``status='unknown'`` and empty ``lanes``/``flags`` — never a
+    truthful empty/zero result silently mistaken for "nothing happened."
+    This is a distinct failure mode from ``RollupDay.status=
+    'not_yet_materialized'`` (a legitimately absent day — never sets this
+    flag) and from a lane's ``unavailable=True`` (a known feeder outage on an
+    otherwise-successfully-read day) — three distinct "no number here"
+    states, three distinct signals, per the classify-before-flagging
+    principle.
+    """
+
+    start_date: str
+    end_date: str
+    tz: str = "Asia/Singapore"
+    days: list[RollupDay] = Field(default_factory=list)
+    """Ordered by local_date ASC, one entry per day in [start_date, end_date]."""
+    rollups_source_error: bool = False
+    """True when the underlying query raised instead of returning rows. See
+    class docstring — never treat a missing/false value as a hard guarantee
+    of freshness, only as "this request did not fail outright"."""
+
+
 class RoutineRow(BaseModel):
     """A row from GET /api/chronicler/routines (bu-whhll.9)."""
 
@@ -475,6 +564,10 @@ __all__ = [
     "EpisodeExplainResponse",
     "OpsSessionRow",
     "ProjectionHealthRow",
+    "RollupDay",
+    "RollupFlagRow",
+    "RollupLaneRow",
+    "RollupsResponse",
     "RoutineRow",
     "SourceBreakdownEntry",
     "SourceStateRow",

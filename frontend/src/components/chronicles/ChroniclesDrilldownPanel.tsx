@@ -31,6 +31,7 @@ import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar
 import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart";
 import { StreakCallouts } from "@/components/chronicles/StreakCallouts";
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton";
+import { RollupTrendWidget } from "@/components/chronicles/RollupTrendWidget";
 
 import type { ChroniclerEventsParams } from "@/api/types";
 
@@ -153,6 +154,10 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
       </div>
 
       <SourceStateBadgeStrip />
+
+      <Section eyebrow="Recent trend">
+        <RollupTrendWidget endDate={date} />
+      </Section>
 
       <MapPanContext.Provider value={mapPanValue}>
         <Section eyebrow="Timeline">
