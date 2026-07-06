@@ -1,7 +1,7 @@
 """Condensed Spotify connector tests — ingest.v1 contract and session state machine.
 
 Replaces: test_spotify_connector.py, test_spotify_client.py,
-test_spotify_session.py, test_spotify_metrics.py, test_spotify_integration.py
+test_spotify_metrics.py, test_spotify_integration.py
 
 Verifies:
 - ingest.v1 envelope production for context_start, listening_digest, session_summary
