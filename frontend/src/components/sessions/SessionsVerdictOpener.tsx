@@ -20,29 +20,11 @@
 
 import type { SessionAggregate, SessionSummary } from "@/api/index.ts";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
+import { elapsedText } from "@/lib/session-elapsed";
 
 /** Lookback window for the failure-clustering verdict (matches the Overview
  * page's DEFAULT_RECENT_ISSUE_HOURS convention for "recent" windows). */
 export const SESSIONS_VERDICT_WINDOW_HOURS = 24;
-
-const HOUR_MS = 3_600_000;
-
-/** "Xm elapsed" / "Xh elapsed" / "Xd elapsed" -- the elapsed-time counterpart
- * to ApprovalsVerdictOpener's countdownText (that one counts down to a future
- * expiry; this one counts up from a past start). */
-function elapsedText(startedAt: string): string | null {
-  const startDate = new Date(startedAt);
-  if (Number.isNaN(startDate.getTime())) return null;
-  const msElapsed = Date.now() - startDate.getTime();
-  if (msElapsed < 0) return null;
-  const mins = Math.round(msElapsed / 60_000);
-  if (mins < 1) return "just started";
-  if (mins < 60) return `${mins}m elapsed`;
-  const hours = Math.round(msElapsed / HOUR_MS);
-  if (hours < 24) return `${hours}h elapsed`;
-  const days = Math.round(msElapsed / (24 * HOUR_MS));
-  return `${days}d elapsed`;
-}
 
 /** The dominant failure cluster: whichever axis (butler or trigger_source) is
  * more concentrated. Ties favor butler -- fewer, more directly actionable

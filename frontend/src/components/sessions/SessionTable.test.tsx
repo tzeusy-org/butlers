@@ -82,3 +82,35 @@ describe("SessionTable model and complexity columns", () => {
     expect(html).toContain("Specialty");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cost column (bu-ptaub)
+// ---------------------------------------------------------------------------
+
+describe("SessionTable cost column", () => {
+  it("renders a Cost column header", () => {
+    const html = renderTable([makeSession({})]);
+    expect(html).toContain("Cost");
+  });
+
+  it("formats a nonzero cost_usd via the shared formatCostUsd convention", () => {
+    const html = renderTable([makeSession({ cost_usd: 0.018 })]);
+    expect(html).toContain("$0.02");
+  });
+
+  it("renders em-dash when cost_usd is null", () => {
+    const html = renderTable([makeSession({ cost_usd: null })]);
+    expect(html).toMatch(/—|&#x2014;|\u2014/);
+  });
+
+  it("renders em-dash when cost_usd is absent (older fixture/mock shape)", () => {
+    const html = renderTable([makeSession({})]);
+    expect(html).toMatch(/—|&#x2014;|\u2014/);
+  });
+
+  it("never renders a nonzero cost as the literal '$0.00' (sub-cent floor)", () => {
+    const html = renderTable([makeSession({ cost_usd: 0.001 })]);
+    // renderToStaticMarkup HTML-escapes "<" in text content.
+    expect(html).toContain("&lt;$0.01");
+  });
+});

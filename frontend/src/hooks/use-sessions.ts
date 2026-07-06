@@ -2,8 +2,8 @@
  * TanStack Query hooks for the sessions API.
  */
 
-import { useQuery } from "@tanstack/react-query";
-import type { ApiResponse, SessionDetail, SessionParams } from "@/api/types.ts";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import type { ApiResponse, SessionDetail, SessionParams, SessionSummary } from "@/api/types.ts";
 import { POLL_BUS_RECONCILE_MS, POLL_RUNNING_SESSION_MS } from "@/lib/poll-policy";
 
 import {
@@ -113,4 +113,39 @@ export function useGlobalSessionDetail(id: string | null) {
     enabled: !!id,
     refetchInterval: sessionDetailRefetchInterval,
   });
+}
+
+/**
+ * Batch-fetch full detail for a small, bounded set of session summaries —
+ * used by the Sessions pinned strip (bu-ptaub) to surface an inline error
+ * excerpt for each recently-failed pinned row without waiting for the user
+ * to open the drawer.
+ *
+ * Uses `useQueries` (the same pattern as `useGoogleAccountsHealth` /
+ * `useAllPendingReviews`) so the query count tracks the live `sessions` list
+ * without violating React's rules of hooks. Each query is keyed identically
+ * to `useSessionDetail` (`["session-detail", butler, id]`) and calls the same
+ * `getButlerSession` — the exact "existing session-detail affordance" the
+ * drawer uses — so a row already rendered here is a cache hit, not a
+ * duplicate fetch, when the user clicks through to the full drawer.
+ *
+ * Sessions with no `butler` (should not happen for a real row, but the field
+ * is optional on the type) are skipped via `enabled: false`.
+ */
+export function useSessionErrorExcerpts(sessions: SessionSummary[]) {
+  const results = useQueries({
+    queries: sessions.map((s) => ({
+      queryKey: ["session-detail", s.butler ?? "", s.id],
+      queryFn: () => getButlerSession(s.butler!, s.id),
+      enabled: !!s.butler,
+      refetchInterval: sessionDetailRefetchInterval,
+    })),
+  });
+
+  const errorsById = new Map<string, string | null>();
+  sessions.forEach((s, i) => {
+    const detail = results[i]?.data?.data;
+    errorsById.set(s.id, detail?.error ?? null);
+  });
+  return errorsById;
 }

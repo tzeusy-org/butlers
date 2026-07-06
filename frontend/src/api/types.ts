@@ -219,6 +219,13 @@ export interface SessionSummary {
   output_tokens: number | null;
   model?: string | null;
   complexity?: string | null;
+  /**
+   * Best-effort per-session USD cost, estimated server-side from model +
+   * token counts (bu-ptaub — sessions pinning + dollar column). Optional so
+   * older fixtures/mocks that predate this field keep compiling; treat a
+   * missing key the same as `null` ("no cost data available"), never as $0.
+   */
+  cost_usd?: number | null;
 }
 
 /** Full session detail returned by the single-session endpoint. */

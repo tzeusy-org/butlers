@@ -29,6 +29,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_pricing
 from butlers.api.models import (
     ApiResponse,
     KeysetMeta,
@@ -51,6 +52,7 @@ from butlers.api.models.session import (
     SessionKindBreakdown,
     SessionKindItem,
 )
+from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.read_models.sessions_v1 import (
     SUMMARY_COLUMNS,
     SessionDetailRow,
@@ -73,6 +75,18 @@ butler_sessions_router = APIRouter(prefix="/api/butlers", tags=["butlers", "sess
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
     raise RuntimeError("DatabaseManager not initialized")
+
+
+def _get_pricing_optional() -> PricingConfig | None:
+    """Return the PricingConfig singleton, or None when not yet initialized.
+
+    Mirrors ``ingestion_events._get_pricing_optional`` — cost estimation is
+    best-effort, never a hard dependency of the sessions list endpoints.
+    """
+    try:
+        return get_pricing()
+    except RuntimeError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +177,27 @@ def _resolve_success_filter(
     return success
 
 
-def _dto_to_summary(dto: SessionSummaryRow) -> SessionSummary:
+def _cost_usd_for_dto(dto: SessionSummaryRow, pricing: PricingConfig | None) -> float | None:
+    """Best-effort per-session USD cost, estimated from model + token counts.
+
+    Reuses the same PricingConfig/estimate_session_cost primitives as the
+    spend and ingestion-events surfaces, computed from fields the summary
+    read-model (sessions_v1) already selects — no new SQL column, no
+    migration. Returns None (never a misleading 0.0) when pricing is
+    unavailable, the model is unknown, or the session has no token data yet
+    (e.g. a running session that hasn't recorded usage).
+    """
+    if pricing is None or not dto.model:
+        return None
+    in_tok = dto.input_tokens or 0
+    out_tok = dto.output_tokens or 0
+    if not in_tok and not out_tok:
+        return None
+    cost = estimate_session_cost(pricing, dto.model, in_tok, out_tok)
+    return cost if cost != 0.0 else None
+
+
+def _dto_to_summary(dto: SessionSummaryRow, pricing: PricingConfig | None = None) -> SessionSummary:
     """Convert a SessionSummaryRow DTO (sessions_v1) to a response model."""
     return SessionSummary(
         id=dto.id,
@@ -179,6 +213,7 @@ def _dto_to_summary(dto: SessionSummaryRow) -> SessionSummary:
         complexity=dto.complexity,
         input_tokens=dto.input_tokens,
         output_tokens=dto.output_tokens,
+        cost_usd=_cost_usd_for_dto(dto, pricing),
     )
 
 
@@ -284,6 +319,7 @@ async def list_sessions(
     to_date: datetime | None = Query(None, description="Sessions started before this time"),
     request_id: str | None = Query(None, description="Filter by request_id"),
     db: DatabaseManager = Depends(_get_db_manager),
+    pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> KeysetResponse[SessionSummary]:
     """Return keyset-paginated sessions aggregated across all butler databases.
 
@@ -330,7 +366,7 @@ async def list_sessions(
     )
 
     return KeysetResponse[SessionSummary](
-        data=[_dto_to_summary(dto) for dto in result.rows],
+        data=[_dto_to_summary(dto, pricing) for dto in result.rows],
         meta=KeysetMeta(
             limit=limit,
             next_cursor=result.next_cursor,
@@ -491,6 +527,7 @@ async def list_butler_sessions(
     to_date: datetime | None = Query(None, description="Sessions started before this time"),
     request_id: str | None = Query(None, description="Filter by request_id"),
     db: DatabaseManager = Depends(_get_db_manager),
+    pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> PaginatedResponse[SessionSummary]:
     """Return paginated sessions for a single butler.
 
@@ -530,7 +567,7 @@ async def list_butler_sessions(
 
     rows = await pool.fetch(data_sql, *args)
 
-    sessions = [_dto_to_summary(row_to_summary(row, butler=name)) for row in rows]
+    sessions = [_dto_to_summary(row_to_summary(row, butler=name), pricing) for row in rows]
 
     return PaginatedResponse[SessionSummary](
         data=sessions,

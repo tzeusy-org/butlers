@@ -17,6 +17,10 @@ const mockUseSessionAggregate = vi.fn();
 vi.mock("@/hooks/use-sessions", () => ({
   useSessions: (...args: unknown[]) => mockUseSessions(...args),
   useSessionAggregate: (...args: unknown[]) => mockUseSessionAggregate(...args),
+  // SessionsPinnedStrip's error-excerpt lookup — not the focus of these
+  // page-mechanics tests, so stub an empty map (no pinned failures render
+  // an excerpt) rather than pulling in real TanStack Query wiring.
+  useSessionErrorExcerpts: () => new Map<string, string | null>(),
 }));
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: () => ({ data: { data: [] } }),

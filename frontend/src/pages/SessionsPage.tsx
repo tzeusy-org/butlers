@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import type { SessionParams, SessionSummary } from "@/api/types";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { SessionsKpiStrip } from "@/components/sessions/SessionsKpiStrip";
+import { SessionsPinnedStrip } from "@/components/sessions/SessionsPinnedStrip";
 import { SessionTable } from "@/components/sessions/SessionTable";
 import {
   SessionsVerdictOpener,
@@ -34,6 +35,12 @@ import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-
 // ---------------------------------------------------------------------------
 
 const PAGE_SIZE = 20;
+
+/** Pinned-strip row caps (bu-ptaub) -- both are small, bounded "strip" sizes,
+ * not full-flow substitutes; the caller can always find the rest in the
+ * chronological table below. */
+const PINNED_RUNNING_LIMIT = 5;
+const PINNED_FAILURES_LIMIT = 5;
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All" },
@@ -168,12 +175,26 @@ export default function SessionsPage() {
     { status: "failed", since: verdictSinceIso, include_trigger_breakdown: true },
     { refetchInterval: autoRefreshControl.refetchInterval },
   );
+  // Widened from the verdict opener's original limit:1 ("nearest running")
+  // to PINNED_RUNNING_LIMIT so the SAME query also feeds the pinned strip
+  // below (bu-ptaub) -- one canonical running-sessions fetch, not a parallel
+  // one. `runningSessions[0]` remains the verdict opener's "nearest" row.
   const {
     data: runningSessionsResponse,
     isLoading: runningSessionsLoading,
     isError: runningSessionsError,
   } = useSessions(
-    { status: "running", limit: 1 },
+    { status: "running", limit: PINNED_RUNNING_LIMIT },
+    { refetchInterval: autoRefreshControl.refetchInterval },
+  );
+
+  // Recent-failures pin (bu-ptaub) -- same window as the verdict opener's
+  // failure-clustering clause (verdictSinceIso), capped to the pinned strip's
+  // small row budget. "Recent" thus means one consistent thing on this page:
+  // the last SESSIONS_VERDICT_WINDOW_HOURS, newest-first, capped at
+  // PINNED_FAILURES_LIMIT rows.
+  const { data: recentFailuresResponse, isError: recentFailuresError } = useSessions(
+    { status: "failed", since: verdictSinceIso, limit: PINNED_FAILURES_LIMIT },
     { refetchInterval: autoRefreshControl.refetchInterval },
   );
 
@@ -484,6 +505,20 @@ export default function SessionsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Pinned strip — running (ticking elapsed) + recent failures (inline
+          error excerpt) surfaced above the chronological flow (bu-ptaub,
+          follow-up from bu-86c4c.17 / PR #2875). Reuses handleSessionClick /
+          selectedSessionId so a pinned row opens the same drawer and
+          participates in the same ?selected= URL mirroring as a table row. */}
+      <SessionsPinnedStrip
+        runningSessions={runningSessionsResponse?.data ?? []}
+        recentFailures={recentFailuresResponse?.data ?? []}
+        runningError={runningSessionsError}
+        recentFailuresError={recentFailuresError}
+        onSessionClick={handleSessionClick}
+        selectedId={selectedSessionId}
+      />
 
       {/* Session table — dims (never blanks) while a filter/cursor change refetches */}
       <Card>

@@ -211,6 +211,12 @@ class SessionSummary(BaseModel):
     complexity: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Best-effort per-session USD cost, estimated from model + token counts via
+    # the shared PricingConfig (bu-ptaub — sessions pinning + dollar column).
+    # None when pricing is unavailable or the session has no token data yet
+    # (e.g. a running session that hasn't recorded usage). Never a misleading
+    # 0.0 — see butlers.api.routers.sessions._cost_usd_for_dto.
+    cost_usd: float | None = None
 
 
 class ButlerConfigResponse(BaseModel):

@@ -5,6 +5,8 @@ import { ButlerMark } from "@/components/ui/ButlerMark";
 import { ComplexityBadge } from "@/components/general/ComplexityBadge";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
+import { formatCostUsd } from "@/lib/format-cost";
+import { truncate } from "@/lib/truncate";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -55,12 +57,6 @@ function formatDuration(ms: number | null): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-/** Truncate text to a maximum length, appending an ellipsis if needed. */
-function truncate(text: string, max = 60): string {
-  if (text.length <= max) return text;
-  return text.slice(0, max) + "\u2026";
-}
-
 /** Truncate a UUID to show only the first 8 characters. */
 function truncateUuid(uuid: string): string {
   return uuid.slice(0, 8);
@@ -101,6 +97,7 @@ function SkeletonRows({
           <TableCell><Skeleton className="h-4 w-12" /></TableCell>
           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
           <TableCell className="text-right"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
+          <TableCell className="text-right"><Skeleton className="h-4 w-12 ml-auto" /></TableCell>
         </TableRow>
       ))}
     </>
@@ -151,6 +148,7 @@ export function SessionTable({
           <TableHead>Duration</TableHead>
           <TableHead>Status</TableHead>
           <TableHead className="text-right">Tokens</TableHead>
+          <TableHead className="text-right">Cost</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -255,6 +253,9 @@ export function SessionTable({
                   {session.input_tokens != null || session.output_tokens != null
                     ? `${formatTokens(session.input_tokens)} / ${formatTokens(session.output_tokens)}`
                     : "\u2014"}
+                </TableCell>
+                <TableCell className="text-right tabular-nums text-xs text-muted-foreground">
+                  {session.cost_usd != null ? formatCostUsd(session.cost_usd) : "\u2014"}
                 </TableCell>
               </TableRow>
             );
