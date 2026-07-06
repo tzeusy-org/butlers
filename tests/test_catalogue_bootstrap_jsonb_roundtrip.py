@@ -83,9 +83,9 @@ async def test_upsert_required_scopes_roundtrips_as_list_not_double_encoded_stri
             "the jsonb column was double-encoded into a string."
         )
         assert stored_scopes == [
-            "https://www.googleapis.com/auth/googlehealth.sleep",
-            "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
-            "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+            "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+            "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+            "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
         ]
 
         # Idempotent re-run (daemon restart) must not change row count and must

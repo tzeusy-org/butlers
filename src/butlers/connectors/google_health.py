@@ -148,9 +148,9 @@ _CONNECTOR_PROVIDER = "google_health"
 # AND across all three — partial grants leave the connector degraded.
 GOOGLE_HEALTH_SCOPES: frozenset[str] = frozenset(
     {
-        "https://www.googleapis.com/auth/googlehealth.sleep",
-        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
-        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+        "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
     }
 )
 
@@ -1340,6 +1340,13 @@ class GoogleHealthConnector:
                     "refresh_token": refresh_token,
                     "client_id": self._client_id,
                     "client_secret": self._client_secret,
+                    # Down-scope the access token to health scopes only. The
+                    # per-account refresh token is scope-widened (Gmail, Drive,
+                    # Calendar, Contacts, …), but the Google Health API rejects
+                    # any token carrying non-health scopes with
+                    # 403 DISALLOWED_OAUTH_SCOPES. Requesting a subset here mints
+                    # a health-only access token the API accepts.
+                    "scope": " ".join(sorted(GOOGLE_HEALTH_SCOPES)),
                 },
                 timeout=15,
             )

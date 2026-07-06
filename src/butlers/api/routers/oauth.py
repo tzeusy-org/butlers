@@ -244,9 +244,9 @@ GOOGLE_SCOPE_SETS: dict[str, list[str]] = {
     # production mode. Test mode (developer-added users) does not require
     # verification but has a 7-day refresh token expiry.
     "health": [
-        "https://www.googleapis.com/auth/googlehealth.sleep",
-        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
-        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+        "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
     ],
 }
 

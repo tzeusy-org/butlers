@@ -256,15 +256,15 @@ _GOOGLE_HEALTH_MANIFEST = ScopeManifest(
             serif_note="Used to read your Google account display name",
         ),
         ScopeDecl(
-            name="https://www.googleapis.com/auth/googlehealth.sleep",
+            name="https://www.googleapis.com/auth/googlehealth.sleep.readonly",
             serif_note="Used to read your sleep data from Google Health",
         ),
         ScopeDecl(
-            name="https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
+            name="https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
             serif_note="Used to read your activity and fitness data from Google Health",
         ),
         ScopeDecl(
-            name="https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+            name="https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
             serif_note="Used to read your health metrics from Google Health",
         ),
     ],

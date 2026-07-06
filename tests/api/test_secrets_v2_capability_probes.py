@@ -432,7 +432,7 @@ def test_github_pat_probe_writes_connectivity_capability_row(monkeypatch):
 class TestCapabilityForScopes:
     def test_google_health_scope_maps_to_health(self):
         assert (
-            _capability_for_scopes("google", ["https://www.googleapis.com/auth/googlehealth.sleep"])
+            _capability_for_scopes("google", ["https://www.googleapis.com/auth/googlehealth.sleep.readonly"])
             == "health"
         )
 

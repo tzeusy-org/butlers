@@ -218,9 +218,9 @@ class TestOnStartup:
 
         all_scopes = " ".join(
             [
-                "https://www.googleapis.com/auth/googlehealth.sleep",
-                "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
-                "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+                "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+                "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+                "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
             ]
         )
         creds = MagicMock(spec=GoogleCredentials)

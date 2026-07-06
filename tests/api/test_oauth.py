@@ -51,9 +51,9 @@ _CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar"
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 _HEALTH_SCOPES = frozenset(
     [
-        "https://www.googleapis.com/auth/googlehealth.sleep",
-        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
-        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+        "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
     ]
 )
 _HEALTH_SCOPE_STR = "https://www.googleapis.com/auth/fitness.activity.read openid email"

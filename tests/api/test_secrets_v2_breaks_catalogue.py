@@ -90,7 +90,7 @@ def test_breaks_catalogue_hit_returns_rows_for_provider():
             butler="health",
             feature="Google Health ingestion",
             severity="high",
-            required_scopes=["https://www.googleapis.com/auth/googlehealth.sleep"],
+            required_scopes=["https://www.googleapis.com/auth/googlehealth.sleep.readonly"],
         ),
         _make_catalogue_row(
             provider="google",
@@ -116,7 +116,7 @@ def test_breaks_catalogue_hit_returns_rows_for_provider():
     assert data[0]["severity"] == "high"
     assert data[0]["butler"] == "health"
     assert data[0]["feature"] == "Google Health ingestion"
-    assert "https://www.googleapis.com/auth/googlehealth.sleep" in data[0]["required_scopes"]
+    assert "https://www.googleapis.com/auth/googlehealth.sleep.readonly" in data[0]["required_scopes"]
 
     # Second row is medium severity
     assert data[1]["severity"] == "medium"
@@ -383,7 +383,7 @@ def test_break_entry_model_fields_and_default_scopes():
         butler="health",
         feature="Google Health ingestion",
         severity="high",
-        required_scopes=["https://www.googleapis.com/auth/googlehealth.sleep"],
+        required_scopes=["https://www.googleapis.com/auth/googlehealth.sleep.readonly"],
     )
     assert entry.butler == "health"
     assert entry.feature == "Google Health ingestion"

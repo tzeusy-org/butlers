@@ -3835,9 +3835,9 @@ import type {
  *   src/butlers/api/routers/google_health.py ::GOOGLE_HEALTH_SCOPE_URLS
  */
 export const GOOGLE_HEALTH_SCOPES = [
-  "https://www.googleapis.com/auth/googlehealth.sleep",
-  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
-  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements",
+  "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
+  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
 ] as const;
 
 /** Fetch the Google Health connector status (state, scopes, counts, flags). */
