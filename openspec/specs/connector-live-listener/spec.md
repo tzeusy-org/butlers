@@ -171,6 +171,8 @@ The live-listener uses the shared discretion layer (`butlers.connectors.discreti
 - **AND** the discretion reason is included in `payload.raw.discretion_reason`
 - **WHEN** the discretion LLM responds `IGNORE`
 - **THEN** the utterance is discarded and `connector_live_listener_discretion_total{mic, verdict="ignore"}` is incremented
+- **AND** the IGNORE verdict is persisted to `connectors.filtered_events` via a per-mic `FilteredEventBuffer` (see `connector-filtered-events`), with `filter_reason` labeled `discretion:ignore:<kind>` (`classify_ignore_kind` distinguishes a genuine LLM verdict from each fail-closed default — auth failure, timeout, parse error, same-tier failover exhaustion, or other error)
+- **AND** the persisted `full_payload.raw` is empty and `subject_or_preview` is the transcript truncated to 200 chars (metadata-tier — ambient audio can capture bystanders who never opted into the connector)
 
 #### Scenario: Discretion layer failure
 - **WHEN** the discretion LLM call fails (timeout, connection error, malformed response)

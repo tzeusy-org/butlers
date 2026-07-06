@@ -59,8 +59,10 @@ from prometheus_client import REGISTRY, generate_latest
 from butlers.connectors.discretion import (
     DiscretionEvaluator,
     DiscretionResult,
+    classify_ignore_kind,
 )
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.checkpoint import (
     load_voice_checkpoint,
@@ -69,6 +71,8 @@ from butlers.connectors.live_listener.checkpoint import (
 from butlers.connectors.live_listener.config import LiveListenerConfig, MicDeviceSpec
 from butlers.connectors.live_listener.envelope import (
     build_voice_envelope,
+    endpoint_identity,
+    mint_event_id,
     unix_ms_from_datetime,
 )
 from butlers.connectors.live_listener.filter_gate import (
@@ -100,6 +104,14 @@ DEFAULT_HEALTH_PORT = 40091
 
 # Connector identity constants
 CONNECTOR_TYPE = "live_listener"
+
+# connector_type value for connectors.filtered_events rows. Deliberately
+# distinct from the underscore-spelled `CONNECTOR_TYPE` above (which is
+# Prometheus/heartbeat identity): filtered_events joins the same
+# `connectors.*` identity space as checkpoint.py / filter_gate.py, which both
+# use this hyphenated "live-listener" spelling (see
+# butlers.connectors.live_listener.envelope.endpoint_identity).
+_FILTERED_EVENTS_CONNECTOR_TYPE = "live-listener"
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +182,7 @@ class LiveListenerConnector:
         # Per-mic pipeline components (built in start())
         self._transcription_clients: dict[str, TranscriptionClient] = {}
         self._discretion_evaluators: dict[str, DiscretionEvaluator] = {}
+        self._filtered_event_buffers: dict[str, FilteredEventBuffer] = {}
         self._prefilters: dict[str, PreFilter] = {}
         self._sessions: dict[str, ConversationSession] = {}
         self._ll_metrics: dict[str, LiveListenerMetrics] = {}
@@ -241,6 +254,14 @@ class LiveListenerConnector:
                     window_seconds=float(self._config.discretion_window_seconds),
                 )
 
+            # Filtered-events buffer: persists discretion IGNORE verdicts
+            # (bu-j3fzp). Created unconditionally — persistence itself
+            # no-ops when there is no DB pool (see _record_discretion_ignore).
+            self._filtered_event_buffers[mic] = FilteredEventBuffer(
+                connector_type=_FILTERED_EVENTS_CONNECTOR_TYPE,
+                endpoint_identity=endpoint_identity(mic),
+            )
+
             # Pre-filter (heuristic gate before discretion LLM)
             self._prefilters[mic] = PreFilter(
                 mic_name=mic,
@@ -303,6 +324,19 @@ class LiveListenerConnector:
                     "live-listener: error disconnecting transcription client for mic=%s", mic
                 )
         self._transcription_clients.clear()
+
+        # Flush any filtered_events rows buffered since the last per-event
+        # flush (best-effort safety net; per module docstring, unflushed
+        # filtered events are operational visibility data, not an audit
+        # trail, and are acceptable to lose if this also fails).
+        if self._db_pool is not None:
+            for mic, buffer in self._filtered_event_buffers.items():
+                try:
+                    await buffer.flush(self._db_pool)
+                except Exception:
+                    logger.exception(
+                        "live-listener: error flushing filtered-events buffer for mic=%s", mic
+                    )
 
         # Stop heartbeat
         if self._heartbeat is not None:
@@ -506,6 +540,12 @@ class LiveListenerConnector:
             result.text,
         )
 
+        # Computed once here (from the immutable speech segment) and reused by
+        # both the discretion-IGNORE filtered_events path and the FORWARD
+        # envelope-construction path below.
+        observed_at = datetime.fromtimestamp(segment.offset_ts, tz=UTC)
+        unix_ms = unix_ms_from_datetime(observed_at)
+
         # --- Filter gate ---
         try:
             decision = evaluate_voice_filter(filter_evaluator, spec.name)
@@ -563,6 +603,13 @@ class LiveListenerConnector:
         if disc_result.verdict == "IGNORE":
             ll_metrics.inc_discretion("ignore")
             ll_metrics.inc_segments("discarded_silence")
+            await self._record_discretion_ignore(
+                mic=mic,
+                unix_ms=unix_ms,
+                observed_at=observed_at,
+                text=result.text,
+                disc_result=disc_result,
+            )
             return
 
         # Record verdict
@@ -570,9 +617,6 @@ class LiveListenerConnector:
         ll_metrics.inc_discretion(verdict_label)
 
         # --- Envelope construction ---
-        observed_at = datetime.fromtimestamp(segment.offset_ts, tz=UTC)
-        unix_ms = unix_ms_from_datetime(observed_at)
-
         session = self._sessions.get(mic)
         if session is None:
             logger.warning("live-listener: no session tracker for mic=%s", mic)
@@ -643,6 +687,79 @@ class LiveListenerConnector:
             result.text[:60],
             e2e_elapsed,
         )
+
+    async def _record_discretion_ignore(
+        self,
+        *,
+        mic: str,
+        unix_ms: int,
+        observed_at: datetime,
+        text: str,
+        disc_result: DiscretionResult,
+    ) -> None:
+        """Persist a discretion IGNORE verdict to ``connectors.filtered_events``.
+
+        Before this (bu-j3fzp, discovered in bu-n0336), a discretion IGNORE in
+        this connector just ``return``ed — unlike whatsapp/telegram, which
+        always self-persist filtered messages. Dropped voice utterances
+        vanished with zero trace, defeating any drop-rate audit.
+
+        ``filter_reason`` is labeled with the specific IGNORE kind (genuine LLM
+        verdict vs. a fail-closed default from an auth failure, timeout,
+        parse error, or same-tier failover exhaustion) via
+        :func:`~butlers.connectors.discretion.classify_ignore_kind`
+        (bu-n0336/PR#3004) rather than a bare ``"discretion:IGNORE"``, so a
+        drop-rate audit does not need to re-sample raw payloads to tell "the
+        LLM judged this noise" apart from "the classifier silently defaulted".
+
+        Privacy: ``full_payload.raw`` is intentionally empty and
+        ``subject_or_preview`` is truncated to 200 chars — this mirrors the
+        WhatsApp connector's metadata-tier persistence for discretion IGNOREs
+        (``raw={}``), not Telegram's full ``message.to_dict()``. Ambient voice
+        capture can pick up bystanders who never opted into the connector, so
+        this connector defaults to the more conservative of the two
+        established precedents rather than persisting the full transcript.
+
+        ``external_thread_id`` is left ``None``: unlike whatsapp/telegram
+        (whose chat/thread ID is available without side effects), the only
+        analogous grouping key here is :class:`ConversationSession`, and
+        resolving/creating a session for filtered content would extend or
+        start a conversation session for an utterance that was never
+        forwarded — a real behavior change to session tracking that is out of
+        scope for this fix.
+
+        No-op (and does not touch the buffer) when there is no DB pool
+        (fail-open — same convention as checkpoint/filter-gate persistence
+        elsewhere in this connector).
+        """
+        if self._db_pool is None:
+            return
+        buffer = self._filtered_event_buffers.get(mic)
+        if buffer is None:
+            return
+
+        ep_id = endpoint_identity(mic)
+        event_id = mint_event_id(mic, unix_ms)
+        kind = classify_ignore_kind(disc_result)
+
+        buffer.record(
+            external_message_id=event_id,
+            source_channel="voice",
+            sender_identity="ambient",
+            subject_or_preview=text[:200] if text else None,
+            filter_reason=FilteredEventBuffer.reason_discretion_ignore(kind),
+            full_payload=FilteredEventBuffer.full_payload(
+                channel="voice",
+                provider="live-listener",
+                endpoint_identity=ep_id,
+                external_event_id=event_id,
+                external_thread_id=None,
+                observed_at=observed_at.astimezone(UTC).isoformat(),
+                sender_identity="ambient",
+                raw={},
+            ),
+        )
+        await buffer.flush(self._db_pool)
 
     # ------------------------------------------------------------------
     # Health state
