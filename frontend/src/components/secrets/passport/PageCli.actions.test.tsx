@@ -403,6 +403,14 @@ describe("PageCli: token-mode set-token (paste-to-save)", () => {
 
 // ---------------------------------------------------------------------------
 // Test button
+//
+// bu-eptoz: PageCli has exactly one test/probe control — the probe block's
+// "run probe" / "probe again" button (ProbeResult in atoms.tsx). A duplicate
+// footer "test" pill (CommitFooter) used to fire the identical handleTest
+// action across every footer branch (device-code / api-key / cli-auth-mirror
+// / generic); it's removed, so these click the probe-block button by its own
+// label instead. cred()'s default `test: null` means the label is
+// "run probe" (a credential with a prior result shows "probe again").
 // ---------------------------------------------------------------------------
 
 describe("PageCli: test button", () => {
@@ -412,7 +420,7 @@ describe("PageCli: test button", () => {
     );
 
     renderWithQuery(<PageCli credential={cred()} />);
-    const testBtn = screen.getByRole("button", { name: /^test$/i });
+    const testBtn = screen.getByRole("button", { name: /^run probe$/i });
     await act(async () => { fireEvent.click(testBtn); });
 
     expect(apiClient.testCLIAuthApiKey).toHaveBeenCalledWith("claude-cli");
@@ -426,6 +434,6 @@ describe("PageCli: test button", () => {
         deviceAuth={deviceCodeAuth}
       />,
     );
-    expect(screen.getByRole("button", { name: /^test$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^run probe$/i })).toBeTruthy();
   });
 });

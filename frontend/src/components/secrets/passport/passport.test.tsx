@@ -586,9 +586,12 @@ describe("PageSystem: renders against mocked data", () => {
   it("keeps probe/test action for non-plainValue credentials", () => {
     const telegram = MOCK_SYSTEM_CREDENTIALS.find((s) => s.key === "BUTLER_TELEGRAM_TOKEN")!;
     const html = renderInRouter(<PageSystem credential={telegram} />);
-    // non-plainValue credential: probe section visible in body and test button in footer
+    // non-plainValue credential: probe section visible in body, with its
+    // "probe again" button as the one test control (bu-eptoz — the
+    // formerly-duplicate footer "test" pill is gone; TELEGRAM already has a
+    // prior probe result, so the probe block reads "probe again").
     expect(html).toContain("probe · last test");
-    expect(html).toContain(">test<");
+    expect(html).toContain("probe again");
   });
 
   it("shows data-page attribute", () => {

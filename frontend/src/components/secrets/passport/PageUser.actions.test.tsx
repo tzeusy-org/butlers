@@ -119,13 +119,19 @@ afterEach(() => {
 
 // ── Probe ────────────────────────────────────────────────────────────────────
 
+// bu-eptoz: PageUser has exactly one test/probe control — the probe block's
+// "run probe" / "probe again" button (ProbeResult in atoms.tsx). A duplicate
+// footer "test" pill (CommitFooter) used to fire the identical handleProbe
+// action; it's removed, so these click the probe-block button by its own
+// label instead. GOOGLE already has a prior probe result, so its label is
+// "probe again" (never-tested credentials show "run probe").
 describe("PageUser: test button (probe)", () => {
   it("calls probeUserCredential with correct provider and identity", async () => {
     mockProbe.mockReturnValue(new Promise(() => {}))
     renderGoogle()
 
     await act(async () => {
-      fireEvent.click(getBtn("test"))
+      fireEvent.click(getBtn("probe again"))
     })
 
     expect(mockProbe).toHaveBeenCalledOnce()
@@ -137,7 +143,7 @@ describe("PageUser: test button (probe)", () => {
     renderGoogle()
 
     await act(async () => {
-      fireEvent.click(getBtn("test"))
+      fireEvent.click(getBtn("probe again"))
     })
 
     await waitFor(() => {
@@ -153,7 +159,7 @@ describe("PageUser: test button (probe)", () => {
     renderGoogle()
 
     await act(async () => {
-      fireEvent.click(getBtn("test"))
+      fireEvent.click(getBtn("probe again"))
     })
 
     // After success the block should show the returned status code
@@ -164,7 +170,8 @@ describe("PageUser: test button (probe)", () => {
 
   it("test button is absent for never_set credential", () => {
     renderSteam()
-    expect(queryBtn("test")).toBeNull()
+    expect(queryBtn("run probe")).toBeNull()
+    expect(queryBtn("probe again")).toBeNull()
   })
 })
 

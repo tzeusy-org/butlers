@@ -407,15 +407,19 @@ test.describe("PageUser (C10–C15)", () => {
 
   test("C13: user probe -- fires test mutation and shows result", async ({ page }) => {
     // Covers C13 -- probe
+    // bu-eptoz: the probe block's own "probe again" button (ProbeResult) is
+    // now the one test control -- the formerly-duplicate footer "test" pill
+    // is gone. The google fixture already has a prior probe result, so its
+    // label is "probe again" (a never-tested credential would read "run probe").
     await gotoPassport(page, "/secrets?focus=u:google");
     await page.locator('[data-page="user"][data-provider="google"]').waitFor({ timeout: 5_000 });
 
     // Test button should be visible for non-missing credential
-    const testBtn = page.locator('[data-page="user"][data-provider="google"] button', { hasText: /^test$/ });
+    const testBtn = page.locator('[data-page="user"][data-provider="google"] button', { hasText: /^probe again$/ });
     await expect(testBtn).toBeAttached({ timeout: 5_000 });
     await testBtn.click();
 
-    // Button text changes to "testing…" while pending; after mock resolves it returns to "test"
+    // Button text changes to "testing…" while pending; after mock resolves it returns to "probe again"
     // (just assert button is still there after the click -- no crash)
     await expect(testBtn).toBeAttached({ timeout: 5_000 });
   });
@@ -521,10 +525,14 @@ test.describe("PageSystem (C16–C21)", () => {
 
   test("C19: system probe -- test button fires probe mutation", async ({ page }) => {
     // Covers C19 -- probe (includes 429 rate-limit hint display path)
+    // bu-eptoz: the probe block's own "probe again" button (ProbeResult) is
+    // now the one test control -- the formerly-duplicate footer "test" pill
+    // is gone. BUTLER_TELEGRAM_TOKEN already has a prior probe result, so
+    // its label is "probe again".
     await gotoPassport(page, "/secrets?focus=s:BUTLER_TELEGRAM_TOKEN");
     await page.locator('[data-page="system"]').waitFor({ timeout: 5_000 });
 
-    const testBtn = page.locator('[data-page="system"] button', { hasText: /^test$/ });
+    const testBtn = page.locator('[data-page="system"] button', { hasText: /^probe again$/ });
     await expect(testBtn).toBeAttached({ timeout: 5_000 });
     await testBtn.click();
     // Button stays attached after click (no crash)
@@ -541,7 +549,7 @@ test.describe("PageSystem (C16–C21)", () => {
     await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 10_000 });
     await page.locator('[data-page="system"]').waitFor({ timeout: 5_000 });
 
-    const testBtn = page.locator('[data-page="system"] button', { hasText: /^test$/ });
+    const testBtn = page.locator('[data-page="system"] button', { hasText: /^probe again$/ });
     await expect(testBtn).toBeAttached({ timeout: 3_000 });
     await testBtn.click();
 
@@ -713,10 +721,14 @@ test.describe("PageCli (C22–C28)", () => {
 
   test("C26: CLI test (api-key mode) -- test button fires test mutation", async ({ page }) => {
     // Covers C26 -- test
+    // bu-eptoz: the probe block's own "probe again" button (ProbeResult) is
+    // now the one test control -- the formerly-duplicate footer "test" pill
+    // is gone. claude-cli already has a prior test result, so its label is
+    // "probe again".
     await gotoPassport(page, "/secrets?focus=c:claude-cli");
     await page.locator('[data-page="cli"]').waitFor({ timeout: 5_000 });
 
-    const testBtn = page.locator('[data-page="cli"] button', { hasText: /^test$/ });
+    const testBtn = page.locator('[data-page="cli"] button', { hasText: /^probe again$/ });
     await expect(testBtn).toBeAttached({ timeout: 5_000 });
     await testBtn.click();
     // No crash after test fires

@@ -327,13 +327,19 @@ describe("PageSystem: override · per butler button", () => {
 
 // ── Probe (test button) ────────────────────────────────────────────────────────
 
+// bu-eptoz: PageSystem has exactly one test/probe control — the probe
+// block's "run probe" / "probe again" button (ProbeResult in atoms.tsx). A
+// duplicate footer "test" pill (CommitFooter) used to fire the identical
+// handleProbe action; it's removed, so these click the probe-block button
+// by its own label instead. TELEGRAM already has a prior probe result, so
+// its label is "probe again" (never-tested credentials show "run probe").
 describe("PageSystem: test button (probe)", () => {
   it("calls probeSystemCredential with the credential key", async () => {
     mockProbe.mockReturnValue(new Promise(() => {}))
     renderTelegram()
 
     await act(async () => {
-      fireEvent.click(getBtn("test"))
+      fireEvent.click(getBtn("probe again"))
     })
 
     expect(mockProbe).toHaveBeenCalledOnce()
@@ -345,7 +351,7 @@ describe("PageSystem: test button (probe)", () => {
     renderTelegram()
 
     await act(async () => {
-      fireEvent.click(getBtn("test"))
+      fireEvent.click(getBtn("probe again"))
     })
 
     await waitFor(() => {
@@ -355,12 +361,14 @@ describe("PageSystem: test button (probe)", () => {
 
   it("test button is absent on missing credential", () => {
     renderMissing()
-    expect(queryBtn("test")).toBeNull()
+    expect(queryBtn("run probe")).toBeNull()
+    expect(queryBtn("probe again")).toBeNull()
   })
 
   it("test button is absent for plainValue credentials", () => {
     renderInProvider(<PageSystem credential={PLAIN} />)
-    expect(queryBtn("test")).toBeNull()
+    expect(queryBtn("run probe")).toBeNull()
+    expect(queryBtn("probe again")).toBeNull()
   })
 
   it("handles HTTP 429 rate-limit gracefully — shows hint, does not crash", async () => {
@@ -368,7 +376,7 @@ describe("PageSystem: test button (probe)", () => {
     renderTelegram()
 
     await act(async () => {
-      fireEvent.click(getBtn("test"))
+      fireEvent.click(getBtn("probe again"))
     })
 
     await waitFor(() => {
@@ -535,7 +543,7 @@ describe("PageSystem: probe latency reflects the real server value", () => {
     renderTelegram()
 
     await act(async () => {
-      fireEvent.click(getBtn("test"))
+      fireEvent.click(getBtn("probe again"))
     })
 
     await waitFor(() => {
@@ -552,7 +560,7 @@ describe("PageSystem: probe latency reflects the real server value", () => {
     renderTelegram()
 
     await act(async () => {
-      fireEvent.click(getBtn("test"))
+      fireEvent.click(getBtn("probe again"))
     })
 
     await waitFor(() => {

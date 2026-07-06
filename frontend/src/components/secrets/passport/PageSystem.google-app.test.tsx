@@ -111,6 +111,18 @@ describe("PageSystem: Google OAuth app keys", () => {
     expect(screen.queryByRole("button", { name: "test" })).toBeNull()
     expect(screen.queryByRole("button", { name: "delete" })).toBeNull()
   })
+
+  // bu-eptoz: the Google-app editor suppresses the generic footer entirely
+  // (dedicated editor above), but the "probe · last test" block above the
+  // footer is NOT suppressed — it still renders unconditionally for
+  // non-plain rows. This credential has never been probed (test: null), so
+  // its one test control is the probe block's "run probe" button. This is
+  // exactly the single-control shape every other page variant now matches
+  // (the footer's duplicate "test" pill is gone everywhere, not just here).
+  it("still exposes exactly one test control — the probe block's 'run probe' button", () => {
+    renderCred(GOOGLE_CLIENT_ID)
+    expect(screen.getByRole("button", { name: "run probe" })).toBeTruthy()
+  })
 })
 
 describe("PageSystem: read-only shared-pool credential", () => {

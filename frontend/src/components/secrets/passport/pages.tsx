@@ -35,6 +35,7 @@ import {
   KV,
   toneColor,
   IdentityChip,
+  formatPassportTimestamp,
 } from "./atoms.tsx";
 import { WhatBreaks, ConfirmImpact, type ConfirmImpactState } from "./WhatBreaks.tsx";
 import type { Identity } from "./types.ts";
@@ -317,6 +318,23 @@ const SCOPE_SETS: Array<{ id: string; label: string; description: string }> = [
 
 function hasHealthScopes(grantedScopes: string[]): boolean {
   return GOOGLE_HEALTH_SCOPES.some((s) => grantedScopes.includes(s));
+}
+
+/**
+ * Derive the Google credential's Voice-paragraph brief from its actually
+ * granted scopes (bu-eptoz) instead of a static per-provider string — the
+ * static "Calendar, Gmail, Drive read." brief went stale the moment Health
+ * scopes could also be granted (#2965). Falls back to the provider's static
+ * `brief` when no recognized family is present in `scopesGranted` (e.g. the
+ * per-credential granted-scope list is empty/untracked for this row).
+ */
+function deriveGoogleBrief(scopesGranted: string[], fallback: string): string {
+  const families: string[] = [];
+  if (scopesGranted.some((s) => s.includes("calendar"))) families.push("Calendar");
+  if (scopesGranted.some((s) => s.includes("gmail"))) families.push("Gmail");
+  if (scopesGranted.some((s) => s.includes("drive"))) families.push("Drive");
+  if (hasHealthScopes(scopesGranted)) families.push("Health");
+  return families.length > 0 ? `${families.join(", ")} access.` : fallback;
 }
 
 /**
@@ -1227,7 +1245,7 @@ export function PageUser({
   const stateLines: string[] = [];
   if (credential.state === "expired" && credential.failureTail) stateLines.push(credential.failureTail);
   if (credential.state === "expiring" && credential.expires) stateLines.push(`expires ${credential.expires}`);
-  if (credential.state === "ok" && credential.lastVerified) stateLines.push(`verified ${credential.lastVerified}`);
+  if (credential.state === "ok" && credential.lastVerified) stateLines.push(`verified ${formatPassportTimestamp(credential.lastVerified)}`);
   if (credential.state === "scope_mismatch") {
     const missing = credential.scopesRequired.filter((s) => !grantedSet.has(s)).length;
     stateLines.push(`${missing} scope missing`);
@@ -1256,7 +1274,9 @@ export function PageUser({
 
       {voiceParagraph && (
         <Voice size={15} maxWidth="60ch">
-          {provider.brief}
+          {provider.id === "google"
+            ? deriveGoogleBrief(credential.scopesGranted, provider.brief)
+            : provider.brief}
           {credential.feeds.length > 0 && (
             <> Feeds the {credential.feeds.join(" and ")} butler{credential.feeds.length === 1 ? "" : "s"}.</>
           )}
@@ -1283,8 +1303,8 @@ export function PageUser({
               </div>
             </div>
             <KV mono label="incoming url" value={credential.webhook ?? "—"} size={12} />
-            <KV label="issued" value={credential.issued ?? "—"} />
-            <KV label="last seen" value={credential.lastVerified ?? "—"} />
+            <KV label="issued" value={formatPassportTimestamp(credential.issued) ?? "—"} />
+            <KV label="last seen" value={formatPassportTimestamp(credential.lastVerified) ?? "—"} />
           </div>
         ) : (
           <div
@@ -1299,7 +1319,7 @@ export function PageUser({
             </div>
             <KV
               label="issued"
-              value={credential.issued ?? "—"}
+              value={formatPassportTimestamp(credential.issued) ?? "—"}
               valueColor={credential.issued ? "var(--fg)" : "var(--dim)"}
             />
             <KV
@@ -1315,7 +1335,7 @@ export function PageUser({
                       : "var(--mfg)"
               }
             />
-            <KV label="last verified" value={credential.lastVerified ?? "—"} />
+            <KV label="last verified" value={formatPassportTimestamp(credential.lastVerified) ?? "—"} />
             <KV label="last used" value={credential.lastUsed ?? "—"} />
             <div>
               <Mono size={9} upper tracking="0.14em" color="var(--dim)">scopes</Mono>
@@ -1390,7 +1410,11 @@ export function PageUser({
               right={liveTest ? (liveTest.ok ? "ok" : "failed") : "never"}
             />
             <div className="mt-2.5 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-              <ProbeResult test={liveTest} onProbe={!isMissing ? handleProbe : undefined} />
+              <ProbeResult
+                test={liveTest}
+                onProbe={!isMissing ? handleProbe : undefined}
+                pending={probeMutation.isPending}
+              />
             </div>
           </div>
           <div>
@@ -1627,14 +1651,10 @@ export function PageUser({
                 {reauthPending ? "redirecting…" : "connect"}
               </PillBtn>
             )}
-            {!isMissing && (
-              <PillBtn
-                onClick={handleProbe}
-                disabled={probeMutation.isPending}
-              >
-                {probeMutation.isPending ? "testing…" : "test"}
-              </PillBtn>
-            )}
+            {/* No footer "test" pill here (bu-eptoz) — the probe block's own
+                "run probe"/"probe again" button (ProbeResult, above) is the
+                one test control; a second footer button duplicated the same
+                handleProbe action. */}
             {!isMissing && !sick && (
               <PillBtn
                 onClick={() => { setRotateOpen(true); setDisconnectConfirm(false); }}
@@ -1714,7 +1734,7 @@ export function PageSystem({
         : "shared default";
   const stateLines: string[] = [];
   if (isLocal) stateLines.push(`target · ${credential.target}`);
-  else if (!isMissing && credential.lastVerified) stateLines.push(`verified ${credential.lastVerified}`);
+  else if (!isMissing && credential.lastVerified) stateLines.push(`verified ${formatPassportTimestamp(credential.lastVerified)}`);
 
   // ── Set value / Rotate ─────────────────────────────────────────────────────
   // "set value" (missing) and "rotate" (present, shared) both open the same
@@ -1900,7 +1920,7 @@ export function PageSystem({
         >
           <div>
             <Mono size={9} upper tracking="0.16em" color="var(--dim)">
-              {isPlain ? "value" : "fingerprint"}
+              {isPlain ? "value" : "passport no."}
             </Mono>
             <div className="mt-1">
               {isPlain ? (
@@ -1914,7 +1934,7 @@ export function PageSystem({
               )}
             </div>
           </div>
-          <KV label="last verified" value={credential.lastVerified ?? "—"} />
+          <KV label="last verified" value={formatPassportTimestamp(credential.lastVerified) ?? "—"} />
           <div>
             <Mono size={9} upper tracking="0.14em" color="var(--dim)">used by</Mono>
             <div className="flex gap-3 flex-wrap mt-1.5">
@@ -1961,7 +1981,11 @@ export function PageSystem({
                 right={liveTest ? (liveTest.ok ? "ok" : "failed") : "never"}
               />
               <div className="mt-2.5 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-                <ProbeResult test={liveTest} onProbe={!isMissing ? handleProbe : undefined} />
+                <ProbeResult
+                  test={liveTest}
+                  onProbe={!isMissing ? handleProbe : undefined}
+                  pending={probeMutation.isPending}
+                />
               </div>
             </div>
           )}
@@ -2225,14 +2249,9 @@ export function PageSystem({
               </PillBtn>
             ) : (
               <>
-                {!isPlain && (
-                  <PillBtn
-                    onClick={handleProbe}
-                    disabled={probeMutation.isPending}
-                  >
-                    {probeMutation.isPending ? "testing…" : "test"}
-                  </PillBtn>
-                )}
+                {/* No footer "test" pill here (bu-eptoz) — the probe block's
+                    own "run probe"/"probe again" button (ProbeResult, above)
+                    is the one test control. */}
                 <PillBtn
                   onClick={handleSetValueOpen}
                   disabled={setValueOpen}
@@ -2395,6 +2414,20 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
  * the device-code flow, the footer surfaces a connect / re-authorize button and
  * the body renders the verification URL + one-time code.
  */
+
+/**
+ * Derive the CLI Voice-paragraph copy without a doubled "CLI CLI" (bu-eptoz)
+ * — some CLI labels already end in "CLI" (e.g. mock fixtures "Codex CLI"),
+ * while real backend `display_name`s generally don't (e.g. "Codex (OpenAI)").
+ * Stripping a trailing "CLI" before appending it back once makes both forms
+ * read naturally: "Auth token for the Codex CLI." / "Auth token for the
+ * Codex (OpenAI) CLI."
+ */
+function cliVoiceCopy(label: string): string {
+  const name = label.replace(/\s*CLI$/i, "").trim() || label;
+  return `Auth token for the ${name} CLI.`;
+}
+
 export function PageCli({
   credential,
   showVerifyCmd = false,
@@ -2611,7 +2644,7 @@ export function PageCli({
       />
 
       <Voice size={15} maxWidth="60ch">
-        Token used by the {credential.label} CLI to authenticate against the system.
+        {cliVoiceCopy(credential.label)}
       </Voice>
 
       {/* Dense KV band */}
@@ -2632,7 +2665,7 @@ export function PageCli({
               <FingerprintRow value={credential.fingerprint} size={13} showVerifyCmd={showVerifyCmd} />
             </div>
           </div>
-          <KV label="issued" value={credential.issued ?? "—"} />
+          <KV label="issued" value={formatPassportTimestamp(credential.issued) ?? "—"} />
           <KV
             label="expires"
             value={credential.expires ?? "no expiry"}
@@ -2702,6 +2735,7 @@ export function PageCli({
                     : credential.test
                 }
                 onProbe={!isMissing ? handleTest : undefined}
+                pending={testMutation.isPending}
               />
             </div>
             {testResult && (
@@ -2891,14 +2925,9 @@ export function PageCli({
                       ? "connect"
                       : "re-authorize"}
                 </PillBtn>
-                {!isMissing && (
-                  <PillBtn
-                    onClick={handleTest}
-                    disabled={testMutation.isPending}
-                  >
-                    {testMutation.isPending ? "testing…" : "test"}
-                  </PillBtn>
-                )}
+                {/* No footer "test" pill here (bu-eptoz) — the probe block's
+                    own "run probe"/"probe again" button is the one test
+                    control. */}
               </>
             )
           ) : isApiKeyMode ? (
@@ -2911,14 +2940,9 @@ export function PageCli({
               >
                 {isMissing ? "save key" : "update key"}
               </PillBtn>
-              {!isMissing && (
-                <PillBtn
-                  onClick={handleTest}
-                  disabled={testMutation.isPending}
-                >
-                  {testMutation.isPending ? "testing…" : "test"}
-                </PillBtn>
-              )}
+              {/* No footer "test" pill here (bu-eptoz) — the probe block's
+                  own "run probe"/"probe again" button is the one test
+                  control. */}
             </>
           ) : isMissing ? (
             <PillBtn
@@ -2940,12 +2964,9 @@ export function PageCli({
               >
                 update token
               </PillBtn>
-              <PillBtn
-                onClick={handleTest}
-                disabled={testMutation.isPending}
-              >
-                {testMutation.isPending ? "testing…" : "test"}
-              </PillBtn>
+              {/* No footer "test" pill here (bu-eptoz) — the probe block's
+                  own "run probe"/"probe again" button is the one test
+                  control. */}
             </>
           ) : (
             <>
@@ -2956,12 +2977,9 @@ export function PageCli({
               >
                 {rotateMutation.isPending ? "rotating…" : "rotate"}
               </PillBtn>
-              <PillBtn
-                onClick={handleTest}
-                disabled={testMutation.isPending}
-              >
-                {testMutation.isPending ? "testing…" : "test"}
-              </PillBtn>
+              {/* No footer "test" pill here (bu-eptoz) — the probe block's
+                  own "run probe"/"probe again" button is the one test
+                  control. */}
             </>
           )
         }
