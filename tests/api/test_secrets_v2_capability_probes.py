@@ -201,7 +201,7 @@ def _install_url_aware_client(
     capability_status = capability_status or dict.fromkeys(_GOOGLE_URL_MARKERS, 200)
 
     async def _fake_post(url, **kwargs):
-        calls.append({"method": "POST", "url": str(url)})
+        calls.append({"method": "POST", "url": str(url), "data": kwargs.get("data")})
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = token_exchange_status
         resp.json = MagicMock(return_value=token_body)
@@ -252,10 +252,15 @@ def test_all_google_capabilities_ok_credential_passes(monkeypatch):
     assert data["ok"] is True
     assert data["message"] is None
 
-    # Exactly one token exchange + one GET per capability family.
+    # One shared token exchange + one health-only down-scoped exchange
+    # (the Health API rejects full-scope tokens with DISALLOWED_OAUTH_SCOPES),
+    # plus one GET per capability family.
     post_calls = [c for c in calls if c["method"] == "POST"]
     get_calls = [c for c in calls if c["method"] == "GET"]
-    assert len(post_calls) == 1
+    assert len(post_calls) == 2
+    downscoped = [c for c in post_calls if (c["data"] or {}).get("scope")]
+    assert len(downscoped) == 1
+    assert "googlehealth" in downscoped[0]["data"]["scope"]
     assert len(get_calls) == 4
     for marker in _GOOGLE_URL_MARKERS.values():
         assert any(marker in c["url"] for c in get_calls), f"missing capability call for {marker}"
@@ -382,6 +387,40 @@ def test_token_exchange_failure_on_test_mode_account_names_expiry(monkeypatch):
     assert data["ok"] is False
     assert "test-mode" in data["message"]
     assert "7-day" in data["message"]
+
+
+def test_health_downscope_exchange_without_health_scope_reports_not_granted(monkeypatch):
+    """When Google's down-scoped token response reports no googlehealth scope,
+    the health capability fails as not-granted WITHOUT calling the Health API
+    (the scope field is the authoritative signal), while the other three
+    capabilities still probe normally."""
+    row = _make_entity_info_row()
+    shared_pool = _make_shared_pool(user_row=row, raw_token_value=_REFRESH_TOKEN)
+    mock_db = _make_db(shared_pool)
+    calls = _install_url_aware_client(
+        monkeypatch,
+        token_exchange_body={
+            "access_token": _ACCESS_TOKEN,
+            "expires_in": 3600,
+            # Simulates Google narrowing the grant: no googlehealth scope came back.
+            "scope": "email profile https://www.googleapis.com/auth/calendar",
+        },
+    )
+
+    client = _build_app(mock_db)
+    resp = client.post("/api/secrets/user/google/probe")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["ok"] is False
+    assert "health" in data["message"]
+    assert "not granted" in data["message"]
+
+    # The Health API endpoint itself was never called.
+    get_calls = [c for c in calls if c["method"] == "GET"]
+    assert not any(_GOOGLE_URL_MARKERS["health"] in c["url"] for c in get_calls)
+    # Calendar / gmail / drive still probed.
+    assert len(get_calls) == 3
 
 
 # ---------------------------------------------------------------------------

@@ -3509,15 +3509,100 @@ async def _verify_google_capabilities(
             for cap in _GOOGLE_CAPABILITY_ORDER
         ]
 
+    async def _mint_health_access_token() -> tuple[str | None, _CapabilityProbe | None]:
+        """Exchange the refresh token for a HEALTH-ONLY access token.
+
+        The Google Health API rejects any access token carrying non-health
+        scopes with 403 DISALLOWED_OAUTH_SCOPES (verified live; the connector's
+        token refresh documents the same), so the shared full-scope token can
+        never pass a health probe. A second, down-scoped exchange mints a token
+        the API accepts. Returns ``(token, None)`` on success, or
+        ``(None, probe)`` when the exchange itself already answers the health
+        question (scope not granted / exchange failed / network error).
+        """
+        from butlers.api.routers.google_health import GOOGLE_HEALTH_SCOPE_URLS  # noqa: PLC0415
+
+        try:
+            async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
+                resp = await client.post(
+                    _GOOGLE_TOKEN_URL,
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "scope": " ".join(sorted(GOOGLE_HEALTH_SCOPE_URLS)),
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "_verify_google_capabilities: network error during health down-scope "
+                "token exchange: %s",
+                exc,
+            )
+            return None, _CapabilityProbe(
+                capability="health",
+                ok=None,
+                code=None,
+                message=None,
+                probe_status="skipped_local_check",
+            )
+        if resp.status_code != 200:
+            return None, _CapabilityProbe(
+                capability="health",
+                ok=False,
+                code=resp.status_code,
+                message=f"health token down-scope exchange HTTP {resp.status_code}",
+                probe_status=f"live_failed:{resp.status_code}",
+            )
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            return None, _CapabilityProbe(
+                capability="health",
+                ok=False,
+                code=None,
+                message="health token down-scope exchange: invalid JSON response",
+                probe_status="live_failed:invalid_json",
+            )
+        # Google reports the scopes actually attached to the minted token; a
+        # response without any googlehealth scope means the grant is missing —
+        # the authoritative "not granted" signal. (Absent ``scope`` field →
+        # fall through to the API call rather than fabricating a verdict.)
+        granted_scope = data.get("scope")
+        if granted_scope is not None and "googlehealth" not in granted_scope:
+            return None, _CapabilityProbe(
+                capability="health",
+                ok=False,
+                code=403,
+                message="403 restricted-scope (health scope not granted)",
+                probe_status="live_failed:403",
+            )
+        token = data.get("access_token")
+        if not token:
+            return None, _CapabilityProbe(
+                capability="health",
+                ok=False,
+                code=None,
+                message="health token down-scope exchange: no access_token in response",
+                probe_status="live_failed:no_access_token",
+            )
+        return token, None
+
     async def _probe_one(capability: str) -> _CapabilityProbe:
         url = _GOOGLE_CAPABILITY_ENDPOINTS[capability]
         params = _google_capability_probe_params(capability)
+        bearer = access_token
+        if capability == "health":
+            bearer, early_result = await _mint_health_access_token()
+            if early_result is not None:
+                return early_result
         started_at = time.monotonic()
         try:
             async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
                 resp = await client.get(
                     url,
-                    headers={"Authorization": f"Bearer {access_token}"},
+                    headers={"Authorization": f"Bearer {bearer}"},
                     params=params,
                 )
         except Exception as exc:  # noqa: BLE001
