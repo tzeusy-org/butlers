@@ -30,6 +30,7 @@ vi.mock("@/hooks/use-qa", () => ({
   useQaCaseJournal: vi.fn(),
   useRemoveDismissal: vi.fn(),
   useForceQaPatrol: vi.fn(),
+  useResetQaCircuitBreaker: vi.fn(),
   useQaPatrols: vi.fn(),
 }));
 
@@ -48,6 +49,7 @@ import {
   useQaCaseJournal,
   useRemoveDismissal,
   useForceQaPatrol,
+  useResetQaCircuitBreaker,
   useQaPatrols,
 } from "@/hooks/use-qa";
 import { useButlers } from "@/hooks/use-butlers";
@@ -116,6 +118,7 @@ const MOCK_CASE_2 = {
 
 function renderPage(route = "/qa") {
   (useRemoveDismissal as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+  (useResetQaCircuitBreaker as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
   (useQaCase as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: false });
   (useQaCaseJournal as AnyMock).mockReturnValue({ data: undefined });
 
@@ -230,6 +233,34 @@ describe("QaOverviewPage -- dossier shell", () => {
     expect(html).toContain("High");
     expect(html).toContain("Medium");
     expect(html).toContain("Low");
+  });
+
+  it("renders a closed circuit-breaker button until the breaker is tripped", () => {
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+    const closedHtml = renderPage();
+    expect(closedHtml).toContain('aria-label="QA circuit breaker closed"');
+    expect(closedHtml).toContain("Circuit breaker closed");
+    expect(closedHtml).not.toContain("Reset breaker");
+
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: {
+        data: {
+          ...MOCK_SUMMARY,
+          staffer_status: "circuit_breaker_tripped",
+          circuit_breaker: { tripped: true, consecutive_failures: 5 },
+        },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).toContain('aria-label="Reset QA circuit breaker"');
+    expect(html).toContain("Reset breaker");
+    expect(html).not.toContain("Circuit breaker closed");
   });
 
   it("renders the time-range filter group with the four preset pills", () => {

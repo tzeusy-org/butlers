@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * Interactive tests for the QA dossier time-range filter (Fix B).
+ * Interactive tests for QA dossier controls.
  *
  * Verified behaviors:
  *   - Default time range is 7d and is reflected in the case-list label.
@@ -9,6 +9,9 @@
  *     and updates the case-list header label accordingly.
  *   - Selecting "All" passes the literal string "all" to the hook (the API
  *     accepts since=all per QaCasesParams).
+ *   - The circuit-breaker reset button confirms with the operator, then calls
+ *     the existing reset mutation.
+ *   - The closed circuit-breaker button is visible but inert.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,6 +26,7 @@ vi.mock("@/hooks/use-qa", () => ({
   useQaCaseJournal: vi.fn(),
   useRemoveDismissal: vi.fn(),
   useForceQaPatrol: vi.fn(),
+  useResetQaCircuitBreaker: vi.fn(),
   useQaPatrols: vi.fn(),
 }));
 
@@ -38,6 +42,7 @@ import {
   useQaCaseJournal,
   useRemoveDismissal,
   useForceQaPatrol,
+  useResetQaCircuitBreaker,
   useQaPatrols,
 } from "@/hooks/use-qa";
 import { useButlers } from "@/hooks/use-butlers";
@@ -85,9 +90,15 @@ const MOCK_CASE = {
   pr_url: null,
 };
 
-function renderPage() {
+function renderPage({
+  summary = MOCK_SUMMARY,
+  resetCircuitBreaker = { mutate: vi.fn(), isPending: false },
+}: {
+  summary?: typeof MOCK_SUMMARY;
+  resetCircuitBreaker?: { mutate: ReturnType<typeof vi.fn>; isPending: boolean };
+} = {}) {
   (useQaSummary as AnyMock).mockReturnValue({
-    data: { data: MOCK_SUMMARY },
+    data: { data: summary },
     isLoading: false,
     isError: false,
   });
@@ -100,6 +111,7 @@ function renderPage() {
   (useQaCaseJournal as AnyMock).mockReturnValue({ data: undefined });
   (useRemoveDismissal as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
   (useForceQaPatrol as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+  (useResetQaCircuitBreaker as AnyMock).mockReturnValue(resetCircuitBreaker);
   (useQaPatrols as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
   (useButlers as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
 
@@ -165,5 +177,50 @@ describe("QaOverviewPage -- time range selector", () => {
 
     const lastCallArgs = (useQaCases as AnyMock).mock.calls.at(-1)?.[0];
     expect(lastCallArgs).toMatchObject({ since: "all" });
+  });
+});
+
+describe("QaOverviewPage -- circuit breaker reset", () => {
+  it("shows an inert closed-state button when the breaker is closed", () => {
+    const mutate = vi.fn();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderPage({ resetCircuitBreaker: { mutate, isPending: false } });
+
+    const button = screen.getByRole("button", {
+      name: "QA circuit breaker closed",
+    }) as HTMLButtonElement;
+    expect(button.textContent).toBe("Circuit breaker closed");
+    expect(button.disabled).toBe(true);
+
+    fireEvent.click(button);
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(mutate).not.toHaveBeenCalled();
+
+    confirmSpy.mockRestore();
+  });
+
+  it("confirms before dispatching the reset mutation", () => {
+    const mutate = vi.fn();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderPage({
+      summary: {
+        ...MOCK_SUMMARY,
+        staffer_status: "circuit_breaker_tripped",
+        circuit_breaker: { tripped: true, consecutive_failures: 5 },
+      },
+      resetCircuitBreaker: { mutate, isPending: false },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset QA circuit breaker" }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(
+      "Reset the QA circuit breaker and allow new investigations?",
+    );
+    expect(mutate).toHaveBeenCalledOnce();
+
+    confirmSpy.mockRestore();
   });
 });

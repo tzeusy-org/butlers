@@ -29,7 +29,13 @@ import type { QaCaseSummary } from "@/api/types";
 import { CaseDossier, CaseList, QaKpiStrip, QaVerdictOpener } from "@/components/qa";
 import { Time } from "@/components/ui/time";
 import { useButlers } from "@/hooks/use-butlers";
-import { useForceQaPatrol, useQaCases, useQaPatrols, useQaSummary } from "@/hooks/use-qa";
+import {
+  useForceQaPatrol,
+  useQaCases,
+  useQaPatrols,
+  useQaSummary,
+  useResetQaCircuitBreaker,
+} from "@/hooks/use-qa";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 
 // ---------------------------------------------------------------------------
@@ -85,6 +91,9 @@ function StickyTopBar({
   selectedButlers,
   onToggleButler,
   butlerOptions,
+  breakerTripped,
+  onResetCircuitBreaker,
+  resetCircuitBreakerPending,
   onForcePatrol,
   forcePatrolPending,
 }: {
@@ -97,6 +106,9 @@ function StickyTopBar({
   selectedButlers: Set<string>;
   onToggleButler: (name: string) => void;
   butlerOptions: string[];
+  breakerTripped: boolean;
+  onResetCircuitBreaker: () => void;
+  resetCircuitBreakerPending: boolean;
   onForcePatrol: () => void;
   forcePatrolPending: boolean;
 }) {
@@ -107,6 +119,12 @@ function StickyTopBar({
     selectedButlers.size === 0
       ? "All butlers"
       : `${selectedButlers.size} butler${selectedButlers.size === 1 ? "" : "s"}`;
+  const circuitBreakerButtonClass = [
+    "rounded border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+    breakerTripped
+      ? "border-destructive/50 text-destructive hover:border-destructive hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+      : "border-border/60 text-muted-foreground disabled:cursor-default disabled:opacity-100",
+  ].join(" ");
 
   return (
     <div className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-y-2 border-b border-border/60 bg-background/95 px-6 py-2 backdrop-blur-sm">
@@ -215,6 +233,20 @@ function StickyTopBar({
       </div>
 
       <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={breakerTripped ? onResetCircuitBreaker : undefined}
+          disabled={!breakerTripped || resetCircuitBreakerPending}
+          aria-label={breakerTripped ? "Reset QA circuit breaker" : "QA circuit breaker closed"}
+          className={circuitBreakerButtonClass}
+        >
+          {breakerTripped
+            ? resetCircuitBreakerPending
+              ? "Resetting…"
+              : "Reset breaker"
+            : "Circuit breaker closed"}
+        </button>
+
         {/* Force patrol — trigger an immediate patrol cycle */}
         <button
           type="button"
@@ -355,6 +387,7 @@ export default function QaOverviewPage() {
 
   const summary = useQaSummary();
   const forcePatrol = useForceQaPatrol();
+  const resetCircuitBreaker = useResetQaCircuitBreaker();
   const butlersQuery = useButlers();
   const cases = useQaCases({
     sev: severity === "all" ? undefined : severity,
@@ -408,6 +441,21 @@ export default function QaOverviewPage() {
     });
   }
 
+  function handleResetCircuitBreaker() {
+    if (resetCircuitBreaker.isPending) return;
+    if (!window.confirm("Reset the QA circuit breaker and allow new investigations?")) return;
+    resetCircuitBreaker.mutate(undefined, {
+      onSuccess: (res) => {
+        toast.success(res.data?.message ?? "Circuit breaker reset");
+      },
+      onError: (err) => {
+        toast.error(
+          `Circuit breaker reset failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        );
+      },
+    });
+  }
+
   // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
   // the sticky top bar's existing "Force patrol" handler, confirm dialog and
   // all -- no new behavior.
@@ -445,6 +493,7 @@ export default function QaOverviewPage() {
   }
 
   const summaryData = summary.data?.data;
+  const breakerTripped = summaryData?.circuit_breaker.tripped ?? false;
 
   return (
     <div className="flex min-h-full flex-col">
@@ -458,6 +507,9 @@ export default function QaOverviewPage() {
         selectedButlers={selectedButlers}
         onToggleButler={handleToggleButler}
         butlerOptions={butlerOptions}
+        breakerTripped={breakerTripped}
+        onResetCircuitBreaker={handleResetCircuitBreaker}
+        resetCircuitBreakerPending={resetCircuitBreaker.isPending}
         onForcePatrol={handleForcePatrol}
         forcePatrolPending={forcePatrol.isPending}
       />
