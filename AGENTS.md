@@ -1149,6 +1149,12 @@ For more details, see README.md and docs/QUICKSTART.md.
 
 ## Notes to self
 
+### Google Health API (health.googleapis.com/v4) token + scope contract
+Two non-obvious rules, both verified live 2026-07-08 (root cause of the "granted health but probe says 403 scope-not-granted" secrets-page bug):
+1. **The Health API rejects full-scope access tokens** with `403 DISALLOWED_OAUTH_SCOPES` — any access token carrying non-health scopes (the unified refresh token covers calendar/gmail/drive/contacts/…) fails EVERY v4 call regardless of granted scopes. Callers must mint a health-only token by passing `scope=<the three googlehealth .readonly URLs>` in the refresh-token exchange (the connector does this in `google_health.py`; the secrets probe does it in `secrets_v2.py::_mint_health_access_token`). A 403 from v4 therefore does NOT mean "scope not granted" unless the token was down-scoped first.
+2. **Google reports scope VARIANTS**: token/callback `scope` fields may list the broader non-`.readonly` URL (e.g. `googlehealth.sleep`) for an account already holding the wider grant. All granted-scope checks must match by FAMILY (`google_account_registry.py::google_health_scope_family` / frontend `client.ts::googleHealthScopeFamily`), never by exact URL — exact matching reads a fully-granted account as unscoped (that made tzeuse@'s revoke a silent no-op and showed "grant health" on a granted account). Requesting scopes still uses the `.readonly` URLs.
+Related plumbing facts: `public.entity_info` `google_oauth_refresh` values are PLAINTEXT (`secured=true` is a marker, not encryption); app creds live in `public.butler_secrets` under `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`.
+
 ### Egress audit operation naming convention
 Dashboard egress catalog (`GET /api/system/egress`) is powered by `switchboard.dashboard_audit_log`. Four operation strings represent outbound external calls — each must be emitted at the actual call site using `write_audit_entry` (daemon) or `emit_dashboard_audit` (API layer):
 - `llm_api_call` — emitted by `src/butlers/core/spawner.py` after every LLM session (success and error paths); `request_summary` carries `provider`, `model`, `session_id`, `input_tokens`, `output_tokens`.
