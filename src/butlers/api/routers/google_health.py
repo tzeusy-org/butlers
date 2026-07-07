@@ -68,7 +68,11 @@ from butlers.api.models.google_health import (
     GoogleHealthDisconnectResponse,
     GoogleHealthStatusResponse,
 )
-from butlers.google_account_registry import list_health_scoped_accounts
+from butlers.google_account_registry import (
+    google_health_scope_family,
+    has_all_health_scope_families,
+    list_health_scoped_accounts,
+)
 from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
@@ -261,13 +265,15 @@ def _parse_jsonb_metadata(raw: Any) -> dict[str, Any]:
 
 
 def _filter_health_scopes(granted: list[str] | None) -> list[str]:
-    """Return the full Google Health scope URLs that are in ``granted``.
+    """Return the ``googlehealth.*`` scope URLs that are in ``granted``.
 
+    Matches by scope FAMILY (readonly or broader variant) — Google may report
+    the non-``.readonly`` URL for an account holding the wider grant.
     Preserves original order to make the response deterministic for tests.
     """
     if not granted:
         return []
-    return [scope for scope in granted if scope in GOOGLE_HEALTH_SCOPE_URLS]
+    return [scope for scope in granted if google_health_scope_family(scope) is not None]
 
 
 async def _fetch_last_ingest_at(shared_pool: Any) -> datetime | None:
@@ -405,7 +411,7 @@ def _derive_state(
     if hb_state_raw == "error":
         return GoogleHealthConnectorState.error, False
 
-    if len(granted_health_scopes) < len(GOOGLE_HEALTH_SCOPE_URLS):
+    if not has_all_health_scope_families(granted_health_scopes):
         return GoogleHealthConnectorState.degraded, False
 
     last_heartbeat_at = (heartbeat or {}).get("last_heartbeat_at")
@@ -958,7 +964,7 @@ async def disconnect_google_health(
         )
 
     granted = list(account["granted_scopes"] or [])
-    present_health = [scope for scope in granted if scope in GOOGLE_HEALTH_SCOPE_URLS]
+    present_health = _filter_health_scopes(granted)
 
     if not present_health:
         logger.info(
@@ -973,7 +979,7 @@ async def disconnect_google_health(
             scopes_removed=[],
         )
 
-    remaining = [scope for scope in granted if scope not in GOOGLE_HEALTH_SCOPE_URLS]
+    remaining = [scope for scope in granted if google_health_scope_family(scope) is None]
 
     async with shared_pool.acquire() as conn:
         await conn.execute(

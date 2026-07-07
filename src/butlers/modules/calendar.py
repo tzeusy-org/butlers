@@ -2136,8 +2136,44 @@ class _GoogleProvider(CalendarProvider):
                         exc_info=True,
                     )
 
+            _module_refresh_token = credentials.refresh_token
+
             async def _mark_token_revoked() -> None:
+                # Guard against stale-daemon clobber: this module caches the
+                # refresh token at startup. If the owner re-authorized since
+                # (dashboard OAuth stored a NEW token and set status='active'),
+                # an invalid_grant on OUR stale token says nothing about the
+                # current credential — only mark revoked when the stored token
+                # is still the one we hold (observed live: a daemon holding a
+                # dead token kept flipping a freshly re-authorized account
+                # back to 'revoked').
                 try:
+                    if _email:
+                        stored = await _pool.fetchval(
+                            """
+                            SELECT ei.value
+                            FROM public.google_accounts ga
+                            JOIN public.entity_info ei ON ei.entity_id = ga.entity_id
+                            WHERE ga.email = $1 AND ei.type = 'google_oauth_refresh'
+                            """,
+                            _email,
+                        )
+                    else:
+                        stored = await _pool.fetchval(
+                            """
+                            SELECT ei.value
+                            FROM public.google_accounts ga
+                            JOIN public.entity_info ei ON ei.entity_id = ga.entity_id
+                            WHERE ga.is_primary = true AND ei.type = 'google_oauth_refresh'
+                            """
+                        )
+                    if stored is not None and stored != _module_refresh_token:
+                        logger.info(
+                            "CalendarModule: stored refresh token differs from this "
+                            "module's cached token — skipping revoked-status update "
+                            "(account was re-authorized; restart to pick up the new token)."
+                        )
+                        return
                     if _email:
                         await _pool.execute(
                             """

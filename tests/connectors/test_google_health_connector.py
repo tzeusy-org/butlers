@@ -1442,7 +1442,7 @@ async def test_list_health_scoped_accounts_filters() -> None:
     pool = MagicMock()
     pool.acquire = MagicMock(return_value=fake_conn)
 
-    results = await list_health_scoped_accounts(pool, health_scopes=GOOGLE_HEALTH_SCOPES)
+    results = await list_health_scoped_accounts(pool)
 
     # Only the full-scopes row passes.
     assert len(results) == 1
@@ -2202,22 +2202,31 @@ def test_metric_reraises_non_collision_value_error() -> None:
         )
 
 
-async def test_resolve_owner_passes_explicit_scopes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The connector pins ``health_scopes`` so the registry never self-imports.
+async def test_resolve_owner_uses_registry_owned_scope_matching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Account discovery must never re-import this connector module.
 
-    Passing ``GOOGLE_HEALTH_SCOPES`` explicitly is what stops
-    ``list_health_scoped_accounts`` from running its lazy
-    ``from butlers.connectors.google_health import GOOGLE_HEALTH_SCOPES`` —
-    the re-import path that crashed account discovery every cycle.
+    The registry owns the health scope-family constants
+    (``GOOGLE_HEALTH_SCOPE_FAMILIES``) so ``list_health_scoped_accounts``
+    has no lazy ``from butlers.connectors.google_health import ...`` — the
+    re-import path that crashed account discovery every cycle when the
+    connector runs as ``__main__`` (duplicate Prometheus registration).
     """
+    import inspect
+
+    import butlers.google_account_registry as registry
+
+    # The registry module must not reference the connector module at all.
+    assert "connectors.google_health" not in inspect.getsource(registry)
+
     connector = _make_connector()
     connector._shared_pool = MagicMock()  # bypass the None-pool degraded short-circuit
 
     captured: dict[str, Any] = {}
 
-    async def _fake_list(pool: Any, health_scopes: Any = None) -> list[Any]:
+    async def _fake_list(pool: Any) -> list[Any]:
         captured["pool"] = pool
-        captured["health_scopes"] = health_scopes
         return []
 
     monkeypatch.setattr("butlers.connectors.google_health.list_health_scoped_accounts", _fake_list)
@@ -2225,4 +2234,3 @@ async def test_resolve_owner_passes_explicit_scopes(monkeypatch: pytest.MonkeyPa
     await connector._resolve_owner_and_scopes()
 
     assert captured["pool"] is connector._shared_pool
-    assert captured["health_scopes"] == GOOGLE_HEALTH_SCOPES

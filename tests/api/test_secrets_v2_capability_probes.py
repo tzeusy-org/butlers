@@ -62,7 +62,9 @@ _GOOGLE_URL_MARKERS = {
     "calendar": "calendar",
     "gmail": "gmail",
     "drive": "drive",
-    "health": "fitness",
+    # The health probe must hit the Google Health v4 surface — the legacy
+    # fitness/v1 API 403s under googlehealth.* scopes even when fully granted.
+    "health": "health.googleapis.com",
 }
 
 

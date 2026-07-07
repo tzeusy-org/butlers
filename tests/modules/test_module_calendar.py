@@ -1862,6 +1862,9 @@ class TestGoogleHelpers:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
         pool = MagicMock()
         pool.execute = AsyncMock()
+        # The stored refresh token matches this module's cached token, so the
+        # invalid_grant verdict applies to the current credential.
+        pool.fetchval = AsyncMock(return_value="refresh-token")
         provider = _GoogleProvider(
             CalendarConfig(provider="google", account="account@example.test"),
             _GoogleOAuthCredentials(
@@ -1888,6 +1891,48 @@ class TestGoogleHelpers:
         assert len(revoked_calls) == 1
         assert "WHERE email = $1" in " ".join(revoked_calls[0].args[0].split())
         assert revoked_calls[0].args[1] == "account@example.test"
+
+    async def test_google_provider_skips_revoked_mark_when_stored_token_differs(self):
+        """Regression (live 2026-07-07): a daemon holding a stale cached token
+        must not flip a freshly re-authorized account back to 'revoked'."""
+
+        async def _handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"error": "invalid_grant", "error_description": "revoked"},
+                request=request,
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+        pool = MagicMock()
+        pool.execute = AsyncMock()
+        # The owner re-authorized: the DB now holds a NEWER refresh token than
+        # the one this module cached at startup.
+        pool.fetchval = AsyncMock(return_value="fresh-token-after-reauth")
+        provider = _GoogleProvider(
+            CalendarConfig(provider="google", account="account@example.test"),
+            _GoogleOAuthCredentials(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="stale-cached-token",
+            ),
+            http_client=client,
+            pool=pool,
+        )
+
+        try:
+            with pytest.raises(CalendarTokenRefreshError):
+                await provider._oauth.get_access_token()
+        finally:
+            await provider.shutdown()
+            await client.aclose()
+
+        revoked_calls = [
+            call
+            for call in pool.execute.await_args_list
+            if "SET status = 'revoked'" in " ".join(call.args[0].split())
+        ]
+        assert revoked_calls == []
 
 
 # ---------------------------------------------------------------------------

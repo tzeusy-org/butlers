@@ -24,6 +24,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Time } from "@/components/ui/time";
 import { StateDot } from "@/components/ui/StateDot";
+import {
+  GOOGLE_HEALTH_SCOPE_FAMILIES,
+  grantedGoogleHealthFamilies,
+} from "@/api/client";
 import type {
   GoogleHealthAccountStatus,
   GoogleHealthConnectorState,
@@ -117,20 +121,15 @@ function ConnectorErrorBanner({ code }: { code: string }) {
 // Scope-count summary helper
 // ---------------------------------------------------------------------------
 
-const GOOGLE_HEALTH_SCOPES = [
-  "https://www.googleapis.com/auth/fitness.sleep.read",
-  "https://www.googleapis.com/auth/fitness.activity.read",
-  "https://www.googleapis.com/auth/fitness.heart_rate.read",
-];
-
 /**
- * Returns a short human-readable summary of which Google Health scopes are
- * granted, e.g. "3 / 3 scopes" or "1 / 3 scopes".
- * Uses exact URL matching against the known scope list.
+ * Returns a short human-readable summary of which Google Health scope
+ * families are granted, e.g. "3 / 3 scopes" or "1 / 3 scopes".
+ * Family-based matching (`googlehealth.*`, readonly or broader variant) —
+ * exact URL matching undercounts when Google reports the broader variant.
  */
 function formatScopeSummary(scopesGranted: string[]): string {
-  const count = GOOGLE_HEALTH_SCOPES.filter((scope) => scopesGranted.includes(scope)).length;
-  const total = GOOGLE_HEALTH_SCOPES.length;
+  const count = grantedGoogleHealthFamilies(scopesGranted).size;
+  const total = GOOGLE_HEALTH_SCOPE_FAMILIES.length;
   return `${count} / ${total} scopes`;
 }
 

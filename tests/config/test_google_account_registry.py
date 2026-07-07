@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.google_account_registry import (
+    GOOGLE_HEALTH_SCOPE_FAMILIES,
     GoogleAccount,
     GoogleAccountAlreadyExistsError,
     GoogleAccountLimitExceededError,
@@ -17,6 +18,9 @@ from butlers.google_account_registry import (
     create_google_account,
     disconnect_account,
     get_google_account,
+    google_health_scope_family,
+    granted_health_scope_families,
+    has_all_health_scope_families,
     list_google_accounts,
     set_primary_account,
 )
@@ -286,3 +290,63 @@ async def test_disconnect_account() -> None:
     with patch("butlers.google_account_registry._revoke_token_with_google", new=_fail):
         await disconnect_account(mp4.pool, _ACCOUNT_ID)
     assert any("status = 'revoked'" in str(c[0][0]) for c in c2d.execute.call_args_list)
+
+
+async def test_disconnect_primary_demotes_first_and_revokes_at_google_last() -> None:
+    """Regression (live 2026-07-07): promoting the next primary without demoting
+    the disconnected one violated ix_google_accounts_primary_singleton, and the
+    pre-transaction Google-side revoke killed the live token even though the
+    local transaction rolled back."""
+    conn1, conn2 = _make_disconnect_conns()
+    order: list[str] = []
+
+    async def _track_execute(sql, *args):
+        order.append(str(sql))
+        return "UPDATE 1"
+
+    conn2.execute = AsyncMock(side_effect=_track_execute)
+
+    async def _track_revoke(_token):
+        order.append("GOOGLE_REVOKE")
+
+    mp = _MultiPool(conn1, conn2)
+    with patch("butlers.google_account_registry._revoke_token_with_google", new=_track_revoke):
+        await disconnect_account(mp.pool, _ACCOUNT_ID)
+
+    # The soft-disconnect UPDATE demotes is_primary in the same statement that
+    # marks the row revoked, and it runs before the auto-promote UPDATE.
+    revoke_update = next(s for s in order if "status = 'revoked'" in s)
+    assert "is_primary = false" in revoke_update
+    promote_idx = next(i for i, s in enumerate(order) if "is_primary = true" in s)
+    assert order.index(revoke_update) < promote_idx
+
+    # Google-side revocation happens only after all local statements.
+    assert order.index("GOOGLE_REVOKE") == len(order) - 1
+
+
+def test_google_health_scope_family_matching() -> None:
+    """Family matching accepts both the requested .readonly URLs and the broader
+    non-readonly variants Google reports for already-granted families."""
+    prefix = "https://www.googleapis.com/auth/googlehealth."
+    assert google_health_scope_family(f"{prefix}sleep.readonly") == "sleep"
+    assert google_health_scope_family(f"{prefix}sleep") == "sleep"
+    assert google_health_scope_family(f"{prefix}activity_and_fitness") == "activity_and_fitness"
+    assert google_health_scope_family(f"{prefix}bogus_family") is None
+    assert google_health_scope_family("https://www.googleapis.com/auth/calendar") is None
+
+    broad = [
+        f"{prefix}sleep",
+        f"{prefix}activity_and_fitness",
+        f"{prefix}health_metrics_and_measurements",
+    ]
+    assert granted_health_scope_families(broad) == GOOGLE_HEALTH_SCOPE_FAMILIES
+    assert has_all_health_scope_families(broad) is True
+    assert has_all_health_scope_families(broad[:2]) is False
+    assert has_all_health_scope_families(None) is False
+    # Mixed variants across families still cover the full set.
+    mixed = [
+        f"{prefix}sleep.readonly",
+        f"{prefix}activity_and_fitness",
+        f"{prefix}health_metrics_and_measurements.readonly",
+    ]
+    assert has_all_health_scope_families(mixed) is True

@@ -79,7 +79,7 @@ import {
 import { useDisconnectGoogleHealth, useGoogleHealthStatus } from "@/hooks/use-google-health.ts";
 import {
   getGoogleOAuthStartUrl,
-  GOOGLE_HEALTH_SCOPES,
+  googleHealthScopeFamily,
 } from "@/api/client.ts";
 import type { GoogleAccount, GoogleHealthStatusResponse } from "@/api/types.ts";
 import {
@@ -317,7 +317,9 @@ const SCOPE_SETS: Array<{ id: string; label: string; description: string }> = [
 ];
 
 function hasHealthScopes(grantedScopes: string[]): boolean {
-  return GOOGLE_HEALTH_SCOPES.some((s) => grantedScopes.includes(s));
+  // Family-based match: Google may report the broader non-`.readonly`
+  // variant for an already-granted family, which exact-URL matching misses.
+  return grantedScopes.some((s) => googleHealthScopeFamily(s) !== null);
 }
 
 /**

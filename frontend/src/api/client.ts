@@ -3842,6 +3842,37 @@ export const GOOGLE_HEALTH_SCOPES = [
   "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
 ] as const;
 
+/**
+ * Google may report the broader non-`.readonly` variant of a googlehealth
+ * scope when the account already holds it, so granted-scope checks must match
+ * by FAMILY rather than exact URL (mirrors
+ * `butlers.google_account_registry.google_health_scope_family`).
+ */
+const GOOGLE_HEALTH_SCOPE_PREFIX = "https://www.googleapis.com/auth/googlehealth.";
+
+export const GOOGLE_HEALTH_SCOPE_FAMILIES = [
+  "sleep",
+  "activity_and_fitness",
+  "health_metrics_and_measurements",
+] as const;
+
+/** Return the Google Health family for a `googlehealth.*` scope URL, else null. */
+export function googleHealthScopeFamily(scope: string): string | null {
+  if (!scope.startsWith(GOOGLE_HEALTH_SCOPE_PREFIX)) return null;
+  const family = scope.slice(GOOGLE_HEALTH_SCOPE_PREFIX.length).replace(/\.readonly$/, "");
+  return (GOOGLE_HEALTH_SCOPE_FAMILIES as readonly string[]).includes(family) ? family : null;
+}
+
+/** Distinct Google Health families covered by `scopes` (readonly or broader variant). */
+export function grantedGoogleHealthFamilies(scopes: readonly string[]): Set<string> {
+  const families = new Set<string>();
+  for (const scope of scopes) {
+    const family = googleHealthScopeFamily(scope);
+    if (family !== null) families.add(family);
+  }
+  return families;
+}
+
 /** Fetch the Google Health connector status (state, scopes, counts, flags). */
 export function getGoogleHealthStatus(): Promise<GoogleHealthStatusResponse> {
   return apiFetch<GoogleHealthStatusResponse>("/connectors/google-health/status");

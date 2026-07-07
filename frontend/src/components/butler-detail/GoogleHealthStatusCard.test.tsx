@@ -52,10 +52,12 @@ const BASE_STATUS: GoogleHealthStatusResponse = {
   primary_account_email: null,
 };
 
+// Mixed .readonly / broader variants on purpose — the scope summary counts by
+// FAMILY, and Google may report either variant for a granted family.
 const HEALTH_SCOPES = [
-  "https://www.googleapis.com/auth/fitness.sleep.read",
-  "https://www.googleapis.com/auth/fitness.activity.read",
-  "https://www.googleapis.com/auth/fitness.heart_rate.read",
+  "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+  "https://www.googleapis.com/auth/googlehealth.activity_and_fitness",
+  "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
 ];
 
 const SINGLE_ACCOUNT_STATUS: GoogleHealthStatusResponse = {

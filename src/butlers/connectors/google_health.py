@@ -117,10 +117,12 @@ from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.google_account_registry import (
+    GOOGLE_HEALTH_SCOPE_FAMILIES,
     GoogleAccount,
     HealthScopedAccount,
     MissingGoogleCredentialsError,
     get_google_account,
+    granted_health_scope_families,
     list_health_scoped_accounts,
 )
 from butlers.google_credentials import (
@@ -144,8 +146,11 @@ _CONNECTOR_CHANNEL = "wellness"
 _CONNECTOR_PROVIDER = "google_health"
 
 # Full Google Health RESTRICTED scope URLs (per openspec spec and the OAuth
-# scope-set registry in src/butlers/api/routers/oauth.py). Scope check is an
-# AND across all three — partial grants leave the connector degraded.
+# scope-set registry in src/butlers/api/routers/oauth.py). These are the URLs
+# we REQUEST; granted-scope checks match by family via
+# ``butlers.google_account_registry.granted_health_scope_families`` (Google may
+# report the broader non-``.readonly`` variant instead). Coverage is an AND
+# across all three families — partial grants leave the connector degraded.
 GOOGLE_HEALTH_SCOPES: frozenset[str] = frozenset(
     {
         "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
@@ -941,16 +946,7 @@ class GoogleHealthConnector:
             return
 
         try:
-            # Pass GOOGLE_HEALTH_SCOPES explicitly. Without it the registry
-            # lazily runs ``from butlers.connectors.google_health import
-            # GOOGLE_HEALTH_SCOPES`` — and because this module is executed as
-            # ``__main__`` (``python -m butlers.connectors.google_health``), that
-            # import re-imports it under its real package name, re-running the
-            # module-level Prometheus metric definitions and raising
-            # "Duplicated timeseries in CollectorRegistry" on every cycle.
-            health_accounts = await list_health_scoped_accounts(
-                self._shared_pool, health_scopes=GOOGLE_HEALTH_SCOPES
-            )
+            health_accounts = await list_health_scoped_accounts(self._shared_pool)
         except Exception as exc:  # noqa: BLE001
             self._account_missing = True
             self._scope_missing = True
@@ -1021,9 +1017,10 @@ class GoogleHealthConnector:
                 # A primary account exists but lacks health scopes.
                 self._google_account = primary_account
                 self._account_missing = False
-                granted = frozenset(primary_account.granted_scopes or [])
-                missing_scopes = GOOGLE_HEALTH_SCOPES - granted
-                self._scope_missing = bool(missing_scopes)
+                missing_families = GOOGLE_HEALTH_SCOPE_FAMILIES - granted_health_scope_families(
+                    primary_account.granted_scopes
+                )
+                self._scope_missing = bool(missing_families)
                 if self._scope_missing:
                     google_health_scope_missing_total.labels(
                         endpoint_identity=_endpoint_identity_for_user(
@@ -1032,9 +1029,10 @@ class GoogleHealthConnector:
                     ).inc()
                     if initial:
                         logger.warning(
-                            "GoogleHealthConnector: primary account %s missing health scopes: %s",
+                            "GoogleHealthConnector: primary account %s missing health scope "
+                            "families: %s",
                             primary_account.email,
-                            sorted(missing_scopes),
+                            sorted(missing_families),
                         )
                 user_id = primary_account.email or str(primary_account.id)
                 self._google_user_id = user_id

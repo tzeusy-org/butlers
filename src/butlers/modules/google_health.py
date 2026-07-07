@@ -26,18 +26,6 @@ from butlers.modules.base import Module
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Required Google Health OAuth scopes (full URLs as stored in granted_scopes)
-# ---------------------------------------------------------------------------
-
-_HEALTH_SCOPES: frozenset[str] = frozenset(
-    {
-        "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
-        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
-        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
-    }
-)
-
-# ---------------------------------------------------------------------------
 # Sentinel error messages
 # ---------------------------------------------------------------------------
 
@@ -218,10 +206,15 @@ class GoogleHealthModule(Module):
             )
             return
 
-        missing = _HEALTH_SCOPES - granted
+        from butlers.google_account_registry import (  # noqa: PLC0415
+            GOOGLE_HEALTH_SCOPE_FAMILIES,
+            granted_health_scope_families,
+        )
+
+        missing = GOOGLE_HEALTH_SCOPE_FAMILIES - granted_health_scope_families(granted)
         if missing:
             logger.warning(
-                "GoogleHealthModule: missing Google Health scopes: %s. "
+                "GoogleHealthModule: missing Google Health scope families: %s. "
                 "Re-authorize at /api/oauth/google/start with the Health scope-set.",
                 sorted(missing),
             )

@@ -3341,14 +3341,39 @@ class _CapabilityProbe:
 
 
 # One cheap, read-only, authenticated Google API call per capability family.
-# calendarList.list / users.getProfile / about.get / dataSources.list are the
-# smallest-payload read endpoints in each API surface.
+# calendarList.list / users.getProfile / about.get / sleep dataPoints:reconcile
+# are the smallest-payload read endpoints in each API surface. Health MUST hit
+# ``health.googleapis.com/v4`` (same surface the connector polls) — the
+# ``googlehealth.*`` scopes do NOT authorize the legacy Fitness API, so a
+# fitness/v1 probe 403s even on a fully-granted account (observed live).
 _GOOGLE_CAPABILITY_ENDPOINTS: dict[str, str] = {
     "calendar": "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1",
     "gmail": "https://www.googleapis.com/gmail/v1/users/me/profile",
     "drive": "https://www.googleapis.com/drive/v3/about?fields=user",
-    "health": "https://www.googleapis.com/fitness/v1/users/me/dataSources",
+    "health": "https://health.googleapis.com/v4/users/me/dataTypes/sleep/dataPoints:reconcile",
 }
+
+
+def _google_capability_probe_params(capability: str) -> dict[str, str | int] | None:
+    """Query params for a capability probe, or None when the bare URL suffices.
+
+    The Health v4 reconcile endpoint requires an AIP-160 ``filter`` window; a
+    minimal 1-day window with ``pageSize=1`` keeps the probe cheap while still
+    exercising auth (403 = scope missing / API not enabled, 200 = granted —
+    an empty result set is still a 200).
+    """
+    if capability != "health":
+        return None
+    until = datetime.now(tz=UTC)
+    since = until - timedelta(days=1)
+    return {
+        "filter": (
+            f'sleep.interval.end_time >= "{since.isoformat()}"'
+            f' AND sleep.interval.end_time < "{until.isoformat()}"'
+        ),
+        "pageSize": 1,
+    }
+
 
 # Deterministic probe/report order.
 _GOOGLE_CAPABILITY_ORDER: tuple[str, ...] = ("calendar", "gmail", "drive", "health")
@@ -3486,10 +3511,15 @@ async def _verify_google_capabilities(
 
     async def _probe_one(capability: str) -> _CapabilityProbe:
         url = _GOOGLE_CAPABILITY_ENDPOINTS[capability]
+        params = _google_capability_probe_params(capability)
         started_at = time.monotonic()
         try:
             async with httpx.AsyncClient(timeout=_VERIFY_TIMEOUT_S) as client:
-                resp = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
+                resp = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params=params,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "_verify_google_capabilities: network error probing capability=%s: %s",

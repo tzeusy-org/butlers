@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -53,6 +54,56 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_ACCOUNTS = 10
 _GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
+
+# ---------------------------------------------------------------------------
+# Google Health scope families
+# ---------------------------------------------------------------------------
+#
+# The codebase requests the three ``.readonly`` googlehealth scope URLs, but
+# Google's token/callback responses may report the broader non-``.readonly``
+# variant instead when the account already holds it (a broader grant subsumes
+# the readonly one). Any code answering "does this account have Google Health
+# access?" must therefore match by FAMILY, not by exact URL — exact matching
+# reads a fully-granted account as unscoped (observed live: an account with
+# ``googlehealth.sleep`` was treated as having no health access at all).
+
+GOOGLE_HEALTH_SCOPE_PREFIX = "https://www.googleapis.com/auth/googlehealth."
+
+GOOGLE_HEALTH_SCOPE_FAMILIES: frozenset[str] = frozenset(
+    {
+        "sleep",
+        "activity_and_fitness",
+        "health_metrics_and_measurements",
+    }
+)
+
+
+def google_health_scope_family(scope: str) -> str | None:
+    """Return the Google Health family for a ``googlehealth.*`` scope URL, else None.
+
+    Accepts both the canonical ``.readonly`` URL and the broader non-readonly
+    variant of each family.
+    """
+    if not scope.startswith(GOOGLE_HEALTH_SCOPE_PREFIX):
+        return None
+    family = scope.removeprefix(GOOGLE_HEALTH_SCOPE_PREFIX).removesuffix(".readonly")
+    return family if family in GOOGLE_HEALTH_SCOPE_FAMILIES else None
+
+
+def granted_health_scope_families(scopes: Iterable[str] | None) -> frozenset[str]:
+    """Return the set of Google Health families covered by *scopes*."""
+    if not scopes:
+        return frozenset()
+    return frozenset(
+        family
+        for family in (google_health_scope_family(scope) for scope in scopes)
+        if family is not None
+    )
+
+
+def has_all_health_scope_families(scopes: Iterable[str] | None) -> bool:
+    """True when *scopes* covers every Google Health family (readonly or broader)."""
+    return granted_health_scope_families(scopes) >= GOOGLE_HEALTH_SCOPE_FAMILIES
 
 
 def _max_accounts() -> int:
@@ -562,38 +613,23 @@ class HealthScopedAccount:
 
 async def list_health_scoped_accounts(
     pool: asyncpg.Pool,
-    health_scopes: frozenset[str] | None = None,
 ) -> list[HealthScopedAccount]:
-    """Return every active Google account whose granted scopes are a superset of the
-    three ``googlehealth.*`` scope URLs.
+    """Return every active Google account whose granted scopes cover all three
+    Google Health scope families (readonly or broader variant).
 
-    Rows with ``status != 'active'`` or missing any required scope are excluded.
+    Rows with ``status != 'active'`` or missing any required family are excluded.
     The result is ordered by ``connected_at ASC`` for determinism.
 
     Parameters
     ----------
     pool:
         asyncpg pool connected to the shared database.
-    health_scopes:
-        The set of required scope URLs.  Defaults to the three canonical
-        Google Health RESTRICTED scopes.  Injected by tests to avoid importing
-        ``GOOGLE_HEALTH_SCOPES`` from the connector module.
 
     Returns
     -------
     list[HealthScopedAccount]
         One entry per qualifying account.  Empty when no accounts qualify.
     """
-    if health_scopes is None:
-        # Import lazily to avoid circular imports — the connector module imports
-        # from this registry, and this function is the only place the registry
-        # needs connector-owned constants.
-        from butlers.connectors.google_health import GOOGLE_HEALTH_SCOPES  # noqa: PLC0415
-
-        health_scopes = GOOGLE_HEALTH_SCOPES
-
-    required = health_scopes
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -617,8 +653,7 @@ async def list_health_scoped_accounts(
 
     results: list[HealthScopedAccount] = []
     for row in rows:
-        granted = frozenset(row["granted_scopes"] or [])
-        if not required.issubset(granted):
+        if not has_all_health_scope_families(row["granted_scopes"]):
             continue
         email = row["email"]
         if not email:
@@ -645,11 +680,17 @@ async def disconnect_account(
 
     Full disconnect flow:
     1. Fetch the refresh token from entity_info.
-    2. Attempt token revocation with Google (failures are non-blocking).
-    3. Delete the entity_info row for the refresh token.
-    4. Update google_accounts.status to 'revoked' (or hard-delete the row).
-    5. If the disconnected account was primary and other accounts exist,
+    2. Delete the entity_info row for the refresh token.
+    3. Update google_accounts.status to 'revoked' and clear is_primary
+       (or hard-delete the row).
+    4. If the disconnected account was primary and other accounts exist,
        auto-promote the oldest remaining active account.
+    5. Attempt token revocation with Google (failures are non-blocking).
+
+    Google-side revocation deliberately happens AFTER the local transaction
+    commits: revoking first and then failing the local cleanup would leave a
+    dead token that the rest of the system still believes is live (observed
+    live when the auto-promote step raised and rolled everything back).
 
     Parameters
     ----------
@@ -686,15 +727,6 @@ async def disconnect_account(
         # Fetch refresh token before deleting.
         refresh_token = await _get_refresh_token(conn, entity_id)
 
-    # Revoke token with Google (outside DB transaction — non-blocking).
-    # Failures (network error, already revoked) are caught and logged; they
-    # must not block local cleanup.
-    if refresh_token:
-        try:
-            await _revoke_token_with_google(refresh_token)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Token revocation call failed (non-blocking): %s", exc)
-
     async with pool.acquire() as conn:
         async with conn.transaction():
             if hard_delete:
@@ -706,6 +738,9 @@ async def disconnect_account(
                 logger.info("Google account hard-deleted: id=%s", account_id)
             else:
                 # Soft disconnect: delete entity_info token, mark status revoked.
+                # Clearing is_primary in the same statement keeps the
+                # ix_google_accounts_primary_singleton partial unique index
+                # satisfied when the auto-promote below elects a new primary.
                 await conn.execute(
                     """
                     DELETE FROM public.entity_info
@@ -714,7 +749,11 @@ async def disconnect_account(
                     entity_id,
                 )
                 await conn.execute(
-                    "UPDATE public.google_accounts SET status = 'revoked' WHERE id = $1",
+                    """
+                    UPDATE public.google_accounts
+                    SET status = 'revoked', is_primary = false
+                    WHERE id = $1
+                    """,
                     account_id,
                 )
                 logger.info("Google account disconnected (revoked): id=%s", account_id)
@@ -737,3 +776,11 @@ async def disconnect_account(
                     logger.info(
                         "No remaining active Google accounts to auto-promote after disconnect."
                     )
+
+    # Revoke token with Google only after local cleanup committed — non-blocking.
+    # Failures (network error, already revoked) are caught and logged.
+    if refresh_token:
+        try:
+            await _revoke_token_with_google(refresh_token)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Token revocation call failed (non-blocking): %s", exc)
