@@ -11,6 +11,7 @@ import CalendarWorkspacePage from "@/pages/CalendarWorkspacePage";
 import {
   useCalendarMeetingPrep,
   useCalendarWorkspace,
+  useCalendarWorkspaceEntry,
   useCalendarWorkspaceMeta,
   useFindCalendarWorkspaceTime,
   useMutateCalendarWorkspaceButlerEvent,
@@ -421,6 +422,22 @@ function setUserMutationState(state?: Partial<UseUserMutationResult>) {
   } as unknown as UseUserMutationResult);
 }
 
+type UseEntryDetailResult = ReturnType<typeof useCalendarWorkspaceEntry>;
+
+// Default: no fresh copy yet (data: null) → the panel falls back to the grid row.
+// vi.resetAllMocks() in beforeEach wipes the vi.mock factory default, and the
+// detail panel now always calls this hook, so it must be re-seeded every test.
+function setEntryDetailState(state?: Partial<UseEntryDetailResult>) {
+  vi.mocked(useCalendarWorkspaceEntry).mockReturnValue({
+    isLoading: false,
+    isError: false,
+    error: null,
+    data: null,
+    refetch: vi.fn(),
+    ...state,
+  } as unknown as UseEntryDetailResult);
+}
+
 type UsePrimaryMutationResult = ReturnType<typeof useSetPrimaryCalendar>;
 
 function setPrimaryCalendarState(state?: Partial<UsePrimaryMutationResult>) {
@@ -652,6 +669,7 @@ describe("CalendarWorkspacePage", () => {
     setSyncState();
     setUserMutationState();
     setPrimaryCalendarState();
+    setEntryDetailState();
     previewMutate.mockReset();
     setRecurrencePreviewState();
     vi.stubGlobal(
@@ -1106,6 +1124,106 @@ describe("CalendarWorkspacePage", () => {
         onError: expect.any(Function),
       }),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Detail panel fetches the fresh server copy of the selected entry
+  // (bu-rgq00): grid row shown immediately, upgraded in place on success,
+  // graceful fallback (grid row + degraded note) on error.
+  // -------------------------------------------------------------------------
+
+  async function openDetailPanel() {
+    const detailButton = findButton("Detail");
+    expect(detailButton).toBeDefined();
+    await act(async () => {
+      detailButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+  }
+
+  it("fetches the selected entry's fresh copy via useCalendarWorkspaceEntry keyed on its id (bu-rgq00)", async () => {
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+    await openDetailPanel();
+
+    // The panel dispatches the single-entry read keyed on the selected id.
+    const calls = vi.mocked(useCalendarWorkspaceEntry).mock.calls;
+    expect(calls.some((c) => c[0] === "entry-1")).toBe(true);
+  });
+
+  it("upgrades the panel in place when the fresh server copy lands (bu-rgq00)", async () => {
+    // Fresh copy differs from the grid row: renamed title + provenance the grid
+    // window did not carry. Both must flow through the same rendering path.
+    setEntryDetailState({
+      data: {
+        data: {
+          entry_id: "entry-1",
+          event_id: "evt-entry-1",
+          view: "user",
+          source_type: "provider_event",
+          source_key: "google:primary",
+          title: "Renamed on server",
+          start_at: "2026-03-01T09:00:00Z",
+          end_at: "2026-03-01T09:30:00Z",
+          timezone: "UTC",
+          all_day: false,
+          calendar_id: "primary",
+          provider_event_id: "evt-1",
+          butler_name: "general",
+          schedule_id: null,
+          reminder_id: null,
+          rrule: null,
+          cron: null,
+          until_at: null,
+          status: "active",
+          sync_state: "fresh",
+          editable: true,
+          source_butler: "finance",
+          metadata: { description: "Daily planning", location: "Desk" },
+        },
+        meta: {},
+      },
+    } as unknown as Partial<UseEntryDetailResult>);
+
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+    await openDetailPanel();
+
+    const panel = container.querySelector('[data-testid="entry-detail-panel"]');
+    const titleInput = panel?.querySelector(
+      '[data-testid="detail-title-input"]',
+    ) as HTMLInputElement;
+    // Editable draft reflects the fresh server title, not the grid-row title.
+    expect(titleInput.value).toBe("Renamed on server");
+    // Provenance only present on the fresh copy — proves it rendered, not the grid row.
+    expect(
+      panel?.querySelector('[data-testid="detail-source-butler"]')?.textContent,
+    ).toContain("finance");
+    // No degraded note on the success path.
+    expect(
+      panel?.querySelector('[data-testid="detail-degraded-note"]'),
+    ).toBeNull();
+  });
+
+  it("falls back to the grid row + a non-blocking degraded note when the fresh fetch errors (bu-rgq00)", async () => {
+    setEntryDetailState({
+      isError: true,
+      error: new Error("entry read failed"),
+      data: undefined,
+    });
+
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+    await openDetailPanel();
+
+    const panel = container.querySelector('[data-testid="entry-detail-panel"]');
+    expect(panel).not.toBeNull();
+    // Grid-row data still rendered — never a blank panel.
+    const titleInput = panel?.querySelector(
+      '[data-testid="detail-title-input"]',
+    ) as HTMLInputElement;
+    expect(titleInput.value).toBe("Morning planning");
+    // Degraded note surfaced (non-blocking).
+    expect(
+      panel?.querySelector('[data-testid="detail-degraded-note"]'),
+    ).not.toBeNull();
   });
 
   it("deletes user event through workspace mutation endpoint", async () => {

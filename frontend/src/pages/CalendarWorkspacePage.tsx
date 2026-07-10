@@ -54,6 +54,7 @@ import {
   usePatchCalendarDedupRules,
   useSetCalendarKeepSeparate,
   useCalendarWorkspaceAudit,
+  useCalendarWorkspaceEntry,
   useCalendarWorkspaceMeta,
   useCalendarWorkspaceSearch,
   useFindCalendarWorkspaceTime,
@@ -1581,7 +1582,7 @@ interface CalendarEntryDetailPanelProps {
 }
 
 function CalendarEntryDetailPanel({
-  entry,
+  entry: gridEntry,
   onClose,
   onDelete,
   onRecurringEdit,
@@ -1589,14 +1590,27 @@ function CalendarEntryDetailPanel({
   butlerMutation,
   timezone,
 }: CalendarEntryDetailPanelProps) {
+  // Fetch the fresh server copy of the selected entry (bu-rgq00). The grid row is
+  // already loaded and shown immediately; when the single-entry read lands we
+  // upgrade to it in place (provenance / sync_state / freshness that the grid
+  // window may not reflect). On error we keep the grid row + a non-blocking
+  // degraded note — never a blank panel. Everything below reads `entry`, so the
+  // whole render (including save-on-blur baselines) flows through this one line.
+  const detailQuery = useCalendarWorkspaceEntry(gridEntry.entry_id, {
+    timezone,
+  });
+  const entry = detailQuery.data?.data ?? gridEntry;
+  const detailFetchFailed = detailQuery.isError;
+
   const isUserEvent = entry.source_type === "provider_event";
   const isButlerEvent =
     entry.source_type === "scheduled_task" ||
     entry.source_type === "butler_reminder";
   const isPending = userMutation.isPending || butlerMutation.isPending;
 
-  // Inline editable fields — initialized from entry, updated on server response
-  // Inline-editable drafts — state is reset on mount (key={entry.entry_id} at call site)
+  // Inline editable fields — seeded from the grid row on mount (state is reset on
+  // mount via key={entry.entry_id} at the call site), then upgraded in place when
+  // the fresh server copy lands (see the effect below).
   const [titleDraft, setTitleDraft] = useState(entry.title);
   const [descriptionDraft, setDescriptionDraft] = useState(
     typeof entry.metadata?.description === "string"
@@ -1611,6 +1625,49 @@ function CalendarEntryDetailPanel({
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
     "idle",
   );
+
+  // Upgrade the editable drafts in place when the fresh server copy arrives,
+  // but only for fields the user has not touched (draft still equals the last
+  // value we seeded). This preserves in-flight edits while letting a fresher
+  // server title/description/location flow through the same inputs.
+  const lastSeededRef = useRef({
+    title: gridEntry.title,
+    description:
+      typeof gridEntry.metadata?.description === "string"
+        ? gridEntry.metadata.description
+        : "",
+    location:
+      typeof gridEntry.metadata?.location === "string"
+        ? gridEntry.metadata.location
+        : "",
+  });
+  const freshEntry = detailQuery.data?.data;
+  useEffect(() => {
+    if (!freshEntry) return;
+    const freshTitle = freshEntry.title;
+    const freshDescription =
+      typeof freshEntry.metadata?.description === "string"
+        ? freshEntry.metadata.description
+        : "";
+    const freshLocation =
+      typeof freshEntry.metadata?.location === "string"
+        ? freshEntry.metadata.location
+        : "";
+    setTitleDraft((d) =>
+      d === lastSeededRef.current.title ? freshTitle : d,
+    );
+    setDescriptionDraft((d) =>
+      d === lastSeededRef.current.description ? freshDescription : d,
+    );
+    setLocationDraft((d) =>
+      d === lastSeededRef.current.location ? freshLocation : d,
+    );
+    lastSeededRef.current = {
+      title: freshTitle,
+      description: freshDescription,
+      location: freshLocation,
+    };
+  }, [freshEntry]);
 
   function fireUserUpdate(patch: Record<string, unknown>, label: string) {
     const { butlerName, calendarId } = resolveOwnerFromEntry(entry);
@@ -1796,6 +1853,18 @@ function CalendarEntryDetailPanel({
           ✕
         </button>
       </div>
+
+      {/* Fresh-copy fetch failed — keep the grid-row data (already rendered
+          below) and surface a non-blocking degraded note (bu-rgq00). */}
+      {detailFetchFailed ? (
+        <div data-testid="detail-degraded-note">
+          <SourceDegradedNote
+            label="Live entry detail"
+            detail="showing cached row"
+            onRetry={() => detailQuery.refetch()}
+          />
+        </div>
+      ) : null}
 
       {/* Title */}
       <div className="flex flex-col gap-1">
