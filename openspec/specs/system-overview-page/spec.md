@@ -3,9 +3,9 @@
 ## Purpose
 
 The System Overview page (`/system`) is the dashboard surface where the owner sees their
-instance as infrastructure they own. It surfaces five ownership-fact domains: software
-version and uptime, database state, backup state, data egress catalog, and per-butler
-heartbeats. This page exists because the doctrine in
+instance as infrastructure they own. It surfaces six ownership-fact domains: software
+version and uptime, deployment provenance, database state, backup state, data egress
+catalog, and per-butler heartbeats. This page exists because the doctrine in
 `about/heart-and-soul/vision.md` Non-Negotiable Rule 1 is not visible anywhere else in the
 dashboard: "You own the instance, the data, the credentials, and the agents."
 
@@ -59,6 +59,79 @@ process started.
   variable or a hardcoded literal in the router
 - **AND** if the version cannot be resolved, the field returns `"unknown"` rather than
   raising a 500
+
+### Requirement: Deployment Ledger Facts
+
+The `/api/system/deployments` endpoint SHALL return the current (most recent) deployment
+and a short recent history, drawn from `public.deployments` (bu-9r3hd.2, epic bu-9r3hd
+"Deploy spine"). This is the ledger the owner reads to answer "what code is actually
+running, and did it survive the last deploy" -- merged-but-undeployed drift is
+otherwise invisible (bd bu-zhfd0: seven merged migrations sat dark in prod with no
+record of when, or whether, any deploy actually took effect).
+
+#### Scenario: Deployments endpoint returns current and recent history
+
+- **WHEN** `GET /api/system/deployments` is called
+- **THEN** the response body contains:
+  - `current: DeploymentRecord | null` -- the most recent deployment row, or `null` if
+    the ledger is empty (e.g. a fresh instance that has not yet completed a boot)
+  - `recent: DeploymentRecord[]` -- up to 10 most recent deployment rows, newest first
+    (including `current`)
+- **AND** each `DeploymentRecord` contains:
+  - `id: string` -- the ledger row's UUID
+  - `git_sha: string` -- the git commit the running image was built from, or
+    `"unknown"` if the image was built without the `GIT_SHA` build arg
+  - `migration_head: string | null` -- a representative Alembic revision id read from
+    one schema's `alembic_version` table at boot time (see below); `null` if it could
+    not be read
+  - `started_at: string` -- ISO 8601 UTC timestamp
+  - `finished_at: string | null` -- ISO 8601 UTC timestamp; in v1 this always equals
+    `started_at` (see below)
+  - `result: "success" | "failed"`
+- **AND** the response wraps in the standard `ApiResponse<DeploymentFacts>` envelope
+
+#### Scenario: One ledger row per process boot, not per butler
+
+- **WHEN** `butlers up` starts all configured butler daemons in one process
+- **THEN** exactly one row is inserted into `public.deployments` for that boot -- not
+  one per butler daemon -- because every butler shares one process/container in this
+  deploy topology
+- **AND** `result` is `"success"` when every configured butler daemon started
+  successfully, `"failed"` otherwise
+- **AND** the write is best-effort: a ledger-write failure is logged and does not
+  block or fail startup (mirrors the `_ensure_owner_entity` bootstrap convention)
+
+#### Scenario: git_sha is threaded from the Docker build
+
+- **WHEN** the `butlers-app` image is built (`scripts/compose.sh` or a manual
+  `docker build`)
+- **THEN** the build accepts a `GIT_SHA` build arg (default `"unknown"`), which the
+  Dockerfile bakes into the image as an environment variable
+- **AND** `scripts/compose.sh` passes `--build-arg GIT_SHA=$(git rev-parse HEAD)`
+  automatically -- the operator does not need to set it by hand for the normal
+  `./scripts/compose.sh` / `./scripts/compose.sh --prod` flows
+
+#### Scenario: migration_head is a representative snapshot, not a cross-schema drift proof
+
+- **WHEN** `migration_head` is recorded at boot time
+- **THEN** it is read from a single representative schema's `alembic_version` table
+  (the first-started butler daemon, conventionally `switchboard` per the existing
+  `_PRIORITY_BUTLERS` start-order convention) rather than reconciling every butler
+  schema's head
+- **AND** this endpoint does NOT itself detect drift between schemas or between the
+  recorded head and the live database state -- the hourly alembic-head vs per-schema
+  DB-revision vs deployed-SHA comparison surfaced as a red `/system` clause is a
+  separate capability (bu-9r3hd.1); this ledger is what that sentinel (and this
+  endpoint) reads to answer "what was last recorded as deployed"
+
+#### Scenario: Deployments endpoint degrades gracefully
+
+- **WHEN** the ledger table exists but has no rows yet (fresh instance, or a build
+  that never ran through `butlers up`)
+- **THEN** the response is HTTP 200 with `current: null` and `recent: []` -- not an
+  error
+- **AND** HTTP 503 is returned only when the underlying query itself fails
+  (permission denied, connection error), matching the `/api/system/database` contract
 
 ### Requirement: Database State Facts
 
@@ -281,7 +354,7 @@ MUST be denied in v1.
 #### Scenario: All other system endpoints are not additionally gated in v1
 
 - **WHEN** `GET /api/system/instance`, `/api/system/database`, `/api/system/backups`,
-  or `/api/system/butlers/heartbeat` is called
+  `/api/system/butlers/heartbeat`, or `/api/system/deployments` is called
 - **THEN** no owner-contact assertion beyond the dashboard session boundary is required
   in v1
 - **AND** this contract is explicitly noted as a v1 simplification; if the dashboard

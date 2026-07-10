@@ -533,6 +533,38 @@ def _ordered_configs(configs: dict[str, Path]) -> list[tuple[str, Path]]:
     return priority + rest
 
 
+async def _record_deployment_boot(daemons: list, *, configured_count: int) -> None:
+    """Record this process boot in ``public.deployments`` (best-effort).
+
+    Called once per ``butlers up`` invocation — not once per butler daemon —
+    since every butler shares one process/container here (see
+    ``core_163_deployments_ledger.py``). Uses the first successfully started
+    daemon's pool to write (``_PRIORITY_BUTLERS`` puts switchboard first when
+    present) and to read a representative migration head. Never blocks or
+    fails startup: a ledger-write failure is logged and swallowed, matching
+    the ``_ensure_owner_entity`` bootstrap convention.
+    """
+    from butlers.core.deployments import read_migration_head, record_deployment, resolve_git_sha
+
+    primary = daemons[0]
+    if primary.db is None or primary.db.pool is None:
+        logger.warning("deployments: no DB pool available on primary daemon; skipping record")
+        return
+
+    schema = primary.config.db_schema or primary.config.name
+    try:
+        migration_head = await read_migration_head(primary.db.pool, schema)
+        result = "success" if len(daemons) == configured_count else "failed"
+        await record_deployment(
+            primary.db.pool,
+            git_sha=resolve_git_sha(),
+            migration_head=migration_head,
+            result=result,
+        )
+    except Exception:
+        logger.warning("Failed to record deployment ledger row (best-effort)", exc_info=True)
+
+
 async def _start_all(configs: dict[str, Path]) -> None:
     """Start all butler daemons in a single event loop."""
     from butlers.daemon import ButlerDaemon
@@ -618,6 +650,8 @@ async def _start_all(configs: dict[str, Path]) -> None:
     if not daemons:
         click.echo("No butlers started successfully")
         return
+
+    await _record_deployment_boot(daemons, configured_count=len(configs))
 
     # Wait for shutdown signal
     await shutdown_event.wait()

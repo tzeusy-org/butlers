@@ -366,8 +366,17 @@ docker builder prune --keep-storage=20g -f 2>/dev/null || true
 # See docs/operations/image-bump-procedure.md for the full bump process.
 BUTLERS_APP_TAG="${BUTLERS_APP_TAG:-latest}"
 export BUTLERS_APP_TAG
-echo "Building butlers-app image (tag: ${BUTLERS_APP_TAG})..."
-DOCKER_BUILDKIT=1 docker build -t "butlers-app:${BUTLERS_APP_TAG}" . || {
+
+# GIT_SHA: baked into the image (Dockerfile ARG/ENV) so the running process
+# can record its own provenance in public.deployments (bu-9r3hd.2 deployments
+# ledger; see src/butlers/core/deployments.py). Falls back to "unknown" when
+# not run from a git checkout.
+GIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+export GIT_SHA
+
+echo "Building butlers-app image (tag: ${BUTLERS_APP_TAG}, sha: ${GIT_SHA})..."
+DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
+  -t "butlers-app:${BUTLERS_APP_TAG}" . || {
   echo "ERROR: Failed to build butlers-app image" >&2
   exit 1
 }
@@ -375,7 +384,7 @@ DOCKER_BUILDKIT=1 docker build -t "butlers-app:${BUTLERS_APP_TAG}" . || {
 # Build profile-specific images (live-listener if audio profile active)
 if [[ " ${PROFILES[*]} " == *" audio "* ]]; then
   echo "Building butlers-app-audio image (tag: ${BUTLERS_APP_TAG})..."
-  DOCKER_BUILDKIT=1 docker build --build-arg EXTRAS=live-listener \
+  DOCKER_BUILDKIT=1 docker build --build-arg EXTRAS=live-listener --build-arg GIT_SHA="${GIT_SHA}" \
     -t "butlers-app-audio:${BUTLERS_APP_TAG}" . || {
     echo "ERROR: Failed to build butlers-app-audio image" >&2
     exit 1

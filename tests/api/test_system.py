@@ -133,6 +133,99 @@ async def test_database_503_on_query_failure():
 
 
 # ---------------------------------------------------------------------------
+# GET /api/system/deployments
+# ---------------------------------------------------------------------------
+
+
+def _make_deployments_mock(*, current_row=None, recent_rows=None, raise_on="none"):
+    # Note: plain dicts, not the `_make_record` MagicMock helper -- the
+    # deployments accessor (butlers.core.deployments) does `dict(row)` on
+    # whatever pool.fetchrow/fetch return, and dict() over a plain dict is a
+    # trivial no-op copy while dict() over a __getitem__-only MagicMock (as
+    # `_make_record` builds) has no `.keys()` to iterate and raises.
+    pool = AsyncMock()
+
+    async def _fetchrow(sql, *args):
+        if raise_on == "current":
+            raise RuntimeError("permission denied")
+        return current_row
+
+    async def _fetch(sql, *args):
+        if raise_on == "recent":
+            raise RuntimeError("permission denied")
+        return recent_rows or []
+
+    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    pool.fetch = AsyncMock(side_effect=_fetch)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    return mock_db
+
+
+async def test_deployments_happy_path():
+    row = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "git_sha": "abc1234",
+        "migration_head": "core_163",
+        "started_at": _NOW,
+        "finished_at": _NOW,
+        "result": "success",
+    }
+    mock_db = _make_deployments_mock(current_row=row, recent_rows=[row])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/deployments")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["current"]["git_sha"] == "abc1234"
+    assert data["current"]["migration_head"] == "core_163"
+    assert data["current"]["result"] == "success"
+    assert len(data["recent"]) == 1
+
+
+async def test_deployments_empty_ledger_returns_null_current():
+    mock_db = _make_deployments_mock(current_row=None, recent_rows=[])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/deployments")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["current"] is None
+    assert data["recent"] == []
+
+
+async def test_deployments_503_on_query_failure():
+    mock_db = _make_deployments_mock(raise_on="current")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/deployments")
+    assert resp.status_code == 503
+
+
+async def test_deployments_allows_null_migration_head():
+    row = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "git_sha": "unknown",
+        "migration_head": None,
+        "started_at": _NOW,
+        "finished_at": _NOW,
+        "result": "failed",
+    }
+    mock_db = _make_deployments_mock(current_row=row, recent_rows=[row])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/deployments")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["current"]["migration_head"] is None
+    assert data["current"]["result"] == "failed"
+
+
+# ---------------------------------------------------------------------------
 # GET /api/system/backups
 # ---------------------------------------------------------------------------
 

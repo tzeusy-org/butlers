@@ -1,19 +1,23 @@
 """System overview endpoints for the dashboard's /system page.
 
-Surfaces five ownership-fact domains:
+Surfaces six ownership-fact domains:
 
     GET /api/system/instance       -- software version and process uptime
     GET /api/system/database       -- PostgreSQL catalog size breakdown
     GET /api/system/backups        -- backup recency and source reachability
     GET /api/system/egress         -- external-actor egress catalog (owner-only)
     GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
+    GET /api/system/deployments    -- current + recent deployment ledger entries
 
 Privacy contract: /api/system/egress is owner-only. The owner is identified
 by asserting 'owner' = ANY(roles) on public.entities. Non-owner callers
 receive HTTP 403. All other endpoints
 are gated only by the standard dashboard session boundary (v1 simplification).
 
-All endpoints are read-only. No writes, no new tables.
+All endpoints are read-only against existing tables, except /api/system/deployments,
+which reads public.deployments (core_163) -- the one new table this module
+introduces. It is written elsewhere (butlers.cli._start_all records one row per
+process boot; see src/butlers/core/deployments.py), never by this router.
 
 Operation names assumed in the actor registry for /api/system/egress
 (documented here for the bu-n28xh audit):
@@ -87,6 +91,11 @@ system_insight_delivery_reads_total = Counter(
     "Number of GET /api/system/insights/delivery-state requests.",
 )
 
+system_deployments_reads_total = Counter(
+    "system_deployments_reads_total",
+    "Number of GET /api/system/deployments requests.",
+)
+
 
 # Module-level start time recorded when this module is first imported.
 # The lifespan startup imports all routers, so this approximates the
@@ -110,6 +119,24 @@ class InstanceFacts(BaseModel):
     version: str
     uptime_seconds: float
     started_at: str
+
+
+class DeploymentRecord(BaseModel):
+    """Single row from public.deployments (one per `butlers up` process boot)."""
+
+    id: str
+    git_sha: str
+    migration_head: str | None
+    started_at: str
+    finished_at: str | None
+    result: str  # "success" or "failed"
+
+
+class DeploymentFacts(BaseModel):
+    """Current (most recent) deployment plus recent deployment history."""
+
+    current: DeploymentRecord | None
+    recent: list[DeploymentRecord]
 
 
 class SchemaSize(BaseModel):
@@ -281,6 +308,58 @@ async def get_instance_facts() -> ApiResponse[InstanceFacts]:
             version=version,
             uptime_seconds=uptime,
             started_at=_PROCESS_START.isoformat(),
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/deployments
+# ---------------------------------------------------------------------------
+
+
+def _deployment_row_to_record(row: dict) -> DeploymentRecord:
+    return DeploymentRecord(
+        id=str(row["id"]),
+        git_sha=row["git_sha"],
+        migration_head=row["migration_head"],
+        started_at=row["started_at"].isoformat(),
+        finished_at=row["finished_at"].isoformat() if row["finished_at"] else None,
+        result=row["result"],
+    )
+
+
+@router.get("/deployments", response_model=ApiResponse[DeploymentFacts])
+async def get_deployment_facts(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[DeploymentFacts]:
+    """Return the current (most recent) deployment plus recent history.
+
+    Reads public.deployments (core_163) via the switchboard pool -- the same
+    shared-public-schema-read convention /api/system/database and
+    /api/system/egress already use. An empty ledger (no boot recorded yet,
+    e.g. a fresh instance) is a legitimate v1 state: returns HTTP 200 with
+    `current: null` / `recent: []`, not an error. HTTP 503 is reserved for an
+    actual query failure (permission denied, connection error).
+    """
+    system_deployments_reads_total.inc()
+    try:
+        pool = db.pool("switchboard")
+    except KeyError:
+        raise HTTPException(status_code=503, detail="Switchboard database is not available")
+
+    from butlers.core.deployments import get_current_deployment, list_recent_deployments
+
+    try:
+        current_row = await get_current_deployment(pool)
+        recent_rows = await list_recent_deployments(pool)
+    except Exception as exc:
+        logger.warning("Failed to query deployments ledger: %s", exc)
+        raise HTTPException(status_code=503, detail="Deployments ledger query failed")
+
+    return ApiResponse(
+        data=DeploymentFacts(
+            current=_deployment_row_to_record(current_row) if current_row else None,
+            recent=[_deployment_row_to_record(r) for r in recent_rows],
         )
     )
 

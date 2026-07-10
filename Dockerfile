@@ -40,6 +40,14 @@ COPY --from=go-builder /out/whatsapp-bridge /usr/local/bin/whatsapp-bridge
 # Optional: extra dependency groups (e.g. "live-listener")
 ARG EXTRAS=""
 
+# Git commit SHA this image was built from (bu-9r3hd.2 deployments ledger).
+# Baked into the image as an env var so the running process can record its
+# own provenance in public.deployments (see src/butlers/core/deployments.py).
+# Passed via --build-arg GIT_SHA=$(git rev-parse HEAD) in scripts/compose.sh;
+# defaults to "unknown" for builds that don't set it (e.g. plain `docker build .`).
+ARG GIT_SHA="unknown"
+ENV GIT_SHA=${GIT_SHA}
+
 # Extra system deps for optional features
 RUN if echo "$EXTRAS" | grep -q "live-listener"; then \
       apt-get update && apt-get install -y --no-install-recommends libportaudio2 \

@@ -407,6 +407,7 @@ services:
       dockerfile: Dockerfile
       args:
         EXTRAS: live-listener
+        GIT_SHA: ${GIT_SHA:-unknown}
     image: butlers-app-audio:${BUTLERS_APP_TAG:-latest}
     profiles: [audio]
     entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.live_listener"]
