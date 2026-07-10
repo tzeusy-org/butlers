@@ -8,7 +8,9 @@ mocked-pool unit tests in ``roster/switchboard/tests/test_routing_verdict_log.py
 - ``routing_verdict_log`` exists with the expected columns and indexes.
 - The ``verdict_source`` / ``verdict_action`` CHECK constraints match the
   spec's fixed vocabularies.
-- The ``ingestion_event_id`` FK to ``public.ingestion_events`` is enforced.
+- The ``ingestion_event_id`` FK to ``public.ingestion_events`` is enforced and
+  cascades on delete (``sw_023``, bu-w4m9q) so scheduled retention purges of
+  ``public.ingestion_events`` cannot FK-halt.
 - ``record_routing_verdict`` (the actual production writer) round-trips
   through the real table, including the ``matched_rule_id`` /
   ``session_id`` FKs to this schema's own ``ingestion_rules`` / ``sessions``
@@ -194,6 +196,51 @@ async def test_matched_rule_id_fk_is_enforced(pool: asyncpg.Pool) -> None:
             event_id,
             uuid.uuid4(),
         )
+
+
+# ---------------------------------------------------------------------------
+# ON DELETE CASCADE (sw_023, bu-w4m9q): purging an ingestion_event must cascade
+# the attached verdict rows away rather than FK-halting the retention purge.
+# ---------------------------------------------------------------------------
+
+
+def test_ingestion_event_fk_has_on_delete_cascade(migrated_db_url: str) -> None:
+    """pg_constraint.confdeltype == 'c' (CASCADE) for the event FK, not the
+    default 'a' (NO ACTION / RESTRICT) it shipped with in sw_019."""
+    engine = create_engine(migrated_db_url)
+    with engine.connect() as conn:
+        confdeltype = conn.execute(
+            text(
+                "SELECT confdeltype FROM pg_constraint "
+                "WHERE conname = 'routing_verdict_log_ingestion_event_id_fkey'"
+            )
+        ).scalar()
+    engine.dispose()
+    assert confdeltype == "c"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_deleting_ingestion_event_cascades_to_verdict_log(pool: asyncpg.Pool) -> None:
+    """Deleting a ``public.ingestion_events`` row with an attached verdict row
+    succeeds and cascades the verdict row away — the exact shape of an
+    ``OwnTracksRetention`` purge cycle hitting a routed (full-tier) event."""
+    event_id = await _insert_ingestion_event(pool, dedupe_key="cascade-delete")
+    row_id = await record_routing_verdict(
+        pool,
+        ingestion_event_id=event_id,
+        sender_identity="alerts@chase.com",
+        source_channel="email",
+        verdict_source="llm",
+        verdict_action="route_to",
+        verdict_target="finance",
+    )
+    assert row_id is not None
+
+    # The purge DELETE must NOT raise a ForeignKeyViolationError.
+    await pool.execute("DELETE FROM public.ingestion_events WHERE id = $1", event_id)
+
+    orphan = await pool.fetchrow("SELECT 1 FROM routing_verdict_log WHERE id = $1::uuid", row_id)
+    assert orphan is None
 
 
 # ---------------------------------------------------------------------------
