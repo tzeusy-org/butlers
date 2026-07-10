@@ -464,6 +464,14 @@ class RollupFlagRow(BaseModel):
     severity: str
     """One of ``info``, ``warning``."""
     detail: dict[str, Any] = Field(default_factory=dict)
+    narrative: str | None = None
+    """Optional one-line natural-language label for this flag, written by the
+    bounded once-daily LLM labeling pass (``chronicler_narrate_daily``,
+    migration chronicler_020). ``None`` is normal and NOT an error: the pass is
+    optional/disable-able, has not run for this day yet, or produced no label —
+    a client MUST render its absence as "no label", never as a degraded state
+    (the deterministic ``flag_type``/``severity``/``detail`` are always
+    present regardless)."""
 
 
 class RollupDay(BaseModel):
@@ -490,6 +498,17 @@ class RollupDay(BaseModel):
     """Empty when ``status='not_yet_materialized'``; one entry per
     ``aggregations.LANES`` (zero-filled) when ``status='materialized'``."""
     flags: list[RollupFlagRow] = Field(default_factory=list)
+    narrative: str | None = None
+    """Optional one-line prose summary of this local day, written by the bounded
+    once-daily LLM labeling pass (``chronicler_narrate_daily``, migration
+    chronicler_020). The pass writes the same day summary onto every
+    ``daily_rollups`` lane row for the date, so this is read off any of them.
+    ``None`` is normal and NOT an error: the labeling pass is optional/
+    disable-able, has not run for this day yet (e.g. days before the feature),
+    or produced no summary — a client MUST render its absence as nothing/a
+    neutral placeholder, never as a degraded state (``rollups_source_error``
+    stays ``False``). Always ``None`` when ``status != 'materialized'`` (no
+    rows to carry it)."""
 
 
 class RollupsResponse(BaseModel):

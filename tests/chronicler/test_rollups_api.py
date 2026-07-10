@@ -87,7 +87,14 @@ async def _get(app: Any, params: dict[str, Any]) -> httpx.Response:
         return await client.get(_ENDPOINT, params=params)
 
 
-def _rollup(local_date: date, lane: str, seconds: int, episode_count: int = 1) -> DailyRollup:
+def _rollup(
+    local_date: date,
+    lane: str,
+    seconds: int,
+    episode_count: int = 1,
+    *,
+    narrative: str | None = None,
+) -> DailyRollup:
     return DailyRollup(
         local_date=local_date,
         lane=lane,
@@ -95,18 +102,25 @@ def _rollup(local_date: date, lane: str, seconds: int, episode_count: int = 1) -
         episode_count=episode_count,
         timezone="Asia/Singapore",
         distinct_place_count=None,
+        narrative=narrative,
         computed_at=datetime(2026, 7, 6, 0, 5),
     )
 
 
 def _flag(
-    local_date: date, flag_type: str, *, severity: str = "warning", detail: dict | None = None
+    local_date: date,
+    flag_type: str,
+    *,
+    severity: str = "warning",
+    detail: dict | None = None,
+    narrative: str | None = None,
 ) -> DailyRollupFlag:
     return DailyRollupFlag(
         local_date=local_date,
         flag_type=flag_type,
         severity=severity,
         detail=detail or {},
+        narrative=narrative,
         created_at=datetime(2026, 7, 6, 0, 5),
     )
 
@@ -266,6 +280,67 @@ async def test_non_feeder_dark_flags_pass_through():
     # routine_break gates nothing lane-level by itself (only feeder_dark does).
     lanes_by_name = {lane_row["lane"]: lane_row for lane_row in day["lanes"]}
     assert lanes_by_name["work"]["unavailable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Optional narrative (chronicler_020) — surfaced when present, None otherwise,
+# never rendered as an error (bu-4qymf)
+# ---------------------------------------------------------------------------
+
+
+async def test_day_narrative_surfaced_when_present():
+    # The narration job writes the same day summary onto every lane row for the
+    # date; the endpoint reads it off the first rollup row.
+    rollups = [
+        _rollup(_DAY, "work", 3600, narrative="A busy work day with a long focus block."),
+        _rollup(_DAY, "sleep", 25200, narrative="A busy work day with a long focus block."),
+    ]
+    app = _build_app(rollups=rollups, flags=[])
+    resp = await _get(app, {"date": "2026-07-05"})
+    assert resp.status_code == 200
+    day = resp.json()["data"]["days"][0]
+    assert day["narrative"] == "A busy work day with a long focus block."
+
+
+async def test_flag_narrative_surfaced_when_present():
+    rollups = [_rollup(_DAY, "work", 3600)]
+    flags = [
+        _flag(
+            _DAY,
+            "routine_break",
+            severity="info",
+            detail={"routines": [{"label": "gym"}]},
+            narrative="Skipped the usual morning gym session.",
+        )
+    ]
+    app = _build_app(rollups=rollups, flags=flags)
+    resp = await _get(app, {"date": "2026-07-05"})
+    day = resp.json()["data"]["days"][0]
+    assert day["flags"][0]["narrative"] == "Skipped the usual morning gym session."
+
+
+async def test_absent_narrative_is_null_not_error():
+    # Pre-feature / labeling-skipped day: rows exist and are materialized, but no
+    # narration ran. Absent narrative is a legitimate None, never a degraded state.
+    rollups = [_rollup(_DAY, "work", 3600)]
+    flags = [_flag(_DAY, "routine_break", severity="info")]
+    app = _build_app(rollups=rollups, flags=flags)
+    resp = await _get(app, {"date": "2026-07-05"})
+    data = resp.json()["data"]
+    assert data["rollups_source_error"] is False
+    day = data["days"][0]
+    assert day["status"] == "materialized"
+    assert day["narrative"] is None
+    assert day["flags"][0]["narrative"] is None
+
+
+async def test_not_yet_materialized_day_has_null_narrative():
+    # No rows for the day → no lane row to carry a day summary.
+    app = _build_app(rollups=[], flags=[])
+    resp = await _get(app, {"date": "2026-07-05"})
+    day = resp.json()["data"]["days"][0]
+    assert day["status"] == "not_yet_materialized"
+    assert day["narrative"] is None
 
 
 # ---------------------------------------------------------------------------

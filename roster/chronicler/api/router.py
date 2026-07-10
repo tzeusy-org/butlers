@@ -1945,9 +1945,21 @@ async def get_rollups(
                     for lane in sorted(LANES)
                 ]
                 flag_out = [
-                    RollupFlagRow(flag_type=f.flag_type, severity=f.severity, detail=f.detail)
+                    RollupFlagRow(
+                        flag_type=f.flag_type,
+                        severity=f.severity,
+                        detail=f.detail,
+                        narrative=f.narrative,
+                    )
                     for f in day_flags
                 ]
+
+            # Day summary is written identically onto every lane row for the date
+            # by the narration job (migration chronicler_020), so read it off the
+            # first rollup row. None when not materialized (no rows carry it) or
+            # when the labeling pass has not run — a legitimate absence, not an
+            # error, so ``rollups_source_error`` is unaffected.
+            day_narrative = day_rollups[0].narrative if day_rollups else None
 
             days.append(
                 RollupDay(
@@ -1956,6 +1968,7 @@ async def get_rollups(
                     status=status,
                     lanes=lane_rows,
                     flags=flag_out,
+                    narrative=day_narrative,
                 )
             )
             current += timedelta(days=1)

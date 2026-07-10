@@ -35,6 +35,7 @@ import {
   getChroniclerEvidenceChain,
   getChroniclerEvents,
   getChroniclerRoutines,
+  getChroniclerRollups,
   getChroniclerSourceState,
   getChroniclerTrends,
   getChroniclerWhoYouWereWith,
@@ -53,6 +54,7 @@ import type {
   ChroniclerEventsParams,
   ChroniclerUpdateRoutineRequest,
   ChroniclerTrendsParams,
+  ChroniclerRollupsParams,
   ChroniclerWhoYouWereWithParams,
   SubmitCorrectionRequest,
 } from "@/api/types.ts";
@@ -80,6 +82,8 @@ export const chroniclesKeys = {
     [...chroniclesKeys.all, "balance", params] as const,
   trends: (params?: ChroniclerTrendsParams) =>
     [...chroniclesKeys.all, "trends", params] as const,
+  rollups: (params: ChroniclerRollupsParams) =>
+    [...chroniclesKeys.all, "rollups", params] as const,
   whoYouWereWith: (params: ChroniclerWhoYouWereWithParams) =>
     [...chroniclesKeys.all, "who-you-were-with", params] as const,
   evidenceChain: (episodeId: string) =>
@@ -249,6 +253,27 @@ export function useChroniclesTrends(
   return useQuery({
     queryKey: chroniclesKeys.trends(params),
     queryFn: () => getChroniclerTrends(params),
+    refetchInterval: options?.refetchInterval ?? false,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Fetch daily rollups + anomaly flags with their optional once-daily LLM
+ * narrative for one local day or an inclusive range (GET /chronicler/rollups).
+ *
+ * Response carries `rollups_source_error` (degraded envelope). A day's
+ * `narrative` / a flag's `narrative` is `null` when the labeling pass has not
+ * run — a legitimate absence, never an error. Polling off by default — a
+ * settled historical day never changes.
+ */
+export function useChroniclesRollups(
+  params: ChroniclerRollupsParams,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.rollups(params),
+    queryFn: () => getChroniclerRollups(params),
     refetchInterval: options?.refetchInterval ?? false,
     enabled: options?.enabled !== false,
   });

@@ -5867,6 +5867,98 @@ export interface ChroniclerTrendsParams {
   lookback_days?: number;
 }
 
+// ── Daily rollups + flags (bu-333dq bead 5; narrative bu-4qymf/chronicler_020) ──
+
+/** One lane's totals for a single local day, from GET /api/chronicler/rollups. */
+export interface ChroniclerRollupLaneRow {
+  lane: string;
+  seconds: number;
+  episode_count: number;
+  distinct_place_count: number | null;
+  /**
+   * True when a source contributing to this lane is flagged `feeder_dark`
+   * for this day. Render this lane as "data unavailable" — never as a
+   * truthful zero — regardless of what `seconds` says.
+   */
+  unavailable: boolean;
+}
+
+/** One deterministic anomaly-flag row from `chronicler.daily_rollup_flags`. */
+export interface ChroniclerRollupFlagRow {
+  /** One of `feeder_dark`, `sleep_missing`, `routine_break`, `lane_share_outlier`. */
+  flag_type: string;
+  /** One of `info`, `warning`. */
+  severity: string;
+  detail: Record<string, unknown>;
+  /**
+   * Optional one-line natural-language label for this flag, from the bounded
+   * once-daily LLM labeling pass (migration chronicler_020). `null` is normal
+   * and NOT an error — the pass is optional, has not run for this day, or
+   * produced no label. Render its absence as "no label", never as a degraded
+   * state (`flag_type`/`severity`/`detail` are always present).
+   */
+  narrative: string | null;
+}
+
+/** One local calendar day's rollup + flags, from GET /api/chronicler/rollups. */
+export interface ChroniclerRollupDay {
+  /** ISO-8601 date string (YYYY-MM-DD), local to `timezone`. */
+  local_date: string;
+  timezone: string;
+  /**
+   * - `"materialized"` — the daily rollup job has written this day's rows;
+   *   `lanes`/`flags` reflect real data.
+   * - `"not_yet_materialized"` — no rows exist yet (day not fully elapsed,
+   *   or outside the job's lookback window). A legitimate absence, not an
+   *   error — never render this as a false all-clear zero, but also never
+   *   treat it as a degraded/error state either.
+   * - `"unknown"` — the query for this window failed (see
+   *   {@link ChroniclerRollupsResponse.rollups_source_error}); this day's
+   *   `lanes`/`flags` are empty because nothing could be read.
+   */
+  status: "materialized" | "not_yet_materialized" | "unknown";
+  lanes: ChroniclerRollupLaneRow[];
+  flags: ChroniclerRollupFlagRow[];
+  /**
+   * Optional one-line prose summary of this local day, from the bounded
+   * once-daily LLM labeling pass (migration chronicler_020). `null` is normal
+   * and NOT an error — the labeling pass is optional, has not run for this day
+   * (e.g. days before the feature), or produced no summary. Render its absence
+   * as nothing/a neutral placeholder, never as a degraded state. Always `null`
+   * when `status !== "materialized"` (no rows carry it).
+   */
+  narrative: string | null;
+}
+
+/** Response envelope for GET /api/chronicler/rollups. */
+export interface ChroniclerRollupsResponse {
+  start_date: string;
+  end_date: string;
+  tz: string;
+  /** Ordered by local_date ASC, one entry per day in [start_date, end_date]. */
+  days: ChroniclerRollupDay[];
+  /**
+   * True when the underlying query raised instead of returning rows —
+   * mirrors the backend's `aggregates_available`-family degraded-envelope
+   * convention. Every day in `days` comes back `status: "unknown"` with
+   * empty `lanes`/`flags` when this is true. Never treat a missing/false
+   * value alone as proof of freshness, only as "this request did not fail
+   * outright".
+   */
+  rollups_source_error: boolean;
+}
+
+/**
+ * Query parameters for GET /api/chronicler/rollups. Provide either `date`
+ * alone, or `start_date` + `end_date` together (both required if either is
+ * given). Range capped server-side at 92 days.
+ */
+export interface ChroniclerRollupsParams {
+  date?: string;
+  start_date?: string;
+  end_date?: string;
+}
+
 // ── Who-you-were-with (IEA, tasks.md §9b, bu-jc6htw.2) ──────────────────────
 
 /** One resolved (or unattributed) companion for a who-you-were-with window. */

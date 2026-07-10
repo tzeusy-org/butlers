@@ -324,6 +324,8 @@ import type {
   ChroniclerBalanceResponse,
   ChroniclerTrendsParams,
   ChroniclerTrendsResponse,
+  ChroniclerRollupsParams,
+  ChroniclerRollupsResponse,
   ChroniclerWhoYouWereWithParams,
   ChroniclerWhoYouWereWithResponse,
   ChroniclerActivityEvidenceChain,
@@ -5999,6 +6001,21 @@ export function getChroniclerTrends(
   if (params?.lookback_days != null) sp.set("lookback_days", String(params.lookback_days));
   const qs = sp.toString();
   return apiFetch(qs ? `/chronicler/trends?${qs}` : "/chronicler/trends");
+}
+
+/**
+ * Fetch daily rollups + anomaly flags (with optional LLM narrative) for one
+ * local day or an inclusive range. Provide either `date` alone, or
+ * `start_date`+`end_date` together. GET /api/chronicler/rollups.
+ */
+export function getChroniclerRollups(
+  params: ChroniclerRollupsParams,
+): Promise<{ data: ChroniclerRollupsResponse; meta: Record<string, unknown> }> {
+  const sp = new URLSearchParams();
+  if (params.date) sp.set("date", params.date);
+  if (params.start_date) sp.set("start_date", params.start_date);
+  if (params.end_date) sp.set("end_date", params.end_date);
+  return apiFetch(`/chronicler/rollups?${sp.toString()}`);
 }
 
 /**

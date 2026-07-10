@@ -28,6 +28,7 @@ import {
   useChroniclesCorrectionPrompts,
   useChroniclesEpisodes,
   useChroniclesPointEvents,
+  useChroniclesRollups,
   useChroniclesTrends,
   useChroniclesWhoYouWereWith,
 } from "@/hooks/use-chronicles";
@@ -47,6 +48,7 @@ import { StreakCallouts } from "@/components/chronicles/StreakCallouts";
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton";
 import { WorkScheduleSettings } from "@/components/chronicles/WorkScheduleSettings";
 import { DayRibbon } from "@/components/chronicles/DayRibbon";
+import { DayNarrative } from "@/components/chronicles/DayNarrative";
 import { BalanceRings } from "@/components/chronicles/BalanceRings";
 import { WhoYouWereWithPanel } from "@/components/chronicles/WhoYouWereWithPanel";
 import { CorrectionPromptsPanel } from "@/components/chronicles/CorrectionPromptsPanel";
@@ -175,6 +177,11 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
     { refetchInterval },
   );
 
+  // Optional once-daily LLM narration for the selected day (GET /rollups):
+  // a one-line prose summary + per-flag labels. Absent narration is normal
+  // (DayNarrative renders nothing); a genuine fetch failure degrades honestly.
+  const rollups = useChroniclesRollups({ date }, { refetchInterval });
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-end">
@@ -209,6 +216,12 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
 
       <Section eyebrow="Where the time went">
         <div className="space-y-5">
+          <DayNarrative
+            data={rollups.data?.data}
+            isLoading={rollups.isLoading}
+            isError={rollups.isError}
+            onRetry={() => void rollups.refetch()}
+          />
           <StreakCallouts episodeParams={episodesParams} refetchInterval={refetchInterval} />
           <DayRibbon
             episodes={episodes}

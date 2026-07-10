@@ -22,7 +22,12 @@ import pytest
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
-from butlers.chronicler.storage import upsert_daily_rollup, upsert_daily_rollup_flag
+from butlers.chronicler.storage import (
+    set_daily_rollup_day_narrative,
+    set_daily_rollup_flag_narrative,
+    upsert_daily_rollup,
+    upsert_daily_rollup_flag,
+)
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -106,6 +111,58 @@ async def test_materialized_day_reads_real_rows(pool) -> None:
         "travel",
         "work",
     }
+
+
+# ---------------------------------------------------------------------------
+# Optional narrative (chronicler_020) round-trips through the real read path
+# ---------------------------------------------------------------------------
+
+
+async def test_narrative_round_trips_when_written(pool) -> None:
+    await upsert_daily_rollup(pool, local_date=_DAY_1, lane="work", seconds=7200, episode_count=3)
+    await upsert_daily_rollup(pool, local_date=_DAY_1, lane="sleep", seconds=21600, episode_count=1)
+    await upsert_daily_rollup_flag(
+        pool,
+        local_date=_DAY_1,
+        flag_type="routine_break",
+        severity="info",
+        detail={"routines": [{"label": "gym"}]},
+    )
+    # The narration job writes the day summary onto every lane row for the date.
+    rows_updated = await set_daily_rollup_day_narrative(
+        pool, local_date=_DAY_1, narrative="A focused work day; skipped the gym."
+    )
+    assert rows_updated == 2
+    await set_daily_rollup_flag_narrative(
+        pool,
+        local_date=_DAY_1,
+        flag_type="routine_break",
+        narrative="Missed the usual gym session.",
+    )
+
+    resp = await _get(pool, {"date": _DAY_1.isoformat()})
+    assert resp.status_code == 200, resp.text
+    day = resp.json()["data"]["days"][0]
+    assert day["narrative"] == "A focused work day; skipped the gym."
+    assert day["flags"][0]["narrative"] == "Missed the usual gym session."
+
+
+async def test_materialized_day_without_narration_returns_null_narrative(pool) -> None:
+    await upsert_daily_rollup(pool, local_date=_DAY_1, lane="work", seconds=3600, episode_count=1)
+    await upsert_daily_rollup_flag(
+        pool, local_date=_DAY_1, flag_type="routine_break", severity="info"
+    )
+
+    resp = await _get(pool, {"date": _DAY_1.isoformat()})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["rollups_source_error"] is False
+    day = data["days"][0]
+    # Real materialized rows, but the labeling pass never ran — absent narrative
+    # is a legitimate None, never a degraded/error state.
+    assert day["status"] == "materialized"
+    assert day["narrative"] is None
+    assert day["flags"][0]["narrative"] is None
 
 
 # ---------------------------------------------------------------------------

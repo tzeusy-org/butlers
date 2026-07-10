@@ -196,3 +196,19 @@ The system SHALL bound any LLM labeling of a day's rollup to at most one call pe
 - **THEN** `daily_rollups` and `daily_rollup_flags` SHALL remain fully
   populated and correct
 - **AND** only the narrative/label fields SHALL be absent
+
+#### Scenario: Narration is exposed on the read API surface when present
+
+- **WHEN** a client reads a materialized day through the rollups read API and a
+  day summary and/or per-flag label was written by the labeling pass
+- **THEN** the response SHALL include the day's prose summary and each labeled
+  flag's one-line label alongside the deterministic rollup/flag fields
+
+#### Scenario: Absent narration reads as a normal null, never an error
+
+- **WHEN** a client reads a day whose labeling pass has not run (disabled, not
+  yet run, or a day predating the feature)
+- **THEN** the narrative/label fields SHALL be returned as absent (null)
+- **AND** the response SHALL NOT signal a degraded/error source state solely
+  because narration is absent — the deterministic rollup and flag fields remain
+  fully present and trustworthy
