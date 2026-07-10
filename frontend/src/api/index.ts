@@ -720,6 +720,7 @@ export {
   addPriorityContact,
   getPriorityContacts,
   removePriorityContact,
+  searchContacts,
 } from "./client.ts";
 
 export type {
@@ -727,6 +728,9 @@ export type {
   PriorityContactAddResponse,
   PriorityContactEntry,
   PriorityContactListParams,
+  ContactMatchedIdentifier,
+  ContactSearchResult,
+  ContactSearchResponse,
 } from "./types.ts";
 
 export {

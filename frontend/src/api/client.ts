@@ -214,6 +214,7 @@ import type {
   PriorityContactAddRequest,
   PriorityContactAddResponse,
   PriorityContactListParams,
+  ContactSearchResponse,
   ModelCatalogEntry,
   PricingMap,
   ModelCatalogCreate,
@@ -4864,6 +4865,26 @@ export function removePriorityContact(contactId: string): Promise<void> {
     `/ingestion/priority-contacts/${encodeURIComponent(contactId)}`,
     { method: "DELETE" },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Contacts identity typeahead (GET /api/contacts/search)
+//
+// Read-only person-entity typeahead over the cross-butler identity layer.
+// Powers the People picker that links contacts to calendar events. A blank or
+// unmatched query returns HTTP 200 with an empty list — never an error.
+// ---------------------------------------------------------------------------
+
+/** Search known person entities for a contact typeahead. */
+export function searchContacts(
+  q: string,
+  options?: { limit?: number; signal?: AbortSignal },
+): Promise<ContactSearchResponse> {
+  const sp = new URLSearchParams({ q });
+  if (options?.limit !== undefined) sp.set("limit", String(options.limit));
+  return apiFetch<ContactSearchResponse>(`/contacts/search?${sp.toString()}`, {
+    signal: options?.signal,
+  });
 }
 
 // ---------------------------------------------------------------------------

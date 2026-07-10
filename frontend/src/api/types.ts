@@ -4215,6 +4215,36 @@ export interface PriorityContactListParams {
 }
 
 // ---------------------------------------------------------------------------
+// Contacts identity typeahead — GET /api/contacts/search
+// ---------------------------------------------------------------------------
+
+/**
+ * A non-secret channel identifier (email, phone, handle, website) that matched
+ * a contact-search query. Surfaced for chip rendering. Mirrors backend
+ * `MatchedIdentifier`.
+ */
+export interface ContactMatchedIdentifier {
+  type: string;
+  value: string;
+}
+
+/**
+ * A single person-entity match from GET /api/contacts/search. Mirrors backend
+ * `ContactSearchResult`. `matched_identifier` is null when the entity matched
+ * by name/alias only.
+ */
+export interface ContactSearchResult {
+  entity_id: string;
+  canonical_name: string;
+  matched_identifier: ContactMatchedIdentifier | null;
+}
+
+/** Envelope for GET /api/contacts/search. Mirrors backend `ContactSearchResponse`. */
+export interface ContactSearchResponse {
+  results: ContactSearchResult[];
+}
+
+// ---------------------------------------------------------------------------
 // Connector detail sections — events, incidents, routing rules [bu-5ywn2]
 // ---------------------------------------------------------------------------
 
