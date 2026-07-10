@@ -98,10 +98,15 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             delivery_attempt_count INTEGER NOT NULL DEFAULT 0
         )
     """)
+    # dedup_key is the PRIMARY KEY here (not a synthetic id) to mirror the
+    # production DDL in alembic/versions/core/core_010_insight_tables.py
+    # exactly: one active cooldown per dedup_key. A prior divergence here
+    # (a synthetic `id UUID PRIMARY KEY` with a non-unique dedup_key) let a
+    # plain-INSERT pkey collision on redelivery ship to production undetected
+    # by this test-backed fixture — see record_cooldowns()'s ON CONFLICT fix.
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS insight_cooldowns (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            dedup_key TEXT NOT NULL,
+            dedup_key TEXT PRIMARY KEY,
             cooldown_until TIMESTAMPTZ NOT NULL,
             reason TEXT NOT NULL DEFAULT 'delivered',
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -460,12 +465,20 @@ def _is_quiet_hours(settings: dict[str, Any], *, now: datetime | None = None) ->
 
 
 async def record_cooldowns(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection,
     candidates: list[dict[str, Any]],
     *,
     now: datetime | None = None,
 ) -> None:
-    """Record cooldown entries for delivered candidates."""
+    """Record cooldown entries for delivered candidates.
+
+    dedup_key is the table's PRIMARY KEY, so a redelivery of the same
+    dedup_key after its prior cooldown expired (the expired row is still
+    there — it's only reaped by ``cleanup_old_rows()``) hits that key again.
+    ON CONFLICT upserts the existing row instead of erroring: this is
+    ordinary redelivery, not a bug, and it crashed the daily delivery cycle
+    (bu-tdd4k.1) before this fix.
+    """
     if now is None:
         now = datetime.now(UTC)
 
@@ -482,13 +495,17 @@ async def record_cooldowns(
             """
             INSERT INTO insight_cooldowns (dedup_key, cooldown_until, reason)
             VALUES ($1, $2, 'delivered')
+            ON CONFLICT (dedup_key) DO UPDATE
+            SET cooldown_until = EXCLUDED.cooldown_until,
+                reason = EXCLUDED.reason,
+                created_at = now()
             """,
             cooldown_data,
         )
 
 
 async def record_engagement_rows(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection,
     candidate_ids: list[str],
     *,
     delivered_at: datetime | None = None,
@@ -1021,27 +1038,44 @@ async def delivery_cycle(
         logger.exception("insight-delivery-cycle: notify raised exception")
 
     if deliver_success:
-        # Mark candidates as delivered and reset consecutive-failure counter
-        await pool.execute(
-            """
-            UPDATE insight_candidates
-            SET status = 'delivered', delivered_at = $1, delivery_attempt_count = 0
-            WHERE id = ANY($2::uuid[])
-            """,
-            delivered_at,
-            selected_ids,
-        )
+        # Mark candidates delivered, record cooldowns, and record engagement
+        # rows as one transaction. These three writes describe a single fact
+        # (this candidate was delivered and its lifecycle is tracked) and
+        # must commit together: before this, a crash partway through this
+        # block (e.g. the insight_cooldowns pkey collision on redelivery —
+        # bu-tdd4k.1) left candidates marked 'delivered' with no cooldown or
+        # engagement row behind them. The insight then silently vanished
+        # (never pending again, never actually tracked), and a later cycle's
+        # benign "suppressed: quiet_hours" ledger write was the only trace
+        # left — narrating a crash as ordinary quiet-hours discipline.
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE insight_candidates
+                    SET status = 'delivered', delivered_at = $1, delivery_attempt_count = 0
+                    WHERE id = ANY($2::uuid[])
+                    """,
+                    delivered_at,
+                    selected_ids,
+                )
+
+                # Step 8: Record cooldowns
+                await record_cooldowns(conn, selected, now=now)
+
+                # Step 9: Record engagement
+                await record_engagement_rows(conn, selected_ids, delivered_at=delivered_at)
+
         result["delivered"] = selected_ids
 
-        # Step 8: Record cooldowns
-        await record_cooldowns(pool, selected, now=now)
-
-        # Step 9: Record engagement
-        await record_engagement_rows(pool, selected_ids, delivered_at=delivered_at)
-
-        # Attention ledger: one row per delivered candidate. A single-candidate
-        # delivery is "delivered"; a batched digest (deliver_count > 1) folds
-        # every candidate into one composed message, so each is "coalesced".
+        # Attention ledger: one row per delivered candidate. Deliberately
+        # outside the bookkeeping transaction above — record_attention_event
+        # is a best-effort observability write (see its degraded-honesty
+        # contract) and must never be able to abort or roll back the
+        # delivery bookkeeping it is merely describing.
+        # A single-candidate delivery is "delivered"; a batched digest
+        # (deliver_count > 1) folds every candidate into one composed
+        # message, so each is "coalesced".
         _ledger_outcome = "delivered" if deliver_count == 1 else "coalesced"
         for _c in selected:
             await record_attention_event(

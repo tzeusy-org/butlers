@@ -52,6 +52,45 @@ class _FakeRecord:
         return iter(self._data)
 
 
+class _FakeTxnCtx:
+    """No-op async context manager standing in for asyncpg's conn.transaction()."""
+
+    async def __aenter__(self) -> _FakeTxnCtx:
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> bool:
+        return False
+
+
+class _FakeConn:
+    """Minimal connection stand-in for the post-delivery bookkeeping transaction.
+
+    delivery_cycle()'s deliver_success path acquires a connection and marks
+    candidates delivered on it directly; record_cooldowns()/
+    record_engagement_rows() are patched out wholesale in these tests, so this
+    only needs to support conn.execute() and conn.transaction().
+    """
+
+    def __init__(self) -> None:
+        self.execute = AsyncMock(return_value="UPDATE 3")
+
+    def transaction(self) -> _FakeTxnCtx:
+        return _FakeTxnCtx()
+
+
+class _FakeAcquireCtx:
+    """No-op async context manager standing in for asyncpg's pool.acquire()."""
+
+    def __init__(self, conn: _FakeConn) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _FakeConn:
+        return self._conn
+
+    async def __aexit__(self, *exc_info: Any) -> bool:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Tests: _build_switchboard_insight_notify_fn
 # ---------------------------------------------------------------------------
@@ -539,6 +578,7 @@ class TestBrokerChannelSelectionInNotifyMetadata:
             mock_pool.fetch = mock_fetch
             mock_pool.execute = AsyncMock(return_value="UPDATE 3")
             mock_pool.executemany = AsyncMock()
+            mock_pool.acquire = lambda: _FakeAcquireCtx(_FakeConn())
 
             await delivery_cycle(mock_pool, notify_fn=_capture_notify)
 

@@ -562,6 +562,82 @@ class TestCooldownEnforcement:
         eligible = await filter_by_cooldown(insight_pool, [cid])
         assert cid in eligible
 
+    async def test_redelivery_across_expired_cooldown_upserts_not_crashes(self, insight_pool):
+        """Regression (bu-tdd4k.1): a recurring insight redelivered after its
+        prior cooldown expired must upsert the existing insight_cooldowns row
+        via full delivery_cycle(), not crash on the dedup_key primary key.
+
+        Before the ON CONFLICT fix, record_cooldowns() did a plain INSERT;
+        since the prior (expired) cooldown row for this dedup_key is still
+        present (cleanup_old_rows() only reaps it after 30 days), the second
+        delivery's INSERT hit a live pkey collision and crashed the whole
+        delivery cycle mid-bookkeeping — after the candidate had already been
+        marked 'delivered', leaving no cooldown/engagement row behind it.
+        """
+        from butlers.tools.switchboard.insight.broker import (
+            delivery_cycle,
+            propose_insight_candidate,
+        )
+
+        await insight_pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'minimal')
+            ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'
+        """)
+
+        dedup_key = "health:bp:user-1:2026"
+        t0 = datetime.now(UTC)
+        notify_mock = AsyncMock(return_value={"status": "sent"})
+
+        # First delivery. priority=70 -> default cooldown is 7 days (70-89 range).
+        await propose_insight_candidate(
+            insight_pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key=dedup_key,
+            message="No BP logged in 12 days",
+            expires_at=_future(),
+        )
+        r1 = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=t0)
+        assert len(r1["delivered"]) == 1
+
+        first_cooldown = await insight_pool.fetchrow(
+            "SELECT cooldown_until FROM insight_cooldowns WHERE dedup_key = $1", dedup_key
+        )
+        assert first_cooldown is not None
+
+        # Recurring insight, proposed and cycled well past the first
+        # cooldown's expiry — this is the redelivery-across-expired-cooldown
+        # case that must succeed after the upsert fix.
+        t1 = t0 + timedelta(days=8)
+        await propose_insight_candidate(
+            insight_pool,
+            origin_butler="health",
+            priority=70,
+            category="health",
+            dedup_key=dedup_key,
+            message="No BP logged in 12 days (again)",
+            expires_at=t1 + timedelta(days=7),
+        )
+        r2 = await delivery_cycle(insight_pool, notify_fn=notify_mock, now=t1)
+
+        assert len(r2["delivered"]) == 1
+        assert notify_mock.call_count == 2
+
+        # The cooldown row was upserted (refreshed), not duplicated or left
+        # missing behind a crash.
+        rows = await insight_pool.fetch(
+            "SELECT cooldown_until FROM insight_cooldowns WHERE dedup_key = $1", dedup_key
+        )
+        assert len(rows) == 1
+        assert rows[0]["cooldown_until"] > first_cooldown["cooldown_until"]
+
+        # Post-delivery bookkeeping for the second delivery committed
+        # atomically alongside it: both deliveries have an engagement row.
+        engagement_count = await insight_pool.fetchval("SELECT COUNT(*) FROM insight_engagement")
+        assert engagement_count == 2
+
     async def test_default_cooldown_by_priority_range(self):
         """Default cooldowns match spec for each priority range."""
         from butlers.tools.switchboard.insight.broker import _get_default_cooldown

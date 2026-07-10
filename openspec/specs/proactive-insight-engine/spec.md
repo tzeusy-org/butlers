@@ -110,6 +110,11 @@ After an insight is delivered or explicitly dismissed, the system SHALL prevent 
 - **THEN** new candidates with that `dedup_key` SHALL be eligible for delivery
 - **AND** expired cooldown entries SHALL be cleaned up periodically (retained for audit for 30 days)
 
+#### Scenario: Redelivery after cooldown expiry
+- **WHEN** a candidate with a `dedup_key` is delivered again after its prior cooldown entry has expired but has not yet been cleaned up
+- **THEN** the existing `public.insight_cooldowns` row for that `dedup_key` SHALL be updated in place (`cooldown_until`, `reason`, `created_at` refreshed to the new delivery) rather than erroring on the `dedup_key` primary key
+- **AND** marking the candidate delivered, recording its cooldown, and recording its engagement row SHALL commit as one atomic unit, so a failure partway through never leaves a candidate marked `'delivered'` without its cooldown/engagement bookkeeping
+
 ### Requirement: Adaptive Delivery with Graceful Degradation
 The system SHALL track user engagement with delivered insights and automatically reduce delivery frequency when the user ignores insights. The system SHALL NEVER automatically increase delivery frequency.
 
