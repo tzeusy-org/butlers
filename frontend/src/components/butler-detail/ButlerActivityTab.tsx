@@ -38,6 +38,7 @@ import {
   useButlerLatencyStats,
 } from "@/hooks/use-butler-analytics"
 import { useSessionAggregate } from "@/hooks/use-sessions"
+import { bucketDaysAgo } from "@/lib/daily-buckets"
 
 // Module-level helper so Date.now() is not called directly during render
 // (required by the react-hooks/purity ESLint rule).
@@ -196,8 +197,10 @@ function ActivityPanel({ butlerName, range, onRangeChange }: ActivityPanelProps)
   if (buckets.length > 0) {
     const now = new Date()
     for (const b of buckets) {
-      const bDate = new Date(b.date + "T00:00:00Z")
-      const daysAgo = Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() - new Date(bDate.getFullYear(), bDate.getMonth(), bDate.getDate()).getTime()) / (1000 * 60 * 60 * 24))
+      // b.date is a UTC-anchored `YYYY-MM-DD` bucket key; measure the offset in
+      // UTC so the histogram doesn't shift a slot on viewers west of UTC.
+      const daysAgo = bucketDaysAgo(b.date, now)
+      if (daysAgo == null) continue
       const idx = windowDays - 1 - daysAgo
       if (idx >= 0 && idx < windowDays) {
         counts[idx] = b.sessions_count
