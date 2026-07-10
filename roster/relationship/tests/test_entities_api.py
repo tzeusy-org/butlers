@@ -2040,9 +2040,16 @@ class TestEntityActivityBinning:
 
     async def test_chronicler_episode_counted_in_bins(self):
         """Chronicler episodes (MCP-sourced) contribute to the daily bins."""
+        # Anchor the seed to the binning clock (UTC "today" at midday) rather than
+        # a fixed past timestamp: the endpoint bins over [now-89d, now] in UTC, so a
+        # fixed anchor drifts out of the window as wall-clock time advances (a fixed
+        # _NOW=2026-05-18 falls outside the 90d window once real-now passes
+        # ~2026-08-16 → sum 0 != 1, main-red bu-7mm5j, same root cause as bu-bz39v).
+        # Midday UTC keeps it in-window for any wall-clock date or local timezone.
+        anchor = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
         ep = {
             "id": str(uuid4()),
-            "canonical_start_at": _NOW.isoformat(),
+            "canonical_start_at": anchor.isoformat(),
             "canonical_title": "Coffee",
         }
         app, pool = self._make_app(fact_rows=[], chronicler_episodes=[ep])
