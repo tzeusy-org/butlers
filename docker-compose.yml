@@ -272,6 +272,10 @@ services:
       <<: *connector-env
       CONNECTOR_PROVIDER: telegram
       CONNECTOR_CHANNEL: telegram_bot
+      # Apply gap-interview (bu-whhll.12) inline-button taps deterministically
+      # via the chronicler dashboard API (the connector's own role cannot write
+      # the chronicler schema). Override to disable the round-trip.
+      CONNECTOR_INTERNAL_API_URL: ${CONNECTOR_INTERNAL_API_URL:-http://dashboard-api:41200}
     volumes:
       - ./logs:/app/logs
     networks: [db, backend, egress]

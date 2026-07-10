@@ -195,6 +195,18 @@ class SubmitCorrectionRequest(BaseModel):
     submitted_by: str = "user"
 
 
+class ResolveGapInterviewRequest(BaseModel):
+    """Body for the gap-interview one-tap resolve endpoint (bu-whhll.12).
+
+    Posted by the ``telegram_bot`` connector when the owner taps an inline
+    button (``cgi:<interview_id>:<answer>``). ``answer`` is one of
+    ``confirm`` / ``correct`` / ``dismiss``.
+    """
+
+    interview_id: str
+    answer: str
+
+
 class DayCloseFreshResponse(BaseModel):
     """Cache hit: fresh prose with provenance."""
 
@@ -773,6 +785,7 @@ __all__ = [
     "RollupDay",
     "RollupFlagRow",
     "RollupLaneRow",
+    "ResolveGapInterviewRequest",
     "RollupsResponse",
     "RoutineRow",
     "SourceBreakdownEntry",

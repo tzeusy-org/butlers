@@ -2,8 +2,10 @@
 
 Registers the Tier-1 read tools (``chronicler_list_events``,
 ``chronicler_list_episodes``, ``chronicler_get_episode``,
-``chronicler_submit_correction``, ``chronicler_list_corrections``) and the
-Tier-2 bundle assembler tool (``chronicler_day_close_bundle``).
+``chronicler_submit_correction``, ``chronicler_list_corrections``), the
+Tier-2 bundle assembler tool (``chronicler_day_close_bundle``), and the
+day-close gap-interview tools (``chronicler_gap_interview`` /
+``chronicler_resolve_gap_interview``, bu-whhll.12).
 
 The bundle assembler tool is the entry-point for scheduled Tier-2 paths
 (day-close, drilldown, etc.).  It applies sensitive masking, field stripping,
@@ -418,6 +420,169 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         from dataclasses import asdict
 
         return {"data": [asdict(o) for o in overrides], "count": len(overrides)}
+
+    # ------------------------------------------------------------------
+    # chronicler_gap_interview  — day-close gap interview ASK (bu-whhll.12)
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    async def chronicler_gap_interview(
+        date_label: str,
+        timezone: str = "UTC",
+    ) -> dict[str, Any]:
+        """Run the once-daily day-close gap interview for *date_label*.
+
+        Deterministic ask-side of bu-whhll.12. When the closed day left more than
+        two hours of waking time unaccounted, or carries a low-confidence
+        ``occupation_block`` the pipeline was never sure about, the owner is
+        worth **one** confirmation prompt. This tool does the whole ask:
+        evaluate → max-one-per-day dedupe (KV state) → quiet-hours /
+        delivery-preferences gate → deliver a Telegram inline-button message
+        (✅ Work day / ✏️ Not work / 🚫 Dismiss) whose taps route back to
+        :func:`chronicler_resolve_gap_interview`. The scheduled prompt only needs
+        to call this tool; it sends nothing itself.
+
+        Args:
+            date_label: Closed local day in ``YYYY-MM-DD``.
+            timezone: IANA timezone the day is bounded/displayed in.
+
+        Returns a status dict: ``asked`` (delivered), ``already_asked``,
+        ``no_gap``, ``deferred_quiet_hours``, ``delivery_failed``, or
+        ``not_configured`` (no owner telegram chat / bot token).
+        """
+        from dataclasses import asdict
+        from datetime import UTC, datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        import httpx
+
+        from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START
+        from butlers.chronicler.gap_interview import run_gap_interview
+        from butlers.chronicler.gap_interview_telegram import build_telegram_transport
+        from butlers.chronicler.storage import list_episodes
+        from butlers.core.state import state_get, state_set
+        from butlers.core.temporal.delivery import should_defer_notification
+        from butlers.core.temporal.delivery_db import get_delivery_preferences
+
+        pool = module._get_pool()
+        asked_key = f"gap_interview:asked:{date_label}"
+
+        async def already_asked() -> bool:
+            return await state_get(pool, asked_key) is not None
+
+        # Cheap short-circuit before resolving a token / building an HTTP client.
+        if await already_asked():
+            return {"status": "already_asked", "date": date_label}
+
+        day = datetime.fromisoformat(date_label).date()
+        tzinfo = ZoneInfo(timezone)
+        start_at = datetime(day.year, day.month, day.day, tzinfo=tzinfo).astimezone(UTC)
+        end_at = (
+            datetime(day.year, day.month, day.day, tzinfo=tzinfo) + timedelta(days=1)
+        ).astimezone(UTC)
+
+        async def mark_asked(decision, interview_id) -> None:
+            # Persist the answer-side mapping (occupation episode + routine) the
+            # callback resolver reads, then record the per-day dedupe marker.
+            await state_set(
+                pool,
+                f"gap_interview:pending:{interview_id}",
+                {
+                    "interview_id": interview_id,
+                    "local_date": date_label,
+                    "occupation_episode_id": (
+                        str(decision.occupation_episode_id)
+                        if decision.occupation_episode_id
+                        else None
+                    ),
+                    "routine_id": str(decision.routine_id) if decision.routine_id else None,
+                    "answered": False,
+                },
+            )
+            await state_set(
+                pool, asked_key, {"interview_id": interview_id, "reasons": list(decision.reasons)}
+            )
+
+        async def delivery_allowed() -> bool:
+            # Same quiet-hours / delivery-preferences gate notify() applies; the
+            # gap-interview prompt is low priority (deferrable). Fail-open.
+            try:
+                prefs = await get_delivery_preferences(pool, "chronicler")
+            except Exception:
+                return True
+            if prefs is None:
+                return True
+            tz_name = prefs.get("timezone", "UTC")
+            try:
+                gate_tz = ZoneInfo(tz_name)
+            except Exception:
+                gate_tz = ZoneInfo("UTC")
+            now_local = datetime.now(UTC).astimezone(gate_tz).time()
+            return not should_defer_notification(
+                priority="low", current_time=now_local, prefs=prefs, channel="telegram"
+            )
+
+        episodes = await list_episodes(pool, start_from=start_at, start_to=end_at, limit=1000)
+        episode_dicts = [asdict(ep) for ep in episodes]
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            transport = await build_telegram_transport(pool, http_client=client)
+            if transport is None:
+                return {
+                    "status": "not_configured",
+                    "detail": "no owner telegram chat id or bot token configured",
+                }
+            # interview_id == date_label: unique per day (one prompt/day) and
+            # compact inside the 64-byte telegram callback_data budget.
+            return await run_gap_interview(
+                episode_dicts,
+                local_date=date_label,
+                day_start_utc=start_at,
+                day_end_utc=end_at,
+                tz=tzinfo,
+                interview_id=date_label,
+                transport=transport,
+                already_asked=already_asked,
+                mark_asked=mark_asked,
+                delivery_allowed=delivery_allowed,
+                waking_hour_start=WAKING_HOUR_START,
+                waking_hour_end=WAKING_HOUR_END,
+            )
+
+    # ------------------------------------------------------------------
+    # chronicler_resolve_gap_interview  — day-close gap interview ANSWER
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    async def chronicler_resolve_gap_interview(
+        interview_id: str,
+        answer: str,
+    ) -> dict[str, Any]:
+        """Apply a one-tap gap-interview answer (bu-whhll.12).
+
+        The deterministic answer-side: turns ``confirm`` / ``correct`` /
+        ``dismiss`` into a durable ``chronicler.overrides`` row (the first real
+        tenant of the corrections machinery) and a reinforce/decay nudge on the
+        matching routine, idempotently. This is the seam the telegram
+        inline-button callback (via the ``telegram_bot`` connector) and the
+        future decision-loop transport (RFC 0021) both call.
+
+        Args:
+            interview_id: The id handed out by ``chronicler_gap_interview``.
+            answer: One of ``confirm`` / ``correct`` / ``dismiss``.
+
+        Returns the apply summary, or ``{"status": "error"|"already_answered"}``.
+        """
+        from datetime import UTC, datetime
+
+        from butlers.chronicler.gap_interview import resolve_gap_interview_callback
+
+        return await resolve_gap_interview_callback(
+            module._get_pool(),
+            interview_id=interview_id,
+            answer=answer,
+            now=datetime.now(UTC),
+        )
 
     # ------------------------------------------------------------------
     # chronicler_day_close_bundle  — Tier-2 bounded assembler

@@ -82,6 +82,7 @@ if _spec is not None and _spec.loader is not None:
     SourceStateRow = _models.SourceStateRow
     SubsourceCheckpoint = _models.SubsourceCheckpoint
     SubmitCorrectionRequest = _models.SubmitCorrectionRequest
+    ResolveGapInterviewRequest = _models.ResolveGapInterviewRequest
     AggregateByDayRow = _models.AggregateByDayRow
     SourceBreakdownEntry = _models.SourceBreakdownEntry
     CategoryBucket = _models.CategoryBucket
@@ -3543,3 +3544,36 @@ async def delete_chronicler_routine(
     )
 
     return Response(status_code=204)
+
+
+@router.post("/gap-interview/resolve")
+async def resolve_gap_interview(
+    body: ResolveGapInterviewRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> dict[str, Any]:
+    """Apply a one-tap gap-interview answer (bu-whhll.12).
+
+    The deterministic route for a telegram inline-button tap: the
+    ``telegram_bot`` connector recognises a ``cgi:<interview_id>:<answer>``
+    callback and POSTs here (the connector runs as the restricted
+    ``connector_writer`` role and cannot write the chronicler schema itself;
+    this endpoint runs with the chronicler pool that can). Delegates to the
+    shared ``resolve_gap_interview_callback`` — the same resolver the
+    ``chronicler_resolve_gap_interview`` MCP tool uses — so the write shape and
+    idempotency are identical across both entry points.
+
+    Always returns HTTP 200 with a ``status`` the caller can turn into a toast:
+    ``applied`` / ``already_answered`` / ``error`` (unknown/expired interview or
+    an unparseable answer). Never raises for those owner-facing conditions.
+    """
+    from datetime import UTC, datetime
+
+    from butlers.chronicler.gap_interview import resolve_gap_interview_callback
+
+    pool = _pool(db)
+    return await resolve_gap_interview_callback(
+        pool,
+        interview_id=body.interview_id,
+        answer=body.answer,
+        now=datetime.now(UTC),
+    )

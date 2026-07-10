@@ -60,6 +60,28 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
+# Owner-facing toasts for a gap-interview (bu-whhll.12) inline-button tap,
+# keyed by the resolve endpoint's returned status. Kept tiny and deterministic
+# — the connector only turns a status into a short acknowledgement.
+_GAP_INTERVIEW_ANSWER_TOASTS: dict[str, str] = {
+    "confirm": "Logged as a work day ✅",
+    "correct": "Removed — not a work day ✏️",
+    "dismiss": "Dismissed 🚫",
+}
+
+
+def _gap_interview_toast(data: dict[str, Any], answer: str) -> str:
+    """Map a resolve-endpoint response to a short owner-facing toast."""
+    status = data.get("status") if isinstance(data, dict) else None
+    if status == "applied":
+        return _GAP_INTERVIEW_ANSWER_TOASTS.get(answer.strip().lower(), "Recorded ✓")
+    if status == "already_answered":
+        return "Already recorded — thanks!"
+    if status == "error" and data.get("error") == "unknown_or_expired_interview":
+        return "This confirmation has expired."
+    return "Recorded ✓"
+
+
 _MEDIA_TYPE_LABELS: dict[str, str] = {
     "photo": "Photo",
     "sticker": "Sticker",
@@ -161,6 +183,14 @@ class TelegramBotConnectorConfig:
     # Health check config
     health_port: int = 40081
 
+    # Internal dashboard-API base URL, used only to apply a gap-interview
+    # (bu-whhll.12) inline-button tap deterministically. The connector runs as
+    # the restricted ``connector_writer`` role and cannot write the chronicler
+    # schema itself, so ``cgi:`` callbacks are POSTed to the chronicler API
+    # (which runs with a chronicler-capable pool). None disables the round-trip
+    # (the tap is acknowledged with a "try again from the dashboard" toast).
+    internal_api_url: str | None = None
+
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
         """Load configuration from environment variables."""
@@ -181,6 +211,8 @@ class TelegramBotConnectorConfig:
 
         health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", "40081"))
 
+        internal_api_url = os.environ.get("CONNECTOR_INTERNAL_API_URL", "").strip() or None
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
@@ -190,6 +222,7 @@ class TelegramBotConnectorConfig:
             webhook_url=webhook_url,
             max_inflight=max_inflight,
             health_port=health_port,
+            internal_api_url=internal_api_url,
         )
 
 
@@ -747,6 +780,14 @@ class TelegramBotConnector:
         async with self._semaphore:
             update_id = str(update.get("update_id", "unknown"))
             try:
+                # Gap-interview one-tap callbacks (bu-whhll.12): a narrow,
+                # prefix-guarded (``cgi:``) inline-button handler. Only these
+                # callbacks are claimed here; every other ``callback_query``
+                # (and every non-callback update) falls through to the normal
+                # ingest path unchanged — additive by construction.
+                if await self._maybe_handle_gap_interview_callback(update):
+                    return
+
                 envelope = self._normalize_to_ingest_v1(update)
                 if envelope is None:
                     return  # Nothing to ingest
@@ -852,6 +893,76 @@ class TelegramBotConnector:
                     status="error",
                     error_detail=str(exc),
                 )
+
+    async def _maybe_handle_gap_interview_callback(self, update: dict[str, Any]) -> bool:
+        """Handle a chronicler gap-interview (bu-whhll.12) inline-button tap.
+
+        Returns ``True`` iff this update was a ``callback_query`` carrying our
+        prefix-guarded ``cgi:<interview_id>:<answer>`` ``callback_data`` and was
+        handled here (so ``_process_update`` skips the normal ingest path). Any
+        other update — including a ``callback_query`` with different data —
+        returns ``False`` and keeps its existing behaviour (ultimately dropped
+        by ``_normalize_to_ingest_v1``), so this is strictly additive.
+
+        The connector cannot write the chronicler schema itself (it runs as the
+        restricted ``connector_writer`` role), so it POSTs the answer to the
+        chronicler dashboard API, which applies it deterministically and
+        idempotently. The tap is always acknowledged via ``answerCallbackQuery``
+        (Telegram otherwise leaves a spinner), including graceful toasts for an
+        expired interview or an unreachable/undefined API.
+        """
+        from butlers.chronicler.gap_interview import parse_gap_interview_callback
+
+        callback_query = update.get("callback_query")
+        if not isinstance(callback_query, dict):
+            return False
+        parsed = parse_gap_interview_callback(callback_query.get("data"))
+        if parsed is None:
+            return False  # Not ours — leave for the existing (drop) behaviour.
+
+        interview_id, answer = parsed
+        callback_query_id = str(callback_query.get("id", ""))
+        toast = await self._apply_gap_interview_answer(interview_id, answer)
+        if callback_query_id:
+            await self._answer_callback_query(callback_query_id, toast)
+        return True
+
+    async def _apply_gap_interview_answer(self, interview_id: str, answer: str) -> str:
+        """POST the answer to the chronicler API; return an owner-facing toast."""
+        if not self._config.internal_api_url:
+            logger.warning(
+                "gap-interview callback received but CONNECTOR_INTERNAL_API_URL is unset; "
+                "cannot apply (interview_id=%s)",
+                interview_id,
+            )
+            return "Couldn't record that — please use the dashboard."
+
+        url = f"{self._config.internal_api_url.rstrip('/')}/api/chronicler/gap-interview/resolve"
+        try:
+            resp = await self._http_client.post(
+                url, json={"interview_id": interview_id, "answer": answer}
+            )
+        except Exception as exc:  # noqa: BLE001 — network hiccup ⇒ graceful toast
+            logger.warning("gap-interview resolve POST failed: %s", exc)
+            return "Couldn't record that right now — please try from the dashboard."
+        if resp.status_code >= 400:
+            logger.warning("gap-interview resolve HTTP %d for %s", resp.status_code, interview_id)
+            return "Couldn't record that right now — please try from the dashboard."
+        try:
+            data = resp.json()
+        except Exception:  # noqa: BLE001
+            data = {}
+        return _gap_interview_toast(data, answer)
+
+    async def _answer_callback_query(self, callback_query_id: str, text: str) -> None:
+        """Acknowledge a callback query (clears the button's loading spinner)."""
+        try:
+            await self._http_client.post(
+                f"{self._telegram_api_base}/answerCallbackQuery",
+                json={"callback_query_id": callback_query_id, "text": text},
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort ack
+            logger.debug("answerCallbackQuery failed (non-fatal): %s", exc)
 
     @staticmethod
     def _build_ingestion_envelope(update: dict[str, Any]) -> IngestionEnvelope:

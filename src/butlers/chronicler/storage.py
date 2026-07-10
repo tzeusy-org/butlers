@@ -1226,6 +1226,47 @@ async def update_routine(
     return _row_to_routine(row)
 
 
+async def adjust_routine_confidence(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    routine_id: UUID,
+    *,
+    confidence_delta: float,
+    support_delta: int = 0,
+) -> Routine | None:
+    """Reinforce or decay a routine's mined ``confidence`` in place.
+
+    The weekly miner (``upsert_mined_routine``) fully recomputes ``confidence``
+    from observed support, but a one-tap owner signal (the day-close gap
+    interview, bu-whhll.12) should be able to nudge that statistic between
+    mines: a confirmed workday reinforces (positive ``confidence_delta`` and a
+    ``support_delta`` of +1), a corrected one decays (negative
+    ``confidence_delta``). The result is clamped to the ``[0, 1]`` range the
+    ``chronicler_018`` CHECK constraint enforces, so an accumulation of taps can
+    never push the row outside its domain. ``support_count`` is floored at 0 for
+    the same reason.
+
+    Returns the updated :class:`~butlers.chronicler.models.Routine`, or ``None``
+    when ``routine_id`` does not exist. Only these two mining-statistic columns
+    are touched — window/label/enabled are left to their own owners.
+    """
+    row = await conn.fetchrow(
+        """
+        UPDATE routines
+        SET confidence = LEAST(1.0, GREATEST(0.0, confidence + $2)),
+            support_count = GREATEST(0, support_count + $3),
+            updated_at = now()
+        WHERE id = $1
+        RETURNING *
+        """,
+        routine_id,
+        confidence_delta,
+        support_delta,
+    )
+    if row is None:
+        return None
+    return _row_to_routine(row)
+
+
 async def delete_routine(
     conn: asyncpg.Connection | asyncpg.Pool,
     routine_id: UUID,
