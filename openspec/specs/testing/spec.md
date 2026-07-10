@@ -148,7 +148,8 @@ Tests SHALL be classified into tiers of increasing scope, cost, and infrastructu
 - **WHEN** a test is marked `@pytest.mark.integration`
 - **THEN** it requires Docker for testcontainers (PostgreSQL)
 - **AND** if Docker is unavailable, the test is skipped via the `docker_available` check
-- **AND** all tests under `roster/` are auto-marked as integration tests via `roster/conftest.py`
+- **AND** all tests under `roster/` that do not already declare an explicit `@pytest.mark.unit` are auto-marked as integration tests via `roster/conftest.py`
+- **AND** a test (or its class/module) that explicitly declares `@pytest.mark.unit` is left as unit and runs in the unit CI lane instead, since that declaration is the author's taxonomy call and must not be silently overridden
 
 #### Scenario: Nightly tests (adapter integration)
 - **WHEN** a test is marked `@pytest.mark.nightly`
@@ -208,7 +209,8 @@ Fixtures SHALL be layered across three conftest files with clear scoping and re-
 
 #### Scenario: Roster conftest (roster/conftest.py)
 - **WHEN** tests under `roster/` run
-- **THEN** `roster/conftest.py` auto-applies the `integration` marker and Docker-skip behavior to all tests in that directory tree via `pytest_collection_modifyitems`
+- **THEN** `roster/conftest.py` auto-applies the `integration` marker and Docker-skip behavior to tests in that directory tree via `pytest_collection_modifyitems`, unless the test already declares an explicit `@pytest.mark.unit` (via `item.get_closest_marker("unit")`), in which case the auto-mark is skipped and the test keeps its declared `unit` taxonomy
+- **AND** a meta-test (`roster/test_conftest_marker_taxonomy.py`) pins this exception so it cannot silently regress
 
 ### Requirement: PostgreSQL Testcontainer Infrastructure
 Integration and E2E tests SHALL use Docker testcontainers for PostgreSQL, with resilient startup and teardown to handle transient Docker API errors.

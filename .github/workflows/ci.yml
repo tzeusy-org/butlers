@@ -116,7 +116,10 @@ jobs:
         run: make check-for-update-joins
 
       - name: Unit tests
-        run: uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/e2e -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json --cov-report=term-missing
+        # roster/ is included alongside tests/ so that roster tests explicitly
+        # marked `unit` (respected as of bu-10fgt.2 — see roster/conftest.py)
+        # run in this fast lane instead of only the Docker integration job.
+        run: uv run pytest tests/ roster/ -q --maxfail=1 --tb=short --ignore=tests/e2e -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json --cov-report=term-missing
 
       - name: Smoke tests (fast gate + release evidence)
         id: smoke
