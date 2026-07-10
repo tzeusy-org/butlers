@@ -65,6 +65,22 @@ describe("SessionsKpiStrip", () => {
     expect(text).not.toContain("NaN");
   });
 
+  it("names the outage (not silent dashes) when the aggregate fails to load", () => {
+    // bu-mkd5r three-way contract: a first-load outage must attribute the
+    // dashes to a down source, not read as still-loading forever.
+    mockUseSessionAggregate.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useSessionAggregate>);
+    const { getByRole, getByTestId } = render(<SessionsKpiStrip filterParams={{}} />);
+    const alert = getByRole("alert");
+    expect(alert.textContent).toContain("Session metrics");
+    // Strip still renders (with dashes) beneath the degraded note.
+    expect(getByTestId("sessions-kpi-strip")).toBeTruthy();
+  });
+
   it("passes the filter params straight through to the aggregate hook", () => {
     setAggregate(makeAggregate());
     render(<SessionsKpiStrip filterParams={{ butler: "finance", status: "running" }} />);

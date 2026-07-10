@@ -166,6 +166,48 @@ describe("HousekeepingBand", () => {
     expect((mounted.container.textContent ?? "").toLowerCase()).toContain("housekeeping");
   });
 
+  // Three-way state contract — errored sub-surfaces must not read as empty
+  // (bu-mkd5r).
+
+  it("retention: shows an error state, not 'No retention policies set.', on load failure", () => {
+    wire();
+    vi.mocked(useMemoryRetentionPolicies).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useMemoryRetentionPolicies>);
+    mounted = render();
+    expect(mounted.container.querySelector('[data-testid="memory-retention-error"]')).not.toBeNull();
+    expect(mounted.container.textContent).not.toContain("No retention policies set.");
+  });
+
+  it("compaction: shows an error state, not 'No sweeps recorded.', on load failure", () => {
+    wire();
+    vi.mocked(useMemoryCompactionLog).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useMemoryCompactionLog>);
+    mounted = render();
+    expect(mounted.container.querySelector('[data-testid="memory-compaction-error"]')).not.toBeNull();
+    expect(mounted.container.textContent).not.toContain("No sweeps recorded.");
+  });
+
+  it("embeddings: shows an error state, not 'All embeddings current.', on load failure", () => {
+    wire();
+    vi.mocked(useReembedPending).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useReembedPending>);
+    mounted = render();
+    expect(mounted.container.querySelector('[data-testid="memory-embeddings-error"]')).not.toBeNull();
+    expect(mounted.container.textContent).not.toContain("All embeddings current.");
+  });
+
   // 1 · Retention ----------------------------------------------------------
 
   it("shows the kind as mono text and exposes only TTL/max-rows inputs (no kind input)", () => {

@@ -24,6 +24,7 @@
 
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Voice } from "@/components/ui/Voice";
+import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
 import { LedgerRow } from "@/components/memory/FactsRegister";
 import { DirectiveRow } from "@/components/memory/RulesRegister";
 import { EpisodeRow } from "@/components/memory/EpisodesRegister";
@@ -130,7 +131,7 @@ interface SearchResultsProps {
  * register shape. Empty result is one serif-italic line.
  */
 export default function SearchResults({ q, kind, now }: SearchResultsProps) {
-  const { data: response } = useMemoryInspect({
+  const { data: response, isError, refetch } = useMemoryInspect({
     q,
     kind: kind === "all" ? undefined : kind,
     limit: SEARCH_LIMIT,
@@ -148,6 +149,18 @@ export default function SearchResults({ q, kind, now }: SearchResultsProps) {
   };
   for (const r of results) {
     (byKind[r.kind] ??= []).push(r);
+  }
+
+  if (isError && results.length === 0) {
+    // A failed search must not render "Nothing in the books." — a down inspect
+    // endpoint would read as a genuine no-match result (bu-mkd5r).
+    return (
+      <MemoryLoadError
+        label="search results"
+        onRetry={() => void refetch()}
+        testId="memory-search-error"
+      />
+    );
   }
 
   if (results.length === 0) {

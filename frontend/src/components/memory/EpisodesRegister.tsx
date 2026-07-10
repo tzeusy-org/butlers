@@ -38,6 +38,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
+import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Mono } from "@/components/ui/Mono";
 import { Pill } from "@/components/ui/Pill";
@@ -320,7 +321,7 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
   const { state, setState } = useMemoryUrlState();
   const { status, offset } = state;
 
-  const { data: response } = useEpisodes({
+  const { data: response, isError, refetch } = useEpisodes({
     butler: butlerScope,
     status: status ?? undefined,
     offset,
@@ -344,7 +345,15 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
     <div className="flex flex-col gap-4">
       <StatusPills status={status} onSelect={onSelectStatus} />
 
-      {episodes.length === 0 ? (
+      {isError && episodes.length === 0 ? (
+        // An errored fetch must not render "Nothing observed yet." — a down
+        // backend would read as a genuinely empty daybook (bu-mkd5r).
+        <MemoryLoadError
+          label="the daybook"
+          onRetry={() => void refetch()}
+          testId="memory-episodes-error"
+        />
+      ) : episodes.length === 0 ? (
         <Voice variant="italic" className="py-6">
           {status == null ? "Nothing observed yet." : "Nothing in the daybook for this."}
         </Voice>

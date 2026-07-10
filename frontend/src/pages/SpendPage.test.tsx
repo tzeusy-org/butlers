@@ -731,3 +731,68 @@ describe("SpendPage — routing rules", () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// Degraded states — an errored inline query must render an honest degraded
+// note, never a calm empty (bu-mkd5r, three-way state contract). QueryClient
+// runs with retry:false so a rejected apiFetch surfaces isError on first pass.
+// ---------------------------------------------------------------------------
+
+describe("SpendPage — degraded states (bu-mkd5r)", () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+    setHooks()
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it("forecast outage: posture slot names the outage, not a blank $0 strip", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/forecast") return Promise.reject(new Error("boom"))
+      return defaultApiFetch(path)
+    })
+    await act(async () => {
+      renderPage()
+    })
+    await waitFor(() => {
+      const alerts = screen.getAllByRole("alert").map((el) => el.textContent ?? "")
+      expect(alerts.some((t) => t.includes("Spend forecast"))).toBe(true)
+    })
+    // The genuinely-empty forecast copy must NOT appear on an outage.
+    expect(screen.queryByText("No forecast data is available yet.")).toBeNull()
+  })
+
+  it("breakdown outage: renders a degraded note, not 'No spend has been recorded yet.'", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path.startsWith("/spend/breakdown")) return Promise.reject(new Error("boom"))
+      return defaultApiFetch(path)
+    })
+    await act(async () => {
+      renderPage()
+    })
+    await waitFor(() => {
+      const alerts = screen.getAllByRole("alert").map((el) => el.textContent ?? "")
+      expect(alerts.some((t) => t.includes("Spend breakdown"))).toBe(true)
+    })
+    expect(screen.queryByText("No spend has been recorded yet.")).toBeNull()
+  })
+
+  it("rules outage: renders a degraded note, not the empty-ruleset line", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/rules") return Promise.reject(new Error("boom"))
+      return defaultApiFetch(path)
+    })
+    await act(async () => {
+      renderPage()
+    })
+    await waitFor(() => {
+      const alerts = screen.getAllByRole("alert").map((el) => el.textContent ?? "")
+      expect(alerts.some((t) => t.includes("Routing rules"))).toBe(true)
+    })
+    expect(
+      screen.queryByText(/No routing rules are configured/),
+    ).toBeNull()
+  })
+})

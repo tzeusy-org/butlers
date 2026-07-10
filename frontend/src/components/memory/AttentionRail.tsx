@@ -29,6 +29,7 @@
 
 import { Link } from "react-router";
 
+import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
@@ -164,7 +165,11 @@ interface AttentionRailProps {
  * ACTIVITY list. State color appears ONLY here.
  */
 export default function AttentionRail({ now }: AttentionRailProps) {
-  const { data: statsResp } = useMemoryStats();
+  const {
+    data: statsResp,
+    isError: statsError,
+    refetch: refetchStats,
+  } = useMemoryStats();
   const stats = statsResp?.data;
 
   // Important fading facts: validity=fading ∧ importance >= 8. We only need the
@@ -180,8 +185,21 @@ export default function AttentionRail({ now }: AttentionRailProps) {
   const { data: reembedResp } = useReembedPending();
   const staleEmbeddings = reembedResp?.data?.total ?? 0;
 
-  const { data: activityResp } = useMemoryActivity(20);
+  const {
+    data: activityResp,
+    isError: activityError,
+    refetch: refetchActivity,
+  } = useMemoryActivity(20);
   const activity = activityResp?.data ?? [];
+
+  // A killed stats/activity source must not fall through to the rail's calm
+  // "Nothing waiting." / "Nothing observed yet." lines — those read as a fully
+  // healthy, quiet house when the backend is actually down (bu-mkd5r, the
+  // canonical truth-amnesty defect this bead closes). React Query keeps the
+  // last-good data on a background-refetch error, so these only trip on a
+  // genuine first-load outage with nothing cached.
+  const statsUnavailable = statsError && stats == null;
+  const activityUnavailable = activityError && activity.length === 0;
 
   // Build the attention list in severity/priority order; each row appears only
   // when its condition holds.
@@ -259,7 +277,13 @@ export default function AttentionRail({ now }: AttentionRailProps) {
       {/* NEEDS ATTENTION */}
       <div className="flex flex-col gap-1">
         <Eyebrow as="div">Needs attention</Eyebrow>
-        {items.length === 0 ? (
+        {statsUnavailable ? (
+          <MemoryLoadError
+            label="attention"
+            onRetry={() => void refetchStats()}
+            testId="memory-attention-error"
+          />
+        ) : items.length === 0 ? (
           <Voice variant="italic" className="py-4">
             Nothing waiting.
           </Voice>
@@ -275,7 +299,13 @@ export default function AttentionRail({ now }: AttentionRailProps) {
       {/* RECENT ACTIVITY (de-carded) */}
       <div className="flex flex-col gap-2">
         <Eyebrow as="div">Recent activity</Eyebrow>
-        {activity.length === 0 ? (
+        {activityUnavailable ? (
+          <MemoryLoadError
+            label="recent activity"
+            onRetry={() => void refetchActivity()}
+            testId="memory-activity-error"
+          />
+        ) : activity.length === 0 ? (
           <Voice variant="italic" className="py-4">
             Nothing observed yet.
           </Voice>

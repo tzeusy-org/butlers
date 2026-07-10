@@ -14,6 +14,7 @@
 import type { SessionParams } from "@/api/types"
 import { KpiStrip } from "@/components/overview/KpiStrip"
 import { KPI_EYEBROW_STYLE } from "@/components/overview/kpi-eyebrow"
+import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { useSessionAggregate } from "@/hooks/use-sessions"
 
 const DASH = "—"
@@ -37,16 +38,31 @@ export interface SessionsKpiStripProps {
 }
 
 export function SessionsKpiStrip({ filterParams }: SessionsKpiStripProps) {
-  const { data } = useSessionAggregate(filterParams)
+  const { data, isError, refetch } = useSessionAggregate(filterParams)
   const agg = data?.data
   const top = agg?.by_butler?.[0]
   const terminal = agg ? agg.success_count + agg.failed_count : 0
+
+  // On a first-load outage the aggregate is undefined and every cell falls to
+  // "—", which reads as "still loading" indefinitely rather than "the source
+  // is down". Name the outage so the dashes are honestly attributed
+  // (bu-mkd5r, three-way state contract). Stale data survives a background
+  // refetch error, so this only trips when nothing is cached.
+  const aggUnavailable = isError && agg == null
 
   return (
     <div data-testid="sessions-kpi-strip">
       <p className="tnum uppercase" style={{ ...KPI_EYEBROW_STYLE, marginBottom: "12px" }}>
         Matching filters
       </p>
+      {aggUnavailable && (
+        <SourceDegradedNote
+          label="Session metrics"
+          detail="unavailable"
+          onRetry={() => void refetch()}
+          className="mb-3"
+        />
+      )}
       <KpiStrip
         cells={[
           {

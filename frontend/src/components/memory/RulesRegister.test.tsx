@@ -287,4 +287,16 @@ describe("RulesRegister — standing orders", () => {
     mounted = renderRegister(["/memory?maturity=anti_pattern"]);
     expect(mounted.container.textContent).toContain("Nothing of this maturity.");
   });
+
+  it("renders an error state (not 'No standing orders yet.') on load failure", () => {
+    // bu-mkd5r three-way contract: a down backend must not read as empty.
+    vi.mocked(useRules).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as UseRulesResult);
+    mounted = renderRegister();
+    expect(mounted.container.querySelector('[data-testid="memory-rules-error"]')).not.toBeNull();
+    expect(mounted.container.textContent).not.toContain("No standing orders yet.");
+  });
 });

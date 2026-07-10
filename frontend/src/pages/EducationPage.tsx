@@ -23,7 +23,7 @@ import StrugglingNodesCard from "@/components/education/StrugglingNodesCard";
 import QuizHistoryList from "@/components/education/QuizHistoryList";
 
 export default function EducationPage() {
-  const { data: mindMapsResponse, isLoading } = useMindMaps({ status: "active" });
+  const { data: mindMapsResponse, isLoading, isError, refetch } = useMindMaps({ status: "active" });
   const mindMaps = useMemo(() => mindMapsResponse?.data ?? [], [mindMapsResponse]);
 
   const [selectedMapId, setSelectedMapId] = useState<string | null>(null);
@@ -63,6 +63,33 @@ export default function EducationPage() {
       <div className="space-y-6">
         <h1 className="text-2xl font-bold tracking-tight">Education</h1>
         <p className="text-muted-foreground">Loading...</p>
+      </div>
+    );
+  }
+
+  // An errored fetch must never fall through to the "No curriculums yet."
+  // empty state — a killed backend would read as a calm all-clear (bu-mkd5r,
+  // three-way loading/error/empty contract). Surface it as an honest
+  // error-with-retry instead, above the empty branch below. Gate on an empty
+  // cache so a background-refetch error keeps the last-good curriculum list
+  // visible (React Query never clears data on error) rather than blanking a
+  // populated page.
+  if (isError && mindMaps.length === 0) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold tracking-tight">Education</h1>
+        <div
+          role="alert"
+          className="flex flex-col items-start gap-3 py-8"
+          data-testid="education-error"
+        >
+          <p className="text-sm text-destructive">
+            Couldn't reach the education service — retry.
+          </p>
+          <Button variant="outline" onClick={() => void refetch()}>
+            Retry
+          </Button>
+        </div>
       </div>
     );
   }

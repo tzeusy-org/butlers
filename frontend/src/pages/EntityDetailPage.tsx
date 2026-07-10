@@ -1016,7 +1016,7 @@ function timelineKindGlyph(kind: string): string {
 }
 
 function ActivityTimeline({ entityId }: { entityId: string }) {
-  const { data: items, isLoading } = useEntityTimeline(entityId);
+  const { data: items, isLoading, isError, refetch } = useEntityTimeline(entityId);
   const [filter, setFilter] = useState<TimelineFilter>("all");
 
   const counts = useMemo(() => {
@@ -1087,6 +1087,19 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
           {Array.from({ length: 4 }, (_, i) => (
             <Skeleton key={i} className="h-10 w-full" />
           ))}
+        </div>
+      ) : isError && (!items || items.length === 0) ? (
+        // A failed timeline fetch must not render "No activity recorded yet." —
+        // a down backend would read as a genuinely quiet history (bu-mkd5r).
+        <div
+          role="alert"
+          className="flex flex-col items-center gap-3 py-8 text-center"
+          data-testid="entity-timeline-error"
+        >
+          <p className="text-destructive text-sm">Couldn&rsquo;t load activity — retry.</p>
+          <Button variant="outline" size="sm" onClick={() => void refetch()}>
+            Retry
+          </Button>
         </div>
       ) : filtered.length === 0 ? (
         <p className="text-muted-foreground py-8 text-center text-sm">

@@ -23,6 +23,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
 import { Voice } from "@/components/ui/Voice";
@@ -103,7 +104,12 @@ type RetentionEdit = { ttl_days: number | null; max_rows: number | null };
  * the confirmation.
  */
 function RetentionPolicies() {
-  const { data: policiesResp, isLoading } = useMemoryRetentionPolicies();
+  const {
+    data: policiesResp,
+    isLoading,
+    isError,
+    refetch,
+  } = useMemoryRetentionPolicies();
   const updateMutation = useUpdateMemoryRetentionPolicies();
 
   const policies = useMemo<MemoryRetentionPolicy[]>(
@@ -216,6 +222,14 @@ function RetentionPolicies() {
 
       {isLoading ? (
         <Mono muted>loading…</Mono>
+      ) : isError && policies.length === 0 ? (
+        // A failed load must not render "No retention policies set." — a down
+        // backend would read as a deliberately empty policy set (bu-mkd5r).
+        <MemoryLoadError
+          label="retention policies"
+          onRetry={() => void refetch()}
+          testId="memory-retention-error"
+        />
       ) : policies.length === 0 ? (
         <Voice variant="italic">No retention policies set.</Voice>
       ) : (
@@ -284,7 +298,7 @@ function RetentionPolicies() {
  * recorded."
  */
 function CompactionLog() {
-  const { data: logResp, isLoading } = useMemoryCompactionLog(50);
+  const { data: logResp, isLoading, isError, refetch } = useMemoryCompactionLog(50);
   const entries = logResp?.data ?? [];
 
   return (
@@ -292,6 +306,14 @@ function CompactionLog() {
       <Eyebrow as="div">Compaction</Eyebrow>
       {isLoading ? (
         <Mono muted>loading…</Mono>
+      ) : isError && entries.length === 0 ? (
+        // A failed load must not render "No sweeps recorded." — a down backend
+        // would read as a genuinely quiet compaction history (bu-mkd5r).
+        <MemoryLoadError
+          label="the compaction log"
+          onRetry={() => void refetch()}
+          testId="memory-compaction-error"
+        />
       ) : entries.length === 0 ? (
         <Voice variant="italic">No sweeps recorded.</Voice>
       ) : (
@@ -341,7 +363,7 @@ const REEMBED_CONFIRM_WINDOW_MS = 5000;
  * NO progress bar.
  */
 function Embeddings() {
-  const { data: pendingResp, isLoading } = useReembedPending();
+  const { data: pendingResp, isLoading, isError, refetch } = useReembedPending();
   const reembedMutation = useReembedRun();
 
   // The pending count probes the first available pool (alphabetically-first
@@ -466,6 +488,15 @@ function Embeddings() {
         {/* Drift sentence (or serif-italic "current" line). */}
         {isLoading ? (
           <Mono muted>loading…</Mono>
+        ) : isError && !pending ? (
+          // A failed pending-count load must not render "All embeddings
+          // current." — a down backend would falsely read as zero drift
+          // (bu-mkd5r, three-way state contract).
+          <MemoryLoadError
+            label="embedding drift"
+            onRetry={() => void refetch()}
+            testId="memory-embeddings-error"
+          />
         ) : driftSentence == null ? (
           <Voice variant="italic">All embeddings current.</Voice>
         ) : (

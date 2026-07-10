@@ -589,7 +589,7 @@ type BreakdownBy = "butler" | "model" | "feature" | "purpose"
 
 function BreakdownSection() {
   const [by, setBy] = useState<BreakdownBy>("butler")
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["spend-breakdown", by],
     queryFn: () => fetchBreakdown(by),
     refetchInterval: 120_000,
@@ -627,6 +627,16 @@ function BreakdownSection() {
               <Skeleton key={i} className="h-4 w-full" />
             ))}
           </div>
+        ) : isError && entries.length === 0 ? (
+          // A failed breakdown query must not fall through to "No spend has
+          // been recorded yet." — an outage would read as a genuine $0 month
+          // (bu-mkd5r, three-way state contract). Only when nothing is cached:
+          // a background-refetch error keeps the last-good breakdown visible.
+          <SourceDegradedNote
+            label="Spend breakdown"
+            detail="unavailable"
+            onRetry={() => void refetch()}
+          />
         ) : sourceError ? (
           <SourceDegradedNote label="Purpose breakdown" detail="spend source unavailable" />
         ) : entries.length === 0 ? (
@@ -1170,7 +1180,7 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
 function SpendRulesSection() {
   const queryClient = useQueryClient()
   const [creating, setCreating] = useState(false)
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["spend-rules"],
     queryFn: fetchRules,
     refetchInterval: 60_000,
@@ -1244,6 +1254,17 @@ function SpendRulesSection() {
               <Skeleton key={i} className="h-8 w-full" />
             ))}
           </div>
+        ) : isError && rules.length === 0 ? (
+          // A failed rules fetch must not render RulesTable's empty "No routing
+          // rules are configured" line — that would read as a deliberately
+          // empty ruleset when the endpoint is actually down (bu-mkd5r). Only
+          // when nothing is cached: a background-refetch error keeps the
+          // last-good ruleset visible.
+          <SourceDegradedNote
+            label="Routing rules"
+            detail="unavailable"
+            onRetry={() => void refetch()}
+          />
         ) : (
           <RulesTable
             rules={rules}
@@ -1265,7 +1286,12 @@ export default function SpendPage() {
 
   // Posture — always the current month, independent of the explore-section
   // time window below (matches the original /settings/spend behavior).
-  const { data: forecastData, isLoading: forecastLoading, isError: forecastError } = useQuery({
+  const {
+    data: forecastData,
+    isLoading: forecastLoading,
+    isError: forecastError,
+    refetch: refetchForecast,
+  } = useQuery({
     queryKey: ["spend-forecast"],
     queryFn: fetchForecast,
     refetchInterval: 120_000,
@@ -1443,6 +1469,15 @@ export default function SpendPage() {
           </div>
         ) : liveForecast ? (
           <KpiStrip forecast={liveForecast} />
+        ) : forecastError ? (
+          // Forecast down with nothing cached: surface it here (the posture
+          // slot) rather than rendering a blank strip that reads as "$0 so far
+          // this month" (bu-mkd5r, three-way state contract).
+          <SourceDegradedNote
+            label="Spend forecast"
+            detail="unavailable"
+            onRetry={() => void refetchForecast()}
+          />
         ) : null}
 
         {/* Posture: forecast chart */}
@@ -1462,6 +1497,12 @@ export default function SpendPage() {
               <Skeleton className="h-48 w-full" />
             ) : liveForecast ? (
               <ForecastChart days={liveForecast.days} ceiling_usd={liveForecast.ceiling_usd} />
+            ) : forecastError ? (
+              // Outage already announced in the posture slot above; render
+              // nothing here rather than "No forecast data is available yet.",
+              // which would contradict it by reading as a genuine empty
+              // (bu-mkd5r, three-way state contract).
+              null
             ) : (
               <p className="font-serif italic text-muted-foreground text-sm">
                 No forecast data is available yet.

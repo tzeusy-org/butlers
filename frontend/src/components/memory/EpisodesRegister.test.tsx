@@ -365,4 +365,17 @@ describe("EpisodesRegister — the daybook", () => {
     mounted = renderRegister(["/memory?status=dead_letter"]);
     expect(mounted.container.textContent).toContain("Nothing in the daybook for this.");
   });
+
+  it("renders an error state (not 'Nothing observed yet.') on load failure", () => {
+    // bu-mkd5r three-way contract: a down backend must not read as an empty
+    // daybook.
+    vi.mocked(useEpisodes).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as UseEpisodesResult);
+    mounted = renderRegister();
+    expect(mounted.container.querySelector('[data-testid="memory-episodes-error"]')).not.toBeNull();
+    expect(mounted.container.textContent).not.toContain("Nothing observed yet.");
+  });
 });

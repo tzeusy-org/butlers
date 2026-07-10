@@ -62,6 +62,16 @@ function setStats(stats: MemoryStats | undefined) {
   } as unknown as UseMemoryStatsResult);
 }
 
+/** First-load outage: query errored with nothing cached (bu-mkd5r). */
+function setStatsError() {
+  vi.mocked(useMemoryStats).mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    isError: true,
+    refetch: vi.fn(),
+  } as unknown as UseMemoryStatsResult);
+}
+
 /** The element carrying the dead-letter fragment (whitespace-nowrap span). */
 function findDeadLetterEl(container: HTMLElement): HTMLElement | undefined {
   return Array.from(container.querySelectorAll<HTMLElement>("span")).find((el) =>
@@ -193,6 +203,22 @@ describe("MemoryOverture", () => {
     const reds = Array.from(container.querySelectorAll<HTMLElement>("[class*='--red']"));
     expect(reds).toHaveLength(1);
     expect(reds[0]).toBe(el);
+  });
+
+  it("renders an error state (not a blank calm band) when stats fail to load", () => {
+    // bu-mkd5r three-way contract: a first-load outage must surface an honest
+    // error-with-retry, never render the blank KPI/pipeline bands (which read
+    // as still-loading forever).
+    setStatsError();
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    const errorEl = container.querySelector('[data-testid="memory-overture-error"]');
+    expect(errorEl).not.toBeNull();
+    expect(errorEl!.getAttribute("role")).toBe("alert");
+    expect(errorEl!.textContent).toContain("load memory stats");
+    // The pipeline band's "dead letters" numeral must NOT render on outage.
+    expect(container.textContent).not.toContain("dead letters");
   });
 
   it("renders the headline while stats are still loading (reserved height, no shift)", () => {

@@ -32,6 +32,7 @@
 
 import { useNavigate } from "react-router";
 
+import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
 import { Mono } from "@/components/ui/Mono";
 import { Pill } from "@/components/ui/Pill";
 import { RowLink } from "@/components/ui/RowLink";
@@ -280,7 +281,7 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   // `all` is the unfiltered view; the API takes a concrete maturity string.
   const maturityFilter = maturity === "all" ? undefined : maturity;
 
-  const { data: response } = useRules({
+  const { data: response, isError, refetch } = useRules({
     maturity: maturityFilter,
     scope: butlerScope,
     offset,
@@ -305,7 +306,15 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
     <div className="flex flex-col gap-4">
       <MaturityPills maturity={maturity} onSelect={onSelectMaturity} />
 
-      {ordered.length === 0 ? (
+      {isError && ordered.length === 0 ? (
+        // An errored fetch must not render "No standing orders yet." — a down
+        // backend would read as a genuinely empty ruleset (bu-mkd5r).
+        <MemoryLoadError
+          label="standing orders"
+          onRetry={() => void refetch()}
+          testId="memory-rules-error"
+        />
+      ) : ordered.length === 0 ? (
         <Voice variant="italic" className="py-6">
           {maturity === "all"
             ? "No standing orders yet."

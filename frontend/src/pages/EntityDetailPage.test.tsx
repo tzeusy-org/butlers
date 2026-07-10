@@ -5,7 +5,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import EntityDetailPage, { ENTITY_MODE_STORAGE_KEY } from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
-import { useEntityDeltaFacts, useEntityFacts, useRelationshipEntitiesByIds } from "@/hooks/use-entities";
+import {
+  useEntityDeltaFacts,
+  useEntityFacts,
+  useEntityTimeline,
+  useRelationshipEntitiesByIds,
+} from "@/hooks/use-entities";
 import type { EntityDetail, EntityFact } from "@/api/types";
 import { makeLocalStorageMock } from "@/test-utils/entity-detail-page";
 
@@ -159,6 +164,21 @@ describe("EntityDetailPage — identity hero", () => {
     setEntityState(BASE_ENTITY);
     const html = renderPage();
     expect(html).toContain("Activity");
+  });
+
+  it("shows an activity error state (not 'No activity recorded yet.') on timeline load failure", () => {
+    // bu-mkd5r three-way contract: a down timeline backend must not read as a
+    // genuinely quiet history.
+    setEntityState(BASE_ENTITY);
+    vi.mocked(useEntityTimeline).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityTimeline>);
+    const html = renderPage();
+    expect(html).toContain("entity-timeline-error");
+    expect(html).not.toContain("No activity recorded yet.");
   });
 });
 

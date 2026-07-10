@@ -20,6 +20,7 @@
 // - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2, §6, §7, §8
 // ---------------------------------------------------------------------------
 
+import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
 import { Display } from "@/components/ui/Display";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
@@ -164,8 +165,15 @@ function PipelineBand({ stats }: { stats: MemoryStats }) {
  */
 export default function MemoryOverture() {
   const tz = useTimezone();
-  const { data: statsResponse } = useMemoryStats();
+  const { data: statsResponse, isError, refetch } = useMemoryStats();
   const stats = statsResponse?.data;
+
+  // Stats down with nothing cached: the Voice/KPI/pipeline bands would
+  // otherwise render blank forever, reading as still-loading when the source
+  // is actually unreachable. Surface it instead (bu-mkd5r). A background
+  // refetch error keeps the last-good `stats` renderable (React Query never
+  // clears data on error), so this only trips on a genuine first-load outage.
+  const statsUnavailable = isError && stats == null;
 
   return (
     <section className="flex flex-col gap-8">
@@ -174,22 +182,34 @@ export default function MemoryOverture() {
         <Eyebrow as="div">Memory</Eyebrow>
         <Display className="max-w-[14ch]">What the house believes.</Display>
 
-        {/* Voice sentence — reserve two lines of height to avoid shift. */}
-        <div className="min-h-[52px] max-w-[50ch]">
-          {stats != null && <Voice>{composeVoiceSentence(stats, tz)}</Voice>}
-        </div>
+        {statsUnavailable ? (
+          <MemoryLoadError
+            label="memory stats"
+            onRetry={() => void refetch()}
+            testId="memory-overture-error"
+          />
+        ) : (
+          <>
+            {/* Voice sentence — reserve two lines of height to avoid shift. */}
+            <div className="min-h-[52px] max-w-[50ch]">
+              {stats != null && <Voice>{composeVoiceSentence(stats, tz)}</Voice>}
+            </div>
 
-        {/* KPI strip — reserve the strip height while stats load. */}
-        <div className="min-h-[72px]">
-          {stats != null && <KpiStrip stats={stats} tz={tz} />}
-        </div>
+            {/* KPI strip — reserve the strip height while stats load. */}
+            <div className="min-h-[72px]">
+              {stats != null && <KpiStrip stats={stats} tz={tz} />}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Band 2 — Pipeline. Reserve the band height (rules + line) so the page
           below does not jump when stats arrive. */}
-      <div className="min-h-[49px]">
-        {stats != null && <PipelineBand stats={stats} />}
-      </div>
+      {!statsUnavailable && (
+        <div className="min-h-[49px]">
+          {stats != null && <PipelineBand stats={stats} />}
+        </div>
+      )}
     </section>
   );
 }

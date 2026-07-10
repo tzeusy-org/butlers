@@ -120,6 +120,35 @@ describe("AttentionRail", () => {
     expect(mounted.container.textContent).toContain("Nothing waiting.");
   });
 
+  it("shows an error state (not 'Nothing waiting.') when stats fail to load", () => {
+    // bu-mkd5r three-way contract: a stats outage must not fall through to the
+    // rail's calm "Nothing waiting." line — the canonical truth-amnesty defect.
+    prime({ stats: healthyStats() });
+    vi.mocked(useMemoryStats).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useMemoryStats>);
+    mounted = render();
+    const errorEl = mounted.container.querySelector('[data-testid="memory-attention-error"]');
+    expect(errorEl).not.toBeNull();
+    expect(errorEl!.getAttribute("role")).toBe("alert");
+    expect(mounted.container.textContent).not.toContain("Nothing waiting.");
+  });
+
+  it("shows an error state (not 'Nothing observed yet.') when activity fails to load", () => {
+    prime({ stats: healthyStats() });
+    vi.mocked(useMemoryActivity).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useMemoryActivity>);
+    mounted = render();
+    const errorEl = mounted.container.querySelector('[data-testid="memory-activity-error"]');
+    expect(errorEl).not.toBeNull();
+    expect(mounted.container.textContent).not.toContain("Nothing observed yet.");
+  });
+
   it("renders the dead-letter row with an episodes-filtered action", () => {
     prime({ stats: healthyStats({ dead_letter_episodes: 3 }) });
     mounted = render();

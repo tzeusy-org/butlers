@@ -138,6 +138,28 @@ describe("FactsRegister — the ledger", () => {
     expect(lastFactsParams).toMatchObject({ validity: "active", offset: 0, limit: 50 });
   });
 
+  it("renders an error state (not 'The ledger is empty.') when the fetch fails", () => {
+    // bu-mkd5r three-way contract: a down backend must not read as an empty
+    // ledger.
+    vi.mocked(useFacts).mockReturnValue({
+      data: undefined,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as UseFactsResult);
+    mounted = renderRegister();
+    const errorEl = mounted.container.querySelector('[data-testid="memory-facts-error"]');
+    expect(errorEl).not.toBeNull();
+    expect(errorEl!.getAttribute("role")).toBe("alert");
+    expect(mounted.container.textContent).not.toContain("The ledger is empty.");
+  });
+
+  it("renders the empty state only on a genuinely empty successful fetch", () => {
+    setFacts([]);
+    mounted = renderRegister();
+    expect(mounted.container.querySelector('[data-testid="memory-facts-error"]')).toBeNull();
+    expect(mounted.container.textContent).toContain("The ledger is empty.");
+  });
+
   it("renders subject · predicate, content, and a two-decimal belief numeral", () => {
     setFacts([makeFact({ confidence: 0.94, permanence: "stable" })]);
     mounted = renderRegister();
