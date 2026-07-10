@@ -69,7 +69,7 @@ function severityColor(severity: Severity): string {
   // bu-86c4c.16: --red as text is a documented, tracked contrast gap (see
   // src/lib/contrast.test.ts "known gaps") — --amber-text is the readable
   // variant already shipped for the amber branch.
-  return severity === "red" ? "text-[var(--red)]" : "text-[var(--amber-text)]";
+  return severity === "red" ? "text-[var(--red-text)]" : "text-[var(--amber-text)]";
 }
 
 // ---------------------------------------------------------------------------

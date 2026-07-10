@@ -85,7 +85,7 @@ export function GateSection({
           <span className="mx-1">·</span>
           <span>out {fmt(count.out)}</span>
           {hasDrop && (
-            <span className="ml-1.5 text-[var(--red)]">
+            <span className="ml-1.5 text-[var(--red-text)]">
               · −{fmt(count.dropped)}
             </span>
           )}

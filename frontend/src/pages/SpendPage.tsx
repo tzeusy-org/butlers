@@ -190,7 +190,7 @@ function KpiCell({ label, value, sub, tone = "fg", testId }: KpiCellProps) {
       <span
         className={cn(
           "text-[28px] font-medium tracking-tight tabular-nums leading-none",
-          tone === "red" ? "text-[var(--red)]" : "text-foreground",
+          tone === "red" ? "text-[var(--red-text)]" : "text-foreground",
         )}
       >
         {value}

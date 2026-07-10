@@ -198,7 +198,7 @@ describe("EpisodesRegister — the daybook", () => {
     ]);
     mounted = renderRegister();
     const redEls = Array.from(
-      mounted.container.querySelectorAll('[class*="text-[var(--red)]"]'),
+      mounted.container.querySelectorAll('[class*="text-[var(--red-text)]"]'),
     );
     expect(redEls).toHaveLength(1);
     expect(redEls[0]!.textContent).toBe("✕");

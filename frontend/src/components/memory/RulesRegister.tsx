@@ -34,6 +34,7 @@ import { useNavigate } from "react-router";
 
 import { Mono } from "@/components/ui/Mono";
 import { Pill } from "@/components/ui/Pill";
+import { RowLink } from "@/components/ui/RowLink";
 import { Voice } from "@/components/ui/Voice";
 import { useRules } from "@/hooks/use-memory";
 import {
@@ -112,7 +113,7 @@ function TallyLine({ rule }: { rule: MemoryRule }) {
       <span className="px-1.5">·</span>
       helpful {formatNumeral(rule.success_count)}
       <span className="px-1.5">·</span>
-      <span className={cn(harmfulRed && "text-[var(--red)]")}>
+      <span className={cn(harmfulRed && "text-[var(--red-text)]")}>
         harmful {formatNumeral(harmful)}
       </span>
     </Mono>
@@ -133,24 +134,26 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
   // a 2px --red left sliver spanning the row. No background, no icon.
   const isAntiPattern = rule.maturity === "anti_pattern";
 
-  // The whole row is the hit target → /memory/rules/:id. role=link (not <a>) so
-  // the row stays valid HTML; keyboard users get an Enter affordance.
-  const openRule = () => navigate(`/memory/rules/${rule.id}`);
+  // The whole row is the hit target → /memory/rules/:id. Kept on RowLink's
+  // hasNestedInteractive (`<div role="link">`) branch — matching its sibling
+  // FactsRegister row, which MUST use it (nested entity anchor) — so both
+  // registers share one canonical, keyboard-accessible primitive (Enter+Space
+  // activation, focus-visible ring, hover/focus route prefetch). Navigation is
+  // imperative via onActivate (bu-f310e: recompose onto bu-86c4c.16's primitive).
+  const to = `/memory/rules/${rule.id}`;
+  const openRule = () => navigate(to);
 
   return (
-    <div
-      role="link"
-      tabIndex={0}
-      onClick={openRule}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") openRule();
-      }}
+    <RowLink
+      to={to}
+      hasNestedInteractive
+      onActivate={openRule}
+      aria-label={`Rule: ${rule.content}`}
       className={cn(
         "grid cursor-pointer grid-cols-[44px_1fr_auto] items-baseline gap-x-3",
         // Generous 18px vertical padding — the most on the page (rules are read).
         "border-b border-[var(--border-soft)] px-1 py-[18px]",
         "transition-colors hover:bg-[var(--bg-elev,transparent)]",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/20",
         // 2px --red left sliver for anti_pattern rules; transparent otherwise so
         // the grid geometry never shifts between row kinds.
         "border-l-2",
@@ -177,7 +180,7 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
         <Mono muted>{rule.maturity}</Mono>
         <Mono>{rule.confidence.toFixed(2)}</Mono>
       </div>
-    </div>
+    </RowLink>
   );
 }
 

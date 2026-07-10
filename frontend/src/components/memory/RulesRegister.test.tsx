@@ -174,7 +174,7 @@ describe("RulesRegister — standing orders", () => {
     setRules([makeRule({ harmful_count: 4 })]);
     mounted = renderRegister();
     // The --red class appears, and it wraps the harmful fragment text.
-    const redEl = mounted.container.querySelector('[class*="text-[var(--red)]"]');
+    const redEl = mounted.container.querySelector('[class*="text-[var(--red-text)]"]');
     expect(redEl).not.toBeNull();
     expect(redEl!.textContent).toContain("harmful 4");
     // The applied/helpful fragments are NOT inside the red element.

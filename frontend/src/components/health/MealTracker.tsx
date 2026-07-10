@@ -139,7 +139,7 @@ function RowAction({
       className={cn(
         "shrink-0 font-mono text-[11px] uppercase tracking-wider underline underline-offset-2 transition-colors cursor-pointer disabled:cursor-default disabled:opacity-50",
         tone === "danger"
-          ? "text-muted-foreground hover:text-[var(--red)]"
+          ? "text-muted-foreground hover:text-[var(--red-text)]"
           : "text-muted-foreground hover:text-foreground",
       )}
     >

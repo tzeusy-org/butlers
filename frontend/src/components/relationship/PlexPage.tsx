@@ -56,6 +56,12 @@ import { Page } from "@/components/ui/page";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { ActivitySparkline } from "@/components/relationship/ActivitySparkline";
 import { LatestInteractionsBlock } from "@/components/relationship/LatestInteractionsBlock";
 import { SubpageTabs } from "@/components/relationship/SubpageTabs";
@@ -312,6 +318,13 @@ function PlexNode({
       }}
       onMouseEnter={onHoverStart}
       onMouseLeave={onHoverEnd}
+      // Keyboard parity (bu-f310e): the node is a real <button>, so Tab lands
+      // on it — open the same micro-dossier card on focus and dismiss it on
+      // blur, not on hover alone. The show/hide handlers are debounced
+      // upstream (scheduleHover/scheduleHide), so focus-driven opens read the
+      // same as pointer-driven ones.
+      onFocus={onHoverStart}
+      onBlur={onHoverEnd}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -639,32 +652,48 @@ function OwnerPlexCanvas({
 
       {/* Halo arc labels: each names its dimension and opens the index
           filtered to that type. A truncated arc owns up to its cap. */}
-      {halo?.arcs.map((arc) => {
-        const p = polar(cx, cy, haloR, haloR, arc.midAngle);
-        const shown = arc.marks.length;
-        return (
-          <Link
-            key={`halo-label-${arc.entityType}`}
-            to={`/entities/index?type=${encodeURIComponent(arc.entityType)}`}
-            data-testid="plex-halo-arc-label"
-            className="absolute left-0 top-0 bg-background px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--mfg)] hover:text-foreground"
-            style={{
-              transform: `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`,
-            }}
-            title={
-              shown < arc.total
-                ? `Showing the ${shown} most recently active of ${arc.total}`
-                : undefined
-            }
-          >
-            {HALO_TYPE_LABELS[arc.entityType] ?? arc.entityType}
-            {" · "}
-            <span className="tabular-nums">
-              {shown < arc.total ? `${shown}/${arc.total}` : arc.total}
-            </span>
-          </Link>
-        );
-      })}
+      <TooltipProvider delayDuration={0}>
+        {halo?.arcs.map((arc) => {
+          const p = polar(cx, cy, haloR, haloR, arc.midAngle);
+          const shown = arc.marks.length;
+          const truncated = shown < arc.total;
+          const key = `halo-label-${arc.entityType}`;
+          const link = (
+            <Link
+              key={key}
+              to={`/entities/index?type=${encodeURIComponent(arc.entityType)}`}
+              data-testid="plex-halo-arc-label"
+              className="absolute left-0 top-0 bg-background px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-[var(--mfg)] hover:text-foreground"
+              style={{
+                transform: `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`,
+              }}
+            >
+              {HALO_TYPE_LABELS[arc.entityType] ?? arc.entityType}
+              {" · "}
+              <span className="tabular-nums">
+                {truncated ? `${shown}/${arc.total}` : arc.total}
+              </span>
+            </Link>
+          );
+          // The "shown/total" count is load-bearing only when the arc is
+          // truncated — the meaning of that ratio lived solely in a title=
+          // tooltip, which never surfaced on keyboard focus and was
+          // inconsistently announced (bu-f310e, task 3). A focusable radix
+          // Tooltip (asChild → the Link itself is the trigger, no nested
+          // interactive) shows it on hover AND focus, and is SR-announced.
+          if (!truncated) {
+            return link;
+          }
+          return (
+            <Tooltip key={key}>
+              <TooltipTrigger asChild>{link}</TooltipTrigger>
+              <TooltipContent data-testid="plex-halo-arc-tooltip">
+                Showing the {shown} most recently active of {arc.total}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </TooltipProvider>
 
       {/* Halo satellite marks */}
       {haloMarks.map((mark) => {

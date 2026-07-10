@@ -170,7 +170,7 @@ export function CalendarDuplicatesPanel({
   if (isError) {
     return (
       <div data-testid="duplicates-panel" role="alert" className="flex items-start gap-2 py-1">
-        <span className="mt-[2px] font-mono text-[11px] text-[var(--red)]">●</span>
+        <span className="mt-[2px] font-mono text-[11px] text-[var(--red-text)]">●</span>
         <p className="text-sm text-[var(--fg)]">
           Failed to load duplicate review.{" "}
           <span className="text-[var(--mfg)]">

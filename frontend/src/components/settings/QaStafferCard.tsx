@@ -263,7 +263,7 @@ export default function QaStafferCard() {
               {repo?.last_synced_at ? ` · synced ${repo.last_synced_at}` : ""}
             </p>
             {repo?.last_sync_error ? (
-              <p className="font-mono text-[11px] text-[var(--red)]">
+              <p className="font-mono text-[11px] text-[var(--red-text)]">
                 sync error · {repo.last_sync_error}
               </p>
             ) : null}
@@ -325,7 +325,7 @@ export default function QaStafferCard() {
                 </Button>
               </div>
               {updateGitAuthor.isError ? (
-                <p className="font-mono text-[11px] text-[var(--red)]">
+                <p className="font-mono text-[11px] text-[var(--red-text)]">
                   Could not save commit identity. Try again.
                 </p>
               ) : null}
@@ -392,7 +392,7 @@ export default function QaStafferCard() {
                     type="button"
                     disabled={deleteRepo.isPending || patchRepo.isPending}
                     onClick={() => deleteRepo.mutate({ owner: r.owner, repo: r.repo })}
-                    className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground underline underline-offset-2 hover:text-[var(--red)] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground underline underline-offset-2 hover:text-[var(--red-text)] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     aria-label={`Remove ${r.owner}/${r.repo}`}
                   >
                     Remove

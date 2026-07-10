@@ -28,6 +28,7 @@ import { Link, useNavigate } from "react-router";
 
 import { Mono } from "@/components/ui/Mono";
 import { Pill } from "@/components/ui/Pill";
+import { RowLink } from "@/components/ui/RowLink";
 import { Voice } from "@/components/ui/Voice";
 import { useFacts } from "@/hooks/use-memory";
 import {
@@ -85,24 +86,26 @@ export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
   const tag = permanenceTag(fact.permanence);
   const hasProvenance = fact.source_episode_id != null;
 
-  // The whole row is the hit target → /memory/facts/:id. It is NOT an <a> so the
-  // entity-anchor <Link> inside it stays valid HTML (no nested anchors). Keyboard
-  // users get an Enter affordance via role/tabIndex.
-  const openFact = () => navigate(`/memory/facts/${fact.id}`);
+  // The whole row is the hit target → /memory/facts/:id. It carries a nested
+  // entity <Link>, so it CANNOT be a real <a> (no nested anchors) — RowLink's
+  // hasNestedInteractive branch renders a `<div role="link">` with the shared
+  // a11y contract (tabIndex, Enter+Space activation, focus-visible ring) and
+  // navigates imperatively via onActivate (bu-f310e: recompose onto the
+  // canonical row primitive from bu-86c4c.16; also enables hover/focus route
+  // prefetch via `to`).
+  const to = `/memory/facts/${fact.id}`;
+  const openFact = () => navigate(to);
 
   return (
-    <div
-      role="link"
-      tabIndex={0}
-      onClick={openFact}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") openFact();
-      }}
+    <RowLink
+      to={to}
+      hasNestedInteractive
+      onActivate={openFact}
+      aria-label={`Fact: ${fact.entity_name ?? fact.subject} ${fact.predicate}`}
       className={cn(
         "grid cursor-pointer grid-cols-[minmax(180px,0.8fr)_1fr_auto] items-baseline gap-x-4",
         "border-b border-[var(--border-soft)] px-1 py-2.5",
         "transition-colors hover:bg-[var(--bg-elev,transparent)]",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/20",
         rowColor,
       )}
     >
@@ -150,7 +153,7 @@ export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
           </span>
         )}
       </span>
-    </div>
+    </RowLink>
   );
 }
 

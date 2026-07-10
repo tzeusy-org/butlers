@@ -258,14 +258,14 @@ function RetentionPolicies() {
       )}
 
       {skippedKinds.length > 0 && (
-        <Mono muted className="text-[var(--red)]">
+        <Mono muted className="text-[var(--red-text)]">
           skipped invalid {skippedKinds.length === 1 ? "kind" : "kinds"}:{" "}
           {skippedKinds.join(", ")}
         </Mono>
       )}
 
       {updateMutation.isError && (
-        <Mono muted className="text-[var(--red)]">
+        <Mono muted className="text-[var(--red-text)]">
           save failed, try again
         </Mono>
       )}
@@ -521,7 +521,7 @@ function Embeddings() {
       {runLine && !runInFlight && <Mono muted>{runLine}</Mono>}
 
       {reembedMutation.isError && (
-        <Mono muted className="text-[var(--red)]">
+        <Mono muted className="text-[var(--red-text)]">
           re-embed failed, try again
         </Mono>
       )}

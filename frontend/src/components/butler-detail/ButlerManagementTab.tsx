@@ -401,7 +401,7 @@ function PromptDiffModal({
                   line.type === "added" &&
                     "bg-[var(--green)]/10 text-[var(--green)]",
                   line.type === "removed" &&
-                    "bg-[var(--red)]/10 text-[var(--red)]",
+                    "bg-[var(--red)]/10 text-[var(--red-text)]",
                   line.type === "same" && "text-muted-foreground",
                 )}
               >
@@ -695,7 +695,7 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
         <button
           type="button"
           onClick={() => setShowConfirm(true)}
-          className="font-mono text-[11px] text-[var(--red)] underline underline-offset-4 hover:opacity-80"
+          className="font-mono text-[11px] text-[var(--red-text)] underline underline-offset-4 hover:opacity-80"
         >
           kill switch · 30s grace →
         </button>
@@ -725,7 +725,7 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
               <button
                 type="button"
                 disabled={isPending}
-                className="rounded border border-[var(--red)]/50 px-3 py-1.5 font-mono text-[11px] text-[var(--red)] hover:bg-[var(--red)]/10 disabled:opacity-50"
+                className="rounded border border-[var(--red)]/50 px-3 py-1.5 font-mono text-[11px] text-[var(--red-text)] hover:bg-[var(--red)]/10 disabled:opacity-50"
                 onClick={handleConfirm}
               >
                 {isPending ? "shutting down…" : "confirm shutdown →"}

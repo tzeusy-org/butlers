@@ -1510,7 +1510,7 @@ export function EntitiesIndexPage() {
                   type="button"
                   data-testid="gutter-forget"
                   onClick={() => setBulkConfirm("forget")}
-                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--red)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--red)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.04em] text-[var(--red-text)] underline decoration-[var(--border-strong)] underline-offset-4 hover:decoration-[var(--red)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   <TrashIcon className="h-3.5 w-3.5" aria-hidden />
                   Forget

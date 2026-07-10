@@ -314,7 +314,7 @@ export function FiltersPipeline() {
       {/* Error banners */}
       {(toggleError || deleteError) && (
         <div
-          className="mb-4 font-mono text-[11px] text-[var(--red)] border border-[var(--red)]/30 px-3 py-2"
+          className="mb-4 font-mono text-[11px] text-[var(--red-text)] border border-[var(--red)]/30 px-3 py-2"
           data-testid="filters-mutation-error"
         >
           {toggleError ?? deleteError}

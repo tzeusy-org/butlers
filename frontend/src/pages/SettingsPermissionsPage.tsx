@@ -426,7 +426,7 @@ function AuditReelSection() {
               <span
                 className={cn(
                   "font-serif text-sm flex-1 min-w-0",
-                  isDestructiveAction(entry.action) && "text-[var(--red)]",
+                  isDestructiveAction(entry.action) && "text-[var(--red-text)]",
                 )}
               >
                 {entry.action}
@@ -1173,7 +1173,7 @@ function WebhooksSection() {
                         disabled={deletingId === wh.id}
                         title="Delete webhook"
                         data-testid={`webhook-delete-${wh.id}`}
-                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-[var(--red)] transition-colors disabled:opacity-40 whitespace-nowrap"
+                        className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-[var(--red-text)] transition-colors disabled:opacity-40 whitespace-nowrap"
                       >
                         {deletingId === wh.id ? "Deleting…" : "Delete →"}
                       </button>

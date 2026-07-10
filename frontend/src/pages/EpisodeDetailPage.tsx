@@ -151,7 +151,7 @@ export default function EpisodeDetailPage() {
                 key: "consolidation",
                 value: (
                   <Mono className={cn(
-                    (episode.consolidation_status === "dead_letter" || episode.consolidation_status === "failed") && "text-[var(--red)]"
+                    (episode.consolidation_status === "dead_letter" || episode.consolidation_status === "failed") && "text-[var(--red-text)]"
                   )}>
                     {consolidationGlyph(episode.consolidation_status)} {episode.consolidation_status}
                   </Mono>

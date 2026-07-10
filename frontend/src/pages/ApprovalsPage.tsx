@@ -131,7 +131,7 @@ function statusColor(status: string): string {
     case "executed":
       return "text-blue-600 dark:text-blue-400";
     case "rejected":
-      return "text-[var(--red)]";
+      return "text-[var(--red-text)]";
     case "expired":
       return "text-muted-foreground";
     default:
@@ -369,7 +369,7 @@ function RailItem({
             <span
               className={
                 countdown.warn
-                  ? "text-[var(--red)] font-medium"
+                  ? "text-[var(--red-text)] font-medium"
                   : "text-muted-foreground"
               }
             >
@@ -639,7 +639,7 @@ function Dossier({
               <span
                 className={
                   expiryChip.warn
-                    ? "ml-2 text-[var(--red)] font-medium"
+                    ? "ml-2 text-[var(--red-text)] font-medium"
                     : "ml-2"
                 }
               >

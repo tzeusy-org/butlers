@@ -69,7 +69,7 @@ function GateNode({ def, count, index }: GateNodeProps) {
         </span>
         {hasDrop && (
           <span
-            className="font-mono text-[10px] tracking-[0.04em] text-[var(--red)]"
+            className="font-mono text-[10px] tracking-[0.04em] text-[var(--red-text)]"
             data-testid={`gate-drop-${def.key}`}
           >
             −{fmt(count.dropped)}

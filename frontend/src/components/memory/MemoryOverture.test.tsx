@@ -174,7 +174,7 @@ describe("MemoryOverture", () => {
     expect(el!.textContent).toBe("dead letters 0");
     // Muted token, NOT the red token — zero red pixels above the fold.
     expect(el!.className).toContain("text-[var(--mfg)]");
-    expect(el!.className).not.toContain("text-[var(--red)]");
+    expect(el!.className).not.toContain("text-[var(--red-text)]");
     // No other element on the band should carry the red token.
     const reds = Array.from(container.querySelectorAll<HTMLElement>("[class*='--red']"));
     expect(reds).toHaveLength(0);
@@ -188,7 +188,7 @@ describe("MemoryOverture", () => {
     const el = findDeadLetterEl(container);
     expect(el).toBeDefined();
     expect(el!.textContent).toBe("dead letters 3");
-    expect(el!.className).toContain("text-[var(--red)]");
+    expect(el!.className).toContain("text-[var(--red-text)]");
     // Exactly one red-bearing element: the dead-letter fragment, nothing else.
     const reds = Array.from(container.querySelectorAll<HTMLElement>("[class*='--red']"));
     expect(reds).toHaveLength(1);

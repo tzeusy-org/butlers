@@ -138,6 +138,14 @@
    * the 4.5:1 AA floor). Base --amber at 2.01:1 against --bg cannot carry
    * text; this token can. Use for any `text-[var(--amber)]` site. */
   --amber-text: oklch(0.55 0.10 84.0);
+  /* bu-f310e: text-safe red, split from the --red fill/border token the same
+   * way --amber-text was split from --amber (bu-86c4c.16). Base --red at
+   * 3.84:1 against --bg is below the 4.5:1 AA floor and was used as text at
+   * ~57 call sites (the deferred follow-up from bu-86c4c.16). Darkened +
+   * de-chromed to clear 4.5:1 against both --bg and --bg-elev (5.60:1 /
+   * 5.85:1, verified in src/lib/contrast.test.ts). Use for any
+   * `text-[var(--red)]` site; fills/borders/badges stay on bright --red. */
+  --red-text: oklch(0.53 0.20 29.2);
 
   /* Dispatch border softness variants (light mode) */
   --border-soft:   oklch(0 0 0 / 0.05);   /* list separators */
@@ -505,6 +513,10 @@ body {
    * --amber-text is defined equal to it purely so the same token NAME is
    * theme-safe to reference from either theme. */
   --amber-text: oklch(0.810 0.185 84.0);
+  /* bu-f310e: dark --red already clears AA as text (~5.55:1 vs --bg,
+   * ~5.02:1 vs --bg-elev) — --red-text is defined equal to it purely so the
+   * same token NAME is theme-safe to reference from either theme. */
+  --red-text: oklch(0.685 0.250 29.2);
   --border-soft:   oklch(1 0 0 / 0.06); /* list separators */
   --border-strong: oklch(1 0 0 / 0.18); /* buttons, link underlines */
   --green: oklch(0.790 0.195 148);      /* healthy, positive delta */

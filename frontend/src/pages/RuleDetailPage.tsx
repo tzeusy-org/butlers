@@ -110,7 +110,7 @@ export default function RuleDetailPage() {
           <div className="flex flex-col gap-1">
             <Mono className="tabular-nums">
               applied {rule.applied_count} · helpful {rule.success_count} ·{" "}
-              <span className={cn(harmful > 0 && "text-[var(--red)]")}>
+              <span className={cn(harmful > 0 && "text-[var(--red-text)]")}>
                 harmful {harmful}
               </span>{" "}
               · effectiveness {rule.effectiveness_score.toFixed(2)}

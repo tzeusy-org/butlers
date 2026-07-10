@@ -1297,7 +1297,7 @@ function UsageCell({
 
       {/* used / limit text — clicking the limit opens the inline editor */}
       <div className="flex items-center gap-1 font-mono text-[10px] tabular-nums">
-        <span className={blocked ? "text-[var(--red)]" : "text-muted-foreground"}>
+        <span className={blocked ? "text-[var(--red-text)]" : "text-muted-foreground"}>
           {formatCompactTokens(usage)}
         </span>
         <span className="text-muted-foreground">/</span>

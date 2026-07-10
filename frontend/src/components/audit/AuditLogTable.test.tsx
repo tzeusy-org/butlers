@@ -253,6 +253,47 @@ describe("AuditLogTable -- expanded detail panel pivots", () => {
     );
   });
 
+  it("exposes a keyboard-accessible disclosure trigger that expands the row on Enter (bu-f310e task 1)", async () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AuditLogTable
+            entries={[entry({ id: 13, actor: "finance", note: "kb note" })]}
+            isLoading={false}
+            isError={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const trigger = container.querySelector(
+      '[data-testid="audit-log-row-trigger"]',
+    ) as HTMLElement;
+    // Recomposed onto the DisclosureRow primitive: an activatable widget the
+    // keyboard reaches, not a mouse-only <tr> onClick.
+    expect(trigger).toBeTruthy();
+    expect(trigger.getAttribute("role")).toBe("button");
+    expect(trigger.getAttribute("tabindex")).toBe("0");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    // Enter (a native <button> affordance the old bare <tr> lacked) toggles it.
+    act(() => {
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("kb note");
+
+    // aria-controls points at the disclosed detail content once expanded.
+    const controls = trigger.getAttribute("aria-controls");
+    expect(controls).toBe("audit-detail-13");
+    expect(container.querySelector(`#${controls}`)).toBeTruthy();
+  });
+
   it("does not render an Issues link for a success row", async () => {
     container = document.createElement("div");
     document.body.appendChild(container);

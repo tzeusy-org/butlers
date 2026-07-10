@@ -327,6 +327,41 @@ describe("PlexPage — owner mode", () => {
     renderPage("/entities");
     expect(container.querySelector("[data-testid='plex-rail']")).toBeTruthy();
   });
+
+  it("opens the micro-dossier on keyboard focus, not hover alone (bu-f310e task 4)", () => {
+    renderPage("/entities");
+    const node = nodeByName("Ana");
+    expect(node).toBeTruthy();
+    // No card yet.
+    expect(container.querySelector("[data-testid='plex-hover-card']")).toBeNull();
+
+    // Tab-focus the node (a real <button>). The card is opened via a debounced
+    // scheduleHover (HOVER_SHOW_DELAY_MS); fake timers flush that delay
+    // deterministically.
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        node!.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      });
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      const card = container.querySelector("[data-testid='plex-hover-card']");
+      expect(card).toBeTruthy();
+      expect(card?.textContent).toContain("Ana");
+
+      // Blurring dismisses it (debounced hide).
+      act(() => {
+        node!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      });
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(container.querySelector("[data-testid='plex-hover-card']")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -576,6 +611,47 @@ describe("PlexPage — dimension halo", () => {
     ].map((l) => l.getAttribute("href"));
     expect(hrefs).toContain("/entities/index?type=organization");
     expect(hrefs).toContain("/entities/index?type=place");
+  });
+
+  it("swaps the truncated arc's title= for a focusable, SR-announced tooltip (bu-f310e task 3)", async () => {
+    vi.mocked(usePlexHalo).mockReturnValue(
+      loaded(HALO) as ReturnType<typeof usePlexHalo>,
+    );
+    renderPage("/entities");
+    const labels = [
+      ...container.querySelectorAll<HTMLAnchorElement>(
+        "[data-testid='plex-halo-arc-label']",
+      ),
+    ];
+    const orgLabel = labels.find((l) => l.textContent?.includes("2/171"));
+    const placeLabel = labels.find((l) => l.textContent?.includes("places"));
+    expect(orgLabel, "truncated org arc-label should render").toBeTruthy();
+    expect(placeLabel, "complete place arc-label should render").toBeTruthy();
+
+    // The load-bearing "shown/total" explanation no longer lives in a title=
+    // attribute (which never surfaced on keyboard focus).
+    expect(orgLabel!.getAttribute("title")).toBeNull();
+    // It is now a radix tooltip trigger: a natively-focusable <a> the tooltip
+    // is wired to (radix stamps data-state on the trigger).
+    expect(orgLabel!.tagName).toBe("A");
+    expect(orgLabel!.getAttribute("href")).toBe(
+      "/entities/index?type=organization",
+    );
+    expect(orgLabel!.getAttribute("data-state")).toBe("closed");
+
+    // A complete arc (nothing truncated) carries no tooltip and no title.
+    expect(placeLabel!.getAttribute("data-state")).toBeNull();
+    expect(placeLabel!.getAttribute("title")).toBeNull();
+
+    // Focusing the trigger opens the tooltip and announces the count's meaning
+    // (delayDuration=0 → instant open); the content is SR-announced (role=tooltip).
+    await act(async () => {
+      orgLabel!.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+    const tip = document.body.querySelector("[data-testid='plex-halo-arc-tooltip']");
+    expect(tip?.textContent).toContain(
+      "Showing the 2 most recently active of 171",
+    );
   });
 
   it("clicking a satellite re-centers the plex on it", async () => {

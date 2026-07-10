@@ -99,16 +99,17 @@ describe("RuleDetailPage", () => {
   it("does NOT color the harmful fragment when harmful_count is 0", () => {
     setRule({ ...BASE_RULE, harmful_count: 0 });
     const out = html();
-    // The harmful span must not carry the --red token when harm is zero.
-    expect(out).not.toMatch(/var\(--red\)[^<]*harmful 0/);
-    expect(out).not.toMatch(/harmful 0[^<]*var\(--red\)/);
+    // The harmful span must not carry the red text token when harm is zero.
+    // (--red-text: the AA-safe text sibling of the --red fill token, bu-f310e.)
+    expect(out).not.toMatch(/var\(--red-text\)[^<]*harmful 0/);
+    expect(out).not.toMatch(/harmful 0[^<]*var\(--red-text\)/);
   });
 
-  it("colors the harmful fragment --red when harmful_count > 0", () => {
+  it("colors the harmful fragment --red-text when harmful_count > 0", () => {
     setRule({ ...BASE_RULE, harmful_count: 4 });
     const out = html();
     expect(out).toContain("harmful 4");
-    expect(out).toContain("var(--red)");
+    expect(out).toContain("var(--red-text)");
   });
 
   it("renders provenance derived-from-episode when source_episode_id set", () => {

@@ -42,7 +42,7 @@ function conditionSummary(condition: Record<string, unknown>): string {
 /** Map action string to a color token. */
 function actionColor(action: string): string {
   const verb = action.toLowerCase().split(' ')[0]
-  if (verb === 'drop') return 'text-[var(--red)]'
+  if (verb === 'drop') return 'text-[var(--red-text)]'
   if (verb === 'tier') return 'text-[var(--amber-text)]'
   if (verb === 'route') return 'text-foreground'
   return 'text-muted-foreground'
@@ -128,7 +128,7 @@ export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
           <span className="flex items-center gap-1.5 whitespace-nowrap">
             <button
               type="button"
-              className="font-mono text-[10px] text-[var(--red)] underline underline-offset-2"
+              className="font-mono text-[10px] text-[var(--red-text)] underline underline-offset-2"
               onClick={() => {
                 onDelete?.(rule.id)
                 setConfirmingDelete(false)
@@ -151,7 +151,7 @@ export function RuleRow({ rule, onToggle, onEdit, onDelete }: RuleRowProps) {
         ) : (
           <button
             type="button"
-            className="font-mono text-[12px] text-muted-foreground hover:text-[var(--red)]"
+            className="font-mono text-[12px] text-muted-foreground hover:text-[var(--red-text)]"
             onClick={() => setConfirmingDelete(true)}
             aria-label={`Delete rule ${rule.name ?? rule.id}`}
             data-testid={`rule-delete-${rule.id}`}

@@ -58,7 +58,7 @@ function ruleTier(rule: ApprovalRule): "full autonomy" | "scoped" {
 
 function tierClass(tier: "full autonomy" | "scoped"): string {
   return tier === "full autonomy"
-    ? "text-[var(--red)]"
+    ? "text-[var(--red-text)]"
     : "text-blue-600 dark:text-blue-400";
 }
 

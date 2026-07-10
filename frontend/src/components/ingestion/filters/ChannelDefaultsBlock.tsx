@@ -65,7 +65,7 @@ function policyLabel(action: string): string {
 
 function policyColor(action: string): string {
   const verb = action.toLowerCase().split(/[ :.]/)[0]
-  if (verb === 'block' || verb === 'drop') return 'text-[var(--red)]'
+  if (verb === 'block' || verb === 'drop') return 'text-[var(--red-text)]'
   if (verb === 'low_priority_queue' || verb === 'tier') return 'text-[var(--amber-text)]'
   return 'text-foreground'
 }
@@ -151,7 +151,7 @@ function ChannelDefaultEditor({
   if (state.error) {
     return (
       <div
-        className="col-span-3 py-2 font-mono text-[10.5px] text-[var(--red)]"
+        className="col-span-3 py-2 font-mono text-[10.5px] text-[var(--red-text)]"
         data-testid={`channel-default-editor-error-${channel}`}
       >
         Failed to load current policy for '{channel}'.{' '}
@@ -234,7 +234,7 @@ function ChannelDefaultEditor({
       </div>
       {localError && (
         <p
-          className="mt-2 font-mono text-[10.5px] text-[var(--red)]"
+          className="mt-2 font-mono text-[10.5px] text-[var(--red-text)]"
           data-testid={`channel-default-editor-local-error-${channel}`}
         >
           {localError}
@@ -301,7 +301,7 @@ export function ChannelDefaultsBlock({
       {/* Mutation error */}
       {mutationError && (
         <div
-          className="mt-3 font-mono text-[11px] text-[var(--red)] border border-[var(--red)]/30 px-3 py-2"
+          className="mt-3 font-mono text-[11px] text-[var(--red-text)] border border-[var(--red)]/30 px-3 py-2"
           data-testid="channel-defaults-mutation-error"
         >
           {mutationError}

@@ -92,10 +92,10 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
         >
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Failed</CardTitle>
-            <XCircle className="h-4 w-4 text-[var(--red)]" />
+            <XCircle className="h-4 w-4 text-[var(--red-text)]" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-[var(--red)]">
+            <div className="text-2xl font-bold text-[var(--red-text)]">
               {failed.toLocaleString()}
             </div>
           </CardContent>
@@ -113,7 +113,7 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
             <div
               className={`text-2xl font-bold ${
                 Number(failureRate) > 10
-                  ? "text-[var(--red)]"
+                  ? "text-[var(--red-text)]"
                   : Number(failureRate) > 0
                     ? "text-[var(--amber-text)]"
                     : "text-[var(--green)]"

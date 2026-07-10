@@ -157,7 +157,7 @@ export function PrioritySendersBlock({
       {/* Mutation error */}
       {mutationError && (
         <div
-          className="mt-3 font-mono text-[11px] text-[var(--red)] border border-[var(--red)]/30 px-3 py-2"
+          className="mt-3 font-mono text-[11px] text-[var(--red-text)] border border-[var(--red)]/30 px-3 py-2"
           data-testid="priority-senders-mutation-error"
         >
           {mutationError}
@@ -234,7 +234,7 @@ export function PrioritySendersBlock({
                 {/* Remove */}
                 <button
                   type="button"
-                  className="font-mono text-[12px] text-muted-foreground hover:text-[var(--red)]"
+                  className="font-mono text-[12px] text-muted-foreground hover:text-[var(--red-text)]"
                   onClick={() => onRemove?.(entry.contact_id)}
                   aria-label={`Remove priority sender ${entry.name ?? entry.contact_id}`}
                   data-testid={`priority-sender-remove-${entry.contact_id}`}

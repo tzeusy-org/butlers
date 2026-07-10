@@ -140,7 +140,7 @@ function PipelineBand({ stats }: { stats: MemoryStats }) {
         <span
           className={cn(
             "whitespace-nowrap tabular-nums",
-            deadLetterActive ? "text-[var(--red)]" : "text-[var(--mfg)]",
+            deadLetterActive ? "text-[var(--red-text)]" : "text-[var(--mfg)]",
           )}
         >
           dead letters {formatNumeral(deadLetters)}

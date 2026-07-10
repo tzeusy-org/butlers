@@ -25,7 +25,7 @@ const diffKindMeta = {
   },
   "-": {
     sign: "-",
-    rowClassName: "bg-[var(--red)]/10 text-[var(--red)]",
+    rowClassName: "bg-[var(--red)]/10 text-[var(--red-text)]",
     testId: "qa-diff-line-minus",
   },
   meta: {

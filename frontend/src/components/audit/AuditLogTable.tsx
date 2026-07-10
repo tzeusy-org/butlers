@@ -6,6 +6,7 @@ import { Link } from "react-router";
 import { Time } from "@/components/ui/time";
 import type { AuditLogEntry } from "@/api/types";
 import { CollapsibleJson } from "@/components/sessions/ToolCallTimeline";
+import { DisclosureRow } from "@/components/ui/DisclosureRow";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -76,7 +77,7 @@ function stopRowToggle(e: MouseEvent) {
 function OutcomeBadge({ result }: { result: string | null | undefined }) {
   if (result === "error") {
     return (
-      <span className="text-xs font-medium text-[var(--red)]" data-testid="outcome-error">
+      <span className="text-xs font-medium text-[var(--red-text)]" data-testid="outcome-error">
         Error
       </span>
     );
@@ -200,7 +201,28 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                   data-testid="audit-log-row"
                 >
                   <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
-                    <Time value={entry.ts} mode="relative" />
+                    {/* The row's REAL keyboard-accessible disclosure trigger
+                        (bu-f310e, mirroring TimelineTab's DisclosureRow
+                        recomposition from bu-86c4c.16). DisclosureRow supplies
+                        role="button", Enter+Space activation, and
+                        aria-expanded/aria-controls. It wraps only the static
+                        Time cell (no nested focusable descendants), so — unlike
+                        putting a widget role on the whole <tr>, which sits
+                        around the actor/action/target links — it passes axe's
+                        nested-interactive check. stopPropagation keeps the
+                        outer row's own mouse-convenience onClick from
+                        double-firing the toggle. */}
+                    <DisclosureRow
+                      expanded={expanded}
+                      onToggle={() => toggleExpanded(entry.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      controlsId={expanded ? `audit-detail-${entry.id}` : undefined}
+                      aria-label={`${expanded ? "Collapse" : "Expand"} audit entry details`}
+                      className="inline-flex rounded-sm"
+                      data-testid="audit-log-row-trigger"
+                    >
+                      <Time value={entry.ts} mode="relative" />
+                    </DisclosureRow>
                   </TableCell>
                   <TableCell className="text-sm font-medium">
                     <Link
@@ -247,7 +269,7 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                 {expanded && (
                   <TableRow data-testid="audit-log-detail-row">
                     <TableCell colSpan={5} className="bg-muted/30 p-4">
-                      <div className="space-y-3 text-sm">
+                      <div id={`audit-detail-${entry.id}`} className="space-y-3 text-sm">
                         <div className="grid grid-cols-2 gap-x-6 gap-y-2">
                           <div>
                             <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
@@ -325,7 +347,7 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                             <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
                               Error
                             </span>
-                            <p className="mt-0.5 text-xs text-[var(--red)]">{entry.error}</p>
+                            <p className="mt-0.5 text-xs text-[var(--red-text)]">{entry.error}</p>
                           </div>
                         )}
                         {entry.metadata && (
@@ -334,7 +356,7 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
                         {entry.result === "error" && entry.error && (
                           <Link
                             to={`/issues?q=${encodeURIComponent(firstErrorLine(entry.error))}`}
-                            className="inline-flex text-xs font-medium text-[var(--red)] hover:underline"
+                            className="inline-flex text-xs font-medium text-[var(--red-text)] hover:underline"
                             data-testid="audit-log-issues-link"
                           >
                             View in Issues →

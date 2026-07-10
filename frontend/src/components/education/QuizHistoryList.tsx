@@ -6,8 +6,8 @@ import { useQuizResponses } from "@/hooks/use-education";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 const QUALITY_LABELS: Record<number, { label: string; className: string }> = {
-  0: { label: "Blackout", className: "bg-[var(--red)]/10 text-[var(--red)]" },
-  1: { label: "Wrong", className: "bg-[var(--red)]/10 text-[var(--red)]" },
+  0: { label: "Blackout", className: "bg-[var(--red)]/10 text-[var(--red-text)]" },
+  1: { label: "Wrong", className: "bg-[var(--red)]/10 text-[var(--red-text)]" },
   2: { label: "Hard", className: "bg-[var(--amber)]/10 text-[var(--amber-text)]" },
   3: { label: "Okay", className: "bg-[var(--amber)]/10 text-[var(--amber-text)]" },
   4: { label: "Good", className: "bg-blue-100 text-blue-800" },

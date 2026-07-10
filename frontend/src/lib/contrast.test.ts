@@ -119,8 +119,9 @@ describe("contrast: math sanity", () => {
 // NOTE: "amber" is deliberately excluded — it is a fill/border token used
 // far more broadly than as text (badges, dots, outlines) and is not held to
 // the text AA floor. Text sites use "amber-text" instead (checked below).
-// "red" is also excluded — see the "known gaps" describe block below.
-const TEXT_TOKENS = ["dim", "amber-text", "fg", "mfg", "green"]
+// "red" is also excluded — like amber it is a fill/border token; text sites
+// use "red-text" instead (bu-f310e, checked below).
+const TEXT_TOKENS = ["dim", "amber-text", "red-text", "fg", "mfg", "green"]
 const BG_TOKENS = ["bg", "bg-elev"]
 
 describe.each(["light", "dark"] as const)("contrast: %s theme text tokens vs surface backgrounds", (theme) => {
@@ -158,6 +159,15 @@ describe("contrast: regression pins for the audit's verified failures", () => {
     const ratio = contrastRatio(requireToken(DARK_TOKENS, "dim"), requireToken(DARK_TOKENS, "bg"))
     expect(ratio).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
   })
+
+  it("light --red-text vs --bg is no longer ~3.84:1 (base --red's old text ratio)", () => {
+    // bu-f310e: minted --red-text (the readable variant for text sites) and
+    // repointed every text-[var(--red)] site to it; base --red stays bright
+    // for fills/borders. This pins the fix so the 3.84:1 gap can't silently
+    // return.
+    const ratio = contrastRatio(requireToken(LIGHT_TOKENS, "red-text"), requireToken(LIGHT_TOKENS, "bg"))
+    expect(ratio).toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -166,13 +176,14 @@ describe("contrast: regression pins for the audit's verified failures", () => {
 // green" never gets read as "every token is AA-safe."
 // ---------------------------------------------------------------------------
 
-describe("contrast: known gaps (tracked follow-up, not fixed by this bead)", () => {
-  it("light --red vs --bg remains below AA (~3.84:1) — 57-site text usage out of scope here", () => {
+describe("contrast: fill/border tokens intentionally below the text AA floor", () => {
+  // These tokens are NOT text colors — they paint fills, borders, badges, and
+  // rail accents where the 4.5:1 normal-text floor does not apply. Their
+  // text-safe siblings (--amber-text, --red-text) carry the AA guarantee and
+  // are graded above. This block documents the deliberate split so "base
+  // --red is below 4.5:1" is never misread as an unfixed regression.
+  it("light --red (fill token) sits below the text AA floor by design (~3.84:1); text sites use --red-text", () => {
     const ratio = contrastRatio(requireToken(LIGHT_TOKENS, "red"), requireToken(LIGHT_TOKENS, "bg"))
-    // This assertion intentionally documents the CURRENT (non-passing) state
-    // rather than asserting AA — flip to toBeGreaterThanOrEqual(WCAG_AA_NORMAL_TEXT)
-    // once a --red-text token ships and every text-[var(--red)] site is
-    // repointed to it.
     expect(ratio).toBeLessThan(WCAG_AA_NORMAL_TEXT)
     expect(ratio).toBeGreaterThan(3.5)
   })

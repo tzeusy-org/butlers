@@ -230,7 +230,7 @@ function KpiCell({
         <span
           className={cn(
             "text-[28px] font-medium tracking-tight tabular-nums leading-none",
-            tone === "red" ? "text-[var(--red)]" : "text-foreground",
+            tone === "red" ? "text-[var(--red-text)]" : "text-foreground",
           )}
         >
           {value}
@@ -355,7 +355,7 @@ function ModelsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
             verified / {data?.total ?? 0} enabled
           </span>
           {(data?.errors ?? 0) > 0 && (
-            <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-xs tabular-nums text-[var(--red)]">
+            <span className="ml-auto inline-flex items-center gap-1.5 font-mono text-xs tabular-nums text-[var(--red-text)]">
               <span className="h-1.5 w-1.5 rounded-full bg-[var(--red)]" aria-hidden />
               {data!.errors} error{data!.errors !== 1 ? "s" : ""}
             </span>
@@ -445,7 +445,7 @@ function ApprovalsPanel({ onNavigate }: { onNavigate: (route: string) => void })
           <span
             className={cn(
               "text-[22px] font-medium tabular-nums leading-none",
-              pending > 0 ? "text-[var(--red)]" : "text-foreground",
+              pending > 0 ? "text-[var(--red-text)]" : "text-foreground",
             )}
           >
             {pending}

@@ -118,7 +118,7 @@ function ConsolidationGlyph({ status }: { status: string }) {
       title={status}
       className={cn(
         "text-right",
-        isDead ? "text-[var(--red)]" : "text-[var(--mfg)]",
+        isDead ? "text-[var(--red-text)]" : "text-[var(--mfg)]",
       )}
     >
       {glyph}

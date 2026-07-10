@@ -395,7 +395,7 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
               </span>
             </div>
             <div
-              class="grid grid-cols-[24px_minmax(0,1fr)] bg-[var(--red)]/10 text-[var(--red)]"
+              class="grid grid-cols-[24px_minmax(0,1fr)] bg-[var(--red)]/10 text-[var(--red-text)]"
               data-testid="qa-diff-line-minus"
             >
               <span

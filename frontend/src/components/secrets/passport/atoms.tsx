@@ -851,7 +851,7 @@ export function PillBtn({
         type="button"
         onClick={onClick}
         disabled={disabled}
-        className={cn(base, "bg-transparent text-[var(--red)] border-[var(--red)]")}
+        className={cn(base, "bg-transparent text-[var(--red-text)] border-[var(--red)]")}
         {...rest}
       >
         {children}
