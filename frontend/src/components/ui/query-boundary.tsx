@@ -121,6 +121,8 @@ export interface SourceDegradedNoteProps {
   detail?: string;
   onRetry?: () => void;
   className?: string;
+  /** Optional test id so a page-level test can assert the degraded (not empty) state renders. */
+  testId?: string;
 }
 
 export function SourceDegradedNote({
@@ -128,10 +130,12 @@ export function SourceDegradedNote({
   detail = "unavailable",
   onRetry,
   className,
+  testId,
 }: SourceDegradedNoteProps) {
   return (
     <div
       role="alert"
+      data-testid={testId}
       className={cn(
         "flex items-center gap-2 rounded-sm border border-[var(--amber)]/40 bg-[var(--amber)]/10 px-3 py-2 text-xs text-[var(--amber-text)]",
         className,

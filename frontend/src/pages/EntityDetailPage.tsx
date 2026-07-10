@@ -53,6 +53,7 @@ import { EntityMark } from "@/components/ui/EntityMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { usePageContext } from "@/lib/page-context.tsx";
 import { Row } from "@/components/ui/Row";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Voice } from "@/components/ui/Voice";
 import { ProvenanceMarks, StalenessBand } from "@/components/ui/Provenance";
 import {
@@ -618,9 +619,11 @@ function LinkedContactSection({
   const setLinkedContact = useSetLinkedContact();
   const [linking, setLinking] = useState(false);
   const [search, setSearch] = useState("");
-  const { data: contactsData } = useContacts(
-    linking ? { q: search || undefined, limit: 10 } : undefined,
-  );
+  const {
+    data: contactsData,
+    isError: contactsError,
+    refetch: refetchContacts,
+  } = useContacts(linking ? { q: search || undefined, limit: 10 } : undefined);
   const contacts: ContactSummary[] = contactsData?.contacts ?? [];
 
   function handleUnlink() {
@@ -676,7 +679,15 @@ function LinkedContactSection({
               autoFocus
               className="h-8 text-sm"
             />
-            {contacts.length > 0 ? (
+            {contactsError ? (
+              // A failed contact search must not read as "No contacts found." —
+              // an outage would look like an empty address book (bu-hckjv).
+              <SourceDegradedNote
+                testId="entity-contacts-search-error"
+                label="Contact search"
+                onRetry={() => void refetchContacts()}
+              />
+            ) : contacts.length > 0 ? (
               <div className="max-h-48 overflow-y-auto rounded border">
                 {contacts.map((c) => (
                   <button
@@ -1153,8 +1164,20 @@ function TimelineRow({ item }: { item: EntityTimelineItem }) {
 // ---------------------------------------------------------------------------
 
 function GiftsPanel({ entityId }: { entityId: string }) {
-  const { data: gifts, isLoading } = useEntityGifts(entityId);
-  if (isLoading || !gifts || gifts.length === 0) return null;
+  const { data: gifts, isLoading, isError, refetch } = useEntityGifts(entityId);
+  if (isLoading) return null;
+  // A failed fetch must not collapse silently to the same nothing as an entity
+  // with no gifts — an outage would read as "no gifts recorded" (bu-hckjv).
+  if (isError) {
+    return (
+      <SourceDegradedNote
+        testId="entity-gifts-error"
+        label="Gifts"
+        onRetry={() => void refetch()}
+      />
+    );
+  }
+  if (!gifts || gifts.length === 0) return null;
 
   return (
     <section className="space-y-2">
@@ -1216,8 +1239,19 @@ function formatLoanAmount(amountCents: string | null, currency: string | null): 
 }
 
 function LoansPanel({ entityId }: { entityId: string }) {
-  const { data: loans, isLoading } = useEntityLoans(entityId);
-  if (isLoading || !loans || loans.length === 0) return null;
+  const { data: loans, isLoading, isError, refetch } = useEntityLoans(entityId);
+  if (isLoading) return null;
+  // Don't let a dropped backend read as "no loans on the books" (bu-hckjv).
+  if (isError) {
+    return (
+      <SourceDegradedNote
+        testId="entity-loans-error"
+        label="Loans"
+        onRetry={() => void refetch()}
+      />
+    );
+  }
+  if (!loans || loans.length === 0) return null;
 
   return (
     <section className="space-y-2">
@@ -1271,8 +1305,19 @@ function channelLabel(channel: string | null): string {
 }
 
 function MessageThreadsSection({ entityId }: { entityId: string }) {
-  const { data: threads, isLoading } = useEntityMessageThreads(entityId);
+  const { data: threads, isLoading, isError, refetch } = useEntityMessageThreads(entityId);
   if (isLoading) return null;
+  // A threads fetch that errored must not vanish as if there were no
+  // conversations — surface the degraded source instead (bu-hckjv).
+  if (isError) {
+    return (
+      <SourceDegradedNote
+        testId="entity-message-threads-error"
+        label="Message threads"
+        onRetry={() => void refetch()}
+      />
+    );
+  }
   if (!threads || threads.length === 0) return null;
 
   return (
@@ -2129,10 +2174,11 @@ function WorkbenchContextRail({
   /** Open the compare view for this entity and the given peer. */
   onOpenMergeReviewWith: (peerId: string) => void;
 }) {
-  const { data: neighboursData } = useEntityNeighbours(entityId, {
-    rank: "weight",
-    per_predicate: 6,
-  });
+  const { data: neighboursData, isError: neighboursError, refetch: refetchNeighbours } =
+    useEntityNeighbours(entityId, {
+      rank: "weight",
+      per_predicate: 6,
+    });
 
   // Flatten the per-predicate neighbour groups into a single weight-ranked list
   // of the top relations. Deterministic: weight DESC, then name ASC.
@@ -2162,7 +2208,15 @@ function WorkbenchContextRail({
     >
       <section className="space-y-2">
         <Eyebrow>top relations</Eyebrow>
-        {topRelations.length === 0 ? (
+        {neighboursError ? (
+          // A failed neighbours fetch must not read as "No relations yet." —
+          // that would paint an isolated entity over an outage (bu-hckjv).
+          <SourceDegradedNote
+            testId="workbench-top-relations-error"
+            label="Top relations"
+            onRetry={() => void refetchNeighbours()}
+          />
+        ) : topRelations.length === 0 ? (
           <p className="text-xs text-muted-foreground">No relations yet.</p>
         ) : (
           <div>
@@ -2232,12 +2286,24 @@ function WorkbenchKpiCell({ label, value }: { label: string; value: string | num
  * than showing a silently wrong exact number.
  */
 function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
-  const { data: neighboursData } = useEntityNeighbours(entityId);
-  const { data: binsData } = useEntityActivityBins(entityId, { window: "90d" });
+  const {
+    data: neighboursData,
+    isError: neighboursError,
+    refetch: refetchNeighbours,
+  } = useEntityNeighbours(entityId);
+  const {
+    data: binsData,
+    isError: binsError,
+    refetch: refetchBins,
+  } = useEntityActivityBins(entityId, { window: "90d" });
   // Pull the max page of facts (200) to count distinct sources and channel
   // predicates. has_more=true means >200 facts exist; in that case we surface
   // the observed counts as lower bounds (e.g. "3+") rather than exact totals.
-  const { data: factsData } = useEntityFacts(entityId, { store: "all", limit: 200 });
+  const {
+    data: factsData,
+    isError: factsError,
+    refetch: refetchFacts,
+  } = useEntityFacts(entityId, { store: "all", limit: 200 });
 
   const relations = useMemo(() => {
     const groups = neighboursData?.neighbours ?? {};
@@ -2261,6 +2327,26 @@ function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
   // the facts window was truncated.
   const sources: string | number = truncated ? `${sourcesCount}+` : sourcesCount;
   const channels: string | number = truncated ? `${channelsCount}+` : channelsCount;
+
+  // If any of the three upstream queries errored, the KPI numbers would be
+  // fabricated zeros (0 relations / 0 touches / 0 sources) — an outage reading
+  // as a genuinely inert entity. Surface the degraded source instead (bu-hckjv).
+  if (neighboursError || binsError || factsError) {
+    return (
+      <SourceDegradedNote
+        testId="workbench-kpi-strip-error"
+        label="Metrics"
+        onRetry={() => {
+          // Only refetch the sources that actually errored — avoids redundant
+          // requests for KPIs that loaded fine (consistent with the other
+          // multi-source sections' retry handlers).
+          if (neighboursError) void refetchNeighbours();
+          if (binsError) void refetchBins();
+          if (factsError) void refetchFacts();
+        }}
+      />
+    );
+  }
 
   return (
     <div
@@ -2480,7 +2566,11 @@ function WorkbenchActionRail({
   onForget: () => void;
   duplicateEvidence: string | null;
 }) {
-  const { data: factsData } = useEntityFacts(entityId, { store: "all", limit: 20 });
+  const {
+    data: factsData,
+    isError: factsError,
+    refetch: refetchFacts,
+  } = useEntityFacts(entityId, { store: "all", limit: 20 });
   const facts = useMemo(() => factsData?.items ?? [], [factsData]);
 
   return (
@@ -2557,7 +2647,15 @@ function WorkbenchActionRail({
 
       <section className="space-y-2">
         <Eyebrow>staleness</Eyebrow>
-        {facts.length === 0 ? (
+        {factsError ? (
+          // A failed facts fetch must not read as "No facts to inspect." — an
+          // outage would look like a fact-free entity (bu-hckjv).
+          <SourceDegradedNote
+            testId="workbench-staleness-error"
+            label="Staleness"
+            onRetry={() => void refetchFacts()}
+          />
+        ) : facts.length === 0 ? (
           <p className="text-xs text-muted-foreground">No facts to inspect.</p>
         ) : (
           <div data-testid="workbench-inspector">

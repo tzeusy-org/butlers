@@ -208,10 +208,12 @@ export interface PulseStripProps {
 }
 
 export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) {
-  const { data: timelineItems, isLoading: timelineLoading } =
+  const { data: timelineItems, isLoading: timelineLoading, isError: timelineError } =
     useEntityTimeline(entityId);
-  const { data: gifts, isLoading: giftsLoading } = useEntityGifts(entityId);
-  const { data: loans, isLoading: loansLoading } = useEntityLoans(entityId);
+  const { data: gifts, isLoading: giftsLoading, isError: giftsError } =
+    useEntityGifts(entityId);
+  const { data: loans, isLoading: loansLoading, isError: loansError } =
+    useEntityLoans(entityId);
 
   const lastInteraction = useMemo(() => {
     if (!timelineItems) return null;
@@ -250,6 +252,11 @@ export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) 
   // Using a combined flag prevents the tile from briefly showing "None" while
   // gifts or loans are still in-flight.
   const isLoading = timelineLoading || giftsLoading || loansLoading;
+  // A failed source must not read as calm ("None recorded" / "Quiet" / "None") —
+  // that fabricated all-clear over an outage is the truth-amnesty defect
+  // (bu-hckjv). Show an honest "Unavailable" for the tiles whose source errored.
+  // Open loops draws from both gifts and loans, so either error degrades it.
+  const loopsError = giftsError || loansError;
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -264,36 +271,42 @@ export function PulseStrip({ entityId, dunbarTier, isPinned }: PulseStripProps) 
         value={
           isLoading
             ? "..."
-            : lastInteraction?.valid_at
-              ? formatDistanceToNow(new Date(lastInteraction.valid_at), {
-                  addSuffix: true,
-                })
-              : "None recorded"
+            : timelineError
+              ? "Unavailable"
+              : lastInteraction?.valid_at
+                ? formatDistanceToNow(new Date(lastInteraction.valid_at), {
+                    addSuffix: true,
+                  })
+                : "None recorded"
         }
-        muted={!isLoading && !lastInteraction}
+        muted={timelineError || (!isLoading && !lastInteraction)}
       />
       <PulseTile
         label="Last 30 days"
         value={
           isLoading
             ? "..."
-            : cadence30d === null || cadence30d === 0
-              ? "Quiet"
-              : `${cadence30d} interaction${cadence30d === 1 ? "" : "s"}`
+            : timelineError
+              ? "Unavailable"
+              : cadence30d === null || cadence30d === 0
+                ? "Quiet"
+                : `${cadence30d} interaction${cadence30d === 1 ? "" : "s"}`
         }
-        muted={cadence30d === 0}
+        muted={timelineError || cadence30d === 0}
       />
       <PulseTile
         label="Open loops"
         value={
           isLoading
             ? "..."
-            : openLoops === 0
-              ? "None"
-              : `${openLoops} unresolved`
+            : loopsError
+              ? "Unavailable"
+              : openLoops === 0
+                ? "None"
+                : `${openLoops} unresolved`
         }
-        muted={!isLoading && openLoops === 0}
-        emphasis={openLoops > 0}
+        muted={loopsError || (!isLoading && openLoops === 0)}
+        emphasis={!loopsError && openLoops > 0}
       />
     </div>
   );

@@ -24,6 +24,7 @@ import {
   stalenessBandForTimestamp,
 } from "@/components/ui/Provenance";
 import { Row } from "@/components/ui/Row";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { useEntityMessageThreads, useEntityTimeline } from "@/hooks/use-entities";
 import { deriveLatestTouches, type LatestTouch } from "@/lib/latest-touches";
@@ -60,12 +61,35 @@ function LatestInteractionRow({ touch }: { touch: LatestTouch }) {
 }
 
 export function LatestInteractionsBlock({ entityId }: { entityId: string }) {
-  const { data: threads, isLoading: threadsLoading } =
-    useEntityMessageThreads(entityId);
-  const { data: timeline, isLoading: timelineLoading } =
-    useEntityTimeline(entityId);
+  const {
+    data: threads,
+    isLoading: threadsLoading,
+    isError: threadsError,
+    refetch: refetchThreads,
+  } = useEntityMessageThreads(entityId);
+  const {
+    data: timeline,
+    isLoading: timelineLoading,
+    isError: timelineError,
+    refetch: refetchTimeline,
+  } = useEntityTimeline(entityId);
 
   if (threadsLoading || timelineLoading) return null;
+
+  // A failed read of either source must not collapse to the same nothing as an
+  // entity with no interactions — an outage would read as calm silence (bu-hckjv).
+  if (threadsError || timelineError) {
+    return (
+      <SourceDegradedNote
+        testId="latest-interactions-error"
+        label="Latest interactions"
+        onRetry={() => {
+          if (threadsError) void refetchThreads();
+          if (timelineError) void refetchTimeline();
+        }}
+      />
+    );
+  }
 
   const touches = deriveLatestTouches(threads ?? [], timeline ?? []);
   if (touches.length === 0) return null;

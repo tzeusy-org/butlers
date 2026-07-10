@@ -186,4 +186,32 @@ describe("LatestInteractionsBlock", () => {
     render();
     expect(container.innerHTML).toBe("");
   });
+
+  // Degraded-state contract (bu-hckjv): a failed read of either source must
+  // surface an honest inline note, never collapse to the same silence as an
+  // entity with no interactions.
+  it("renders a degraded note (not a silent vanish) when a source errors", () => {
+    vi.mocked(useEntityMessageThreads).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityMessageThreads>);
+    vi.mocked(useEntityTimeline).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityTimeline>);
+    render();
+    expect(container.querySelector('[data-testid="latest-interactions-error"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="latest-interactions-block"]')).toBeNull();
+  });
+
+  it("shows no degraded note on a genuine empty success", () => {
+    mockData([], []);
+    render();
+    expect(container.querySelector('[data-testid="latest-interactions-error"]')).toBeNull();
+    expect(container.innerHTML).toBe("");
+  });
 });

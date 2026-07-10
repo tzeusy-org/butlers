@@ -137,4 +137,26 @@ describe("CoreDatesBlock", () => {
       container.querySelector('[data-testid="core-date-row-has-birthday"]')?.textContent,
     ).toContain("today");
   });
+
+  // Degraded-state contract (bu-hckjv): a failed fetch must surface an honest
+  // inline note, never collapse to the same silence as an entity with no dates.
+  it("renders a degraded note (not a silent vanish) when the fetch errors", () => {
+    vi.mocked(useEntityCoreDates).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useEntityCoreDates>);
+    render();
+    expect(container.querySelector('[data-testid="core-dates-error"]')).not.toBeNull();
+    // The block itself must not render on error.
+    expect(container.querySelector('[data-testid="core-dates-block"]')).toBeNull();
+  });
+
+  it("shows no degraded note on a genuine empty success", () => {
+    mockCoreDates({ items: [] });
+    render();
+    expect(container.querySelector('[data-testid="core-dates-error"]')).toBeNull();
+    expect(container.innerHTML).toBe("");
+  });
 });

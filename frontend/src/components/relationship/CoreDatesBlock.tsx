@@ -19,6 +19,7 @@ import { format } from "date-fns";
 
 import type { CoreDateEntry } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useEntityCoreDates } from "@/hooks/use-entities";
 
 /** Map a date-kind predicate to a human label. */
@@ -77,9 +78,20 @@ function CoreDateRow({ entry }: { entry: CoreDateEntry }) {
 }
 
 export function CoreDatesBlock({ entityId }: { entityId: string }) {
-  const { data, isLoading } = useEntityCoreDates(entityId);
+  const { data, isLoading, isError, refetch } = useEntityCoreDates(entityId);
 
   if (isLoading) return null;
+  // A failed core-dates fetch must not hide the block as if the entity had no
+  // birthdays or anniversaries — an outage would read as calm absence (bu-hckjv).
+  if (isError) {
+    return (
+      <SourceDegradedNote
+        testId="core-dates-error"
+        label="Core dates"
+        onRetry={() => void refetch()}
+      />
+    );
+  }
   const items = data?.items ?? [];
   if (items.length === 0) return null;
 
