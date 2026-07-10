@@ -5732,92 +5732,12 @@ export interface ChroniclerSourceStateRow {
   subsource_checkpoints: ChroniclerSubsourceCheckpoint[] | null;
 }
 
-// ── Daily rollups + flags (bu-333dq, telemetry-distillation bead 5) ────────
-
-/**
- * One lane's totals for a single local day, from GET /api/chronicler/rollups.
- * Present for every lane in the fixed taxonomy when the day's
- * `status === "materialized"`; absent (the day's `lanes` array is empty)
- * otherwise — see {@link ChroniclerRollupDay}.
- */
-export interface ChroniclerRollupLaneRow {
-  lane: string;
-  seconds: number;
-  episode_count: number;
-  distinct_place_count: number | null;
-  /**
-   * True when a source contributing to this lane is flagged `feeder_dark`
-   * for this day. Render this lane as "data unavailable" — never as a
-   * truthful zero — regardless of what `seconds` says.
-   */
-  unavailable: boolean;
-}
-
-/** One deterministic anomaly-flag row from `chronicler.daily_rollup_flags`. */
-export interface ChroniclerRollupFlagRow {
-  /** One of `feeder_dark`, `sleep_missing`, `routine_break`, `lane_share_outlier`. */
-  flag_type: string;
-  /** One of `info`, `warning`. */
-  severity: string;
-  detail: Record<string, unknown>;
-}
-
-/** One local calendar day's rollup + flags, from GET /api/chronicler/rollups. */
-export interface ChroniclerRollupDay {
-  /** ISO-8601 date string (YYYY-MM-DD), local to `timezone`. */
-  local_date: string;
-  timezone: string;
-  /**
-   * - `"materialized"` — the daily rollup job has written this day's rows;
-   *   `lanes`/`flags` reflect real data.
-   * - `"not_yet_materialized"` — no rows exist yet (day not fully elapsed,
-   *   or outside the job's lookback window). A legitimate absence, not an
-   *   error — never render this as a false all-clear zero, but also never
-   *   treat it as a degraded/error state either.
-   * - `"unknown"` — the query for this window failed (see
-   *   {@link ChroniclerRollupsResponse.rollups_source_error}); this day's
-   *   `lanes`/`flags` are empty because nothing could be read.
-   */
-  status: "materialized" | "not_yet_materialized" | "unknown";
-  lanes: ChroniclerRollupLaneRow[];
-  flags: ChroniclerRollupFlagRow[];
-}
-
-/** Response envelope for GET /api/chronicler/rollups. */
-export interface ChroniclerRollupsResponse {
-  start_date: string;
-  end_date: string;
-  tz: string;
-  /** Ordered by local_date ASC, one entry per day in [start_date, end_date]. */
-  days: ChroniclerRollupDay[];
-  /**
-   * True when the underlying query raised instead of returning rows —
-   * mirrors the backend's `aggregates_available`-family degraded-envelope
-   * convention. Every day in `days` comes back `status: "unknown"` with
-   * empty `lanes`/`flags` when this is true. Never treat a missing/false
-   * value alone as proof of freshness, only as "this request did not fail
-   * outright".
-   */
-  rollups_source_error: boolean;
-}
-
-/**
- * Query parameters for GET /api/chronicler/rollups. Provide either `date`
- * alone, or `start_date` + `end_date` together (both required if either is
- * given). Range capped server-side at 92 days.
- */
-export interface ChroniclerRollupsParams {
-  date?: string;
-  start_date?: string;
-  end_date?: string;
-}
-
 // ── Daily balance vs usual (IEA, tasks.md §9b, bu-jc6htw.2) ─────────────────
 
 /**
  * One lane's balance for the target day, from GET /api/chronicler/balance.
  * Baseline is a trailing rolling-window mean over the same materialized
- * per-day rollups {@link ChroniclerRollupsResponse} reads.
+ * per-day rollups the backend's daily rollup job writes.
  */
 export interface ChroniclerBalanceLaneRow {
   lane: string;
@@ -5842,7 +5762,12 @@ export interface ChroniclerBalanceLaneRow {
 export interface ChroniclerBalanceResponse {
   local_date: string;
   timezone: string;
-  /** Same three-state contract as {@link ChroniclerRollupDay.status}. */
+  /**
+   * Materialization state of the target day's rollup:
+   * - `"materialized"` — rows written, `lanes` reflect real data;
+   * - `"not_yet_materialized"` — no rows yet (legitimate absence, not error);
+   * - `"unknown"` — the query failed (see `balance_source_error`).
+   */
   status: "materialized" | "not_yet_materialized" | "unknown";
   baseline_lookback_days: number;
   /** Empty when `status !== "materialized"`; one entry per lane otherwise. */

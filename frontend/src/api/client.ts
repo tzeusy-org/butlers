@@ -319,8 +319,6 @@ import type {
   ChroniclerEventsParams,
   ChroniclerOverride,
   ChroniclerPointEvent,
-  ChroniclerRollupsParams,
-  ChroniclerRollupsResponse,
   ChroniclerRoutine,
   ChroniclerBalanceParams,
   ChroniclerBalanceResponse,
@@ -5955,20 +5953,6 @@ export function getChroniclerAggregateByDay(
 /** Fetch source adapter state joined with projection checkpoints (singleton, sorted by source_name). */
 export function getChroniclerSourceState(): Promise<{ data: ChroniclerSourceStateRow[]; meta: Record<string, unknown> }> {
   return apiFetch("/chronicler/source-state");
-}
-
-/**
- * Fetch daily rollups + anomaly flags for one local day or an inclusive
- * range. Provide either `date` alone, or `start_date`+`end_date` together.
- */
-export function getChroniclerRollups(
-  params: ChroniclerRollupsParams,
-): Promise<{ data: ChroniclerRollupsResponse; meta: Record<string, unknown> }> {
-  const sp = new URLSearchParams();
-  if (params.date) sp.set("date", params.date);
-  if (params.start_date) sp.set("start_date", params.start_date);
-  if (params.end_date) sp.set("end_date", params.end_date);
-  return apiFetch(`/chronicler/rollups?${sp.toString()}`);
 }
 
 /**

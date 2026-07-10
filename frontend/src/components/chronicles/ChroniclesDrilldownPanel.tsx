@@ -45,7 +45,6 @@ import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer";
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip";
 import { StreakCallouts } from "@/components/chronicles/StreakCallouts";
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton";
-import { RollupTrendWidget } from "@/components/chronicles/RollupTrendWidget";
 import { WorkScheduleSettings } from "@/components/chronicles/WorkScheduleSettings";
 import { DayRibbon } from "@/components/chronicles/DayRibbon";
 import { BalanceRings } from "@/components/chronicles/BalanceRings";
@@ -183,10 +182,6 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
       </div>
 
       <SourceStateBadgeStrip />
-
-      <Section eyebrow="Recent trend">
-        <RollupTrendWidget endDate={date} />
-      </Section>
 
       <MapPanContext.Provider value={mapPanValue}>
         <Section eyebrow="Timeline">
