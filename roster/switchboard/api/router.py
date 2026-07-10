@@ -1092,6 +1092,10 @@ async def get_connectors_summary(
                 coalesce(counter_messages_failed, 0)   AS messages_failed
             FROM connector_registry
             WHERE deleted_at IS NULL
+              -- Archived (superseded) identities are excluded from the
+              -- fleet-health rollup so a permanently-offline dead endpoint
+              -- stops dragging the online/stale/offline counts down (bu-33dm2).
+              AND archived_at IS NULL
             """,
         )
     except Exception:

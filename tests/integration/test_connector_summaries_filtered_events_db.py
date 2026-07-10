@@ -85,6 +85,7 @@ async def pool(postgres_container, migrated_db_url: str):
             counter_messages_ingested BIGINT NOT NULL DEFAULT 0,
             counter_messages_failed BIGINT NOT NULL DEFAULT 0,
             deleted_at TIMESTAMPTZ,
+            archived_at TIMESTAMPTZ,
             PRIMARY KEY (connector_type, endpoint_identity)
         )
     """)

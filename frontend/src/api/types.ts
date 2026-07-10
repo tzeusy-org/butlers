@@ -3395,6 +3395,18 @@ export interface ConnectorSummary {
    * and never ingested is still surfaced here.
    */
   devices?: ConnectorDeviceLiveness[] | null;
+  /**
+   * Soft-archive state (bu-33dm2). `true` when this endpoint identity has been
+   * archived as superseded/dead. Archived identities are still returned by the
+   * summaries endpoint (so the roster can group them into a collapsed "archived"
+   * section reachable for history) but are separated from the active roster —
+   * excluded from attention/KPIs on the frontend and from the fleet-health
+   * rollups on the backend. Optional/additive: absent on older cached responses
+   * — treat as `false` when missing.
+   */
+  archived?: boolean;
+  /** ISO-8601 archival timestamp, or null when not archived (bu-33dm2). */
+  archived_at?: string | null;
 }
 
 /** One OAuth scope entry from connector-oauth-scope-surface backend. */

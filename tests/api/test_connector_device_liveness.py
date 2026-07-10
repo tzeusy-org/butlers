@@ -56,6 +56,7 @@ def _registry_row(
     state: str = "healthy",
     first_seen_at: dt.datetime | None = None,
     last_heartbeat_at: dt.datetime | None = None,
+    archived_at: dt.datetime | None = None,
 ) -> MagicMock:
     if first_seen_at is None:
         first_seen_at = dt.datetime(2024, 1, 1, 0, 0, 0, tzinfo=dt.UTC)
@@ -71,6 +72,7 @@ def _registry_row(
             "first_seen_at": first_seen_at,
             "counter_messages_ingested": 10,
             "counter_messages_failed": 0,
+            "archived_at": archived_at,
         }
     )
 

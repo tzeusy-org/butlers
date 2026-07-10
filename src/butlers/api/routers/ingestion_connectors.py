@@ -10,6 +10,8 @@ GET  /api/ingestion/connectors/summaries        — connector list with aggregat
 GET  /api/ingestion/connectors/cross-summary    — cross-connector aggregate + aggregates_available
 POST /api/ingestion/connectors/{type}/{identity}/pause       — pause a connector (audit-only)
 POST /api/ingestion/connectors/{type}/{identity}/run-now    — resume a paused connector (audit-only)
+POST /api/ingestion/connectors/{type}/{identity}/archive    — soft-archive an id (audit-only)
+POST /api/ingestion/connectors/{type}/{identity}/unarchive  — restore an archived id (audit-only)
 POST /api/ingestion/connectors/{type}/{identity}/disconnect — Approvals-gated; soft-delete (§4.4)
 POST /api/ingestion/connectors/{type}/{identity}/rotate-token — Approvals-gated; masked (§4.5)
 POST /api/ingestion/connectors/{type}/{identity}/reauth      — BLOCKED HTTP 503 (§4.6)
@@ -168,6 +170,17 @@ async def list_connector_summaries_with_aggregates(
     ``aggregates_available``) is ``false`` only if the per-device query itself
     failed — it is unrelated to whether any given connector_type has devices data.
 
+    Each connector entry also includes ``archived`` (bool) and ``archived_at``
+    (nullable ISO-8601) — the soft-archive state (bu-33dm2). Archived rows are
+    still returned here (so the dashboard can group them into a collapsed
+    "archived" section that stays reachable for history), but the frontend
+    separates them from the active roster so they never contribute to
+    attention/KPIs, and the fleet-health rollups (``cross-summary`` and the
+    switchboard ``/connectors/summary``) exclude them entirely so a superseded,
+    permanently-offline identity stops dragging fleet health down. Archived
+    ``!=`` degraded: archiving never masks a genuinely-failing *live* connector,
+    which stays in the active roster.
+
     Always returns HTTP 200 — connector registry errors fall back to an empty list.
     Hourly timeseries errors fall back to all-zero ``hourly_events`` arrays per connector.
     Per-device liveness query errors fall back to ``devices: null`` for every connector
@@ -204,7 +217,8 @@ async def list_connector_summaries_with_aggregates(
                 last_heartbeat_at,
                 first_seen_at,
                 counter_messages_ingested,
-                counter_messages_failed
+                counter_messages_failed,
+                archived_at
             FROM connector_registry
             WHERE deleted_at IS NULL
             ORDER BY first_seen_at DESC
@@ -431,6 +445,15 @@ async def list_connector_summaries_with_aggregates(
                     r["last_heartbeat_at"].isoformat() if r["last_heartbeat_at"] else None
                 ),
                 "first_seen_at": r["first_seen_at"].isoformat(),
+                # Soft-archive state (bu-33dm2). Archived rows are still returned
+                # here so the dashboard can group them into a collapsed "archived"
+                # section (reachable for history), but the FE separates them out
+                # so they never count toward attention/KPIs, and the fleet-health
+                # rollups (cross-summary, /connectors/summary) exclude them
+                # entirely. `archived` is a convenience boolean mirroring whether
+                # `archived_at` is set.
+                "archived": r["archived_at"] is not None,
+                "archived_at": (r["archived_at"].isoformat() if r["archived_at"] else None),
                 "today": {
                     "messages_ingested": messages_ingested_24h,
                     "messages_failed": r["counter_messages_failed"] or 0,
@@ -528,6 +551,10 @@ async def get_cross_connector_summary_with_aggregates(
                 coalesce(counter_messages_failed, 0)   AS messages_failed
             FROM connector_registry
             WHERE deleted_at IS NULL
+              -- Archived (superseded) identities are excluded from the
+              -- fleet-health rollup so a permanently-offline dead endpoint
+              -- stops dragging the online/stale/offline counts down (bu-33dm2).
+              AND archived_at IS NULL
             """,
         )
     except Exception:
@@ -773,6 +800,189 @@ async def run_now_connector(
             "connector_type": str(row["connector_type"]),
             "endpoint_identity": str(row["endpoint_identity"]),
             "state": str(row["state"]),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingestion/connectors/{type}/{identity}/archive
+# POST /api/ingestion/connectors/{type}/{identity}/unarchive
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{connector_type}/{endpoint_identity}/archive",
+    response_model=ApiResponse[dict],
+    status_code=200,
+)
+async def archive_connector(
+    connector_type: str,
+    endpoint_identity: str,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Archive a superseded connector identity — audit-only, no Approvals gate (bu-33dm2).
+
+    Sets ``connector_registry.archived_at`` to NOW() (idempotent — a re-archive
+    of an already-archived row leaves the original timestamp untouched) and emits
+    an audit entry with ``action='connector.archive'``.
+
+    Archiving is a soft, reversible state distinct from ``disconnect``'s
+    ``deleted_at`` soft-delete: an archived row is still listed (grouped into the
+    dashboard's collapsed "archived" section and reachable for history) but is
+    EXCLUDED from the fleet-health rollups, so a permanently-offline superseded
+    identity stops dragging fleet health down. History references
+    (ingestion_events, filtered_events, audit_log) are preserved — nothing is
+    deleted.
+
+    No Approvals-module call is made (archival is a low-risk, reversible,
+    audit-log-only action, matching the ``pause`` gate).
+
+    Returns HTTP 200 with the connector identity + ``archived_at`` on success.
+    Returns HTTP 404 if the connector is not found (or already soft-deleted).
+    Returns HTTP 503 if the connector registry is unavailable.
+    """
+    return await _set_archived(
+        connector_type,
+        endpoint_identity,
+        request,
+        db,
+        archive=True,
+    )
+
+
+@router.post(
+    "/{connector_type}/{endpoint_identity}/unarchive",
+    response_model=ApiResponse[dict],
+    status_code=200,
+)
+async def unarchive_connector(
+    connector_type: str,
+    endpoint_identity: str,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Restore an archived connector identity to the active roster (bu-33dm2).
+
+    Clears ``connector_registry.archived_at`` (sets it back to NULL) and emits an
+    audit entry with ``action='connector.unarchive'``. Idempotent — unarchiving a
+    row that is not archived is a no-op that still returns 200.
+
+    Audit-only, no Approvals gate (mirrors ``archive`` / ``pause``).
+
+    Returns HTTP 200 with the connector identity on success.
+    Returns HTTP 404 if the connector is not found (or soft-deleted).
+    Returns HTTP 503 if the connector registry is unavailable.
+    """
+    return await _set_archived(
+        connector_type,
+        endpoint_identity,
+        request,
+        db,
+        archive=False,
+    )
+
+
+async def _set_archived(
+    connector_type: str,
+    endpoint_identity: str,
+    request: Request,
+    db: DatabaseManager,
+    *,
+    archive: bool,
+) -> ApiResponse[dict]:
+    """Shared implementation for archive / unarchive (bu-33dm2).
+
+    ``archive=True`` sets ``archived_at`` to NOW() only when it is currently NULL
+    (so a re-archive preserves the original timestamp); ``archive=False`` clears
+    it. Both emit an audit entry and are gated only by the connector existing and
+    not being soft-deleted.
+    """
+    pool = _pool(db)
+    action = "connector.archive" if archive else "connector.unarchive"
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            try:
+                if archive:
+                    # COALESCE preserves an existing archived_at (idempotent re-archive).
+                    row = await conn.fetchrow(
+                        "UPDATE connector_registry"
+                        " SET archived_at = COALESCE(archived_at, now())"
+                        " WHERE connector_type = $1 AND endpoint_identity = $2"
+                        " AND deleted_at IS NULL"
+                        " RETURNING connector_type, endpoint_identity, archived_at",
+                        connector_type,
+                        endpoint_identity,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        "UPDATE connector_registry"
+                        " SET archived_at = NULL"
+                        " WHERE connector_type = $1 AND endpoint_identity = $2"
+                        " AND deleted_at IS NULL"
+                        " RETURNING connector_type, endpoint_identity, archived_at",
+                        connector_type,
+                        endpoint_identity,
+                    )
+            except Exception:
+                logger.warning(
+                    "Failed to %s connector %s/%s",
+                    "archive" if archive else "unarchive",
+                    connector_type,
+                    endpoint_identity,
+                    exc_info=True,
+                )
+                raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+            if row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+                )
+
+        # Emit the audit entry AFTER the state change has committed (outside the
+        # transaction block, matching the disconnect/rotate-token audit pattern).
+        # If _audit_append were inside conn.transaction() and raised, asyncpg
+        # would abort the transaction; the swallowed exception then lets the
+        # context manager issue COMMIT, which Postgres turns into a ROLLBACK of
+        # the aborted tx — silently discarding the archive/unarchive while still
+        # returning 200. Auditing post-commit keeps the audit write best-effort
+        # (logged on failure) without ever rolling back the persisted state.
+        try:
+            client_host = getattr(request.client, "host", None) if request.client else None
+            verb = "archived" if archive else "unarchived"
+            await _audit_append(
+                conn,
+                actor="dashboard",
+                action=action,
+                target=f"{connector_type}/{endpoint_identity}",
+                note=(f"Connector '{connector_type}/{endpoint_identity}' {verb} via dashboard"),
+                ip=client_host,
+            )
+        except Exception:
+            logger.warning(
+                "ingestion_connectors: failed to append audit_log entry for %s %s/%s",
+                action,
+                connector_type,
+                endpoint_identity,
+                exc_info=True,
+            )
+
+    logger.info(
+        "%s connector %s/%s",
+        "Archived" if archive else "Unarchived",
+        connector_type,
+        endpoint_identity,
+    )
+
+    archived_at = row["archived_at"]
+    return ApiResponse[dict](
+        data={
+            "connector_type": str(row["connector_type"]),
+            "endpoint_identity": str(row["endpoint_identity"]),
+            "archived": archived_at is not None,
+            "archived_at": archived_at.isoformat() if archived_at else None,
         }
     )
 

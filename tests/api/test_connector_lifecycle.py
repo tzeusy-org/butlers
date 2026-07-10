@@ -31,6 +31,7 @@ async-context-manager chain: pool.acquire().__aenter__ → conn → conn.fetchro
 
 from __future__ import annotations
 
+import datetime as _dt
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -196,3 +197,98 @@ async def test_connector_run_now_409_when_not_paused(app):
         resp = await client.post("/api/ingestion/connectors/gmail/user@example.com/run-now")
 
     assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# POST /api/ingestion/connectors/{type}/{identity}/archive  (bu-33dm2)
+# POST /api/ingestion/connectors/{type}/{identity}/unarchive
+# ---------------------------------------------------------------------------
+
+
+async def test_connector_archive_200_sets_archived_and_audits(app):
+    """POST archive returns 200, reports archived=true + timestamp, and audits."""
+    archived_at = _dt.datetime(2026, 7, 10, 0, 0, 0, tzinfo=_dt.UTC)
+    returned_row = _make_row(
+        {
+            "connector_type": "google_health",
+            "endpoint_identity": "degraded",
+            "archived_at": archived_at,
+        }
+    )
+    conn = _make_conn(fetchrow_results=[returned_row])
+    pool = _make_pool(conn)
+    _wire_db(app, pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_connectors._audit_append",
+        new_callable=AsyncMock,
+    ) as mock_audit:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/ingestion/connectors/google_health/degraded/archive")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["archived"] is True
+    assert body["data"]["archived_at"] == archived_at.isoformat()
+    mock_audit.assert_awaited_once()
+    assert mock_audit.call_args.kwargs["action"] == "connector.archive"
+
+
+async def test_connector_archive_404_not_found(app):
+    """POST archive on a non-existent (or soft-deleted) connector returns 404."""
+    conn = _make_conn(fetchrow_results=[None])
+    pool = _make_pool(conn)
+    _wire_db(app, pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/ingestion/connectors/gmail/ghost@example.com/archive")
+
+    assert resp.status_code == 404
+
+
+async def test_connector_unarchive_200_clears_archived_and_audits(app):
+    """POST unarchive returns 200, reports archived=false, and audits."""
+    returned_row = _make_row(
+        {
+            "connector_type": "google_health",
+            "endpoint_identity": "degraded",
+            "archived_at": None,
+        }
+    )
+    conn = _make_conn(fetchrow_results=[returned_row])
+    pool = _make_pool(conn)
+    _wire_db(app, pool)
+
+    with patch(
+        "butlers.api.routers.ingestion_connectors._audit_append",
+        new_callable=AsyncMock,
+    ) as mock_audit:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/ingestion/connectors/google_health/degraded/unarchive")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["archived"] is False
+    assert body["data"]["archived_at"] is None
+    mock_audit.assert_awaited_once()
+    assert mock_audit.call_args.kwargs["action"] == "connector.unarchive"
+
+
+async def test_connector_unarchive_404_not_found(app):
+    """POST unarchive on a non-existent connector returns 404."""
+    conn = _make_conn(fetchrow_results=[None])
+    pool = _make_pool(conn)
+    _wire_db(app, pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/ingestion/connectors/gmail/ghost@example.com/unarchive")
+
+    assert resp.status_code == 404

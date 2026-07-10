@@ -53,6 +53,7 @@ def _registry_row(
     state: str = "healthy",
     first_seen_at: dt.datetime | None = None,
     last_heartbeat_at: dt.datetime | None = None,
+    archived_at: dt.datetime | None = None,
 ) -> MagicMock:
     if first_seen_at is None:
         first_seen_at = dt.datetime(2024, 1, 1, 0, 0, 0, tzinfo=dt.UTC)
@@ -68,6 +69,7 @@ def _registry_row(
             "first_seen_at": first_seen_at,
             "counter_messages_ingested": 10,
             "counter_messages_failed": 0,
+            "archived_at": archived_at,
         }
     )
 
@@ -323,6 +325,7 @@ async def test_today_messages_ingested_reflects_24h_sum_not_lifetime_counter(
                 # Simulates the real bug: a huge cumulative lifetime counter
                 "counter_messages_ingested": 1_781_451_647,
                 "counter_messages_failed": 0,
+                "archived_at": None,
             }
         )
     ]
@@ -584,3 +587,43 @@ async def test_hourly_events_available_false_on_query_failure(app: FastAPI) -> N
     connector = data["connectors"][0]
     assert connector["hourly_events"] == [0] * 24
     assert connector["hourly_filtered_events"] == [0] * 24
+
+
+# ---------------------------------------------------------------------------
+# archived flag (bu-33dm2)
+# ---------------------------------------------------------------------------
+
+
+async def test_summaries_exposes_archived_flag(app: FastAPI) -> None:
+    """Each connector entry carries `archived`/`archived_at`; archived rows are
+    still returned (so the roster can group them) but flagged distinctly."""
+    archived_ts = dt.datetime(2026, 6, 7, 0, 0, 0, tzinfo=dt.UTC)
+    registry_rows = [
+        _registry_row(connector_type="gmail", endpoint_identity="live@example.com"),
+        _registry_row(
+            connector_type="google_health",
+            endpoint_identity="degraded",
+            archived_at=archived_ts,
+        ),
+    ]
+    pool = _make_pool_with_fetch_sequence([registry_rows, []])
+    _wire_db(app, pool)
+
+    from butlers.api.routers import ingestion_pipeline as _pip_mod
+
+    _pip_mod._pipeline_cache.clear()
+
+    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/ingestion/connectors/summaries")
+
+    assert resp.status_code == 200
+    connectors = {c["endpoint_identity"]: c for c in resp.json()["data"]["connectors"]}
+    # Both are returned — archived rows are NOT hidden from the summaries payload.
+    assert set(connectors) == {"live@example.com", "degraded"}
+    assert connectors["live@example.com"]["archived"] is False
+    assert connectors["live@example.com"]["archived_at"] is None
+    assert connectors["degraded"]["archived"] is True
+    assert connectors["degraded"]["archived_at"] == archived_ts.isoformat()

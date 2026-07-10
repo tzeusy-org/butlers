@@ -55,6 +55,7 @@ import { SourceDegradedNote } from '@/components/ui/query-boundary'
 import { AttentionStrip } from './AttentionStrip'
 import { ConnectorRosterRow } from './ConnectorRosterRow'
 import { DormantList } from './DormantList'
+import { ArchivedConnectorsList } from './ArchivedConnectorsList'
 import { deriveConnectorDispatchInfo } from './connector-auth'
 import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 
@@ -123,8 +124,16 @@ export function ConnectorsRoster() {
     useConnectorSummariesWithAggregates()
   const { data: availableResp } = useAvailableConnectors()
 
-  // The new endpoint returns { connectors: [...], aggregates_available: bool }
-  const allConnectors: ConnectorSummary[] = connectorsResp?.data?.connectors ?? []
+  // The new endpoint returns { connectors: [...], aggregates_available: bool }.
+  // Archived identities (bu-33dm2) are returned in the same list but are
+  // superseded/dead endpoints — split them out so they never contribute to the
+  // active roster, its attention strip, KPI band, sort order, or dormant
+  // detection. They surface only in the collapsed "archived" section below,
+  // which keeps their history reachable. `archived` is absent on older cached
+  // responses; treat missing as false.
+  const returnedConnectors: ConnectorSummary[] = connectorsResp?.data?.connectors ?? []
+  const allConnectors = returnedConnectors.filter((c) => !c.archived)
+  const archivedConnectors = returnedConnectors.filter((c) => c.archived)
   const sorted = sortConnectors(allConnectors)
 
   // hourly_events_available (bu-scyro) is false only when the backend's combined
@@ -224,6 +233,10 @@ export function ConnectorsRoster() {
 
       {/* Dormant / available connectors */}
       <DormantList profiles={dormantProfiles} />
+
+      {/* Archived / superseded connector identities (bu-33dm2) — collapsed,
+          excluded from the active roster + KPIs above, history still reachable. */}
+      <ArchivedConnectorsList connectors={archivedConnectors} />
 
       {/* KPI footer band */}
       <div

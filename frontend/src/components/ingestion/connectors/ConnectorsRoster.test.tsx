@@ -721,3 +721,95 @@ describe('device_liveness_available degraded note (bu-fm3my)', () => {
     expect(container.textContent).toMatch(/per-device liveness source unavailable/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Archived / superseded connector identities (bu-33dm2)
+//
+// Dead endpoint identities are returned in the same summaries list but flagged
+// `archived`. They must be split out of the active roster (no rows, no KPI, no
+// attention) into a collapsed "archived" section whose rows link to detail so
+// their history stays reachable.
+// ---------------------------------------------------------------------------
+
+const ARCHIVED_CONNECTOR: ConnectorSummary = {
+  connector_type: 'google_health',
+  endpoint_identity: 'degraded',
+  liveness: 'offline',
+  state: 'degraded',
+  error_message: null,
+  version: null,
+  uptime_s: null,
+  last_heartbeat_at: null,
+  first_seen_at: '2026-01-01T00:00:00Z',
+  today: { messages_ingested: 0, messages_failed: 0, uptime_pct: null },
+  hourly_events: Array(24).fill(0),
+  archived: true,
+  archived_at: '2026-06-07T00:00:00Z',
+}
+
+describe('archived connectors section (bu-33dm2)', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('renders a collapsed archived section when an archived identity is present', () => {
+    mockHooks([HEALTHY_CONNECTOR, ARCHIVED_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(container.querySelector('[data-testid="archived-section"]')).not.toBeNull()
+    // Collapsed: list not rendered until toggled
+    expect(container.querySelector('[data-testid="archived-list"]')).toBeNull()
+  })
+
+  it('does not render the archived section when there are no archived identities', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(container.querySelector('[data-testid="archived-section"]')).toBeNull()
+  })
+
+  it('excludes archived identities from the active roster rows', () => {
+    mockHooks([HEALTHY_CONNECTOR, ARCHIVED_CONNECTOR])
+    renderRoster(container, root)
+
+    // Only the live connector renders as an active roster row.
+    const rosterRows = container.querySelector('[data-testid="roster-rows"]')
+    const rows = rosterRows?.querySelectorAll('[data-testid^="connector-row-"]') ?? []
+    expect(rows.length).toBe(1)
+    expect(rows[0].getAttribute('data-testid')).toBe('connector-row-gmail')
+    // The archived google_health identity is NOT an active row.
+    expect(
+      container.querySelector('[data-testid="connector-row-google_health"]'),
+    ).toBeNull()
+  })
+
+  it('does not drag an archived (offline) identity into the attention strip', () => {
+    // Only a healthy connector + an archived offline one: nothing needs attention.
+    mockHooks([HEALTHY_CONNECTOR, ARCHIVED_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(container.querySelector('[data-testid="attention-strip"]')).toBeNull()
+  })
+
+  it('expands to show archived rows that link to connector detail (history reachable)', () => {
+    mockHooks([HEALTHY_CONNECTOR, ARCHIVED_CONNECTOR])
+    renderRoster(container, root)
+
+    const toggle = container.querySelector('[data-testid="archived-toggle"]')
+    expect(toggle).not.toBeNull()
+    act(() => {
+      ;(toggle as HTMLButtonElement).click()
+    })
+
+    const row = container.querySelector(
+      '[data-testid="archived-row-google_health:degraded"]',
+    )
+    expect(row).not.toBeNull()
+    expect(row?.tagName).toBe('A')
+    expect(row?.getAttribute('href')).toBe('/ingestion/connectors/google_health/degraded')
+  })
+})
