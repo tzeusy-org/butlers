@@ -1256,7 +1256,10 @@ class TelegramUserClientConnector:
                             external_thread_id=self._extract_chat_id(message),
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(message),
-                            raw=message.to_dict() if hasattr(message, "to_dict") else {},
+                            # Filtered-content privacy tier (bu-it77x): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                         ),
                     )
                     await self._flush_and_drain()
@@ -1289,7 +1292,10 @@ class TelegramUserClientConnector:
                             external_thread_id=self._extract_chat_id(message),
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(message),
-                            raw=message.to_dict() if hasattr(message, "to_dict") else {},
+                            # Filtered-content privacy tier (bu-it77x): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                         ),
                     )
                     await self._flush_and_drain()
@@ -1339,7 +1345,10 @@ class TelegramUserClientConnector:
                                 external_thread_id=self._extract_chat_id(message),
                                 observed_at=datetime.now(UTC).isoformat(),
                                 sender_identity=self._extract_sender_identity(message),
-                                raw=(message.to_dict() if hasattr(message, "to_dict") else {}),
+                                # Filtered-content privacy tier (bu-it77x):
+                                # discretion-IGNORE content persists a bounded
+                                # preview only; no full raw payload retained.
+                                raw={},
                             ),
                         )
                         await self._flush_and_drain()

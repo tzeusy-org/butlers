@@ -13,8 +13,8 @@ Covers:
 - No-op (no buffer touched) when there is no DB pool.
 - Exactly one ``record`` + one ``flush`` per IGNORE — no double-persist.
 - Privacy: ``full_payload.raw`` stays empty and ``subject_or_preview`` is
-  truncated to 200 chars — metadata-tier, matching the WhatsApp connector's
-  discretion-IGNORE persistence rather than Telegram's full raw payload.
+  truncated to 200 chars — the filtered-content privacy tier now normative
+  across connectors (whatsapp, telegram, live-listener) per bu-it77x.
 - ``stop()`` flushes any buffered-but-unflushed filtered-events rows.
 
 Uses a bare instance (``object.__new__``) per the pattern established in
@@ -157,9 +157,9 @@ async def test_record_discretion_ignore_persists_exactly_once() -> None:
 async def test_record_discretion_ignore_full_payload_raw_is_empty() -> None:
     """full_payload.raw stays empty; the transcript never lands there.
 
-    Mirrors the WhatsApp connector's discretion-IGNORE persistence
-    (raw={}) rather than Telegram's full message.to_dict() — ambient voice
-    capture can pick up bystanders who never opted into the connector.
+    Follows the filtered-content privacy tier (raw={}) now normative across
+    connectors per bu-it77x — ambient voice capture can pick up bystanders
+    who never opted into the connector.
     """
     buffer = _mock_buffer()
     connector = _bare_connector(db_pool=object(), buffer=buffer)

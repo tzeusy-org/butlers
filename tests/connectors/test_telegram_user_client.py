@@ -12,6 +12,7 @@ Verifies:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -474,3 +475,87 @@ def test_get_health_state_healthy_when_discretion_auth_ok(
 
     assert state == "healthy"
     assert error_msg is None
+
+
+# ---------------------------------------------------------------------------
+# Filtered-content privacy tier (bu-it77x)
+#
+# Content the connector deliberately does NOT submit (status='filtered':
+# policy block, global skip, discretion IGNORE) persists a bounded preview
+# only — the full raw message payload MUST NOT be retained. Errored content
+# (status='error') is exempt and keeps its payload for diagnosis/replay.
+# This brings telegram_user_client into line with the WhatsApp posture.
+# ---------------------------------------------------------------------------
+
+
+def _allow_decision() -> SimpleNamespace:
+    return SimpleNamespace(allowed=True, action="pass_through", reason="", matched_rule_type=None)
+
+
+async def test_policy_block_persists_no_raw_payload(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A connector-scope policy block records a filtered event whose
+    full_payload.raw is empty and whose preview is bounded to 200 chars."""
+    connector._ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            allowed=False, action="block", reason="blocked", matched_rule_type="sender_domain"
+        )
+    )
+    connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    msg = _make_message(msg_id=7, chat_id=100, sender_id=999, text="z" * 500)
+    await connector._process_message(msg)
+
+    connector._filtered_event_buffer.record.assert_called_once()
+    kwargs = connector._filtered_event_buffer.record.call_args.kwargs
+    assert kwargs["filter_reason"] == "connector_rule:block:sender_domain"
+    assert kwargs["full_payload"]["payload"]["raw"] == {}
+    assert kwargs["subject_or_preview"] == "z" * 200
+
+
+async def test_global_skip_persists_no_raw_payload(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """A global-scope skip records a filtered event with an empty raw payload."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(
+            allowed=True, action="skip", reason="skip", matched_rule_type="keyword"
+        )
+    )
+    connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    msg = _make_message(msg_id=8, chat_id=100, sender_id=999, text="hello")
+    await connector._process_message(msg)
+
+    connector._filtered_event_buffer.record.assert_called_once()
+    kwargs = connector._filtered_event_buffer.record.call_args.kwargs
+    assert kwargs["filter_reason"] == "global_rule:skip:keyword"
+    assert kwargs["full_payload"]["payload"]["raw"] == {}
+
+
+async def test_error_status_retains_full_raw_payload(
+    connector: TelegramUserClientConnector,
+) -> None:
+    """Errored content (status='error') is exempt from the privacy tier and
+    keeps its full raw payload for diagnosis and replay."""
+    connector._ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._global_ingestion_policy.evaluate = MagicMock(return_value=_allow_decision())  # type: ignore[method-assign]
+    connector._discretion_dispatcher = None
+    connector._normalize_to_ingest_v1 = AsyncMock(  # type: ignore[method-assign]
+        return_value={"schema_version": "ingest.v1"}
+    )
+    connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    connector._filtered_event_buffer.record = MagicMock()  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    msg = _make_message(msg_id=9, chat_id=100, sender_id=999, text="hi")
+    await connector._process_message(msg)
+
+    connector._filtered_event_buffer.record.assert_called_once()
+    kwargs = connector._filtered_event_buffer.record.call_args.kwargs
+    assert kwargs["status"] == "error"
+    assert kwargs["full_payload"]["payload"]["raw"] == {"id": 9, "message": "hi"}

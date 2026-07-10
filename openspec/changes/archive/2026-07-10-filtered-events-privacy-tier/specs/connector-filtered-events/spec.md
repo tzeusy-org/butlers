@@ -1,8 +1,28 @@
-# Connector Filtered Events
+## ADDED Requirements
 
-## Purpose
-Provides persistent storage for messages that connectors observe but do not submit to the Switchboard (filtered by policy rules, label exclusions, or processing errors). Enables operator visibility into what was dropped and supports replay of individual events through the standard ingestion pipeline.
-## Requirements
+### Requirement: Filtered-Content Privacy Tier
+Content that a connector deliberately declines to submit to the Switchboard SHALL be persisted under a minimal-retention privacy tier: the connector chose not to process it, so its full raw payload MUST NOT be retained. This tier applies to every `filtered`-status row regardless of connector or filter reason. Errored rows (`error` status) are exempt — a processing failure is not a discretion decision, and its payload is retained for diagnosis and replay.
+
+This resolves a real divergence between connectors: the WhatsApp user-client persisted filtered content as an empty raw payload plus a bounded preview, while several other connectors (Telegram user-client, Gmail, Discord, Google Calendar, Google Health, Spotify, Telegram bot) persisted the full raw provider payload for the same class of dropped content. The minimal-retention posture is now normative.
+
+#### Scenario: Filtered content persists a bounded preview only
+- **WHEN** a connector persists a row with status `filtered` (any filter reason: `label_exclude:*`, a policy-rule reason, or `discretion:ignore:*`)
+- **THEN** `subject_or_preview` SHALL contain at most 200 characters of the message's normalized text, or NULL when no text is available
+- **AND** `full_payload.payload.raw` SHALL be empty (`{}`) — the full raw provider payload MUST NOT be persisted
+- **AND** the envelope metadata (`source`, `event`, `sender`, `control`) SHALL still be persisted for operator visibility and audit
+
+#### Scenario: Errored content is exempt from the privacy tier
+- **WHEN** a connector persists a row with status `error`
+- **THEN** `full_payload.payload.raw` MAY contain the raw provider payload available at the point of failure
+- **AND** this content is retained to support diagnosis and replay, not redacted for privacy
+
+#### Scenario: Replay of filtered content is best-effort
+- **WHEN** a `filtered`-status row is replayed through the ingestion pipeline
+- **THEN** the replay envelope is reconstructed from the persisted metadata (and bounded preview) only
+- **AND** because the raw payload was not retained, replay fidelity is best-effort and MAY differ from the original message body
+
+## MODIFIED Requirements
+
 ### Requirement: Connectors Schema
 The `connectors` Postgres schema is a dedicated namespace for connector-owned persistent state. It is separate from the `switchboard` schema and SHALL be owned by connector processes.
 
@@ -86,24 +106,7 @@ The `full_payload` JSONB column SHALL store envelope metadata sufficient to reco
 - **THEN** `full_payload` SHALL contain whatever envelope fields were available at the point of failure
 - **AND** incomplete payloads are acceptable — replay of error-status events MAY fail again if the root cause is not fixed
 
-### Requirement: Filtered-Content Privacy Tier
-Content that a connector deliberately declines to submit to the Switchboard SHALL be persisted under a minimal-retention privacy tier: the connector chose not to process it, so its full raw payload MUST NOT be retained. This tier applies to every `filtered`-status row regardless of connector or filter reason. Errored rows (`error` status) are exempt — a processing failure is not a discretion decision, and its payload is retained for diagnosis and replay.
-
-This resolves a real divergence between connectors: the WhatsApp user-client persisted filtered content as an empty raw payload plus a bounded preview, while several other connectors (Telegram user-client, Gmail, Discord, Google Calendar, Google Health, Spotify, Telegram bot) persisted the full raw provider payload for the same class of dropped content. The minimal-retention posture is now normative.
-
-#### Scenario: Filtered content persists a bounded preview only
-- **WHEN** a connector persists a row with status `filtered` (any filter reason: `label_exclude:*`, a policy-rule reason, or `discretion:ignore:*`)
-- **THEN** `subject_or_preview` SHALL contain at most 200 characters of the message's normalized text, or NULL when no text is available
-- **AND** `full_payload.payload.raw` SHALL be empty (`{}`) — the full raw provider payload MUST NOT be persisted
-- **AND** the envelope metadata (`source`, `event`, `sender`, `control`) SHALL still be persisted for operator visibility and audit
-
-#### Scenario: Errored content is exempt from the privacy tier
-- **WHEN** a connector persists a row with status `error`
-- **THEN** `full_payload.payload.raw` MAY contain the raw provider payload available at the point of failure
-- **AND** this content is retained to support diagnosis and replay, not redacted for privacy
-
-#### Scenario: Replay of filtered content is best-effort
-- **WHEN** a `filtered`-status row is replayed through the ingestion pipeline
-- **THEN** the replay envelope is reconstructed from the persisted metadata (and bounded preview) only
-- **AND** because the raw payload was not retained, replay fidelity is best-effort and MAY differ from the original message body
-
+## Source References
+- `about/heart-and-soul/security.md` — "Sensitive Data Categories": connector-level controls (ingestion tier, retention periods, opt-in activation) are the primary privacy mechanism. The metadata-tier precedent (OwnTracks stores "no raw coordinates in the ingest payload") is the same posture applied here to deliberately-filtered content.
+- RFC 0003 (Switchboard routing and ingestion) — `ingest.v1` envelope shape reconstructed on replay.
+- `openspec/specs/connector-live-listener/spec.md` — ambient-capture connector already applies this privacy tier for discretion-IGNORE content (`raw={}` + bounded preview).
