@@ -531,8 +531,13 @@ function DrawerReplaysTab({ requestId, enabled }: { requestId: string; enabled: 
           </div>
         ))}
       </div>
+      {/* Grounded in code (bu-lkzsf.3), replacing a fabricated "3 attempts with exponential
+          backoff" claim: dispatch is single-attempt (src/butlers/modules/pipeline.py:1982,
+          2603, 2950 hardcode "attempt": 1, no retry loop). Recovery is the manual replay
+          request above (src/butlers/core/ingestion_events.py `ingestion_event_replay_request`). */}
       <p className="font-serif text-[13px] leading-[1.55] text-muted-foreground italic pt-2">
-        Retry policy: up to 3 attempts with exponential backoff, then held for manual review.
+        No automatic retries — each dispatch is a single attempt. A failed event stays failed
+        until replay is requested from this drawer.
       </p>
     </div>
   )

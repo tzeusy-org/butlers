@@ -74,9 +74,16 @@ export const GATE_DEFS: GateDefinition[] = [
   {
     key: 'execute',
     label: 'execute',
-    gloss: 'Spawns the butler session. Failures retry up to 3 times, then queue for replay.',
+    // Grounded in code, replacing a fabricated "3 retries + exponential backoff" claim
+    // (bu-lkzsf.3): the dispatch envelope hardcodes `"attempt": 1` with no retry loop
+    // (src/butlers/modules/pipeline.py:1982, 2603, 2950). Recovery is a person-triggered
+    // replay request (src/butlers/core/ingestion_events.py `ingestion_event_replay_request`),
+    // which resets `failed` -> `ingested` for one more single-attempt dispatch.
+    gloss:
+      'Spawns the butler session in a single attempt. A failure surfaces as failed, not a retry.',
     codePolicy:
-      'Execution policy lives in code. Exponential back-off, 3 retries, then manual replay queue.',
+      'Execution policy lives in code, not in the rules DSL. One dispatch attempt — no automatic ' +
+      'retry or back-off. A failed event stays failed/replay_failed until someone requests replay.',
   },
 ]
 
