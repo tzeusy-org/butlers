@@ -47,8 +47,15 @@ pytestmark = [
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with the tables needed by correct_route."""
-    async with provisioned_postgres_pool() as p:
+    """Provision a fresh database with the tables needed by correct_route.
+
+    Scoped to the real ``switchboard`` schema (not ``public``) to mirror
+    production's one-db/multi-schema topology — required for the
+    schema-qualified ``butler_registry``/``routing_log`` queries inside
+    route()/resolve_routing_target() to resolve correctly.
+    """
+    async with provisioned_postgres_pool(schema="switchboard") as p:
+        await p.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
         # public.ingestion_events (from core_019 + core_032)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS public.ingestion_events (

@@ -346,6 +346,20 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                     "cannot deliver notification for key=%s",
                     snapshot.key,
                 )
+                # A genuine terminal failure — must be recorded, not silent,
+                # or an unresolvable recipient reads identically to quiet-hours
+                # discipline in the ledger.
+                await record_attention_event(
+                    shared_pool,
+                    origin_butler=_LIFECYCLE_ACTOR,
+                    source="notify",
+                    outcome="deferred",
+                    channel="telegram",
+                    intent="send",
+                    priority="medium",
+                    reason="no_recipient_configured",
+                    dedup_key=snapshot.key,
+                )
                 continue
 
             message = _compose_message(snapshot, dashboard_url)
@@ -404,10 +418,24 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 target=snapshot.key,
                 note=snapshot.state,
             )
-        except Exception:
+        except Exception as exc:
             errors += 1
             logger.exception(
                 "secrets_lifecycle_check: unexpected error notifying for key=%s", snapshot.key
+            )
+            # A genuine terminal failure — must be recorded, not silent, or an
+            # exception deep in the dispatch path (e.g. a DB error) reads
+            # identically to quiet-hours discipline in the ledger.
+            await record_attention_event(
+                shared_pool,
+                origin_butler=_LIFECYCLE_ACTOR,
+                source="notify",
+                outcome="deferred",
+                channel="telegram",
+                intent="send",
+                priority="medium",
+                reason=f"unexpected_error:{type(exc).__name__}",
+                dedup_key=snapshot.key,
             )
 
     return {

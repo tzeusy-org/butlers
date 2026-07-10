@@ -450,9 +450,14 @@ async def deliver(
         span.set_attribute("channel", channel)
         module_name, tool_name = _CHANNEL_DISPATCH[channel]
 
+        # Schema-qualified: deliver() is called cross-butler (secrets_lifecycle
+        # runs in the dashboard-api process on a public-only search_path pool),
+        # so a bare `butler_registry` reference silently resolves to nothing
+        # instead of raising — the lookup must not depend on the caller's
+        # search_path including the switchboard schema.
         rows = await pool.fetch(
             """
-            SELECT name FROM butler_registry
+            SELECT name FROM switchboard.butler_registry
             WHERE modules::jsonb @> $1::jsonb
             ORDER BY name
             """,

@@ -359,6 +359,9 @@ async def test_run_secrets_lifecycle_check_suppressed_does_not_write_debounce_ma
 
 
 async def test_run_secrets_lifecycle_check_no_recipient_counts_as_error_no_marker():
+    """An unresolvable recipient is a genuine terminal failure: it must write an
+    attention-ledger row (not go silent, or the outage reads as quiet-hours
+    discipline) while still leaving no debounce marker so the next scan retries."""
     shared_pool = object()
     db = _FakeDatabaseManager(butler_pools={}, shared_pool=shared_pool)
     snapshot = CredentialSnapshot(
@@ -381,10 +384,57 @@ async def test_run_secrets_lifecycle_check_no_recipient_counts_as_error_no_marke
             "butlers.jobs.secrets_lifecycle.resolve_owner_telegram_recipient",
             new=AsyncMock(return_value=None),
         ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ) as ledger_mock,
         patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
+    ledger_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "deferred"
+    assert ledger_mock.await_args.kwargs["reason"] == "no_recipient_configured"
+    assert ledger_mock.await_args.kwargs["dedup_key"] == "s:SOME_KEY"
+    audit_append.assert_not_called()
+    assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 0, "errors": 1}
+
+
+async def test_run_secrets_lifecycle_check_unexpected_error_writes_ledger_row():
+    """An unexpected exception mid-dispatch (e.g. a DB error deep in deliver())
+    must not go silent — it is a genuine delivery failure and has to be
+    recorded, or an outage impersonates quiet-hours discipline in the ledger."""
+    shared_pool = object()
+    db = _FakeDatabaseManager(butler_pools={}, shared_pool=shared_pool)
+    snapshot = CredentialSnapshot(
+        key="s:SOME_KEY", family="system", label="SOME_KEY", state="expired"
+    )
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._check_suppression",
+            side_effect=RuntimeError("boom"),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ) as ledger_mock,
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    ledger_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "deferred"
+    assert ledger_mock.await_args.kwargs["reason"] == "unexpected_error:RuntimeError"
+    assert ledger_mock.await_args.kwargs["dedup_key"] == "s:SOME_KEY"
     audit_append.assert_not_called()
     assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 0, "errors": 1}
 

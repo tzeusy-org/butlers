@@ -45,6 +45,7 @@ MAILBOX_TABLE_SQL = """
 """
 
 SWITCHBOARD_TABLES_SQL = """
+    CREATE SCHEMA IF NOT EXISTS switchboard;
     CREATE TABLE IF NOT EXISTS butler_registry (
         name TEXT PRIMARY KEY,
         endpoint_url TEXT NOT NULL,
@@ -120,7 +121,14 @@ async def mailbox_pool(postgres_container):
 
 @pytest.fixture
 async def switchboard_pool(postgres_container):
-    """Provision a fresh database with switchboard + mailbox tables and return a pool."""
+    """Provision a fresh database with switchboard + mailbox tables and return a pool.
+
+    Scoped to the real ``switchboard`` schema (not ``public``) to mirror
+    production's one-db/multi-schema topology — required for the
+    schema-qualified ``butler_registry``/``routing_log`` queries inside
+    route()/resolve_routing_target() (used by post_mail()) to resolve
+    correctly.
+    """
     import asyncpg
 
     db_name = _unique_db_name()
@@ -146,6 +154,7 @@ async def switchboard_pool(postgres_container):
         min_size=1,
         max_size=3,
         init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard,public"},
     )
     await pool.execute(SWITCHBOARD_TABLES_SQL)
     yield pool

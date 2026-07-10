@@ -172,10 +172,14 @@ async def _audit_eligibility_transition(
     new_last_seen_at: datetime | None,
     observed_at: datetime,
 ) -> None:
+    # Schema-qualified: this runs inside resolve_routing_target()'s call chain,
+    # which deliver()'s cross-butler delivery path invokes against pools whose
+    # search_path may not include the switchboard schema (e.g. secrets_lifecycle
+    # on a public-only pool) — a bare reference must not depend on caller scope.
     try:
         await pool.execute(
             """
-            INSERT INTO butler_registry_eligibility_log (
+            INSERT INTO switchboard.butler_registry_eligibility_log (
                 butler_name,
                 previous_state,
                 new_state,
@@ -215,9 +219,10 @@ async def _reconcile_eligibility_state(
     if current_state == previous_state:
         return row
 
+    # Schema-qualified — see resolve_routing_target()'s docstring note above.
     await pool.execute(
         """
-        UPDATE butler_registry
+        UPDATE switchboard.butler_registry
         SET eligibility_state = $2,
             eligibility_updated_at = $3
         WHERE name = $1
@@ -413,6 +418,11 @@ async def resolve_routing_target(
     allow_stale: bool = False,
     allow_quarantined: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
+    # Schema-qualified: resolve_routing_target() is on deliver()'s cross-butler
+    # delivery path (called via route()), invoked against pools whose
+    # search_path may not include the switchboard schema (e.g.
+    # secrets_lifecycle on a public-only pool) — a bare reference silently
+    # resolves to nothing instead of finding the row.
     row = await pool.fetchrow(
         """
         SELECT
@@ -431,7 +441,7 @@ async def resolve_routing_target(
             capabilities,
             eligibility_updated_at,
             agent_type
-        FROM butler_registry
+        FROM switchboard.butler_registry
         WHERE name = $1
         """,
         name,

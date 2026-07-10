@@ -271,15 +271,18 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
     the duration of this handler's dispatch, rather than widening every
     registered deterministic job's signature for one caller's sake.
 
-    Calling ``deliver()``/``route()`` directly with the Home butler's own
-    schema-scoped pool (the ``butlers.jobs.secrets_lifecycle`` pattern for a
-    caller with no switchboard_client at all) is not an option here: both
-    read the switchboard schema's ``butler_registry`` table unqualified
-    (``roster/switchboard/tools/registry/registry.py``), so they only
-    resolve correctly against a pool whose search_path includes the
-    ``switchboard`` schema — Home's pool is scoped to ``home,public``. Going
-    through the ``deliver`` MCP tool instead runs it against the
-    Switchboard daemon's own pool, sidestepping the mismatch.
+    Goes through the ``deliver`` MCP tool rather than an in-process
+    ``deliver()``/``route()`` call with Home's own schema-scoped pool (the
+    ``butlers.jobs.secrets_lifecycle`` pattern for a caller with no
+    switchboard_client at all) because Home already has a live
+    ``switchboard_client`` MCP connection available here — routing through it
+    reaches the Switchboard daemon's own process rather than reimplementing
+    the dispatch locally. (Historical note: prior to bu-tdd4k.2,
+    ``deliver()``/``route()`` also read the switchboard schema's
+    ``butler_registry`` table unqualified, so an in-process call from Home's
+    ``home,public``-scoped pool would have failed outright; that lookup is
+    now schema-qualified, but the live-client route remains the natural
+    choice here regardless.)
 
     Args:
         pool: asyncpg connection pool for the home butler's database.

@@ -57,9 +57,13 @@ async def log_notification(
     trace_id:
         Optional OpenTelemetry trace ID.
     """
+    # Schema-qualified: log_notification() is invoked from deliver()'s cross-
+    # butler delivery path (e.g. secrets_lifecycle running against a
+    # public-only search_path pool), so a bare `notifications` reference must
+    # not depend on the caller's search_path including the switchboard schema.
     row = await pool.fetchrow(
         """
-        INSERT INTO notifications
+        INSERT INTO switchboard.notifications
             (source_butler, channel, recipient, message, metadata, status, error,
              session_id, trace_id)
         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)

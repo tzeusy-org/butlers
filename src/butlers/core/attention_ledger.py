@@ -26,11 +26,10 @@ small, known set of egress paths:
   ``get_current_switchboard_client()`` contextvar
   (``butlers.core.tool_call_capture``) rather than a widened handler
   signature. Composes the same gating primitives as the paths above, then
-  dispatches through the ``deliver`` MCP tool (not a direct in-process
-  ``deliver()`` call — see ``_send_notify``'s docstring for why: ``deliver()``
-  /``route()`` read the switchboard schema's ``butler_registry`` unqualified,
-  so they only resolve against a pool whose search_path includes the
-  ``switchboard`` schema).
+  dispatches through the ``deliver`` MCP tool (see ``_send_notify``'s
+  docstring for why it goes through the MCP tool rather than an in-process
+  ``deliver()`` call, even though ``deliver()``/``route()``'s
+  ``butler_registry`` lookups are now schema-qualified — bu-tdd4k.2).
 
 All four call :func:`record_attention_event` at each terminal decision point
 so a notification is never silently dropped: it is recorded as delivered,

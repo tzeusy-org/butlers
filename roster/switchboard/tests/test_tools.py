@@ -37,8 +37,16 @@ pytestmark = [
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with switchboard tables and return a pool."""
-    async with provisioned_postgres_pool() as p:
+    """Provision a fresh database with switchboard tables and return a pool.
+
+    Scoped to the real ``switchboard`` schema (not ``public``) to mirror
+    production's one-db/multi-schema topology — this is what makes the
+    schema-qualified queries in deliver()/route()/registry.py resolve
+    correctly, and what a same-schema caller's bare/unqualified queries
+    resolve against via search_path.
+    """
+    async with provisioned_postgres_pool(schema="switchboard") as p:
+        await p.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
         # Create switchboard tables (mirrors Alembic switchboard migration)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS butler_registry (

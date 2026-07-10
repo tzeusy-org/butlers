@@ -514,6 +514,12 @@ def provisioned_postgres_pool(
     Tests should use this as:
         async with provisioned_postgres_pool() as pool:
             ...
+
+    Pass ``schema=`` to scope the pool's search_path (mirrors one-db/
+    multi-schema production topology, e.g. a real "switchboard"-scoped pool
+    for tests that need schema-qualified queries to resolve without an
+    explicit prefix, or "public" to reproduce a caller whose search_path
+    lacks the schema entirely).
     """
     from butlers.db import Database
 
@@ -522,9 +528,11 @@ def provisioned_postgres_pool(
         *,
         min_pool_size: int = 1,
         max_pool_size: int = 3,
+        schema: str | None = None,
     ) -> AsyncIterator[Pool]:
         db = Database(
             db_name=_unique_test_db_name(),
+            schema=schema,
             host=postgres_container.get_container_host_ip(),
             port=int(postgres_container.get_exposed_port(5432)),
             user=postgres_container.username,

@@ -316,10 +316,15 @@ async def route(
                 await _log_routing(
                     pool, source_butler, target_butler, tool_name, True, duration_ms, None
                 )
-                # Update last_seen_at on successful route
+                # Update last_seen_at on successful route. Schema-qualified:
+                # route() is on deliver()'s cross-butler delivery path,
+                # invoked against pools whose search_path may not include the
+                # switchboard schema (e.g. secrets_lifecycle on a public-only
+                # pool) — a bare reference here would raise UndefinedTableError
+                # and mask an otherwise-successful delivery as a failure.
                 await pool.execute(
                     """
-                    UPDATE butler_registry
+                    UPDATE switchboard.butler_registry
                     SET last_seen_at = now(),
                         eligibility_state = CASE
                             WHEN eligibility_state = 'quarantined' THEN eligibility_state
@@ -556,9 +561,11 @@ async def _log_routing(
     sender_roles:
         Snapshot of the sender's roles at routing time (e.g. ``['owner']``). Nullable.
     """
+    # Schema-qualified — see the UPDATE in route() above for why this must not
+    # depend on the caller's search_path including the switchboard schema.
     await pool.execute(
         """
-        INSERT INTO routing_log
+        INSERT INTO switchboard.routing_log
             (source_butler, target_butler, tool_name, success, duration_ms, error,
              thread_id, source_channel, contact_id, entity_id, sender_roles)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
