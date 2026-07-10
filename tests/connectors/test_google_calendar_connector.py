@@ -402,3 +402,90 @@ async def test_live_ingest_envelope_carries_canonical_idempotency_key(
     assert captured[0]["control"]["idempotency_key"] == captured[1]["control"]["idempotency_key"]
     # External thread id mirrors the event id per spec.
     assert captured[0]["event"]["external_thread_id"] == "evt-live-1"
+
+
+# ---------------------------------------------------------------------------
+# Submission-error path preserves resolved organizer identity (bu-y3gkk)
+# ---------------------------------------------------------------------------
+
+
+async def test_submission_error_preserves_resolved_organizer_identity(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """An ingest-submission failure must buffer the resolved organizer email as
+    sender_identity — matching the two policy-filter record sites — not ''.
+
+    Regression for bu-y3gkk: ``_submit_envelope``'s except-block previously wrote
+    ``sender_identity=""`` even when the organizer was resolved, discarding the
+    identity the policy-filter paths preserve.
+    """
+    runtime = CalendarConnectorRuntime(account_config)
+    event = {
+        "id": "evt-submit-err",
+        "status": "confirmed",
+        "summary": "Submit Error",
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "organizer": {"email": "org@example.com"},
+    }
+
+    async def _boom(_env: dict) -> None:
+        raise RuntimeError("switchboard down")
+
+    with (
+        patch.object(runtime._ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime._global_ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime, "_submit_to_ingest_api", side_effect=_boom),
+    ):
+        ingested = await runtime._process_event(event)
+
+    assert ingested is False
+    assert len(runtime._filtered_event_buffer) == 1
+    row = runtime._filtered_event_buffer._rows[0]
+    # row[5] = sender_identity, row[8] = status, row[9] = full_payload dict
+    assert row[5] == "org@example.com"
+    assert row[8] == "error"
+    assert row[7] == "submission_error"
+    assert row[9]["sender"]["identity"] == "org@example.com"
+
+
+async def test_submission_error_without_organizer_matches_policy_filter_convention(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """When the event has no organizer, the submission-error path keeps the same
+    no-identity value the policy-filter sites use.
+
+    ``organizer_email`` defaults to ``"unknown"`` (not ``""``) throughout this
+    connector, so a submission failure without a resolved organizer buffers
+    ``"unknown"`` — identical to what the block/skip record sites would write —
+    rather than fabricating a different placeholder.
+    """
+    runtime = CalendarConnectorRuntime(account_config)
+    event = {
+        "id": "evt-submit-err-noorg",
+        "status": "confirmed",
+        "summary": "Submit Error No Org",
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        # no "organizer" key → organizer_email resolves to "unknown"
+    }
+
+    async def _boom(_env: dict) -> None:
+        raise RuntimeError("switchboard down")
+
+    with (
+        patch.object(runtime._ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime._global_ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime, "_submit_to_ingest_api", side_effect=_boom),
+    ):
+        ingested = await runtime._process_event(event)
+
+    assert ingested is False
+    assert len(runtime._filtered_event_buffer) == 1
+    row = runtime._filtered_event_buffer._rows[0]
+    assert row[5] == "unknown"
+    assert row[9]["sender"]["identity"] == "unknown"

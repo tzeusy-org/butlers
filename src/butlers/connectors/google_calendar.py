@@ -1467,11 +1467,16 @@ class CalendarConnectorRuntime:
                 error_type=get_error_type(exc),
                 operation="ingest_submit",
             )
+            # Preserve the resolved organizer identity carried on the envelope, matching
+            # the two policy-filter record sites above (which write organizer_email). The
+            # envelope's sender.identity is exactly that resolved value ("unknown" when the
+            # event had no organizer); fall back to "" only if the envelope lacks a sender.
+            sender_identity = envelope.get("sender", {}).get("identity", "")
             # Record in filtered buffer for replay
             self._filtered_event_buffer.record(
                 external_message_id=event_id,
                 source_channel=_CONNECTOR_CHANNEL,
-                sender_identity="",
+                sender_identity=sender_identity,
                 subject_or_preview=preview,
                 filter_reason=FilteredEventBuffer.reason_submission_error(),
                 status="error",
@@ -1483,7 +1488,7 @@ class CalendarConnectorRuntime:
                     external_event_id=event_id,
                     external_thread_id=None,
                     observed_at=datetime.now(UTC).isoformat(),
-                    sender_identity="",
+                    sender_identity=sender_identity,
                     raw=envelope.get("payload", {}).get("raw", {}),
                     normalized_text=envelope.get("payload", {}).get("normalized_text"),
                 ),
