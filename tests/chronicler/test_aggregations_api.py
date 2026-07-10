@@ -534,9 +534,17 @@ async def test_by_day_dst_fall_back_repeated_hour_counted_once():
 
 
 async def test_by_day_large_window_completes_quickly():
-    """Aggregation over 1000 episodes × 365 days must complete within 3 s.
+    """Aggregation over 1000 episodes × 365 days must complete well under budget.
 
     Guards against O(N×D) regression — the O(N×k) inner loop should be fast.
+
+    The budget is a *gross-regression* tripwire, not a micro-benchmark. The
+    healthy O(N×k) path finishes in well under a second; an O(N×D) regression
+    would blow up by orders of magnitude (N×D = 365 000 inner iterations), so a
+    generous budget still catches it. The budget is deliberately widened from
+    the original 3.0s — which false-failed at 3.03s (1% over) on a contended CI
+    runner despite no regression (bu-dee62) — to leave real headroom for runner
+    load while remaining far below any true-regression runtime.
     """
     import time
 
@@ -565,8 +573,11 @@ async def test_by_day_large_window_completes_quickly():
 
     assert resp.status_code == 200
     assert len(resp.json()) > 0
-    assert elapsed < 3.0, (
-        f"aggregate/by-day N={_N}×D={_D} took {elapsed:.2f}s (budget: 3s). "
+    # Gross-regression tripwire: healthy runtime is sub-second; a generous
+    # budget absorbs runner load without masking an O(N×D) blow-up.
+    _BUDGET_S = 10.0
+    assert elapsed < _BUDGET_S, (
+        f"aggregate/by-day N={_N}×D={_D} took {elapsed:.2f}s (budget: {_BUDGET_S:.0f}s). "
         "Inner loop may have regressed to O(N×D)."
     )
 

@@ -42,6 +42,15 @@ pytestmark = pytest.mark.unit
 # own patch.
 _real_sleep = asyncio.sleep
 
+# Safety-net timeout for the delta-loop tests below. These tests are already
+# event-based: each waits on an asyncio.Event that the loop sets on the
+# observable state change, so a passing run returns the instant the event
+# fires and never approaches this bound. The timeout exists ONLY to fail fast
+# if the loop genuinely wedges (never reaches the awaited tick). It is
+# therefore generous on purpose -- a tight wall-clock value (previously 2.0s)
+# false-failed under runner load even though nothing was wrong (bu-lbtqc).
+_LOOP_WEDGE_TIMEOUT_S = 30.0
+
 
 async def _fast_sleep(_delay: float) -> None:
     """Yield control to the event loop without a real delay."""
@@ -644,7 +653,7 @@ async def test_settings_console_delta_loop_emits_nothing_on_first_tick():
             )
         )
         try:
-            await asyncio.wait_for(first_tick_done.wait(), timeout=2.0)
+            await asyncio.wait_for(first_tick_done.wait(), timeout=_LOOP_WEDGE_TIMEOUT_S)
             await _real_sleep(0)  # let the tick finish updating the cache
         finally:
             task.cancel()
@@ -696,7 +705,7 @@ async def test_settings_console_delta_loop_emits_deltas_on_change():
             )
         )
         try:
-            await asyncio.wait_for(second_tick_done.wait(), timeout=2.0)
+            await asyncio.wait_for(second_tick_done.wait(), timeout=_LOOP_WEDGE_TIMEOUT_S)
             await _real_sleep(0)  # let the tick finish emitting before we cancel
         finally:
             task.cancel()
@@ -737,7 +746,7 @@ async def test_settings_console_delta_loop_continues_after_aggregation_failure()
             )
         )
         try:
-            await asyncio.wait_for(recovered.wait(), timeout=2.0)
+            await asyncio.wait_for(recovered.wait(), timeout=_LOOP_WEDGE_TIMEOUT_S)
             await _real_sleep(0)
         finally:
             task.cancel()
