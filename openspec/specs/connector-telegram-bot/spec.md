@@ -2,11 +2,9 @@
 
 ## Purpose
 The Telegram Bot connector is the butler ecosystem's primary user-facing chat interface. It receives Telegram updates from a bot account, normalizes them into `ingest.v1` envelopes for Switchboard ingestion, and provides the bidirectional channel through which butlers communicate with the user. The bot account is the "face" of the butler system on Telegram — users message the bot, and butlers reply through the Messenger butler's channel tools. This connector handles the inbound half of that loop.
-
 ## Requirements
-
 ### Requirement: Telegram Bot Identity and Role
-The Telegram bot connector bridges a Telegram bot account into the butler ecosystem as the primary interactive chat channel.
+The Telegram bot connector SHALL bridge a Telegram bot account into the butler ecosystem as the primary interactive chat channel.
 
 #### Scenario: Bot as user-facing interface
 - **WHEN** the Telegram bot connector runs
@@ -19,7 +17,7 @@ The Telegram bot connector bridges a Telegram bot account into the butler ecosys
 - **THEN** `source.channel="telegram_bot"`, `source.provider="telegram"`, and `source.endpoint_identity` identifies the receiving bot (e.g., bot username or configured bot ID)
 
 ### Requirement: Update Retrieval Modes
-The connector supports two modes: polling for development and webhook for production.
+The connector SHALL support two modes: polling for development and webhook for production.
 
 #### Scenario: Polling mode (development)
 - **WHEN** no webhook URL is configured
@@ -34,7 +32,7 @@ The connector supports two modes: polling for development and webhook for produc
 - **AND** incoming webhook updates are processed individually via `process_webhook_update()`
 
 ### Requirement: ingest.v1 Field Mapping
-Each Telegram update is normalized to the canonical `ingest.v1` envelope.
+Each Telegram update SHALL be normalized to the canonical `ingest.v1` envelope.
 
 #### Scenario: Field mapping
 - **WHEN** a Telegram update is normalized
@@ -52,7 +50,7 @@ Each Telegram update is normalized to the canonical `ingest.v1` envelope.
   - `control.policy_tier` = `"interactive"` (bot messages are direct user-to-bot interactions)
 
 ### Requirement: Tiered Text Extraction
-The connector extracts human-readable text from Telegram messages using a four-tier fallback strategy.
+The connector SHALL extract human-readable text from Telegram messages using a four-tier fallback strategy.
 
 #### Scenario: Tier 1 — text field
 - **WHEN** a Telegram message has a `text` field
@@ -76,7 +74,11 @@ The connector extracts human-readable text from Telegram messages using a four-t
 - **THEN** the update is silently skipped — no ingest submission
 
 ### Requirement: Update Type Handling
-The connector processes a defined subset of Telegram update types.
+The connector SHALL process a defined subset of Telegram update types. It SHALL
+also recognize one strictly additive `callback_query` exception: a
+`callback_data` carrying the `cgi:` gap-interview prefix SHALL be routed to the
+chronicler gap-interview resolve path instead of being dropped, while every
+other `callback_query` SHALL retain its existing drop behavior.
 
 #### Scenario: Processed update types
 - **WHEN** a Telegram update arrives
@@ -84,10 +86,26 @@ The connector processes a defined subset of Telegram update types.
 
 #### Scenario: Skipped update types
 - **WHEN** a non-message update arrives (`callback_query`, `inline_query`, `chosen_inline_result`, etc.)
-- **THEN** it is silently skipped
+- **THEN** it is silently skipped — no ingest submission — UNLESS it is a
+  `callback_query` whose `callback_data` carries the `cgi:` gap-interview
+  prefix, which is handled per the next scenario
+
+#### Scenario: Gap-interview one-tap callback routed
+- **WHEN** a `callback_query` arrives whose `callback_data` begins with the
+  `cgi:` prefix (`cgi:<interview_id>:<answer>`)
+- **THEN** the connector SHALL route it to the chronicler gap-interview resolve
+  path (`POST /api/chronicler/gap-interview/resolve`) instead of dropping it,
+  and SHALL acknowledge the tap via `answerCallbackQuery` with an owner-facing
+  toast
+- **AND** this routing SHALL be strictly additive — any `callback_query` whose
+  `callback_data` does not carry the `cgi:` prefix retains its existing drop
+  behavior
+- **AND** when the internal API URL is unconfigured or unreachable, the tap
+  SHALL still be acknowledged with a graceful toast rather than left with a
+  loading spinner
 
 ### Requirement: Lifecycle Reactions
-Lifecycle reactions are applied downstream by the pipeline (via `core/channel_reactions.py` and the Messenger butler's telegram tools), not by this transport-only connector. The connector neither sends nor tracks reactions. The emoji mapping below documents the cross-component behavior for reference.
+Lifecycle reactions SHALL be applied downstream by the pipeline (via `core/channel_reactions.py` and the Messenger butler's telegram tools), not by this transport-only connector. The connector SHALL neither send nor track reactions. The emoji mapping below documents the cross-component behavior for reference.
 
 #### Scenario: Reaction emoji mapping
 - **WHEN** an ingested message progresses through the pipeline
@@ -101,7 +119,7 @@ Lifecycle reactions are applied downstream by the pipeline (via `core/channel_re
 - **THEN** processing continues and a debug log is emitted (non-fatal — reactions are best-effort)
 
 ### Requirement: Error Handling and Backoff
-The connector handles Telegram API errors with rate limit awareness and exponential backoff.
+The connector SHALL handle Telegram API errors with rate limit awareness and exponential backoff.
 
 #### Scenario: Rate limit handling (HTTP 429)
 - **WHEN** Telegram returns HTTP 429
@@ -119,7 +137,7 @@ The connector handles Telegram API errors with rate limit awareness and exponent
 - **AND** the backoff counter resets on the first successful poll
 
 ### Requirement: Credential Resolution
-Bot token credentials are resolved via the layered credential store.
+Bot token credentials SHALL be resolved via the layered credential store.
 
 #### Scenario: DB-first credential resolution
 - **WHEN** the connector starts with database configuration available (`DATABASE_URL` or `POSTGRES_HOST`)
@@ -131,7 +149,7 @@ Bot token credentials are resolved via the layered credential store.
 - **THEN** that env var name (default `BUTLER_TELEGRAM_TOKEN`) is the lookup key for credential resolution
 
 ### Requirement: Health State Derivation
-The connector reports health state based on source API connectivity and recent failure history.
+The connector SHALL report health state based on source API connectivity and recent failure history.
 
 #### Scenario: Health states
 - **WHEN** the connector's health is queried
@@ -142,7 +160,7 @@ The connector reports health state based on source API connectivity and recent f
 - **THEN** it exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` (default 40081) with `/health` (JSON status) and `/metrics` (Prometheus text format) endpoints
 
 ### Requirement: Environment Variables
-Configuration via environment variables with base connector variables plus Telegram-specific variables.
+The connector SHALL be configured via environment variables, with base connector variables plus Telegram-specific variables.
 
 #### Scenario: Required variables
 - **WHEN** the Telegram bot connector starts
@@ -160,7 +178,7 @@ Configuration via environment variables with base connector variables plus Teleg
 
 ### Requirement: Source Filter Integration (Telegram Bot)
 
-The Telegram bot connector implements the ingestion policy gate using `IngestionPolicyEvaluator` with `scope = 'connector:telegram-bot:<endpoint_identity>'`. It builds an `IngestionEnvelope` from the Telegram update's chat ID. Only the `chat_id` rule type is valid for Telegram bot connector scope.
+The Telegram bot connector SHALL implement the ingestion policy gate using `IngestionPolicyEvaluator` with `scope = 'connector:telegram-bot:<endpoint_identity>'`. It SHALL build an `IngestionEnvelope` from the Telegram update's chat ID. Only the `chat_id` rule type SHALL be valid for Telegram bot connector scope.
 
 #### Scenario: IngestionPolicyEvaluator instantiation
 - **WHEN** the Telegram bot connector initializes
@@ -183,7 +201,7 @@ The Telegram bot connector implements the ingestion policy gate using `Ingestion
 - **THEN** the `raw_key` is set to the stringified chat ID (e.g., `"987654321"` or `"-100987654321"`)
 
 ### Requirement: Idempotency and Safety
-The connector guarantees at-least-once delivery with crash-safe resume.
+The connector SHALL guarantee at-least-once delivery with crash-safe resume.
 
 #### Scenario: Dedup identity
 - **WHEN** a Telegram update is submitted
@@ -196,3 +214,4 @@ The connector guarantees at-least-once delivery with crash-safe resume.
 - **AND** the checkpoint advances only after ingest acceptance
 - **AND** messages blocked by source filters also have their `update_id` acknowledged (checkpoint advanced) so they are not re-delivered
 - **AND** on restart, it replays from the last safe checkpoint (harmless due to Switchboard dedup)
+
