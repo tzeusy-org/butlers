@@ -3530,12 +3530,15 @@ export interface PipelineStats {
 }
 
 /**
- * Connector list with aggregates_available flag
- * (GET /api/ingestion/connectors/summaries).
+ * Connector list (GET /api/ingestion/connectors/summaries).
+ *
+ * Every field on this response is DB-sourced — this endpoint has no Prometheus
+ * dependency and therefore carries no `aggregates_available` flag. Its only
+ * degraded-mode flags gate the two DB queries that can independently fail
+ * (`hourly_events_available`, `device_liveness_available`).
  */
 export interface ConnectorSummariesResponse {
   connectors: ConnectorSummary[];
-  aggregates_available: boolean;
   /**
    * False only if the backend's per-device liveness query itself failed
    * (genuine-failure-only degraded flag — every connector's `devices` falls

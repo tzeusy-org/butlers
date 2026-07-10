@@ -229,8 +229,8 @@ export function useAvailableConnectors(options?: { enabled?: boolean }) {
 }
 
 /**
- * Connector list with aggregates_available flag.
- * Uses the new /api/ingestion/connectors/summaries endpoint.
+ * Connector list (all fields DB-sourced; no aggregates_available flag).
+ * Uses the /api/ingestion/connectors/summaries endpoint.
  */
 export function useConnectorSummariesWithAggregates(options?: { enabled?: boolean }) {
   return useQuery({

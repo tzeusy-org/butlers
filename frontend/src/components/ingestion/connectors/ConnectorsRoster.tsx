@@ -16,8 +16,10 @@
  * Data: uses useConnectorSummariesWithAggregates and useAvailableConnectors
  * hooks. Per-connector `hourly_events` (ingested) and `hourly_filtered_events`
  * (skip-routed, bu-scyro) both come from GET /api/ingestion/connectors/summaries
- * — sourced from the DB, not Prometheus, so sparklines are always populated
- * regardless of `aggregates_available`. When the response's top-level
+ * — sourced from the DB, not Prometheus, so sparklines are always populated.
+ * This endpoint has no Prometheus dependency and therefore no
+ * `aggregates_available` flag (that flag lives on the pipeline endpoint,
+ * consumed by BoardFooter). When the response's top-level
  * `hourly_events_available` is `false` (the combined hourly query itself
  * failed), a `SourceDegradedNote` names the degraded source instead of letting
  * the all-zero fallback arrays render as an honest "quiet 24h". Likewise,
@@ -28,15 +30,6 @@
  * (bu-fm3my; same shape as bu-scyro's hourly note). Both flags are
  * genuine-failure-only — absent (older cached response) must NOT trigger
  * the note, only an explicit `false`.
- *
- * `aggregates_available` on this endpoint is NOT gated here: the response's
- * per-connector fields (`hourly_events`, `hourly_filtered_events`, `today`,
- * `devices`) are all DB-sourced, not Prometheus-sourced, so nothing rendered
- * on this page actually depends on it (the flag mirrors the pipeline cache's
- * Prometheus reachability, consumed instead by BoardFooter's own
- * `aggregates_available` on a different endpoint/response). Gating a note on
- * it here would fabricate a "degraded" signal for data unaffected by the
- * flag.
  *
  * NOTE: useConnectorDetail MUST NOT be mounted from this roster (spec §6.2).
  * Only summary-level data is shown here.
@@ -125,7 +118,7 @@ export function ConnectorsRoster() {
     useConnectorSummariesWithAggregates()
   const { data: availableResp } = useAvailableConnectors()
 
-  // The new endpoint returns { connectors: [...], aggregates_available: bool }.
+  // The endpoint returns { connectors: [...] } (all fields DB-sourced).
   // Archived identities (bu-33dm2) are returned in the same list but are
   // superseded/dead endpoints — split them out so they never contribute to the
   // active roster, its attention strip, KPI band, sort order, or dormant

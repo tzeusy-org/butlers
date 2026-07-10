@@ -4614,7 +4614,8 @@ export async function getConnectorStats(
 
 /**
  * GET /api/ingestion/connectors/summaries
- * Returns connector list with aggregates_available flag.
+ * Returns the connector list. Every field is DB-sourced — no Prometheus
+ * dependency, so no `aggregates_available` flag on this response.
  */
 export async function getConnectorSummariesWithAggregates(): Promise<
   ApiResponse<ConnectorSummariesResponse>

@@ -57,7 +57,7 @@ async function mockIngestionApis(page: Parameters<typeof test>[1] extends (...ar
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: [], aggregates_available: false }),
+      body: JSON.stringify({ data: [] }),
     });
   });
 

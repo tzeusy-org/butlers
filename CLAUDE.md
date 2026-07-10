@@ -198,7 +198,7 @@ Response envelope:
 
 ### Degraded-Mode Response Envelope (Phase 4a, PRs #1762, #1798)
 
-Endpoints that query Prometheus for aggregate metrics (`GET /api/ingestion/pipeline?window=24h`, `GET /api/ingestion/connectors/summaries`, `GET /api/ingestion/connectors/cross-summary`) always return HTTP 200. When Prometheus is unreachable, aggregate fields contain zeros and the envelope includes:
+Endpoints that query Prometheus for aggregate metrics (`GET /api/ingestion/pipeline?window=24h`, `GET /api/ingestion/connectors/cross-summary`) always return HTTP 200. When Prometheus is unreachable, aggregate fields contain zeros and the envelope includes:
 
 ```json
 {"...", "aggregates_available": false}

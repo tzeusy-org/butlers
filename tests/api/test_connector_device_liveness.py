@@ -219,7 +219,7 @@ async def test_devices_stale_threshold_boundary(app: FastAPI) -> None:
 async def test_device_liveness_query_failure_falls_back_gracefully(app: FastAPI) -> None:
     """If the per-device query raises, devices=None everywhere and the flag flips false.
 
-    The rest of the response (hourly_events, today, aggregates_available) must be
+    The rest of the response (hourly_events, today) must be
     unaffected — a per-device liveness failure is not a whole-endpoint failure.
     """
     registry_rows = [_registry_row(connector_type="owntracks", endpoint_identity="owntracks:th")]

@@ -6,7 +6,7 @@ Provides:
 
 Endpoints
 ---------
-GET  /api/ingestion/connectors/summaries        — connector list with aggregates_available flag
+GET  /api/ingestion/connectors/summaries        — connector list (all fields DB-sourced)
 GET  /api/ingestion/connectors/cross-summary    — cross-connector aggregate + aggregates_available
 POST /api/ingestion/connectors/{type}/{identity}/pause       — pause a connector (audit-only)
 POST /api/ingestion/connectors/{type}/{identity}/run-now    — resume a paused connector (audit-only)
@@ -22,8 +22,11 @@ GET  /api/ingestion/connectors/{type}/{identity}/routing-rules — scoped rules 
 
 The ``summaries`` and ``cross-summary`` endpoints proxy the existing
 ``/api/switchboard/connectors`` and ``/api/switchboard/connectors/summary``
-endpoints and add the ``aggregates_available`` flag derived from whether the
-Prometheus backend is reachable (via the pipeline stats cache).
+endpoints. ``cross-summary`` adds an ``aggregates_available`` flag derived from
+whether the Prometheus backend is reachable (via the pipeline stats cache);
+``summaries`` does not — every field it returns is DB-sourced, so it carries
+its own genuine-failure-only flags (``hourly_events_available``,
+``device_liveness_available``) instead.
 
 Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
       connector-lifecycle-ceremony/spec.md
@@ -170,20 +173,19 @@ def _get_prometheus_url() -> str | None:
 async def list_connector_summaries_with_aggregates(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
-    """Return the connector list with an ``aggregates_available`` flag.
+    """Return the connector list. Every field is DB-sourced.
 
-    Fetches connector registry rows from the switchboard database and
-    augments the response with ``aggregates_available`` indicating whether
-    Prometheus-backed metrics (spark24h, rate1h, etc.) are expected to be
-    valid.
-
-    ``aggregates_available`` is ``true`` when ``PROMETHEUS_URL`` is configured
-    and the last pipeline cache entry was successful; ``false`` otherwise.
+    Fetches connector registry rows from the switchboard database. This
+    endpoint has **no** Prometheus dependency — it never surfaced any
+    Prometheus-backed field (no spark24h/rate1h, etc.), so it carries no
+    ``aggregates_available`` flag. Its only degraded-mode flags gate the two
+    DB queries that can independently fail (``hourly_events_available``,
+    ``device_liveness_available`` below).
 
     Each connector entry includes ``hourly_events`` — a 24-element array of
     per-hour event counts for the last 24 hours (oldest bucket first, newest
     last).  This is sourced from ``public.ingestion_events`` (not Prometheus)
-    so it is always populated regardless of ``aggregates_available``.
+    so it is always populated (subject to ``hourly_events_available``).
 
     Each connector entry also includes ``hourly_filtered_events`` (bu-scyro) — a
     DISTINCT 24-element array counting ``connectors.filtered_events`` rows per
@@ -195,7 +197,7 @@ async def list_connector_summaries_with_aggregates(
     this chart — pre-bu-416vk home_assistant was the anomaly whose skip
     decisions inflated the ``ingested`` series instead of living in
     filtered_events like every other connector. ``hourly_events_available``
-    (top-level, mirrors ``aggregates_available``/``device_liveness_available``)
+    (top-level, mirrors ``device_liveness_available``)
     is ``false`` only if the combined ingested+filtered query itself failed.
 
     ``today.messages_ingested`` is the **true last-24h count** derived by
@@ -229,8 +231,8 @@ async def list_connector_summaries_with_aggregates(
     otherwise hide that still-unregistered sibling behind neither its own row
     nor the badge (bu-e16to). A device with no event at all in the lookback
     window drops out of ``devices`` entirely rather than appearing maximally
-    stale. ``device_liveness_available`` (top-level, mirrors
-    ``aggregates_available``) is ``false`` only if the per-device query itself
+    stale. ``device_liveness_available`` (top-level, sibling of
+    ``hourly_events_available``) is ``false`` only if the per-device query itself
     failed — it is unrelated to whether any given connector_type has devices data.
 
     Each connector entry also includes ``archived`` (bool) and ``archived_at``
@@ -261,22 +263,6 @@ async def list_connector_summaries_with_aggregates(
     and ``device_liveness_available: false``.
     """
     pool = _pool(db)
-    aggregates_available = _get_prometheus_url() is not None
-
-    # Check the pipeline cache for a recent successful fetch
-    try:
-        import time
-
-        from butlers.api.routers.ingestion_pipeline import _CACHE_TTL_SECONDS, _pipeline_cache
-
-        cached = _pipeline_cache.get("24h")
-        if cached is not None:
-            ts, data = cached
-            if time.monotonic() - ts < _CACHE_TTL_SECONDS:
-                aggregates_available = data.get("aggregates_available", False)
-    except Exception:
-        # Cache read failure is non-fatal
-        pass
 
     try:
         rows = await pool.fetch(
@@ -300,9 +286,7 @@ async def list_connector_summaries_with_aggregates(
         )
     except Exception:
         logger.warning("connector summaries: failed to fetch from registry", exc_info=True)
-        return ApiResponse[dict](
-            data={"connectors": [], "aggregates_available": aggregates_available}
-        )
+        return ApiResponse[dict](data={"connectors": []})
 
     # Count registry rows per connector_type. The `devices` badge list (below)
     # exists specifically for connector_types where connector_registry cannot
@@ -347,8 +331,8 @@ async def list_connector_summaries_with_aggregates(
     # calendar post-#2994) was invisible on this chart — pre-#2986 HA was the
     # anomaly whose skip decisions inflated the 'ingested' series instead.
     #
-    # Sourced from the DB (not Prometheus) so both series work regardless of
-    # aggregates_available.
+    # Sourced from the DB (not Prometheus) so both series are always populated
+    # (subject only to hourly_events_available on a genuine query failure).
     hourly_map: dict[tuple[str, str], list[int]] = {}
     hourly_filtered_map: dict[tuple[str, str], list[int]] = {}
     hourly_events_available = True
@@ -580,10 +564,9 @@ async def list_connector_summaries_with_aggregates(
     return ApiResponse[dict](
         data={
             "connectors": connectors,
-            "aggregates_available": aggregates_available,
             "device_liveness_available": device_liveness_available,
             # False only if the combined ingested+filtered hourly query itself
-            # raised — mirrors aggregates_available/device_liveness_available
+            # raised — mirrors device_liveness_available
             # (genuine-failure-only degraded flag; never fabricated zeros).
             "hourly_events_available": hourly_events_available,
         }

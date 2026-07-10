@@ -134,11 +134,11 @@ function mockHooks(
     device_liveness_available?: boolean
   } = {},
 ) {
-  // The new endpoint returns { connectors: [...], aggregates_available: bool }
-  // wrapped in ApiResponse<ConnectorSummariesResponse>: { data: { connectors, aggregates_available } }
+  // The endpoint returns { connectors: [...] } (all fields DB-sourced),
+  // wrapped in ApiResponse<ConnectorSummariesResponse>: { data: { connectors } }
   vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue(
     makeResult({
-      data: { connectors, aggregates_available: true, ...responseOverrides },
+      data: { connectors, ...responseOverrides },
     }) as ReturnType<typeof useConnectorSummariesWithAggregates>,
   )
 

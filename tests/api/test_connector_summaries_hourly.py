@@ -229,8 +229,9 @@ async def test_hourly_events_per_connector_isolation(app: FastAPI) -> None:
     assert all(v == 0 for v in telegram_hourly)
 
 
-async def test_hourly_events_present_in_degraded_mode(app: FastAPI) -> None:
-    """hourly_events is populated even when Prometheus is unreachable (DB-backed)."""
+async def test_hourly_events_are_db_backed(app: FastAPI) -> None:
+    """hourly_events is populated purely from the DB — this endpoint has no
+    Prometheus dependency (and therefore no aggregates_available flag)."""
     now = dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0)
     window_start = now - dt.timedelta(hours=23)
 
@@ -246,20 +247,15 @@ async def test_hourly_events_present_in_degraded_mode(app: FastAPI) -> None:
     pool = _make_pool_with_fetch_sequence([registry_rows, hourly_rows])
     _wire_db(app, pool)
 
-    from butlers.api.routers import ingestion_pipeline as _pip_mod
-
-    _pip_mod._pipeline_cache.clear()
-
-    # Prometheus NOT configured → aggregates_available=false
-    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/ingestion/connectors/summaries")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/ingestion/connectors/summaries")
 
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["aggregates_available"] is False
+    # No Prometheus dependency → no aggregates_available flag on this response.
+    assert "aggregates_available" not in data
 
     hourly = data["connectors"][0]["hourly_events"]
     assert len(hourly) == 24

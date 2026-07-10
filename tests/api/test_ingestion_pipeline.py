@@ -482,32 +482,12 @@ async def test_pipeline_stats_spark24h_trims_25_buckets_to_24(app):
 
 
 # ---------------------------------------------------------------------------
-# §4.3 aggregates_available threading: summaries + cross-summary
+# §4.3 aggregates_available threading: cross-summary
+#
+# Note: the /summaries endpoint has NO aggregates_available flag — every field
+# it returns is DB-sourced with no Prometheus dependency (bu-hv639). Only
+# cross-summary threads the flag.
 # ---------------------------------------------------------------------------
-
-
-async def test_connector_summaries_includes_aggregates_available_false_no_prometheus(app):
-    """GET /api/ingestion/connectors/summaries includes aggregates_available=false
-    when PROMETHEUS_URL is not configured."""
-    pool = _make_shared_pool(rows=[])
-    _app_with_connectors_db(app, switchboard_pool=pool)
-
-    # Clear pipeline cache so cache doesn't influence aggregates_available
-    from butlers.api.routers import ingestion_pipeline as _pip_mod
-
-    _pip_mod._pipeline_cache.clear()
-
-    with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/ingestion/connectors/summaries")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "aggregates_available" in body["data"]
-    assert body["data"]["aggregates_available"] is False
-    assert "connectors" in body["data"]
 
 
 def _cross_summary_row(last_heartbeat_at, messages_ingested=0, messages_failed=0):

@@ -176,7 +176,6 @@ async function installCommonMocks(page: Page) {
       contentType: "application/json",
       body: JSON.stringify({
         data: [FIXTURE_CONNECTOR_BACKEND],
-        aggregates_available: false,
       }),
     });
   });
