@@ -26,7 +26,7 @@ from butlers.api.briefing.lint import first_violation, voice_lint_passes
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
-from butlers.core.general_settings import load_general_settings
+from butlers.core.general_settings import load_general_settings, resolve_general_timezone
 from butlers.core.model_routing import Complexity
 
 # Dynamically load models module from the same directory
@@ -97,6 +97,64 @@ def _pool(db: DatabaseManager):
 
 
 # ---------------------------------------------------------------------------
+# Owner-timezone day-window resolution [bu-jlzxf]
+#
+# The dashboard sends date-range filters as bare ``YYYY-MM-DD`` *day keys*
+# computed in the owner's configured timezone (frontend/src/lib/day-window.ts,
+# PR #3070).  A bare date compared against the ``valid_at`` timestamptz column
+# is coerced by Postgres to midnight in the DB *session* timezone (UTC), not the
+# owner's day boundary — so a meal logged at 23:30 owner-local landed on the
+# wrong calendar day, and an inclusive ``valid_at <= <until-date>`` truncated
+# every entry logged later that same owner-day.
+#
+# These helpers align the backend with that owner-timezone convention: a bare
+# day key becomes the owner-tz *start-of-day* (lower bound) or *end-of-day*
+# 23:59:59.999999 (upper bound), mirroring the existing ``_normalize_end_date``
+# convention in roster/health/tools/_helpers.py.  A full ISO-8601 timestamp is
+# parsed and passed through unchanged (a naive one stays naive, which asyncpg
+# encodes as UTC — preserving prior behavior for explicit-timestamp callers).
+# ---------------------------------------------------------------------------
+
+_DAY_KEY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+async def _owner_zoneinfo(pool: Any) -> ZoneInfo:
+    """Resolve the owner's configured timezone as a ZoneInfo (UTC on failure)."""
+    tz_name = await resolve_general_timezone(pool)
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        logger.warning("Could not build ZoneInfo for owner timezone %r; using UTC", tz_name)
+        return ZoneInfo("UTC")
+
+
+def _resolve_valid_at_bound(value: str, owner_tz: ZoneInfo, *, upper: bool) -> datetime:
+    """Resolve a since/until (or start/end) filter value to a ``valid_at`` bound.
+
+    Bare ``YYYY-MM-DD`` day keys are interpreted as owner-timezone calendar-day
+    boundaries: ``upper=False`` yields owner-tz start-of-day (00:00:00.000000),
+    ``upper=True`` yields owner-tz end-of-day (23:59:59.999999) so a same-day
+    entry is not truncated by an inclusive ``valid_at <=`` comparison.
+
+    Any other value is parsed as a full ISO-8601 timestamp and returned as-is
+    (a naive timestamp stays naive → asyncpg encodes it as UTC, matching prior
+    behavior).  Raises HTTP 422 on an unparseable value.
+    """
+    if _DAY_KEY_RE.match(value):
+        year, month, day = (int(part) for part in value.split("-"))
+        if upper:
+            return datetime(year, month, day, 23, 59, 59, 999999, tzinfo=owner_tz)
+        return datetime(year, month, day, tzinfo=owner_tz)
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid date or timestamp: {value!r}",
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
 # GET /measurements — list measurements
 #
 # Storage: reads from the `facts` table using predicates of the form
@@ -145,14 +203,16 @@ async def list_measurements(
     base_where = f"{predicate_cond} AND scope = 'health' AND validity = 'active'"
     extra: list[str] = []
 
+    owner_tz = await _owner_zoneinfo(pool) if (since is not None or until is not None) else None
+
     if since is not None:
         extra.append(f"valid_at >= ${idx}")
-        args.append(since)
+        args.append(_resolve_valid_at_bound(since, owner_tz, upper=False))
         idx += 1
 
     if until is not None:
         extra.append(f"valid_at <= ${idx}")
-        args.append(until)
+        args.append(_resolve_valid_at_bound(until, owner_tz, upper=True))
         idx += 1
 
     where = base_where + ("".join(f" AND {c}" for c in extra))
@@ -433,14 +493,16 @@ async def list_medication_doses(
     args: list[object] = [medication_id]
     idx = 2
 
+    owner_tz = await _owner_zoneinfo(pool) if (since is not None or until is not None) else None
+
     if since is not None:
         conditions.append(f"valid_at >= ${idx}")
-        args.append(since)
+        args.append(_resolve_valid_at_bound(since, owner_tz, upper=False))
         idx += 1
 
     if until is not None:
         conditions.append(f"valid_at <= ${idx}")
-        args.append(until)
+        args.append(_resolve_valid_at_bound(until, owner_tz, upper=True))
         idx += 1
 
     where = " WHERE " + " AND ".join(conditions)
@@ -973,14 +1035,16 @@ async def list_symptoms(
         args.append(name)
         idx += 1
 
+    owner_tz = await _owner_zoneinfo(pool) if (since is not None or until is not None) else None
+
     if since is not None:
         conditions.append(f"valid_at >= ${idx}")
-        args.append(since)
+        args.append(_resolve_valid_at_bound(since, owner_tz, upper=False))
         idx += 1
 
     if until is not None:
         conditions.append(f"valid_at <= ${idx}")
-        args.append(until)
+        args.append(_resolve_valid_at_bound(until, owner_tz, upper=True))
         idx += 1
 
     where = " WHERE " + " AND ".join(conditions)
@@ -1178,15 +1242,17 @@ async def list_meals(
     args: list[object] = [predicates]  # $1 = predicate array
     idx = 2
 
+    owner_tz = await _owner_zoneinfo(pool) if (since is not None or until is not None) else None
+
     extra: list[str] = []
     if since is not None:
         extra.append(f"valid_at >= ${idx}")
-        args.append(since)
+        args.append(_resolve_valid_at_bound(since, owner_tz, upper=False))
         idx += 1
 
     if until is not None:
         extra.append(f"valid_at <= ${idx}")
-        args.append(until)
+        args.append(_resolve_valid_at_bound(until, owner_tz, upper=True))
         idx += 1
 
     where = "predicate = ANY($1) AND scope = 'health' AND validity = 'active'" + (
@@ -1843,8 +1909,20 @@ async def get_measurements_trend(
 
 @router.get("/nutrition/summary", response_model=NutritionSummaryResponse)
 async def get_nutrition_summary(
-    start: datetime = Query(..., description="Window start (inclusive)"),
-    end: datetime = Query(..., description="Window end (inclusive)"),
+    start: str = Query(
+        ...,
+        description=(
+            "Window start (inclusive). A bare YYYY-MM-DD day key is read as the "
+            "start of that owner-timezone day."
+        ),
+    ),
+    end: str = Query(
+        ...,
+        description=(
+            "Window end (inclusive). A bare YYYY-MM-DD day key covers the whole "
+            "owner-timezone day (through 23:59:59.999999)."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> NutritionSummaryResponse:
     """Return aggregate nutrition totals and daily averages over a window.
@@ -1853,12 +1931,20 @@ async def get_nutrition_summary(
     ``meal_log`` MCP tool writes) via the ``nutrition_summary`` diet tool.
     Meals without nutrition data are excluded.  ``days`` is the inclusive span
     used to compute the daily averages (minimum 1).
+
+    Bare ``YYYY-MM-DD`` day keys — the shape the dashboard sends (see
+    frontend/src/lib/day-window.ts) — are interpreted as owner-timezone
+    day boundaries so the window frames the same calendar days the meal list
+    buckets by, rather than UTC midnight.
     """
     from butlers.tools.health import nutrition_summary
 
     pool = _pool(db)
-    result = await nutrition_summary(pool, start, end)
-    days = max((end - start).days, 1)
+    owner_tz = await _owner_zoneinfo(pool)
+    start_dt = _resolve_valid_at_bound(start, owner_tz, upper=False)
+    end_dt = _resolve_valid_at_bound(end, owner_tz, upper=True)
+    result = await nutrition_summary(pool, start_dt, end_dt)
+    days = max((end_dt - start_dt).days, 1)
 
     return NutritionSummaryResponse(
         total_calories=result["total_calories"],

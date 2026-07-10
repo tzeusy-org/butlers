@@ -193,9 +193,11 @@ async def test_list_measurements_since_until_passed_to_query():
             params={"since": "2026-01-01T00:00:00Z", "until": "2026-12-31T23:59:59Z"},
         )
     assert resp.status_code == 200
-    fetchval_calls = pool.fetchval.call_args_list
-    sql = fetchval_calls[0][0][0]
-    assert "valid_at" in sql
+    # A since/until filter first resolves the owner timezone (a `state` read),
+    # so locate the facts count query rather than assuming it is call [0].
+    all_sql = [c[0][0] for c in pool.fetchval.call_args_list if c[0]]
+    facts_sql = next(s for s in all_sql if "FROM facts" in s)
+    assert "valid_at" in facts_sql
 
 
 async def test_list_measurements_503_when_pool_unavailable():

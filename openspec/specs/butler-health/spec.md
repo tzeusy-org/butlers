@@ -418,6 +418,25 @@ calories and macros across meal facts in a date range, exposing over HTTP the ro
 - **AND** the figures MUST be aggregated from existing meal facts (`meal_*` predicates) over the
   range, with no new schema
 
+### Requirement: Owner-timezone day-boundary date filters (bu-jlzxf)
+
+The health butler's dashboard API date-range filters (`since`/`until` on `GET /api/health/meals`,
+`GET /api/health/measurements`, `GET /api/health/symptoms`, `GET /api/health/medications/{id}/doses`;
+`start`/`end` on `GET /api/health/nutrition/summary`) compare against the `valid_at` timestamptz
+column. A bare `YYYY-MM-DD` day key — the shape the dashboard sends (see
+`frontend/src/lib/day-window.ts`) — MUST be interpreted as an owner-timezone calendar-day boundary,
+not midnight in the database session timezone.
+
+#### Scenario: Bare day key resolves to owner-timezone boundaries
+
+- **WHEN** a bare `YYYY-MM-DD` day key is passed as a lower bound (`since`/`start`)
+- **THEN** it MUST resolve to `00:00:00.000000` in the owner's configured timezone
+- **WHEN** a bare `YYYY-MM-DD` day key is passed as an upper bound (`until`/`end`)
+- **THEN** it MUST resolve to `23:59:59.999999` in the owner's configured timezone, so an entry logged
+  later that same owner-day is not truncated by an inclusive `valid_at <=` comparison
+- **AND** a full ISO-8601 timestamp value MUST be parsed and used as-is (unchanged from prior
+  behavior) rather than reinterpreted as a day key
+
 ### Requirement: [TARGET-STATE] Health Voice briefing route
 
 The health butler's dashboard API SHALL expose `GET /api/health/briefing`, an owner-only LLM Voice
