@@ -650,24 +650,31 @@ async def pause_connector(
                     detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
                 )
 
-            # Emit audit entry within the same transaction — atomicity with the state change
-            try:
-                client_host = getattr(request.client, "host", None) if request.client else None
-                await _audit_append(
-                    conn,
-                    actor="dashboard",
-                    action="connector.pause",
-                    target=f"{connector_type}/{endpoint_identity}",
-                    note=f"Connector '{connector_type}/{endpoint_identity}' paused via dashboard",
-                    ip=client_host,
-                )
-            except Exception:
-                logger.warning(
-                    "ingestion_connectors: failed to append audit_log entry for pause %s/%s",
-                    connector_type,
-                    endpoint_identity,
-                    exc_info=True,
-                )
+        # Emit the audit entry AFTER the state change has committed (outside the
+        # transaction block, matching the disconnect/rotate-token/archive audit
+        # pattern). If _audit_append were inside conn.transaction() and raised,
+        # asyncpg would abort the transaction; the swallowed exception then lets
+        # the context manager issue COMMIT, which Postgres turns into a ROLLBACK
+        # of the aborted tx — silently discarding the pause while still returning
+        # 200. Auditing post-commit keeps the audit write best-effort (logged on
+        # failure) without ever rolling back the persisted state.
+        try:
+            client_host = getattr(request.client, "host", None) if request.client else None
+            await _audit_append(
+                conn,
+                actor="dashboard",
+                action="connector.pause",
+                target=f"{connector_type}/{endpoint_identity}",
+                note=f"Connector '{connector_type}/{endpoint_identity}' paused via dashboard",
+                ip=client_host,
+            )
+        except Exception:
+            logger.warning(
+                "ingestion_connectors: failed to append audit_log entry for pause %s/%s",
+                connector_type,
+                endpoint_identity,
+                exc_info=True,
+            )
 
     logger.info("Paused connector %s/%s", connector_type, endpoint_identity)
 
@@ -774,24 +781,31 @@ async def run_now_connector(
                 )
                 raise HTTPException(status_code=503, detail="Connector registry is not available")
 
-            # Emit audit entry within the same transaction — atomicity with the state change
-            try:
-                client_host = getattr(request.client, "host", None) if request.client else None
-                await _audit_append(
-                    conn,
-                    actor="dashboard",
-                    action="connector.run_now",
-                    target=f"{connector_type}/{endpoint_identity}",
-                    note=f"Connector '{connector_type}/{endpoint_identity}' resumed via run-now",
-                    ip=client_host,
-                )
-            except Exception:
-                logger.warning(
-                    "ingestion_connectors: failed to append audit_log entry for run-now %s/%s",
-                    connector_type,
-                    endpoint_identity,
-                    exc_info=True,
-                )
+        # Emit the audit entry AFTER the state change has committed (outside the
+        # transaction block, matching the disconnect/rotate-token/archive audit
+        # pattern). If _audit_append were inside conn.transaction() and raised,
+        # asyncpg would abort the transaction; the swallowed exception then lets
+        # the context manager issue COMMIT, which Postgres turns into a ROLLBACK
+        # of the aborted tx — silently discarding the resume while still returning
+        # 200. Auditing post-commit keeps the audit write best-effort (logged on
+        # failure) without ever rolling back the persisted state.
+        try:
+            client_host = getattr(request.client, "host", None) if request.client else None
+            await _audit_append(
+                conn,
+                actor="dashboard",
+                action="connector.run_now",
+                target=f"{connector_type}/{endpoint_identity}",
+                note=f"Connector '{connector_type}/{endpoint_identity}' resumed via run-now",
+                ip=client_host,
+            )
+        except Exception:
+            logger.warning(
+                "ingestion_connectors: failed to append audit_log entry for run-now %s/%s",
+                connector_type,
+                endpoint_identity,
+                exc_info=True,
+            )
 
     logger.info("run-now: cleared pause for connector %s/%s", connector_type, endpoint_identity)
 

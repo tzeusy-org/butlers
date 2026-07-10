@@ -88,6 +88,31 @@ def _make_conn(*, fetchrow_results: list):
     return conn
 
 
+def _make_tracking_conn(*, fetchrow_results: list, tx_state: dict):
+    """Like ``_make_conn`` but records transaction nesting depth in ``tx_state``.
+
+    ``tx_state["depth"]`` is incremented on ``transaction()`` enter and
+    decremented on exit, so a caller can observe whether a later call (e.g.
+    ``_audit_append``) happened while the state transaction was still open
+    (``depth > 0``) or after it committed (``depth == 0``). This is what
+    distinguishes the buggy in-transaction audit (would roll the state change
+    back on failure) from the fixed post-commit audit.
+    """
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(side_effect=fetchrow_results)
+
+    @asynccontextmanager
+    async def _transaction():
+        tx_state["depth"] += 1
+        try:
+            yield
+        finally:
+            tx_state["depth"] -= 1
+
+    conn.transaction = _transaction
+    return conn
+
+
 def _make_pool(conn: AsyncMock) -> AsyncMock:
     """Wrap a mock connection in a mock pool with acquire() context-manager support."""
     pool = AsyncMock()
@@ -292,3 +317,81 @@ async def test_connector_unarchive_404_not_found(app):
         resp = await client.post("/api/ingestion/connectors/gmail/ghost@example.com/unarchive")
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Audit-failure atomicity (bu-tjtp8)
+#
+# Regression for the silent-rollback bug: pause and run-now used to emit their
+# audit_log entry INSIDE conn.transaction() with the exception swallowed. Under
+# a real asyncpg connection an audit insert failure aborts the transaction, so
+# the swallowed exception let the context manager COMMIT an already-aborted tx —
+# Postgres turns that into a ROLLBACK, silently discarding the state change while
+# the endpoint still returned 200 (false success). The fix moves audit emission
+# post-commit (matching archive/unarchive/disconnect/rotate). These tests assert
+# a failing audit does NOT roll the state change back and that audit is attempted
+# only AFTER the state transaction has closed.
+# ---------------------------------------------------------------------------
+
+
+async def test_connector_pause_audit_failure_does_not_roll_back_state(app):
+    """A failing pause audit insert leaves the state committed and returns true state."""
+    returned_row = _make_row(_connector_row(state="paused"))
+    tx_state = {"depth": 0}
+    conn = _make_tracking_conn(fetchrow_results=[returned_row], tx_state=tx_state)
+    pool = _make_pool(conn)
+    _wire_db(app, pool)
+
+    audit_tx_depth: list[int] = []
+
+    async def _failing_audit(*args, **kwargs):
+        audit_tx_depth.append(tx_state["depth"])
+        raise RuntimeError("audit_log insert failed")
+
+    with patch(
+        "butlers.api.routers.ingestion_connectors._audit_append",
+        new=AsyncMock(side_effect=_failing_audit),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/ingestion/connectors/gmail/user@example.com/pause")
+
+    # The state change survives the audit failure: 200 + the true mutated state.
+    assert resp.status_code == 200
+    assert resp.json()["data"]["state"] == "paused"
+    # Audit was attempted exactly once, AFTER the state transaction committed
+    # (depth 0) — so a failing audit can never roll the pause back.
+    assert audit_tx_depth == [0]
+
+
+async def test_connector_run_now_audit_failure_does_not_roll_back_state(app):
+    """A failing run-now audit insert leaves the cleared pause committed, returns true state."""
+    paused_row = _make_row(_connector_row(state="paused"))
+    updated_row = _make_row(_connector_row(state="unknown"))
+    tx_state = {"depth": 0}
+    conn = _make_tracking_conn(fetchrow_results=[paused_row, updated_row], tx_state=tx_state)
+    pool = _make_pool(conn)
+    _wire_db(app, pool)
+
+    audit_tx_depth: list[int] = []
+
+    async def _failing_audit(*args, **kwargs):
+        audit_tx_depth.append(tx_state["depth"])
+        raise RuntimeError("audit_log insert failed")
+
+    with patch(
+        "butlers.api.routers.ingestion_connectors._audit_append",
+        new=AsyncMock(side_effect=_failing_audit),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/ingestion/connectors/gmail/user@example.com/run-now")
+
+    # The cleared-pause state change survives the audit failure: 200 + true state.
+    assert resp.status_code == 200
+    assert resp.json()["data"]["state"] == "unknown"
+    # Audit was attempted exactly once, AFTER the state transaction committed
+    # (depth 0) — so a failing audit can never roll the resume back.
+    assert audit_tx_depth == [0]
