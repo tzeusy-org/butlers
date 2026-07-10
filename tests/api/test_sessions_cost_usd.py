@@ -8,6 +8,8 @@ already selects (no new SQL column, no migration) via the shared
 Verifies:
 - cost_usd is None when pricing is unavailable (default app state).
 - cost_usd is computed from model + tokens when pricing is available.
+- cost_usd is priced from a single side when only input_tokens or only
+  output_tokens is present (each count coalesces independently).
 - cost_usd is None (never 0.0) for a running session with no token data yet.
 - cost_usd is None for a model with no pricing entry.
 - Same behavior holds for the butler-scoped endpoint.
@@ -117,6 +119,38 @@ async def test_cost_usd_computed_from_model_and_tokens() -> None:
     cost_usd = resp.json()["data"][0]["cost_usd"]
     # 1000 * 0.000003 + 1000 * 0.000015 = 0.018
     assert cost_usd == pytest.approx(0.018)
+
+
+async def test_cost_usd_with_only_input_tokens() -> None:
+    """Only input_tokens present (output None) -> priced from input alone.
+
+    _cost_usd_for_dto coalesces each count independently (``... or 0``), so a
+    None output_tokens contributes 0 rather than voiding the whole estimate.
+    """
+    app = _make_app_with_sessions([_make_session_row(input_tokens=1000, output_tokens=None)])
+    app.dependency_overrides[_sessions_get_pricing] = lambda: _PRICING
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions")
+    assert resp.status_code == 200
+    cost_usd = resp.json()["data"][0]["cost_usd"]
+    # 1000 * 0.000003 + 0 * 0.000015 = 0.003
+    assert cost_usd == pytest.approx(0.003)
+
+
+async def test_cost_usd_with_only_output_tokens() -> None:
+    """Only output_tokens present (input None) -> priced from output alone."""
+    app = _make_app_with_sessions([_make_session_row(input_tokens=None, output_tokens=1000)])
+    app.dependency_overrides[_sessions_get_pricing] = lambda: _PRICING
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions")
+    assert resp.status_code == 200
+    cost_usd = resp.json()["data"][0]["cost_usd"]
+    # 0 * 0.000003 + 1000 * 0.000015 = 0.015
+    assert cost_usd == pytest.approx(0.015)
 
 
 async def test_cost_usd_none_for_running_session_without_tokens() -> None:
