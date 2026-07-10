@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -176,15 +177,48 @@ def _make_classify_row(
     return row
 
 
+def _relationship_router_module(app: FastAPI) -> ModuleType:
+    """Return the loaded roster/relationship/api/router.py module for ``app``.
+
+    The module is cached in ``sys.modules`` by the dynamic router loader, so
+    this is the same object across every app instance in the process — lets
+    tests monkeypatch names inside it (e.g. ``datetime``) without hardcoding
+    its dynamically-generated module name.
+    """
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            return router_module
+    raise RuntimeError("relationship router module not found on app.state.butler_routers")
+
+
+class _ShiftedNow:
+    """Stand-in for the ``datetime`` name imported into router.py.
+
+    ``.now(tz)`` returns the real wall clock shifted by a fixed offset;
+    every other attribute (``.fromisoformat``, ``.min``, construction, ...)
+    delegates straight to the real ``datetime`` class unchanged. Used to
+    simulate the system clock advancing weeks or months into the future
+    without freezing time globally or touching unrelated code paths.
+    """
+
+    def __init__(self, offset: timedelta) -> None:
+        self._offset = offset
+
+    def now(self, tz: object = None) -> datetime:
+        return datetime.now(tz) + self._offset
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(datetime, name)
+
+
 def _wire_app(mock_pool: AsyncMock) -> FastAPI:
     """Attach a mock pool to a fresh create_app() instance."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
-            break
+    router_module = _relationship_router_module(app)
+    if hasattr(router_module, "_get_db_manager"):
+        app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
     return app
 
 
@@ -2010,6 +2044,41 @@ class TestEntityActivityBinning:
         assert "items" not in body
         assert len(body["bins"]) == 90
         # 3 days carry a count; the rest are zero (no day omitted).
+        nonzero = [b for b in body["bins"] if b["count"] > 0]
+        assert len(nonzero) == 3
+        assert sum(b["count"] for b in body["bins"]) == 3
+
+    @pytest.mark.parametrize("offset_days", [0, 30, 90])
+    async def test_bins_stable_under_simulated_future_wall_clock(
+        self, monkeypatch: pytest.MonkeyPatch, offset_days: int
+    ) -> None:
+        """The dense-90-day-bin invariant holds no matter how far the wall
+        clock has advanced past the day this test was written.
+
+        Regression guard for the frozen-``_NOW`` time bombs fixed in
+        bu-bz39v/bu-7mm5j (main-red 2026-07-06+): those fixes anchor seeds to
+        ``datetime.now(UTC)`` rather than a fixed past timestamp, which only
+        stays correct because the seed and the router's binning clock are the
+        same call. Here we simulate the wall clock running ``offset_days``
+        into the future (via ``_ShiftedNow``, without touching the real
+        system clock) and re-derive the seed from that same simulated
+        instant — the router must still report exactly 3 nonzero bins.
+        """
+        offset = timedelta(days=offset_days)
+        simulated_now = datetime.now(UTC) + offset
+        anchor = simulated_now.replace(hour=12, minute=0, second=0, microsecond=0)
+        rows = [
+            self._make_fact_row(last_seen=anchor),
+            self._make_fact_row(last_seen=anchor - timedelta(days=5)),
+            self._make_fact_row(last_seen=anchor - timedelta(days=40)),
+        ]
+        app, _ = self._make_app(fact_rows=rows, chronicler_episodes=[])
+        monkeypatch.setattr(_relationship_router_module(app), "datetime", _ShiftedNow(offset))
+
+        resp = await _get(app, _ACTIVITY_PATH, bins="daily", window="90d", bins_only=True)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["bins"]) == 90
         nonzero = [b for b in body["bins"] if b["count"] > 0]
         assert len(nonzero) == 3
         assert sum(b["count"] for b in body["bins"]) == 3
