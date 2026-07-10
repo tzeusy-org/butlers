@@ -35,6 +35,7 @@ import type {
   usePatchCalendarDedupRules,
   useSetCalendarKeepSeparate,
 } from "@/hooks/use-calendar-workspace.ts";
+import { Tip } from "@/components/ui/tip";
 import { formatEventTime, tzDayKey } from "@/lib/calendar-grid.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -210,23 +211,23 @@ export function CalendarDuplicatesPanel({
               {MATCH_STRATEGIES.map((option) => {
                 const active = rules.match_strategy === option.value;
                 return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    data-testid={`dedup-strategy-${option.value}`}
-                    aria-pressed={active}
-                    title={option.hint}
-                    disabled={rulesBusy}
-                    onClick={() => void applyStrategy(option.value)}
-                    className={cn(
-                      PILL,
-                      active
-                        ? "border-[var(--fg)] bg-[var(--fg)] text-[var(--bg)]"
-                        : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-[var(--fg)]",
-                    )}
-                  >
-                    {option.label}
-                  </button>
+                  <Tip key={option.value} content={option.hint}>
+                    <button
+                      type="button"
+                      data-testid={`dedup-strategy-${option.value}`}
+                      aria-pressed={active}
+                      disabled={rulesBusy}
+                      onClick={() => void applyStrategy(option.value)}
+                      className={cn(
+                        PILL,
+                        active
+                          ? "border-[var(--fg)] bg-[var(--fg)] text-[var(--bg)]"
+                          : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-[var(--fg)]",
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  </Tip>
                 );
               })}
             </div>

@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Tip } from "@/components/ui/tip";
 import { useConversations, useConversationSearch } from "@/hooks/use-conversations.ts";
 import { useDebounce } from "@/hooks/use-debounce.ts";
 import type { ConversationSummary } from "@/api/types.ts";
@@ -54,19 +55,21 @@ function ConversationItem({
 
   if (collapsed) {
     return (
-      <button
-        type="button"
-        onClick={onClick}
-        title={title}
-        className={cn(
-          "flex items-center justify-center size-9 rounded-lg text-sm font-medium transition-colors",
-          isActive
-            ? "bg-accent text-accent-foreground"
-            : "hover:bg-muted text-muted-foreground hover:text-foreground",
-        )}
-      >
-        {initial}
-      </button>
+      <Tip content={title}>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={title}
+          className={cn(
+            "flex items-center justify-center size-9 rounded-lg text-sm font-medium transition-colors",
+            isActive
+              ? "bg-accent text-accent-foreground"
+              : "hover:bg-muted text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {initial}
+        </button>
+      </Tip>
     );
   }
 
@@ -192,30 +195,34 @@ export function ConversationList({
           </Button>
         )}
         {collapsed && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8"
-            onClick={onNewConversation}
-            title="New conversation"
-          >
-            <PlusIcon className="size-4" />
-          </Button>
+          <Tip content="New conversation">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8"
+              onClick={onNewConversation}
+              aria-label="New conversation"
+            >
+              <PlusIcon className="size-4" />
+            </Button>
+          </Tip>
         )}
         {collapsible && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 shrink-0"
-            onClick={toggleCollapse}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            {collapsed ? (
-              <PanelLeftOpenIcon className="size-4" />
-            ) : (
-              <PanelLeftCloseIcon className="size-4" />
-            )}
-          </Button>
+          <Tip content={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0"
+              onClick={toggleCollapse}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {collapsed ? (
+                <PanelLeftOpenIcon className="size-4" />
+              ) : (
+                <PanelLeftCloseIcon className="size-4" />
+              )}
+            </Button>
+          </Tip>
         )}
       </div>
 

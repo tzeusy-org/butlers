@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Time } from "@/components/ui/time";
+import { Tip } from "@/components/ui/tip";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES, CURATION_RAIL_GLOSSES } from "@/lib/entity-glosses";
 import type { DunbarTier, EntityState, EntityType, CurationRailAction } from "@/lib/entity-glosses";
@@ -1622,13 +1623,14 @@ function FactRow({
         <span className="text-muted-foreground flex shrink-0 items-center gap-2 text-xs tabular-nums">
           <Time value={created} mode="absolute" precision="day" />
           {fact.session_id && (
-            <Link
-              to={sessionDetailHref(fact.session_id, fact.source_butler)}
-              className="text-primary hover:underline"
-              title={fact.session_id}
-            >
-              session
-            </Link>
+            <Tip content={fact.session_id}>
+              <Link
+                to={sessionDetailHref(fact.session_id, fact.source_butler)}
+                className="text-primary hover:underline"
+              >
+                session
+              </Link>
+            </Tip>
           )}
           {hasProvenance && (
             <button

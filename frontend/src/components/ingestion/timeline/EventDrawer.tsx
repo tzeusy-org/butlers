@@ -39,6 +39,7 @@ import {
 } from '@/hooks/use-ingestion-events'
 import { replayIngestionEvent } from '@/api/index.ts'
 import { ApiError } from '@/api/index.ts'
+import { Tip } from '@/components/ui/tip'
 import { StatusBadge } from '../StatusBadge'
 import type { IngestionEventSummary, IngestionEventStatus } from '@/api/index.ts'
 
@@ -136,20 +137,21 @@ function CopyButton({ value, label }: { value: string; label?: string }) {
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className="inline-flex items-center gap-1 rounded px-1 py-0.5 font-mono text-[11px] tracking-[0.01em] text-muted-foreground hover:bg-muted transition-colors"
-      title={copied ? 'Copied' : 'Copy to clipboard'}
-      data-testid="copy-button"
-    >
-      <span className="truncate max-w-[160px]">{label ?? value}</span>
-      {copied ? (
-        <Check className="size-3 text-[var(--green,theme(colors.emerald.500))] shrink-0" />
-      ) : (
-        <Copy className="size-3 shrink-0" />
-      )}
-    </button>
+    <Tip content={copied ? 'Copied' : 'Copy to clipboard'}>
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="inline-flex items-center gap-1 rounded px-1 py-0.5 font-mono text-[11px] tracking-[0.01em] text-muted-foreground hover:bg-muted transition-colors"
+        data-testid="copy-button"
+      >
+        <span className="truncate max-w-[160px]">{label ?? value}</span>
+        {copied ? (
+          <Check className="size-3 text-[var(--green,theme(colors.emerald.500))] shrink-0" />
+        ) : (
+          <Copy className="size-3 shrink-0" />
+        )}
+      </button>
+    </Tip>
   )
 }
 
@@ -264,17 +266,17 @@ function DrawerSessionsTab({
                     const width = Math.max(((sEnd - sStart) / span) * 100, 1)
                     const dur = s.completed_at ? formatDuration(s.started_at, s.completed_at) : '--'
                     return (
-                      <Link
-                        key={s.id}
-                        to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
-                        title={`${s.butler_name}: ${dur}`}
-                        className="absolute top-0.5 bottom-0.5 rounded-sm opacity-80 hover:opacity-100 transition-opacity cursor-pointer"
-                        style={{ left: `${left}%`, width: `${width}%`, backgroundColor: laneColor }}
-                      >
-                        <span className="px-1 text-[10px] font-medium text-white truncate block leading-6">
-                          {dur}
-                        </span>
-                      </Link>
+                      <Tip key={s.id} content={`${s.butler_name}: ${dur}`}>
+                        <Link
+                          to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
+                          className="absolute top-0.5 bottom-0.5 rounded-sm opacity-80 hover:opacity-100 transition-opacity cursor-pointer"
+                          style={{ left: `${left}%`, width: `${width}%`, backgroundColor: laneColor }}
+                        >
+                          <span className="px-1 text-[10px] font-medium text-white truncate block leading-6">
+                            {dur}
+                          </span>
+                        </Link>
+                      </Tip>
                     )
                   })}
                 </div>

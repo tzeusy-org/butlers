@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tip } from "@/components/ui/tip";
 import {
   Table,
   TableBody,
@@ -179,20 +180,25 @@ export function ScheduleTable({
                   )}
                 </TableCell>
                 <TableCell>
-                  <button
-                    type="button"
-                    onClick={() => onToggle(schedule)}
-                    className="cursor-pointer"
-                    title={schedule.enabled ? "Click to disable" : "Click to enable"}
+                  <Tip
+                    content={
+                      schedule.enabled ? "Click to disable" : "Click to enable"
+                    }
                   >
-                    {schedule.enabled ? (
-                      <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90">
-                        On
-                      </Badge>
-                    ) : (
-                      <Badge variant="secondary">Off</Badge>
-                    )}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => onToggle(schedule)}
+                      className="cursor-pointer"
+                    >
+                      {schedule.enabled ? (
+                        <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90">
+                          On
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary">Off</Badge>
+                      )}
+                    </button>
+                  </Tip>
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {schedule.source}

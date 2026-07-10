@@ -18,6 +18,8 @@ import {
 import { toast } from "sonner";
 import { Link, useSearchParams } from "react-router";
 
+import { Tip } from "@/components/ui/tip";
+
 import type {
   ApiResponse,
   CalendarAccountEntry,
@@ -1487,13 +1489,14 @@ export function CalendarActivityPanel({
               meta={
                 <div className="flex items-center gap-3">
                   {entry.source_session_id ? (
-                    <Link
-                      to={`/sessions/${entry.source_session_id}`}
-                      className="font-mono text-[10px] text-[var(--mfg)] underline decoration-dotted hover:text-[var(--fg)]"
-                      title={`Session ${entry.source_session_id}`}
-                    >
-                      session ›
-                    </Link>
+                    <Tip content={`Session ${entry.source_session_id}`}>
+                      <Link
+                        to={`/sessions/${entry.source_session_id}`}
+                        className="font-mono text-[10px] text-[var(--mfg)] underline decoration-dotted hover:text-[var(--fg)]"
+                      >
+                        session ›
+                      </Link>
+                    </Tip>
                   ) : null}
                   {undoable ? (
                     undone ? (
@@ -1938,14 +1941,15 @@ function CalendarEntryDetailPanel({
             </Mono>
           ) : null}
           {entry.source_session_id ? (
-            <Link
-              to={`/sessions/${entry.source_session_id}`}
-              data-testid="detail-session-link"
-              className="font-mono text-[11px] text-[var(--mfg)] underline decoration-dotted hover:text-[var(--fg)]"
-              title={`Session ${entry.source_session_id}`}
-            >
-              session ›
-            </Link>
+            <Tip content={`Session ${entry.source_session_id}`}>
+              <Link
+                to={`/sessions/${entry.source_session_id}`}
+                data-testid="detail-session-link"
+                className="font-mono text-[11px] text-[var(--mfg)] underline decoration-dotted hover:text-[var(--fg)]"
+              >
+                session ›
+              </Link>
+            </Tip>
           ) : null}
         </div>
       ) : null}
@@ -5054,14 +5058,13 @@ export default function CalendarWorkspacePage() {
                         </div>
                         <div className="space-y-0.5">
                           {dayEntries.slice(0, 3).map((entry) => (
-                            <button
-                              key={entry.entry_id}
-                              type="button"
-                              data-calendar-entry-id={entry.entry_id}
-                              title={entry.title}
-                              onClick={() => openDetailPanel(entry)}
-                              className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
-                            >
+                            <Tip key={entry.entry_id} content={entry.title}>
+                              <button
+                                type="button"
+                                data-calendar-entry-id={entry.entry_id}
+                                onClick={() => openDetailPanel(entry)}
+                                className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                              >
                               {!entry.all_day ? (
                                 <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
                                   {formatEventTime(
@@ -5072,7 +5075,8 @@ export default function CalendarWorkspacePage() {
                                 </span>
                               ) : null}
                               <span className="truncate">{entry.title}</span>
-                            </button>
+                              </button>
+                            </Tip>
                           ))}
                           {dayEntries.length > 3 ? (
                             <button
@@ -5205,19 +5209,19 @@ export default function CalendarWorkspacePage() {
                       return (
                         <div key={key} className="space-y-1 px-1">
                           {allDayEntries.map((entry) => (
-                            <button
-                              key={entry.entry_id}
-                              type="button"
-                              data-calendar-entry-id={entry.entry_id}
-                              title={entry.title}
-                              onClick={(evt) => {
-                                evt.stopPropagation();
-                                openDetailPanel(entry);
-                              }}
-                              className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06]"
-                            >
-                              {entry.title}
-                            </button>
+                            <Tip key={entry.entry_id} content={entry.title}>
+                              <button
+                                type="button"
+                                data-calendar-entry-id={entry.entry_id}
+                                onClick={(evt) => {
+                                  evt.stopPropagation();
+                                  openDetailPanel(entry);
+                                }}
+                                className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06]"
+                              >
+                                {entry.title}
+                              </button>
+                            </Tip>
                           ))}
                           {dayOverlays.map((overlay) => (
                             <OverlayPill

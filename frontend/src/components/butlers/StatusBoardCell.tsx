@@ -28,6 +28,7 @@ import { ButlerMark } from "@/components/ui/ButlerMark"
 import { RowLink } from "@/components/ui/RowLink"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time, formatRelativeCompact } from "@/components/ui/time"
+import { Tip } from "@/components/ui/tip"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
 import type { StatusBoardRow, ActivityVerb, EligibilityState } from "@/hooks/use-butler-status-board"
 
@@ -225,24 +226,33 @@ export function StatusBoardCell({ row, onRestore, isRestorePending = false }: St
             When heartbeat data is unavailable (source down or schema_unreachable),
             the activity verdict is unreliable: show '—' instead of a false 'IDLE'. */}
         {isRestorable && onRestore ? (
-          <button
-            type="button"
-            disabled={isRestorePending}
-            title={isRestorePending ? undefined : (eligibility === "quarantined" ? quarantineReason ?? undefined : chipTitle)}
-            onClick={(e) => {
-              e.stopPropagation()
-              onRestore(name)
-            }}
-            className={[
-              "font-mono text-[9px] uppercase tracking-wider",
+          <Tip
+            content={
               isRestorePending
-                ? "cursor-not-allowed text-muted-foreground"
-                : "cursor-pointer underline underline-offset-2 decoration-current/50",
-              !isRestorePending && (heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-[var(--amber-text)]" : activityChipClasses(activity)),
-            ].filter(Boolean).join(" ")}
+                ? undefined
+                : eligibility === "quarantined"
+                  ? (quarantineReason ?? undefined)
+                  : chipTitle
+            }
           >
-            {isRestorePending ? "RESTORING…" : heartbeatUnavailable ? "—" : eligibility === "stale" ? "STALE" : activityLabel(activity)}
-          </button>
+            <button
+              type="button"
+              disabled={isRestorePending}
+              onClick={(e) => {
+                e.stopPropagation()
+                onRestore(name)
+              }}
+              className={[
+                "font-mono text-[9px] uppercase tracking-wider",
+                isRestorePending
+                  ? "cursor-not-allowed text-muted-foreground"
+                  : "cursor-pointer underline underline-offset-2 decoration-current/50",
+                !isRestorePending && (heartbeatUnavailable ? "text-muted-foreground" : eligibility === "stale" ? "text-[var(--amber-text)]" : activityChipClasses(activity)),
+              ].filter(Boolean).join(" ")}
+            >
+              {isRestorePending ? "RESTORING…" : heartbeatUnavailable ? "—" : eligibility === "stale" ? "STALE" : activityLabel(activity)}
+            </button>
+          </Tip>
         ) : (
           <span
             title={eligibility === "quarantined" ? quarantineReason ?? undefined : chipTitle}

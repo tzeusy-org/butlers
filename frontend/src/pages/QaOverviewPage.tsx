@@ -28,6 +28,7 @@ import { toast } from "sonner";
 import type { QaCaseSummary } from "@/api/types";
 import { CaseDossier, CaseList, QaKpiStrip, QaVerdictOpener } from "@/components/qa";
 import { Time } from "@/components/ui/time";
+import { Tip } from "@/components/ui/tip";
 import { useButlers } from "@/hooks/use-butlers";
 import {
   useForceQaPatrol,
@@ -343,23 +344,26 @@ function PatrolPulseStrip() {
         Recent patrols
       </span>
       {rows.map((patrol) => (
-        <Link
+        <Tip
           key={patrol.id}
-          to={`/qa/patrols/${patrol.id}`}
-          title={`${patrol.status} · ${patrol.findings_count} findings`}
-          className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/60"
+          content={`${patrol.status} · ${patrol.findings_count} findings`}
         >
-          <span
-            aria-hidden="true"
-            className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass(patrol.status)}`}
-          />
-          <Time
-            value={patrol.started_at}
-            mode="relative"
-            className="font-mono text-[10px] text-muted-foreground"
-            showTitle={false}
-          />
-        </Link>
+          <Link
+            to={`/qa/patrols/${patrol.id}`}
+            className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/60"
+          >
+            <span
+              aria-hidden="true"
+              className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass(patrol.status)}`}
+            />
+            <Time
+              value={patrol.started_at}
+              mode="relative"
+              className="font-mono text-[10px] text-muted-foreground"
+              showTitle={false}
+            />
+          </Link>
+        </Tip>
       ))}
     </div>
   );

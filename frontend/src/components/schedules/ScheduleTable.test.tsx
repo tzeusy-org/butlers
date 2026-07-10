@@ -60,6 +60,19 @@ describe("ScheduleTable dual-mode rendering", () => {
     expect(html).toContain("{&quot;policy_tier&quot;:&quot;default&quot;}");
   });
 
+  it("routes the enable/disable action through a focusable tooltip, not a native title= (bu-sywxz)", () => {
+    // The enable/disable action hint used to live only in a `title=` attribute,
+    // which never surfaced on keyboard focus. It is now a radix Tip trigger.
+    const html = renderTable([
+      makeSchedule({ id: "sched-on", enabled: true }),
+    ]);
+    // The visible On/Off state still renders...
+    expect(html).toContain("On");
+    // ...but the action hint no longer leaks as a native title= tooltip.
+    expect(html).not.toContain('title="Click to disable"');
+    expect(html).not.toContain('title="Click to enable"');
+  });
+
   it("falls back to job mode when legacy rows omit dispatch_mode but include job_name", () => {
     const html = renderTable([
       makeSchedule({
