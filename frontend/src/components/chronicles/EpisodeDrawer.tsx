@@ -63,6 +63,7 @@ import {
 } from "@/hooks/use-chronicles"
 import { useChroniclesTimezone } from "./use-chronicles-timezone"
 import { formatDateTimeInTz } from "./tz-format"
+import { extractRoutineProvenance } from "./episode-routine-evidence"
 
 function formatDuration(startIso: string, endIso: string | null | undefined): string {
   if (!endIso) return "ongoing"
@@ -339,6 +340,10 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
   if (!ep) return null
 
   const duration = formatDuration(ep.canonical_start_at, ep.canonical_end_at)
+  // Which routine produced this inferred episode (bu-whhll.11). Present only on
+  // occupation_block episodes the routine adapter stamped; null otherwise.
+  // Masked for sensitive episodes alongside the rest of the payload.
+  const routineProvenance = isSensitive ? null : extractRoutineProvenance(ep.payload)
 
   return (
     <div className="flex flex-col gap-6 overflow-y-auto px-4 pb-6" data-testid="episode-drawer-content">
@@ -403,6 +408,34 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
           )}
         </div>
       </section>
+
+      {/* ── Produced by routine (evidence chain for inferred episodes) ── */}
+      {routineProvenance && (
+        <section aria-label="Produced by routine" data-testid="episode-routine-evidence">
+          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Produced by routine
+          </h3>
+          <div className="space-y-1 rounded-md border p-3" style={{ borderColor: "var(--border)" }}>
+            <p className="text-sm">
+              Inferred from your{" "}
+              <span className="font-medium" data-testid="routine-evidence-label">
+                {routineProvenance.routineLabel ?? "declared"}
+              </span>{" "}
+              routine.
+            </p>
+            {routineProvenance.corroboratorCount !== null && (
+              <p className="text-xs text-muted-foreground">
+                {routineProvenance.corroboratorCount === 1
+                  ? "1 corroborating signal in the window"
+                  : `${routineProvenance.corroboratorCount} corroborating signals in the window`}
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Edit this schedule under Work schedule on this page.
+            </p>
+          </div>
+        </section>
+      )}
 
       {/* ── Explain button (Tier-2 — explicit click only) ─────── */}
       {!isSensitive && (

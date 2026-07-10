@@ -16,11 +16,12 @@ import time
 import zoneinfo
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
+from datetime import time as dt_time
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
 
@@ -55,8 +56,11 @@ from butlers.chronicler.balance import (
 )
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START
+from butlers.chronicler.models import RoutineOrigin
 from butlers.chronicler.rollups import DEFAULT_TIMEZONE as ROLLUPS_DEFAULT_TIMEZONE
 from butlers.chronicler.storage import (
+    create_declared_routine,
+    delete_routine,
     get_routine,
     list_daily_rollup_flags_range,
     list_daily_rollups_range,
@@ -100,6 +104,7 @@ if _spec is not None and _spec.loader is not None:
     CorrectionPrompt = _models.CorrectionPrompt
     CorrectionPrompts = _models.CorrectionPrompts
     RoutineRow = _models.RoutineRow
+    CreateRoutineRequest = _models.CreateRoutineRequest
     UpdateRoutineRequest = _models.UpdateRoutineRequest
     RollupLaneRow = _models.RollupLaneRow
     RollupFlagRow = _models.RollupFlagRow
@@ -3302,13 +3307,48 @@ async def list_correction_prompts(
     )
 
 
-# ── GET /api/chronicler/routines, PATCH /api/chronicler/routines/{id} ─────
+# ── /api/chronicler/routines CRUD ─────────────────────────────────────────
 #
 # Owner-reviewable weekly routines (bu-whhll.9): rows mined by the
 # deterministic weekly job (chronicler_routines_mine) plus any owner-declared
-# rows (origin='declared', bu-whhll.11). GET lists all rows for dashboard
-# review; PATCH lets the owner enable/disable a row or rename its label —
-# the only two owner-editable fields (see storage.update_routine).
+# rows (origin='declared', bu-whhll.11).
+#
+# - GET    /routines           list all rows for dashboard review
+# - POST   /routines           declare a schedule (origin='declared')
+# - PATCH  /routines/{id}       enable/disable + rename (any row); edit the
+#                               window/days/timezone (declared rows only)
+# - DELETE /routines/{id}       remove a declared row (mined rows are disabled,
+#                               not deleted — the miner would recreate them)
+
+
+def _is_declared(routine: Any) -> bool:
+    origin = routine.origin.value if hasattr(routine.origin, "value") else str(routine.origin)
+    return origin == RoutineOrigin.DECLARED.value
+
+
+def _validate_routine_window(window_start: dt_time, window_end: dt_time) -> None:
+    """Reject a non-same-day window (matches the table's CHECK constraint).
+
+    Surfacing this as a 400 keeps a bad payload from bubbling up as an opaque
+    500 from the Postgres CHECK on ``window_end_local > window_start_local``.
+    """
+    if window_end <= window_start:
+        raise HTTPException(
+            status_code=400,
+            detail="window_end_local must be strictly after window_start_local",
+        )
+
+
+def _validate_routine_timezone(tz: str) -> None:
+    try:
+        zoneinfo.ZoneInfo(tz)
+    except (zoneinfo.ZoneInfoNotFoundError, KeyError, ValueError):
+        # ValueError covers an empty/malformed key ("" -> "keys must be
+        # normalized relative paths"); without it a blank timezone would 500.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unrecognized IANA timezone: {tz!r}",
+        )
 
 
 def _routine_to_row(routine: Any) -> RoutineRow:
@@ -3345,30 +3385,161 @@ async def list_chronicler_routines(
     return ApiResponse[list[RoutineRow]](data=[_routine_to_row(r) for r in routines])
 
 
+@router.post("/routines", response_model=RoutineRow, status_code=201)
+async def create_chronicler_routine(
+    request: Request,
+    body: CreateRoutineRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> RoutineRow:
+    """Declare an owner work schedule (``origin='declared'``, bu-whhll.11).
+
+    Writes the schedule straight into ``chronicler.routines`` so the
+    occupation-inference adapter consumes it on its next run — inference works
+    the moment the owner declares, without waiting weeks for the miner to
+    accrue observed support. The miner later refines/decays confidence with
+    real evidence but never clobbers a declared row.
+    """
+    _validate_routine_window(body.window_start_local, body.window_end_local)
+    _validate_routine_timezone(body.timezone)
+
+    pool = _pool(db)
+    routine = await create_declared_routine(
+        pool,
+        dow_mask=body.dow_mask,
+        window_start_local=body.window_start_local,
+        window_end_local=body.window_end_local,
+        label=body.label,
+        timezone=body.timezone,
+        enabled=body.enabled,
+    )
+
+    await emit_dashboard_audit(
+        db,
+        butler="chronicler",
+        operation="routine_declare_create",
+        method="POST",
+        path="/api/chronicler/routines",
+        body={"dow_mask": body.dow_mask, "label": body.label, "enabled": body.enabled},
+        response_status=201,
+        request=request,
+    )
+
+    return _routine_to_row(routine)
+
+
 @router.patch("/routines/{routine_id}", response_model=RoutineRow)
 async def patch_chronicler_routine(
     routine_id: UUID,
-    request: UpdateRoutineRequest = Body(...),
+    request: Request,
+    body: UpdateRoutineRequest = Body(...),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> RoutineRow:
-    """Owner review: enable/disable a routine and/or rename its label.
+    """Owner review/edit: enable/disable, rename, or re-schedule a routine.
 
-    Both fields are optional. Mining-derived fields (window bounds,
-    support_count, confidence, evidence_summary) are not editable here — the
-    weekly miner refreshes them on its next run, and (per
-    ``storage.upsert_mined_routine``) never overwrites ``enabled``/``label``
-    once set, so this edit survives every subsequent re-mine.
+    ``enabled``/``label`` are editable on any routine. The schedule fields
+    (``dow_mask``, ``window_start_local``, ``window_end_local``, ``timezone``)
+    are editable only on owner-declared routines — attempting them on a mined
+    routine is a 400, because the weekly miner owns a mined routine's window
+    and (per ``storage.upsert_mined_routine``) refreshes it on its next run
+    while preserving the owner's ``enabled``/``label`` edits.
     """
-    existing = await get_routine(_pool(db), routine_id)
+    pool = _pool(db)
+    existing = await get_routine(pool, routine_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Routine not found")
 
+    editing_schedule = any(
+        field is not None
+        for field in (
+            body.dow_mask,
+            body.window_start_local,
+            body.window_end_local,
+            body.timezone,
+        )
+    )
+    if editing_schedule and not _is_declared(existing):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only declared routines can have their schedule edited; the weekly "
+                "miner owns a mined routine's window, days, and timezone. Disable "
+                "the mined routine and declare your own instead."
+            ),
+        )
+
+    # Validate the effective window when either bound is being changed.
+    if body.window_start_local is not None or body.window_end_local is not None:
+        _validate_routine_window(
+            body.window_start_local or existing.window_start_local,
+            body.window_end_local or existing.window_end_local,
+        )
+    if body.timezone is not None:
+        _validate_routine_timezone(body.timezone)
+
     updated = await update_routine(
-        _pool(db),
+        pool,
         routine_id,
-        enabled=request.enabled,
-        label=request.label,
+        enabled=body.enabled,
+        label=body.label,
+        dow_mask=body.dow_mask,
+        window_start_local=body.window_start_local,
+        window_end_local=body.window_end_local,
+        timezone=body.timezone,
     )
     if updated is None:  # pragma: no cover — defensive (row existed above)
         raise HTTPException(status_code=404, detail="Routine not found")
+
+    await emit_dashboard_audit(
+        db,
+        butler="chronicler",
+        operation="routine_update",
+        method="PATCH",
+        path=f"/api/chronicler/routines/{routine_id}",
+        path_params={"routine_id": str(routine_id)},
+        body={"enabled": body.enabled, "label": body.label, "schedule_edited": editing_schedule},
+        response_status=200,
+        request=request,
+    )
+
     return _routine_to_row(updated)
+
+
+@router.delete("/routines/{routine_id}", status_code=204)
+async def delete_chronicler_routine(
+    routine_id: UUID,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> Response:
+    """Delete an owner-declared routine (bu-whhll.11).
+
+    Only ``origin='declared'`` rows are deletable. A mined routine can only be
+    disabled (PATCH ``enabled=false``): deleting it would be futile because the
+    next weekly mine would recreate it — a 400 steers the owner to disable it.
+    """
+    pool = _pool(db)
+    existing = await get_routine(pool, routine_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Routine not found")
+    if not _is_declared(existing):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Only declared routines can be deleted; disable a mined routine "
+                "instead (deleting it would be undone by the next weekly mine)."
+            ),
+        )
+
+    await delete_routine(pool, routine_id)
+
+    await emit_dashboard_audit(
+        db,
+        butler="chronicler",
+        operation="routine_delete",
+        method="DELETE",
+        path=f"/api/chronicler/routines/{routine_id}",
+        path_params={"routine_id": str(routine_id)},
+        response_status=204,
+        request=request,
+    )
+
+    return Response(status_code=204)

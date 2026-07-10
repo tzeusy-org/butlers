@@ -306,6 +306,7 @@ import type {
   ChroniclerAggregateByDayParams,
   ChroniclerAggregateByDayRow,
   ChroniclerCategoryBuckets,
+  ChroniclerCreateRoutineRequest,
   ChroniclerDayCloseParams,
   ChroniclerDayCloseRefreshRequest,
   ChroniclerDayCloseRefreshResponse,
@@ -318,7 +319,9 @@ import type {
   ChroniclerPointEvent,
   ChroniclerRollupsParams,
   ChroniclerRollupsResponse,
+  ChroniclerRoutine,
   ChroniclerSourceStateRow,
+  ChroniclerUpdateRoutineRequest,
   SubmitCorrectionRequest,
   EntityGift,
   EntityLoan,
@@ -6027,6 +6030,49 @@ export function getChroniclerEvents(
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();
   return apiFetch(qs ? `/chronicler/events?${qs}` : "/chronicler/events");
+}
+
+// ── Chronicler routines (bu-whhll.9 / bu-whhll.11) ─────────────────────────
+
+/** List owner-reviewable weekly routines (mined + declared). */
+export function getChroniclerRoutines(
+  params?: { enabled_only?: boolean },
+): Promise<{ data: ChroniclerRoutine[]; meta: Record<string, unknown> }> {
+  const sp = new URLSearchParams();
+  if (params?.enabled_only) sp.set("enabled_only", "true");
+  const qs = sp.toString();
+  return apiFetch(qs ? `/chronicler/routines?${qs}` : "/chronicler/routines");
+}
+
+/** Declare an owner work schedule (origin='declared'). Returns the created row. */
+export function createChroniclerRoutine(
+  body: ChroniclerCreateRoutineRequest,
+): Promise<ChroniclerRoutine> {
+  return apiFetch("/chronicler/routines", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Enable/disable, rename, or (declared only) re-schedule a routine.
+ * Rejected with 400 when schedule fields are sent for a mined routine.
+ */
+export function updateChroniclerRoutine(
+  routineId: string,
+  body: ChroniclerUpdateRoutineRequest,
+): Promise<ChroniclerRoutine> {
+  return apiFetch(`/chronicler/routines/${encodeURIComponent(routineId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Delete a declared routine. Returns undefined on success (HTTP 204). */
+export function deleteChroniclerRoutine(routineId: string): Promise<undefined> {
+  return apiFetch(`/chronicler/routines/${encodeURIComponent(routineId)}`, {
+    method: "DELETE",
+  });
 }
 
 // ---------------------------------------------------------------------------

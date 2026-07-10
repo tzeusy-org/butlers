@@ -5883,6 +5883,66 @@ export interface ChroniclerEpisodeExplainResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Chronicler routines (bu-whhll.9 miner + bu-whhll.11 owner-declared schedule)
+// ---------------------------------------------------------------------------
+
+/**
+ * One row from GET /api/chronicler/routines — a weekly work-pattern the
+ * occupation-inference adapter consumes when enabled.
+ *
+ * `origin`:
+ *  - `"mined"` — written by the deterministic weekly miner; its window/days
+ *    are refreshed by the miner (not owner-editable), but enable/label are.
+ *  - `"declared"` — owner bootstrap ("I work Mon-Fri 09:30-19:30 at Acme");
+ *    fully owner-editable and deletable.
+ */
+export interface ChroniclerRoutine {
+  id: string;
+  /** Bitmask over ISO weekday, bit 0 = Monday ... bit 6 = Sunday. */
+  dow_mask: number;
+  /** Local wall-clock start, "HH:MM:SS". */
+  window_start_local: string;
+  /** Local wall-clock end, "HH:MM:SS". */
+  window_end_local: string;
+  timezone: string;
+  label: string;
+  support_count: number;
+  confidence: number;
+  evidence_summary: Record<string, unknown>;
+  origin: "mined" | "declared";
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Request body for POST /api/chronicler/routines (declare a schedule). */
+export interface ChroniclerCreateRoutineRequest {
+  dow_mask: number;
+  /** "HH:MM" or "HH:MM:SS". */
+  window_start_local: string;
+  window_end_local: string;
+  label: string;
+  timezone?: string;
+  enabled?: boolean;
+}
+
+/**
+ * Request body for PATCH /api/chronicler/routines/{id}.
+ *
+ * `enabled`/`label` apply to any routine. The schedule fields
+ * (`dow_mask`/`window_*`/`timezone`) apply only to declared routines — the
+ * server rejects them with 400 on a mined routine.
+ */
+export interface ChroniclerUpdateRoutineRequest {
+  enabled?: boolean;
+  label?: string;
+  dow_mask?: number;
+  window_start_local?: string;
+  window_end_local?: string;
+  timezone?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Relationship butler: entity-level tab types
 // ---------------------------------------------------------------------------
 

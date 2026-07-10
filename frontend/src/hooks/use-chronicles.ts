@@ -21,6 +21,8 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  createChroniclerRoutine,
+  deleteChroniclerRoutine,
   getChroniclerAggregateByCategory,
   getChroniclerAggregateByDay,
   getChroniclerDayClose,
@@ -30,17 +32,21 @@ import {
   getChroniclerEpisodes,
   getChroniclerEvents,
   getChroniclerRollups,
+  getChroniclerRoutines,
   getChroniclerSourceState,
   postChroniclerEpisodeExplain,
   submitChroniclerEpisodeCorrection,
+  updateChroniclerRoutine,
 } from "@/api/client.ts";
 import type {
   ChroniclerAggregateByCategoryParams,
   ChroniclerAggregateByDayParams,
+  ChroniclerCreateRoutineRequest,
   ChroniclerDayCloseParams,
   ChroniclerEpisodesParams,
   ChroniclerEventsParams,
   ChroniclerRollupsParams,
+  ChroniclerUpdateRoutineRequest,
   SubmitCorrectionRequest,
 } from "@/api/types.ts";
 
@@ -69,6 +75,8 @@ export const chroniclesKeys = {
     [...chroniclesKeys.all, "day-close", params] as const,
   pointEvents: (params?: ChroniclerEventsParams) =>
     [...chroniclesKeys.all, "point-events", params] as const,
+  routines: (params?: { enabled_only?: boolean }) =>
+    [...chroniclesKeys.all, "routines", params ?? {}] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -368,5 +376,68 @@ export function useChroniclesPointEvents(
     queryFn: () => getChroniclerEvents(params),
     refetchInterval: options?.refetchInterval ?? 30_000,
     enabled: options?.enabled !== false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Routines (bu-whhll.9 miner rows + bu-whhll.11 owner-declared schedule)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch owner-reviewable weekly routines (mined + declared).
+ *
+ * The settings surface must distinguish a FAILED fetch from an empty list:
+ * an errored query renders a degraded note, never a calm "no schedule yet"
+ * (the truth-amnesty rule, CLAUDE.md API conventions). Callers read
+ * `isError`/`error` and gate their empty state on it.
+ */
+export function useChroniclesRoutines(
+  params?: { enabled_only?: boolean },
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.routines(params),
+    queryFn: () => getChroniclerRoutines(params),
+    refetchInterval: options?.refetchInterval ?? false,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/** Declare an owner work schedule (origin='declared'). Invalidates the list. */
+export function useCreateChroniclesRoutine() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ChroniclerCreateRoutineRequest) => createChroniclerRoutine(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.all });
+    },
+  });
+}
+
+/** Enable/disable, rename, or re-schedule a routine. Invalidates the list. */
+export function useUpdateChroniclesRoutine() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      routineId,
+      body,
+    }: {
+      routineId: string;
+      body: ChroniclerUpdateRoutineRequest;
+    }) => updateChroniclerRoutine(routineId, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.all });
+    },
+  });
+}
+
+/** Delete a declared routine. Invalidates the list. */
+export function useDeleteChroniclesRoutine() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (routineId: string) => deleteChroniclerRoutine(routineId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: chroniclesKeys.all });
+    },
   });
 }

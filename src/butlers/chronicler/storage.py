@@ -1086,6 +1086,52 @@ async def upsert_mined_routine(
     return _row_to_routine(row)
 
 
+async def create_declared_routine(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    dow_mask: int,
+    window_start_local: Any,
+    window_end_local: Any,
+    label: str,
+    timezone: str = "Asia/Singapore",
+    enabled: bool = True,
+    evidence_summary: dict[str, Any] | None = None,
+) -> Routine:
+    """Insert an owner-declared routine (``origin='declared'``, bu-whhll.11).
+
+    Declared rows are the owner's bootstrap schedule ("I work Mon-Fri
+    09:30-19:30 at <label>"). They carry no mining statistics
+    (``support_count``/``confidence`` stay 0) and are deliberately NOT
+    constrained by the mined ``routines_mined_dow_mask_idx`` partial-unique
+    index — the owner may declare any number of them, even overlapping a
+    mined row on the same ``dow_mask``. The occupation-inference adapter reads
+    enabled rows on its next run, so declaring a schedule makes inference work
+    immediately rather than waiting weeks for the miner to accrue support.
+
+    ``evidence_summary`` is written as a JSONB **dict** (never ``json.dumps``
+    — the pool's JSONB codec encodes the dict; a pre-serialized string would
+    double-encode). Defaults to a small marker recording the declared origin.
+    """
+    row = await conn.fetchrow(
+        """
+        INSERT INTO routines (
+            dow_mask, window_start_local, window_end_local, timezone,
+            label, evidence_summary, origin, enabled
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, 'declared', $7)
+        RETURNING *
+        """,
+        dow_mask,
+        window_start_local,
+        window_end_local,
+        timezone,
+        label,
+        evidence_summary if evidence_summary is not None else {"origin": "owner-declared"},
+        enabled,
+    )
+    return _row_to_routine(row)
+
+
 async def list_routines(
     conn: asyncpg.Connection | asyncpg.Pool,
     *,
@@ -1123,13 +1169,22 @@ async def update_routine(
     *,
     enabled: bool | None = None,
     label: str | None = None,
+    dow_mask: int | None = None,
+    window_start_local: Any = None,
+    window_end_local: Any = None,
+    timezone: str | None = None,
 ) -> Routine | None:
-    """Owner-review PATCH: update ``enabled`` and/or ``label`` in place.
+    """Owner-review / owner-declare PATCH: update fields in place.
 
-    Both fields are optional; only the provided ones are updated. Returns
-    ``None`` when ``routine_id`` does not exist. Mining-derived columns
-    (window bounds, support_count, confidence, evidence_summary) are never
-    touched here — that is ``upsert_mined_routine``'s job.
+    All fields are optional; only the provided ones are updated. Returns
+    ``None`` when ``routine_id`` does not exist.
+
+    ``enabled``/``label`` are editable on any routine (the owner-review
+    surface). The schedule columns (``dow_mask``, ``window_start_local``,
+    ``window_end_local``, ``timezone``) are only ever passed for
+    ``origin='declared'`` rows — the API layer rejects a schedule edit on a
+    mined routine, whose windows the weekly miner owns (``upsert_mined_routine``).
+    ``support_count``/``confidence``/``evidence_summary`` are never touched here.
     """
     updates: list[str] = []
     args: list[Any] = []
@@ -1139,6 +1194,18 @@ async def update_routine(
     if label is not None:
         args.append(label)
         updates.append(f"label = ${len(args)}")
+    if dow_mask is not None:
+        args.append(dow_mask)
+        updates.append(f"dow_mask = ${len(args)}")
+    if window_start_local is not None:
+        args.append(window_start_local)
+        updates.append(f"window_start_local = ${len(args)}")
+    if window_end_local is not None:
+        args.append(window_end_local)
+        updates.append(f"window_end_local = ${len(args)}")
+    if timezone is not None:
+        args.append(timezone)
+        updates.append(f"timezone = ${len(args)}")
 
     if not updates:
         return await get_routine(conn, routine_id)
@@ -1157,6 +1224,23 @@ async def update_routine(
     if row is None:
         return None
     return _row_to_routine(row)
+
+
+async def delete_routine(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    routine_id: UUID,
+) -> bool:
+    """Hard-delete a routine row. Returns ``True`` when a row was removed.
+
+    Only owner-declared routines are deletable (the API layer enforces this):
+    a mined routine deleted here would simply be re-created on the next weekly
+    mine, so those are disabled rather than deleted.
+    """
+    row = await conn.fetchrow(
+        "DELETE FROM routines WHERE id = $1 RETURNING id",
+        routine_id,
+    )
+    return row is not None
 
 
 # ── Daily rollups (bu-u30as, telemetry-distillation bead 3) ────────────────
@@ -1428,7 +1512,9 @@ async def set_daily_rollup_flag_narrative(
 
 
 __all__: Sequence[str] = (
+    "create_declared_routine",
     "delete_daily_rollup_flag",
+    "delete_routine",
     "get_carryover",
     "get_checkpoint",
     "get_checkpoint_subsource",

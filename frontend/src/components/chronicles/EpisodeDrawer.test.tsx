@@ -713,3 +713,70 @@ describe("EpisodeDrawerContent privacy contract (bu-6c5i6)", () => {
     expect(html).not.toContain("explain-button")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Routine-provenance evidence chain (bu-whhll.11)
+//
+// An occupation_block episode carries the producing routine on its payload
+// (routine_id/routine_label/corroborator_count). The drawer surfaces WHICH
+// routine produced the inferred episode, closing the evidence chain from the
+// timeline bar back to the declared/mined schedule that implied it.
+// ---------------------------------------------------------------------------
+
+describe("EpisodeDrawerContent — produced-by-routine evidence", () => {
+  it("shows the producing routine for an inferred episode", () => {
+    reset()
+    _episodeData = makeEpisode({
+      source_name: "chronicler.occupation_inferred",
+      episode_type: "occupation_block",
+      payload: {
+        routine_id: "routine-xyz",
+        routine_label: "Work at Acme",
+        local_date: "2026-04-25",
+        corroborator_count: 3,
+      },
+    })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+    expect(html).toContain("episode-routine-evidence")
+    expect(html).toContain("routine-evidence-label")
+    expect(html).toContain("Work at Acme")
+    expect(html).toContain("3 corroborating signals")
+  })
+
+  it("uses a fallback label when routine_label is absent", () => {
+    reset()
+    _episodeData = makeEpisode({
+      source_name: "chronicler.occupation_inferred",
+      episode_type: "occupation_block",
+      payload: { routine_id: "routine-xyz" },
+    })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+    expect(html).toContain("episode-routine-evidence")
+    expect(html).toContain("declared")
+  })
+
+  it("does NOT render the routine section for a non-routine episode", () => {
+    reset()
+    _episodeData = makeEpisode({ payload: {} })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+    expect(html).not.toContain("episode-routine-evidence")
+  })
+
+  it("hides routine provenance for a sensitive episode (payload masked)", () => {
+    reset()
+    _episodeData = makeEpisode({
+      canonical_privacy: "sensitive",
+      payload: { routine_id: "routine-xyz", routine_label: "Work at Acme" },
+    })
+    _eventsData = []
+    _correctionsData = []
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+    expect(html).not.toContain("episode-routine-evidence")
+  })
+})

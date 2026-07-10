@@ -698,17 +698,48 @@ class RoutineRow(BaseModel):
     updated_at: datetime
 
 
+class CreateRoutineRequest(BaseModel):
+    """Request body for POST /api/chronicler/routines (bu-whhll.11).
+
+    Owner-declared work-schedule bootstrap — "I work Mon-Fri 09:30-19:30 at
+    <label>". Written straight into ``chronicler.routines`` with
+    ``origin='declared'`` so the occupation-inference adapter picks it up on
+    its next run (inference works immediately, without waiting for the weekly
+    miner to accrue observed support).
+
+    ``dow_mask`` is a bitmask over ISO weekday, bit 0 = Monday ... bit 6 =
+    Sunday (``1 << date.weekday()``); at least one day must be set. The window
+    is a same-day local wall-clock range (``window_end_local`` strictly after
+    ``window_start_local`` — midnight-spanning windows are out of scope for
+    v1, matching the table CHECK).
+    """
+
+    dow_mask: int = Field(..., ge=1, le=127)
+    window_start_local: time
+    window_end_local: time
+    label: str = Field(..., min_length=1)
+    timezone: str = "Asia/Singapore"
+    enabled: bool = True
+
+
 class UpdateRoutineRequest(BaseModel):
     """Request body for PATCH /api/chronicler/routines/{id}.
 
-    Owner-review fields only — both optional, both independently settable.
-    Mining-derived fields (window bounds, support_count, confidence,
-    evidence_summary) are not editable; the miner refreshes them on its next
-    weekly run.
+    ``enabled``/``label`` are editable on any routine (the owner-review
+    surface). The schedule fields (``dow_mask``, ``window_start_local``,
+    ``window_end_local``, ``timezone``) are only editable on owner-declared
+    routines; passing any of them for a mined routine is a 400 — the weekly
+    miner owns a mined routine's window and refreshes it on its next run.
+    ``support_count``/``confidence``/``evidence_summary`` are never editable.
+    All fields are optional and independently settable.
     """
 
     enabled: bool | None = None
-    label: str | None = None
+    label: str | None = Field(default=None, min_length=1)
+    dow_mask: int | None = Field(default=None, ge=1, le=127)
+    window_start_local: time | None = None
+    window_end_local: time | None = None
+    timezone: str | None = None
 
 
 __all__ = [
@@ -721,6 +752,7 @@ __all__ = [
     "CompanionEntry",
     "CorrectionPrompt",
     "CorrectionPrompts",
+    "CreateRoutineRequest",
     "EvidenceChainLink",
     "ChroniclerEpisode",
     "ChroniclerOverride",

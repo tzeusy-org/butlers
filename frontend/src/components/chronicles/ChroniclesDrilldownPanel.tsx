@@ -32,6 +32,7 @@ import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart";
 import { StreakCallouts } from "@/components/chronicles/StreakCallouts";
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton";
 import { RollupTrendWidget } from "@/components/chronicles/RollupTrendWidget";
+import { WorkScheduleSettings } from "@/components/chronicles/WorkScheduleSettings";
 
 import type { ChroniclerEventsParams } from "@/api/types";
 
@@ -202,6 +203,10 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
             />
           </div>
         </div>
+      </Section>
+
+      <Section eyebrow="Work schedule">
+        <WorkScheduleSettings />
       </Section>
 
       <EpisodeDrawer

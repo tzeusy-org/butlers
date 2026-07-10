@@ -14,7 +14,7 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, date, datetime, time, timedelta
 from unittest.mock import MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import asyncpg
@@ -387,4 +387,214 @@ async def test_patch_routine_api_404_for_unknown_id(pool) -> None:
             f"/api/chronicler/routines/{uuid4()}",
             json={"enabled": False},
         )
+    assert resp.status_code == 404
+
+
+# ── Owner-declared routines (bu-whhll.11) ──────────────────────────────────
+
+
+async def test_create_declared_routine_storage(pool) -> None:
+    """storage.create_declared_routine writes an origin='declared' row with a
+    JSONB dict evidence_summary (the dict-not-json.dumps trap) and no mining
+    stats."""
+    from butlers.chronicler.storage import create_declared_routine
+
+    routine = await create_declared_routine(
+        pool,
+        dow_mask=0b0011111,
+        window_start_local=time(9, 30),
+        window_end_local=time(19, 30),
+        label="Work at Acme",
+    )
+    assert routine.id is not None
+    assert routine.origin.value == "declared"
+    assert routine.enabled is True
+    assert routine.support_count == 0
+    assert routine.confidence == pytest.approx(0.0)
+    # evidence_summary round-trips as a dict, never a JSON string.
+    assert isinstance(routine.evidence_summary, dict)
+    assert routine.evidence_summary == {"origin": "owner-declared"}
+
+
+async def test_post_declared_routine_api_creates_row(pool) -> None:
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/chronicler/routines",
+            json={
+                "dow_mask": 0b0011111,
+                "window_start_local": "09:30:00",
+                "window_end_local": "19:30:00",
+                "label": "Work at Acme",
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["origin"] == "declared"
+    assert body["dow_mask"] == 0b0011111
+    assert body["label"] == "Work at Acme"
+    assert body["enabled"] is True
+
+    # The declared row drives inference immediately: it is returned by the
+    # enabled-only list the occupation adapter consumes.
+    enabled = await list_routines(pool, enabled_only=True)
+    assert any(r.id == UUID(body["id"]) for r in enabled)
+
+
+async def test_post_declared_routine_rejects_inverted_window(pool) -> None:
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/chronicler/routines",
+            json={
+                "dow_mask": 0b0011111,
+                "window_start_local": "19:30:00",
+                "window_end_local": "09:30:00",
+                "label": "Backwards",
+            },
+        )
+    assert resp.status_code == 400
+    assert "window_end_local" in resp.text
+
+
+async def test_post_declared_routine_rejects_unknown_timezone(pool) -> None:
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/chronicler/routines",
+            json={
+                "dow_mask": 1,
+                "window_start_local": "09:00:00",
+                "window_end_local": "17:00:00",
+                "label": "Bad tz",
+                "timezone": "Mars/Olympus_Mons",
+            },
+        )
+    assert resp.status_code == 400
+    assert "timezone" in resp.text.lower()
+
+
+async def test_post_declared_routine_rejects_empty_timezone(pool) -> None:
+    # zoneinfo.ZoneInfo("") raises ValueError (not ZoneInfoNotFoundError); the
+    # validator must map it to a 400, not let it bubble up as a 500.
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/chronicler/routines",
+            json={
+                "dow_mask": 1,
+                "window_start_local": "09:00:00",
+                "window_end_local": "17:00:00",
+                "label": "Blank tz",
+                "timezone": "",
+            },
+        )
+    assert resp.status_code == 400
+    assert "timezone" in resp.text.lower()
+
+
+async def test_patch_declared_routine_edits_schedule(pool) -> None:
+    from butlers.chronicler.storage import create_declared_routine
+
+    routine = await create_declared_routine(
+        pool,
+        dow_mask=0b0011111,
+        window_start_local=time(9, 30),
+        window_end_local=time(19, 30),
+        label="Work",
+    )
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.patch(
+            f"/api/chronicler/routines/{routine.id}",
+            json={
+                "dow_mask": 0b0111111,
+                "window_start_local": "10:00:00",
+                "window_end_local": "18:00:00",
+                "label": "Work (updated)",
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dow_mask"] == 0b0111111
+    assert body["window_start_local"] == "10:00:00"
+    assert body["window_end_local"] == "18:00:00"
+    assert body["label"] == "Work (updated)"
+
+
+async def test_patch_mined_routine_rejects_schedule_edit(pool) -> None:
+    """The weekly miner owns a mined routine's window — a schedule edit on one
+    is a 400 (enable/disable/rename remain allowed)."""
+    routine = await upsert_mined_routine(
+        pool,
+        dow_mask=0b0011111,
+        window_start_local=time(9, 30),
+        window_end_local=time(19, 30),
+        label="Mon-Fri 09:30-19:30",
+        support_count=25,
+        confidence=0.83,
+        evidence_summary={},
+    )
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.patch(
+            f"/api/chronicler/routines/{routine.id}",
+            json={"window_start_local": "08:00:00"},
+        )
+        assert resp.status_code == 400
+        assert "declared" in resp.text.lower()
+
+        # enable/disable + rename still work on a mined routine.
+        ok = await client.patch(
+            f"/api/chronicler/routines/{routine.id}",
+            json={"enabled": False, "label": "Renamed"},
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["enabled"] is False
+        assert ok.json()["label"] == "Renamed"
+
+
+async def test_delete_declared_routine_removes_row(pool) -> None:
+    from butlers.chronicler.storage import create_declared_routine
+
+    routine = await create_declared_routine(
+        pool,
+        dow_mask=1,
+        window_start_local=time(9, 0),
+        window_end_local=time(17, 0),
+        label="Delete me",
+    )
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete(f"/api/chronicler/routines/{routine.id}")
+    assert resp.status_code == 204, resp.text
+    assert await get_routine(pool, routine.id) is None
+
+
+async def test_delete_mined_routine_rejected(pool) -> None:
+    """A mined routine cannot be deleted (the miner would recreate it); the
+    owner is steered to disable it instead."""
+    routine = await upsert_mined_routine(
+        pool,
+        dow_mask=0b0011111,
+        window_start_local=time(9, 30),
+        window_end_local=time(19, 30),
+        label="Mon-Fri 09:30-19:30",
+        support_count=25,
+        confidence=0.83,
+        evidence_summary={},
+    )
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete(f"/api/chronicler/routines/{routine.id}")
+    assert resp.status_code == 400
+    assert "declared" in resp.text.lower()
+    # Row survives.
+    assert await get_routine(pool, routine.id) is not None
+
+
+async def test_delete_routine_404_for_unknown_id(pool) -> None:
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete(f"/api/chronicler/routines/{uuid4()}")
     assert resp.status_code == 404
