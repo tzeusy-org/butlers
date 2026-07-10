@@ -18,7 +18,9 @@ import { useButlerMemoryAccess, useButlerPrompt, useButlerPromptHistory, useButl
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
 import { useResolveModel } from "@/hooks/use-model-catalog";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
+import { bucketHourInZone } from "@/lib/hourly-buckets";
 import { cn } from "@/lib/utils";
+import { useTimezone } from "@/components/ui/timezone-context";
 import RuntimeConfigCard from "./RuntimeConfigCard";
 
 interface Props {
@@ -625,11 +627,16 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
 function ActivityStripeSection({ butlerName }: { butlerName: string }) {
   const { data } = useButlerHourlyActivity(butlerName);
   const buckets = data?.data?.buckets ?? [];
+  const ownerTz = useTimezone();
 
-  // Build a 24-slot array from the hourly buckets (local timezone, matching HourlyActivityBucket).
+  // Build a 24-slot array indexed by hour-of-day. Each backend `hour_start` is
+  // a UTC-anchored instant; it must be slotted in the OWNER timezone so the
+  // viewer's host zone never shifts the histogram (bu-8ogli). Slot i is thus
+  // the owner-tz hour i, matching the `${i}:00` tooltip below.
   const values: number[] = Array(24).fill(0);
   for (const bucket of buckets) {
-    const hourIndex = new Date(bucket.hour_start).getHours();
+    const hourIndex = bucketHourInZone(bucket.hour_start, ownerTz);
+    if (hourIndex === null) continue;
     values[hourIndex] = bucket.sessions_count;
   }
 
