@@ -94,10 +94,11 @@ The system SHALL generate periodic financial summaries incorporating intelligenc
 
 #### Scenario: Budget thresholds via the daily insight scan
 - **WHEN** the `insight-scan` job (`0 7 * * *`) evaluates budget thresholds
-- **THEN** it SHALL call `budget_status()`-equivalent aggregation and propose a `budget-threshold` insight candidate per category whose utilization is at or above that budget's own configured `warn_threshold` (default 0.80)
+- **THEN** it SHALL call `budget_status()` (which aligns each budget's spending window to its own period via `DATE_TRUNC`) and propose a `budget-threshold` insight candidate for every active budget — of any period (`weekly`, `monthly`, `quarterly`, `yearly`) — whose utilization is at or above that budget's own configured `warn_threshold` (default 0.80) (bu-hovqz: previously the scan filtered `period = 'monthly'` only, silently excluding weekly/quarterly/yearly budgets)
 - **AND** priority SHALL be 70 when utilization is at or above the budget's `alert_threshold` (default 1.00), else 50
-- **AND** the candidate SHALL include category, spent amount, budget amount, and utilization percentage, with a month-scoped dedup key
-- **AND** if no category is at or above its `warn_threshold`, no `budget-threshold` candidate SHALL be proposed
+- **AND** the candidate SHALL include category, budget period, spent amount, budget amount, and utilization percentage, with a period-scoped dedup key whose time-scope segment resets at that period's boundary (`weekly`→`YYYY-Www`, `monthly`→`YYYY-MM`, `quarterly`→`YYYY-Qn`, `yearly`→`YYYY`) — the four formats are mutually unambiguous, so a monthly and a yearly budget for the same category never share a dedup key
+- **AND** the candidate's cooldown SHALL span the remainder of that budget's current period window, so a crossing fires at most once per window and the next window's fresh dedup key re-fires
+- **AND** if no budget is at or above its `warn_threshold`, no `budget-threshold` candidate SHALL be proposed
 - **AND** this replaced the old weekly `budget-status-check` task (which hardcoded 80%/90% thresholds regardless of each budget's actual configured thresholds) — that task was removed as fully redundant with (and less accurate than) this step, and cadence moved from weekly to daily
 
 #### Scenario: Per-transaction anomaly candidates via the daily anomaly insight scan

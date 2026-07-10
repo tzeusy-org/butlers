@@ -116,6 +116,50 @@ def _end_of_month(ref: date) -> datetime:
     return datetime(next_month_start.year, next_month_start.month, next_month_start.day, tzinfo=UTC)
 
 
+def _end_of_period_dt(period_end: date) -> datetime:
+    """Return midnight UTC on the day after *period_end* (the period's exclusive end).
+
+    Used as the ``expires_at`` for a budget-threshold candidate: it is always
+    strictly after any moment on ``period_end`` (which the broker requires), and
+    the candidate naturally expires once its budget period is over.
+    """
+    day_after = period_end + timedelta(days=1)
+    return datetime(day_after.year, day_after.month, day_after.day, tzinfo=UTC)
+
+
+def _budget_period_scope_token(period: str, period_start: date) -> str:
+    """Return the dedup time-scope token for a budget's current period window.
+
+    This is the fourth (time-scope) segment of a ``budget-threshold`` dedup key.
+    It resets exactly at each period's boundary so a threshold crossing dedupes
+    within its window and re-fires in the next one:
+
+    - ``weekly``    -> ISO week, ``YYYY-Www`` (e.g. ``2026-W28``)
+    - ``monthly``   -> ``YYYY-MM``            (e.g. ``2026-07``) — unchanged, so
+      already-shipped monthly budgets keep their dedup identity
+    - ``quarterly`` -> ``YYYY-Qn``            (e.g. ``2026-Q3``)
+    - ``yearly``    -> ``YYYY``               (e.g. ``2026``)
+
+    The four formats are mutually unambiguous, so budgets of different periods
+    for the same category never share a dedup key (e.g. a monthly and a yearly
+    ``dining`` budget both crossing threshold in the same year stay distinct).
+
+    ``period_start`` comes from ``budget_status()`` (DATE_TRUNC-aligned), so the
+    token stays consistent with the window the spending was aggregated over.
+    """
+    if period == "weekly":
+        iso = period_start.isocalendar()
+        return f"{iso.year}-W{iso.week:02d}"
+    if period == "monthly":
+        return period_start.strftime("%Y-%m")
+    if period == "quarterly":
+        quarter = (period_start.month - 1) // 3 + 1
+        return f"{period_start.year}-Q{quarter}"
+    if period == "yearly":
+        return str(period_start.year)
+    raise ValueError(f"Unsupported budget period: {period!r}")
+
+
 async def _propose(
     pool: asyncpg.Pool,
     *,
@@ -154,7 +198,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     Scans four categories in order:
     1. Spending anomalies — categories >30% above 3-month rolling average
     2. Upcoming bills — due within 3 days, not paid
-    3. Budget thresholds — monthly spending at 80%+ of a budget target
+    3. Budget thresholds — spending at/above each budget's warn_threshold, for
+       every budget period (weekly/monthly/quarterly/yearly) via budget_status()
     4. Subscription renewals — annual subscriptions renewing within 14 days
 
     Each candidate is submitted via ``propose_insight_candidate()``.
@@ -355,78 +400,63 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             return {**counts, "early_exit": True}
 
     # ------------------------------------------------------------------
-    # 3. Budget thresholds (80%/90% utilisation)
+    # 3. Budget thresholds (all periods: weekly/monthly/quarterly/yearly)
     # ------------------------------------------------------------------
-    async with db_pool.acquire() as conn:
-        budget_rows = await conn.fetch(
-            """
-            SELECT b.id, b.category, b.amount AS budget_amount,
-                   b.warn_threshold, b.alert_threshold,
-                   COALESCE(SUM(ABS(t.amount)), 0) AS spent
-            FROM finance.budgets b
-            LEFT JOIN finance.transactions t
-                ON t.category = b.category
-               AND t.direction = 'debit'
-               AND t.posted_at >= $1
-               AND t.posted_at < $2
-            WHERE b.is_active = true
-              AND b.period = 'monthly'
-            GROUP BY b.id, b.category, b.amount, b.warn_threshold, b.alert_threshold
-            """,
-            datetime(month_start.year, month_start.month, month_start.day, tzinfo=UTC),
-            datetime(
-                today.year,
-                today.month,
-                today.day,
-                23,
-                59,
-                59,
-                tzinfo=UTC,
-            ),
-        )
+    # bu-hovqz: drive this section off budget_status(), which aligns each
+    # budget's spending window to its OWN period via DATE_TRUNC and returns
+    # per-budget spent/status/period_start/period_end. This replaces the
+    # previous monthly-only SQL, which silently excluded weekly/quarterly/yearly
+    # budgets even though the owner can configure them. budget_status already
+    # applies each budget's configured warn/alert thresholds (bu-rvz2o) and the
+    # transactions.deleted_at guard, so no threshold logic is duplicated here.
+    async with _finance_scoped_connection(db_pool) as conn:
+        budget_result = await budget_status(conn)
 
-    for row in budget_rows:
-        budget_amount = Decimal(str(row["budget_amount"]))
-        if budget_amount <= 0:
-            continue
-        spent = Decimal(str(row["spent"]))
-        utilisation = spent / budget_amount
+    for item in budget_result.get("items", []):
+        status = item["status"]
+        if status == "on_track":
+            continue  # below warn_threshold — no candidate
 
-        # bu-rvz2o: use the budget's OWN configured warn/alert thresholds
-        # (finance.budgets.warn_threshold/alert_threshold) instead of hardcoded
-        # 80%/90% — this is what budget_status() (the tool the old direct-notify
-        # budget-status-check task called) already respects, and what the owner
-        # actually configured per category. Defaults are 0.80/1.00 respectively.
-        warn_threshold = Decimal(str(row["warn_threshold"]))
-        alert_threshold = Decimal(str(row["alert_threshold"]))
+        priority = _BUDGET_PRIORITY_EXCEEDED if status == "exceeded" else _BUDGET_PRIORITY_WARNING
 
-        if utilisation < warn_threshold:
-            continue
+        category = item["category"]
+        period = item["period"]
+        spent = Decimal(item["spent"])
+        budget_amount = Decimal(item["budget_amount"])
+        utilisation_pct = item["utilization_pct"]  # float percentage (0-100+)
+        period_start = date.fromisoformat(item["period_start"])
+        period_end = date.fromisoformat(item["period_end"])
 
-        if utilisation >= alert_threshold:
-            priority = _BUDGET_PRIORITY_EXCEEDED
-        else:
-            priority = _BUDGET_PRIORITY_WARNING
-
-        pct_label = f"{utilisation * 100:.0f}%"
-        category = row["category"]
+        pct_label = f"{utilisation_pct:.0f}%"
         message = (
-            f"Budget alert: '{category}' spending is at {pct_label} of the monthly budget "
+            f"Budget alert: '{category}' spending is at {pct_label} of the {period} budget "
             f"(${spent:.2f} of ${budget_amount:.2f})"
         )
-        dedup_key = f"finance:budget-threshold:{category}:{year_month}"
+        # Period-correct dedup identity: the time-scope token resets exactly at
+        # each period's boundary, so the alert dedupes within its window and
+        # re-fires in the next one.
+        scope_token = _budget_period_scope_token(period, period_start)
+        dedup_key = f"finance:budget-threshold:{category}:{scope_token}"
+
+        # Cooldown spans the remainder of the current period window, so a
+        # crossing fires at most once per window; the next window's fresh
+        # dedup key re-fires regardless of this cooldown. (This scales the old
+        # monthly-only, priority-default cooldown to each period's cadence.)
+        cooldown_days = max(1, (period_end - today).days + 1)
 
         keep_going = await _submit(
             priority=priority,
             category="budget-threshold",
             dedup_key=dedup_key,
             message=message,
-            expires_at=month_end_dt,
+            expires_at=_end_of_period_dt(period_end),
+            cooldown_days=cooldown_days,
             metadata={
                 "category": category,
+                "period": period,
                 "spent": str(spent),
                 "budget": str(budget_amount),
-                "utilisation_pct": str(utilisation),
+                "utilisation_pct": str(utilisation_pct),
             },
         )
         if not keep_going:

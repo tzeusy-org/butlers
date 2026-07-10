@@ -704,6 +704,234 @@ async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
         assert budget_cands[0]["dedup_key"] == expected_key
 
 
+# ---------------------------------------------------------------------------
+# Tests: budget-threshold across all periods + period-scoped dedup (bu-hovqz)
+# ---------------------------------------------------------------------------
+
+
+def _current_week_token() -> str:
+    iso = _today().isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def _current_quarter_token() -> str:
+    t = _today()
+    return f"{t.year}-Q{(t.month - 1) // 3 + 1}"
+
+
+def test_budget_period_scope_token_per_period():
+    """Each period yields a distinct, period-correct dedup time-scope token."""
+    fj = _fj_module()
+    tok = fj._budget_period_scope_token
+    assert tok("weekly", date(2026, 7, 6)) == "2026-W28"  # Monday of ISO week 28
+    assert tok("monthly", date(2026, 7, 1)) == "2026-07"
+    assert tok("quarterly", date(2026, 7, 1)) == "2026-Q3"
+    assert tok("yearly", date(2026, 1, 1)) == "2026"
+    # All four formats are mutually unambiguous for the same anchor, so budgets
+    # of different periods for one category never share a dedup key.
+    tokens = {
+        tok("weekly", date(2026, 7, 6)),
+        tok("monthly", date(2026, 7, 1)),
+        tok("quarterly", date(2026, 7, 1)),
+        tok("yearly", date(2026, 1, 1)),
+    }
+    assert len(tokens) == 4
+
+
+def test_budget_period_scope_token_resets_across_windows():
+    """The token changes at every period boundary (dedup resets across windows)."""
+    fj = _fj_module()
+    tok = fj._budget_period_scope_token
+    assert tok("weekly", date(2026, 7, 6)) != tok("weekly", date(2026, 7, 13))
+    assert tok("monthly", date(2026, 7, 1)) != tok("monthly", date(2026, 8, 1))
+    # Quarter rollover Q1 -> Q2 at Apr 1.
+    assert tok("quarterly", date(2026, 3, 1)) == "2026-Q1"
+    assert tok("quarterly", date(2026, 4, 1)) == "2026-Q2"
+    # Year rollover.
+    assert tok("yearly", date(2026, 1, 1)) != tok("yearly", date(2027, 1, 1))
+
+
+def test_budget_period_scope_token_iso_week_year_boundary():
+    """ISO week-year is used, so year-boundary weeks stay coherent and distinct."""
+    fj = _fj_module()
+    tok = fj._budget_period_scope_token
+    # 2020-12-28 (Mon) is ISO week 53 of ISO-year 2020; 2021-01-04 (Mon) is week 1
+    # of ISO-year 2021 — distinct, no calendar-year confusion.
+    assert tok("weekly", date(2020, 12, 28)) == "2020-W53"
+    assert tok("weekly", date(2021, 1, 4)) == "2021-W01"
+
+
+def test_budget_period_scope_token_rejects_unknown_period():
+    """An unsupported period is a programming error, not a silent skip."""
+    fj = _fj_module()
+    with pytest.raises(ValueError):
+        fj._budget_period_scope_token("biweekly", date(2026, 7, 1))
+
+
+async def test_insight_scan_weekly_budget_fires_with_week_scoped_key(provisioned_postgres_pool):
+    """bu-hovqz: a weekly budget over threshold fires with an ISO-week-scoped key,
+    and its cooldown spans the remainder of the current week.
+    """
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="coffee", period="weekly", amount="50.00")
+
+        today = _today()
+        tx_date = datetime(today.year, today.month, today.day, 12, 0, 0, tzinfo=UTC)
+        # $55 of a $50 weekly budget = 110% -> exceeded (>= default alert 100%).
+        await _insert_transaction(
+            pool,
+            merchant="Cafe",
+            amount="55.00",
+            direction="debit",
+            category="coffee",
+            posted_at=tx_date,
+        )
+
+        await run_insight_scan(pool)
+
+        cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
+        assert len(cands) == 1
+        assert cands[0]["dedup_key"] == f"finance:budget-threshold:coffee:{_current_week_token()}"
+        assert cands[0]["priority"] == 70
+        assert "weekly budget" in cands[0]["message"]
+        # Cooldown spans the rest of the ISO week (Monday..Sunday).
+        week_end = today + timedelta(days=7 - today.isoweekday())
+        assert cands[0]["cooldown_days"] == max(1, (week_end - today).days + 1)
+
+
+async def test_insight_scan_quarterly_budget_fires_with_quarter_scoped_key(
+    provisioned_postgres_pool,
+):
+    """bu-hovqz: a quarterly budget over threshold fires with a quarter-scoped key."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="travel", period="quarterly", amount="1000.00")
+
+        today = _today()
+        tx_date = datetime(today.year, today.month, today.day, 12, 0, 0, tzinfo=UTC)
+        # $850 of $1000 = 85% -> warning (>= 80% warn, < 100% alert).
+        await _insert_transaction(
+            pool,
+            merchant="Airline",
+            amount="850.00",
+            direction="debit",
+            category="travel",
+            posted_at=tx_date,
+        )
+
+        await run_insight_scan(pool)
+
+        cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
+        assert len(cands) == 1
+        assert (
+            cands[0]["dedup_key"] == f"finance:budget-threshold:travel:{_current_quarter_token()}"
+        )
+        assert cands[0]["priority"] == 50
+        assert "quarterly budget" in cands[0]["message"]
+
+
+async def test_insight_scan_yearly_budget_fires_with_year_scoped_key(provisioned_postgres_pool):
+    """bu-hovqz: a yearly budget over threshold fires with a year-scoped key."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="insurance", period="yearly", amount="1200.00")
+
+        today = _today()
+        tx_date = datetime(today.year, today.month, today.day, 12, 0, 0, tzinfo=UTC)
+        # $1200 of $1200 = 100% -> exceeded.
+        await _insert_transaction(
+            pool,
+            merchant="Insurer",
+            amount="1200.00",
+            direction="debit",
+            category="insurance",
+            posted_at=tx_date,
+        )
+
+        await run_insight_scan(pool)
+
+        cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
+        assert len(cands) == 1
+        assert cands[0]["dedup_key"] == f"finance:budget-threshold:insurance:{today.year}"
+        assert cands[0]["priority"] == 70
+        assert "yearly budget" in cands[0]["message"]
+
+
+async def test_insight_scan_monthly_and_yearly_same_category_no_collision(
+    provisioned_postgres_pool,
+):
+    """bu-hovqz: a monthly and a yearly budget for the same category both crossing
+    threshold produce two candidates with distinct, non-colliding dedup keys.
+    """
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="shopping", period="monthly", amount="200.00")
+        await _insert_budget(pool, category="shopping", period="yearly", amount="2000.00")
+
+        today = _today()
+        tx_date = datetime(today.year, today.month, today.day, 12, 0, 0, tzinfo=UTC)
+        # $1900: 950% of the monthly budget (exceeded) AND 95% of the yearly (warning).
+        await _insert_transaction(
+            pool,
+            merchant="Mall",
+            amount="1900.00",
+            direction="debit",
+            category="shopping",
+            posted_at=tx_date,
+        )
+
+        await run_insight_scan(pool)
+
+        cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
+        assert len(cands) == 2
+        keys = sorted(c["dedup_key"] for c in cands)
+        assert keys == sorted(
+            [
+                f"finance:budget-threshold:shopping:{today.strftime('%Y-%m')}",
+                f"finance:budget-threshold:shopping:{today.year}",
+            ]
+        )
+
+
+async def test_insight_scan_budget_dedup_key_stable_within_window(provisioned_postgres_pool):
+    """bu-hovqz: repeated scans within the same period window emit the SAME dedup key,
+    so the broker's dedup/cooldown collapses them (dedup holds within the window).
+    """
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="groceries", period="monthly", amount="500.00")
+
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
+        await _insert_transaction(
+            pool,
+            merchant="Market",
+            amount="480.00",
+            direction="debit",
+            category="groceries",
+            posted_at=tx_date,
+        )
+
+        await run_insight_scan(pool)
+        await run_insight_scan(pool)
+
+        cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
+        assert len(cands) == 2
+        assert cands[0]["dedup_key"] == cands[1]["dedup_key"]
+
+
 async def test_insight_scan_subscription_renewal_within_3_days_priority_75(
     provisioned_postgres_pool,
 ):
