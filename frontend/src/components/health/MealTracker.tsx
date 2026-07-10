@@ -41,7 +41,9 @@ import { Mono } from "@/components/ui/Mono";
 import { QueryBoundary } from "@/components/ui/query-boundary";
 import { Row } from "@/components/ui/Row";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { Voice } from "@/components/ui/Voice";
+import { dayKeyInTimeZone } from "@/lib/day-window";
 import { cn } from "@/lib/utils";
 import { useDeleteMeal, useMeals } from "@/hooks/use-health";
 
@@ -68,15 +70,15 @@ function fmtNutrition(nutrition: Record<string, unknown> | null): string {
   return parts.slice(0, 2).join(", ");
 }
 
-/** Format eaten_at as HH:MM in local time. */
-function fmtTime(iso: string): string {
+/** Format eaten_at as HH:MM in the owner timezone. */
+function fmtTime(iso: string, timeZone: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone });
 }
 
-/** Format eaten_at date as a human-readable day header (e.g. "Wed 1 Jan 2026"). */
-function fmtDayHeader(iso: string): string {
+/** Format eaten_at date as a human-readable day header (e.g. "Wed 1 Jan 2026") in the owner timezone. */
+function fmtDayHeader(iso: string, timeZone: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "Unknown date";
   return d.toLocaleDateString([], {
@@ -84,21 +86,26 @@ function fmtDayHeader(iso: string): string {
     day: "numeric",
     month: "short",
     year: "numeric",
+    timeZone,
   });
 }
 
-/** Extract YYYY-MM-DD from an ISO datetime string for grouping. */
-function extractDate(iso: string): string {
+/** Extract the owner-timezone YYYY-MM-DD from an ISO datetime string for grouping. */
+function extractDate(iso: string, timeZone: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso.slice(0, 10);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return dayKeyInTimeZone(d, timeZone);
 }
 
-/** Group meals by local date. Preserves server order (most recent first). */
-function groupByDay(meals: Meal[]): Array<{ dateKey: string; meals: Meal[] }> {
+/**
+ * Group meals by owner-timezone calendar day. Preserves server order (most
+ * recent first). Bucketing in the owner timezone (not the host clock) keeps the
+ * day groups aligned with the owner-tz query window in MealsPage.
+ */
+function groupByDay(meals: Meal[], timeZone: string): Array<{ dateKey: string; meals: Meal[] }> {
   const map = new Map<string, Meal[]>();
   for (const meal of meals) {
-    const key = extractDate(meal.eaten_at);
+    const key = extractDate(meal.eaten_at, timeZone);
     const group = map.get(key);
     if (group) {
       group.push(meal);
@@ -152,7 +159,15 @@ function RowAction({
 // MealRow — single Dispatch rule-list row
 // ---------------------------------------------------------------------------
 
-function MealRow({ meal, onEdit }: { meal: Meal; onEdit: (meal: Meal) => void }) {
+function MealRow({
+  meal,
+  onEdit,
+  timeZone,
+}: {
+  meal: Meal;
+  onEdit: (meal: Meal) => void;
+  timeZone: string;
+}) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const deleteMutation = useDeleteMeal();
 
@@ -172,7 +187,7 @@ function MealRow({ meal, onEdit }: { meal: Meal; onEdit: (meal: Meal) => void })
     <>
       <Row
         mark={
-          <Mono muted>{fmtTime(meal.eaten_at)}</Mono>
+          <Mono muted>{fmtTime(meal.eaten_at, timeZone)}</Mono>
         }
         meta={
           <div className="flex items-center gap-3">
@@ -252,12 +267,14 @@ function DayGroup({
   dateKey,
   meals,
   onEdit,
+  timeZone,
 }: {
   dateKey: string;
   meals: Meal[];
   onEdit: (meal: Meal) => void;
+  timeZone: string;
 }) {
-  const label = fmtDayHeader(meals[0]?.eaten_at ?? dateKey);
+  const label = fmtDayHeader(meals[0]?.eaten_at ?? dateKey, timeZone);
 
   return (
     <div>
@@ -272,7 +289,7 @@ function DayGroup({
       {/* Meals for this day */}
       <div className="flex flex-col">
         {meals.map((meal) => (
-          <MealRow key={meal.id} meal={meal} onEdit={onEdit} />
+          <MealRow key={meal.id} meal={meal} onEdit={onEdit} timeZone={timeZone} />
         ))}
       </div>
     </div>
@@ -306,6 +323,7 @@ export default function MealTracker({
   setSince,
   setUntil,
 }: MealTrackerProps) {
+  const ownerTz = useTimezone();
   const [page, setPage] = useState(0);
   // `null` = closed; `undefined` = add mode; a Meal = edit mode.
   const [formTarget, setFormTarget] = useState<Meal | null | undefined>(null);
@@ -330,7 +348,7 @@ export default function MealTracker({
   const dialogOpen = formTarget !== null;
   const editing = formTarget != null;
 
-  const groups = groupByDay(meals);
+  const groups = groupByDay(meals, ownerTz);
 
   return (
     <div className="space-y-4">
@@ -452,6 +470,7 @@ export default function MealTracker({
               dateKey={dateKey}
               meals={groupMeals}
               onEdit={setFormTarget}
+              timeZone={ownerTz}
             />
           ))}
         </div>

@@ -29,24 +29,9 @@ import MealTracker from "@/components/health/MealTracker";
 import { Display } from "@/components/ui/Display";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { Voice } from "@/components/ui/Voice";
-
-// ---------------------------------------------------------------------------
-// Default window helpers
-// ---------------------------------------------------------------------------
-
-/** ISO date string for today (YYYY-MM-DD). */
-function todayISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-/** ISO date string for N days ago (YYYY-MM-DD). */
-function daysAgoISO(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+import { daysAgoISO, todayISO } from "@/lib/day-window";
 
 // ---------------------------------------------------------------------------
 // DailyTotals — right-column mini-KPI sourced from /nutrition/summary
@@ -63,10 +48,13 @@ interface DailyTotalsProps {
 }
 
 function DailyTotals({ since, until }: DailyTotalsProps) {
+  const ownerTz = useTimezone();
   // Fall back to a default 30-day window when no date range is set,
-  // so the nutrition/summary call is always enabled.
-  const start = since || daysAgoISO(30);
-  const end = until || todayISO();
+  // so the nutrition/summary call is always enabled. The window is keyed to
+  // the owner's timezone (not the host clock) so it frames the same calendar
+  // days MealTracker buckets by.
+  const start = since || daysAgoISO(30, ownerTz);
+  const end = until || todayISO(ownerTz);
 
   const { data, isLoading } = useNutritionSummary({ start, end });
 
