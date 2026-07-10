@@ -5,12 +5,10 @@
 The Contacts module synchronizes external address-book sources into the entity-graph identity model and backfills the Relationship Butler's CRM with provider-agnostic upsert logic, provenance tracking, and conflict-aware field resolution. The module supports multiple concurrent providers (e.g., Google Contacts and Telegram) through a pluggable `ContactsProvider` interface.
 
 Note (reality sync, code authoritative): after bead `bu-tzyuh`, the backfill writer and resolver no longer touch `public.contacts` or `public.contact_info` (both retired by `core_115` / `core_134`). The writer creates/updates `public.entities` and stores channel identifiers as `relationship.entity_facts` triples; identity matching routes through `public.entities` and `relationship.entity_facts` (`src/butlers/modules/contacts/backfill.py:16-17`, `:86-91`, `:235-236`, `:311-312`). In this module's scenarios below, `local_id` is the entity UUID (`public.entities.id`), and any scenario phrased as writing to `public.contacts` / `public.contact_info` is SUPERSEDED by entity / `entity_facts` writes.
-
 ## Requirements
-
 ### Requirement: ContactsModule Configuration and Scaffold
 
-The module is configured under `[modules.contacts]` in `butler.toml` with `providers` (list of provider configs, required), `include_other_contacts` (bool, default false), and `sync` sub-config (`enabled`, `run_on_startup`, `interval_minutes` default 15, `full_sync_interval_days` default 6).
+The module SHALL be configured under `[modules.contacts]` in `butler.toml` with `providers` (list of provider configs, required), `include_other_contacts` (bool, default false), and `sync` sub-config (`enabled`, `run_on_startup`, `interval_minutes` default 15, `full_sync_interval_days` default 6).
 
 Each entry in `providers` is a table with `type` (required, e.g. `"google"`, `"telegram"`), `account` (optional, email string — Google account to use for `type = "google"`), plus provider-specific keys. The legacy single-provider `provider` string field is accepted for backward compatibility and interpreted as `providers = [{type = "<value>"}]`.
 
@@ -69,7 +67,7 @@ type = "telegram"
 
 ### Requirement: Google OAuth Credential Resolution
 
-Credentials are resolved from the DB-backed credential store (`butler_secrets`), not environment variables. Each Google provider entry resolves credentials for its configured account.
+Credentials SHALL be resolved from the DB-backed credential store (`butler_secrets`), not environment variables. Each Google provider entry resolves credentials for its configured account.
 
 #### Scenario: Credentials resolved for specific account
 
@@ -97,7 +95,7 @@ Credentials are resolved from the DB-backed credential store (`butler_secrets`),
 
 ### Requirement: Provider-Agnostic Sync Contract
 
-The `ContactsProvider` abstract class defines the sync interface: `name()`, `validate_credentials()`, `full_sync()`, `incremental_sync()`, `list_groups()`. Providers return `ContactBatch` objects with contacts, groups, page tokens, sync cursors, and checkpoints.
+The `ContactsProvider` abstract class SHALL define the sync interface: `name()`, `validate_credentials()`, `full_sync()`, `incremental_sync()`, `list_groups()`. Providers return `ContactBatch` objects with contacts, groups, page tokens, sync cursors, and checkpoints.
 
 #### Scenario: Full sync execution
 
@@ -118,7 +116,7 @@ The `ContactsProvider` abstract class defines the sync interface: `name()`, `val
 
 ### Requirement: Canonical Contact Model
 
-The `CanonicalContact` Pydantic model normalizes provider payloads with fields: `external_id`, `etag`, `display_name`, `first_name`, `last_name`, `middle_name`, `nickname`, `emails[]` (`ContactEmail`), `phones[]` (`ContactPhone`), `addresses[]` (`ContactAddress`), `organizations[]` (`ContactOrganization`), `birthdays[]`/`anniversaries[]` (`ContactDate`), `urls[]` (`ContactUrl`), `usernames[]` (`ContactUsername`), `photos[]` (`ContactPhoto`), `group_memberships[]`, `deleted` (tombstone flag), `raw` (provider payload snapshot).
+The `CanonicalContact` Pydantic model SHALL normalize provider payloads with fields: `external_id`, `etag`, `display_name`, `first_name`, `last_name`, `middle_name`, `nickname`, `emails[]` (`ContactEmail`), `phones[]` (`ContactPhone`), `addresses[]` (`ContactAddress`), `organizations[]` (`ContactOrganization`), `birthdays[]`/`anniversaries[]` (`ContactDate`), `urls[]` (`ContactUrl`), `usernames[]` (`ContactUsername`), `photos[]` (`ContactPhoto`), `group_memberships[]`, `deleted` (tombstone flag), `raw` (provider payload snapshot).
 
 #### Scenario: Google payload normalization
 
@@ -130,7 +128,7 @@ The `CanonicalContact` Pydantic model normalizes provider payloads with fields: 
 
 ### Requirement: TelegramContactsProvider
 
-The `TelegramContactsProvider` implements the `ContactsProvider` interface to fetch contacts from the user's personal Telegram account via Telethon's `client.get_contacts()`. Unlike Google (which provides sync tokens for incremental sync), Telegram returns the full contact list on every call. Incremental sync is approximated by comparing a local hash of the contact list against the previous sync's hash.
+The `TelegramContactsProvider` SHALL implement the `ContactsProvider` interface to fetch contacts from the user's personal Telegram account via Telethon's `client.get_contacts()`. Unlike Google (which provides sync tokens for incremental sync), Telegram returns the full contact list on every call. Incremental sync is approximated by comparing a local hash of the contact list against the previous sync's hash.
 
 #### Scenario: Telegram credential resolution
 
@@ -188,7 +186,7 @@ The `TelegramContactsProvider` implements the `ContactsProvider` interface to fe
 
 ### Requirement: Multi-Provider Sync Runtime
 
-When multiple providers are configured, the `ContactsSyncRuntime` manages independent sync loops for each provider.
+When multiple providers are configured, the `ContactsSyncRuntime` SHALL manage independent sync loops for each provider.
 
 #### Scenario: Independent provider sync loops with account keying
 
@@ -217,7 +215,7 @@ When multiple providers are configured, the `ContactsSyncRuntime` manages indepe
 
 ### Requirement: Sync State Persistence
 
-Sync state is persisted via `ContactsSyncStateStore` with fields: `sync_cursor`, `cursor_issued_at`, `last_full_sync_at`, `last_incremental_sync_at`, `last_success_at`, `last_error`, `contact_versions` (in-memory etag tracking).
+Sync state SHALL be persisted via `ContactsSyncStateStore` with fields: `sync_cursor`, `cursor_issued_at`, `last_full_sync_at`, `last_incremental_sync_at`, `last_success_at`, `last_error`, `contact_versions` (in-memory etag tracking).
 
 #### Scenario: State store load and save
 
@@ -227,7 +225,7 @@ Sync state is persisted via `ContactsSyncStateStore` with fields: `sync_cursor`,
 
 ### Requirement: Sync Runtime with Polling Loop
 
-`ContactsSyncRuntime` manages the background polling loop with configurable intervals.
+`ContactsSyncRuntime` SHALL manage the background polling loop with configurable intervals.
 
 #### Scenario: Startup sync
 
@@ -247,7 +245,7 @@ Sync state is persisted via `ContactsSyncStateStore` with fields: `sync_cursor`,
 
 ### Requirement: CRM Backfill Pipeline
 
-`ContactBackfillEngine` orchestrates identity resolution, table writing, and activity feed logging for each synced contact.
+`ContactBackfillEngine` SHALL orchestrate identity resolution, table writing, and activity feed logging for each synced contact.
 
 #### Scenario: New contact backfill
 
@@ -277,7 +275,7 @@ Sync state is persisted via `ContactsSyncStateStore` with fields: `sync_cursor`,
 
 ### Requirement: Identity Resolution Pipeline
 
-`ContactBackfillResolver` resolves canonical contacts to local CRM records in priority order.
+`ContactBackfillResolver` SHALL resolve canonical contacts to local CRM records in priority order.
 
 #### Scenario: Resolution order
 
@@ -291,7 +289,7 @@ Sync state is persisted via `ContactsSyncStateStore` with fields: `sync_cursor`,
 
 ### Requirement: MCP Tool Surface (4 Tools)
 
-The module registers 4 operational/sync control tools.
+The module SHALL register 4 operational/sync control tools.
 
 #### Scenario: contacts_sync_now
 
@@ -314,19 +312,9 @@ The module registers 4 operational/sync control tools.
 - **THEN** an immediate sync trigger is signaled to the runtime
 - **AND** per-contact scoping is noted as not yet supported at the engine level
 
-### Requirement: Public Schema Tables
-
-The backfill writes to `public.contact_info` for cross-butler contact data, while module-owned tables (`contacts_source_links`) live in the hosting butler's schema.
-
-#### Scenario: Contact info in public schema
-
-- **WHEN** email, phone, website, or other contact info is upserted
-- **THEN** rows are written to `public.contact_info` with `contact_id`, `type`, `value`, `label`, `is_primary`
-- **AND** existing duplicates (same contact_id + type + lower(value)) are not re-inserted
-
 ### Requirement: Cross-Provider Contact Backfill
 
-When multiple providers sync contacts concurrently, the `ContactBackfillEngine` merges contacts from different providers into unified CRM records using the identity resolution pipeline.
+When multiple providers sync contacts concurrently, the `ContactBackfillEngine` SHALL merge contacts from different providers into unified CRM records using the identity resolution pipeline.
 
 #### Scenario: Telegram contact matches existing Google contact by phone
 
@@ -373,9 +361,10 @@ When multiple providers sync contacts concurrently, the `ContactBackfillEngine` 
 
 ### Requirement: [TARGET-STATE] Apple/CardDAV Provider
 
-The provider abstraction supports future Apple/iCloud providers using CardDAV sync semantics.
+The provider abstraction SHALL support future Apple/iCloud providers using CardDAV sync semantics.
 
 #### Scenario: CardDAV provider registration
 
 - **WHEN** a CardDAV provider is implemented
 - **THEN** it implements the same `ContactsProvider` interface with collection-based sync, ETag-aware updates, and provider-owned cursor formats
+

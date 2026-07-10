@@ -1,0 +1,5 @@
+## REMOVED Requirements
+
+### Requirement: Public Schema Tables
+**Reason**: This requirement existed solely to assert that the backfill writes cross-butler contact data to `public.contact_info`. That table was dropped by `core_115_drop_contact_info`; the backfill writer now creates/updates `public.entities` and stores channel identifiers as `relationship.entity_facts` triples (`src/butlers/modules/contacts/backfill.py`). The surviving module-owned table `contacts_source_links` is still documented by the "CRM Backfill Pipeline" requirement's provenance-row scenarios.
+**Migration**: Non-secret channel identifiers (email, phone, website, handle) are written as `relationship.entity_facts` triples keyed by `entity_id` (see the `relationship-facts` spec). Secret credentials use `public.entity_info` (see the `entity-identity` spec, "Entity info table for per-entity properties and credentials"). Module-owned provenance/state tables (`contacts_source_links`, `contacts_sync_state`) remain in the hosting butler's schema.
