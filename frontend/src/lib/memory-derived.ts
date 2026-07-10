@@ -16,6 +16,7 @@
  */
 
 import type { Episode, Fact, MemoryInspectResult, MemoryRule } from '@/api/types.ts'
+import { dayKeyInTimeZone, shiftDayKey } from '@/lib/day-window'
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24
 
@@ -135,29 +136,6 @@ export interface DayGroup {
 }
 
 /**
- * Day key `YYYY-MM-DD` for an instant, resolved in the owner timezone `tz`
- * (an IANA name from useTimezone()). Owner-tz, NOT UTC and NOT host-local: the
- * whole memory subsystem buckets and stamps dates on the owner's clock so a
- * viewer's browser timezone never shifts which day a memory lands on.
- */
-export function dayKeyInTimeZone(d: Date, tz: string): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(d)
-  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]))
-  return `${lookup.year}-${lookup.month}-${lookup.day}`
-}
-
-/** The calendar day before `dayKey` (`YYYY-MM-DD`), computed on the numerals. */
-function previousDayKey(dayKey: string): string {
-  const [year, month, day] = dayKey.split('-').map(Number)
-  return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10)
-}
-
-/**
  * Day header label for a day relative to `now`, all resolved in owner tz:
  *   today → "TODAY" · yesterday → "YESTERDAY" · older → "THU 12 JUN".
  */
@@ -165,7 +143,7 @@ function dayLabel(day: Date, now: Date, tz: string): string {
   const dayKey = dayKeyInTimeZone(day, tz)
   const nowKey = dayKeyInTimeZone(now, tz)
   if (dayKey === nowKey) return 'TODAY'
-  if (dayKey === previousDayKey(nowKey)) return 'YESTERDAY'
+  if (dayKey === shiftDayKey(nowKey, -1)) return 'YESTERDAY'
 
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,

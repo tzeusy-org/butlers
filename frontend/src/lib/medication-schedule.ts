@@ -35,7 +35,7 @@ export function parseScheduleTime(raw: unknown): number | null {
  * is not in the owner's zone: a HEALTH-CRITICAL error for a medication tracker.
  *
  * Uses `Intl.DateTimeFormat` with an explicit `timeZone` (the app convention —
- * see `formatDateInTimeZone` in ChroniclesPage) and `hourCycle: "h23"` so
+ * see `dayKeyInTimeZone` in `@/lib/day-window`) and `hourCycle: "h23"` so
  * midnight reads as 00, not 24. Falls back to UTC for an unusable timezone
  * rather than to host-local, which would reintroduce the very bug this closes.
  */

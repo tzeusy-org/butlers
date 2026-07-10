@@ -11,9 +11,14 @@
 // owner-midnight lands in the wrong calendar day, and the query window
 // (todayISO / daysAgoISO) drifts off the buckets it is supposed to frame.
 //
-// Convention mirrors ChroniclesPage.formatDateInTimeZone and PR #3065: derive
-// the day key via Intl.DateTimeFormat with an explicit `timeZone`, and fall
-// back to UTC — never host-local — when the timezone string is invalid.
+// Convention mirrors PR #3065: derive the day key via Intl.DateTimeFormat with
+// an explicit `timeZone`, and fall back to UTC — never host-local — when the
+// timezone string is invalid.
+//
+// This is the single shared home for the owner-tz day-key primitive: the
+// near-identical copies formerly in ChroniclesPage.formatDateInTimeZone and
+// memory-derived.ts's dayKeyInTimeZone (bu-bqpec) were consolidated here
+// [bu-2d44e]; both now import dayKeyInTimeZone/shiftDayKey from this module.
 // ---------------------------------------------------------------------------
 
 /** Format a Date's calendar day (YYYY-MM-DD) in `timeZone` via Intl. */
@@ -44,7 +49,7 @@ export function dayKeyInTimeZone(date: Date, timeZone: string): string {
 }
 
 /** Shift a YYYY-MM-DD day key by `deltaDays` calendar days (UTC-anchored math). */
-function shiftDayKey(dayKey: string, deltaDays: number): string {
+export function shiftDayKey(dayKey: string, deltaDays: number): string {
   const [year, month, day] = dayKey.split("-").map(Number);
   const shifted = new Date(Date.UTC(year, month - 1, day + deltaDays));
   return shifted.toISOString().slice(0, 10);

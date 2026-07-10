@@ -12,7 +12,7 @@
 // - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2, §4, §6
 // ---------------------------------------------------------------------------
 
-import { dayKeyInTimeZone } from "./memory-derived";
+import { dayKeyInTimeZone } from "@/lib/day-window";
 
 /**
  * The backend's valid retention-policy kinds.

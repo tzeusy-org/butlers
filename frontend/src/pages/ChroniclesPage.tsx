@@ -22,6 +22,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useSearchParams } from "react-router";
 
 import { useTimezone } from "@/components/ui/timezone-context";
+import { dayKeyInTimeZone, shiftDayKey } from "@/lib/day-window";
 import { useChroniclesBriefing } from "@/hooks/use-chronicles-briefing";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
@@ -74,30 +75,9 @@ function fmtMinutes(total: number): string {
   return `${h}h ${m.toString().padStart(2, "0")}m`;
 }
 
-function formatDateInTimeZone(date: Date, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${lookup.year}-${lookup.month}-${lookup.day}`;
-}
-
-function previousIsoCalendarDate(dateIso: string): string {
-  const [year, month, day] = dateIso.split("-").map(Number);
-  const previous = new Date(Date.UTC(year, month - 1, day - 1));
-  return previous.toISOString().slice(0, 10);
-}
-
 /** The most recent settled day: yesterday in the owner timezone. */
 function yesterdayInTimeZone(timeZone: string): string {
-  try {
-    return previousIsoCalendarDate(formatDateInTimeZone(new Date(), timeZone));
-  } catch {
-    return previousIsoCalendarDate(formatDateInTimeZone(new Date(), "UTC"));
-  }
+  return shiftDayKey(dayKeyInTimeZone(new Date(), timeZone), -1);
 }
 
 function buildKpiCells(kpi: ChroniclesKpi): React.ComponentProps<typeof KpiStrip>["cells"] {

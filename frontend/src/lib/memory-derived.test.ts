@@ -11,7 +11,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Episode, Fact, MemoryRule } from '@/api/types.ts'
 import {
   consolidationGlyph,
-  dayKeyInTimeZone,
   daysSince,
   decayArithmeticLine,
   decayDaysAgo,
@@ -25,6 +24,7 @@ import {
   isWriteupOverdue,
   permanenceTag,
 } from './memory-derived'
+import { dayKeyInTimeZone } from '@/lib/day-window'
 import type { MemoryInspectResult } from '@/api/types.ts'
 
 const NOW = new Date('2026-06-12T00:00:00.000Z')
