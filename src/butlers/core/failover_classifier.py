@@ -77,6 +77,25 @@ class FailoverDecision:
 # ``auth_failure_default`` ignore-kind (bu-n0336), so it must stay narrow: a
 # network blip here would falsely paint a healthy-but-unreachable provider as
 # an auth problem (bu-ujm9d).
+#
+# ``forbidden`` WAF/CDN audit (bu-0n2wk, 2026-07-10 vs the live dev DB): the
+# concern was that a provider-side WAF/CDN block (e.g. "403 Forbidden by
+# security policy") would misclassify as a genuine auth failure because no
+# rate-limit or availability marker catches it first. Audited every LLM-spawn
+# exception the classifier actually sees — the ``error`` column across all
+# butler ``sessions`` tables (~2,300 failure rows): zero rows contain
+# ``forbidden``, ``security policy``, ``access denied``, or ``denied by``. The
+# HTTP-403 traffic that DOES exist in the fleet lives only in connector tables
+# (Telegram Bot API "403 Forbidden: bots can't send messages to bots", the
+# ``api_forbidden`` connector-heartbeat status, Pydantic ``extra_forbidden``
+# validation) — none of which is a model-CLI spawn exception, so none of it
+# ever reaches this classifier. Where an LLM provider itself does return 403 it
+# is semantically an auth/permission rejection (Anthropic ``PermissionDenied``,
+# OpenAI region/permission 403), so the auth bucket is its correct home.
+# Decision: keep ``forbidden`` here (option a) — no availability sub-marker is
+# added for traffic that does not exist, which would only risk the disjointness
+# invariant below. Guarded by ``test_forbidden_marker_*`` and the marker-bucket
+# disjointness test in tests/core/test_failover_classifier.py.
 _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     # Authentication / credential failures
     "authentication",
@@ -90,6 +109,9 @@ _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     "token invalid",
     "permission denied",
     "access denied",
+    # A raw "403 Forbidden" from an LLM *provider* is an auth/permission
+    # rejection, not availability. Audited zero real-world provider-side WAF
+    # "403 Forbidden by security policy" hits (bu-0n2wk); see bucket comment.
     "forbidden",
 )
 

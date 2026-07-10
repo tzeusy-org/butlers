@@ -23,8 +23,11 @@ Covers every acceptance criterion from bu-ojiij.2:
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
+from butlers.core import failover_classifier as _fc
 from butlers.core.failover_classifier import (
     FailoverContext,
     FailoverDecision,
@@ -370,6 +373,49 @@ class TestProviderAuthErrorsEligible:
 
         assert _suppressed(dec)
         assert "default-closed" in dec.reason
+
+
+class TestForbiddenMarkerAuditGuard:
+    """bu-0n2wk: pin the ``forbidden`` auth marker's behavior after the WAF/CDN
+    false-positive audit.
+
+    The audit (2026-07-10, live dev DB) found zero real provider-side WAF
+    "403 Forbidden by security policy" messages in the classifier's actual
+    input surface (butler ``sessions.error``). The only HTTP-403 traffic in the
+    fleet is connector-level (Telegram, ingestion, connector heartbeat) and
+    never reaches this classifier. An LLM provider's own 403 is an
+    auth/permission rejection, so ``forbidden`` stays in the auth bucket
+    (option a). These tests lock that decision and its precedence so a future
+    edit cannot silently reclassify it.
+    """
+
+    def test_forbidden_marker_carries_provider_auth_error_reason(self) -> None:
+        """A bare provider 403 is classified as a genuine auth failure."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError("Anthropic API error: 403 Forbidden"))
+        )
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
+
+    def test_hypothetical_waf_forbidden_is_eligible_auth_by_precedence(self) -> None:
+        """The audited hypothetical ("403 Forbidden by security policy") is still
+        failover-eligible; with no rate-limit/availability marker matching first
+        it lands in the auth bucket. Documents the precedence the audit accepted
+        (both buckets are eligible; only the reason label differs)."""
+        dec = classify_failover_eligibility(_ctx(RuntimeError("403 Forbidden by security policy")))
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
+
+    def test_rate_limit_and_availability_win_over_forbidden(self) -> None:
+        """Precedence guard: if a real message ever pairs 'forbidden' with a
+        rate-limit or availability signal, the earlier bucket must classify it,
+        never the auth bucket. Rate-limit is checked first, availability after
+        auth — so a forbidden+rate-limit message is a rate-limit, while a
+        forbidden+availability message stays auth (auth is checked first)."""
+        rate = classify_failover_eligibility(
+            _ctx(RuntimeError("429 forbidden: rate limit exceeded"))
+        )
+        assert rate.reason.startswith("rate_limit_before_work"), rate.reason
 
 
 class TestProviderAvailabilityErrorsSplitFromAuth:
@@ -799,3 +845,59 @@ class TestContextFieldsAccepted:
         )
         dec = classify_failover_eligibility(ctx)
         assert _eligible(dec)
+
+
+class TestMarkerBucketDisjointness:
+    """Invariant: the marker buckets must have zero pairwise substring overlaps.
+
+    Overlap would make classification order-dependent in a hidden way — a
+    message could match two buckets and be labeled by whichever gate happens to
+    run first, silently corrupting the ``provider_auth_error`` /
+    ``provider_unavailable`` / ``rate_limit_before_work`` reason taxonomy that
+    discretion's auth-health surface and the ``auth_failure_default`` ignore-kind
+    key off of (bu-ujm9d, bu-0n2wk). This test reads the live marker tuples off
+    the module, so any new marker that collides with an existing one across
+    buckets fails here immediately.
+    """
+
+    def _marker_buckets(self) -> dict[str, tuple[str, ...]]:
+        return {
+            name: getattr(_fc, name)
+            for name in dir(_fc)
+            if name.endswith("_MARKERS") and isinstance(getattr(_fc, name), tuple)
+        }
+
+    def test_expected_seven_marker_buckets_present(self) -> None:
+        """Guards against a bucket being renamed/dropped out of the invariant."""
+        assert set(self._marker_buckets()) == {
+            "_PROVIDER_AUTH_MARKERS",
+            "_PROVIDER_AVAILABILITY_MARKERS",
+            "_RATE_LIMIT_MARKERS",
+            "_EMPTY_RESPONSE_MARKERS",
+            "_MCP_DISCOVERY_MARKERS",
+            "_RUNTIME_CONFIG_MARKERS",
+            "_GUARDRAIL_MARKERS",
+        }
+
+    def test_no_pairwise_substring_overlap_across_buckets(self) -> None:
+        """No marker in one bucket may be a substring of (or equal to) a marker
+        in a different bucket. ``forbidden`` living only in the auth bucket is
+        part of what this pins (bu-0n2wk)."""
+        buckets = self._marker_buckets()
+        offenders: list[str] = []
+        for (na, a), (nb, b) in itertools.combinations(buckets.items(), 2):
+            for x in a:
+                for y in b:
+                    if x in y or y in x:
+                        offenders.append(f"{na}:{x!r} overlaps {nb}:{y!r}")
+        assert not offenders, "marker buckets must be pairwise substring-disjoint: " + "; ".join(
+            offenders
+        )
+
+    def test_markers_within_a_bucket_are_lowercase_and_stripped(self) -> None:
+        """Markers are matched against a lowercased message, so an upper-case or
+        untrimmed marker would silently never fire."""
+        for name, bucket in self._marker_buckets().items():
+            for marker in bucket:
+                assert marker == marker.lower(), f"{name}: {marker!r} is not lowercase"
+                assert marker == marker.strip(), f"{name}: {marker!r} has surrounding whitespace"
