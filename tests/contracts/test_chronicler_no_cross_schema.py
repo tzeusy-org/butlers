@@ -56,6 +56,8 @@ _CHRONICLER_RELATIONS: frozenset[str] = frozenset(
         "episode_event_links",
         "overrides",
         "idempotency_keys",
+        # ── Tables (014_episode_entities.py) ──────────────────────────────
+        "episode_entities",
         # ── Views (001_chronicler_tables.py) ──────────────────────────────
         "v_latest_overrides",
         "v_episodes_corrected",
@@ -70,6 +72,13 @@ _CHRONICLER_RELATIONS: frozenset[str] = frozenset(
         # does NOT violate D17 — fan_out never runs SQL through the chronicler
         # pool; it runs through each butler's own connection pool.
         "sessions",
+        # GET /api/chronicler/who-you-were-with uses
+        # db.fan_out_with_status(butler_names=["relationship"]) to resolve
+        # entity_id -> canonical_name through the relationship butler's OWN
+        # pool (bare 'entities' resolves via that pool's search_path to
+        # public.entities). Same fan_out carve-out as 'sessions' above — never
+        # runs through the chronicler pool.
+        "entities",
     }
 )
 
@@ -224,8 +233,11 @@ def test_chronicler_relations_list_matches_migrations() -> None:
 
     # Core tables like scheduled_tasks are not created by chronicler migrations —
     # they are part of the core butler schema or accessed via fan_out.
+    # 'entities' is public.entities, resolved via fan_out to the relationship
+    # butler's own pool (see the _CHRONICLER_RELATIONS comment above) — it will
+    # never appear in a chronicler migration file either.
     # Exclude them from this migration-presence check.
-    _CORE_BUTLER_TABLES = frozenset({"scheduled_tasks", "sessions"})
+    _CORE_BUTLER_TABLES = frozenset({"scheduled_tasks", "sessions", "entities"})
 
     stale: list[str] = []
     for relation in sorted(_CHRONICLER_RELATIONS - _CORE_BUTLER_TABLES):

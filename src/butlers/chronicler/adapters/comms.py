@@ -138,8 +138,10 @@ _COMMS_CHANNELS: tuple[str, ...] = (
     "discord",
 )
 
-# Channel -> human-readable label for episode/point-event titles.
-_CHANNEL_LABELS: dict[str, str] = {
+# Channel -> human-readable label for episode/point-event titles. Public
+# (also used by GET /api/chronicler/who-you-were-with to label companions'
+# payload.channel values without re-deriving the same table).
+CHANNEL_LABELS: dict[str, str] = {
     "email": "email",
     "telegram_bot": "Telegram",
     "telegram_user_client": "Telegram",
@@ -153,8 +155,9 @@ _CHANNEL_LABELS: dict[str, str] = {
 _TELEGRAM_CHANNELS: frozenset[str] = frozenset({"telegram_bot", "telegram_user_client"})
 
 
-def _channel_label(channel: str) -> str:
-    return _CHANNEL_LABELS.get(channel, channel)
+def channel_label_for(channel: str) -> str:
+    """Human-readable label for a comms channel value, falling back to itself."""
+    return CHANNEL_LABELS.get(channel, channel)
 
 
 def _match_object_for(channel: str, sender_identity: str) -> str:
@@ -435,7 +438,7 @@ class CommsSocialAdapter(ProjectionAdapter):
         last = segment[-1]
         start_at: datetime = first["received_at"]
         end_at: datetime = last["received_at"]
-        channel_label = _channel_label(key.channel)
+        channel_label = channel_label_for(key.channel)
 
         async with chronicler_pool.acquire() as conn:
             async with conn.transaction():
@@ -527,9 +530,11 @@ class CommsSocialAdapter(ProjectionAdapter):
 
 __all__ = [
     "BURST_GAP_MINUTES",
+    "CHANNEL_LABELS",
     "DEFAULT_BATCH_LIMIT",
     "EPISODE_TYPE_SOCIAL",
     "EVENT_TYPE_MESSAGE",
     "SOURCE_NAME",
     "CommsSocialAdapter",
+    "channel_label_for",
 ]

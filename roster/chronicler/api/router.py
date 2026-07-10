@@ -33,6 +33,7 @@ from butlers.api.models import (
     PaginatedResponse,
     PaginationMeta,
 )
+from butlers.chronicler.adapters.comms import CHANNEL_LABELS
 from butlers.chronicler.adapters.sessions import (
     EXCLUDED_TRIGGER_SOURCE_PREFIX,
     EXCLUDED_TRIGGER_SOURCES,
@@ -45,6 +46,12 @@ from butlers.chronicler.aggregations import (
     sources_for_lane,
     union_seconds,
     untracked_seconds_for_window,
+)
+from butlers.chronicler.balance import (
+    DEFAULT_BASELINE_LOOKBACK_DAYS,
+    compute_daily_balance,
+    compute_lane_streak,
+    is_lane_anomalous,
 )
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START
@@ -98,6 +105,14 @@ if _spec is not None and _spec.loader is not None:
     RollupFlagRow = _models.RollupFlagRow
     RollupDay = _models.RollupDay
     RollupsResponse = _models.RollupsResponse
+    BalanceLaneRow = _models.BalanceLaneRow
+    BalanceResponse = _models.BalanceResponse
+    TrendLaneDay = _models.TrendLaneDay
+    TrendLaneSeries = _models.TrendLaneSeries
+    TrendAnomaly = _models.TrendAnomaly
+    TrendsResponse = _models.TrendsResponse
+    CompanionEntry = _models.CompanionEntry
+    WhoYouWereWithResponse = _models.WhoYouWereWithResponse
 else:  # pragma: no cover — defensive
     raise RuntimeError("Failed to load chronicler API models module")
 
@@ -1948,6 +1963,489 @@ async def get_rollups(
                 tz=ROLLUPS_DEFAULT_TIMEZONE,
                 days=days,
                 rollups_source_error=rollups_source_error,
+            )
+        )
+
+
+# ── GET /api/chronicler/balance, GET /api/chronicler/trends ────────────────
+#
+# bu-jc6htw.2 (Chronicler IEA p9b, split from old p9 per eng-bar review).
+# Both endpoints read chronicler.daily_rollups (the same materialized
+# per-day/per-lane totals GET /rollups reads) and derive a trailing rolling
+# "usual" baseline via balance.compute_daily_balance — see balance.py's
+# module docstring for why this does NOT depend on the separate memory
+# write-back loop (tasks.md S8, bu-93y4rt).
+
+
+def _dark_sources_from_flags(flag_rows: list[Any]) -> set[str]:
+    """Extract the ``feeder_dark`` flag's dark_sources set, or empty.
+
+    Same extraction ``GET /rollups`` performs per day — factored out so
+    ``/balance`` and ``/trends`` share it without re-deriving the shape.
+    """
+    feeder_dark_row = next((f for f in flag_rows if f.flag_type == "feeder_dark"), None)
+    if feeder_dark_row is None:
+        return set()
+    return set(feeder_dark_row.detail.get("dark_sources", []))
+
+
+_BALANCE_MAX_LOOKBACK_DAYS = 180
+
+
+@router.get("/balance", response_model=ApiResponse[BalanceResponse])
+async def get_daily_balance(
+    balance_date: date = Query(
+        ...,
+        alias="date",
+        description="Local calendar day (rollup timezone) to compute balance for.",
+    ),
+    lookback_days: int = Query(
+        DEFAULT_BASELINE_LOOKBACK_DAYS,
+        ge=1,
+        le=_BALANCE_MAX_LOOKBACK_DAYS,
+        description="Trailing local-day window (excluding today) used for the 'usual' baseline",
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[BalanceResponse]:
+    """Return the target day's per-lane totals annotated against the owner's
+    rolling baseline ("vs usual").
+
+    ``date`` uses the same local-day semantics as ``GET /rollups``
+    (``rollups.DEFAULT_TIMEZONE``). The baseline is the trailing mean over
+    ``lookback_days`` materialized prior days for each lane — a lane with no
+    baseline history yet reports ``baseline_seconds=null`` rather than a
+    fabricated 0 (see ``BalanceLaneRow`` docstring).
+
+    Mirrors ``GET /rollups``'s three-state day status
+    (``materialized``/``not_yet_materialized``/``unknown``) and the
+    ``feeder_dark``-marks-lane-unavailable cross-reference.
+    """
+    baseline_start = balance_date - timedelta(days=lookback_days)
+    baseline_end = balance_date - timedelta(days=1)
+
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.balance") as span:
+        pool = _pool(db)
+
+        balance_source_error = False
+        try:
+            target_rows = await list_daily_rollups_range(
+                pool, start_date=balance_date, end_date=balance_date
+            )
+            baseline_rows = await list_daily_rollups_range(
+                pool, start_date=baseline_start, end_date=baseline_end
+            )
+            target_flags = await list_daily_rollup_flags_range(
+                pool, start_date=balance_date, end_date=balance_date
+            )
+        except Exception:
+            logger.exception("chronicler.balance: query failed for date=%s", balance_date)
+            balance_source_error = True
+            target_rows, baseline_rows, target_flags = [], [], []
+
+        span.set_attribute("chronicler.balance.source_error", balance_source_error)
+
+        if balance_source_error:
+            status = "unknown"
+        elif target_rows:
+            status = "materialized"
+        else:
+            status = "not_yet_materialized"
+
+        lanes: list[BalanceLaneRow] = []
+        if status == "materialized":
+            day_seconds_by_lane = {r.lane: r.seconds for r in target_rows}
+            baseline_seconds_by_lane: dict[str, list[int]] = defaultdict(list)
+            for r in baseline_rows:
+                baseline_seconds_by_lane[r.lane].append(r.seconds)
+            dark_sources = _dark_sources_from_flags(target_flags)
+
+            for lb in compute_daily_balance(day_seconds_by_lane, baseline_seconds_by_lane):
+                lanes.append(
+                    BalanceLaneRow(
+                        lane=lb.lane,
+                        seconds=lb.seconds,
+                        baseline_seconds=lb.baseline_seconds,
+                        delta_seconds=lb.delta_seconds,
+                        baseline_sample_days=lb.baseline_sample_days,
+                        unavailable=bool(sources_for_lane(lb.lane) & dark_sources),
+                    )
+                )
+
+        span.set_attribute("chronicler.balance.lane_count", len(lanes))
+
+        return ApiResponse[BalanceResponse](
+            data=BalanceResponse(
+                local_date=balance_date.isoformat(),
+                timezone=ROLLUPS_DEFAULT_TIMEZONE,
+                status=status,
+                baseline_lookback_days=lookback_days,
+                lanes=lanes,
+                balance_source_error=balance_source_error,
+            )
+        )
+
+
+_TRENDS_WINDOW_DAYS: dict[str, int] = {"week": 7, "month": 30}
+
+
+@router.get("/trends", response_model=ApiResponse[TrendsResponse])
+async def get_trends(
+    window: str = Query(
+        "week", description="'week' (trailing 7 days) or 'month' (trailing 30 days)."
+    ),
+    end_date: date | None = Query(
+        None,
+        description="Last local day of the window (inclusive). Defaults to the most recent day",
+    ),
+    lookback_days: int = Query(
+        DEFAULT_BASELINE_LOOKBACK_DAYS,
+        ge=1,
+        le=_BALANCE_MAX_LOOKBACK_DAYS,
+        description="Trailing local-day window used for each day's 'usual' baseline.",
+    ),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[TrendsResponse]:
+    """Return week/month-grained per-lane balance trends, streaks, and anomalies.
+
+    Each day in the window gets the same vs-baseline treatment as
+    ``GET /balance`` (trailing ``lookback_days`` mean, ``feeder_dark``
+    cross-reference). ``streak_days`` is the trailing run of consecutive
+    non-zero-activity days ending at ``end_date``. ``anomalies`` flags days
+    whose delta clears ``balance.is_lane_anomalous``'s thresholds — a day
+    needs a full-size baseline sample before it can be flagged, so the start
+    of a rollup history never produces spurious anomalies.
+    """
+    if window not in _TRENDS_WINDOW_DAYS:
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="invalid_parameter",
+                    message="window must be 'week' or 'month'",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    window_days = _TRENDS_WINDOW_DAYS[window]
+    resolved_end = end_date or (
+        datetime.now(UTC).astimezone(zoneinfo.ZoneInfo(ROLLUPS_DEFAULT_TIMEZONE)).date()
+    )
+    start_date = resolved_end - timedelta(days=window_days - 1)
+    fetch_start = start_date - timedelta(days=lookback_days)
+
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.trends") as span:
+        pool = _pool(db)
+
+        trends_source_error = False
+        try:
+            all_rows = await list_daily_rollups_range(
+                pool, start_date=fetch_start, end_date=resolved_end
+            )
+            all_flags = await list_daily_rollup_flags_range(
+                pool, start_date=start_date, end_date=resolved_end
+            )
+        except Exception:
+            logger.exception(
+                "chronicler.trends: query failed for range %s..%s", fetch_start, resolved_end
+            )
+            trends_source_error = True
+            all_rows, all_flags = [], []
+
+        span.set_attribute("chronicler.trends.source_error", trends_source_error)
+
+        rows_by_date: dict[date, list[Any]] = defaultdict(list)
+        for r in all_rows:
+            rows_by_date[r.local_date].append(r)
+        flags_by_date: dict[date, list[Any]] = defaultdict(list)
+        for f in all_flags:
+            flags_by_date[f.local_date].append(f)
+
+        lane_series: dict[str, list[TrendLaneDay]] = {lane: [] for lane in sorted(LANES)}
+        lane_daily_seconds: dict[str, list[int]] = {lane: [] for lane in sorted(LANES)}
+        anomalies: list[TrendAnomaly] = []
+
+        current = start_date
+        while current <= resolved_end:
+            day_rows = rows_by_date.get(current, [])
+            if trends_source_error:
+                day_status = "unknown"
+            elif day_rows:
+                day_status = "materialized"
+            else:
+                day_status = "not_yet_materialized"
+
+            if day_status == "materialized":
+                day_seconds_by_lane = {r.lane: r.seconds for r in day_rows}
+                baseline_start = current - timedelta(days=lookback_days)
+                baseline_end = current - timedelta(days=1)
+                baseline_seconds_by_lane: dict[str, list[int]] = defaultdict(list)
+                for d in range(lookback_days):
+                    day_in_baseline = baseline_end - timedelta(days=d)
+                    if day_in_baseline < baseline_start:
+                        break
+                    for r in rows_by_date.get(day_in_baseline, []):
+                        baseline_seconds_by_lane[r.lane].append(r.seconds)
+                dark_sources = _dark_sources_from_flags(flags_by_date.get(current, []))
+
+                for lb in compute_daily_balance(day_seconds_by_lane, baseline_seconds_by_lane):
+                    unavailable = bool(sources_for_lane(lb.lane) & dark_sources)
+                    lane_series[lb.lane].append(
+                        TrendLaneDay(
+                            local_date=current.isoformat(),
+                            status=day_status,
+                            seconds=lb.seconds,
+                            baseline_seconds=lb.baseline_seconds,
+                            delta_seconds=lb.delta_seconds,
+                            unavailable=unavailable,
+                        )
+                    )
+                    lane_daily_seconds[lb.lane].append(lb.seconds)
+                    if not unavailable and is_lane_anomalous(lb):
+                        anomalies.append(
+                            TrendAnomaly(
+                                lane=lb.lane,
+                                local_date=current.isoformat(),
+                                seconds=lb.seconds,
+                                baseline_seconds=lb.baseline_seconds,
+                                delta_seconds=lb.delta_seconds,
+                                direction="spike" if lb.delta_seconds > 0 else "drop",
+                            )
+                        )
+            else:
+                for lane in sorted(LANES):
+                    lane_series[lane].append(
+                        TrendLaneDay(local_date=current.isoformat(), status=day_status)
+                    )
+                    lane_daily_seconds[lane].append(0)
+
+            current += timedelta(days=1)
+
+        lanes = [
+            TrendLaneSeries(
+                lane=lane,
+                days=lane_series[lane],
+                streak_days=compute_lane_streak(lane_daily_seconds[lane]),
+            )
+            for lane in sorted(LANES)
+        ]
+
+        span.set_attribute("chronicler.trends.anomaly_count", len(anomalies))
+
+        return ApiResponse[TrendsResponse](
+            data=TrendsResponse(
+                window=window,
+                start_date=start_date.isoformat(),
+                end_date=resolved_end.isoformat(),
+                tz=ROLLUPS_DEFAULT_TIMEZONE,
+                baseline_lookback_days=lookback_days,
+                lanes=lanes,
+                anomalies=anomalies,
+                trends_source_error=trends_source_error,
+            )
+        )
+
+
+# ── GET /api/chronicler/who-you-were-with ───────────────────────────────────
+#
+# bu-jc6htw.2 (Chronicler IEA p9b). Per RFC 0014 §D17 the chronicler dashboard
+# API must not read cross-schema — companion identity was already resolved to
+# an entity_id at write time (adapters.comms.CommsSocialAdapter, via
+# relationship.entity_facts, grant core_150). This handler reads ONLY
+# chronicler's own schema (v_episodes_corrected + episode_entities) for
+# entity_id/duration/channel, then resolves entity_id -> display_name via
+# DatabaseManager.fan_out_with_status against the relationship butler's OWN
+# pool — the same sanctioned cross-BUTLER pattern GET /ops/sessions uses
+# (fan_out queries a butler's own schema-scoped pool, never the chronicler
+# pool cross-schema).
+
+
+def _channel_for_payload(payload: dict[str, Any]) -> str:
+    """Human-readable channel label for a social-lane episode's payload.
+
+    Comms-sourced episodes carry ``payload.channel`` (e.g. ``"telegram_bot"``,
+    mapped through ``CHANNEL_LABELS``). A social-lane episode with no
+    ``channel`` key is a non-comms (e.g. future co-presence) source and is
+    labelled ``"in-person"`` per the "Who-You-Were-With Endpoint" spec
+    (channel is "in-person vs a comms channel").
+    """
+    channel = payload.get("channel")
+    if not channel:
+        return "in-person"
+    return CHANNEL_LABELS.get(channel, channel)
+
+
+@router.get("/who-you-were-with", response_model=ApiResponse[WhoYouWereWithResponse])
+async def get_who_you_were_with(
+    start_at: datetime | None = Query(None, description="Inclusive window start (UTC or tz-aware)"),
+    end_at: datetime | None = Query(None, description="Exclusive window end (UTC or tz-aware)"),
+    tz: str = Query("UTC", description="IANA timezone for display purposes"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[WhoYouWereWithResponse]:
+    """Return the resolved people the owner spent time with in the window.
+
+    Reads ``activity``-layer, ``social``-lane episodes and their
+    ``episode_entities`` participant rows (role != 'owner'). Groups by
+    (entity_id, channel) and unions overlapping episode spans per group, same
+    convention every other aggregate endpoint uses. Episodes with no resolved
+    participant are returned as a single ``unattributed=True`` entry per
+    channel rather than dropped.
+
+    Restricted episodes are excluded; tombstoned episodes are excluded.
+    """
+    if start_at is None or end_at is None:
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="missing_parameter",
+                    message="start_at and end_at are required",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    if end_at <= start_at:
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="invalid_time_range",
+                    message="end_at must be strictly after start_at",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    try:
+        zoneinfo.ZoneInfo(tz)
+    except (zoneinfo.ZoneInfoNotFoundError, KeyError):
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                error=ErrorDetail(
+                    code="invalid_timezone",
+                    message=f"Unrecognized IANA timezone: {tz!r}",
+                    butler="chronicler",
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    _tracer = trace.get_tracer("butlers.chronicler")
+    with _tracer.start_as_current_span("chronicler.who_you_were_with") as span:
+        pool = _pool(db)
+
+        source_error = False
+        try:
+            rows = await pool.fetch(
+                """
+                SELECT
+                    e.id AS episode_id,
+                    e.source_name,
+                    e.episode_type,
+                    e.start_at,
+                    e.end_at,
+                    e.payload,
+                    ee.entity_id
+                FROM v_episodes_corrected e
+                LEFT JOIN episode_entities ee
+                    ON ee.episode_id = e.id AND ee.role != 'owner'
+                WHERE e.layer = 'activity'
+                  AND e.tombstone_at IS NULL
+                  AND e.privacy IN ('normal', 'sensitive')
+                  AND e.start_at < $2
+                  AND (e.end_at IS NULL OR e.end_at > $1)
+                """,
+                start_at,
+                end_at,
+            )
+        except Exception:
+            logger.exception(
+                "chronicler.who_you_were_with: query failed for window %s..%s", start_at, end_at
+            )
+            source_error = True
+            rows = []
+
+        span.set_attribute("chronicler.who_you_were_with.source_error", source_error)
+
+        groups: dict[tuple[Any, str], dict[str, Any]] = defaultdict(
+            lambda: {"intervals": [], "episode_count": 0}
+        )
+        distinct_entity_ids: set[Any] = set()
+
+        for row in rows:
+            payload = _coerce_payload(row["payload"])
+            ep_lane = lane_for_activity(
+                "activity",
+                row["source_name"],
+                row["episode_type"],
+                trigger_source=payload.get("trigger_source"),
+            )
+            if ep_lane != "social":
+                continue
+
+            ep_start: datetime = row["start_at"]
+            ep_end: datetime | None = row["end_at"]
+            ep_end_resolved = ep_end if ep_end is not None else end_at
+            overlap_start = max(ep_start, start_at)
+            overlap_end = min(ep_end_resolved, end_at)
+            if overlap_end <= overlap_start:
+                continue
+
+            channel = _channel_for_payload(payload)
+            entity_id = row["entity_id"]
+            if entity_id is not None:
+                distinct_entity_ids.add(entity_id)
+
+            group_key = (entity_id, channel)
+            group = groups[group_key]
+            group["intervals"].append((overlap_start, overlap_end))
+            group["episode_count"] += 1
+
+        # ── Resolve entity_id -> display_name via the relationship butler's
+        # own pool (cross-BUTLER fan_out, not a cross-schema chronicler read).
+        display_names: dict[Any, str] = {}
+        companion_names_unavailable = False
+        if distinct_entity_ids:
+            entities_results, failed = await db.fan_out_with_status(
+                "SELECT id, canonical_name FROM entities WHERE id = ANY($1::uuid[])",
+                args=(list(distinct_entity_ids),),
+                butler_names=["relationship"],
+            )
+            if "relationship" in failed:
+                companion_names_unavailable = True
+            for name_rows in entities_results.values():
+                for r in name_rows:
+                    if r["canonical_name"]:
+                        display_names[r["id"]] = r["canonical_name"]
+
+        companions: list[CompanionEntry] = []
+        for (entity_id, channel), data in groups.items():
+            companions.append(
+                CompanionEntry(
+                    entity_id=str(entity_id) if entity_id is not None else None,
+                    display_name=display_names.get(entity_id) if entity_id is not None else None,
+                    unattributed=entity_id is None,
+                    channel=channel,
+                    co_present_seconds=union_seconds(data["intervals"]),
+                    episode_count=data["episode_count"],
+                )
+            )
+
+        companions.sort(key=lambda c: -c.co_present_seconds)
+
+        span.set_attribute("chronicler.who_you_were_with.companion_count", len(companions))
+
+        return ApiResponse[WhoYouWereWithResponse](
+            data=WhoYouWereWithResponse(
+                start_at=start_at,
+                end_at=end_at,
+                tz=tz,
+                companions=companions,
+                companion_names_unavailable=companion_names_unavailable,
+                who_you_were_with_source_error=source_error,
             )
         )
 

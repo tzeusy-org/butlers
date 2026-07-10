@@ -507,6 +507,177 @@ class RollupsResponse(BaseModel):
     of freshness, only as "this request did not fail outright"."""
 
 
+# ── Daily balance vs usual (IEA, tasks.md S9b, bu-jc6htw.2) ─────────────────
+
+
+class BalanceLaneRow(BaseModel):
+    """One lane's balance for the target day, from GET /api/chronicler/balance.
+
+    Baseline is a trailing rolling-window mean over ``chronicler.daily_rollups``
+    (see ``balance.compute_daily_balance``) — the same materialized per-day
+    totals ``GET /api/chronicler/rollups`` reads, so this surface can never
+    diverge from the rollup numbers a client already renders elsewhere.
+    """
+
+    lane: str
+    seconds: int = 0
+    baseline_seconds: float | None = None
+    """Trailing rolling-window mean seconds for this lane, or null when there
+    is no materialized rollup history yet within the lookback window — not
+    the same as a real 0 baseline."""
+    delta_seconds: float | None = None
+    """``seconds - baseline_seconds``. Null whenever ``baseline_seconds`` is
+    null."""
+    baseline_sample_days: int = 0
+    unavailable: bool = False
+    """True when a source contributing to this lane is ``feeder_dark`` for
+    the target day (mirrors ``RollupLaneRow.unavailable``) — render this as
+    'data unavailable', never as a truthful zero/delta."""
+
+
+class BalanceResponse(BaseModel):
+    """Response envelope for GET /api/chronicler/balance.
+
+    Degraded-envelope convention (butlers/CLAUDE.md "API Conventions"): a
+    genuine query failure sets ``balance_source_error=True`` and ``lanes``
+    is returned empty — never a truthful empty/zero result silently mistaken
+    for "nothing happened". This is distinct from ``status=
+    'not_yet_materialized'`` (a legitimately absent day — never sets this
+    flag) and from a lane's ``unavailable=True`` (a known feeder outage on an
+    otherwise-successfully-read day).
+    """
+
+    local_date: str
+    timezone: str
+    status: str
+    """One of ``materialized`` / ``not_yet_materialized`` / ``unknown`` —
+    same three-state contract as ``RollupDay.status``."""
+    baseline_lookback_days: int
+    lanes: list[BalanceLaneRow] = Field(default_factory=list)
+    """Empty when ``status != 'materialized'``; one entry per
+    ``aggregations.LANES`` (zero-filled) otherwise."""
+    balance_source_error: bool = False
+
+
+# ── Trends (IEA, tasks.md S9b, bu-jc6htw.2) ─────────────────────────────────
+
+
+class TrendLaneDay(BaseModel):
+    """One lane's balance for one day within a trends window."""
+
+    local_date: str
+    status: str
+    """One of ``materialized`` / ``not_yet_materialized`` / ``unknown``."""
+    seconds: int = 0
+    baseline_seconds: float | None = None
+    delta_seconds: float | None = None
+    unavailable: bool = False
+    """See ``BalanceLaneRow.unavailable`` — same feeder_dark cross-reference,
+    evaluated per day."""
+
+
+class TrendLaneSeries(BaseModel):
+    """One lane's day-by-day series across the requested trends window."""
+
+    lane: str
+    days: list[TrendLaneDay] = Field(default_factory=list)
+    """Ordered by local_date ASC, one entry per day in [start_date, end_date]."""
+    streak_days: int = 0
+    """Trailing run of consecutive non-zero-activity days ending at
+    ``end_date`` (``balance.compute_lane_streak``). 0 when the most recent
+    day has no activity in this lane."""
+
+
+class TrendAnomaly(BaseModel):
+    """One day where a lane's total deviated sharply from its baseline.
+
+    Flagged by ``balance.is_lane_anomalous`` — requires both a minimum
+    baseline sample size and a delta clearing an absolute-and-relative
+    threshold, so early-history noise never produces a fabricated anomaly.
+    """
+
+    lane: str
+    local_date: str
+    seconds: int
+    baseline_seconds: float
+    delta_seconds: float
+    direction: str
+    """``"spike"`` when seconds > baseline, ``"drop"`` when seconds < baseline."""
+
+
+class TrendsResponse(BaseModel):
+    """Response envelope for GET /api/chronicler/trends.
+
+    Degraded-envelope convention: ``trends_source_error=True`` means the
+    underlying rollup query raised — ``lanes``/``anomalies`` are returned
+    empty in that case, never a truthful empty/zero result.
+    """
+
+    window: str
+    """``"week"`` or ``"month"``."""
+    start_date: str
+    end_date: str
+    tz: str = "Asia/Singapore"
+    baseline_lookback_days: int
+    lanes: list[TrendLaneSeries] = Field(default_factory=list)
+    anomalies: list[TrendAnomaly] = Field(default_factory=list)
+    """Ordered by local_date ASC, then lane ASC."""
+    trends_source_error: bool = False
+
+
+# ── Who-you-were-with (IEA, tasks.md S9b, bu-jc6htw.2) ──────────────────────
+
+
+class CompanionEntry(BaseModel):
+    """One resolved (or unattributed) companion for a who-you-were-with window.
+
+    Identity resolution happens once, at write time, in
+    ``adapters.comms.CommsSocialAdapter`` (message sender -> entity via
+    ``relationship.entity_facts``, RFC D8 evidence-surface grant
+    ``core_150``) — never re-resolved here. Per RFC 0014 §D17, the chronicler
+    dashboard API itself must not read cross-schema; ``entity_id`` here is
+    chronicler's own already-resolved ``episode_entities.entity_id``, and
+    ``display_name`` is filled in via ``DatabaseManager.fan_out_with_status``
+    against the relationship butler's OWN pool (the same sanctioned
+    cross-BUTLER pattern ``GET /ops/sessions`` uses) — not a cross-schema
+    join through the chronicler pool.
+    """
+
+    entity_id: str | None = None
+    """Null when the companion could not be resolved to an entity
+    (``unattributed=True``)."""
+    display_name: str | None = None
+    """Null when unattributed, OR when entity_id is known but the
+    relationship-butler name lookup failed/returned nothing — see
+    ``WhoYouWereWithResponse.companion_names_unavailable`` to distinguish the
+    two."""
+    unattributed: bool = False
+    channel: str
+    """E.g. ``"Telegram"``, ``"email"``, ``"WhatsApp"``, ``"Discord"``, or
+    ``"in-person"`` for a non-comms (e.g. co-presence) social activity."""
+    co_present_seconds: float
+    episode_count: int
+
+
+class WhoYouWereWithResponse(BaseModel):
+    """Response envelope for GET /api/chronicler/who-you-were-with."""
+
+    start_at: datetime
+    end_at: datetime
+    tz: str
+    companions: list[CompanionEntry] = Field(default_factory=list)
+    """Sorted by co_present_seconds DESC."""
+    companion_names_unavailable: bool = False
+    """True when entity_id -> display_name resolution (the relationship
+    butler fan_out lookup) failed. Companion identity/duration/channel data
+    is still chronicler's own and remains trustworthy; only display names are
+    degraded. Distinct from an entry's own ``unattributed`` (identity
+    genuinely unknown, not a lookup failure)."""
+    who_you_were_with_source_error: bool = False
+    """True when the chronicler-own-schema episode query itself failed —
+    ``companions`` is empty in that case, never a truthful empty result."""
+
+
 class RoutineRow(BaseModel):
     """A row from GET /api/chronicler/routines (bu-whhll.9)."""
 
@@ -543,8 +714,11 @@ class UpdateRoutineRequest(BaseModel):
 __all__ = [
     "ActivityEvidenceChain",
     "AggregateByDayRow",
+    "BalanceLaneRow",
+    "BalanceResponse",
     "CategoryBucket",
     "CategoryBuckets",
+    "CompanionEntry",
     "CorrectionPrompt",
     "CorrectionPrompts",
     "EvidenceChainLink",
@@ -573,5 +747,10 @@ __all__ = [
     "SourceStateRow",
     "SubsourceCheckpoint",
     "SubmitCorrectionRequest",
+    "TrendAnomaly",
+    "TrendLaneDay",
+    "TrendLaneSeries",
+    "TrendsResponse",
     "UpdateRoutineRequest",
+    "WhoYouWereWithResponse",
 ]
