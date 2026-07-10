@@ -329,6 +329,20 @@ GROUP BY 1
 ORDER BY 1 DESC
 """
 
+# Owner-tz audit (bu-uqkfm, follow-up from bu-8ogli/PR #3072): this is the same
+# UTC-bucketed ``hour_start`` shape as sessions.py::_HOURLY_ACTIVITY_SQL, whose
+# per-butler §5 histogram needed owner-tz bucketing (frontend/src/lib/
+# hourly-buckets.ts::bucketHourInZone) because it slots each bucket onto a
+# fixed 0-23 hour-of-day axis. This board query does NOT need the same fix:
+# _fetch_board_hourly_stripe() below discards every ``hour_start`` and returns
+# only a relative-position ``stripe: list[int]`` (slot = "N hours ago", not a
+# clock hour). Its sole renderer, ActivityStripe.tsx, treats the stripe as a
+# rolling window, not an hour-of-day histogram; the peak-hour figure in its
+# aria-label is derived from the viewer's live clock via ``getUTCHours()``
+# (deliberately host-tz-invariant, guarded by ActivityStripe.test.tsx), never
+# from a backend ``hour_start`` value. No consumer here needs bucketHourInZone
+# / useTimezone conversion.
+
 # A butler is "overdue" only once its silence exceeds its own cadence by this
 # factor -- avoids flagging a butler that simply hasn't hit its next
 # scheduled run yet.
