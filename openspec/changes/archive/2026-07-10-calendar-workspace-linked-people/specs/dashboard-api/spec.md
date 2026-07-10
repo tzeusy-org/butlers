@@ -23,4 +23,4 @@ The read MUST be fail-open and honest: a resolution-query failure SHALL NOT drop
 
 #### Scenario: Backward-compatible additive shape
 - **WHEN** a client that predates this change reads the workspace response
-- **THEN** it observes the prior `UnifiedCalendarEntry` shape unchanged — `linked_people` defaults to `[]` and `people_source_available` defaults to `true` (both optional/additive)
+- **THEN** it observes the prior `UnifiedCalendarEntry` shape unchanged, with entry-level `linked_people` defaulting to `[]`, and the response envelope's `people_source_available` defaulting to `true` (both optional/additive)

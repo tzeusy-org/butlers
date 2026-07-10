@@ -36,6 +36,6 @@
 
 - [x] 4.1 OpenSpec delta under
   `openspec/changes/calendar-workspace-linked-people/specs/dashboard-api/`.
-- [ ] 4.2 `openspec validate calendar-workspace-linked-people --strict`.
+- [x] 4.2 `openspec validate calendar-workspace-linked-people --strict`.
 - [x] 4.3 ruff check/format; targeted pytest (unit + integration).
 - [x] 4.4 FE `npm run build` + `eslint .` + targeted vitest.
