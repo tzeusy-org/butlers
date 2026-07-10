@@ -244,7 +244,7 @@ def register_scheduling_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) 
             job_name = row["job_name"]
             raw_job_args = row["job_args"]
             job_args = json.loads(raw_job_args) if isinstance(raw_job_args, str) else raw_job_args
-            task_complexity = _parse_complexity_from_db_row(row, name)
+            task_complexity = _parse_complexity_from_db_row(row)
 
             now = datetime.now(UTC)
             try:

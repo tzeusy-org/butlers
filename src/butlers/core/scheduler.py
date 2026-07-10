@@ -22,7 +22,7 @@ from croniter import croniter
 from opentelemetry import trace
 
 from butlers.core.metrics import ButlerMetrics
-from butlers.core.model_routing import Complexity
+from butlers.core.model_routing import Complexity, coerce_complexity_tier
 
 logger = logging.getLogger(__name__)
 
@@ -223,22 +223,30 @@ def _normalize_complexity(value: Any, *, context: str) -> str:
     return normalized
 
 
-def _parse_complexity_from_db_row(row: asyncpg.Record, task_name: str) -> Complexity:
-    """Parse complexity from a DB row, falling back to WORKHORSE on missing or invalid values.
+def _parse_complexity_from_db_row(row: asyncpg.Record) -> Complexity:
+    """Parse complexity from a DB row into a canonical ``Complexity``.
 
-    Logs a warning on invalid values — complexity is DB-serialized by this codebase but
-    could be stale (e.g. old migration, manual edit), so a visible warning is appropriate.
+    Delegates to the shared ``coerce_complexity_tier`` (the single source of
+    truth for tier normalization) with ``strict=False`` so that a stored value
+    is normalized rather than collapsed:
+
+    - Missing/null values default to ``Complexity.WORKHORSE``.
+    - Every retired tier — trivial/medium/high/extra_high/discretion/
+      self_healing — is remapped to its canonical successor via
+      ``_DEPRECATED_TIER_MAP`` (e.g. ``high``/``extra_high`` -> ``reasoning``),
+      not silently collapsed to ``workhorse``. This matters on the real
+      dispatch paths (cron + deadline loops): the returned tier is handed to
+      ``dispatch_fn``/``resolve_model``, so a schedule row persisted with a
+      legacy ``high`` tier now correctly dispatches at ``reasoning``.
+    - Any other unrecognized junk degrades to ``Complexity.WORKHORSE`` with a
+      logged warning rather than crashing — complexity is DB-serialized by this
+      codebase but could be stale (old migration, manual edit), so a read path
+      must fail open.
+
+    Returns the ``Complexity`` enum (its consumers want the enum for dispatch;
+    ``schedule_list`` calls ``.value`` on the result for its LLM-facing dict).
     """
-    raw_complexity = row.get("complexity") or _DEFAULT_COMPLEXITY
-    try:
-        return Complexity(raw_complexity)
-    except ValueError:
-        logger.warning(
-            "Unknown complexity value %r for task %s; defaulting to workhorse",
-            raw_complexity,
-            task_name,
-        )
-        return Complexity.WORKHORSE
+    return coerce_complexity_tier(row.get("complexity"), strict=False)
 
 
 def _normalize_schedule_dispatch(
@@ -1130,7 +1138,7 @@ async def _tick_deadline_pass(
 
         # Step 4: dispatch the deadline prompt
         prompt = row["prompt"] or f"Deadline approaching: {name}"
-        task_complexity = _parse_complexity_from_db_row(row, name)
+        task_complexity = _parse_complexity_from_db_row(row)
         augmented_prompt = build_deadline_prompt_context(
             original_prompt=prompt,
             target_date=target_date,
@@ -2011,7 +2019,7 @@ async def tick(
             dispatch_mode = row["dispatch_mode"]
             job_name = row["job_name"]
             job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
-            task_complexity = _parse_complexity_from_db_row(row, name)
+            task_complexity = _parse_complexity_from_db_row(row)
             max_token_budget: int | None = row["max_token_budget"] if _has_budget_col else None
 
             # Effective cron timezone: a non-UTC per-row value overrides; the
@@ -2185,12 +2193,11 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
             task.get("job_args"),
             context=f"scheduled_tasks[{task['name']}]",
         )
-        # Coerce null/legacy-invalid complexity (e.g. the retired "medium" tier)
-        # to a valid Complexity before surfacing it to MCP tool callers, using
-        # the same safe-fallback parser the dispatch loop relies on. bu-3qbrq
-        # tracks converging this onto model_routing.coerce_complexity_tier()
-        # once that shared helper lands (see bu-h3cwc / PR #3000).
-        task["complexity"] = _parse_complexity_from_db_row(row, task["name"]).value
+        # Normalize null/legacy complexity (e.g. the retired "medium"/"high"
+        # tiers) to a canonical Complexity before surfacing it to MCP tool
+        # callers, using the same shared parser the dispatch loop relies on
+        # (_parse_complexity_from_db_row -> model_routing.coerce_complexity_tier).
+        task["complexity"] = _parse_complexity_from_db_row(row).value
         tasks.append(task)
     return tasks
 

@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
+from butlers.core.model_routing import Complexity
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -240,6 +241,43 @@ async def test_tick_dispatch_prompt_and_job(pool):
     assert "prompt" not in call and "complexity" not in call
 
 
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        (None, Complexity.WORKHORSE),  # missing → default
+        ("trivial", Complexity.CHEAP),
+        ("medium", Complexity.WORKHORSE),
+        ("high", Complexity.REASONING),
+        ("extra_high", Complexity.REASONING),
+        ("discretion", Complexity.SPECIALTY),
+        ("self_healing", Complexity.SPECIALTY),
+        ("reasoning", Complexity.REASONING),  # canonical passes through
+        ("bogus-tier", Complexity.WORKHORSE),  # junk fails open
+    ],
+)
+async def test_tick_dispatches_legacy_complexity_at_canonical_tier(pool, stored, expected):
+    """The REAL cron dispatch loop hands the canonical Complexity to dispatch_fn (which
+    feeds resolve_model). bu-lq7m4: a schedule row stored with the retired 'high'/'extra_high'
+    tier must dispatch at reasoning — previously _parse_complexity_from_db_row collapsed every
+    legacy tier to workhorse, so those rows silently under-resolved their model."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    task_id = await schedule_create(pool, "tiered-task", "*/1 * * * *", "run tiered")
+    # schedule_create validates complexity on write; persist the stale/legacy value directly.
+    await pool.execute(
+        "UPDATE scheduled_tasks SET complexity = $2, next_run_at = $3 WHERE id = $1",
+        task_id,
+        stored,
+        _past(),
+    )
+
+    dispatch = _Dispatch()
+    await tick(pool, dispatch)
+
+    assert len(dispatch.calls) == 1
+    assert dispatch.calls[0]["complexity"] == expected
+
+
 async def test_tick_skips_disabled_continues_on_failure_and_timestamps(pool):
     """tick() skips disabled tasks; continues when dispatch raises; sets last_run_at; advances next_run_at; disables when until_at exceeded."""
     from butlers.core.scheduler import schedule_create, tick
@@ -452,29 +490,41 @@ async def test_schedule_create_and_list(pool):
         await schedule_create(pool, "dup-name", "0 10 * * *", "second")
 
 
-async def test_schedule_list_coerces_null_and_legacy_complexity(pool):
-    """schedule_list coerces null/legacy-invalid stored complexity to workhorse for MCP callers;
-    valid tiers pass through unchanged. Guards bu-e0d9x (schedule_list previously returned
-    dict(row) uncoerced, leaking null/legacy 'medium' straight to LLM tool callers)."""
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        (None, "workhorse"),  # missing/null column defaults to workhorse
+        # Every retired pre-core_092 tier normalizes to its canonical successor
+        # (bu-lq7m4: previously ALL legacy tiers collapsed to workhorse because
+        # _parse_complexity_from_db_row did a bare Complexity(raw); high/extra_high
+        # must remap to reasoning). Contract shared with model_routing._DEPRECATED_TIER_MAP.
+        ("trivial", "cheap"),
+        ("medium", "workhorse"),
+        ("high", "reasoning"),
+        ("extra_high", "reasoning"),
+        ("discretion", "specialty"),
+        ("self_healing", "specialty"),
+        ("reasoning", "reasoning"),  # valid tiers pass through unchanged
+        ("legacy", "legacy"),
+        ("bogus-tier", "workhorse"),  # unknown junk fails open to workhorse
+    ],
+)
+async def test_schedule_list_coerces_null_and_legacy_complexity(pool, stored, expected):
+    """schedule_list normalizes null/legacy stored complexity to a canonical tier for MCP
+    callers; valid tiers pass through unchanged. Guards bu-e0d9x (schedule_list previously
+    returned dict(row) uncoerced) and bu-lq7m4 (retired high/extra_high must remap to
+    reasoning, not collapse to workhorse)."""
     from butlers.core.scheduler import schedule_create, schedule_list
 
-    await schedule_create(
-        pool, "valid-complexity-task", "0 9 * * *", "valid", complexity="reasoning"
-    )
-    null_id = await schedule_create(pool, "null-complexity-task", "0 9 * * *", "null test")
-    legacy_id = await schedule_create(pool, "legacy-complexity-task", "0 9 * * *", "legacy test")
+    task_id = await schedule_create(pool, "coerce-task", "0 9 * * *", "coerce test")
 
     # schedule_create validates complexity on write, so simulate a stale/legacy
-    # stored value (NULL, or the retired "medium" tier) via a direct row update.
-    await pool.execute("UPDATE scheduled_tasks SET complexity = NULL WHERE id = $1", null_id)
-    await pool.execute("UPDATE scheduled_tasks SET complexity = 'medium' WHERE id = $1", legacy_id)
+    # stored value (NULL or a retired tier) via a direct row update.
+    await pool.execute("UPDATE scheduled_tasks SET complexity = $2 WHERE id = $1", task_id, stored)
 
     tasks = await schedule_list(pool)
     by_name = {t["name"]: t for t in tasks}
-
-    assert by_name["valid-complexity-task"]["complexity"] == "reasoning"
-    assert by_name["null-complexity-task"]["complexity"] == "workhorse"
-    assert by_name["legacy-complexity-task"]["complexity"] == "workhorse"
+    assert by_name["coerce-task"]["complexity"] == expected
 
 
 async def test_schedule_update_and_delete(pool):
