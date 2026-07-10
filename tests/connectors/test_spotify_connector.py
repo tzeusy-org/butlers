@@ -683,3 +683,82 @@ async def test_emit_session_summary_skips_persist_without_cursor_pool() -> None:
 
     mock_persist.assert_not_awaited()
     connector._submit_envelope.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Filtered-content privacy tier (bu-glbjx)
+#
+# Content the connector deliberately does NOT submit (status='filtered':
+# policy block) persists a bounded preview only — the full raw payload MUST NOT
+# be retained (full_payload.payload.raw == {}). Errored content (status='error')
+# is exempt and keeps its payload for diagnosis and replay.
+# ---------------------------------------------------------------------------
+
+
+def _privacy_envelope() -> dict[str, Any]:
+    return build_context_start_envelope(
+        endpoint_identity=_ENDPOINT,
+        spotify_user_id=_SPOTIFY_USER_ID,
+        track_id="track1",
+        track_name="Song A",
+        artist_names=["Artist"],
+        album_name="Album",
+        duration_ms=240000,
+        context_uri="spotify:playlist:abc",
+        device_name="Phone",
+        timestamp_ms=1711447200000,
+        raw_payload={"track_id": "track1"},
+        observed_at=_OBSERVED,
+    )
+
+
+@pytest.mark.asyncio
+async def test_policy_block_persists_no_raw_payload() -> None:
+    """A policy block records raw={} while keeping the bounded preview."""
+    from types import SimpleNamespace
+
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._filtered_event_buffer = FilteredEventBuffer("spotify_user_client", _ENDPOINT)
+    connector._ingestion_policy = SimpleNamespace(  # type: ignore[assignment]
+        scope="connector_rule",
+        evaluate=lambda _ing_env: SimpleNamespace(
+            allowed=False, action="block", matched_rule_type="sender_domain"
+        ),
+    )
+
+    await connector._submit_envelope(_privacy_envelope())
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[8] == "filtered"
+    assert row[9]["payload"]["raw"] == {}
+
+
+@pytest.mark.asyncio
+async def test_submission_error_retains_raw_payload() -> None:
+    """Errored content (status='error') is exempt: the raw payload is retained."""
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._filtered_event_buffer = FilteredEventBuffer("spotify_user_client", _ENDPOINT)
+    connector._ingestion_policy = None
+    connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
+
+    envelope = _privacy_envelope()
+    expected_raw = envelope["payload"]["raw"]
+    assert expected_raw, "envelope fixture must carry a non-empty raw payload"
+
+    await connector._submit_envelope(envelope)
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[8] == "error"
+    assert row[9]["payload"]["raw"] == expected_raw

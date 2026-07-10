@@ -11,7 +11,7 @@ Verifies:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -128,3 +128,87 @@ def test_idempotency_key_uses_chat_and_message_id(connector: TelegramBotConnecto
     assert "tg:" in key
     assert "999" in key
     assert "42" in key
+
+
+# ---------------------------------------------------------------------------
+# Filtered-content privacy tier (bu-glbjx)
+#
+# Content the connector deliberately does NOT submit (status='filtered':
+# connector-rule block, global skip) persists a bounded preview only — the
+# full raw update payload MUST NOT be retained (full_payload.payload.raw == {}).
+# Errored content (status='error') is exempt and keeps its payload for
+# diagnosis and replay.
+# ---------------------------------------------------------------------------
+
+
+def _text_update(update_id: int = 555) -> dict[str, Any]:
+    return {
+        "update_id": update_id,
+        "message": {
+            "message_id": 1,
+            "from": {"id": 987},
+            "chat": {"id": 100},
+            "text": "Hello Bot!",
+        },
+    }
+
+
+async def test_connector_rule_block_persists_no_raw_payload(
+    connector: TelegramBotConnector,
+) -> None:
+    """A connector-scope policy block records raw={} while keeping the preview."""
+    from butlers.ingestion_policy import PolicyDecision
+
+    connector._ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+        return_value=PolicyDecision(action="block", matched_rule_type="sender_domain")
+    )
+    await connector._process_update(_text_update())
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[8] == "filtered"
+    assert row[9]["payload"]["raw"] == {}
+    # Preview is retained so the filtered row stays operationally useful.
+    assert row[6]
+
+
+async def test_global_skip_persists_no_raw_payload(connector: TelegramBotConnector) -> None:
+    """A global-scope skip records raw={} while keeping the preview."""
+    from butlers.ingestion_policy import PolicyDecision
+
+    connector._ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+        return_value=PolicyDecision(action="pass_through")
+    )
+    connector._global_ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+        return_value=PolicyDecision(action="skip", matched_rule_type="keyword")
+    )
+    await connector._process_update(_text_update())
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[8] == "filtered"
+    assert row[9]["payload"]["raw"] == {}
+
+
+async def test_submission_error_retains_raw_payload(connector: TelegramBotConnector) -> None:
+    """Errored content (status='error') is exempt: the raw payload is retained."""
+    from butlers.ingestion_policy import PolicyDecision
+
+    connector._ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+        return_value=PolicyDecision(action="pass_through")
+    )
+    connector._global_ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+        return_value=PolicyDecision(action="pass_through")
+    )
+    connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+
+    update = _text_update()
+    await connector._process_update(update)
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[8] == "error"
+    assert row[9]["payload"]["raw"] == update

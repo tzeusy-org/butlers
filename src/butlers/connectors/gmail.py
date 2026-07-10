@@ -2123,7 +2123,7 @@ class GmailConnectorRuntime:
                         external_message_id=message_id,
                         source_channel=self._config.connector_channel,
                         sender_identity=_from_header,
-                        subject_or_preview=_subject or None,
+                        subject_or_preview=_subject[:200] if _subject else None,
                         filter_reason=policy_result.filter_reason,
                         full_payload=FilteredEventBuffer.full_payload(
                             channel=self._config.connector_channel,
@@ -2133,7 +2133,10 @@ class GmailConnectorRuntime:
                             external_thread_id=_thread_id,
                             observed_at=_observed_at,
                             sender_identity=_from_header,
-                            raw=message_data,
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                             policy_tier=policy_result.policy_tier,
                         ),
                     )
@@ -2154,7 +2157,7 @@ class GmailConnectorRuntime:
                         external_message_id=message_id,
                         source_channel=self._config.connector_channel,
                         sender_identity=_from_header,
-                        subject_or_preview=_subject or None,
+                        subject_or_preview=_subject[:200] if _subject else None,
                         filter_reason=FilteredEventBuffer.reason_policy_rule(
                             "connector_rule",
                             "block",
@@ -2168,7 +2171,10 @@ class GmailConnectorRuntime:
                             external_thread_id=_thread_id,
                             observed_at=_observed_at,
                             sender_identity=_from_header,
-                            raw=message_data,
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                             policy_tier=policy_result.policy_tier,
                         ),
                     )
@@ -2186,7 +2192,7 @@ class GmailConnectorRuntime:
                         external_message_id=message_id,
                         source_channel=self._config.connector_channel,
                         sender_identity=_from_header,
-                        subject_or_preview=_subject or None,
+                        subject_or_preview=_subject[:200] if _subject else None,
                         filter_reason=FilteredEventBuffer.reason_policy_rule(
                             "global_rule",
                             "skip",
@@ -2200,7 +2206,10 @@ class GmailConnectorRuntime:
                             external_thread_id=_thread_id,
                             observed_at=_observed_at,
                             sender_identity=_from_header,
-                            raw=message_data,
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                             policy_tier=policy_result.policy_tier,
                         ),
                     )

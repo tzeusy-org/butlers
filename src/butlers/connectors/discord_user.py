@@ -847,7 +847,10 @@ class DiscordUserConnector:
                             external_thread_id=channel_id,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(event_data),
-                            raw={"event_type": event_type, **event_data},
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                         ),
                     )
                     await self._flush_and_drain()
@@ -887,7 +890,10 @@ class DiscordUserConnector:
                             external_thread_id=channel_id,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(event_data),
-                            raw={"event_type": event_type, **event_data},
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                         ),
                     )
                     await self._flush_and_drain()
@@ -919,7 +925,10 @@ class DiscordUserConnector:
                             external_thread_id=channel_id,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(event_data),
-                            raw={"event_type": event_type, **event_data},
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                         ),
                     )
                     await self._flush_and_drain()

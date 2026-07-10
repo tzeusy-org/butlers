@@ -1998,7 +1998,11 @@ class GoogleHealthConnector:
                                 external_thread_id=event.get("external_thread_id"),
                                 observed_at=event.get("observed_at", ""),
                                 sender_identity=sender.get("identity", ""),
-                                raw=payload.get("raw"),
+                                # Filtered-content privacy tier (bu-glbjx): content
+                                # the connector chose not to submit persists a
+                                # bounded preview only; the full raw payload is NOT
+                                # retained.
+                                raw={},
                                 normalized_text=payload.get("normalized_text", ""),
                                 policy_tier=control.get("policy_tier", "default"),
                             ),

@@ -824,7 +824,10 @@ class TelegramBotConnector:
                             external_thread_id=self._extract_chat_id(update),
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
-                            raw=update,
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                         ),
                     )
                     return
@@ -855,7 +858,10 @@ class TelegramBotConnector:
                             external_thread_id=self._extract_chat_id(update),
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
-                            raw=update,
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a bounded
+                            # preview only; the full raw payload is NOT retained.
+                            raw={},
                         ),
                     )
                     return

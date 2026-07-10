@@ -489,3 +489,143 @@ async def test_submission_error_without_organizer_matches_policy_filter_conventi
     row = runtime._filtered_event_buffer._rows[0]
     assert row[5] == "unknown"
     assert row[9]["sender"]["identity"] == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Filtered-content privacy tier (bu-glbjx)
+#
+# Content the connector deliberately does NOT submit (status='filtered':
+# connector-scope block, global skip) persists a bounded preview only — the
+# full raw event payload MUST NOT be retained (full_payload.payload.raw == {}).
+# Errored content (status='error') is exempt and keeps its raw payload for
+# diagnosis and replay.
+# ---------------------------------------------------------------------------
+
+
+async def test_blocked_event_persists_no_raw_payload(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """A connector-scope policy block records raw={} while keeping the preview."""
+    runtime = CalendarConnectorRuntime(account_config)
+    block_decision = PolicyDecision(
+        action="block",
+        matched_rule_type="sender_domain",
+        reason="blocked",
+    )
+    event = {
+        "id": "evt-blocked-priv",
+        "status": "confirmed",
+        "summary": "Blocked Meeting",
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "organizer": {"email": "blocked@example.com"},
+    }
+    with patch.object(runtime._ingestion_policy, "evaluate", return_value=block_decision):
+        ingested = await runtime._process_event(event)
+
+    assert ingested is False
+    assert len(runtime._filtered_event_buffer) == 1
+    row = runtime._filtered_event_buffer._rows[0]
+    assert row[8] == "filtered"
+    assert row[9]["payload"]["raw"] == {}
+    # Preview is retained so the filtered row stays operationally useful.
+    assert row[6] == "Blocked Meeting"
+
+
+async def test_blocked_event_preview_bounded_to_200_chars(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """A summary longer than 200 chars is truncated before persistence."""
+    runtime = CalendarConnectorRuntime(account_config)
+    block_decision = PolicyDecision(
+        action="block",
+        matched_rule_type="sender_domain",
+        reason="blocked",
+    )
+    event = {
+        "id": "evt-blocked-long",
+        "status": "confirmed",
+        "summary": "z" * 500,
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "organizer": {"email": "blocked@example.com"},
+    }
+    with patch.object(runtime._ingestion_policy, "evaluate", return_value=block_decision):
+        ingested = await runtime._process_event(event)
+
+    assert ingested is False
+    assert len(runtime._filtered_event_buffer) == 1
+    row = runtime._filtered_event_buffer._rows[0]
+    assert row[6] == "z" * 200
+
+
+async def test_global_skip_persists_no_raw_payload(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """A global-scope skip records raw={} while keeping the preview."""
+    runtime = CalendarConnectorRuntime(account_config)
+    skip_decision = PolicyDecision(
+        action="skip",
+        matched_rule_type="keyword",
+        reason="skipped",
+    )
+    event = {
+        "id": "evt-skip-priv",
+        "status": "confirmed",
+        "summary": "Skipped Meeting",
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "organizer": {"email": "skip@example.com"},
+    }
+    with (
+        patch.object(runtime._ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime._global_ingestion_policy, "evaluate", return_value=skip_decision),
+    ):
+        ingested = await runtime._process_event(event)
+
+    assert ingested is False
+    assert len(runtime._filtered_event_buffer) == 1
+    row = runtime._filtered_event_buffer._rows[0]
+    assert row[8] == "filtered"
+    assert row[9]["payload"]["raw"] == {}
+
+
+async def test_submission_error_retains_raw_payload(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """Errored content (status='error') is exempt: the raw payload is retained
+    for diagnosis and replay."""
+    runtime = CalendarConnectorRuntime(account_config)
+    event = {
+        "id": "evt-err-priv",
+        "status": "confirmed",
+        "summary": "Errored Meeting",
+        "start": {"dateTime": "2026-06-01T10:00:00Z"},
+        "end": {"dateTime": "2026-06-01T11:00:00Z"},
+        "created": "2026-01-01T00:00:00Z",
+        "updated": "2026-01-02T00:00:00Z",
+        "organizer": {"email": "org@example.com"},
+    }
+
+    async def _boom(_env: dict) -> None:
+        raise RuntimeError("switchboard down")
+
+    with (
+        patch.object(runtime._ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime._global_ingestion_policy, "evaluate", return_value=None),
+        patch.object(runtime, "_submit_to_ingest_api", side_effect=_boom),
+    ):
+        ingested = await runtime._process_event(event)
+
+    assert ingested is False
+    assert len(runtime._filtered_event_buffer) == 1
+    row = runtime._filtered_event_buffer._rows[0]
+    assert row[8] == "error"
+    # The error path preserves the raw payload built into the envelope.
+    assert row[9]["payload"]["raw"] == event

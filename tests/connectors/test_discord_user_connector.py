@@ -11,7 +11,7 @@ Verifies:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -106,3 +106,67 @@ def test_idempotency_key_format(connector: DiscordUserConnector) -> None:
     key = env["control"]["idempotency_key"]
     assert "discord" in key
     assert "key-msg-999" in key
+
+
+# ---------------------------------------------------------------------------
+# Filtered-content privacy tier (bu-glbjx)
+#
+# Content the connector deliberately does NOT submit (status='filtered':
+# allowlist block, connector/global policy filter) persists a bounded preview
+# only — the full raw event payload MUST NOT be retained
+# (full_payload.payload.raw == {}). Errored content (status='error') is exempt
+# and keeps its payload for diagnosis and replay.
+# ---------------------------------------------------------------------------
+
+
+async def test_allowlist_block_persists_no_raw_payload(connector: DiscordUserConnector) -> None:
+    """An allowlist-filtered event records raw={} while keeping the preview."""
+    connector._is_allowed = MagicMock(return_value=False)  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    event_data: dict[str, Any] = {
+        "id": "evt-blocked",
+        "channel_id": "ch1",
+        "content": "secret message",
+        "author": {"id": "u1"},
+    }
+    await connector._process_dispatch_event("MESSAGE_CREATE", event_data)
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[8] == "filtered"
+    assert row[9]["payload"]["raw"] == {}
+    # Preview is retained so the filtered row stays operationally useful.
+    assert row[6]
+
+
+async def test_submission_error_retains_raw_payload(connector: DiscordUserConnector) -> None:
+    """Errored content (status='error') is exempt: the raw payload is retained."""
+    from butlers.ingestion_policy import PolicyDecision
+
+    connector._is_allowed = MagicMock(return_value=True)  # type: ignore[method-assign]
+    connector._ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+        return_value=PolicyDecision(action="pass_through")
+    )
+    connector._global_ingestion_policy.evaluate = MagicMock(  # type: ignore[method-assign]
+        return_value=PolicyDecision(action="pass_through")
+    )
+    connector._submit_to_ingest = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    connector._flush_and_drain = AsyncMock()  # type: ignore[method-assign]
+
+    event_data: dict[str, Any] = {
+        "id": "evt-err",
+        "channel_id": "ch1",
+        "content": "hi",
+        "author": {"id": "u2"},
+    }
+    await connector._process_dispatch_event("MESSAGE_CREATE", event_data)
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[8] == "error"
+    raw = row[9]["payload"]["raw"]
+    assert raw["event_type"] == "MESSAGE_CREATE"
+    assert raw["id"] == "evt-err"

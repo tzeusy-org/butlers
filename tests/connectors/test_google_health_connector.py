@@ -2234,3 +2234,76 @@ async def test_resolve_owner_uses_registry_owned_scope_matching(
     await connector._resolve_owner_and_scopes()
 
     assert captured["pool"] is connector._shared_pool
+
+
+# ---------------------------------------------------------------------------
+# Filtered-content privacy tier (bu-glbjx)
+#
+# Content the connector deliberately does NOT submit (status='filtered':
+# policy block) persists a bounded preview only — the full raw payload MUST NOT
+# be retained (full_payload.payload.raw == {}). Errored content (status='error')
+# is exempt and keeps its payload for diagnosis and replay.
+# ---------------------------------------------------------------------------
+
+
+def _privacy_envelope() -> dict[str, Any]:
+    return {
+        "source": {
+            "channel": "wellness",
+            "provider": "google_health",
+            "endpoint_identity": _endpoint_identity_for_user(_OWNER_EMAIL),
+        },
+        "event": {
+            "external_event_id": "evt-1",
+            "external_thread_id": None,
+            "observed_at": "2026-06-01T00:00:00+00:00",
+        },
+        "sender": {"identity": _OWNER_EMAIL},
+        "payload": {"raw": {"steps": 1234}, "normalized_text": "1234 steps today"},
+        "control": {"policy_tier": "default"},
+    }
+
+
+async def test_policy_block_persists_no_raw_payload() -> None:
+    """A policy block records raw={} while keeping the bounded preview."""
+    from types import SimpleNamespace
+
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
+    connector = _make_connector()
+    connector._filtered_event_buffer = FilteredEventBuffer("google_health", "ep")
+    connector._ingestion_policy = SimpleNamespace(  # type: ignore[assignment]
+        scope="connector_rule",
+        evaluate=lambda _ing_env: SimpleNamespace(
+            allowed=False, action="block", matched_rule_type="sender_domain"
+        ),
+    )
+
+    await connector._submit_envelope(_privacy_envelope(), resource="steps")
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[8] == "filtered"
+    assert row[9]["payload"]["raw"] == {}
+    # Bounded preview is retained so the filtered row stays operationally useful.
+    assert row[6] == "1234 steps today"
+
+
+async def test_submission_error_retains_raw_payload() -> None:
+    """Errored content (status='error') is exempt: the raw payload is retained."""
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
+    connector = _make_connector()
+    connector._filtered_event_buffer = FilteredEventBuffer("google_health", "ep")
+    connector._ingestion_policy = None
+    connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+
+    envelope = _privacy_envelope()
+    await connector._submit_envelope(envelope, resource="steps")
+
+    rows = connector._filtered_event_buffer._rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[8] == "error"
+    assert row[9]["payload"]["raw"] == {"steps": 1234}

@@ -1366,7 +1366,7 @@ class CalendarConnectorRuntime:
                 external_message_id=event_id,
                 source_channel=_CONNECTOR_CHANNEL,
                 sender_identity=organizer_email,
-                subject_or_preview=summary,
+                subject_or_preview=summary[:200],
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
                     "connector_rule",
                     decision.action,
@@ -1380,7 +1380,10 @@ class CalendarConnectorRuntime:
                     external_thread_id=None,
                     observed_at=observed_at,
                     sender_identity=organizer_email,
-                    raw=event,
+                    # Filtered-content privacy tier (bu-glbjx): content the
+                    # connector chose not to submit persists a bounded preview
+                    # only; the full raw payload is NOT retained.
+                    raw={},
                     normalized_text=normalized_text,
                 ),
             )
@@ -1400,7 +1403,7 @@ class CalendarConnectorRuntime:
                 external_message_id=event_id,
                 source_channel=_CONNECTOR_CHANNEL,
                 sender_identity=organizer_email,
-                subject_or_preview=summary,
+                subject_or_preview=summary[:200],
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
                     "global_rule",
                     global_decision.action,
@@ -1414,7 +1417,10 @@ class CalendarConnectorRuntime:
                     external_thread_id=None,
                     observed_at=observed_at,
                     sender_identity=organizer_email,
-                    raw=event,
+                    # Filtered-content privacy tier (bu-glbjx): content the
+                    # connector chose not to submit persists a bounded preview
+                    # only; the full raw payload is NOT retained.
+                    raw={},
                     normalized_text=normalized_text,
                 ),
             )
