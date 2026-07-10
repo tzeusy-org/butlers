@@ -85,3 +85,45 @@ Requires both prerequisites to be merged before implementation starts:
 - Snoozing radar alerts — a future follow-up; v1 shows issues until fixed.
 - A per-event "conflicts with" indicator in the event detail drawer — separate
   from the banner; not in this change.
+
+## Archive Note (partial archive, 2026-07-10, reconciliation bu-d287o)
+
+This change was archived after the **read/HTTP + FE** slice shipped, but the
+**butler-side scan tool and the LLM fix-proposal session did not ship**. The
+radar shipped **HTTP-only**: `GET /api/calendar/workspace/conflicts`
+(`src/butlers/api/routers/calendar_workspace.py`), the `query_calendar_conflicts`
+read-model (`src/butlers/api/read_models/calendar_workspace_v1.py`), the pure
+`detect_conflict_issues` detector (`src/butlers/core/temporal/conflicts.py`), and
+the FE radar banner + amber edge (`frontend/src/components/calendar/ConflictRadarBanner.tsx`,
+`CalendarWorkspacePage.tsx`, shipped under `bu-q8o90x`).
+
+To keep the authoritative specs true to `main`, the following delta content was
+**removed before archive** and is intentionally **not** reflected in
+`openspec/specs/`:
+
+- **`module-calendar` delta (entire file removed).** Its only content was a
+  `MODIFIED` block bumping the tool count from **22 → 23** and adding
+  `calendar_scan_conflicts` to the tool list. That MCP tool was **never
+  registered** — the calendar module registers **22 tools** on `main`
+  (`calendar_scan_conflicts` appears only in a code comment in `conflicts.py`).
+  The authoritative `openspec/specs/module-calendar/spec.md` "22 MCP tools total"
+  line is therefore left **unchanged**.
+- **`calendar-conflict-overcommitment-radar` capability delta — removed two
+  requirements** describing unshipped behavior:
+  - `Requirement: calendar_scan_conflicts MCP Tool` — the butler-side scan tool
+    is not registered.
+  - `Requirement: LLM Fix-Proposal Session` — no scheduled conflict-radar session
+    / cron job exists; no skill emits `calendar_propose_event` from a radar scan.
+
+The retained requirements (Forward-Window Conflict Scan Endpoint,
+ConflictScanResponse Model, FE Radar Banner, Amber Edge) all describe behavior
+verified present on `main`. The endpoint's `proposal_ids` field and the FE fix
+cards remain accurate: they read `pending` rows from the already-shipped
+`calendar_event_proposals` store and gracefully render an empty/informational
+state until a proposal producer runs (the FE "Fix card without proposal" scenario
+explicitly covers this).
+
+The `## What Changes` / `## Capabilities` narrative above still describes the full
+intended scope (including the scan tool and the LLM session) as historical
+record. When the scan tool and fix-proposal session ship, re-introduce that spec
+content — and the `22 → 23` tool-count bump — via a **new** OpenSpec change.

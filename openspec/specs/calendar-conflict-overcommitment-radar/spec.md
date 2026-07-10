@@ -1,15 +1,18 @@
-# Calendar Conflict & Overcommitment Radar
+# calendar-conflict-overcommitment-radar Specification
 
 ## Purpose
 
-The conflict radar proactively scans a forward calendar window for scheduling
-problems — event overlaps, back-to-back meeting density, and overloaded days —
-and proposes one-click fixes via the existing proposals lane. The user sees a
-quiet banner in the week/day view and confirms or declines each proposed fix;
-**nothing is ever silently written to the real calendar**.
+The conflict and overcommitment radar scans the forward calendar window at read
+time to detect scheduling problems — overlapping events, back-to-back density,
+and overloaded days — and surfaces them in the calendar workspace as a radar
+banner and amber-edged grid entries. The scan is a pure read: it runs off the
+projected `calendar_event_instances` store, makes no provider API call and no LLM
+call at request time, and fails open (degraded mode is silent). Detected issues
+carry any `pending` fix proposals from the shared `calendar_event_proposals`
+store so the UI can offer one-tap fixes, rendering an empty/informational state
+until a proposal producer runs.
 
-## ADDED Requirements
-
+## Requirements
 ### Requirement: [TARGET-STATE] Forward-Window Conflict Scan Endpoint
 
 The capability SHALL expose `GET /api/calendar/workspace/conflicts` that
@@ -110,74 +113,6 @@ accepted or dismissed proposals MUST NOT appear in this list.
 - **THEN** the matching `ConflictIssue` includes that proposal's UUID in `proposal_ids`
 - **AND** the proposal UUID is NOT included if its status is `accepted` or `dismissed`
 
-### Requirement: [TARGET-STATE] calendar_scan_conflicts MCP Tool
-
-The calendar module MUST register `calendar_scan_conflicts(start_at, end_at,
-back_to_back_gap_minutes=15, overloaded_day_hours=6.0)` as an MCP tool. It
-SHALL return a structured list of `ConflictIssue` objects (same shape as the API
-response). The tool MUST NOT call the provider API — it SHALL query only the
-synced DB tables. On any DB error it SHALL return
-`{"issues": [], "issues_available": false}` (fail-open). The LLM fix-proposal
-session MUST call this tool to read the issues list before emitting proposals.
-
-#### Scenario: LLM session calls `calendar_scan_conflicts`
-
-- **WHEN** the fix-proposal session calls
-  `calendar_scan_conflicts(start_at=..., end_at=...)`
-- **THEN** it receives a structured list of issues within the window
-- **AND** the tool makes no provider API call and no LLM call
-
-#### Scenario: Tool is fail-open on DB error
-
-- **WHEN** the DB query inside `calendar_scan_conflicts` fails
-- **THEN** the tool returns `{"issues": [], "issues_available": false}`
-- **AND** no exception is raised to the calling session
-
-### Requirement: [TARGET-STATE] LLM Fix-Proposal Session
-
-A butler scheduler job SHALL run a conflict-radar session over the configured
-forward window (default 7 days ahead) at the configured cadence (default every
-6 hours). The session MUST fire only when `calendar_scan_conflicts` returns at
-least one `warning`-severity issue; it MUST exit without emitting proposals when
-only `info`-severity issues exist.
-
-The session MUST:
-1. Call `calendar_scan_conflicts` to read the issue list.
-2. For each `overlap` issue: call `calendar_find_free_slots` to locate an
-   alternative slot, then call `calendar_propose_event` for the lower-priority or
-   tentative event, using the canonical overlap-pair id as `source_event_id`
-   (deterministic UUID5 of the sorted `entry_id` pair) for idempotency.
-3. For each `back_to_back` cluster: propose a 15-minute buffer block between the
-   densest adjacent pair.
-4. For each `overloaded_day`: propose declining or rescheduling the event with the
-   lowest priority signal (tentative preference, shortest attendee list) on that day.
-5. Emit at most one proposal per issue.
-
-The session MUST NEVER write directly to the user's real Google Calendar. All fix
-proposals SHALL go through `calendar_propose_event` → `pending` → human
-confirm/decline via the existing proposals accept/dismiss endpoints.
-
-#### Scenario: Proposal emitted for overlap issue
-
-- **WHEN** the session detects an overlap between a `confirmed` and a `tentative` event
-- **THEN** it proposes declining the tentative event via `calendar_propose_event`
-  with `source_event_id` derived from the canonical overlap-pair id
-- **AND** the proposal row has `status: "pending"` in `calendar_event_proposals`
-- **AND** the proposal is idempotent: re-running the session does not create a
-  second proposal for the same overlap pair
-
-#### Scenario: Session skipped when no warning issues
-
-- **WHEN** `calendar_scan_conflicts` returns zero `"warning"`-severity issues
-- **THEN** the session exits without emitting any proposals
-- **AND** no `calendar_propose_event` calls are made
-
-#### Scenario: Session finds no free slot for reschedule
-
-- **WHEN** `calendar_find_free_slots` returns no available slots for an overlap fix
-- **THEN** no proposal is emitted for that issue (rather than proposing an
-  impossible reschedule)
-
 ### Requirement: [TARGET-STATE] FE Radar Banner
 
 The week/day view SHALL fetch `GET /api/calendar/workspace/conflicts` for the
@@ -242,3 +177,4 @@ NOT be changed for this feature.
 
 - **WHEN** the conflicts endpoint returns `issues_available: false`
 - **THEN** no event blocks receive the amber-edge style
+

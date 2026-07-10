@@ -1241,3 +1241,202 @@ requests.
 - **THEN** the override is removed and the cluster collapses again under the
   active dedup rules
 
+### Requirement: Calendar Mutation Audit-Trail Read Endpoint
+
+`src/butlers/api/routers/calendar_workspace.py` SHALL expose a read-only endpoint
+`GET /api/calendar/workspace/audit` that returns the calendar mutation audit
+trail from the existing `calendar_action_log` table (written today by the calendar
+module's `_record_projection_action`). The endpoint SHALL NOT mutate any state and
+SHALL NOT call a provider. It surfaces each logged action with its status,
+type, payload summary, and the existing `source_butler` / `source_session_id`
+provenance columns (migration `core_076`) so the agent's own writes are
+self-explaining and deep-linkable to the originating session.
+
+#### Scenario: Audit feed returns logged mutations newest-first
+
+- **WHEN** `GET /api/calendar/workspace/audit` is called with an optional `limit`
+  (and optional `offset`/`butler` filters)
+- **THEN** rows are read from `calendar_action_log` fanned out across
+  `butlers_with_module("calendar")` and returned ordered by `created_at DESC`
+- **AND** each row carries its `action_id`, `action_type` (e.g.
+  `"workspace_user_update"`), `action_status` (one of `applied`, `pending`,
+  `failed`, `noop`), `request_id`, a payload summary, `error` (when present), and
+  `created_at`/`applied_at` timestamps
+- **AND** the response uses the standard `ApiResponse` envelope and performs no
+  provider or projection write
+
+#### Scenario: Audit rows surface authorship provenance
+
+- **WHEN** an audit row references an event present in `calendar_events`
+- **THEN** the row includes `source_butler` and `source_session_id` joined from
+  `calendar_events` (the existing `core_076` columns) via the row's `event_id`
+- **AND** when no joined event exists (e.g. a delete whose projection row is gone,
+  or a `noop`/`failed` action), `source_butler` falls back to the row's owning
+  butler and `source_session_id` is `null`
+- **AND** the provenance fields let an Activity tab deep-link the row to the
+  originating session log
+
+#### Scenario: UnifiedCalendarEntry exposes authorship for deep-linking
+
+- **WHEN** a calendar workspace entry is returned by the read surface
+- **THEN** the entry exposes `source_butler` and `source_session_id` (sourced from
+  the existing `calendar_events.source_butler` / `source_session_id` columns)
+- **AND** these fields back the Activity-tab deep-link from an event to the
+  session that created or last mutated it
+
+#### Scenario: Empty audit log returns an empty feed
+
+- **WHEN** `GET /api/calendar/workspace/audit` is called and no
+  `calendar_action_log` rows exist (or the table is absent in a deployment)
+- **THEN** the response is HTTP 200 with an empty list (fail-open), not an error
+
+### Requirement: Calendar Mutation Undo Endpoint
+
+`src/butlers/api/routers/calendar_workspace.py` SHALL expose
+`POST /api/calendar/workspace/undo/{action_id}` that reverses a single previously
+logged calendar mutation. The endpoint SHALL synthesize the inverse mutation from
+the logged `calendar_action_log` row (`action_payload` plus the captured
+pre-mutation state in `action_result`) and dispatch it through the **existing**
+calendar MCP tools with a **fresh `request_id`**; it SHALL NOT introduce a new
+MCP tool and SHALL NOT reverse an action that was never applied, was already
+undone, or whose pre-state is unavailable.
+
+#### Scenario: Undo an update reverse-applies the captured pre-state
+
+- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` is called for an
+  `applied` `workspace_user_update` row whose `action_result` carries the
+  pre-mutation event state
+- **THEN** an inverse `calendar_update_event` is dispatched that restores the
+  event's pre-state fields (title, start/end, timezone, location, description,
+  attendees, recurrence, calendar id) with a freshly generated `request_id`
+- **AND** the undo dispatch is itself recorded in `calendar_action_log` (so it is
+  idempotent and appears in the audit trail)
+- **AND** the response reports the undone `action_id`, the inverse tool invoked,
+  and the new `request_id`
+
+#### Scenario: Undo a delete recreates the event from the pre-image
+
+- **WHEN** the undone row is an `applied` `workspace_user_delete` whose
+  `action_result` carries the pre-deletion event state
+- **THEN** an inverse `calendar_create_event` is dispatched from the captured
+  pre-image with a fresh `request_id`, recreating the event on its home calendar
+
+#### Scenario: Undo a create deletes the created event
+
+- **WHEN** the undone row is an `applied` `workspace_user_create`
+- **THEN** an inverse `calendar_delete_event` is dispatched against the created
+  event id (from the row's `origin_ref`/`action_result`) with a fresh `request_id`
+
+#### Scenario: Undo of a non-applied action fails fast
+
+- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` targets a row whose
+  `action_status` is `pending`, `failed`, or `noop`
+- **THEN** the endpoint returns a fail-fast error (HTTP 409) naming the row's
+  status and stating that only an `applied` mutation can be undone
+- **AND** no inverse mutation is dispatched
+
+#### Scenario: Undo of a missing or expired pre-state fails fast with diagnostics
+
+- **WHEN** the targeted row exists and is `applied` but its `action_result` lacks
+  the captured pre-mutation state (e.g. it was logged before pre-state capture, or
+  the event no longer exists to restore against)
+- **THEN** the endpoint returns a fail-fast error (HTTP 422) whose detail names
+  the `action_id`, the `action_type`, and the reason the inverse could not be
+  reconstructed (missing/expired pre-state)
+- **AND** no inverse mutation is dispatched
+- **BECAUSE** silently guessing an inverse on a single-owner calendar could
+  materialize a wrong event or a wrong restore
+
+#### Scenario: Undo of an unknown action id returns not found
+
+- **WHEN** `{action_id}` does not match any `calendar_action_log` row
+- **THEN** the endpoint returns HTTP 404 and dispatches no mutation
+
+#### Scenario: Repeated undo of the same action is rejected
+
+- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` is called for an action
+  whose inverse mutation has already been dispatched and recorded
+- **THEN** the endpoint fails fast (HTTP 409) reporting the action was already
+  undone, rather than dispatching a second inverse
+
+### Requirement: Calendar Workspace Single-Entry Lookup
+
+The dashboard API SHALL expose `GET /api/calendar/workspace/entries/{entry_id}`,
+a read-only single-entry lookup that resolves `entry_id` against the indexed
+`calendar_event_instances.id` and returns the `UnifiedCalendarEntry`-shaped
+record (including `source_butler` / `source_session_id` provenance) in the
+standard `ApiResponse` envelope. The lookup fans out only across
+`butlers_with_module('calendar')` and performs no mutation and no migration.
+
+#### Scenario: Existing entry returned
+
+- **WHEN** `GET /api/calendar/workspace/entries/{entry_id}` is called with an
+  `entry_id` that maps to a known `calendar_event_instances.id`
+- **THEN** the full `UnifiedCalendarEntry` for that instance is returned in the
+  `ApiResponse` envelope, including its `source_butler`/`source_session_id`
+  provenance fields
+
+#### Scenario: Unknown entry id
+
+- **WHEN** the requested `entry_id` does not resolve to any instance in a
+  calendar-module schema
+- **THEN** the endpoint returns HTTP 404 (FastAPI error envelope,
+  `{"detail": "Entry {entry_id} not found"}`) rather than an empty 200 or a 500
+
+### Requirement: Calendar Butler-Event Recurrence Preview
+
+The dashboard API SHALL expose `POST /api/calendar/workspace/butler-events/preview`,
+which dry-runs the existing `dateutil` RRULE / `croniter` expansion for a draft
+butler event and returns the projected occurrence datetimes over the existing
+90-day projection window, applying the existing "+N more" capping sentinel. The
+endpoint MUST persist nothing and MUST NOT spawn an LLM session.
+
+#### Scenario: Preview of a valid recurrence
+
+- **WHEN** `POST /api/calendar/workspace/butler-events/preview` is called with a
+  valid `rrule` (or `cron`) draft and optional `until_at`/`timezone`
+- **THEN** the projected occurrence datetimes within the 90-day window are
+  returned with the "+N more" capping sentinel when the count exceeds the cap
+- **AND** no row is written to any calendar table and no event is created
+
+#### Scenario: Lossy conversion surfaced
+
+- **WHEN** the draft uses a recurrence construct that the engine cannot represent
+  exactly (e.g. a weekly `BYDAY` that degrades)
+- **THEN** the projected dates are still returned **AND** the response `notes`
+  field records the lossy conversion so the user is warned before saving
+
+#### Scenario: Invalid recurrence fails fast
+
+- **WHEN** the draft contains an unparseable `rrule` or `cron` expression
+- **THEN** the endpoint returns HTTP 422 carrying the parse error detail and
+  persists nothing, rather than returning a partial or empty success
+
+### Requirement: Calendar Reminder Dismiss and Snooze
+
+The workspace butler-events mutation surface SHALL accept the `action` values
+`dismiss` and `snooze` for due reminders and butler events. `dismiss` SHALL
+dispatch the existing `reminder_dismiss` MCP tool; `snooze` SHALL update the
+reminder/butler-event `due_at` via the existing butler-event update path. Neither
+action introduces a new table or a new MCP tool, and both SHALL preserve the
+existing soft-mutation response envelope (`status` / `persisted`).
+
+#### Scenario: Dismiss a due reminder
+
+- **WHEN** the butler-events mutation endpoint is called with `action="dismiss"`
+  for a known reminder/butler-event id
+- **THEN** the existing `reminder_dismiss` tool is dispatched and the reminder is
+  marked dismissed, returned in the soft-mutation envelope
+
+#### Scenario: Snooze moves the due time
+
+- **WHEN** the endpoint is called with `action="snooze"` and a new `due_at` for a
+  known id
+- **THEN** the reminder/butler-event `due_at` is updated via the existing update
+  path and the change is returned in the soft-mutation envelope
+
+#### Scenario: Unknown target id
+
+- **WHEN** `dismiss` or `snooze` targets an id that does not exist
+- **THEN** the endpoint returns HTTP 404 rather than silently succeeding
+

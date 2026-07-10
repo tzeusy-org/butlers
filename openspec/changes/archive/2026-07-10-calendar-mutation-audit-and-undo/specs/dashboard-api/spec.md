@@ -14,7 +14,7 @@ self-explaining and deep-linkable to the originating session.
 #### Scenario: Audit feed returns logged mutations newest-first
 
 - **WHEN** `GET /api/calendar/workspace/audit` is called with an optional `limit`
-  (and optional `cursor`/`butler` filters)
+  (and optional `offset`/`butler` filters)
 - **THEN** rows are read from `calendar_action_log` fanned out across
   `butlers_with_module("calendar")` and returned ordered by `created_at DESC`
 - **AND** each row carries its `action_id`, `action_type` (e.g.

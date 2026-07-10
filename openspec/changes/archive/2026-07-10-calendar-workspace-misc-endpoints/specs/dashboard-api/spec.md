@@ -21,8 +21,8 @@ standard `ApiResponse` envelope. The lookup fans out only across
 
 - **WHEN** the requested `entry_id` does not resolve to any instance in a
   calendar-module schema
-- **THEN** the endpoint returns HTTP 404 with `{"status": "not_found", "entry": null}`
-  rather than an empty 200 or a 500
+- **THEN** the endpoint returns HTTP 404 (FastAPI error envelope,
+  `{"detail": "Entry {entry_id} not found"}`) rather than an empty 200 or a 500
 
 ### Requirement: Calendar Butler-Event Recurrence Preview
 
