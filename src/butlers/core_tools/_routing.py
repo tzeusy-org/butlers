@@ -21,7 +21,7 @@ from opentelemetry.context import Context as OtelContext
 from opentelemetry.trace import Link as OtelLink
 from pydantic import ValidationError
 
-from butlers.core.model_routing import Complexity
+from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.core.route_inbox import (
     route_inbox_insert,
     route_inbox_mark_errored,
@@ -496,11 +496,20 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 _route_sender_entity_id = _raw_entity_id.strip()
 
             # Extract complexity from envelope input; default to WORKHORSE on missing/invalid.
-            _raw_route_complexity = parsed_route.input.complexity
-            try:
-                _route_complexity = Complexity(_raw_route_complexity)
-            except ValueError:
-                _route_complexity = Complexity.WORKHORSE
+            # Delegate to the shared tier-normalization idiom (coerce_complexity_tier,
+            # PR #3000) rather than a raw Complexity() construction: retired vocabulary
+            # (trivial/high/extra_high/discretion/self_healing) remaps to its canonical
+            # successor instead of collapsing to WORKHORSE, and None/junk degrades to
+            # WORKHORSE. strict=False because this fail-open routing hot path must never
+            # crash a route over a cosmetic tier value.
+            #
+            # Hot-path note: RouteInputV1._validate_complexity already restricts
+            # input.complexity to the six canonical tiers at envelope-parse time, so
+            # retired/unrecognized values normally cannot reach here — the coerce call
+            # therefore does not log a per-envelope warning in normal operation. This is
+            # defense-in-depth convergence that stays correct if that upstream guard ever
+            # loosens.
+            _route_complexity = coerce_complexity_tier(parsed_route.input.complexity, strict=False)
 
             async def _process_route(
                 _inbox_id: uuid.UUID,

@@ -19,7 +19,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.daemon import ButlerDaemon
+from butlers.tools.switchboard.routing.contracts import parse_route_envelope
 
 pytestmark = pytest.mark.unit
 
@@ -352,3 +354,123 @@ async def test_crash_recovery_on_startup(tmp_path: Path) -> None:
         daemon2 = ButlerDaemon(butler_dir2)
         await daemon2.start()
     assert daemon2._route_inbox_recovery_task is None
+
+
+# ---------------------------------------------------------------------------
+# Complexity coercion on the route.execute accept path (bu-kereb)
+#
+# The accept path normalizes ``input.complexity`` via the shared
+# ``coerce_complexity_tier(strict=False)`` idiom (converging with the schedules
+# API read path, PR #3049, and the scheduler dispatch path, bu-lq7m4) rather
+# than a raw ``Complexity()`` construction, then forwards the resulting
+# ``Complexity`` enum to ``spawner.trigger(complexity=...)``.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "envelope_complexity, expected",
+    [
+        ("reasoning", Complexity.REASONING),
+        ("workhorse", Complexity.WORKHORSE),
+        ("cheap", Complexity.CHEAP),
+        ("specialty", Complexity.SPECIALTY),
+        ("local", Complexity.LOCAL),
+        ("legacy", Complexity.LEGACY),
+        (None, Complexity.WORKHORSE),  # missing key -> canonical default
+    ],
+)
+async def test_accept_path_coerces_complexity_and_plumbs_enum_to_trigger(
+    tmp_path: Path, envelope_complexity: str | None, expected: Complexity
+) -> None:
+    """Every canonical envelope complexity resolves to its ``Complexity`` member
+    and is forwarded to ``spawner.trigger(complexity=...)`` as the enum (not the
+    raw string). Missing complexity defaults to WORKHORSE.
+
+    Only canonical tiers are exercised here because the envelope validator
+    (``RouteInputV1``) rejects retired vocabulary before it can reach the accept
+    path — see ``test_envelope_validator_rejects_retired_complexity_tiers``.
+    """
+    patches = _patch_infra("health")
+    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    assert route_execute_fn is not None
+
+    input_payload: dict[str, Any] = {"prompt": "Run health check."}
+    if envelope_complexity is not None:
+        input_payload["complexity"] = envelope_complexity
+
+    trigger_mock = _make_trigger_mock()
+    daemon.spawner.trigger = trigger_mock
+    with (
+        patch(
+            "butlers.core_tools._routing.route_inbox_insert",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ),
+        patch("butlers.core_tools._routing.route_inbox_mark_processing", new_callable=AsyncMock),
+        patch("butlers.core_tools._routing.route_inbox_mark_processed", new_callable=AsyncMock),
+    ):
+        await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(),
+            input=input_payload,
+        )
+        await asyncio.sleep(0.05)
+
+    trigger_mock.assert_awaited()
+    forwarded = trigger_mock.call_args.kwargs["complexity"]
+    assert forwarded == expected
+    assert isinstance(forwarded, Complexity)
+
+
+@pytest.mark.parametrize(
+    "retired_tier",
+    ["trivial", "medium", "high", "extra_high", "discretion", "self_healing"],
+)
+def test_envelope_validator_rejects_retired_complexity_tiers(retired_tier: str) -> None:
+    """The route envelope validator refuses every retired pre-core_092 tier, so
+    retired vocabulary can never reach the accept path's coerce call.
+
+    This is why delegating to ``coerce_complexity_tier(strict=False)`` on this
+    hot path does NOT emit a per-envelope deprecation warning in normal
+    operation: the retired-tier remap branch is unreachable through a parsed
+    envelope. The coerce call is defense-in-depth that stays correct if this
+    upstream guard is ever loosened.
+    """
+    envelope = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(),
+        "input": {"prompt": "hi", "complexity": retired_tier},
+    }
+    with pytest.raises(Exception, match="is not valid"):
+        parse_route_envelope(envelope)
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        # Retired pre-core_092 vocabulary -> canonical successor (the contract
+        # the accept path converges onto; kept here as a guard in case the
+        # envelope validator is ever relaxed to admit legacy aliases).
+        ("trivial", Complexity.CHEAP),
+        ("medium", Complexity.WORKHORSE),
+        ("high", Complexity.REASONING),
+        ("extra_high", Complexity.REASONING),
+        ("discretion", Complexity.SPECIALTY),
+        ("self_healing", Complexity.SPECIALTY),
+        # Canonical values pass through unchanged.
+        ("reasoning", Complexity.REASONING),
+        ("workhorse", Complexity.WORKHORSE),
+        # Missing / junk degrade to WORKHORSE (fail-open on the routing hot path).
+        (None, Complexity.WORKHORSE),
+        ("", Complexity.WORKHORSE),
+        ("bogus-tier", Complexity.WORKHORSE),
+    ],
+)
+def test_accept_path_complexity_coercion_contract(value: str | None, expected: Complexity) -> None:
+    """Pin the ``coerce_complexity_tier(strict=False)`` contract the accept path
+    now delegates to: retired -> canonical, canonical pass-through, junk/None ->
+    WORKHORSE, always returning a ``Complexity`` enum."""
+    result = coerce_complexity_tier(value, strict=False)
+    assert result == expected
+    assert isinstance(result, Complexity)
