@@ -1989,11 +1989,17 @@ class TestEntityActivityBinning:
 
     async def test_bins_only_returns_dense_90_day_series(self):
         """bins_only=true returns exactly 90 daily bins including zero days."""
-        # Activity on 3 distinct days within the window.
+        # Anchor seeds to the binning clock (UTC "today" at midday) rather than a
+        # fixed past timestamp: the endpoint bins over [now-89d, now] in UTC, so a
+        # fixed anchor drifts out of the window as wall-clock time advances (the
+        # -40d seed fell outside the 90d window → 2 nonzero bins, main-red
+        # bu-bz39v). Midday UTC keeps all three on distinct UTC daily bins for any
+        # wall-clock date or local timezone.
+        anchor = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
         rows = [
-            self._make_fact_row(last_seen=_NOW),
-            self._make_fact_row(last_seen=_NOW - timedelta(days=5)),
-            self._make_fact_row(last_seen=_NOW - timedelta(days=40)),
+            self._make_fact_row(last_seen=anchor),
+            self._make_fact_row(last_seen=anchor - timedelta(days=5)),
+            self._make_fact_row(last_seen=anchor - timedelta(days=40)),
         ]
         app, _ = self._make_app(fact_rows=rows, chronicler_episodes=[])
         resp = await _get(app, _ACTIVITY_PATH, bins="daily", window="90d", bins_only=True)
