@@ -2814,6 +2814,51 @@ class MessagePipeline:
                                 self._pool,
                                 rule_id=_spot_check_matched_rule_id,
                             )
+                    elif (
+                        message_inbox_id
+                        and _triage_spot_check
+                        and _verdict_matched_rule_id
+                        and spawn_result is not None
+                        and _triage_decision in ("skip", "metadata_only")
+                    ):
+                        # Spot-check counterpart verdict for a suppressed-bypass
+                        # skip/metadata_only rule (bu-wa3nb). A spot-checked
+                        # skip/metadata_only rule whose fresh classification
+                        # AGREES resolves to *no* route target — the LLM
+                        # effectively does nothing, so the route_to write loop
+                        # above records no counterpart row. Without this branch
+                        # the rolling agreement scorer (rule_demotion.py) can
+                        # only ever observe disagreements (a spot-checked skip
+                        # rule that the LLM disagrees with DOES call
+                        # route_to_butler and lands above), systematically
+                        # understating the agreement denominator and biasing
+                        # toward false demotion once such rules are promoted.
+                        #
+                        # The LLM's no-route outcome is consistent with the
+                        # rule's own suppressed decision, so record that decision
+                        # (skip / metadata_only, target None) as the spot_check
+                        # verdict — matching how compute_agreement compares the
+                        # row against the rule's parsed action. Honesty guard:
+                        # only reached when the classification actually ran
+                        # (spawn_result is not None and no spawn exception, which
+                        # would have jumped to the outer handler); a route_to
+                        # spot-check that produced no route is genuinely
+                        # undeterminable and is intentionally NOT logged here.
+                        await record_routing_verdict(
+                            self._pool,
+                            ingestion_event_id=message_inbox_id,
+                            sender_identity=source_metadata.get("identity"),
+                            source_channel=source,
+                            verdict_source="spot_check",
+                            verdict_action=_triage_decision,
+                            verdict_target=None,
+                            matched_rule_id=_verdict_matched_rule_id,
+                            session_id=getattr(spawn_result, "session_id", None),
+                        )
+                        await maybe_create_demotion_suggestion(
+                            self._pool,
+                            rule_id=_verdict_matched_rule_id,
+                        )
 
                     # Fallback: LLM called no tools → infer from summary text, else general.
                     if not acked and source == "dashboard":

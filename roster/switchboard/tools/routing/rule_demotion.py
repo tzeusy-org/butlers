@@ -43,22 +43,32 @@ window — it can neither count as agreement nor disagreement. This satisfies
 the "ran-and-agreed / ran-and-disagreed / did-not-run" three-way distinction
 without any extra bookkeeping.
 
-Known instrumentation gap (pre-existing, not introduced by this bead): bead 1
-(sw_019) only ever writes ``verdict_source='llm'`` rows for the "LLM called
-route_to_butler" outcome (``pipeline.py``'s comment there: the no-tool-call
+Spot-check counterpart verdicts for skip/metadata_only rules (bu-wa3nb): the
+ordinary ``verdict_source='llm'`` mining path (bead 1, sw_019) only ever
+writes rows for the "LLM called route_to_butler" outcome — the no-tool-call
 fallback is "deliberately NOT logged... would pollute promotion mining with
-noise"). One consequence for demotion: a spot-checked ``skip``/
-``metadata_only`` promoted rule whose fresh classification *agrees* (the LLM
-effectively does nothing) produces no counterpart ``spot_check`` row, so
-agreement for those rule types is under-counted relative to disagreement (a
-spot-checked ``skip`` rule where the LLM *does* call ``route_to_butler``
-always produces a row). In practice this is currently moot: the promotion
-trigger (bead 3) can only ever mine ``route_to`` suggestions today, because
-that is the only verdict shape bead 1 records for ``verdict_source='llm'``
-in the first place — so no ``skip``/``metadata_only`` promoted rule can
-exist yet to be spot-checked. Flagged here for whoever eventually instruments
-skip/metadata_only LLM-equivalent verdicts (would need bead 1's fallback
-path reconsidered, a separate decision from this bead's scope).
+noise". That asymmetry would once have biased *demotion* for the other rule
+shapes: a spot-checked ``skip``/``metadata_only`` promoted rule whose fresh
+classification *agrees* (the LLM effectively does nothing) resolves to no
+route target, so the route_to write loop records no counterpart row, while a
+spot-checked ``skip`` rule where the LLM *disagrees* and *does* call
+``route_to_butler`` always produces one — agreement for those rule types
+would be under-counted relative to disagreement. ``pipeline.py`` now closes
+this specifically for the ``verdict_source='spot_check'`` path: when a
+suppressed-bypass spot-check of a ``skip``/``metadata_only`` rule produces no
+route (the classification ran and the LLM agreed the message should not be
+routed), it records a ``spot_check`` row carrying the rule's own suppressed
+decision (``verdict_action='skip'``/``'metadata_only'``, ``verdict_target``
+None), so :func:`compute_agreement` counts it as an agreement sample instead
+of the window seeing disagreements only. A route_to spot-check that produced
+no route stays unlogged (genuinely undeterminable, not an agreement), and a
+did-not-run spot-check (spawn error/timeout) still writes nothing, preserving
+the honesty doctrine above. This only completes the *demotion* (spot_check)
+ledger; the general ``verdict_source='llm'`` promotion-mining fallback is
+untouched, and bead 3's trigger still mines only ``route_to`` suggestions —
+so no ``skip``/``metadata_only`` rule is promoted or demoted yet, but the
+spot-check agreement data is now complete for the day one is (that promotion
+decision remains bu-4pq0s's, out of this fix's scope).
 
 [decision] Minimum sample floor before evaluating demotion: the spec says
 "a rolling per-rule agreement score over the most recent 20 spot-checks" but

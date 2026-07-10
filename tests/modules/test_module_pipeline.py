@@ -617,6 +617,12 @@ class TestMessagePipelineDemotionSpotCheck:
     the fresh verdict as ``verdict_source='spot_check'`` (not ``'llm'``) with
     ``matched_rule_id`` set to the sampled rule, and trigger the rolling
     agreement re-score.
+
+    For a spot-checked ``skip``/``metadata_only`` rule the LLM *agreeing*
+    resolves to no route target, so the route_to write loop records nothing;
+    a dedicated counterpart branch (bu-wa3nb) records that no-route agreement
+    as a ``spot_check`` row carrying the rule's own suppressed decision so the
+    agreement scorer sees agreements, not just disagreements.
     """
 
     @patch(
@@ -740,8 +746,11 @@ class TestMessagePipelineDemotionSpotCheck:
         assert kwargs["verdict_target"] == "general"
         assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
 
-    async def test_spot_check_skip_suppresses_bypass(self):
-        """A spot-checked skip rule must not take the early skip return."""
+    async def test_spot_check_skip_agreement_records_skip_counterpart_verdict(self):
+        """A spot-checked skip rule the LLM AGREES with (no route) must not
+        take the early skip return, but MUST record a ``spot_check`` skip
+        counterpart row (bu-wa3nb) so the agreement scorer sees the agreement,
+        then trigger the demotion re-score."""
 
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(output="Nothing routable here.", tool_calls=[])
@@ -779,12 +788,166 @@ class TestMessagePipelineDemotionSpotCheck:
                 message_inbox_id="00000000-0000-0000-0000-000000000012",
             )
 
-        # The skip bypass's early return (target_butler="skipped") must not
-        # fire; it falls through to the no-tool-calls heuristic fallback
-        # instead, which is deliberately not logged as mining evidence (see
-        # TestMessagePipelineRoutingVerdictLog.
-        # test_llm_no_tool_calls_fallback_does_not_record_llm_verdict).
+        # The skip bypass's early return (target_butler="skipped") must not fire.
         assert result.target_butler != "skipped"
+        mock_record.assert_awaited_once()
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["verdict_source"] == "spot_check"
+        assert kwargs["verdict_action"] == "skip"
+        assert kwargs["verdict_target"] is None
+        assert kwargs["matched_rule_id"] == "22222222-2222-2222-2222-222222222222"
+        mock_demotion.assert_awaited_once()
+        assert mock_demotion.await_args.kwargs["rule_id"] == "22222222-2222-2222-2222-222222222222"
+
+    async def test_spot_check_metadata_only_agreement_records_counterpart_verdict(self):
+        """Same as the skip counterpart, for a spot-checked metadata_only
+        rule the LLM agrees with -> ``verdict_action='metadata_only'``."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output="Metadata only.", tool_calls=[])
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.classify._load_available_butlers",
+                new_callable=AsyncMock,
+                return_value=_MOCK_BUTLERS,
+            ),
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+            patch(
+                "butlers.modules.pipeline.maybe_create_demotion_suggestion",
+                new_callable=AsyncMock,
+            ) as mock_demotion,
+        ):
+            result = await pipeline.process(
+                "receipt attachment",
+                tool_args={
+                    "source_channel": "email",
+                    "request_context": {
+                        "triage_decision": "metadata_only",
+                        "triage_rule_id": "33333333-3333-3333-3333-333333333333",
+                        "triage_rule_type": "header_condition",
+                        "triage_spot_check": True,
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000014",
+            )
+
+        assert result.target_butler != "metadata_only"
+        mock_record.assert_awaited_once()
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["verdict_source"] == "spot_check"
+        assert kwargs["verdict_action"] == "metadata_only"
+        assert kwargs["verdict_target"] is None
+        assert kwargs["matched_rule_id"] == "33333333-3333-3333-3333-333333333333"
+        mock_demotion.assert_awaited_once()
+
+    async def test_spot_check_skip_disagreement_records_route_to_not_skip(self):
+        """A spot-checked skip rule the LLM DISAGREES with (calls
+        route_to_butler) records the route_to disagreement row exactly as
+        before — the skip counterpart branch must NOT also fire."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to finance.",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "finance"},
+                        "result": {"status": "ok", "butler": "finance"},
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.classify._load_available_butlers",
+                new_callable=AsyncMock,
+                return_value=_MOCK_BUTLERS,
+            ),
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+            patch(
+                "butlers.modules.pipeline.maybe_create_demotion_suggestion",
+                new_callable=AsyncMock,
+            ) as mock_demotion,
+        ):
+            await pipeline.process(
+                "actually a finance email",
+                tool_args={
+                    "source_channel": "email",
+                    "request_context": {
+                        "triage_decision": "skip",
+                        "triage_rule_id": "22222222-2222-2222-2222-222222222222",
+                        "triage_rule_type": "header_condition",
+                        "triage_spot_check": True,
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000015",
+            )
+
+        # Exactly one row: the route_to disagreement — never a second skip row.
+        mock_record.assert_awaited_once()
+        kwargs = mock_record.await_args.kwargs
+        assert kwargs["verdict_source"] == "spot_check"
+        assert kwargs["verdict_action"] == "route_to"
+        assert kwargs["verdict_target"] == "finance"
+        mock_demotion.assert_awaited_once()
+
+    async def test_spot_check_skip_did_not_run_records_nothing(self):
+        """Honesty doctrine: a spot-check whose classification never produced
+        a result (dispatch returns None -> spawn error/timeout equivalent)
+        must record no counterpart row, so it counts as neither agreement nor
+        disagreement in the rolling window."""
+
+        async def mock_dispatch(**kwargs):
+            return None
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+
+        with (
+            patch(
+                "butlers.tools.switchboard.routing.classify._load_available_butlers",
+                new_callable=AsyncMock,
+                return_value=_MOCK_BUTLERS,
+            ),
+            patch(
+                "butlers.modules.pipeline.record_routing_verdict",
+                new_callable=AsyncMock,
+            ) as mock_record,
+            patch(
+                "butlers.modules.pipeline.maybe_create_demotion_suggestion",
+                new_callable=AsyncMock,
+            ) as mock_demotion,
+        ):
+            await pipeline.process(
+                "bulk mail",
+                tool_args={
+                    "source_channel": "email",
+                    "request_context": {
+                        "triage_decision": "skip",
+                        "triage_rule_id": "22222222-2222-2222-2222-222222222222",
+                        "triage_rule_type": "header_condition",
+                        "triage_spot_check": True,
+                    },
+                },
+                message_inbox_id="00000000-0000-0000-0000-000000000016",
+            )
+
         mock_record.assert_not_awaited()
         mock_demotion.assert_not_awaited()
 
