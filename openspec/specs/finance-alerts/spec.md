@@ -2,9 +2,7 @@
 
 ## Purpose
 Configurable alert system -- large transaction alerts, subscription price change detection, bill reminders from historical patterns, and automated periodic spending summaries. Scheduled intelligence (anomaly, bill, budget, and monthly-digest detection) is delivered as proactive insight candidates through the switchboard insight broker (dedup/cooldown/quiet-hours/owner-verbosity), not via direct `notify()` calls from prompt-mode cron tasks (bu-rvz2o, PR #2991).
-
 ## Requirements
-
 ### Requirement: Alert Configuration
 The system SHALL allow configuring financial alert preferences stored as memory facts.
 
@@ -80,14 +78,19 @@ The system SHALL generate periodic financial summaries incorporating intelligenc
 - **WHEN** the `monthly-finance-digest` job (`0 9 1 * *`, `run_monthly_finance_digest`) fires on the 1st of the month
 - **THEN** it SHALL compose and propose a single `monthly-finance-digest` insight candidate (priority 55, 25-day cooldown, dedup key `finance:monthly-digest:{YYYY-MM}`) covering the prior calendar month
 - **AND** the message SHALL include: total spend, the top 3 spending categories by amount, budget status (categories not `on_track`, or "all categories on track"), and a subscription audit summary (active subscription count, projected annual cost, and untracked-pattern count if any)
+- **AND** the message SHALL additionally include a month-over-month trend segment when prior-month data is available (see "Month-over-month trend content" below)
 - **AND** this merges what were previously two separate always-fire tasks (`monthly-spending-summary` and `subscription-audit-monthly`) whose subscription-audit content was duplicated across both
 - **AND** the net-worth-snapshot reminder and outstanding-obligations bullets from the old `monthly-spending-summary` task were dropped as low-value/redundant (disclosed in PR #2991)
 - **AND** delivery is subject to the owner's insight verbosity/budget like any other candidate — it is no longer an unconditional send
 
-#### Scenario: Month-over-month trend content — pending decision (bu-7hogl)
-- The old `monthly-spending-summary` task additionally reported a "notable changes" bullet: categories with a >20% month-over-month swing vs. two months prior (including categories that newly appeared or disappeared).
-- **`monthly-finance-digest` does not currently reproduce this month-over-month trend content.** Whether to restore it (e.g. as an additional bullet or a separate candidate) or formally drop the requirement is an open decision tracked in bu-7hogl (discovered during PR #2991 review; unlike the other drops above, this one was not disclosed in the PR body).
-- This scenario intentionally does NOT assert a requirement either way pending that decision — do not restore or re-delete this content based on this spec alone; resolve via bu-7hogl first.
+#### Scenario: Month-over-month trend content
+- **WHEN** the `monthly-finance-digest` job composes its candidate (the "notable changes" trend restored by the bu-7hogl RESTORE decision, shipped in PR #3024)
+- **THEN** it SHALL append a month-over-month trend segment comparing the covered month against the immediately preceding calendar month, aggregated per debit category (`_month_over_month_trend`)
+- **AND** the segment SHALL state the overall total-spend direction (`up`, `down`, or `flat`) and the absolute percentage change versus the prior month (labeled `YYYY-MM`)
+- **AND** it SHALL list "notable changes": each debit category whose spend swings by more than 20% month-over-month (formatted `{category} {+/-}{pct}%`), each category that newly appeared this month (`{category} (new)`), and each category that had prior-month spend but none this month (`{category} (no spend)`)
+- **AND** notable changes SHALL be ordered by the absolute size of the swing (largest first) and capped at 5, with any remainder summarized as `(+N more)`
+- **AND** when there is insufficient prior-month data to compute a meaningful comparison (no prior-month debit spend), the trend bullet SHALL be omitted entirely rather than shown empty
+- **AND** a failure to compute the trend SHALL never block the digest — the digest is proposed without the trend segment (graceful degradation)
 
 #### Scenario: Budget thresholds via the daily insight scan
 - **WHEN** the `insight-scan` job (`0 7 * * *`) evaluates budget thresholds
@@ -131,3 +134,4 @@ The finance butler SHALL register deterministic, job-mode (not prompt-mode) sche
 - **WHEN** enumerating the finance butler's schedules
 - **THEN** the old weekly `budget-status-check` (`0 9 * * 1`) and weekly `subscription-renewal-alerts` (`20 21 * * 0`) prompt-mode tasks SHALL NOT appear as separate schedules
 - **AND** their behavior SHALL instead be covered by the daily `insight-scan` job's budget-threshold and subscription-renewal/price-change steps respectively
+
