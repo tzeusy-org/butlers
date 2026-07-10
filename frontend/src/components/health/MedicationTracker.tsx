@@ -47,8 +47,9 @@ import { Row } from "@/components/ui/Row";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StateDot, type AnyDotState } from "@/components/ui/StateDot";
 import { Time } from "@/components/ui/time";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { Voice } from "@/components/ui/Voice";
-import { parseScheduleTime } from "@/lib/medication-schedule";
+import { computeNextDoses } from "@/lib/medication-schedule";
 import { cn } from "@/lib/utils";
 import {
   useDeleteMedication,
@@ -335,56 +336,15 @@ function MedicationRow({
 
 // ---------------------------------------------------------------------------
 // Next doses — right-rail of upcoming scheduled doses across active meds
+//
+// Owner-authored schedule times are wall-clock times in the OWNER's timezone,
+// so `computeNextDoses` reads "now" in that zone (via useTimezone), never the
+// viewer's host clock. See medication-schedule.ts for the rationale.
 // ---------------------------------------------------------------------------
 
-interface NextDose {
-  medicationId: string;
-  name: string;
-  dosage: string;
-  /** Minutes-from-now until the next scheduled time (for sorting). */
-  minutesAway: number;
-  /** "HH:MM" scheduled time. */
-  time: string;
-  /** True when the soonest occurrence is tomorrow. */
-  tomorrow: boolean;
-}
-
-function computeNextDoses(medications: Medication[]): NextDose[] {
-  const now = new Date();
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  const next: NextDose[] = [];
-
-  for (const med of medications) {
-    if (!med.active) continue;
-    let soonest: { minutesAway: number; minutesOfDay: number; tomorrow: boolean } | null = null;
-    for (const entry of med.schedule ?? []) {
-      const minutesOfDay = parseScheduleTime(entry);
-      if (minutesOfDay == null) continue;
-      const tomorrow = minutesOfDay < nowMinutes;
-      const minutesAway = tomorrow ? minutesOfDay + 1440 - nowMinutes : minutesOfDay - nowMinutes;
-      if (soonest == null || minutesAway < soonest.minutesAway) {
-        soonest = { minutesAway, minutesOfDay, tomorrow };
-      }
-    }
-    if (soonest) {
-      const hh = String(Math.floor(soonest.minutesOfDay / 60)).padStart(2, "0");
-      const mm = String(soonest.minutesOfDay % 60).padStart(2, "0");
-      next.push({
-        medicationId: med.id,
-        name: med.name,
-        dosage: med.dosage,
-        minutesAway: soonest.minutesAway,
-        time: `${hh}:${mm}`,
-        tomorrow: soonest.tomorrow,
-      });
-    }
-  }
-
-  return next.sort((a, b) => a.minutesAway - b.minutesAway).slice(0, 8);
-}
-
 function NextDoses({ medications }: { medications: Medication[] }) {
-  const upcoming = computeNextDoses(medications);
+  const timeZone = useTimezone();
+  const upcoming = computeNextDoses(medications, timeZone);
 
   return (
     <aside className="md:w-56 md:shrink-0">
