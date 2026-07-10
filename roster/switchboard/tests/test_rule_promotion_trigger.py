@@ -19,6 +19,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.tools.switchboard.routing.rule_promotion import (
+    DEFAULT_MIN_ELAPSED_FLOOR,
     PromotionTriggerResult,
     build_proposed_action,
     compute_is_clearly_automated,
@@ -130,6 +131,62 @@ class TestEvidenceQualityGate:
             )
             is True
         )
+
+    # --- exact-boundary pins (bu-xcrz6): guard the ``>=`` in both checks -----
+    # These isolate each threshold at its literal edge so a future off-by-one
+    # (``>=`` -> ``>``) flips exactly one of them red instead of slipping by.
+
+    def test_elapsed_exactly_at_floor_passes(self):
+        """Elapsed == 20h (the default floor) must pass: the check is ``>=``.
+
+        Held at 2 distinct UTC days so the elapsed floor is the deciding
+        factor, not the distinct-day count.
+        """
+        timestamps = [
+            datetime(2026, 7, 1, 4, 0, 0, tzinfo=UTC),
+            datetime(2026, 7, 2, 0, 0, 0, tzinfo=UTC),
+        ]
+        assert max(timestamps) - min(timestamps) == timedelta(hours=20)
+        assert distinct_utc_calendar_days(timestamps) == 2
+        assert passes_evidence_quality_gate(timestamps) is True
+
+    def test_elapsed_one_second_under_floor_fails(self):
+        """Elapsed == 20h - 1s must fail: pins the low side of the floor."""
+        timestamps = [
+            datetime(2026, 7, 1, 4, 0, 1, tzinfo=UTC),
+            datetime(2026, 7, 2, 0, 0, 0, tzinfo=UTC),
+        ]
+        assert max(timestamps) - min(timestamps) == timedelta(hours=20) - timedelta(seconds=1)
+        assert distinct_utc_calendar_days(timestamps) == 2  # distinct-day check satisfied...
+        assert passes_evidence_quality_gate(timestamps) is False  # ...only the floor rejects it
+
+    def test_exactly_two_distinct_days_passes(self):
+        """distinct days == 2 (the default minimum) must pass: check is ``>=``.
+
+        Elapsed is held well above the floor so the distinct-day count is the
+        deciding factor.
+        """
+        timestamps = [
+            datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+            datetime(2026, 7, 2, 23, 0, tzinfo=UTC),
+        ]
+        assert distinct_utc_calendar_days(timestamps) == 2
+        assert max(timestamps) - min(timestamps) >= DEFAULT_MIN_ELAPSED_FLOOR
+        assert passes_evidence_quality_gate(timestamps) is True
+
+    def test_one_distinct_day_fails_even_with_sufficient_elapsed(self):
+        """distinct days == 1 must fail even when the elapsed floor is met.
+
+        20h elapsed within a single UTC calendar day clears the floor, so this
+        pins the distinct-day check as an independent, mandatory gate.
+        """
+        timestamps = [
+            datetime(2026, 7, 1, 0, 0, tzinfo=UTC),
+            datetime(2026, 7, 1, 20, 0, tzinfo=UTC),
+        ]
+        assert distinct_utc_calendar_days(timestamps) == 1
+        assert max(timestamps) - min(timestamps) >= DEFAULT_MIN_ELAPSED_FLOOR  # floor satisfied...
+        assert passes_evidence_quality_gate(timestamps) is False  # ...only distinct-day rejects it
 
 
 # ---------------------------------------------------------------------------
