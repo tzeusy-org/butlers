@@ -14,12 +14,14 @@ Covers:
 from __future__ import annotations
 
 import ast
+import math
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.chronicler.adapters.owntracks_place_cluster import (
+    CLOCK_SKEW_THRESHOLD_HOURS,
     DEFAULT_MAX_GAP_MINUTES,
     DEFAULT_MIN_DWELL_MINUTES,
     DEFAULT_RADIUS_METERS,
@@ -571,3 +573,249 @@ async def test_no_rows_since_watermark_returns_unchanged_watermark() -> None:
 def test_constructor_rejects_invalid_parameters(kwargs: dict) -> None:
     with pytest.raises(ValueError):
         OwnTracksPlaceClusterAdapter(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Exact-boundary tests (bu-tmiqc): pin the literal-edge semantics of the three
+# clustering thresholds and the clock-skew clamp that read correct by
+# inspection but were previously exercised only away from their edges.
+# ---------------------------------------------------------------------------
+
+# A point ~150m due north of home — near the default 150m clustering radius.
+# We measure the exact geodesic distance with the module's OWN haversine and
+# use THAT value as the boundary radius, so the ``dist <= radius_m`` comparison
+# is exact rather than depending on constructing a coordinate at precisely
+# 150.000m (the guidance in the issue). ``math.nextafter`` then yields the
+# tightest possible just-over / just-under radius on either side of the edge.
+_EDGE_LAT = _HOME_LAT + 0.001347  # ~150m north at this latitude
+_EDGE_LON = _HOME_LON
+_EDGE_DIST_M = haversine_meters(_HOME_LAT, _HOME_LON, _EDGE_LAT, _EDGE_LON)
+
+
+def test_edge_fixture_is_near_default_radius() -> None:
+    """Sanity-check that the constructed edge point sits at ~150m (the default
+    clustering radius), so the boundary cases below genuinely exercise the
+    radius edge rather than some arbitrary distance."""
+    assert _EDGE_DIST_M == pytest.approx(DEFAULT_RADIUS_METERS, abs=2.0)
+
+
+# --- radius edge: dist <= radius_m is inclusive -----------------------------
+
+
+def test_point_exactly_at_radius_clusters_inclusive() -> None:
+    """A point at EXACTLY ``radius_m`` from the centroid joins the cluster
+    (``dist <= radius_m`` is inclusive)."""
+    rows = [_row(_NOW), _row(_NOW + timedelta(minutes=5), lat=_EDGE_LAT, lon=_EDGE_LON)]
+    spans, _ = cluster_points(
+        rows, radius_m=_EDGE_DIST_M, max_gap=timedelta(minutes=DEFAULT_MAX_GAP_MINUTES)
+    )
+    assert len(spans) == 1
+    assert spans[0].point_count == 2
+
+
+def test_point_just_over_radius_does_not_cluster() -> None:
+    """One ULP inside the edge, the point falls outside ``radius_m`` and forms
+    its own cluster rather than joining."""
+    rows = [_row(_NOW), _row(_NOW + timedelta(minutes=5), lat=_EDGE_LAT, lon=_EDGE_LON)]
+    spans, _ = cluster_points(
+        rows,
+        radius_m=math.nextafter(_EDGE_DIST_M, 0.0),
+        max_gap=timedelta(minutes=DEFAULT_MAX_GAP_MINUTES),
+    )
+    assert len(spans) == 2
+    assert all(s.point_count == 1 for s in spans)
+
+
+def test_point_just_under_radius_clusters() -> None:
+    """One ULP the other way (radius fractionally larger than the point's
+    distance) keeps the point inside the cluster."""
+    rows = [_row(_NOW), _row(_NOW + timedelta(minutes=5), lat=_EDGE_LAT, lon=_EDGE_LON)]
+    spans, _ = cluster_points(
+        rows,
+        radius_m=math.nextafter(_EDGE_DIST_M, math.inf),
+        max_gap=timedelta(minutes=DEFAULT_MAX_GAP_MINUTES),
+    )
+    assert len(spans) == 1
+    assert spans[0].point_count == 2
+
+
+# --- gap edge: gap > max_gap breaks (gap == max_gap continues) --------------
+
+
+def test_gap_exactly_max_gap_continues_cluster() -> None:
+    """An inter-point gap of EXACTLY ``max_gap`` stays in the same cluster
+    (``gap > max_gap`` is strict, so the boundary is included)."""
+    rows = [_row(_NOW), _row(_NOW + timedelta(minutes=DEFAULT_MAX_GAP_MINUTES))]
+    spans, _ = cluster_points(
+        rows,
+        radius_m=DEFAULT_RADIUS_METERS,
+        max_gap=timedelta(minutes=DEFAULT_MAX_GAP_MINUTES),
+    )
+    assert len(spans) == 1
+    assert spans[0].point_count == 2
+    assert spans[0].dwell == timedelta(minutes=DEFAULT_MAX_GAP_MINUTES)
+
+
+def test_gap_just_over_max_gap_starts_new_cluster() -> None:
+    """One second past ``max_gap`` breaks the run into two clusters."""
+    rows = [
+        _row(_NOW),
+        _row(_NOW + timedelta(minutes=DEFAULT_MAX_GAP_MINUTES, seconds=1)),
+    ]
+    spans, _ = cluster_points(
+        rows,
+        radius_m=DEFAULT_RADIUS_METERS,
+        max_gap=timedelta(minutes=DEFAULT_MAX_GAP_MINUTES),
+    )
+    assert len(spans) == 2
+    assert all(s.point_count == 1 for s in spans)
+
+
+def test_gap_just_under_max_gap_continues_cluster() -> None:
+    """One second short of ``max_gap`` stays in the same cluster."""
+    rows = [
+        _row(_NOW),
+        _row(_NOW + timedelta(minutes=DEFAULT_MAX_GAP_MINUTES, seconds=-1)),
+    ]
+    spans, _ = cluster_points(
+        rows,
+        radius_m=DEFAULT_RADIUS_METERS,
+        max_gap=timedelta(minutes=DEFAULT_MAX_GAP_MINUTES),
+    )
+    assert len(spans) == 1
+    assert spans[0].point_count == 2
+
+
+# --- dwell edge: dwell < min_dwell returns None (dwell == min_dwell emits) --
+
+
+def _place_span(dwell: timedelta) -> ClusterSpan:
+    """A single-point span with a controllable dwell for _maybe_emit edges."""
+    return ClusterSpan(
+        endpoint_identity=_ENDPOINT,
+        start_at=_NOW,
+        end_at=_NOW + dwell,
+        sum_lat=_HOME_LAT,
+        sum_lon=_HOME_LON,
+        point_count=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dwell_exactly_min_dwell_emits_episode() -> None:
+    """A cluster whose dwell is EXACTLY ``min_dwell`` IS emitted
+    (``dwell < min_dwell`` is strict, so the boundary qualifies)."""
+    adapter = OwnTracksPlaceClusterAdapter(min_dwell_minutes=DEFAULT_MIN_DWELL_MINUTES)
+    span = _place_span(timedelta(minutes=DEFAULT_MIN_DWELL_MINUTES))
+    cp = _chronicler_pool()
+
+    captured: list[Episode] = []
+
+    async def _capture(_conn: object, episode: Episode) -> Episode:
+        episode.id = "ep-exact"
+        captured.append(episode)
+        return episode
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.owntracks_place_cluster.upsert_episode",
+            side_effect=_capture,
+        ),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.upsert_owner_episode_entity"),
+    ):
+        episode = await adapter._maybe_emit(cp, span, entity_id=None)
+
+    assert episode is not None
+    assert len(captured) == 1
+
+
+@pytest.mark.asyncio
+async def test_dwell_one_second_under_min_dwell_does_not_emit() -> None:
+    """One second short of ``min_dwell`` is not emitted."""
+    adapter = OwnTracksPlaceClusterAdapter(min_dwell_minutes=DEFAULT_MIN_DWELL_MINUTES)
+    span = _place_span(timedelta(minutes=DEFAULT_MIN_DWELL_MINUTES) - timedelta(seconds=1))
+    cp = _chronicler_pool()
+
+    with patch("butlers.chronicler.adapters.owntracks_place_cluster.upsert_episode") as mock_upsert:
+        episode = await adapter._maybe_emit(cp, span, entity_id=None)
+
+    assert episode is None
+    mock_upsert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dwell_one_second_over_min_dwell_emits_episode() -> None:
+    """One second past ``min_dwell`` is emitted."""
+    adapter = OwnTracksPlaceClusterAdapter(min_dwell_minutes=DEFAULT_MIN_DWELL_MINUTES)
+    span = _place_span(timedelta(minutes=DEFAULT_MIN_DWELL_MINUTES) + timedelta(seconds=1))
+    cp = _chronicler_pool()
+
+    captured: list[Episode] = []
+
+    async def _capture(_conn: object, episode: Episode) -> Episode:
+        episode.id = "ep-over"
+        captured.append(episode)
+        return episode
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.owntracks_place_cluster.upsert_episode",
+            side_effect=_capture,
+        ),
+        patch("butlers.chronicler.adapters.owntracks_place_cluster.upsert_owner_episode_entity"),
+    ):
+        episode = await adapter._maybe_emit(cp, span, entity_id=None)
+
+    assert episode is not None
+    assert len(captured) == 1
+
+
+# --- clock-skew clamp: abs(delta) > threshold clamps ts to recorded_at ------
+
+
+def test_clock_skew_exactly_at_threshold_is_not_clamped() -> None:
+    """A device/server delta of EXACTLY the threshold is NOT clamped
+    (``abs(delta) > threshold`` is strict); the original ts is preserved and
+    no warning is raised."""
+    adapter = OwnTracksPlaceClusterAdapter()  # default threshold = 4h
+    ts = _NOW + timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS)
+    row = _row(ts)
+    row["recorded_at"] = _NOW
+
+    normalized, warnings = adapter._normalize_row(row)
+
+    assert normalized is not None
+    assert normalized["ts"] == ts
+    assert warnings == []
+
+
+def test_clock_skew_just_over_threshold_clamps_ts_to_recorded_at() -> None:
+    """One second past the threshold: ts is clamped to ``recorded_at`` and a
+    single clamp warning is emitted."""
+    adapter = OwnTracksPlaceClusterAdapter()
+    ts = _NOW + timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS, seconds=1)
+    row = _row(ts)
+    row["recorded_at"] = _NOW
+
+    normalized, warnings = adapter._normalize_row(row)
+
+    assert normalized is not None
+    assert normalized["ts"] == _NOW  # clamped to recorded_at
+    assert len(warnings) == 1
+    assert "clamping ts to recorded_at" in warnings[0]
+
+
+def test_clock_skew_negative_direction_over_threshold_clamps() -> None:
+    """The clamp is on ``abs(delta)``: a device clock that runs BEHIND server
+    time by more than the threshold is clamped too."""
+    adapter = OwnTracksPlaceClusterAdapter()
+    ts = _NOW - timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS, seconds=1)
+    row = _row(ts)
+    row["recorded_at"] = _NOW
+
+    normalized, warnings = adapter._normalize_row(row)
+
+    assert normalized is not None
+    assert normalized["ts"] == _NOW  # clamped to recorded_at
+    assert len(warnings) == 1
+    assert "clamping ts to recorded_at" in warnings[0]
