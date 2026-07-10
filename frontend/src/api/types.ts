@@ -5773,6 +5773,222 @@ export interface ChroniclerRollupsParams {
   end_date?: string;
 }
 
+// ── Daily balance vs usual (IEA, tasks.md §9b, bu-jc6htw.2) ─────────────────
+
+/**
+ * One lane's balance for the target day, from GET /api/chronicler/balance.
+ * Baseline is a trailing rolling-window mean over the same materialized
+ * per-day rollups {@link ChroniclerRollupsResponse} reads.
+ */
+export interface ChroniclerBalanceLaneRow {
+  lane: string;
+  seconds: number;
+  /**
+   * Trailing rolling-window mean seconds for this lane, or null when there is
+   * no materialized rollup history yet within the lookback window — NOT the
+   * same as a real 0 baseline.
+   */
+  baseline_seconds: number | null;
+  /** `seconds - baseline_seconds`. Null whenever `baseline_seconds` is null. */
+  delta_seconds: number | null;
+  baseline_sample_days: number;
+  /**
+   * True when a source contributing to this lane is `feeder_dark` for the
+   * target day. Render as "data unavailable" — never as a truthful zero/delta.
+   */
+  unavailable: boolean;
+}
+
+/** Response envelope for GET /api/chronicler/balance. */
+export interface ChroniclerBalanceResponse {
+  local_date: string;
+  timezone: string;
+  /** Same three-state contract as {@link ChroniclerRollupDay.status}. */
+  status: "materialized" | "not_yet_materialized" | "unknown";
+  baseline_lookback_days: number;
+  /** Empty when `status !== "materialized"`; one entry per lane otherwise. */
+  lanes: ChroniclerBalanceLaneRow[];
+  /**
+   * True when the underlying query raised — `lanes` is empty in that case,
+   * never a truthful empty/zero result. Distinct from
+   * `status: "not_yet_materialized"` and from a lane's `unavailable`.
+   */
+  balance_source_error: boolean;
+}
+
+/** Query parameters for GET /api/chronicler/balance. */
+export interface ChroniclerBalanceParams {
+  /** Local calendar day (rollup tz) to compute balance for (YYYY-MM-DD). */
+  date: string;
+  /** Trailing local-day window used for the "usual" baseline. */
+  lookback_days?: number;
+}
+
+// ── Trends (IEA, tasks.md §9b, bu-jc6htw.2) ─────────────────────────────────
+
+/** One lane's balance for one day within a trends window. */
+export interface ChroniclerTrendLaneDay {
+  local_date: string;
+  status: "materialized" | "not_yet_materialized" | "unknown";
+  seconds: number;
+  baseline_seconds: number | null;
+  delta_seconds: number | null;
+  unavailable: boolean;
+}
+
+/** One lane's day-by-day series across the requested trends window. */
+export interface ChroniclerTrendLaneSeries {
+  lane: string;
+  /** Ordered by local_date ASC, one entry per day in [start_date, end_date]. */
+  days: ChroniclerTrendLaneDay[];
+  /** Trailing run of consecutive non-zero-activity days ending at end_date. */
+  streak_days: number;
+}
+
+/** One day where a lane's total deviated sharply from its baseline. */
+export interface ChroniclerTrendAnomaly {
+  lane: string;
+  local_date: string;
+  seconds: number;
+  baseline_seconds: number;
+  delta_seconds: number;
+  /** `"spike"` when seconds > baseline, `"drop"` when seconds < baseline. */
+  direction: "spike" | "drop";
+}
+
+/** Response envelope for GET /api/chronicler/trends. */
+export interface ChroniclerTrendsResponse {
+  window: "week" | "month";
+  start_date: string;
+  end_date: string;
+  tz: string;
+  baseline_lookback_days: number;
+  lanes: ChroniclerTrendLaneSeries[];
+  /** Ordered by local_date ASC, then lane ASC. */
+  anomalies: ChroniclerTrendAnomaly[];
+  /**
+   * True when the underlying rollup query raised — `lanes`/`anomalies` are
+   * empty in that case, never a truthful empty/zero result.
+   */
+  trends_source_error: boolean;
+}
+
+/** Query parameters for GET /api/chronicler/trends. */
+export interface ChroniclerTrendsParams {
+  window?: "week" | "month";
+  /** Last local day of the window (inclusive, YYYY-MM-DD). */
+  end_date?: string;
+  lookback_days?: number;
+}
+
+// ── Who-you-were-with (IEA, tasks.md §9b, bu-jc6htw.2) ──────────────────────
+
+/** One resolved (or unattributed) companion for a who-you-were-with window. */
+export interface ChroniclerCompanionEntry {
+  /** Null when the companion could not be resolved (`unattributed=true`). */
+  entity_id: string | null;
+  /**
+   * Null when unattributed, OR when entity_id is known but the name lookup
+   * failed — see {@link ChroniclerWhoYouWereWithResponse.companion_names_unavailable}
+   * to distinguish the two.
+   */
+  display_name: string | null;
+  unattributed: boolean;
+  /** E.g. "Telegram", "email", "in-person" for a co-presence social activity. */
+  channel: string;
+  co_present_seconds: number;
+  episode_count: number;
+}
+
+/** Response envelope for GET /api/chronicler/who-you-were-with. */
+export interface ChroniclerWhoYouWereWithResponse {
+  start_at: string;
+  end_at: string;
+  tz: string;
+  /** Sorted by co_present_seconds DESC. */
+  companions: ChroniclerCompanionEntry[];
+  /**
+   * True when entity_id → display_name resolution failed. Identity/duration/
+   * channel data is still trustworthy; only display names are degraded.
+   * Distinct from an entry's own `unattributed` (identity genuinely unknown).
+   */
+  companion_names_unavailable: boolean;
+  /**
+   * True when the chronicler-own-schema episode query itself failed —
+   * `companions` is empty in that case, never a truthful empty result.
+   */
+  who_you_were_with_source_error: boolean;
+}
+
+/** Query parameters for GET /api/chronicler/who-you-were-with. */
+export interface ChroniclerWhoYouWereWithParams {
+  start_at: string;
+  end_at: string;
+  tz?: string;
+}
+
+// ── Activity evidence chain (IEA, tasks.md §9a) ────────────────────────────
+
+/** One corroborating signal backing an activity, resolved to its point-event. */
+export interface ChroniclerEvidenceChainLink {
+  event_id: string;
+  source_name: string;
+  event_type: string;
+  occurred_at: string;
+  /** How the point-event relates to the activity. */
+  relation: "supports" | "boundary_start" | "boundary_end" | "evidence" | string;
+  /** Human-readable label — the event title, else a source/type fallback. */
+  descriptor: string;
+  privacy: string;
+}
+
+/** Response envelope for GET /api/chronicler/episodes/{id}/evidence-chain. */
+export interface ChroniclerActivityEvidenceChain {
+  episode_id: string;
+  /** The episode's IEA layer; only `activity` rows carry a meaningful chain. */
+  layer: string;
+  confidence: "high" | "medium" | "low" | string;
+  /** Denormalized point-event id list from `episodes.evidence_refs`. */
+  evidence_refs: string[];
+  /** Resolved evidence links, ordered by occurred_at ASC. */
+  links: ChroniclerEvidenceChainLink[];
+}
+
+// ── Low-confidence correction prompts (IEA, tasks.md §9a) ──────────────────
+
+/** One low-confidence activity surfaced for owner confirmation / relabel. */
+export interface ChroniclerCorrectionPrompt {
+  episode_id: string;
+  source_name: string;
+  episode_type: string;
+  title: string | null;
+  start_at: string;
+  end_at: string | null;
+  /** The lane the activity is currently counted toward, or null. */
+  best_guess_lane: string | null;
+  confidence: string;
+  evidence_refs: string[];
+  /** Number of corroborating evidence links — low here is why confidence is low. */
+  evidence_count: number;
+}
+
+/** Response envelope for GET /api/chronicler/correction-prompts. */
+export interface ChroniclerCorrectionPrompts {
+  start_at: string;
+  end_at: string;
+  tz: string;
+  /** Low-confidence activities, ordered by start_at ASC. */
+  prompts: ChroniclerCorrectionPrompt[];
+}
+
+/** Query parameters for GET /api/chronicler/correction-prompts. */
+export interface ChroniclerCorrectionPromptsParams {
+  start_at: string;
+  end_at: string;
+  tz?: string;
+  limit?: number;
+}
+
 /** Query parameters for GET /api/chronicler/episodes. */
 export interface ChroniclerEpisodesParams {
   source_name?: string;

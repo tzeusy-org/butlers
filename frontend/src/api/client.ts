@@ -322,6 +322,15 @@ import type {
   ChroniclerRollupsParams,
   ChroniclerRollupsResponse,
   ChroniclerRoutine,
+  ChroniclerBalanceParams,
+  ChroniclerBalanceResponse,
+  ChroniclerTrendsParams,
+  ChroniclerTrendsResponse,
+  ChroniclerWhoYouWereWithParams,
+  ChroniclerWhoYouWereWithResponse,
+  ChroniclerActivityEvidenceChain,
+  ChroniclerCorrectionPromptsParams,
+  ChroniclerCorrectionPrompts,
   ChroniclerSourceStateRow,
   ChroniclerUpdateRoutineRequest,
   SubmitCorrectionRequest,
@@ -5960,6 +5969,68 @@ export function getChroniclerRollups(
   if (params.start_date) sp.set("start_date", params.start_date);
   if (params.end_date) sp.set("end_date", params.end_date);
   return apiFetch(`/chronicler/rollups?${sp.toString()}`);
+}
+
+/**
+ * Fetch the target day's per-lane balance annotated against the owner's
+ * rolling "usual" baseline. IEA §9b — GET /api/chronicler/balance.
+ */
+export function getChroniclerBalance(
+  params: ChroniclerBalanceParams,
+): Promise<{ data: ChroniclerBalanceResponse; meta: Record<string, unknown> }> {
+  const sp = new URLSearchParams({ date: params.date });
+  if (params.lookback_days != null) sp.set("lookback_days", String(params.lookback_days));
+  return apiFetch(`/chronicler/balance?${sp.toString()}`);
+}
+
+/**
+ * Fetch week/month-grained per-lane balance trends, streaks, and anomalies.
+ * IEA §9b — GET /api/chronicler/trends.
+ */
+export function getChroniclerTrends(
+  params?: ChroniclerTrendsParams,
+): Promise<{ data: ChroniclerTrendsResponse; meta: Record<string, unknown> }> {
+  const sp = new URLSearchParams();
+  if (params?.window) sp.set("window", params.window);
+  if (params?.end_date) sp.set("end_date", params.end_date);
+  if (params?.lookback_days != null) sp.set("lookback_days", String(params.lookback_days));
+  const qs = sp.toString();
+  return apiFetch(qs ? `/chronicler/trends?${qs}` : "/chronicler/trends");
+}
+
+/**
+ * Fetch the resolved people the owner spent time with in a window, with
+ * co-present time and channel. IEA §9b — GET /api/chronicler/who-you-were-with.
+ */
+export function getChroniclerWhoYouWereWith(
+  params: ChroniclerWhoYouWereWithParams,
+): Promise<{ data: ChroniclerWhoYouWereWithResponse; meta: Record<string, unknown> }> {
+  const sp = new URLSearchParams({ start_at: params.start_at, end_at: params.end_at });
+  if (params.tz) sp.set("tz", params.tz);
+  return apiFetch(`/chronicler/who-you-were-with?${sp.toString()}`);
+}
+
+/**
+ * Fetch the evidence chain backing an activity — "why is this counted?".
+ * IEA §9a — GET /api/chronicler/episodes/{id}/evidence-chain.
+ */
+export function getChroniclerEvidenceChain(
+  episodeId: string,
+): Promise<ChroniclerActivityEvidenceChain> {
+  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/evidence-chain`);
+}
+
+/**
+ * Fetch the window's low-confidence activities as correction prompts.
+ * IEA §9a — GET /api/chronicler/correction-prompts.
+ */
+export function getChroniclerCorrectionPrompts(
+  params: ChroniclerCorrectionPromptsParams,
+): Promise<{ data: ChroniclerCorrectionPrompts; meta: Record<string, unknown> }> {
+  const sp = new URLSearchParams({ start_at: params.start_at, end_at: params.end_at });
+  if (params.tz) sp.set("tz", params.tz);
+  if (params.limit != null) sp.set("limit", String(params.limit));
+  return apiFetch(`/chronicler/correction-prompts?${sp.toString()}`);
 }
 
 /**

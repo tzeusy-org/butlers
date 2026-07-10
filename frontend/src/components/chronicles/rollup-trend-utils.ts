@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
 // Pivot utility for RollupTrendWidget (bu-333dq, telemetry-distillation
-// bead 5) — mirrors aggregate-stacked-bar-utils.ts's pivotByDay shape, but
-// sourced from GET /api/chronicler/rollups (already one row per day, unlike
-// the flat (day, category) rows aggregate/by-day returns).
+// bead 5) — produces one recharts row per day, sourced from
+// GET /api/chronicler/rollups (already one row per day, unlike the flat
+// (day, category) rows aggregate/by-day returns).
 // ---------------------------------------------------------------------------
 
 import { LANE_TAXONOMY, type Category } from "./lane-taxonomy"

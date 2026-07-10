@@ -48,6 +48,10 @@ let _correctionsLoading = false
 let _correctionsError: Error | null = null
 let _correctionsData: unknown[] | undefined = undefined
 
+let _evidenceChainLoading = false
+let _evidenceChainError: Error | null = null
+let _evidenceChainData: unknown | undefined = undefined
+
 let _explainIsPending = false
 let _explainIsSuccess = false
 let _explainError: Error | null = null
@@ -74,6 +78,11 @@ vi.mock("@/hooks/use-chronicles", () => ({
     data: _correctionsData,
     isLoading: _correctionsLoading,
     error: _correctionsError,
+  }),
+  useChroniclerEvidenceChain: () => ({
+    data: _evidenceChainData,
+    isLoading: _evidenceChainLoading,
+    error: _evidenceChainError,
   }),
   useChroniclerExplain: () => ({
     mutate: _explainMutateFn,
@@ -138,6 +147,9 @@ function reset() {
   _correctionsLoading = false
   _correctionsError = null
   _correctionsData = undefined
+  _evidenceChainLoading = false
+  _evidenceChainError = null
+  _evidenceChainData = undefined
   _explainIsPending = false
   _explainIsSuccess = false
   _explainError = null
@@ -382,6 +394,69 @@ describe("EpisodeDrawerContent corrections list", () => {
     expect(html).toContain("correction-item-corr-1")
     expect(html).toContain("Adjusted start time")
     expect(html).toContain("Fixed title")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Evidence chain — "why is this counted?" (IEA §9a)
+// ---------------------------------------------------------------------------
+
+describe("EpisodeDrawerContent evidence chain", () => {
+  it("renders the confidence + resolved evidence links when present", () => {
+    reset()
+    _episodeData = makeEpisode()
+    _eventsData = []
+    _correctionsData = []
+    _evidenceChainData = {
+      episode_id: "ep-test-id",
+      layer: "activity",
+      confidence: "low",
+      evidence_refs: ["pe-1"],
+      links: [
+        {
+          event_id: "pe-1",
+          source_name: "owntracks.points",
+          event_type: "location_ping",
+          occurred_at: "2026-04-25T09:05:00Z",
+          relation: "supports",
+          descriptor: "Near the gym",
+          privacy: "normal",
+        },
+      ],
+    }
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+    expect(html).toContain("evidence-chain")
+    expect(html).toContain("evidence-confidence")
+    expect(html).toContain("evidence-link-pe-1")
+    expect(html).toContain("Near the gym")
+    expect(html).toContain("supports")
+  })
+
+  it("masks a sensitive evidence link's descriptor", () => {
+    reset()
+    _episodeData = makeEpisode()
+    _eventsData = []
+    _correctionsData = []
+    _evidenceChainData = {
+      episode_id: "ep-test-id",
+      layer: "activity",
+      confidence: "medium",
+      evidence_refs: ["pe-2"],
+      links: [
+        {
+          event_id: "pe-2",
+          source_name: "owntracks.points",
+          event_type: "location_ping",
+          occurred_at: "2026-04-25T09:05:00Z",
+          relation: "supports",
+          descriptor: "Secret spot",
+          privacy: "sensitive",
+        },
+      ],
+    }
+    const html = renderToStaticMarkup(<EpisodeDrawerContent episodeId="ep-test-id" />)
+    expect(html).toContain("Private signal")
+    expect(html).not.toContain("Secret spot")
   })
 })
 

@@ -25,15 +25,20 @@ import {
   deleteChroniclerRoutine,
   getChroniclerAggregateByCategory,
   getChroniclerAggregateByDay,
+  getChroniclerBalance,
+  getChroniclerCorrectionPrompts,
   getChroniclerDayClose,
   getChroniclerEpisode,
   getChroniclerEpisodeCorrections,
   getChroniclerEpisodeEvents,
   getChroniclerEpisodes,
+  getChroniclerEvidenceChain,
   getChroniclerEvents,
   getChroniclerRollups,
   getChroniclerRoutines,
   getChroniclerSourceState,
+  getChroniclerTrends,
+  getChroniclerWhoYouWereWith,
   postChroniclerEpisodeExplain,
   submitChroniclerEpisodeCorrection,
   updateChroniclerRoutine,
@@ -42,11 +47,15 @@ import type {
   ChroniclerAggregateByCategoryParams,
   ChroniclerAggregateByDayParams,
   ChroniclerCreateRoutineRequest,
+  ChroniclerBalanceParams,
+  ChroniclerCorrectionPromptsParams,
   ChroniclerDayCloseParams,
   ChroniclerEpisodesParams,
   ChroniclerEventsParams,
   ChroniclerRollupsParams,
   ChroniclerUpdateRoutineRequest,
+  ChroniclerTrendsParams,
+  ChroniclerWhoYouWereWithParams,
   SubmitCorrectionRequest,
 } from "@/api/types.ts";
 
@@ -71,6 +80,16 @@ export const chroniclesKeys = {
   sourceState: () => [...chroniclesKeys.all, "source-state"] as const,
   rollups: (params: ChroniclerRollupsParams) =>
     [...chroniclesKeys.all, "rollups", params] as const,
+  balance: (params: ChroniclerBalanceParams) =>
+    [...chroniclesKeys.all, "balance", params] as const,
+  trends: (params?: ChroniclerTrendsParams) =>
+    [...chroniclesKeys.all, "trends", params] as const,
+  whoYouWereWith: (params: ChroniclerWhoYouWereWithParams) =>
+    [...chroniclesKeys.all, "who-you-were-with", params] as const,
+  evidenceChain: (episodeId: string) =>
+    [...chroniclesKeys.all, "evidence-chain", episodeId] as const,
+  correctionPrompts: (params: ChroniclerCorrectionPromptsParams) =>
+    [...chroniclesKeys.all, "correction-prompts", params] as const,
   dayClose: (params: ChroniclerDayCloseParams) =>
     [...chroniclesKeys.all, "day-close", params] as const,
   pointEvents: (params?: ChroniclerEventsParams) =>
@@ -214,6 +233,100 @@ export function useChroniclesRollups(
   return useQuery({
     queryKey: chroniclesKeys.rollups(params),
     queryFn: () => getChroniclerRollups(params),
+    refetchInterval: options?.refetchInterval ?? false,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Fetch the target day's per-lane balance vs the owner's rolling baseline.
+ *
+ * A settled past day never changes, so polling defaults to off. The response
+ * carries `balance_source_error` (degraded envelope) plus per-lane
+ * `unavailable` flags — consumers MUST render those as degraded, never as a
+ * truthful zero.
+ */
+export function useChroniclesBalance(
+  params: ChroniclerBalanceParams,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.balance(params),
+    queryFn: () => getChroniclerBalance(params),
+    refetchInterval: options?.refetchInterval ?? false,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Fetch week/month-grained per-lane balance trends, streaks, and anomalies.
+ *
+ * Response carries `trends_source_error` (degraded envelope). Polling off by
+ * default — a settled historical window never changes.
+ */
+export function useChroniclesTrends(
+  params?: ChroniclerTrendsParams,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.trends(params),
+    queryFn: () => getChroniclerTrends(params),
+    refetchInterval: options?.refetchInterval ?? false,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Fetch the resolved people the owner spent time with in a window.
+ *
+ * Response carries `who_you_were_with_source_error` (the chronicler query
+ * failed → empty companions) and `companion_names_unavailable` (only the
+ * relationship-butler name lookup degraded; identity/duration still trusted).
+ */
+export function useChroniclesWhoYouWereWith(
+  params: ChroniclerWhoYouWereWithParams,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.whoYouWereWith(params),
+    queryFn: () => getChroniclerWhoYouWereWith(params),
+    refetchInterval: options?.refetchInterval ?? false,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Fetch the evidence chain backing an activity ("why is this counted?").
+ *
+ * Disabled when episodeId is falsy — callers pass null when no activity is
+ * selected without triggering a fetch.
+ */
+export function useChroniclerEvidenceChain(
+  episodeId: string | null | undefined,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.evidenceChain(episodeId ?? ""),
+    queryFn: () => getChroniclerEvidenceChain(episodeId!),
+    enabled: options?.enabled !== false && !!episodeId,
+    refetchInterval: options?.refetchInterval ?? false,
+  });
+}
+
+/**
+ * Fetch the window's low-confidence activities as correction prompts.
+ *
+ * The write path reuses the existing corrections overlay
+ * ({@link useSubmitEpisodeCorrection}); once an override exists the prompt
+ * drops off the list server-side.
+ */
+export function useChroniclesCorrectionPrompts(
+  params: ChroniclerCorrectionPromptsParams,
+  options?: ChroniclesHookOptions,
+) {
+  return useQuery({
+    queryKey: chroniclesKeys.correctionPrompts(params),
+    queryFn: () => getChroniclerCorrectionPrompts(params),
     refetchInterval: options?.refetchInterval ?? false,
     enabled: options?.enabled !== false,
   });

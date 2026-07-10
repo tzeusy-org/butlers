@@ -12,7 +12,7 @@
 //   - a day whose status isn't "materialized" renders an empty column plus
 //     a muted "···" mark instead of flag glyphs;
 //   - a lane flagged `unavailable` (feeder_dark) renders with the same
-//     neutral hatch pattern AggregatePieChart already uses for "untracked",
+//     neutral hatch pattern used for "data unavailable",
 //     not a solid lane color;
 //   - a genuine query failure (`rollups_source_error`) renders the shared
 //     SourceDegradedNote instead of the chart.
@@ -256,9 +256,9 @@ export function RollupTrendWidget({ endDate, days = DEFAULT_TRAILING_DAYS }: Rol
       <div className="h-44">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={rows} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
-            {/* Hatch pattern for feeder_dark-affected lanes — same neutral
-                density treatment AggregatePieChart uses for "untracked", not
-                a lane hue or severity color (never implies a real reading). */}
+            {/* Hatch pattern for feeder_dark-affected lanes — a neutral
+                density treatment for "data unavailable", not a lane hue or
+                severity color (never implies a real reading). */}
             <defs>
               <pattern
                 id={UNAVAILABLE_PATTERN_ID}

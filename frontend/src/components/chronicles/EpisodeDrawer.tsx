@@ -58,6 +58,7 @@ import {
   useChroniclerEpisode,
   useChroniclerEpisodeCorrections,
   useChroniclerEpisodeEvents,
+  useChroniclerEvidenceChain,
   useChroniclerExplain,
   useSubmitEpisodeCorrection,
 } from "@/hooks/use-chronicles"
@@ -307,6 +308,7 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
   const episode = useChroniclerEpisode(episodeId)
   const events = useChroniclerEpisodeEvents(episodeId)
   const corrections = useChroniclerEpisodeCorrections(episodeId)
+  const evidenceChain = useChroniclerEvidenceChain(episodeId)
   const tz = useChroniclesTimezone()
   const formatDateTime = (iso: string | null | undefined) => formatDateTimeInTz(iso, tz)
 
@@ -447,6 +449,67 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
           <p className="mt-1 text-xs text-muted-foreground">
             Triggers a per-episode LLM drilldown via the Chronicler. Rate-limited to once per 24h per episode.
           </p>
+        </section>
+      )}
+
+      {/* ── Evidence chain — "why is this counted?" (IEA §9a) ──── */}
+      {!isSensitive && (
+        <section aria-label="Evidence chain">
+          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Why this counts
+          </h3>
+          {evidenceChain.isLoading ? (
+            <Skeleton className="h-10 w-full" data-testid="evidence-chain-loading" />
+          ) : evidenceChain.error ? (
+            <p className="text-xs text-destructive" data-testid="evidence-chain-error">
+              Failed to load the evidence chain.
+            </p>
+          ) : !evidenceChain.data ? null : (
+            <div className="space-y-2" data-testid="evidence-chain">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Confidence</span>
+                <Badge
+                  variant={evidenceChain.data.confidence === "low" ? "secondary" : "outline"}
+                  className="text-[10px]"
+                  data-testid="evidence-confidence"
+                >
+                  {evidenceChain.data.confidence}
+                </Badge>
+              </div>
+              {evidenceChain.data.links.length === 0 ? (
+                <p className="text-xs text-muted-foreground" data-testid="evidence-chain-empty">
+                  No corroborating signals linked to this activity.
+                </p>
+              ) : (
+                <ul className="space-y-1.5" data-testid="evidence-chain-links">
+                  {evidenceChain.data.links.map((link) => (
+                    <li
+                      key={link.event_id}
+                      className="rounded-md border p-2 text-xs space-y-0.5"
+                      data-testid={`evidence-link-${link.event_id}`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <Badge variant="outline" className="text-[10px]">
+                          {link.relation}
+                        </Badge>
+                        <span className="text-muted-foreground">{link.source_name}</span>
+                      </div>
+                      {link.privacy === "sensitive" ? (
+                        <p className="text-muted-foreground">Private signal</p>
+                      ) : (
+                        <>
+                          <p>{link.descriptor}</p>
+                          <p className="text-muted-foreground">
+                            {formatDateTime(link.occurred_at)}
+                          </p>
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </section>
       )}
 

@@ -2,19 +2,35 @@
 // ChroniclesDrilldownPanel
 //
 // The editorial /chronicles landing keeps the page quiet: Voice briefing, KPI
-// strip, attention list, recent-days index. The Gantt timeline, Map, Scrubber,
-// breakdown charts, source-state strip, streak callouts, and EpisodeDrawer live
-// here, below the editorial fold.
+// strip, attention list, recent-days index. The lived-day detail lives here,
+// below the editorial fold.
+//
+// IEA reframe (tasks.md §10): the misleading source-shaped pie is gone. The
+// "where the time went" surface is now the plan-vs-reality Day Ribbon (with a
+// ghost Intent track) plus Balance rings vs usual. Clicking a lived-activity
+// block opens the EpisodeDrawer, which reveals the activity's evidence chain
+// ("why is this counted?"). Alongside: who-you-were-with, low-confidence
+// correction prompts wired to the corrections overlay, the where-you-went map
+// trail (existing privacy contract), and a week/month zoom-out trends lens.
+//
+// Every new panel follows the degraded-mode convention: a failed source
+// renders a SourceDegradedNote, never a truthful-empty result.
 //
 // The panel is driven by the page's selected day (a settled past day), so it is
-// static: no time-window picker, no auto-refresh. The detail body is always
-// shown; its heavy widgets (Gantt and Map) remain self-lazy via React.lazy /
-// dynamic import so they stream in without blocking the briefing above.
+// static: no time-window picker, no auto-refresh. The Gantt and Map remain
+// self-lazy so they stream in without blocking the briefing above.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useMemo, useState } from "react";
 
-import { useChroniclesAggregates, useChroniclesPointEvents } from "@/hooks/use-chronicles";
+import {
+  useChroniclesBalance,
+  useChroniclesCorrectionPrompts,
+  useChroniclesEpisodes,
+  useChroniclesPointEvents,
+  useChroniclesTrends,
+  useChroniclesWhoYouWereWith,
+} from "@/hooks/use-chronicles";
 import { dayWindowInTz } from "@/components/chronicles/tz-format";
 import { Section } from "@/components/overview/Section";
 import { Scrubber } from "@/components/workspace/Scrubber";
@@ -27,14 +43,17 @@ import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane";
 import { FloatingMapMinimap } from "@/components/chronicles/FloatingMapMinimap";
 import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer";
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip";
-import { AggregateStackedBar } from "@/components/chronicles/AggregateStackedBar";
-import { AggregatePieChart } from "@/components/chronicles/AggregatePieChart";
 import { StreakCallouts } from "@/components/chronicles/StreakCallouts";
 import { ManualRefreshButton } from "@/components/chronicles/ManualRefreshButton";
 import { RollupTrendWidget } from "@/components/chronicles/RollupTrendWidget";
 import { WorkScheduleSettings } from "@/components/chronicles/WorkScheduleSettings";
+import { DayRibbon } from "@/components/chronicles/DayRibbon";
+import { BalanceRings } from "@/components/chronicles/BalanceRings";
+import { WhoYouWereWithPanel } from "@/components/chronicles/WhoYouWereWithPanel";
+import { CorrectionPromptsPanel } from "@/components/chronicles/CorrectionPromptsPanel";
+import { TrendsLens, type TrendsWindow } from "@/components/chronicles/TrendsLens";
 
-import type { ChroniclerEventsParams } from "@/api/types";
+import type { ChroniclerEventsParams, ChroniclerEpisodesParams } from "@/api/types";
 
 interface ChroniclesDrilldownPanelProps {
   /** The selected day (owner-tz calendar date, YYYY-MM-DD). */
@@ -69,6 +88,7 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
   const refetchInterval = false as const;
 
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
+  const [trendsWindow, setTrendsWindow] = useState<TrendsWindow>("week");
   const handleEpisodeClick = useCallback((episodeId: string) => {
     setSelectedEpisodeId(episodeId);
   }, []);
@@ -79,13 +99,8 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
   const windowFrom = from.toISOString();
   const windowTo = to.toISOString();
 
-  const aggregateParams = useMemo(
-    () => ({ start_at: windowFrom, end_at: windowTo }),
-    [windowFrom, windowTo],
-  );
-
-  const episodesParams = useMemo(
-    () => ({ overlaps_start: windowFrom, overlaps_end: windowTo }),
+  const episodesParams: ChroniclerEpisodesParams = useMemo(
+    () => ({ overlaps_start: windowFrom, overlaps_end: windowTo, limit: 500 }),
     [windowFrom, windowTo],
   );
 
@@ -99,6 +114,13 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
   });
   const pointEvents = useMemo(() => pointEventsData?.data ?? [], [pointEventsData]);
 
+  // Episodes power the Day Ribbon (activity blocks + ghost intent track). The
+  // same query key backs the Gantt below, so react-query dedupes the request.
+  const episodesQuery = useChroniclesEpisodes(episodesParams, { refetchInterval });
+  const episodes = useMemo(() => episodesQuery.data?.data ?? [], [episodesQuery.data]);
+
+  // Where-you-went: the existing map trail respects the map privacy contract —
+  // sensitive point events are excluded before any coordinate is plotted.
   const timedTrail = useMemo<TimedTrailPoint[]>(() => {
     return pointEvents
       .filter((ev) => ev.canonical_privacy !== "sensitive")
@@ -133,20 +155,26 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
     return interpolatePlayhead(scrubberMs, timedTrail);
   }, [scrubberMs, timedTrail]);
 
-  const { byCategory, byDay } = useChroniclesAggregates(aggregateParams, aggregateParams, {
-    refetchInterval,
-    enabled: true,
-  });
+  // Balance rings vs usual (GET /balance) — keyed on the local calendar day.
+  const balance = useChroniclesBalance({ date }, { refetchInterval });
 
-  const byDayRows = byDay.data ?? [];
-  const categoryBuckets = byCategory.data?.data.buckets ?? [];
+  // Who-you-were-with (GET /who-you-were-with) — the day window + owner tz.
+  const who = useChroniclesWhoYouWereWith(
+    { start_at: windowFrom, end_at: windowTo, tz },
+    { refetchInterval },
+  );
 
-  function handleByDayRetry() {
-    void byDay.refetch();
-  }
-  function handleByCategoryRetry() {
-    void byCategory.refetch();
-  }
+  // Low-confidence correction prompts (GET /correction-prompts) → drawer overlay.
+  const prompts = useChroniclesCorrectionPrompts(
+    { start_at: windowFrom, end_at: windowTo, tz },
+    { refetchInterval },
+  );
+
+  // Week/month zoom-out trends lens (GET /trends), ending on the selected day.
+  const trends = useChroniclesTrends(
+    { window: trendsWindow, end_date: date },
+    { refetchInterval },
+  );
 
   return (
     <div className="space-y-8">
@@ -185,24 +213,51 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
       </MapPanContext.Provider>
 
       <Section eyebrow="Where the time went">
-        <div className="space-y-4">
+        <div className="space-y-5">
           <StreakCallouts episodeParams={episodesParams} refetchInterval={refetchInterval} />
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <AggregateStackedBar
-              data={byDayRows}
-              isLoading={byDay.isLoading}
-              isError={byDay.isError}
-              onRetry={handleByDayRetry}
-            />
-            <AggregatePieChart
-              buckets={categoryBuckets}
-              untrackedSeconds={byCategory.data?.data.untracked_seconds ?? 0}
-              isLoading={byCategory.isLoading}
-              isError={byCategory.isError}
-              onRetry={handleByCategoryRetry}
-            />
-          </div>
+          <DayRibbon
+            episodes={episodes}
+            windowStart={from}
+            windowEnd={to}
+            onEpisodeClick={handleEpisodeClick}
+          />
+          <BalanceRings
+            data={balance.data?.data}
+            isLoading={balance.isLoading}
+            isError={balance.isError}
+            onRetry={() => void balance.refetch()}
+          />
         </div>
+      </Section>
+
+      <Section eyebrow="Who you were with">
+        <WhoYouWereWithPanel
+          data={who.data?.data}
+          isLoading={who.isLoading}
+          isError={who.isError}
+          onRetry={() => void who.refetch()}
+        />
+      </Section>
+
+      <Section eyebrow="Needs your eye">
+        <CorrectionPromptsPanel
+          data={prompts.data?.data}
+          isLoading={prompts.isLoading}
+          isError={prompts.isError}
+          onRetry={() => void prompts.refetch()}
+          onSelectEpisode={handleEpisodeClick}
+        />
+      </Section>
+
+      <Section eyebrow="Zoom out">
+        <TrendsLens
+          data={trends.data?.data}
+          isLoading={trends.isLoading}
+          isError={trends.isError}
+          onRetry={() => void trends.refetch()}
+          window={trendsWindow}
+          onWindowChange={setTrendsWindow}
+        />
       </Section>
 
       <Section eyebrow="Work schedule">

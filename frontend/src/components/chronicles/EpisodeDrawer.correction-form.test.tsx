@@ -16,6 +16,7 @@ vi.mock("@/hooks/use-chronicles", () => ({
   useChroniclerEpisode: vi.fn(),
   useChroniclerEpisodeEvents: vi.fn(() => ({ data: [], isLoading: false, error: null })),
   useChroniclerEpisodeCorrections: vi.fn(() => ({ data: [], isLoading: false, error: null })),
+  useChroniclerEvidenceChain: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
   useChroniclerExplain: vi.fn(() => ({ mutate: vi.fn(), isPending: false, isSuccess: false, error: null })),
   useSubmitEpisodeCorrection: vi.fn(),
 }));
