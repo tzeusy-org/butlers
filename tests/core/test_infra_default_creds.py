@@ -43,6 +43,23 @@ def _set_strong_infra_creds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GF_SECURITY_ADMIN_PASSWORD", "str0ng-grafana-pw")
 
 
+def _own_warning_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return only this module's own INSECURE-DEFAULT warning messages.
+
+    ``caplog.at_level(level, logger="butlers.db")`` narrows the *level* of the
+    named logger, but pytest's capture handler is still attached at the ROOT
+    logger — so ``caplog.records`` picks up WARNING+ records from *any*
+    logger that propagates to root during the ``with`` block (e.g. a stray
+    "no running event loop" line from ``butlers.core.butler_logging`` left
+    over by an unrelated test's global logging state; see bu-lvoqq). Filter
+    to records actually emitted by ``butlers.db`` so cross-test bleed cannot
+    inflate the count.
+    """
+    return [
+        r.message for r in caplog.records if r.levelno == logging.WARNING and r.name == "butlers.db"
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Dev-posture tests
 # ---------------------------------------------------------------------------
@@ -61,7 +78,7 @@ def test_known_defaults_dev_posture_warns_not_raises(
         check_infra_default_creds()  # must NOT raise
 
     # At least one WARNING logged for MinIO and Grafana defaults.
-    warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    warning_messages = _own_warning_messages(caplog)
     assert any("MinIO" in m for m in warning_messages), (
         "Expected at least one WARNING mentioning MinIO default credentials"
     )
@@ -85,7 +102,7 @@ def test_explicit_known_default_values_dev_posture_warns(
     with caplog.at_level(logging.WARNING, logger="butlers.db"):
         check_infra_default_creds()  # must NOT raise
 
-    warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    warning_messages = _own_warning_messages(caplog)
     assert len(warning_messages) == 4, (
         f"Expected 4 warnings (one per credential), got {len(warning_messages)}: {warning_messages}"
     )
@@ -149,7 +166,7 @@ def test_strong_creds_dev_posture_no_warning(
     with caplog.at_level(logging.WARNING, logger="butlers.db"):
         check_infra_default_creds()  # must NOT raise
 
-    warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    warning_messages = _own_warning_messages(caplog)
     assert not warning_messages, f"Unexpected warnings with strong creds: {warning_messages}"
 
 
