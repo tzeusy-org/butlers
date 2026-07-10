@@ -187,11 +187,15 @@ _HISTOGRAM_MAX_BUCKETS = 2880
 # output plus connectors.filtered_events' own status values). Used to
 # zero-fill each present bucket's counts dict so callers never see a missing
 # key — only whole buckets with zero events across every status are omitted.
+# 'failed' (routing failure post-ingestion, see ingestion_event_mark_failed)
+# was historically omitted here, undercounting outages in the hourly chart —
+# see bu-lkzsf.2.
 _HISTOGRAM_STATUSES: tuple[str, ...] = (
     "ingested",
     "skipped",
     "filtered",
     "error",
+    "failed",
     "replay_pending",
     "replay_complete",
     "replay_failed",
@@ -611,7 +615,7 @@ async def ingestion_events_histogram(
         A dict with:
         - ``buckets``: list of ``{"ts": datetime, "counts": {status: count, ...}}``,
           ordered oldest-first. A bucket only appears when at least one event
-          fell into it; present buckets always carry all seven status keys
+          fell into it; present buckets always carry all eight status keys
           (:data:`_HISTOGRAM_STATUSES`), zero-filled for statuses with no events.
         - ``bucket``: the resolved bucket granularity string, echoed back.
 

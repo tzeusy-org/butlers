@@ -446,7 +446,7 @@ async def get_ingestion_events_histogram(
 
     Zero-count buckets are omitted — a bucket only appears in the response when
     at least one event fell into it during the requested window; present
-    buckets always carry all seven status keys (zero-filled for statuses with
+    buckets always carry all eight status keys (zero-filled for statuses with
     no events in that bucket).
 
     Guardrail: bucket count is capped at 2880 regardless of granularity (48h

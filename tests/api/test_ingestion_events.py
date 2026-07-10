@@ -1346,6 +1346,7 @@ async def test_histogram_response_shape(app):
                         "skipped": 0,
                         "filtered": 1,
                         "error": 0,
+                        "failed": 0,
                         "replay_pending": 0,
                         "replay_complete": 0,
                         "replay_failed": 0,
@@ -1370,6 +1371,7 @@ async def test_histogram_response_shape(app):
     assert len(body["buckets"]) == 1
     assert body["buckets"][0]["counts"]["ingested"] == 3
     assert body["buckets"][0]["counts"]["filtered"] == 1
+    assert body["buckets"][0]["counts"]["failed"] == 0  # zero-filled, not dropped
 
 
 async def test_histogram_missing_from_or_to_returns_422(app):

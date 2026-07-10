@@ -1252,7 +1252,7 @@ async def test_ingestion_events_histogram_guardrail_rejects_1m_over_48h() -> Non
 
 
 async def test_ingestion_events_histogram_aggregates_and_zero_fills_present_buckets() -> None:
-    """Rows are grouped by bucket_ts, zero-filled to all 7 statuses; buckets sorted ascending."""
+    """Rows are grouped by bucket_ts, zero-filled to all 8 statuses; buckets sorted ascending."""
     from butlers.core.ingestion_events import ingestion_events_histogram
 
     ts_a = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -1281,6 +1281,7 @@ async def test_ingestion_events_histogram_aggregates_and_zero_fills_present_buck
         "skipped": 0,
         "filtered": 1,
         "error": 0,
+        "failed": 0,
         "replay_pending": 0,
         "replay_complete": 0,
         "replay_failed": 0,
@@ -1291,6 +1292,28 @@ async def test_ingestion_events_histogram_aggregates_and_zero_fills_present_buck
 
     # No zero-count bucket appears for minutes with no rows at all.
     assert len(result["buckets"]) == 2
+
+
+async def test_ingestion_events_histogram_counts_failed_status() -> None:
+    """'failed' (routing failure post-ingestion, see ingestion_event_mark_failed)
+    is a first-class histogram status, not silently dropped into the zero-fill
+    (bu-lkzsf.2: the hourly chart previously undercounted outages)."""
+    from butlers.core.ingestion_events import ingestion_events_histogram
+
+    ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    pool = _FakePool(fetch_results=[_make_histogram_row(ts, "failed", 4)])
+
+    result = await ingestion_events_histogram(
+        pool,
+        from_dt=datetime(2026, 1, 1, 11, 0, 0, tzinfo=UTC),
+        to_dt=datetime(2026, 1, 1, 13, 0, 0, tzinfo=UTC),
+        bucket="1m",
+    )
+
+    assert len(result["buckets"]) == 1
+    counts = result["buckets"][0]["counts"]
+    assert counts["failed"] == 4
+    assert "failed" in counts  # present even when zero, on every bucket
 
 
 async def test_ingestion_events_histogram_forwards_filters_to_sql() -> None:

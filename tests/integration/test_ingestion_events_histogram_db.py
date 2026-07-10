@@ -264,6 +264,29 @@ async def test_histogram_respects_statuses_filter(pool):
     assert counts["ingested"] == 0
 
 
+async def test_histogram_counts_failed_status_against_real_backend(pool):
+    """'failed' (routing failure post-ingestion, ingestion_event_mark_failed's
+    'ingested' -> 'failed' transition) is counted in the histogram rather than
+    being dropped by the union query's status vocabulary (bu-lkzsf.2)."""
+    from butlers.core.ingestion_events import ingestion_events_histogram
+
+    ts = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
+    await _seed_ingestion_event(pool, received_at=ts, status="ingested")
+    await _seed_ingestion_event(pool, received_at=ts, status="failed")
+
+    result = await ingestion_events_histogram(
+        pool,
+        from_dt=ts - timedelta(minutes=1),
+        to_dt=ts + timedelta(minutes=1),
+        bucket="1m",
+    )
+
+    assert len(result["buckets"]) == 1
+    counts = result["buckets"][0]["counts"]
+    assert counts["failed"] == 1
+    assert counts["ingested"] == 1
+
+
 async def test_histogram_respects_q_filter(pool):
     from butlers.core.ingestion_events import ingestion_events_histogram
 

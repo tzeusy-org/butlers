@@ -114,6 +114,7 @@ class IngestionHistogramCounts(BaseModel):
     skipped: int = 0
     filtered: int = 0
     error: int = 0
+    failed: int = 0
     replay_pending: int = 0
     replay_complete: int = 0
     replay_failed: int = 0
