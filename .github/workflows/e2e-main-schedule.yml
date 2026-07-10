@@ -1,0 +1,163 @@
+name: E2E Main Schedule
+
+# Scheduled watchdog for the frontend-e2e suite on main (bu-xotdv).
+#
+# WHY: frontend-e2e is not a required GitHub check, so a real e2e regression can
+# merge to main and sit red silently (it did — commit 32fe52ea0 broke scope
+# matching and the secrets-passport-parity spec stayed red ~2 days). This
+# workflow re-runs the SAME frontend-e2e suite against main on a schedule and,
+# on failure, opens (or updates) a single deduped tracking issue so a red main
+# surfaces loudly within one cycle instead of lying red silently. On recovery it
+# comments and closes that issue.
+#
+# It deliberately does NOT touch branch protection or required checks — main is
+# unprotected by design (network-boundary security doctrine); flipping that is an
+# owner call, left as a possible follow-up.
+
+on:
+  schedule:
+    # Every 6 hours.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+# Overlapping scheduled runs cancel — keep it cheap, only ever one in flight.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  frontend-e2e:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+
+      # Setup steps below are kept in lock-step with the frontend-e2e job in
+      # ci.yml — do not let them diverge.
+      - name: Set up Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npm run test:e2e:install
+
+      - name: Build (required for vite preview)
+        run: npm run build
+
+      - name: Run Playwright e2e tests
+        id: e2e
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
+      # ── Loud surface: open-or-update a single deduped tracking issue on red ──
+      - name: Open or update red-main tracking issue
+        if: ${{ failure() && steps.e2e.conclusion == 'failure' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const LABEL = 'e2e-main-red';
+            const TITLE = 'frontend-e2e is RED on main';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const sha = context.sha;
+            const shortSha = sha.slice(0, 10);
+
+            // Dedupe: reuse the single open tracking issue if one already exists.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: LABEL,
+              per_page: 100,
+            });
+            const issue = existing.data.find((i) => i.title === TITLE);
+
+            const detail = [
+              `frontend-e2e failed on \`main\` (\`${shortSha}\`).`,
+              '',
+              `- Run: ${runUrl}`,
+              `- Commit: ${sha}`,
+              '',
+              'This is the scheduled main-branch e2e watchdog (bu-xotdv). frontend-e2e',
+              'is not a required check, so this run is the safety net that catches a',
+              'regression already merged to main. Investigate: download the Playwright',
+              'report artifact from the run, reproduce locally with',
+              '`npm run test:e2e` in `frontend/`, and fix the spec or the UI.',
+            ].join('\n');
+
+            if (issue) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Still red — another scheduled run failed.\n\n${detail}`,
+              });
+              core.notice(`Updated existing red-main issue #${issue.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: TITLE,
+                labels: [LABEL],
+                body: detail,
+              });
+              core.notice(`Opened red-main issue #${created.data.number}`);
+            }
+
+      # ── Recovery: comment and close any open tracking issue when green ──
+      - name: Close red-main tracking issue on recovery
+        if: ${{ success() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const LABEL = 'e2e-main-red';
+            const TITLE = 'frontend-e2e is RED on main';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const shortSha = context.sha.slice(0, 10);
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: LABEL,
+              per_page: 100,
+            });
+            const issues = existing.data.filter((i) => i.title === TITLE);
+
+            for (const issue of issues) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Recovered — frontend-e2e is green on \`main\` (\`${shortSha}\`).\n\nRun: ${runUrl}\n\nClosing automatically.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              core.notice(`Closed recovered red-main issue #${issue.number}`);
+            }
