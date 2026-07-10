@@ -102,6 +102,36 @@ function isGoogleAppCredential(credential: SystemCredential): boolean {
   return GOOGLE_APP_KEYS.has(credential.key);
 }
 
+// Display names for the known system-credential consumers (bu-aqoiq). These
+// are the module/subsystem labels emitted by the backend's _SYSTEM_KEY_USED_BY
+// map (secrets_v2.py) — NOT butler slugs. A pure algorithmic Title Case would
+// mangle "oauth" → "Oauth", so known labels get an explicit display name; any
+// value not listed here falls back to snake_case → Title Case in
+// humanizeUsedByConsumer so a newly-added consumer still reads sanely.
+const SYSTEM_CONSUMER_DISPLAY_NAMES: Record<string, string> = {
+  email: "Email",
+  telegram: "Telegram",
+  blob_storage: "Blob Storage",
+  oauth: "OAuth",
+};
+
+/**
+ * Humanize a system-credential "used by" consumer label for display.
+ *
+ * Known consumers resolve via SYSTEM_CONSUMER_DISPLAY_NAMES; unknown values
+ * fall back to snake_case → Title Case (e.g. "blob_storage" → "Blob Storage").
+ * The "*" sentinel is special-cased at the call site and never passed here.
+ */
+function humanizeUsedByConsumer(consumer: string): string {
+  const known = SYSTEM_CONSUMER_DISPLAY_NAMES[consumer];
+  if (known) return known;
+  return consumer
+    .split("_")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 // ── Shared layout atoms ──────────────────────────────────────────────────────
 
 /** HeadingBand: credential title + state plaque. Used by all three pages. */
@@ -1962,7 +1992,12 @@ export function PageSystem({
               {credential.usedBy[0] !== "*" &&
                 credential.usedBy.map((b) => (
                   <span key={b} className="inline-flex items-center gap-1.5">
-                    <span className="font-sans text-[12.5px] text-[var(--fg)]">{b}</span>
+                    <span
+                      data-testid="used-by-consumer"
+                      className="font-sans text-[12.5px] text-[var(--fg)]"
+                    >
+                      {humanizeUsedByConsumer(b)}
+                    </span>
                   </span>
                 ))}
             </div>
