@@ -39,6 +39,8 @@ import type {
   UnifiedCalendarEntry,
   UnifiedCalendarSourceType,
 } from "@/api/types.ts";
+import { CALENDAR_UNDOABLE_ACTION_TYPES } from "@/api/types.ts";
+import { ApiError } from "@/api/index.ts";
 import {
   useCalendarAccounts,
   useAcceptCalendarProposal,
@@ -57,6 +59,7 @@ import {
   useFindCalendarWorkspaceTime,
   useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
+  useUndoCalendarWorkspaceMutation,
   usePreviewCalendarWorkspaceButlerEvent,
   useSetPrimaryCalendar,
   useSyncCalendarWorkspace,
@@ -1108,6 +1111,24 @@ interface CalendarActivityPanelProps {
   offset: number;
   limit: number;
   onPageChange: (offset: number) => void;
+  /**
+   * Reverse an applied, undoable audit row (durable undo via
+   * POST /calendar/workspace/undo/{action_id}). The parent owns the mutation,
+   * toast, and status-code→message mapping.
+   */
+  onUndo: (entry: CalendarAuditEntry) => void;
+  /** action_id of the row whose undo is currently in flight, if any. */
+  undoingId: string | null;
+  /** action_ids already reversed this session (their Undo button is spent). */
+  undoneIds: ReadonlySet<string>;
+}
+
+/** An audit row is reversible when it is applied and has a known inverse. */
+function isUndoableAuditEntry(entry: CalendarAuditEntry): boolean {
+  return (
+    entry.action_status === "applied" &&
+    CALENDAR_UNDOABLE_ACTION_TYPES.has(entry.action_type)
+  );
 }
 
 interface CalendarFindTimePanelProps {
@@ -1361,11 +1382,14 @@ function CalendarFindTimePanel({
   );
 }
 
-function CalendarActivityPanel({
+export function CalendarActivityPanel({
   auditQuery,
   offset,
   limit,
   onPageChange,
+  onUndo,
+  undoingId,
+  undoneIds,
 }: CalendarActivityPanelProps) {
   const entries = auditQuery.data?.data?.entries ?? [];
   const total = auditQuery.data?.data?.total ?? 0;
@@ -1434,6 +1458,9 @@ function CalendarActivityPanel({
             typeof entry.payload_summary?.title === "string"
               ? entry.payload_summary.title
               : null;
+          const undoable = isUndoableAuditEntry(entry);
+          const undone = undoneIds.has(entry.id);
+          const undoing = undoingId === entry.id;
 
           return (
             <Row
@@ -1446,15 +1473,37 @@ function CalendarActivityPanel({
                 </span>
               }
               meta={
-                entry.source_session_id ? (
-                  <Link
-                    to={`/sessions/${entry.source_session_id}`}
-                    className="font-mono text-[10px] text-[var(--mfg)] underline decoration-dotted hover:text-[var(--fg)]"
-                    title={`Session ${entry.source_session_id}`}
-                  >
-                    session ›
-                  </Link>
-                ) : null
+                <div className="flex items-center gap-3">
+                  {entry.source_session_id ? (
+                    <Link
+                      to={`/sessions/${entry.source_session_id}`}
+                      className="font-mono text-[10px] text-[var(--mfg)] underline decoration-dotted hover:text-[var(--fg)]"
+                      title={`Session ${entry.source_session_id}`}
+                    >
+                      session ›
+                    </Link>
+                  ) : null}
+                  {undoable ? (
+                    undone ? (
+                      <span
+                        className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]"
+                        data-testid="calendar-audit-undone"
+                      >
+                        undone
+                      </span>
+                    ) : (
+                      <PillButton
+                        data-testid="calendar-audit-undo"
+                        data-action-id={entry.id}
+                        disabled={undoingId !== null}
+                        onClick={() => onUndo(entry)}
+                        title="Reverse this calendar change"
+                      >
+                        {undoing ? "Undoing…" : "Undo"}
+                      </PillButton>
+                    )
+                  ) : null}
+                </div>
               }
             >
               <div className="flex min-w-0 flex-col gap-0.5">
@@ -2423,6 +2472,60 @@ export default function CalendarWorkspacePage() {
   const auditQuery = useCalendarWorkspaceAudit(
     { limit: AUDIT_PAGE_SIZE, offset: auditOffset },
     { enabled: activityPanelOpen },
+  );
+
+  // Durable undo of an applied audit row. The endpoint reverses the logged
+  // mutation server-side with a freshly generated request_id; we track the
+  // in-flight row and the set already reversed this session so the affordance
+  // reflects state without needing a per-row "undone" flag on the audit read.
+  const undoMutation = useUndoCalendarWorkspaceMutation();
+  const [undoingActionId, setUndoingActionId] = useState<string | null>(null);
+  const [undoneActionIds, setUndoneActionIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const handleUndoAuditEntry = useCallback(
+    (entry: CalendarAuditEntry) => {
+      if (undoingActionId) return;
+      setUndoingActionId(entry.id);
+      undoMutation.mutate(entry.id, {
+        onSuccess: (response) => {
+          setUndoneActionIds((prev) => new Set(prev).add(entry.id));
+          toast.success(
+            `Reversed ${entry.action_type} · undo ${response.data.request_id}`,
+          );
+        },
+        onError: (error) => {
+          // Map the fail-fast HTTP contract to honest, distinct messages —
+          // never swallow the failure into a generic "try again".
+          let message = "Couldn't undo this calendar change.";
+          if (error instanceof ApiError) {
+            if (error.status === 409) {
+              // Already undone, or the row is no longer in an applied state.
+              setUndoneActionIds((prev) => new Set(prev).add(entry.id));
+              message =
+                "This change was already undone (or is no longer reversible).";
+            } else if (error.status === 422) {
+              message =
+                "Can't undo — the original state wasn't captured, so it can't be reconstructed.";
+            } else if (error.status === 404) {
+              message =
+                "That action is no longer in the audit log, so it can't be undone.";
+            } else if (error.message) {
+              message = error.message;
+            }
+          } else if (error instanceof Error && error.message) {
+            message = error.message;
+          }
+          toast.error(message);
+        },
+        onSettled: () => {
+          setUndoingActionId((current) =>
+            current === entry.id ? null : current,
+          );
+        },
+      });
+    },
+    [undoMutation, undoingActionId],
   );
 
   const [syncingSourceKey, setSyncingSourceKey] = useState<string | null>(null);
@@ -4548,6 +4651,9 @@ export default function CalendarWorkspacePage() {
             offset={auditOffset}
             limit={AUDIT_PAGE_SIZE}
             onPageChange={setAuditOffset}
+            onUndo={handleUndoAuditEntry}
+            undoingId={undoingActionId}
+            undoneIds={undoneActionIds}
           />
         </div>
       ) : null}

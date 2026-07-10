@@ -772,6 +772,36 @@ export interface CalendarAuditParams {
   butler?: string;
 }
 
+/**
+ * Audit action types that have a reconstructable inverse mutation and can be
+ * reversed via POST /api/calendar/workspace/undo/{action_id}. Mirrors the
+ * backend ``_UNDO_INVERSE_TOOL`` map in
+ * ``api/routers/calendar_workspace.py`` — user-lane create/update/delete only.
+ */
+export const CALENDAR_UNDOABLE_ACTION_TYPES: ReadonlySet<string> = new Set([
+  "workspace_user_create",
+  "workspace_user_update",
+  "workspace_user_delete",
+]);
+
+/**
+ * Response payload for POST /api/calendar/workspace/undo/{action_id}.
+ *
+ * The endpoint synthesizes and dispatches the inverse mutation server-side
+ * with a freshly generated ``request_id`` (``undo-<uuid>``) — the client sends
+ * no body and does not supply the request_id; it is returned here so the UI can
+ * surface/audit the reversal. ``undone`` is ``true`` only when the inverse
+ * dispatch succeeded and the original action was marked undone.
+ */
+export interface CalendarUndoResponse {
+  action_id: string;
+  action_type: string;
+  inverse_tool: string;
+  request_id: string;
+  undone: boolean;
+  result: Record<string, unknown>;
+}
+
 /** Source-level freshness metadata for workspace rendering. */
 export interface CalendarWorkspaceSourceFreshness {
   source_id: string;

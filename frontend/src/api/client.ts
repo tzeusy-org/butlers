@@ -38,6 +38,7 @@ import type {
   CalendarIcsImportResponse,
   CalendarAuditParams,
   CalendarAuditResponse,
+  CalendarUndoResponse,
   CalendarDayBriefingResponse,
   CalendarDedupRulesModel,
   CalendarDedupRulesUpdateRequest,
@@ -1700,6 +1701,26 @@ export function getCalendarWorkspaceEntry(
   const qs = sp.toString();
   return apiFetch<ApiResponse<UnifiedCalendarEntry>>(
     `/calendar/workspace/entries/${encodeURIComponent(entryId)}${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/**
+ * Reverse a single previously-applied calendar mutation —
+ * POST /calendar/workspace/undo/{action_id}.
+ *
+ * The endpoint synthesizes the inverse mutation from the logged
+ * ``calendar_action_log`` row and dispatches it with a freshly generated
+ * server-side ``request_id`` (returned on the response); the client sends no
+ * body. Throws {@link ApiError} with status 404 (unknown action), 409 (action
+ * not ``applied`` / already undone), or 422 (missing pre-state or no
+ * reconstructable inverse).
+ */
+export function undoCalendarWorkspaceMutation(
+  actionId: string,
+): Promise<ApiResponse<CalendarUndoResponse>> {
+  return apiFetch<ApiResponse<CalendarUndoResponse>>(
+    `/calendar/workspace/undo/${encodeURIComponent(actionId)}`,
+    { method: "POST" },
   );
 }
 

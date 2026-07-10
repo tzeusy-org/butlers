@@ -27,6 +27,7 @@ import {
   setPrimaryCalendar,
   syncCalendarWorkspace,
   toggleCalendarSource,
+  undoCalendarWorkspaceMutation,
 } from "@/api/index.ts";
 import type {
   ApiResponse,
@@ -225,6 +226,28 @@ export function useSyncCalendarWorkspace() {
 export function useFindCalendarWorkspaceTime() {
   return useMutation({
     mutationFn: (body: CalendarWorkspaceFindTimeRequest) => findCalendarWorkspaceTime(body),
+  });
+}
+
+/**
+ * Reverse a single applied calendar mutation from the audit log and refresh
+ * the workspace grid, meta, and audit caches after success.
+ *
+ * The mutation variable is the audit row's ``action_id``. The endpoint
+ * generates the inverse dispatch's ``request_id`` server-side and returns it on
+ * the response. Rejects with an {@link ApiError} carrying status 404 (unknown
+ * action), 409 (not applied / already undone), or 422 (missing pre-state) — the
+ * caller maps those to distinct UI messages.
+ */
+export function useUndoCalendarWorkspaceMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (actionId: string) => undoCalendarWorkspaceMutation(actionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace-audit"] });
+    },
   });
 }
 

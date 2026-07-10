@@ -58,6 +58,7 @@ export {
   mutateCalendarWorkspaceButlerEvent,
   previewCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
+  undoCalendarWorkspaceMutation,
   parseCalendarQuickAdd,
   getCostSummary,
   getDailyCosts,
