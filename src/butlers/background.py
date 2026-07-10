@@ -21,6 +21,10 @@ from typing import Any
 import httpx
 
 from butlers.core.model_routing import Complexity
+from butlers.core.tool_call_capture import (
+    reset_current_switchboard_client,
+    set_current_switchboard_client,
+)
 from butlers.scheduled_jobs import (
     _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
     _resolve_deterministic_schedule_job_name,
@@ -71,6 +75,7 @@ async def dispatch_scheduled_task(
     job_args: dict[str, Any] | None = None,
     complexity: Complexity = Complexity.WORKHORSE,
     max_token_budget: int | None = None,
+    switchboard_client: Any | None = None,
 ) -> Any:
     """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
@@ -97,6 +102,14 @@ async def dispatch_scheduled_task(
         Complexity hint forwarded to the spawner for prompt-mode dispatch.
     max_token_budget:
         Optional token budget forwarded to the spawner for prompt-mode dispatch.
+    switchboard_client:
+        The calling daemon's live switchboard MCP client (or ``None`` when
+        disconnected). Bound to the ambient
+        ``butlers.core.tool_call_capture`` contextvar for the duration of the
+        deterministic handler call so a job can deliver owner notifications
+        through the notify boundary (``deliver()`` via the Switchboard MCP
+        connection) without widening every job handler's ``(pool, job_args)``
+        signature. Unused for prompt-mode dispatch.
     """
     resolved_job_name = _resolve_deterministic_schedule_job_name(
         butler_name=butler_name,
@@ -129,7 +142,11 @@ async def dispatch_scheduled_task(
             trigger_source,
             job_args,
         )
-        return await handler(pool, job_args)
+        _client_token = set_current_switchboard_client(switchboard_client)
+        try:
+            return await handler(pool, job_args)
+        finally:
+            reset_current_switchboard_client(_client_token)
 
     if spawner is None:
         raise RuntimeError("Scheduler dispatch requires an initialized spawner")

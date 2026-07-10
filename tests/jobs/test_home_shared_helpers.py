@@ -5,7 +5,10 @@ Covers:
 - HomeJobContext async context manager: client lifecycle, Authorization header
 - _load_thresholds: stored values, fallbacks, per-key fallback, type casting, key prefix
 - _read_entity_snapshot: populated table, domain filter, empty raises
-- _send_notify: delegates to _notify_owner_telegram
+- _send_notify: routes through the notify boundary (quiet-hours/context-bus
+  suppression, missing recipient, missing switchboard client, deliver()
+  success/failure) with an attention_ledger row on every terminal branch
+  (bu-tdd4k.3)
 
 All tests use mocked asyncpg pools — no real database or network required.
 """
@@ -225,16 +228,161 @@ async def test_read_entity_snapshot():
 
 
 # ---------------------------------------------------------------------------
-# _send_notify
+# _send_notify — routes through the notify boundary (bu-tdd4k.3)
 # ---------------------------------------------------------------------------
 
 
-async def test_send_notify():
-    """_send_notify delegates to _notify_owner_telegram."""
+def _patch_no_suppression():
+    """Patch the quiet-hours/context-bus gate open (not suppressed)."""
+    return (
+        patch(
+            "butlers.jobs.home.get_approvals_policy_quiet_hours",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "butlers.jobs.home.get_suppressing_context_signal",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    )
+
+
+async def test_send_notify_suppressed_by_quiet_hours():
+    """Quiet-hours suppression skips delivery and records a suppressed ledger row."""
     pool = _make_pool()
-    mock_notify = AsyncMock()
 
-    with patch("butlers.jobs.home._notify_owner_telegram", mock_notify):
-        await _send_notify(pool, "Hello, owner!")
+    with (
+        patch(
+            "butlers.jobs.home.get_approvals_policy_quiet_hours",
+            new_callable=AsyncMock,
+            return_value={"timezone": "UTC", "quiet_start_hour": 0, "quiet_end_hour": 23},
+        ),
+        patch("butlers.jobs.home.should_suppress_by_policy", return_value=True),
+        patch(
+            "butlers.jobs.home.resolve_owner_telegram_recipient", new_callable=AsyncMock
+        ) as mock_resolve,
+        patch("butlers.jobs.home.get_current_switchboard_client") as mock_client,
+        patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
+    ):
+        await _send_notify(pool, "Weekly digest")
 
-    mock_notify.assert_awaited_once_with(pool, "Hello, owner!")
+    mock_resolve.assert_not_awaited()
+    mock_client.assert_not_called()
+    mock_ledger.assert_awaited_once()
+    assert mock_ledger.await_args.kwargs["outcome"] == "suppressed"
+    assert mock_ledger.await_args.kwargs["reason"] == "quiet_hours"
+
+
+async def test_send_notify_no_recipient_configured():
+    """No telegram recipient configured: skip delivery, record a deferred ledger row."""
+    pool = _make_pool()
+    p1, p2 = _patch_no_suppression()
+
+    with (
+        p1,
+        p2,
+        patch(
+            "butlers.jobs.home.resolve_owner_telegram_recipient",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch("butlers.jobs.home.get_current_switchboard_client") as mock_client,
+        patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
+    ):
+        await _send_notify(pool, "Weekly digest")
+
+    mock_client.assert_not_called()
+    assert mock_ledger.await_args.kwargs["outcome"] == "deferred"
+    assert mock_ledger.await_args.kwargs["reason"] == "no_recipient_configured"
+
+
+async def test_send_notify_no_switchboard_client():
+    """Switchboard client unavailable: skip delivery, record a deferred ledger row."""
+    pool = _make_pool()
+    p1, p2 = _patch_no_suppression()
+
+    with (
+        p1,
+        p2,
+        patch(
+            "butlers.jobs.home.resolve_owner_telegram_recipient",
+            new_callable=AsyncMock,
+            return_value="12345",
+        ),
+        patch("butlers.jobs.home.get_current_switchboard_client", return_value=None),
+        patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
+    ):
+        await _send_notify(pool, "Weekly digest")
+
+    assert mock_ledger.await_args.kwargs["outcome"] == "deferred"
+    assert mock_ledger.await_args.kwargs["reason"] == "switchboard_client_unavailable"
+
+
+async def test_send_notify_delivers_via_deliver_mcp_tool():
+    """Happy path: builds a notify.v1 envelope and calls deliver() over the MCP client."""
+    pool = _make_pool()
+    p1, p2 = _patch_no_suppression()
+
+    mock_client = MagicMock()
+    mock_result = MagicMock()
+    mock_result.is_error = False
+    mock_result.data = {"status": "sent", "notification_id": "abc-123"}
+    mock_client.call_tool = AsyncMock(return_value=mock_result)
+
+    with (
+        p1,
+        p2,
+        patch(
+            "butlers.jobs.home.resolve_owner_telegram_recipient",
+            new_callable=AsyncMock,
+            return_value="12345",
+        ),
+        patch("butlers.jobs.home.get_current_switchboard_client", return_value=mock_client),
+        patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
+    ):
+        await _send_notify(pool, "Weekly digest")
+
+    mock_client.call_tool.assert_awaited_once()
+    tool_name, tool_args = mock_client.call_tool.await_args.args
+    assert tool_name == "deliver"
+    assert tool_args["source_butler"] == "home"
+    envelope = tool_args["notify_request"]
+    assert envelope["schema_version"] == "notify.v1"
+    assert envelope["origin_butler"] == "home"
+    assert envelope["delivery"] == {
+        "intent": "send",
+        "channel": "telegram",
+        "message": "Weekly digest",
+        "recipient": "12345",
+    }
+    assert mock_ledger.await_args.kwargs["outcome"] == "delivered"
+    assert mock_ledger.await_args.kwargs["notification_ref"] == "abc-123"
+
+
+async def test_send_notify_deliver_failure_recorded_as_deferred():
+    """deliver() reporting status=failed is recorded as a deferred ledger row, not raised."""
+    pool = _make_pool()
+    p1, p2 = _patch_no_suppression()
+
+    mock_client = MagicMock()
+    mock_result = MagicMock()
+    mock_result.is_error = False
+    mock_result.data = {"status": "failed", "error": "Messenger unreachable"}
+    mock_client.call_tool = AsyncMock(return_value=mock_result)
+
+    with (
+        p1,
+        p2,
+        patch(
+            "butlers.jobs.home.resolve_owner_telegram_recipient",
+            new_callable=AsyncMock,
+            return_value="12345",
+        ),
+        patch("butlers.jobs.home.get_current_switchboard_client", return_value=mock_client),
+        patch("butlers.jobs.home.record_attention_event", new_callable=AsyncMock) as mock_ledger,
+    ):
+        await _send_notify(pool, "Weekly digest")
+
+    assert mock_ledger.await_args.kwargs["outcome"] == "deferred"
+    assert "Messenger unreachable" in mock_ledger.await_args.kwargs["reason"]

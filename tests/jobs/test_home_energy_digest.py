@@ -179,7 +179,7 @@ def test_build_digest_message():
 
 async def test_run_energy_digest_early_exits():
     """Empty snapshot → error; no energy sensors → error."""
-    with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock):
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock):
         result = await run_energy_digest(_make_pool(snapshot_count=0), None)
     assert result == {"error": "no_entity_snapshot"}
 
@@ -189,7 +189,7 @@ async def test_run_energy_digest_early_exits():
             _make_energy_row("sensor.temperature", "22.5", "Room Temp"),
         ],
     )
-    with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock):
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock):
         result2 = await run_energy_digest(pool, None)
     assert result2 == {"error": "no_energy_sensors"}
 
@@ -211,7 +211,7 @@ async def test_run_energy_digest_full_run_with_anomalies():
     }
 
     with (
-        patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch(
             "butlers.credential_store.resolve_owner_entity_info",
             new_callable=AsyncMock,

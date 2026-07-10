@@ -36,14 +36,21 @@ Shared helpers
     matching rows.
 
 ``_send_notify(pool, message)``
-    Convenience wrapper around ``_notify_owner_telegram`` with an explicit
-    ``channel="telegram"`` / ``intent="send"`` semantic.
+    Canonical notify helper for Home butler job handlers (bu-tdd4k.3). Routes
+    every owner-facing push through the notify boundary — the same
+    quiet-hours / context-bus gating and ``public.attention_ledger``
+    recording as ``notify()`` and the insight-delivery-cycle (RFC 0011
+    Amendment 1) — and dispatches via the Switchboard's ``deliver()`` MCP
+    tool over the Home daemon's live ``switchboard_client``. Replaces the
+    former ``_notify_owner_telegram`` raw Telegram Bot API POST, which
+    bypassed budgets/quiet-hours/coalescing entirely and has been deleted.
 
 Design reference: openspec/changes/archive/home-butler-enhancements/
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
@@ -51,12 +58,22 @@ import re
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypedDict
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import httpx
 
+from butlers.core.approvals_policy import (
+    get_approvals_policy_quiet_hours,
+    should_suppress_by_policy,
+)
+from butlers.core.attention_ledger import get_suppressing_context_signal, record_attention_event
 from butlers.core.state import state_get
-from butlers.credential_store import CredentialStore, resolve_owner_entity_info
+from butlers.core.tool_call_capture import get_current_switchboard_client
+from butlers.credential_store import (
+    resolve_owner_entity_info,
+    resolve_owner_telegram_recipient,
+)
 from butlers.modules.memory.storage import store_fact
 
 logger = logging.getLogger(__name__)
@@ -197,19 +214,199 @@ async def _read_entity_snapshot(
 # ---------------------------------------------------------------------------
 
 
-async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
-    """Send a Telegram notification to the owner (channel=telegram, intent=send).
+_HOME_NOTIFY_ORIGIN = "home"
+_HOME_NOTIFY_TIMEOUT_S = 30
 
-    This is the canonical notify helper for Home butler job handlers.
-    It delegates to ``_notify_owner_telegram``, which resolves the bot token
-    and chat ID from the owner's contact info.
+
+async def _check_owner_notify_suppression(pool: asyncpg.Pool) -> str | None:
+    """Decide whether an owner-facing Home butler push should be suppressed.
+
+    Mirrors notify()'s owner-default gate (quiet hours via
+    ``public.approvals_policy``, then context-bus dnd/sleeping) — see
+    ``core_tools/_notifications.py`` lines ~588-690 for the reference
+    implementation this deliberately parallels, and
+    ``butlers.jobs.secrets_lifecycle._check_suppression`` for an identical
+    replication of the same gate for a different out-of-process caller.
+    Returns a machine-readable reason string when suppressed, else None.
+    """
+    try:
+        policy = await get_approvals_policy_quiet_hours(pool)
+    except Exception:
+        logger.debug("_send_notify: quiet-hours policy lookup failed", exc_info=True)
+        policy = None
+
+    if policy is not None:
+        tz_name = policy.get("timezone", "UTC")
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("UTC")
+        now_local = datetime.now(UTC).astimezone(tz)
+        if should_suppress_by_policy(policy, current_hour=now_local.hour):
+            return "quiet_hours"
+
+    context_signal = await get_suppressing_context_signal(pool)
+    if context_signal is not None:
+        return f"context_bus:{context_signal}"
+
+    return None
+
+
+async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
+    """Send an owner notification through the notify boundary (channel=telegram, intent=send).
+
+    This is the canonical notify helper for Home butler job handlers
+    (bu-tdd4k.3). Unlike the deleted ``_notify_owner_telegram`` raw Telegram
+    Bot API POST, every push here is subject to the same quiet-hours /
+    context-bus suppression ``notify()`` itself applies, and every terminal
+    outcome (suppressed / no recipient / delivery error / delivered) is
+    recorded to ``public.attention_ledger`` so a skipped notification is
+    never invisible.
+
+    Home's deterministic job handlers run inside the Home daemon process but
+    are dispatched with the scheduler's fixed ``(pool, job_args)`` signature
+    — there is no parameter carrying ``daemon.switchboard_client`` through to
+    here. ``get_current_switchboard_client()`` recovers it from the ambient
+    contextvar that ``butlers.background.dispatch_scheduled_task`` binds for
+    the duration of this handler's dispatch, rather than widening every
+    registered deterministic job's signature for one caller's sake.
+
+    Calling ``deliver()``/``route()`` directly with the Home butler's own
+    schema-scoped pool (the ``butlers.jobs.secrets_lifecycle`` pattern for a
+    caller with no switchboard_client at all) is not an option here: both
+    read the switchboard schema's ``butler_registry`` table unqualified
+    (``roster/switchboard/tools/registry/registry.py``), so they only
+    resolve correctly against a pool whose search_path includes the
+    ``switchboard`` schema — Home's pool is scoped to ``home,public``. Going
+    through the ``deliver`` MCP tool instead runs it against the
+    Switchboard daemon's own pool, sidestepping the mismatch.
 
     Args:
         pool: asyncpg connection pool for the home butler's database.
         message: Message text to deliver.  HTML parse mode is used, so
             ``<b>``, ``<i>``, and ``<code>`` tags are supported.
     """
-    await _notify_owner_telegram(pool, message)
+    suppress_reason = await _check_owner_notify_suppression(pool)
+    if suppress_reason is not None:
+        logger.info("_send_notify: suppressed (%s)", suppress_reason)
+        await record_attention_event(
+            pool,
+            origin_butler=_HOME_NOTIFY_ORIGIN,
+            source="notify",
+            outcome="suppressed",
+            channel="telegram",
+            intent="send",
+            priority="medium",
+            reason=suppress_reason,
+        )
+        return
+
+    recipient = await resolve_owner_telegram_recipient(pool)
+    if not recipient:
+        logger.warning(
+            "_send_notify: no telegram_chat_id configured for owner — skipping notification"
+        )
+        await record_attention_event(
+            pool,
+            origin_butler=_HOME_NOTIFY_ORIGIN,
+            source="notify",
+            outcome="deferred",
+            channel="telegram",
+            intent="send",
+            priority="medium",
+            reason="no_recipient_configured",
+        )
+        return
+
+    client = get_current_switchboard_client()
+    if client is None:
+        logger.warning("_send_notify: switchboard client unavailable — skipping notification")
+        await record_attention_event(
+            pool,
+            origin_butler=_HOME_NOTIFY_ORIGIN,
+            source="notify",
+            outcome="deferred",
+            channel="telegram",
+            intent="send",
+            priority="medium",
+            reason="switchboard_client_unavailable",
+        )
+        return
+
+    notify_request = {
+        "schema_version": "notify.v1",
+        "origin_butler": _HOME_NOTIFY_ORIGIN,
+        "delivery": {
+            "intent": "send",
+            "channel": "telegram",
+            "message": message,
+            "recipient": recipient,
+        },
+    }
+    try:
+        result = await asyncio.wait_for(
+            client.call_tool(
+                "deliver",
+                {"source_butler": _HOME_NOTIFY_ORIGIN, "notify_request": notify_request},
+            ),
+            timeout=_HOME_NOTIFY_TIMEOUT_S,
+        )
+    except Exception as exc:
+        logger.warning("_send_notify: deliver() call failed: %s", exc, exc_info=True)
+        await record_attention_event(
+            pool,
+            origin_butler=_HOME_NOTIFY_ORIGIN,
+            source="notify",
+            outcome="deferred",
+            channel="telegram",
+            intent="send",
+            priority="medium",
+            reason=f"delivery_error:{exc}",
+        )
+        return
+
+    if result.is_error:
+        error_text = str(result.content[0].text) if result.content else "Unknown error"
+        logger.warning("_send_notify: deliver() returned an error: %s", error_text)
+        await record_attention_event(
+            pool,
+            origin_butler=_HOME_NOTIFY_ORIGIN,
+            source="notify",
+            outcome="deferred",
+            channel="telegram",
+            intent="send",
+            priority="medium",
+            reason=f"delivery_error:{error_text}",
+        )
+        return
+
+    data = result.data
+    if isinstance(data, dict) and data.get("status") == "failed":
+        error_text = str(data.get("error", "Delivery failed"))
+        logger.warning("_send_notify: deliver() reported failure: %s", error_text)
+        await record_attention_event(
+            pool,
+            origin_butler=_HOME_NOTIFY_ORIGIN,
+            source="notify",
+            outcome="deferred",
+            channel="telegram",
+            intent="send",
+            priority="medium",
+            reason=f"delivery_error:{error_text}",
+        )
+        return
+
+    logger.info("_send_notify: notification delivered to chat_id=%r", recipient)
+    await record_attention_event(
+        pool,
+        origin_butler=_HOME_NOTIFY_ORIGIN,
+        source="notify",
+        outcome="delivered",
+        channel="telegram",
+        intent="send",
+        priority="medium",
+        notification_ref=data.get("notification_id") if isinstance(data, dict) else None,
+    )
 
 
 class _NullEmbeddingEngine:
@@ -1219,53 +1416,6 @@ def _build_digest_message(
     return "\n".join(lines)
 
 
-async def _notify_owner_telegram(
-    pool: asyncpg.Pool,
-    message: str,
-) -> None:
-    """Send a Telegram message to the owner using the bot token and owner chat ID.
-
-    Resolves ``BUTLER_TELEGRAM_TOKEN`` from ``butler_secrets`` via
-    ``CredentialStore`` (ecosystem-wide Tier 1 credential) and
-    ``telegram_chat_id`` from the owner's entity_info/contact_info via
-    ``resolve_owner_entity_info`` (user-specific Tier 2). Silently skips if
-    either credential is unavailable.
-    """
-    token = await CredentialStore(pool).resolve("BUTLER_TELEGRAM_TOKEN")
-    chat_id = await resolve_owner_entity_info(pool, "telegram_chat_id")
-
-    if not token or not chat_id:
-        logger.warning(
-            "_notify_owner_telegram: telegram_bot_token or telegram_chat_id not configured "
-            "— skipping notification"
-        )
-        return
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code >= 400:
-                try:
-                    detail = resp.json().get("description", resp.text[:200])
-                except (ValueError, KeyError):
-                    detail = resp.text[:200]
-                logger.error(
-                    "_notify_owner_telegram: Telegram sendMessage failed: status=%d detail=%s",
-                    resp.status_code,
-                    detail,
-                )
-            else:
-                logger.info("_notify_owner_telegram: notification sent to chat_id=%r", chat_id)
-    except httpx.RequestError as exc:
-        logger.error("_notify_owner_telegram: request error — %s", exc)
-
-
 # ---------------------------------------------------------------------------
 # Energy digest — main entry point
 # ---------------------------------------------------------------------------
@@ -1311,7 +1461,7 @@ async def run_energy_digest(
 
     if snapshot_count == 0:
         logger.warning("run_energy_digest: ha_entity_snapshot is empty — skipping")
-        await _notify_owner_telegram(
+        await _send_notify(
             pool,
             "⚠️ Energy digest skipped: Home Assistant entity data is unavailable. "
             "Check that the HA connector is running.",
@@ -1324,7 +1474,7 @@ async def run_energy_digest(
     sensors = await _discover_energy_sensors(pool)
     if not sensors:
         logger.info("run_energy_digest: no energy sensors found in snapshot")
-        await _notify_owner_telegram(
+        await _send_notify(
             pool,
             "Energy monitoring is not configured. "
             "No energy, power, or kWh sensors were found in Home Assistant.",
@@ -1496,7 +1646,7 @@ async def run_energy_digest(
         if ha_unreachable:
             message += "\n\n⚠️ Note: HA REST API unreachable — statistics may be incomplete."
 
-    await _notify_owner_telegram(pool, message)
+    await _send_notify(pool, message)
 
     result = {
         "total_kwh": float(round(total_kwh, 3)),
@@ -1559,7 +1709,7 @@ async def run_device_health_check(
 
     if not rows:
         logger.info("device_health_check: ha_entity_snapshot is empty; sending alert")
-        await _notify_owner_telegram(
+        await _send_notify(
             pool,
             "\u26a0\ufe0f Device Health Check: Home Assistant entity data is unavailable. "
             "The connector may not have run yet or was recently reset.",
@@ -1684,7 +1834,7 @@ async def run_device_health_check(
         warning_count=warning_count,
         info_count=info_count,
     )
-    await _notify_owner_telegram(pool, notification)
+    await _send_notify(pool, notification)
 
     logger.info(
         "device_health_check: devices_checked=%d issues_found=%d critical=%d warning=%d",
@@ -1744,7 +1894,7 @@ async def run_environment_report(
 
     if snapshot_count == 0:
         logger.warning("run_environment_report: ha_entity_snapshot is empty — skipping")
-        await _notify_owner_telegram(
+        await _send_notify(
             pool,
             "\u26a0\ufe0f Environment report skipped: Home Assistant entity data is unavailable. "
             "Check that the HA connector is running.",
@@ -1757,7 +1907,7 @@ async def run_environment_report(
     areas_map = await _discover_areas_and_sensors(pool)
     if not areas_map:
         logger.info("run_environment_report: no environment sensors found in snapshot")
-        await _notify_owner_telegram(
+        await _send_notify(
             pool,
             "Environment report: no temperature, humidity, CO\u2082, or illuminance sensors found "
             "in Home Assistant.",
@@ -1853,7 +2003,7 @@ async def run_environment_report(
     # 8. Build and send report
     # ------------------------------------------------------------------
     message = _build_environment_report_message(area_results, comfort_defaults)
-    await _notify_owner_telegram(pool, message)
+    await _send_notify(pool, message)
 
     areas_checked = len(area_results)
     logger.info(

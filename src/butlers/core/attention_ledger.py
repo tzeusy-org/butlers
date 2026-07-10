@@ -17,8 +17,22 @@ small, known set of egress paths:
   composes the same gating (``get_suppressing_context_signal``,
   ``approvals_policy``) and dispatch (``switchboard.notification.deliver``)
   primitives ``notify()`` calls, rather than re-deriving their logic.
+- ``butlers.jobs.home._send_notify`` (bu-tdd4k.3) — the Home butler's four
+  deterministic monitoring crons (energy digest, device health check,
+  environment report, maintenance schedule check). These run inside the Home
+  daemon process and do have a live ``switchboard_client``, but the
+  deterministic scheduler dispatches job handlers with a fixed
+  ``(pool, job_args)`` signature, so the client is recovered via the
+  ``get_current_switchboard_client()`` contextvar
+  (``butlers.core.tool_call_capture``) rather than a widened handler
+  signature. Composes the same gating primitives as the paths above, then
+  dispatches through the ``deliver`` MCP tool (not a direct in-process
+  ``deliver()`` call — see ``_send_notify``'s docstring for why: ``deliver()``
+  /``route()`` read the switchboard schema's ``butler_registry`` unqualified,
+  so they only resolve against a pool whose search_path includes the
+  ``switchboard`` schema).
 
-All three call :func:`record_attention_event` at each terminal decision point
+All four call :func:`record_attention_event` at each terminal decision point
 so a notification is never silently dropped: it is recorded as delivered,
 coalesced (folded into a digest), deferred (retryable later), or suppressed
 (quiet hours / context bus), always with a machine-readable ``reason``.

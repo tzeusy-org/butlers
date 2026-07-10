@@ -23,6 +23,17 @@ _runtime_trigger_source_var: contextvars.ContextVar[str | None] = contextvars.Co
 _runtime_butler_name_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_runtime_butler_name_var", default=None
 )
+# Ambient handle to the current butler daemon's live switchboard MCP client,
+# scoped to the duration of one deterministic scheduled-job dispatch (bu-tdd4k.3).
+# Deterministic job handlers are invoked with a fixed ``(pool, job_args)``
+# signature shared across every butler's job registry (see
+# ``butlers.background.dispatch_scheduled_task``), so a job that needs to
+# deliver a notification through the notify boundary (rather than bypassing it
+# with a raw side-channel call) reads this contextvar instead of widening that
+# signature for every registered job.
+_runtime_switchboard_client_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "_runtime_switchboard_client_var", default=None
+)
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
@@ -75,6 +86,21 @@ def reset_current_runtime_butler_name(token: contextvars.Token[str | None]) -> N
 def get_current_runtime_butler_name() -> str | None:
     """Return current executing butler name bound to the request/task context."""
     return _runtime_butler_name_var.get()
+
+
+def set_current_switchboard_client(client: Any | None) -> contextvars.Token[Any | None]:
+    """Set the live switchboard MCP client for the current task context."""
+    return _runtime_switchboard_client_var.set(client)
+
+
+def reset_current_switchboard_client(token: contextvars.Token[Any | None]) -> None:
+    """Restore the switchboard MCP client binding for the current task context."""
+    _runtime_switchboard_client_var.reset(token)
+
+
+def get_current_switchboard_client() -> Any | None:
+    """Return the switchboard MCP client bound to the current task context, if any."""
+    return _runtime_switchboard_client_var.get()
 
 
 def ensure_runtime_session_capture(session_id: str) -> None:

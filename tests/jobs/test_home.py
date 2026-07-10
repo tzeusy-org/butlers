@@ -260,12 +260,12 @@ async def test_maintenance_check_error_propagation_and_notify_failure():
 
 
 async def test_maintenance_wrapper_delivers_when_items_due():
-    """The scheduled wrapper routes through _notify_owner_telegram and DELIVERS
-    a Telegram reminder when items are due/overdue/upcoming (mirrors siblings)."""
+    """The scheduled wrapper routes through _send_notify and DELIVERS
+    a notification when items are due/overdue/upcoming (mirrors siblings)."""
     from butlers.scheduled_jobs import _run_home_maintenance_schedule_check_job
 
     pool = _make_pool(fetch_rows=[_make_db_row(next_due_at=datetime.now(UTC) - timedelta(days=5))])
-    with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock) as mock_notify:
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify:
         result = await _run_home_maintenance_schedule_check_job(pool, None)
 
     mock_notify.assert_awaited_once()
@@ -281,7 +281,7 @@ async def test_maintenance_wrapper_no_notify_when_nothing_due():
     from butlers.scheduled_jobs import _run_home_maintenance_schedule_check_job
 
     pool = _make_pool(fetch_rows=[])
-    with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock) as mock_notify:
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify:
         result = await _run_home_maintenance_schedule_check_job(pool, None)
 
     mock_notify.assert_not_awaited()
@@ -397,7 +397,7 @@ def test_build_health_check_notification():
 async def test_run_device_health_check_empty_and_healthy():
     """Empty snapshot returns error; healthy devices have 0 issues."""
     pool = _make_health_pool(entity_rows=[])
-    with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock):
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock):
         result = await run_device_health_check(pool, None)
     assert result == {"error": "no_entity_snapshot"}
 
@@ -407,7 +407,7 @@ async def test_run_device_health_check_empty_and_healthy():
     ]
     pool2 = _make_health_pool(entity_rows=rows)
     with (
-        patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
     ):
         result2 = await run_device_health_check(pool2, None)
@@ -423,7 +423,7 @@ async def test_run_device_health_check_battery_and_non_battery():
     ]
     pool = _make_health_pool(entity_rows=rows)
     with (
-        patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
     ):
         result = await run_device_health_check(pool, None)
@@ -432,7 +432,7 @@ async def test_run_device_health_check_battery_and_non_battery():
     rows_nb = [_make_entity_row("sensor.living_room_temp", state="5")]
     pool_nb = _make_health_pool(entity_rows=rows_nb)
     with (
-        patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch("butlers.jobs.home._store_device_fact", new_callable=AsyncMock),
     ):
         result_nb = await run_device_health_check(pool_nb, None)

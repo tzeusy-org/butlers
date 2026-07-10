@@ -165,7 +165,7 @@ def test_build_environment_report_message():
 async def test_run_environment_report_empty_snapshot():
     """Empty snapshot returns error."""
     pool = _make_pool(snapshot_count=0)
-    with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock):
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock):
         result = await run_environment_report(pool, None)
     assert result == {"error": "no_entity_snapshot"}
 
@@ -174,7 +174,7 @@ async def test_run_environment_report_no_sensors_and_normal_run():
     """Non-sensor rows → zero counts; normal run returns correct counts; critical triggers store."""
     rows = [_make_snapshot_row("light.living_room", "on")]
     pool = _make_pool(snapshot_count=1, snapshot_rows=rows)
-    with patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock):
+    with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock):
         result = await run_environment_report(pool, None)
     assert result == {"areas_checked": 0, "sensors_read": 0, "deviations_found": 0}
 
@@ -190,7 +190,7 @@ async def test_run_environment_report_no_sensors_and_normal_run():
     ]
     pool2 = _make_pool(snapshot_count=2, snapshot_rows=rows2)
     with (
-        patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch("butlers.jobs.home.state_get", new_callable=AsyncMock, return_value=None),
         patch("butlers.jobs.home.store_fact", new_callable=AsyncMock, return_value=None),
     ):
@@ -208,7 +208,7 @@ async def test_run_environment_report_no_sensors_and_normal_run():
     ]
     pool_crit = _make_pool(snapshot_count=1, snapshot_rows=rows_crit)
     with (
-        patch("butlers.jobs.home._notify_owner_telegram", new_callable=AsyncMock),
+        patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch("butlers.jobs.home.state_get", new_callable=AsyncMock, return_value=None),
         patch(
             "butlers.jobs.home.store_fact", new_callable=AsyncMock, return_value=None

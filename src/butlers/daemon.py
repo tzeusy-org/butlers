@@ -997,6 +997,7 @@ class ButlerDaemon:
             job_args=job_args,
             complexity=complexity,
             max_token_budget=max_token_budget,
+            switchboard_client=self.switchboard_client,
         )
 
     async def _scheduler_loop(self) -> None:

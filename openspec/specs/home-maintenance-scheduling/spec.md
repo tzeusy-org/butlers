@@ -57,10 +57,9 @@ The `maintenance_schedule_check` deterministic job checks all maintenance items 
 
 #### Scenario: Reminder notification
 
-> **SPEC-CODE DIVERGENCE**: `run_maintenance_schedule_check` (`src/butlers/jobs/home.py`) takes an optional `notify_fn` and only notifies when one is supplied, but the daemon wrapper `_run_home_maintenance_schedule_check_job` (`src/butlers/scheduled_jobs.py`) calls it without a `notify_fn`, so scheduled runs compose `notification_text` and log it but send no Telegram message. The three sibling home jobs (`device_health_check`, `environment_report`, `energy_digest`) call the shared `_notify_owner_telegram` helper directly and do deliver. This scenario is the intended contract; a remediation follow-up tracks wiring maintenance onto the same helper.
-
 - **WHEN** one or more items are due, overdue, or upcoming
-- **THEN** the job SHALL send a Telegram notification via the notify helper with `intent="send"`
+- **THEN** the job SHALL send a notification via the shared `_send_notify` helper (`src/butlers/jobs/home.py`) with `intent="send"`, which the daemon wrapper `_run_home_maintenance_schedule_check_job` (`src/butlers/scheduled_jobs.py`) wires as `notify_fn` on every scheduled run — mirroring the three sibling home jobs (`device_health_check`, `environment_report`, `energy_digest`), which call `_send_notify` directly
+- **AND** `_send_notify` SHALL route the notification through the notify boundary: quiet-hours/context-bus suppression gating and a `public.attention_ledger` row on every terminal outcome (suppressed, no recipient configured, switchboard client unavailable, delivery error, or delivered) — see bu-tdd4k.3
 - **AND** the message SHALL list items grouped by status (critical overdue first, then overdue, then due, then upcoming)
 - **AND** each item SHALL show name, category, days overdue or days until due
 
