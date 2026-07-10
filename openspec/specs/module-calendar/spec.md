@@ -46,7 +46,7 @@ The module defines an abstract `CalendarProvider` interface with concrete implem
 
 ### Requirement: CalendarConfig Validation
 
-Configuration is declared under `[modules.calendar]` in `butler.toml` with fields: `provider` (required), `account` (optional, email string — Google account to use), `calendar_id` (optional), `timezone` (default `"UTC"`), `conflicts` (policy defaults), `event_defaults` (notification defaults), and `sync` (sync interval settings).
+Configuration SHALL be declared under `[modules.calendar]` in `butler.toml` with fields: `provider` (required), `account` (optional, email string — Google account to use), `calendar_id` (optional), `timezone` (default `"UTC"`), `conflicts` (policy defaults), `event_defaults` (notification defaults), and `sync` (sync interval settings).
 
 #### Scenario: Valid calendar config with account
 
@@ -113,7 +113,7 @@ The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list
 
 ### Requirement: CalendarEvent Model
 
-The canonical `CalendarEvent` model is provider-neutral with fields: `event_id`, `title`, `start_at`, `end_at`, `timezone`, `description`, `body`, `location`, `attendees` (list of `AttendeeInfo`), `recurrence_rule`, `color_id`, `butler_generated`, `butler_name`, `source_butler`, `source_session_id`, `entity_ids`, `status`, `organizer`, `visibility`, `etag`, `created_at`, `updated_at`.
+The canonical `CalendarEvent` model SHALL be provider-neutral with fields: `event_id`, `title`, `start_at`, `end_at`, `timezone`, `description`, `body`, `location`, `attendees` (list of `AttendeeInfo`), `recurrence_rule`, `color_id`, `butler_generated`, `butler_name`, `source_butler`, `source_session_id`, `entity_ids`, `status`, `organizer`, `visibility`, `etag`, `created_at`, `updated_at`.
 
 - `body` — a longer freeform description to complement the short `title` (nullable; maps to Google Calendar `description` field on parse)
 - `source_butler` — the butler name that created or owns the event (NOT NULL; backfilled from `metadata.butler_name` on migration)
@@ -171,7 +171,7 @@ Schema: `(event_id UUID REFERENCES calendar_events(id) ON DELETE CASCADE, entity
 
 ### Requirement: RRULE and Cron Support
 
-The module supports both RFC-5545 RRULE recurrence and cron expressions for event and task projection.
+The module SHALL support both RFC-5545 RRULE recurrence and cron expressions for event and task projection.
 
 #### Scenario: RRULE occurrence expansion
 
@@ -250,7 +250,7 @@ The module registers MCP tools for managing butler-owned workspace events (sched
 
 ### Requirement: Attendee Management Tools
 
-The module registers MCP tools for managing event attendees: `calendar_add_attendees` and `calendar_remove_attendees`.
+The module SHALL register MCP tools for managing event attendees: `calendar_add_attendees` and `calendar_remove_attendees`.
 
 #### Scenario: Add attendees to event
 
@@ -267,7 +267,7 @@ The module registers MCP tools for managing event attendees: `calendar_add_atten
 
 ### Requirement: Google OAuth and Rate Limiting
 
-The Google provider handles OAuth token refresh and rate-limited retries, resolving credentials for the configured account.
+The Google provider SHALL handle OAuth token refresh and rate-limited retries, resolving credentials for the configured account.
 
 #### Scenario: OAuth token refresh for specific account
 
@@ -288,7 +288,7 @@ The Google provider handles OAuth token refresh and rate-limited retries, resolv
 
 ### Requirement: Reminder Tools
 
-The module registers three MCP tools for managing butler-owned reminders as native calendar events: `reminder_create`, `reminder_list`, `reminder_dismiss`. Reminders are stored as `calendar_events` rows with `source_kind = 'internal_reminders'` and scoped to the calling butler via `source_butler`. The legacy `reminders` SPO fact table used by the relationship butler has been migrated to `calendar_events` and is no longer authoritative.
+The module SHALL register three MCP tools for managing butler-owned reminders as native calendar events: `reminder_create`, `reminder_list`, `reminder_dismiss`. Reminders are stored as `calendar_events` rows with `source_kind = 'internal_reminders'` and scoped to the calling butler via `source_butler`. The legacy `reminders` SPO fact table used by the relationship butler has been migrated to `calendar_events` and is no longer authoritative.
 
 #### Scenario: Create reminder as calendar event
 
@@ -328,7 +328,7 @@ The module registers three MCP tools for managing butler-owned reminders as nati
 
 ### Requirement: Reminder Dispatch via tick()
 
-The module exposes an async `tick(source_butler, notify_fn=None)` method that the butler core can call periodically to evaluate and dispatch due reminders.
+The module SHALL expose an async `tick(source_butler, notify_fn=None)` method that the butler core can call periodically to evaluate and dispatch due reminders.
 
 #### Scenario: One-time reminder dispatch
 
@@ -435,7 +435,7 @@ The programmatic inter-module entry point `create_user_event` (used by e.g. heal
 
 ### Requirement: [TARGET-STATE] Calendar Sync and Projection
 
-Provider sync with incremental/full modes and a unified projection table for fast dashboard queries.
+The module SHALL provide provider sync with incremental/full modes and a unified projection table for fast dashboard queries.
 
 #### Scenario: Incremental sync via sync token
 
@@ -457,7 +457,7 @@ Provider sync with incremental/full modes and a unified projection table for fas
 
 ### Requirement: Dual-Lane Ownership and Authoritativeness
 
-The projection uses a dual-lane model to separate event authority. Each `calendar_sources` row has a `lane` field: `"user"` or `"butler"`. The lane determines which system is authoritative for an event's state.
+The projection SHALL use a dual-lane model to separate event authority. Each `calendar_sources` row has a `lane` field: `"user"` or `"butler"`. The lane determines which system is authoritative for an event's state.
 
 - **`lane="user"`** — Provider-synced external events (meetings, appointments created by humans on Google Calendar). Google is the source of truth. The local projection faithfully mirrors whatever the provider reports on each sync cycle.
 - **`lane="butler"`** — Internal scheduled tasks and reminders managed by the butler. The butler's `calendar_events` rows (for reminders with `source_kind='internal_reminders'`) and `scheduled_tasks` table are the source of truth. These are pushed outbound to Google for visibility but Google is never read back as authoritative for them.
@@ -496,7 +496,7 @@ The projection uses a dual-lane model to separate event authority. Each `calenda
 
 ### Requirement: [TARGET-STATE] Unified Calendar View
 
-A dashboard page at `/butlers/calendar` with a view toggle between user events and butler-managed schedules/reminders, backed by an in-app projection table.
+The dashboard SHALL provide a page at `/butlers/calendar` with a view toggle between user events and butler-managed schedules/reminders, backed by an in-app projection table.
 
 #### Scenario: Projection status tracking
 

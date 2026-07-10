@@ -1,7 +1,7 @@
 # chronicler-intent-evidence-activity Specification
 
 ## Purpose
-TBD - created by archiving change chronicler-intent-evidence-activity. Update Purpose after archive.
+Defines how the chronicler classifies every projected episode into exactly one of three layers — `intent` (planned blocks such as calendar events), `evidence` (raw point signals such as GPS points or heart-rate samples), and `activity` (inferred real blocks) — and mandates that only the `activity` layer contributes to any time or balance aggregate. Calendar `intent` blocks are never counted and never form a "calendar" lane: when a real activity overlaps a planned block, the activity is counted on its own merits under its own lane, so corroboration is automatic rather than a matching step. The spec also fixes the activity lane taxonomy, corroboration-based confidence, per-activity evidence chains, deterministic candidate projection with LLM-narrated day-close reconciliation, and the requirement that the layer be stamped on every projection write.
 ## Requirements
 ### Requirement: Three-Layer Episode Classification
 

@@ -1,7 +1,7 @@
 # relationship-facts Specification
 
 ## Purpose
-TBD - created by archiving change relationship-tabs-to-entities. Update Purpose after archive.
+Defines `relationship.entity_facts`, the relationship butler's single RDF (subject-predicate-object) triple store that is the canonical registry for both relational predicates (`knows`, `family-of`, `partner-of`, `co-attended`, ...) and contact predicates (`has-email`, `has-phone`, `has-handle`, `has-address`, ...). It supersedes RFC 0004 §3 as the channel-identity registry, lives in the `relationship` schema (cross-butler reads go through Switchboard/MCP per RFC 0006 isolation), and holds both predicate families in one table to preserve RDF purity and avoid a dual-write split. The spec fixes the table schema, required indexes and active-fact uniqueness, the predicate catalog, the central `relationship_assert_fact()` writer, the Switchboard `resolve_contact_by_channel()` re-point onto triples, the dual-write/parity/cut-over migration path, the credentials carve-out and orphan-contact handling, and the confidence-gated extraction of inferred edges from relational prose.
 ## Requirements
 ### Requirement: Relationship entity facts triple store
 

@@ -4,7 +4,7 @@
 Defines the complete data access layer connecting the Butlers dashboard frontend to backend infrastructure. This covers the FastAPI application factory, REST endpoint inventory across all domains, cross-butler database fan-out, MCP client proxy, butler-specific route auto-discovery, TanStack Query refresh patterns, SSE real-time streaming, OAuth bootstrap flow, generic secrets management, response envelope standards, and the pricing/cost estimation model. Together these form the single-pane-of-glass contract between the React frontend and the Python backend.
 ## Requirements
 ### Requirement: FastAPI Application Factory
-The `create_app()` function in `src/butlers/api/app.py` builds the FastAPI application with CORS middleware, lifespan handler, error handlers, static file serving, and router registration. The lifespan handler initializes `MCPClientManager`, `PricingConfig`, and `DatabaseManager` singletons on startup and tears them down on shutdown.
+The `create_app()` function in `src/butlers/api/app.py` SHALL build the FastAPI application with CORS middleware, lifespan handler, error handlers, static file serving, and router registration. The lifespan handler initializes `MCPClientManager`, `PricingConfig`, and `DatabaseManager` singletons on startup and tears them down on shutdown.
 
 #### Scenario: Application startup
 - **WHEN** the FastAPI lifespan starts
@@ -29,7 +29,7 @@ The `create_app()` function in `src/butlers/api/app.py` builds the FastAPI appli
 - **AND** it is mounted after all API routes so `/api/*` always takes precedence
 
 ### Requirement: Standard Response Envelopes
-All API responses use consistent wrapper types. Backend Pydantic models and frontend TypeScript interfaces are kept in sync.
+All API responses SHALL use consistent wrapper types. Backend Pydantic models and frontend TypeScript interfaces are kept in sync.
 
 #### Scenario: ApiResponse wrapper
 - **WHEN** a single-resource or aggregate endpoint succeeds
@@ -58,7 +58,7 @@ All API responses use consistent wrapper types. Backend Pydantic models and fron
 - **THEN** `ApiResponse<T>`, `PaginatedResponse<T>`, `ErrorResponse`, `ErrorDetail`, and `PaginationMeta` are available as generic interfaces matching the backend Pydantic shapes
 
 ### Requirement: Error Handling Middleware
-`src/butlers/api/middleware.py` registers exception handlers that convert domain exceptions into the standard error envelope.
+`src/butlers/api/middleware.py` SHALL register exception handlers that convert domain exceptions into the standard error envelope.
 
 #### Scenario: Butler unreachable
 - **WHEN** a `ButlerUnreachableError` is raised during request handling
@@ -79,7 +79,7 @@ All API responses use consistent wrapper types. Backend Pydantic models and fron
 - **AND** the original exception is logged with full traceback
 
 ### Requirement: API Client (Frontend)
-`frontend/src/api/client.ts` provides a typed `apiFetch<T>()` wrapper over native `fetch` that prepends the base URL, sets JSON headers, and converts non-2xx responses to `ApiError`.
+`frontend/src/api/client.ts` SHALL provide a typed `apiFetch<T>()` wrapper over native `fetch` that prepends the base URL, sets JSON headers, and converts non-2xx responses to `ApiError`.
 
 #### Scenario: Base URL resolution
 - **WHEN** `apiFetch` is called
@@ -95,7 +95,7 @@ All API responses use consistent wrapper types. Backend Pydantic models and fron
 - **THEN** the return type is fully generic-typed (e.g., `Promise<ApiResponse<ButlerSummary[]>>`, `Promise<PaginatedResponse<SessionSummary>>`)
 
 ### Requirement: DatabaseManager (Per-Butler Pool Management)
-`src/butlers/api/db.py` maintains one asyncpg connection pool per butler and a dedicated shared credential pool. Supports both legacy multi-DB and one-DB/multi-schema topologies.
+`src/butlers/api/db.py` SHALL maintain one asyncpg connection pool per butler and a dedicated shared credential pool. Supports both legacy multi-DB and one-DB/multi-schema topologies.
 
 #### Scenario: Add butler pool
 - **WHEN** `add_butler(name, db_name, db_schema)` is called
@@ -118,7 +118,7 @@ All API responses use consistent wrapper types. Backend Pydantic models and fron
 - **AND** all queries on that pool are scoped to the butler's schema by default
 
 ### Requirement: Cross-Butler Fan-Out
-The `DatabaseManager.fan_out()` method executes a SQL query concurrently across multiple butler databases, enabling cross-butler aggregate endpoints.
+The `DatabaseManager.fan_out()` method SHALL execute a SQL query concurrently across multiple butler databases, enabling cross-butler aggregate endpoints.
 
 #### Scenario: Fan-out across all butlers
 - **WHEN** `fan_out(query, args)` is called without `butler_names`
@@ -141,7 +141,7 @@ The `DatabaseManager.fan_out()` method executes a SQL query concurrently across 
 - **AND** results are merged, sorted by `started_at DESC`, and paginated with correct cross-butler total count
 
 ### Requirement: MCP Client Proxy
-`src/butlers/api/deps.py` provides `MCPClientManager` for lazy FastMCP client connections to running butler MCP daemons. Write operations (state set/delete, schedule CRUD, triggers) are proxied through MCP to preserve the architectural constraint that only the butler mutates its own database.
+`src/butlers/api/deps.py` SHALL provide `MCPClientManager` for lazy FastMCP client connections to running butler MCP daemons. Write operations (state set/delete, schedule CRUD, triggers) are proxied through MCP to preserve the architectural constraint that only the butler mutates its own database.
 
 #### Scenario: Lazy client connection
 - **WHEN** `get_client(butler_name)` is called for the first time
@@ -172,7 +172,7 @@ The `DatabaseManager.fan_out()` method executes a SQL query concurrently across 
 - **AND** each operation records an audit log entry
 
 ### Requirement: Butler-Specific Route Auto-Discovery
-`src/butlers/api/router_discovery.py` scans `roster/{butler}/api/router.py` files and dynamically loads them via `importlib`. Butler-specific routers extend the API surface without modifying core router registration code.
+`src/butlers/api/router_discovery.py` SHALL scan `roster/{butler}/api/router.py` files and dynamically load them via `importlib`. Butler-specific routers extend the API surface without modifying core router registration code.
 
 #### Scenario: Discovery of butler routers
 - **WHEN** `discover_butler_routers()` is called
@@ -190,7 +190,7 @@ The `DatabaseManager.fan_out()` method executes a SQL query concurrently across 
 - **AND** the override applies via FastAPI's `dependency_overrides` mechanism
 
 ### Requirement: Butler Discovery and Status Probing
-`src/butlers/api/routers/butlers.py` provides butler list and detail endpoints that combine static config discovery with live MCP status probing.
+`src/butlers/api/routers/butlers.py` SHALL provide butler list and detail endpoints that combine static config discovery with live MCP status probing.
 
 #### Scenario: List butlers with live status
 - **WHEN** `GET /api/butlers` is called
@@ -207,7 +207,7 @@ The `DatabaseManager.fan_out()` method executes a SQL query concurrently across 
 
 ### Requirement: API Endpoint Inventory
 
-The following is the complete endpoint inventory grouped by domain.
+The API SHALL expose the following complete endpoint inventory, grouped by domain.
 
 #### Core System
 | Method | Path | Purpose |
@@ -380,7 +380,7 @@ The following is the complete endpoint inventory grouped by domain.
 | GET | `/api/events` | Server-Sent Events stream |
 
 ### Requirement: TanStack Query Patterns
-The frontend uses TanStack Query (`@tanstack/react-query`) via `frontend/src/hooks/` for all data fetching, with domain-specific stale times, refetch intervals, and mutation invalidation patterns.
+The frontend SHALL use TanStack Query (`@tanstack/react-query`) via `frontend/src/hooks/` for all data fetching, with domain-specific stale times, refetch intervals, and mutation invalidation patterns.
 
 #### Scenario: Default query client configuration
 - **WHEN** the TanStack QueryClient is initialized (`frontend/src/lib/query-client.ts`)
@@ -442,7 +442,7 @@ The frontend uses TanStack Query (`@tanstack/react-query`) via `frontend/src/hoo
 - **THEN** users can select intervals (5s, 10s, 30s, 60s), pause/resume, and the setting persists in localStorage
 
 ### Requirement: SSE Real-Time Streaming
-`src/butlers/api/routers/sse.py` provides a `GET /api/events` endpoint that streams Server-Sent Events to connected dashboard clients.
+`src/butlers/api/routers/sse.py` SHALL provide a `GET /api/events` endpoint that streams Server-Sent Events to connected dashboard clients.
 
 #### Scenario: Event stream connection
 - **WHEN** a client connects to `GET /api/events`
@@ -468,7 +468,7 @@ The frontend uses TanStack Query (`@tanstack/react-query`) via `frontend/src/hoo
 - **THEN** the subscriber's queue is removed from the subscriber list and the generator exits cleanly
 
 ### Requirement: OAuth Bootstrap Flow
-`src/butlers/api/routers/oauth.py` implements a two-leg Google OAuth 2.0 authorization-code flow with CSRF protection, DB-backed credential persistence, and structured status reporting.
+`src/butlers/api/routers/oauth.py` SHALL implement a two-leg Google OAuth 2.0 authorization-code flow with CSRF protection, DB-backed credential persistence, and structured status reporting.
 
 #### Scenario: OAuth start
 - **WHEN** `GET /api/oauth/google/start` is called
@@ -627,7 +627,7 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 - **AND** no array or scalar is returned at the top level of the response body
 
 ### Requirement: Pricing and Cost Estimation
-`src/butlers/api/pricing.py` loads per-model token pricing from `pricing.toml` and exposes cost estimation for session cost calculation.
+`src/butlers/api/pricing.py` SHALL load per-model token pricing from `pricing.toml` and expose cost estimation for session cost calculation.
 
 #### Scenario: Pricing config loading
 - **WHEN** `load_pricing()` is called at startup
@@ -837,7 +837,7 @@ pattern and MUST NOT breach per-butler schema isolation.
   row (by `consolidated_at`), aggregated across butler pools
 
 ### Requirement: Issues Aggregation
-`src/butlers/api/routers/issues.py` aggregates live reachability problems and grouped audit-log error history into a single issues feed.
+`src/butlers/api/routers/issues.py` SHALL aggregate live reachability problems and grouped audit-log error history into a single issues feed.
 
 #### Scenario: Issue aggregation
 - **WHEN** `GET /api/issues` is called
@@ -847,7 +847,7 @@ pattern and MUST NOT breach per-butler schema isolation.
 - **AND** results are sorted by recency (newest `last_seen_at` first)
 
 ### Requirement: Butler Eligibility Control
-Butler-specific routers can expose domain-specific API endpoints that are auto-discovered and mounted.
+Butler-specific routers that expose domain-specific API endpoints SHALL have them auto-discovered and mounted.
 
 #### Scenario: Switchboard eligibility
 - **WHEN** the switchboard butler has `roster/switchboard/api/router.py`
@@ -855,7 +855,7 @@ Butler-specific routers can expose domain-specific API endpoints that are auto-d
 - **AND** the frontend `useSetEligibility` mutation calls the switchboard-specific endpoint
 
 ### Requirement: Ingestion Rules and Thread Affinity
-Frontend hooks manage unified ingestion rules and thread affinity settings via dedicated API endpoints. The previous triage-specific hooks (`useTriageRules`, `useCreateTriageRule`, etc.) and source filter hooks (`useSourceFilters`, `useCreateSourceFilter`, etc.) are replaced by unified ingestion rules hooks.
+Frontend hooks SHALL manage unified ingestion rules and thread affinity settings via dedicated API endpoints. The previous triage-specific hooks (`useTriageRules`, `useCreateTriageRule`, etc.) and source filter hooks (`useSourceFilters`, `useCreateSourceFilter`, etc.) are replaced by unified ingestion rules hooks.
 
 #### Scenario: Ingestion rule management
 - **WHEN** ingestion rule hooks are used (`useIngestionRules`, `useCreateIngestionRule`, `useUpdateIngestionRule`, `useDeleteIngestionRule`)
@@ -873,7 +873,7 @@ Frontend hooks manage unified ingestion rules and thread affinity settings via d
 - **AND** override mutations invalidate both settings and overrides query keys
 
 ### Requirement: Backfill Job Management
-Frontend hooks in `use-backfill.ts` manage historical data backfill jobs with lifecycle operations.
+Frontend hooks in `use-backfill.ts` SHALL manage historical data backfill jobs with lifecycle operations.
 
 #### Scenario: Adaptive polling for active jobs
 - **WHEN** `useBackfillJobProgress(jobId, currentStatus)` is called
@@ -885,7 +885,7 @@ Frontend hooks in `use-backfill.ts` manage historical data backfill jobs with li
 - **THEN** three query key families are invalidated: `["backfill-jobs"]`, `["backfill-job", jobId]`, and `["backfill-job-progress", jobId]`
 
 ### Requirement: Ingestion Analytics
-Frontend hooks in `use-ingestion.ts` provide multi-tab analytics for the ingestion monitoring page.
+Frontend hooks in `use-ingestion.ts` SHALL provide multi-tab analytics for the ingestion monitoring page.
 
 #### Scenario: Shared query key strategy
 - **WHEN** the Overview and Connectors tabs share data
@@ -897,7 +897,7 @@ Frontend hooks in `use-ingestion.ts` provide multi-tab analytics for the ingesti
 - **THEN** its `enabled` flag prevents unnecessary fetches until the tab is activated
 
 ### Requirement: Ingestion Timeline Tab Frontend Hooks
-TanStack Query hooks for the Timeline tab on the Ingestion page, following the same cache-key and stale-time conventions as existing ingestion hooks.
+TanStack Query hooks for the Timeline tab on the Ingestion page SHALL follow the same cache-key and stale-time conventions as existing ingestion hooks.
 
 #### Scenario: Ingestion events list hook
 - **WHEN** the Timeline tab renders on the Ingestion page
