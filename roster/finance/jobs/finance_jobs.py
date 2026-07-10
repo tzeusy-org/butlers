@@ -130,9 +130,10 @@ def _end_of_period_dt(period_end: date) -> datetime:
 def _budget_period_scope_token(period: str, period_start: date) -> str:
     """Return the dedup time-scope token for a budget's current period window.
 
-    This is the fourth (time-scope) segment of a ``budget-threshold`` dedup key.
-    It resets exactly at each period's boundary so a threshold crossing dedupes
-    within its window and re-fires in the next one:
+    This is the time-scope portion of the fourth segment of a
+    ``budget-threshold`` dedup key (the caller appends ``-{status}`` to fold in
+    severity). It resets exactly at each period's boundary so a threshold
+    crossing dedupes within its window and re-fires in the next one:
 
     - ``weekly``    -> ISO week, ``YYYY-Www`` (e.g. ``2026-W28``)
     - ``monthly``   -> ``YYYY-MM``            (e.g. ``2026-07``) — unchanged, so
@@ -434,14 +435,22 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         )
         # Period-correct dedup identity: the time-scope token resets exactly at
         # each period's boundary, so the alert dedupes within its window and
-        # re-fires in the next one.
+        # re-fires in the next one. The severity (status) is folded into the
+        # fourth segment so a warning and a later escalation-to-exceeded within
+        # the SAME window carry distinct keys — otherwise the warning's cooldown
+        # would silence the exceeded alert until the next window (bu-qvs1o).
+        # ``status`` is one of "warning" | "exceeded" ("on_track" already
+        # continued above), and "{scope}-{status}" stays one colon-free segment
+        # so the broker's 4-segment dedup-key regex still matches.
         scope_token = _budget_period_scope_token(period, period_start)
-        dedup_key = f"finance:budget-threshold:{category}:{scope_token}"
+        dedup_key = f"finance:budget-threshold:{category}:{scope_token}-{status}"
 
-        # Cooldown spans the remainder of the current period window, so a
-        # crossing fires at most once per window; the next window's fresh
-        # dedup key re-fires regardless of this cooldown. (This scales the old
-        # monthly-only, priority-default cooldown to each period's cadence.)
+        # Cooldown spans the remainder of the current period window, so each
+        # (budget, window, severity) crossing fires at most once per window;
+        # the next window's fresh dedup key re-fires regardless of this cooldown.
+        # With severity in the key, warning fires once AND exceeded fires once
+        # per window. (This scales the old monthly-only, priority-default
+        # cooldown to each period's cadence.)
         cooldown_days = max(1, (period_end - today).days + 1)
 
         keep_going = await _submit(

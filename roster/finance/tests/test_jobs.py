@@ -675,7 +675,12 @@ async def test_insight_scan_budget_custom_warn_threshold_respected(provisioned_p
 
 
 async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
-    """Budget insight dedup_key matches finance:budget-threshold:{category}:{year-month}."""
+    """Budget dedup_key = finance:budget-threshold:{category}:{year-month}-{status}.
+
+    bu-qvs1o: severity is folded into the fourth (time-scope) segment so a
+    warning and a later escalation-to-exceeded within the same window carry
+    distinct keys.
+    """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
@@ -700,7 +705,8 @@ async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
         candidates = await _fetch_candidates(pool)
         budget_cands = [c for c in candidates if c["category"] == "budget-threshold"]
         year_month = _today().strftime("%Y-%m")
-        expected_key = f"finance:budget-threshold:subscriptions:{year_month}"
+        # $95 of $100 = 95% -> warning (>= 80% warn, < 100% alert).
+        expected_key = f"finance:budget-threshold:subscriptions:{year_month}-warning"
         assert budget_cands[0]["dedup_key"] == expected_key
 
 
@@ -794,7 +800,10 @@ async def test_insight_scan_weekly_budget_fires_with_week_scoped_key(provisioned
 
         cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
         assert len(cands) == 1
-        assert cands[0]["dedup_key"] == f"finance:budget-threshold:coffee:{_current_week_token()}"
+        assert (
+            cands[0]["dedup_key"]
+            == f"finance:budget-threshold:coffee:{_current_week_token()}-exceeded"
+        )
         assert cands[0]["priority"] == 70
         assert "weekly budget" in cands[0]["message"]
         # Cooldown spans the rest of the ISO week (Monday..Sunday).
@@ -829,7 +838,8 @@ async def test_insight_scan_quarterly_budget_fires_with_quarter_scoped_key(
         cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
         assert len(cands) == 1
         assert (
-            cands[0]["dedup_key"] == f"finance:budget-threshold:travel:{_current_quarter_token()}"
+            cands[0]["dedup_key"]
+            == f"finance:budget-threshold:travel:{_current_quarter_token()}-warning"
         )
         assert cands[0]["priority"] == 50
         assert "quarterly budget" in cands[0]["message"]
@@ -859,7 +869,7 @@ async def test_insight_scan_yearly_budget_fires_with_year_scoped_key(provisioned
 
         cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
         assert len(cands) == 1
-        assert cands[0]["dedup_key"] == f"finance:budget-threshold:insurance:{today.year}"
+        assert cands[0]["dedup_key"] == f"finance:budget-threshold:insurance:{today.year}-exceeded"
         assert cands[0]["priority"] == 70
         assert "yearly budget" in cands[0]["message"]
 
@@ -896,8 +906,9 @@ async def test_insight_scan_monthly_and_yearly_same_category_no_collision(
         keys = sorted(c["dedup_key"] for c in cands)
         assert keys == sorted(
             [
-                f"finance:budget-threshold:shopping:{today.strftime('%Y-%m')}",
-                f"finance:budget-threshold:shopping:{today.year}",
+                # $1900/$200 = 950% -> exceeded; $1900/$2000 = 95% -> warning.
+                f"finance:budget-threshold:shopping:{today.strftime('%Y-%m')}-exceeded",
+                f"finance:budget-threshold:shopping:{today.year}-warning",
             ]
         )
 
@@ -930,6 +941,71 @@ async def test_insight_scan_budget_dedup_key_stable_within_window(provisioned_po
         cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
         assert len(cands) == 2
         assert cands[0]["dedup_key"] == cands[1]["dedup_key"]
+
+
+@pytest.mark.parametrize(
+    "period, budget_amount, warn_spend, exceed_spend, scope_fn",
+    [
+        # Short window (monthly) and a long one (yearly): under the OLD
+        # severity-agnostic key the yearly exceeded state would stay unreported
+        # for the rest of the year once the warning's cooldown was set.
+        ("monthly", "500.00", "460.00", "80.00", lambda t: t.strftime("%Y-%m")),
+        ("yearly", "1200.00", "1080.00", "200.00", lambda t: str(t.year)),
+    ],
+)
+async def test_insight_scan_budget_warn_then_exceeded_escalates_distinct_keys(
+    provisioned_postgres_pool, period, budget_amount, warn_spend, exceed_spend, scope_fn
+):
+    """bu-qvs1o: a budget that crosses warn, then later exceeds within the SAME
+    window, yields two candidates with distinct severity-scoped dedup keys — so
+    the warning's per-window cooldown does not silence the escalation to
+    exceeded. Folding severity into the fourth segment is what makes the keys
+    distinct; parametrized across a short (monthly) and a long (yearly) window.
+    """
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="dining", period=period, amount=budget_amount)
+
+        today = _today()
+        safe_day = min(today.day, 28)
+        tx_date = datetime(today.year, today.month, safe_day, 12, 0, 0, tzinfo=UTC)
+
+        # First scan: warn-level spend -> a single 'warning' candidate.
+        await _insert_transaction(
+            pool,
+            merchant="Bistro",
+            amount=warn_spend,
+            direction="debit",
+            category="dining",
+            posted_at=tx_date,
+        )
+        await run_insight_scan(pool)
+
+        # More spend on the same budget/window pushes it over the alert threshold.
+        await _insert_transaction(
+            pool,
+            merchant="Bistro",
+            amount=exceed_spend,
+            direction="debit",
+            category="dining",
+            posted_at=tx_date,
+        )
+        await run_insight_scan(pool)
+
+        cands = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
+        scope = scope_fn(today)
+        warning_key = f"finance:budget-threshold:dining:{scope}-warning"
+        exceeded_key = f"finance:budget-threshold:dining:{scope}-exceeded"
+        by_key = {c["dedup_key"]: c for c in cands}
+
+        # Both severities are present as distinct candidates (escalation surfaces).
+        assert warning_key in by_key
+        assert exceeded_key in by_key
+        assert warning_key != exceeded_key
+        assert by_key[warning_key]["priority"] == 50
+        assert by_key[exceeded_key]["priority"] == 70
 
 
 async def test_insight_scan_subscription_renewal_within_3_days_priority_75(
