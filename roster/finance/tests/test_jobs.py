@@ -2196,3 +2196,150 @@ async def test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions
         assert "1 active" in message
         assert "150.00" in message
         assert "1 untracked pattern" in message
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_monthly_finance_digest month-over-month trend content (bu-7hogl)
+# ---------------------------------------------------------------------------
+
+
+def _digest_month_bounds() -> tuple[datetime, datetime]:
+    """Return (mid-of-prior-month, mid-of-covered-month) datetimes for inserts.
+
+    The digest covers the calendar month before ``date.today()`` and compares it
+    against the month before that. Day 15 is valid in every month, so it is a
+    safe posting day for both.
+    """
+    today = date.today()
+    first_of_this_month = today.replace(day=1)
+    covered_start = (first_of_this_month - timedelta(days=1)).replace(day=1)
+    prior_start = (covered_start - timedelta(days=1)).replace(day=1)
+    prior_mid = datetime(prior_start.year, prior_start.month, 15, tzinfo=UTC)
+    covered_mid = datetime(covered_start.year, covered_start.month, 15, tzinfo=UTC)
+    return prior_mid, covered_mid
+
+
+async def test_monthly_finance_digest_includes_trend_when_prior_month_data_exists(
+    provisioned_postgres_pool, monkeypatch
+):
+    """The digest surfaces month-over-month swings, new, and disappeared categories."""
+    fj = _fj_module()
+
+    async def _fake_budget_status(conn):
+        return {"items": [], "count": 0}
+
+    async def _fake_subscription_audit(conn):
+        return {"entries": [], "total_annual_cost": "0", "changes_since_last_audit": []}
+
+    monkeypatch.setattr(fj, "budget_status", _fake_budget_status)
+    monkeypatch.setattr(fj, "subscription_audit", _fake_subscription_audit)
+
+    prior_mid, covered_mid = _digest_month_bounds()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        # Prior month: dining $100, travel $100 (travel disappears next month).
+        await _insert_transaction(
+            pool, merchant="Bistro", amount="100.00", category="dining", posted_at=prior_mid
+        )
+        await _insert_transaction(
+            pool, merchant="Airline", amount="100.00", category="travel", posted_at=prior_mid
+        )
+        # Covered month: dining $200 (+100% swing), coffee $50 (new). Travel absent.
+        await _insert_transaction(
+            pool, merchant="Bistro", amount="200.00", category="dining", posted_at=covered_mid
+        )
+        await _insert_transaction(
+            pool, merchant="Cafe", amount="50.00", category="coffee", posted_at=covered_mid
+        )
+
+        await fj.run_monthly_finance_digest(pool)
+
+        candidates = await _fetch_candidates(pool)
+        digest_cands = [c for c in candidates if c["category"] == "monthly-finance-digest"]
+        assert len(digest_cands) == 1
+        message = digest_cands[0]["message"]
+        # Total spend rose $200 -> $250 = +25%.
+        assert "Month-over-month: total spend up 25% vs" in message
+        assert "notable changes:" in message
+        assert "dining +100%" in message
+        assert "coffee (new)" in message
+        assert "travel (no spend)" in message
+
+
+async def test_monthly_finance_digest_omits_trend_when_no_prior_month_data(
+    provisioned_postgres_pool, monkeypatch
+):
+    """With no prior-month spend, the digest still sends but omits the trend bullet."""
+    fj = _fj_module()
+
+    async def _fake_budget_status(conn):
+        return {"items": [], "count": 0}
+
+    async def _fake_subscription_audit(conn):
+        return {"entries": [], "total_annual_cost": "0", "changes_since_last_audit": []}
+
+    monkeypatch.setattr(fj, "budget_status", _fake_budget_status)
+    monkeypatch.setattr(fj, "subscription_audit", _fake_subscription_audit)
+
+    _prior_mid, covered_mid = _digest_month_bounds()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        # Only covered-month spend; the month before it has no transactions.
+        await _insert_transaction(
+            pool, merchant="Bistro", amount="80.00", category="dining", posted_at=covered_mid
+        )
+
+        result = await fj.run_monthly_finance_digest(pool)
+
+        assert result["status"] == "accepted"
+        candidates = await _fetch_candidates(pool)
+        digest_cands = [c for c in candidates if c["category"] == "monthly-finance-digest"]
+        assert len(digest_cands) == 1
+        message = digest_cands[0]["message"]
+        assert "Month-over-month" not in message
+        assert "notable changes" not in message
+
+
+async def test_monthly_finance_digest_degrades_gracefully_on_trend_failure(
+    provisioned_postgres_pool, monkeypatch
+):
+    """A trend-computation error never blocks the digest — it just drops the bullet."""
+    fj = _fj_module()
+
+    async def _fake_budget_status(conn):
+        return {"items": [], "count": 0}
+
+    async def _fake_subscription_audit(conn):
+        return {"entries": [], "total_annual_cost": "0", "changes_since_last_audit": []}
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("trend query blew up")
+
+    monkeypatch.setattr(fj, "budget_status", _fake_budget_status)
+    monkeypatch.setattr(fj, "subscription_audit", _fake_subscription_audit)
+    monkeypatch.setattr(fj, "_month_over_month_trend", _boom)
+
+    prior_mid, covered_mid = _digest_month_bounds()
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+
+        await _insert_transaction(
+            pool, merchant="Bistro", amount="100.00", category="dining", posted_at=prior_mid
+        )
+        await _insert_transaction(
+            pool, merchant="Bistro", amount="200.00", category="dining", posted_at=covered_mid
+        )
+
+        result = await fj.run_monthly_finance_digest(pool)
+
+        assert result["status"] == "accepted"
+        candidates = await _fetch_candidates(pool)
+        digest_cands = [c for c in candidates if c["category"] == "monthly-finance-digest"]
+        assert len(digest_cands) == 1
+        message = digest_cands[0]["message"]
+        assert "Month-over-month" not in message

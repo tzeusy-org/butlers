@@ -92,6 +92,14 @@ _BILL_PREDICTED_PRIORITY = 30  # advisory — untracked recurring pattern
 # bu-rvz2o: absorbs monthly-spending-summary + subscription-audit-monthly.
 _MONTHLY_DIGEST_PRIORITY = 55
 
+# bu-7hogl: restore the month-over-month "notable changes" trend content the old
+# monthly-spending-summary task produced (via spending_trends(comparison=
+# "month_over_month")). A category is "notable" when its spend swings by more than
+# this percentage vs. the month before the digest's covered month, or when it
+# newly appears / disappears. Capped for message legibility; overflow is disclosed.
+_MONTHLY_TREND_SWING_PCT = Decimal("20")
+_MONTHLY_TREND_MAX_NOTABLE = 5
+
 
 async def run_upcoming_bills_check(db_pool: asyncpg.Pool) -> dict:
     """Check for bills due within 14 days and overdue bills.
@@ -1086,6 +1094,103 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+async def _month_over_month_trend(
+    db_pool: asyncpg.Pool,
+    *,
+    last_month_start: date,
+    last_month_end: date,
+) -> dict[str, Any] | None:
+    """Compute the month-over-month "notable changes" trend for the digest.
+
+    Compares the digest's covered month (``[last_month_start, last_month_end)``)
+    against the calendar month immediately before it, per category. This is the
+    deterministic equivalent of the old ``monthly-spending-summary`` task's
+    ``spending_trends(comparison="month_over_month", months=2)`` call plus its
+    per-category delta pass (bu-7hogl).
+
+    Returns
+    -------
+    dict | None
+        ``{prior_period, direction, total_change_pct, notable, notable_total}``
+        where ``notable`` is a capped list of human-readable category-swing
+        strings, or ``None`` when there is insufficient prior-month data to
+        compute a meaningful comparison (the digest then simply omits the bullet
+        rather than blocking).
+    """
+    prior_month_end = last_month_start
+    prior_month_start = (last_month_start - timedelta(days=1)).replace(day=1)
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                category,
+                COALESCE(
+                    SUM(ABS(amount)) FILTER (WHERE posted_at >= $1 AND posted_at < $2),
+                    0
+                ) AS prior_total,
+                COALESCE(
+                    SUM(ABS(amount)) FILTER (WHERE posted_at >= $2 AND posted_at < $3),
+                    0
+                ) AS last_total
+            FROM finance.transactions
+            WHERE direction = 'debit'
+              AND posted_at >= $1
+              AND posted_at < $3
+            GROUP BY category
+            """,
+            prior_month_start,
+            prior_month_end,
+            last_month_end,
+        )
+
+    prior_grand = Decimal("0.00")
+    last_grand = Decimal("0.00")
+    # (sort_key, label) so we can surface the biggest swings first.
+    scored: list[tuple[Decimal, str]] = []
+    for row in rows:
+        category = row["category"] or "uncategorized"
+        prior_total = Decimal(str(row["prior_total"]))
+        last_total = Decimal(str(row["last_total"]))
+        prior_grand += prior_total
+        last_grand += last_total
+
+        if prior_total > 0 and last_total > 0:
+            change_pct = (last_total - prior_total) / prior_total * 100
+            if abs(change_pct) > _MONTHLY_TREND_SWING_PCT:
+                sign = "+" if change_pct >= 0 else ""
+                scored.append(
+                    (abs(last_total - prior_total), f"{category} {sign}{change_pct:.0f}%")
+                )
+        elif prior_total == 0 and last_total > 0:
+            scored.append((last_total, f"{category} (new)"))
+        elif prior_total > 0 and last_total == 0:
+            scored.append((prior_total, f"{category} (no spend)"))
+
+    # Insufficient prior-month data -> no meaningful month-over-month comparison.
+    if prior_grand <= 0:
+        return None
+
+    total_change_pct = (last_grand - prior_grand) / prior_grand * 100
+    if total_change_pct > 0:
+        direction = "up"
+    elif total_change_pct < 0:
+        direction = "down"
+    else:
+        direction = "flat"
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    notable = [label for _, label in scored[:_MONTHLY_TREND_MAX_NOTABLE]]
+
+    return {
+        "prior_period": prior_month_start.strftime("%Y-%m"),
+        "direction": direction,
+        "total_change_pct": total_change_pct,
+        "notable": notable,
+        "notable_total": len(scored),
+    }
+
+
 async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Compose and propose one consolidated monthly finance digest insight.
 
@@ -1170,6 +1275,38 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
     )
     total_annual_cost = audit_result.get("total_annual_cost", "0")
 
+    # bu-7hogl: restore the month-over-month "notable changes" trend content.
+    # Never let a trend computation failure block the digest — degrade to omitting
+    # the bullet (the digest is more valuable delivered without it than not at all).
+    trend: dict[str, Any] | None = None
+    try:
+        trend = await _month_over_month_trend(
+            db_pool,
+            last_month_start=last_month_start,
+            last_month_end=last_month_end,
+        )
+    except Exception:  # noqa: BLE001 — graceful degradation, never block the digest
+        logger.warning(
+            "Finance monthly digest: month-over-month trend computation failed; "
+            "sending digest without the trend bullet",
+            exc_info=True,
+        )
+
+    if trend is not None:
+        trend_segment = (
+            f" Month-over-month: total spend {trend['direction']} "
+            f"{abs(trend['total_change_pct']):.0f}% vs {trend['prior_period']}"
+        )
+        if trend["notable"]:
+            notable_str = ", ".join(trend["notable"])
+            overflow = trend["notable_total"] - len(trend["notable"])
+            if overflow > 0:
+                notable_str += f" (+{overflow} more)"
+            trend_segment += f"; notable changes: {notable_str}"
+        trend_segment += "."
+    else:
+        trend_segment = ""
+
     message = (
         f"Monthly finance digest for {period_label}: "
         f"total spend ${total_spend:.2f}"
@@ -1178,6 +1315,7 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
         f"Subscriptions: {active_count} active (${total_annual_cost}/yr projected)"
         + (f", {untracked_count} untracked pattern(s) detected" if untracked_count else "")
         + "."
+        + trend_segment
     )
 
     result = await propose_insight_candidate(
@@ -1195,6 +1333,9 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
             "budget_flagged_count": len(flagged),
             "subscription_active_count": active_count,
             "subscription_untracked_count": untracked_count,
+            "trend_available": trend is not None,
+            "trend_direction": trend["direction"] if trend else None,
+            "trend_notable_count": trend["notable_total"] if trend else 0,
         },
     )
 
