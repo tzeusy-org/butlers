@@ -298,6 +298,16 @@ describe("EventDrawer — per-session cost column", () => {
     expect(empty!.textContent).toContain("Filtered before dispatch");
     expect(empty!.textContent).toContain("duplicate");
   });
+
+  it("renders an honest empty state for a 'failed' event (routing failure after ingestion, bu-lkzsf.1)", () => {
+    mockSessions([]);
+
+    renderDrawer(makeEvent({ status: "failed", error_detail: "switchboard unreachable" }));
+    const empty = container.querySelector("[data-testid='sessions-tab-empty']");
+    expect(empty).not.toBeNull();
+    expect(empty!.textContent).toContain("Routing failed after this event was ingested");
+    expect(empty!.textContent).toContain("switchboard unreachable");
+  });
 });
 
 describe("EventDrawer — raw tab", () => {

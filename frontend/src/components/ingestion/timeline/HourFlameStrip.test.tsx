@@ -40,6 +40,7 @@ function counts(overrides: Partial<IngestionHistogramCounts> = {}): IngestionHis
     skipped: 0,
     filtered: 0,
     error: 0,
+    failed: 0,
     replay_pending: 0,
     replay_complete: 0,
     replay_failed: 0,
@@ -109,6 +110,24 @@ describe("HourFlameStrip", () => {
     expect(segments).toHaveLength(1);
     expect(segments[0].classList.contains("bg-destructive")).toBe(true);
     expect((segments[0] as HTMLElement).style.height).toBe("100%");
+  });
+
+  it("counts 'failed' (routing failure after ingestion, bu-lkzsf.1) into the same destructive segment as 'error'", () => {
+    const buckets = [bucket("2026-05-17T14:06:00Z", { error: 1, failed: 3 })];
+    act(() => {
+      root.render(renderStrip({ hourStart: HOUR_START, buckets, bucketMinutes: 1 }));
+    });
+    const failedButton = container.querySelector(
+      "[data-testid='hour-strip-minute'][data-minute-iso='2026-05-17T14:06:00.000Z']",
+    );
+    expect(failedButton).not.toBeNull();
+    expect(failedButton!.getAttribute("data-has-error")).toBe("true");
+    const segments = failedButton!.querySelectorAll(":scope > div > div");
+    // 4 total (1 error + 3 failed), one merged destructive segment, filling 100%.
+    expect(segments).toHaveLength(1);
+    expect(segments[0].classList.contains("bg-destructive")).toBe(true);
+    expect((segments[0] as HTMLElement).style.height).toBe("100%");
+    expect(failedButton!.getAttribute("aria-label")).toContain("4 errors");
   });
 
   it("stacks mixed-status minutes with error, replay, ingested, and filtered/skipped segments", () => {

@@ -159,13 +159,17 @@ It SHALL include:
   (state color as foreground/border only)
 - **AND** no row renders a background-filled status badge
 - **AND** the status word matches the badge vocabulary exactly: `ingested`,
-  `skipped`, `filtered`, `error`, `replay pending`, `replay complete`,
-  `replay failed`
+  `skipped`, `filtered`, `error`, `failed`, `replay pending`,
+  `replay complete`, `replay failed`
 - **AND** `filtered` rows are visually de-emphasized (reduced opacity) rather
   than distinguished by a gray pill
-- **AND** `filtered`/`error` rows show their `filter_reason`/`error_detail`
-  inline next to the sender, truncated with a title tooltip, instead of only
-  on hover of the status control
+- **AND** `filtered`/`error`/`failed` rows show their
+  `filter_reason`/`error_detail` inline next to the sender, truncated with a
+  title tooltip, instead of only on hover of the status control
+- **AND** `failed` (a routing failure recorded after the event was already
+  ingested — see `ingestion_event_mark_failed`) renders with the same
+  destructive-red treatment as `error` and is replayable straight back to
+  `ingested`, alongside `filtered`/`error`/`replay_failed`
 
 #### Scenario: Ledger row shows a dispatch-ticks summary without opening the drawer
 
@@ -203,11 +207,16 @@ It SHALL include:
   `GET /api/ingestion/events/histogram` for that hour and its active
   filters, and are correct even when only some pages of that hour have
   loaded into the ledger
+- **AND** the event and error counts include `failed` events (routing
+  failures recorded after ingestion) — a `failed` event counts as both an
+  event and an error, the same as `error`, so it never silently vanishes
+  from the honest hourly total
 - **AND** the per-minute strip renders each minute as a status-stacked bar:
   ingested at a low foreground alpha, filtered/skipped at a lower foreground
-  alpha, error in the destructive color, and replay states in blue
-- **AND** a minute where every event errored renders as solid destructive
-  color
+  alpha, error and failed together in the destructive color, and replay
+  states in blue
+- **AND** a minute where every event errored or failed renders as solid
+  destructive color
 - **AND** the strip exposes an `aria-label` summarizing the hour's activity
   instead of being hidden from assistive technology
 

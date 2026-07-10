@@ -16,7 +16,10 @@
  * component owns bucket alignment, stacking, and honesty directly.
  *
  * Stack order within a bar, top (most visible) to bottom (baseline):
- * error → replay (pending/complete/failed combined) → ingested → filtered/skipped.
+ * error+failed → replay (pending/complete/failed combined) → ingested →
+ * filtered/skipped. "failed" (routing failure after ingestion, bu-lkzsf.1)
+ * shares the error segment — same destructive severity, just a later
+ * pipeline stage — rather than adding a fifth stacked lane.
  * Segment fills reuse the app's existing status color vocabulary (StatusBadge /
  * RowStatus: destructive for error, blue-500 for replay) — no new color
  * tokens are introduced.
@@ -44,6 +47,7 @@ const ZERO_COUNTS: IngestionHistogramCounts = {
   skipped: 0,
   filtered: 0,
   error: 0,
+  failed: 0,
   replay_pending: 0,
   replay_complete: 0,
   replay_failed: 0,
@@ -58,8 +62,24 @@ interface MinuteSlot {
 
 function countsTotal(c: IngestionHistogramCounts): number {
   return (
-    c.ingested + c.skipped + c.filtered + c.error + c.replay_pending + c.replay_complete + c.replay_failed
+    c.ingested +
+    c.skipped +
+    c.filtered +
+    c.error +
+    c.failed +
+    c.replay_pending +
+    c.replay_complete +
+    c.replay_failed
   );
+}
+
+/**
+ * "error" and "failed" (routing failure after ingestion, bu-lkzsf.1) share one
+ * destructive-severity bucket here — same trouble, different pipeline stage —
+ * rather than a fifth stacked lane.
+ */
+function errorTotal(c: IngestionHistogramCounts): number {
+  return c.error + c.failed;
 }
 
 function replayTotal(c: IngestionHistogramCounts): number {
@@ -78,7 +98,8 @@ function formatMinuteSummary(slot: MinuteSlot, tz: string): string {
   if (slot.total === 0) return `${label} · no events`;
   const { counts } = slot;
   const parts: string[] = [];
-  if (counts.error > 0) parts.push(`${counts.error} ${counts.error === 1 ? "error" : "errors"}`);
+  const errors = errorTotal(counts);
+  if (errors > 0) parts.push(`${errors} ${errors === 1 ? "error" : "errors"}`);
   const replays = replayTotal(counts);
   if (replays > 0) parts.push(`${replays} ${replays === 1 ? "replay" : "replays"}`);
   if (counts.filtered > 0) parts.push(`${counts.filtered} filtered`);
@@ -97,13 +118,13 @@ function buildAriaSummary(hourStart: string, slots: MinuteSlot[], tz: string): s
   if (totalEvents === 0) return `Activity ${startLabel}–${endLabel}, no events`;
 
   const peakSlot = slots.reduce((best, s) => (s.total > best.total ? s : best), slots[0]);
-  const errorTotal = slots.reduce((sum, s) => sum + s.counts.error, 0);
+  const errorCount = slots.reduce((sum, s) => sum + errorTotal(s.counts), 0);
   const replaysTotal = slots.reduce((sum, s) => sum + replayTotal(s.counts), 0);
 
   let summary = `Activity ${startLabel}–${endLabel}, peak ${formatClock(peakSlot.minuteIso, tz)}`;
-  if (errorTotal > 0) {
-    const firstError = slots.find((s) => s.counts.error > 0);
-    summary += `, ${errorTotal} ${errorTotal === 1 ? "error" : "errors"}`;
+  if (errorCount > 0) {
+    const firstError = slots.find((s) => errorTotal(s.counts) > 0);
+    summary += `, ${errorCount} ${errorCount === 1 ? "error" : "errors"}`;
     if (firstError) summary += ` starting ${formatClock(firstError.minuteIso, tz)}`;
   }
   if (replaysTotal > 0) {
@@ -183,11 +204,12 @@ export function HourFlameStrip({
           const isEmpty = slot.total === 0;
           const barH = isEmpty ? 1 : Math.max(1, (slot.total / peak) * height);
           // Stack order, first-rendered (top of bar, most visible) to
-          // last-rendered (baseline): error, replay, ingested, filtered/skipped.
+          // last-rendered (baseline): error+failed, replay, ingested,
+          // filtered/skipped.
           const segments = isEmpty
             ? []
             : [
-                { count: slot.counts.error, className: "bg-destructive" },
+                { count: errorTotal(slot.counts), className: "bg-destructive" },
                 { count: replayTotal(slot.counts), className: "bg-blue-500" },
                 { count: slot.counts.ingested, className: "bg-foreground/30" },
                 { count: slot.counts.filtered + slot.counts.skipped, className: "bg-foreground/10" },
@@ -207,7 +229,7 @@ export function HourFlameStrip({
               aria-label={formatMinuteSummary(slot, tz)}
               data-testid="hour-strip-minute"
               data-minute-iso={slot.minuteIso}
-              data-has-error={slot.counts.error > 0 ? "true" : undefined}
+              data-has-error={errorTotal(slot.counts) > 0 ? "true" : undefined}
             >
               {isEmpty ? (
                 <div className="w-full bg-border" style={{ height: barH }} />

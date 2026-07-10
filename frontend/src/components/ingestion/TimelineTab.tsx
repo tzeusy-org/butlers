@@ -169,12 +169,12 @@ const BUILT_IN_VIEWS: SavedView[] = [
     label: "All",
     // All real traffic — noise statuses ("skipped" skip-triaged events,
     // "filtered" rule drops) stay hidden until toggled on via the status chips.
-    statuses: ["ingested", "error", "replay_pending", "replay_complete", "replay_failed"],
+    statuses: ["ingested", "error", "failed", "replay_pending", "replay_complete", "replay_failed"],
   },
   {
     id: "errors",
     label: "Errors only",
-    statuses: ["error", "replay_pending", "replay_failed"],
+    statuses: ["error", "failed", "replay_pending", "replay_failed"],
   },
   {
     id: "spend",
@@ -183,7 +183,7 @@ const BUILT_IN_VIEWS: SavedView[] = [
     label: "spend",
     // Same statuses as "All" — cost sort applies to dispatched events.
     // Enabled by core_126: cost_usd is now denormalized onto ingestion_events.
-    statuses: ["ingested", "error", "replay_pending", "replay_complete", "replay_failed"],
+    statuses: ["ingested", "error", "failed", "replay_pending", "replay_complete", "replay_failed"],
   },
 ];
 
@@ -223,6 +223,7 @@ const ALL_STATUSES: IngestionEventStatus[] = [
   "skipped",
   "filtered",
   "error",
+  "failed",
   "replay_pending",
   "replay_complete",
   "replay_failed",
@@ -230,7 +231,9 @@ const ALL_STATUSES: IngestionEventStatus[] = [
 
 // Status filter chips use the exact badge vocabulary (ROW_STATUS_WORDS,
 // imported from StatusBadge.tsx) rather than a second, driftable word list —
-// "ok"/"replay"/"replayed"/"failed" from the old chip labels are gone.
+// "ok"/"replay"/"replayed" from the old chip labels are gone. ("failed" here
+// is the real routing-failure status added by bu-lkzsf.1, not the retired
+// chip shorthand for replay_failed.)
 
 // "skipped" (stored but not dispatched — e.g. home_assistant sensor streams)
 // and "filtered" are noise statuses, hidden by default.
@@ -868,8 +871,14 @@ function LedgerRow({
   // bu-4utdw.4: every row expands now — filtered/error rows used to be
   // excluded (their detail was tooltip-only). The drawer already renders an
   // honest reason for those statuses (EventDrawer's emptySessionsReason).
+  // "failed" (routing failure after ingestion, bu-lkzsf.1) carries the same
+  // error_detail shape as "error" and gets the same inline treatment.
   const reasonText =
-    event.status === "filtered" ? event.filter_reason : event.status === "error" ? event.error_detail : null;
+    event.status === "filtered"
+      ? event.filter_reason
+      : event.status === "error" || event.status === "failed"
+        ? event.error_detail
+        : null;
 
   async function handleReplay(e: React.MouseEvent) {
     e.stopPropagation();
@@ -1013,7 +1022,9 @@ function LedgerRow({
             aria-hidden="true"
             className={[
               "truncate min-w-0 font-mono text-[11px]",
-              event.status === "error" ? "text-destructive" : "text-muted-foreground",
+              event.status === "error" || event.status === "failed"
+                ? "text-destructive"
+                : "text-muted-foreground",
             ].join(" ")}
           >
             {reasonText}
@@ -1120,8 +1131,20 @@ function HourGroup({
     let replays = 0;
     for (const b of histogramBuckets) {
       const c = b.counts;
-      total += c.ingested + c.skipped + c.filtered + c.error + c.replay_pending + c.replay_complete + c.replay_failed;
-      errors += c.error;
+      // "failed" (routing failure after ingestion, bu-lkzsf.1) counts as an
+      // error for this honest-total header — same severity class as "error",
+      // just a later pipeline stage (mirrors the backend's incident grouping
+      // in ingestion_connectors.py::_INCIDENT_STATUSES).
+      total +=
+        c.ingested +
+        c.skipped +
+        c.filtered +
+        c.error +
+        c.failed +
+        c.replay_pending +
+        c.replay_complete +
+        c.replay_failed;
+      errors += c.error + c.failed;
       replays += c.replay_pending + c.replay_complete + c.replay_failed;
     }
     return { total, errors, replays };

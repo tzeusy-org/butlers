@@ -152,6 +152,7 @@ function makeHistogramCounts(overrides: Record<string, number> = {}) {
     skipped: 0,
     filtered: 0,
     error: 0,
+    failed: 0,
     replay_pending: 0,
     replay_complete: 0,
     replay_failed: 0,
@@ -366,6 +367,38 @@ describe("TimelineTab — hour grouping", () => {
     expect(summary!.textContent).toContain("214 events");
     expect(summary!.textContent).toContain("6 errors");
     expect(summary!.textContent).toContain("2 replays");
+  });
+
+  it("header counts fold 'failed' (routing failure after ingestion, bu-lkzsf.1) into the honest event and error totals", () => {
+    // A "failed" event was already ingested (backend histogram counts it
+    // separately from "error", see _HISTOGRAM_STATUSES), but the header must
+    // still count it as both an event and a trouble signal — it must never
+    // silently vanish from the honest total (bu-lkzsf epic: "failure never
+    // impersonates health").
+    const events = [makeEvent({ id: "id-1", received_at: "2026-05-17T14:05:00Z" })];
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+    vi.mocked(useIngestionEventsHistogram).mockReturnValue(
+      makeHistogramResult([
+        makeHistogramBucket("2026-05-17T14:05:00Z", { ingested: 10, error: 1, failed: 3 }),
+      ]) as unknown as ReturnType<typeof useIngestionEventsHistogram>,
+    );
+
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} defaultStatuses={["ingested"]} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    const summary = container.querySelector("[data-testid='hour-group-summary']");
+    expect(summary).not.toBeNull();
+    expect(summary!.textContent).toContain("14 events");
+    expect(summary!.textContent).toContain("4 errors");
   });
 
   it("clicking a strip minute with a loaded ledger row scrolls it into view", () => {

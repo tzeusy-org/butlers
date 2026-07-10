@@ -355,6 +355,7 @@ describe("TimelineTab — status filter passes statuses= CSV to useIngestionEven
       "skipped",
       "filtered",
       "error",
+      "failed",
       "replay_pending",
       "replay_complete",
       "replay_failed",
@@ -398,7 +399,7 @@ describe("TimelineTab — row status rendering", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
-            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "replay_pending", "replay_complete", "replay_failed"]} />
+            <TimelineTab isActive={true} defaultStatuses={["ingested", "filtered", "error", "failed", "replay_pending", "replay_complete", "replay_failed"]} />
           </MemoryRouter>
         </QueryClientProvider>,
       );
@@ -420,6 +421,11 @@ describe("TimelineTab — row status rendering", () => {
     expect(container.textContent).toContain("error");
   });
 
+  it("renders 'failed' badge text (routing failure after ingestion, bu-lkzsf.1)", () => {
+    render([makeEvent({ status: "failed" })]);
+    expect(container.textContent).toContain("failed");
+  });
+
   it("renders 'replay pending' badge text for replay_pending", () => {
     render([makeEvent({ status: "replay_pending" })]);
     expect(container.textContent).toContain("replay pending");
@@ -434,6 +440,13 @@ describe("TimelineTab — row status rendering", () => {
 
   it("shows Replay button for error events", () => {
     render([makeEvent({ status: "error" })]);
+    const btn = container.querySelector("[data-testid='replay-button']");
+    expect(btn).not.toBeNull();
+    expect(btn!.getAttribute("title")).toBe("Replay");
+  });
+
+  it("shows Replay button for failed events (replayable straight back to ingested)", () => {
+    render([makeEvent({ status: "failed" })]);
     const btn = container.querySelector("[data-testid='replay-button']");
     expect(btn).not.toBeNull();
     expect(btn!.getAttribute("title")).toBe("Replay");
@@ -654,6 +667,10 @@ describe("TimelineTab — Status filter", () => {
     expect(filterEl!.textContent).toContain("ingested");
     expect(filterEl!.textContent).toContain("filtered");
     expect(filterEl!.textContent).toContain("error");
+    // "failed" (routing failure after ingestion, bu-lkzsf.1) always renders
+    // its own chip alongside "error" — chips render for ALL_STATUSES
+    // regardless of which are enabled by defaultStatuses.
+    expect(filterEl!.textContent).toContain("failed");
   });
 
   it("status filter chips share one vocabulary with the row status word (bu-4utdw.5)", () => {
@@ -673,6 +690,7 @@ describe("TimelineTab — Status filter", () => {
       "skipped",
       "filtered",
       "error",
+      "failed",
       "replay pending",
       "replay complete",
       "replay failed",

@@ -3602,6 +3602,8 @@ export interface ConnectorProfile {
  * - skipped: stored but deliberately not dispatched (matched a `skip` triage rule)
  * - filtered: dropped by a rule
  * - error: processing failed
+ * - failed: routing failed after the event was already ingested (see
+ *   ``ingestion_event_mark_failed``); replayable straight back to `ingested`
  * - replay_pending: replay requested, awaiting processing
  * - replay_complete: replay succeeded
  * - replay_failed: replay attempt failed
@@ -3611,6 +3613,7 @@ export type IngestionEventStatus =
   | "skipped"
   | "filtered"
   | "error"
+  | "failed"
   | "replay_pending"
   | "replay_complete"
   | "replay_failed";
@@ -3867,6 +3870,7 @@ export interface IngestionHistogramCounts {
   skipped: number;
   filtered: number;
   error: number;
+  failed: number;
   replay_pending: number;
   replay_complete: number;
   replay_failed: number;

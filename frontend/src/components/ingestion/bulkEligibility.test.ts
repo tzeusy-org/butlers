@@ -18,6 +18,7 @@ const ELIGIBLE_STATUSES: IngestionEventStatus[] = [
   "ingested",
   "filtered",
   "error",
+  "failed",
   "replay_complete",
   "replay_failed",
 ];

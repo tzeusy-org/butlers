@@ -85,6 +85,11 @@ function emptySessionsReason(
       ? `Dispatch failed before a session could start (${event.error_detail}).`
       : 'Dispatch failed before a session could start.'
   }
+  if (event.status === 'failed') {
+    return event.error_detail
+      ? `Routing failed after this event was ingested, so no butler session ran (${event.error_detail}).`
+      : 'Routing failed after this event was ingested, so no butler session ran.'
+  }
   return 'This event was ingested but no butler session has been recorded for it.'
 }
 
@@ -649,7 +654,11 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
     { id: 'replays', label: 'replay history' },
   ]
 
-  const canReplay = event.status === 'filtered' || event.status === 'error' || event.status === 'replay_failed'
+  const canReplay =
+    event.status === 'filtered' ||
+    event.status === 'error' ||
+    event.status === 'failed' ||
+    event.status === 'replay_failed'
 
   const announceText = hasSessions
     ? `Event detail open — ${sessionList.length} ${sessionList.length === 1 ? 'session' : 'sessions'}`

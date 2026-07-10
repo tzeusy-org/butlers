@@ -6,12 +6,15 @@
  * - skipped       → muted outline (stored but not dispatched — skip triage rule)
  * - filtered      → gray (secondary)
  * - error         → red (destructive)
+ * - failed        → red (destructive) — routing failed after ingestion
+ *   (see ingestion_event_mark_failed); same severity treatment as error
  * - replay_pending → blue (custom)
  * - replay_complete → green outline
  * - replay_failed  → red outline
  *
- * For filtered and error statuses, wraps in a Tooltip showing filter_reason.
- * For error status, also appends error_detail when available.
+ * For filtered, error, and failed statuses, wraps in a Tooltip showing
+ * filter_reason. For error and failed statuses, also appends error_detail
+ * when available.
  */
 
 import { Badge } from "@/components/ui/badge";
@@ -34,6 +37,7 @@ const STATUS_LABELS: Record<IngestionEventStatus, string> = {
   skipped: "skipped",
   filtered: "filtered",
   error: "error",
+  failed: "failed",
   replay_pending: "replay pending",
   replay_complete: "replayed",
   replay_failed: "replay failed",
@@ -60,6 +64,10 @@ function BadgeInner({ status }: { status: IngestionEventStatus }) {
     case "error":
       return (
         <Badge variant="destructive">{STATUS_LABELS.error}</Badge>
+      );
+    case "failed":
+      return (
+        <Badge variant="destructive">{STATUS_LABELS.failed}</Badge>
       );
     case "replay_pending":
       return (
@@ -91,9 +99,9 @@ function BadgeInner({ status }: { status: IngestionEventStatus }) {
 }
 
 export function StatusBadge({ status, filterReason, errorDetail }: StatusBadgeProps) {
+  const isErrorLike = status === "error" || status === "failed";
   const hasTooltipContent =
-    (status === "filtered" || status === "error") &&
-    (!!filterReason || (status === "error" && !!errorDetail));
+    (status === "filtered" || isErrorLike) && (!!filterReason || (isErrorLike && !!errorDetail));
 
   if (!hasTooltipContent) {
     return <BadgeInner status={status} />;
@@ -109,7 +117,7 @@ export function StatusBadge({ status, filterReason, errorDetail }: StatusBadgePr
         </TooltipTrigger>
         <TooltipContent side="top">
           {filterReason && <p className="max-w-xs text-xs">{filterReason}</p>}
-          {status === "error" && errorDetail && (
+          {isErrorLike && errorDetail && (
             <p className="max-w-xs text-xs">{errorDetail}</p>
           )}
         </TooltipContent>
@@ -143,6 +151,7 @@ export const ROW_STATUS_WORDS: Record<IngestionEventStatus, string> = {
   skipped: "skipped",
   filtered: "filtered",
   error: "error",
+  failed: "failed",
   replay_pending: "replay pending",
   replay_complete: "replay complete",
   replay_failed: "replay failed",
@@ -160,6 +169,7 @@ const ROW_STATUS_STYLE: Record<IngestionEventStatus, RowStatusStyle> = {
   skipped: { dot: "border border-muted-foreground/40", text: "text-muted-foreground" },
   filtered: { dot: "border border-muted-foreground/40", text: "text-muted-foreground" },
   error: { dot: "bg-destructive", text: "text-destructive" },
+  failed: { dot: "bg-destructive", text: "text-destructive" },
   replay_pending: { dot: "border border-blue-500", text: "text-blue-600" },
   replay_complete: { dot: "border border-[var(--green)]", text: "text-[var(--green)]" },
   replay_failed: { dot: "border border-destructive", text: "text-destructive" },
