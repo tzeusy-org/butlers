@@ -80,14 +80,21 @@ async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None
 
 
 # Module-level cache for _has_column results.
-# Keyed by id(pool) so different pools (e.g. test fixtures with different schemas)
-# don't pollute each other.  Plain dict because asyncpg.Pool does not support
-# weak references.
-_column_existence_cache: dict[int, dict[tuple[str, str], bool]] = {}
+# Keyed by the pool object itself (not id(pool)) so different pools (e.g. test
+# fixtures with different schemas) don't pollute each other. Using the pool as
+# the key rather than id(pool) matters: asyncpg.Pool does not support weak
+# references, but a plain dict keyed by id(pool) is worse than useless -- once
+# a short-lived pool is garbage collected, CPython is free to hand its old
+# memory address to a brand-new, unrelated pool, and the new pool would then
+# silently inherit the dead pool's cached (and possibly wrong) schema facts.
+# Keying by the object itself makes the dict hold a strong reference, which
+# keeps that exact address alive for as long as its cache entry exists, so no
+# two live pools can ever collide on the same key.
+_column_existence_cache: dict[asyncpg.Pool, dict[tuple[str, str], bool]] = {}
 
 # Module-level cache for _has_table results, mirroring _column_existence_cache.
 # Avoids an information_schema round-trip per insert (hot on bulk imports).
-_table_existence_cache: dict[int, dict[str, bool]] = {}
+_table_existence_cache: dict[asyncpg.Pool, dict[str, bool]] = {}
 
 
 async def _mirror_to_spo(
@@ -332,7 +339,7 @@ async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
     Results are cached for the lifetime of the process to avoid repeated
     ``information_schema`` queries on every deduplication call.
     """
-    per_pool = _column_existence_cache.setdefault(id(pool), {})
+    per_pool = _column_existence_cache.setdefault(pool, {})
     cache_key = (table, column)
     if cache_key in per_pool:
         return per_pool[cache_key]
@@ -357,7 +364,7 @@ async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
     repeated ``information_schema`` queries on every insert / dedup call
     (hot during bulk imports).
     """
-    per_pool = _table_existence_cache.setdefault(id(pool), {})
+    per_pool = _table_existence_cache.setdefault(pool, {})
     if table in per_pool:
         return per_pool[table]
     count = await pool.fetchval(

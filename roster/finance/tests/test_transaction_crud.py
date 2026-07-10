@@ -1469,6 +1469,59 @@ class TestSplitTransactionEnhanced:
         assert result["splits"][0]["category"] == "groceries"
 
 
+class TestSchemaExistenceCacheIdentity:
+    """Regression guard for bu-3keyu.
+
+    ``_has_table``/``_has_column`` memoize schema facts per pool for the
+    lifetime of the process (see roster/finance/tools/transactions.py). Under
+    the full CI suite, thousands of short-lived pools are created and closed
+    within one worker process; if the cache were keyed by ``id(pool)`` (a
+    plain memory address), a garbage-collected pool's freed address could be
+    reused by a brand-new, unrelated pool, causing that new pool to silently
+    inherit a stale (and possibly wrong) schema fact -- e.g. a pool whose
+    schema genuinely has the ``categories`` FK table reading back a dead
+    pool's cached "no such table," skipping the unknown-category fallback and
+    tripping a real FK violation on insert. This is exactly the flake this
+    bead was filed for. Keying by the pool object itself (not id(pool)) fixes
+    it: a dict holds a strong reference to its keys, so the same address can
+    never be reused while a cache entry for it still exists.
+    """
+
+    async def test_table_and_column_cache_are_keyed_by_pool_object_not_id(self, pool_v2):
+        """Cache dicts must never be keyed by a raw int (id(pool))."""
+        from butlers.tools.finance import transactions as _txn_module
+
+        await _txn_module._has_table(pool_v2, "categories")
+        await _txn_module._has_column(pool_v2, "transactions", "category")
+
+        assert not any(isinstance(key, int) for key in _txn_module._table_existence_cache)
+        assert not any(isinstance(key, int) for key in _txn_module._column_existence_cache)
+
+    async def test_unrelated_pool_never_observes_another_pools_cached_facts(
+        self, pool_v2, provisioned_postgres_pool
+    ):
+        """Two distinct, concurrently-alive pools must never share cache entries."""
+        from butlers.tools.finance.transactions import _has_table
+
+        # pool_v2 never installs the FK taxonomy in this test, so it must see
+        # "no categories table".
+        assert await _has_table(pool_v2, "categories") is False
+
+        # A second, independent pool that *does* have a categories table must
+        # see the truth for its own schema, not pool_v2's cached fact.
+        async with provisioned_postgres_pool() as other_pool:
+            await other_pool.execute("""
+                CREATE TABLE categories (
+                    id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    name TEXT NOT NULL UNIQUE
+                )
+            """)
+            assert await _has_table(other_pool, "categories") is True
+
+        # And pool_v2's own cached fact must remain unaffected.
+        assert await _has_table(pool_v2, "categories") is False
+
+
 # ---------------------------------------------------------------------------
 # bulk_recategorize: create_rule and is_category_locked
 # ---------------------------------------------------------------------------
