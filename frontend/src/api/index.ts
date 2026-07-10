@@ -958,6 +958,7 @@ export {
   getEgressCatalog,
   getButlerHeartbeats,
   getInsightDeliveryState,
+  getDriftFacts,
 } from "./client.ts";
 
 export type {
@@ -965,6 +966,8 @@ export type {
   BackupFacts,
   ButlerHeartbeat,
   DatabaseFacts,
+  DriftEntry,
+  DriftFacts,
   EgressActor,
   EgressCatalog,
   HeartbeatFacts,

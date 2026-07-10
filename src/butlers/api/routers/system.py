@@ -1,6 +1,6 @@
 """System overview endpoints for the dashboard's /system page.
 
-Surfaces six ownership-fact domains:
+Surfaces seven ownership-fact domains:
 
     GET /api/system/instance       -- software version and process uptime
     GET /api/system/database       -- PostgreSQL catalog size breakdown
@@ -8,6 +8,7 @@ Surfaces six ownership-fact domains:
     GET /api/system/egress         -- external-actor egress catalog (owner-only)
     GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
     GET /api/system/deployments    -- current + recent deployment ledger entries
+    GET /api/system/drift          -- migration-drift sentinel (bu-9r3hd.1)
 
 Privacy contract: /api/system/egress is owner-only. The owner is identified
 by asserting 'owner' = ANY(roles) on public.entities. Non-owner callers
@@ -18,6 +19,10 @@ All endpoints are read-only against existing tables, except /api/system/deployme
 which reads public.deployments (core_163) -- the one new table this module
 introduces. It is written elsewhere (butlers.cli._start_all records one row per
 process boot; see src/butlers/core/deployments.py), never by this router.
+/api/system/drift is also read-only from this router's perspective: it computes
+the comparison live on each request (butlers.jobs.deploy_drift.compute_drift_report)
+and reads (never writes) the first-detected/escalated debounce markers the
+background sentinel loop persists to public.audit_log.
 
 Operation names assumed in the actor registry for /api/system/egress
 (documented here for the bu-n28xh audit):
@@ -96,6 +101,11 @@ system_deployments_reads_total = Counter(
     "Number of GET /api/system/deployments requests.",
 )
 
+system_drift_reads_total = Counter(
+    "system_drift_reads_total",
+    "Number of GET /api/system/drift requests.",
+)
+
 
 # Module-level start time recorded when this module is first imported.
 # The lifespan startup imports all routers, so this approximates the
@@ -137,6 +147,33 @@ class DeploymentFacts(BaseModel):
 
     current: DeploymentRecord | None
     recent: list[DeploymentRecord]
+
+
+class DriftEntry(BaseModel):
+    """One migration chain out of sync between the codebase and a schema."""
+
+    schema_name: str
+    chain: str
+    expected_head: str
+    actual_revision: str | None
+
+
+class DriftFacts(BaseModel):
+    """Migration-drift sentinel result (bu-9r3hd.1).
+
+    ``drift_check_available=False`` means the comparison itself failed (pool
+    unavailable, unreadable schema) -- per the fleet-wide degraded-envelope
+    convention, this must never be rendered as a truthful all-clear. When
+    unavailable, ``is_drifted``/``drifted``/``first_detected_at``/``escalated``
+    are all zeroed rather than reflecting a stale or partial comparison.
+    """
+
+    checked_at: str
+    is_drifted: bool
+    drifted: list[DriftEntry]
+    first_detected_at: str | None
+    escalated: bool
+    drift_check_available: bool
 
 
 class SchemaSize(BaseModel):
@@ -360,6 +397,82 @@ async def get_deployment_facts(
         data=DeploymentFacts(
             current=_deployment_row_to_record(current_row) if current_row else None,
             recent=[_deployment_row_to_record(r) for r in recent_rows],
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/drift
+# ---------------------------------------------------------------------------
+
+
+@router.get("/drift", response_model=ApiResponse[DriftFacts])
+async def get_drift_facts(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[DriftFacts]:
+    """Return the migration-drift sentinel's current comparison (bu-9r3hd.1).
+
+    Computes the codebase-head vs per-schema DB-revision comparison live on
+    every request (butlers.jobs.deploy_drift.compute_drift_report) rather than
+    relying on the hourly background loop's cached state -- this endpoint is
+    always at least as fresh as the loop, and the loop's own job is the
+    escalation side effect, not serving this page. When drifted, also reads
+    (never writes) the first-detected/escalated debounce markers the
+    background loop maintains in public.audit_log.
+
+    Always returns HTTP 200, per the fleet-wide degraded-envelope convention:
+    a failed comparison sets drift_check_available=False with every other
+    field zeroed, rather than a fabricated all-clear or a 503.
+    """
+    system_drift_reads_total.inc()
+
+    from butlers.jobs.deploy_drift import (
+        compute_drift_report,
+        drift_fingerprint,
+        get_drift_escalation_state,
+    )
+
+    report = await compute_drift_report(db)
+
+    if not report.is_available:
+        return ApiResponse(
+            data=DriftFacts(
+                checked_at=report.checked_at.isoformat(),
+                is_drifted=False,
+                drifted=[],
+                first_detected_at=None,
+                escalated=False,
+                drift_check_available=False,
+            )
+        )
+
+    first_detected_at: str | None = None
+    escalated = False
+    if report.is_drifted:
+        try:
+            pool = db.pool("switchboard")
+            fingerprint = drift_fingerprint(report.drifted)
+            first, escalated = await get_drift_escalation_state(pool, fingerprint)
+            first_detected_at = first.isoformat() if first is not None else None
+        except Exception:
+            logger.warning("drift facts: escalation-state lookup failed", exc_info=True)
+
+    return ApiResponse(
+        data=DriftFacts(
+            checked_at=report.checked_at.isoformat(),
+            is_drifted=report.is_drifted,
+            drifted=[
+                DriftEntry(
+                    schema_name=d.schema,
+                    chain=d.chain,
+                    expected_head=d.expected_head,
+                    actual_revision=d.actual_revision,
+                )
+                for d in report.drifted
+            ],
+            first_detected_at=first_detected_at,
+            escalated=escalated,
+            drift_check_available=True,
         )
     )
 

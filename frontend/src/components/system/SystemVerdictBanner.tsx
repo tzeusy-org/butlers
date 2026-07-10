@@ -18,6 +18,7 @@ import { Link } from "react-router";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import {
   useBackupFacts,
+  useDriftFacts,
   useHealthPosture,
   useInsightDeliveryState,
   useInstanceFacts,
@@ -54,12 +55,18 @@ export function SystemVerdictBanner() {
   const backups = useBackupFacts();
   const insights = useInsightDeliveryState();
   const posture = useHealthPosture();
+  const drift = useDriftFacts();
 
   // Never render a verdict (all-clear or otherwise) while a source that
   // feeds it is still loading -- a premature "all clear" is worse than a
   // brief skeleton.
   const stillLoading =
-    board.isLoading || instance.isLoading || backups.isLoading || insights.isPending || posture.isPending;
+    board.isLoading ||
+    instance.isLoading ||
+    backups.isLoading ||
+    insights.isPending ||
+    posture.isPending ||
+    drift.isPending;
 
   if (stillLoading) {
     return (
@@ -90,6 +97,9 @@ export function SystemVerdictBanner() {
   }
   if (posture.isError) {
     problems.push({ key: "posture-error", text: "security posture unavailable" });
+  }
+  if (drift.isError) {
+    problems.push({ key: "drift-error", text: "migration drift status unavailable" });
   }
 
   if (board.offline > 0) {
@@ -139,6 +149,19 @@ export function SystemVerdictBanner() {
 
   if (board.sourcesPartiallyDegraded) {
     problems.push({ key: "degraded", text: "some fleet data is degraded or unavailable" });
+  }
+
+  const driftData = drift.data?.data;
+  if (driftData && !driftData.drift_check_available) {
+    problems.push({ key: "drift-unavailable", text: "migration drift check unavailable" });
+  } else if (driftData?.is_drifted) {
+    const chainCount = driftData.drifted.length;
+    problems.push({
+      key: "drift",
+      text: driftData.escalated
+        ? `${chainCount} migration chain${chainCount === 1 ? "" : "s"} drifted — escalated to QA`
+        : `${chainCount} migration chain${chainCount === 1 ? "" : "s"} drifted`,
+    });
   }
 
   if (problems.length === 0) {

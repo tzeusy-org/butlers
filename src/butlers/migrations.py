@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 from alembic import command
@@ -214,6 +215,55 @@ def _resolve_target_chains(chain: str) -> list[str]:
     if chain == "all":
         return get_all_chains()
     return [chain]
+
+
+def _chain_script_directory(chain: str) -> ScriptDirectory:
+    """Build a ScriptDirectory scoped to exactly one migration chain.
+
+    Unlike ``_build_alembic_config`` (which always includes every chain's
+    ``version_locations`` so a shared per-schema ``alembic_version`` table can
+    resolve any revision during an upgrade), this scopes ``version_locations``
+    to *chain* alone so ``get_heads()``/``walk_revisions()`` only ever see
+    that one chain's self-contained revision graph. No database connection is
+    made — this is a pure filesystem scan of the chain's version directory.
+    """
+    chain_dir = _resolve_chain_dir(chain)
+    if chain_dir is None:
+        raise ValueError(f"Unknown migration chain: {chain!r}")
+    config = Config(str(ALEMBIC_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(ALEMBIC_DIR))
+    config.set_main_option("version_locations", str(chain_dir))
+    return ScriptDirectory.from_config(config)
+
+
+def get_chain_head(chain: str) -> str:
+    """Return the current codebase head revision for one migration chain.
+
+    Used by the migration-drift sentinel (bu-9r3hd.1) to compare "what the
+    codebase says should be applied" against what a schema's
+    ``alembic_version`` table actually holds. A chain is expected to have
+    exactly one head; more than one (an unmerged fork left in the codebase)
+    or zero (an empty chain) raises rather than silently picking one, since
+    either is itself a codebase defect worth surfacing loudly.
+    """
+    heads = _chain_script_directory(chain).get_heads()
+    if len(heads) != 1:
+        raise RuntimeError(
+            f"Migration chain {chain!r} has {len(heads)} head(s) (expected exactly 1): "
+            f"{sorted(heads)}"
+        )
+    return heads[0]
+
+
+def get_chain_revision_ids(chain: str) -> frozenset[str]:
+    """Return every revision id that belongs to one migration chain.
+
+    Revision ids are chain-specific by naming convention (e.g. ``core_NNN``,
+    ``home_NNN``), so intersecting a schema's applied ``alembic_version`` rows
+    with this set unambiguously identifies that chain's applied state even
+    though independent chains share one ``alembic_version`` table per schema.
+    """
+    return frozenset(rev.revision for rev in _chain_script_directory(chain).walk_revisions())
 
 
 def _upgrade_chain(config: Config, chain: str, schema: str | None) -> None:

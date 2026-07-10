@@ -13,6 +13,7 @@ import {
   getBackupFacts,
   getButlerHeartbeats,
   getDatabaseFacts,
+  getDriftFacts,
   getEgressCatalog,
   getHealth,
   getInsightDeliveryState,
@@ -107,6 +108,20 @@ export function useInsightDeliveryState() {
   return useQuery({
     queryKey: ["system-insight-delivery"],
     queryFn: () => getInsightDeliveryState(),
+    refetchInterval: 60_000,
+  });
+}
+
+/**
+ * Fetch the migration-drift sentinel's current comparison (bu-9r3hd.1).
+ *
+ * Always HTTP 200 -- `data.drift_check_available === false` means the
+ * comparison itself failed server-side; render "unknown", never "clean".
+ */
+export function useDriftFacts() {
+  return useQuery({
+    queryKey: ["system-drift"],
+    queryFn: () => getDriftFacts(),
     refetchInterval: 60_000,
   });
 }

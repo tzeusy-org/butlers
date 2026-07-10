@@ -14,6 +14,7 @@ import SystemPage from "@/pages/SystemPage";
 import {
   useBackupFacts,
   useDatabaseFacts,
+  useDriftFacts,
   useEgressFacts,
   useHealthPosture,
   useInsightDeliveryState,
@@ -60,6 +61,7 @@ vi.mock("@/hooks/use-system", () => ({
   useEgressFacts: vi.fn(),
   useHealthPosture: vi.fn(),
   useInsightDeliveryState: vi.fn(),
+  useDriftFacts: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -196,6 +198,13 @@ function setAllLoading() {
     isError: false,
     error: null,
   } as AnyMock);
+
+  vi.mocked(useDriftFacts).mockReturnValue({
+    data: undefined,
+    isPending: true,
+    isError: false,
+    error: null,
+  } as AnyMock);
 }
 
 function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS> = {}) {
@@ -242,6 +251,23 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
 
   vi.mocked(useInsightDeliveryState).mockReturnValue({
     data: { data: { queued: 2, delivered: 5, failed: 0, last_delivery_at: "2026-06-17T10:00:00Z" }, meta: {} },
+    isPending: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+
+  vi.mocked(useDriftFacts).mockReturnValue({
+    data: {
+      data: {
+        checked_at: "2026-06-17T10:00:00Z",
+        is_drifted: false,
+        drifted: [],
+        first_detected_at: null,
+        escalated: false,
+        drift_check_available: true,
+      },
+      meta: {},
+    },
     isPending: false,
     isError: false,
     error: null,

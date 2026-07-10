@@ -226,6 +226,91 @@ async def test_deployments_allows_null_migration_head():
 
 
 # ---------------------------------------------------------------------------
+# GET /api/system/drift
+# ---------------------------------------------------------------------------
+
+
+async def test_drift_happy_path_not_drifted(monkeypatch):
+    from butlers.jobs.deploy_drift import DriftReport
+
+    monkeypatch.setattr(
+        "butlers.jobs.deploy_drift.compute_drift_report",
+        AsyncMock(return_value=DriftReport(checked_at=_NOW, drifted=())),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/drift")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["is_drifted"] is False
+    assert data["drifted"] == []
+    assert data["drift_check_available"] is True
+    assert data["escalated"] is False
+    assert data["first_detected_at"] is None
+
+
+async def test_drift_reports_drifted_entries_and_escalation_state(monkeypatch):
+    from butlers.jobs.deploy_drift import ChainDrift, DriftReport
+
+    drift = (
+        ChainDrift(
+            schema="finance", chain="core", expected_head="core_163", actual_revision="core_155"
+        ),
+    )
+    monkeypatch.setattr(
+        "butlers.jobs.deploy_drift.compute_drift_report",
+        AsyncMock(return_value=DriftReport(checked_at=_NOW, drifted=drift)),
+    )
+    monkeypatch.setattr(
+        "butlers.jobs.deploy_drift.get_drift_escalation_state",
+        AsyncMock(return_value=(_NOW, True)),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/drift")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["is_drifted"] is True
+    assert data["drifted"] == [
+        {
+            "schema_name": "finance",
+            "chain": "core",
+            "expected_head": "core_163",
+            "actual_revision": "core_155",
+        }
+    ]
+    assert data["escalated"] is True
+    assert data["first_detected_at"] is not None
+
+
+async def test_drift_check_unavailable_returns_flag_not_503(monkeypatch):
+    from butlers.jobs.deploy_drift import DriftReport
+
+    monkeypatch.setattr(
+        "butlers.jobs.deploy_drift.compute_drift_report",
+        AsyncMock(
+            return_value=DriftReport(checked_at=_NOW, drifted=(), check_error="pool unreachable")
+        ),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/drift")
+    # Fleet-wide degraded-envelope convention: never a fabricated all-clear, never a 503.
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["drift_check_available"] is False
+    assert data["is_drifted"] is False
+    assert data["drifted"] == []
+
+
+# ---------------------------------------------------------------------------
 # GET /api/system/backups
 # ---------------------------------------------------------------------------
 

@@ -126,6 +126,10 @@ from butlers.db import (
     has_insecure_infra_defaults,
     is_grafana_anon_outside_dev,
 )
+from butlers.jobs.deploy_drift import (
+    DEFAULT_DRIFT_CHECK_INTERVAL_S,
+    run_migration_drift_loop,
+)
 from butlers.jobs.secrets_lifecycle import (
     DEFAULT_SCAN_INTERVAL_S,
     run_secrets_lifecycle_loop,
@@ -141,6 +145,7 @@ logger = logging.getLogger(__name__)
 _SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV = "SECRETS_LIFECYCLE_SCAN_INTERVAL_S"
 _SECRETS_STALENESS_SCAN_INTERVAL_ENV = "SECRETS_STALENESS_SCAN_INTERVAL_S"
 _SECRETS_STALENESS_WINDOW_ENV = "SECRETS_STALENESS_WINDOW_S"
+_MIGRATION_DRIFT_CHECK_INTERVAL_ENV = "MIGRATION_DRIFT_CHECK_INTERVAL_S"
 
 
 def _resolve_positive_float_env(env_var: str, default: float) -> float:
@@ -212,6 +217,7 @@ async def lifespan(app: FastAPI):
     secrets_lifecycle_task: asyncio.Task | None = None
     settings_console_delta_task: asyncio.Task | None = None
     secrets_staleness_task: asyncio.Task | None = None
+    migration_drift_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
         # Wire DB dependencies for both static and dynamic routers
@@ -296,6 +302,30 @@ async def lifespan(app: FastAPI):
         _BACKGROUND_TASKS.add(secrets_staleness_task)
         secrets_staleness_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
+        # Migration-drift sentinel (bu-9r3hd.1): hourly comparison of the
+        # codebase's Alembic heads against each butler schema's applied
+        # alembic_version revisions, escalating to QA once drift persists
+        # more than 24h. See butlers.jobs.deploy_drift for the full design
+        # rationale (why this process, not a butler daemon's scheduler).
+        # Runs independently of the /api/system/drift endpoint, which
+        # computes the same comparison live on each request — this loop's
+        # job is the escalation side effect, not serving the page.
+        try:
+            drift_interval_s = _resolve_positive_float_env(
+                _MIGRATION_DRIFT_CHECK_INTERVAL_ENV, DEFAULT_DRIFT_CHECK_INTERVAL_S
+            )
+            migration_drift_task = asyncio.create_task(
+                run_migration_drift_loop(get_db_manager(), interval_s=drift_interval_s)
+            )
+            _BACKGROUND_TASKS.add(migration_drift_task)
+            migration_drift_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        except Exception:
+            logger.warning(
+                "Failed to start migration-drift sentinel loop; GET /api/system/drift "
+                "is unaffected (it computes the comparison live per request)",
+                exc_info=True,
+            )
+
     except Exception:
         logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
 
@@ -319,6 +349,10 @@ async def lifespan(app: FastAPI):
         secrets_staleness_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await secrets_staleness_task
+    if migration_drift_task is not None:
+        migration_drift_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await migration_drift_task
     await shutdown_db_manager()
     await shutdown_dependencies()
 

@@ -6706,6 +6706,33 @@ export interface InsightDeliveryState {
   last_delivery_at: string | null;
 }
 
+/** One migration chain out of sync between the codebase and a schema (bu-9r3hd.1). */
+export interface DriftEntry {
+  schema_name: string;
+  chain: string;
+  expected_head: string;
+  /** Currently-applied revision for this chain in this schema, or null if never applied. */
+  actual_revision: string | null;
+}
+
+/**
+ * Migration-drift sentinel result.
+ *
+ * `drift_check_available: false` means the comparison itself failed (pool
+ * unavailable, unreadable schema) -- per the fleet-wide degraded-envelope
+ * convention, never render this as a truthful all-clear.
+ */
+export interface DriftFacts {
+  checked_at: string;
+  is_drifted: boolean;
+  drifted: DriftEntry[];
+  /** ISO 8601 timestamp the current drift composition was first detected, or null. */
+  first_detected_at: string | null;
+  /** True once drift has persisted >24h and a QA case has been opened. */
+  escalated: boolean;
+  drift_check_available: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard briefing (GET /api/dashboard/briefing)
 //

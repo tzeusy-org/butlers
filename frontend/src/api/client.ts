@@ -369,6 +369,7 @@ import type {
   EgressCatalog,
   HeartbeatFacts,
   InsightDeliveryState,
+  DriftFacts,
   ModuleStatus,
   Briefing,
   ChroniclesBriefing,
@@ -6254,6 +6255,16 @@ export function getButlerHeartbeats(): Promise<ApiResponse<HeartbeatFacts>> {
  */
 export function getInsightDeliveryState(): Promise<ApiResponse<InsightDeliveryState>> {
   return apiFetch<ApiResponse<InsightDeliveryState>>("/system/insights/delivery-state");
+}
+
+/**
+ * Fetch the migration-drift sentinel's current comparison (bu-9r3hd.1).
+ *
+ * Always returns HTTP 200. `drift_check_available: false` means the
+ * comparison itself failed -- treat that as "unknown", not "clean".
+ */
+export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
+  return apiFetch<ApiResponse<DriftFacts>>("/system/drift");
 }
 
 // ---------------------------------------------------------------------------
