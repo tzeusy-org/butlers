@@ -1,15 +1,8 @@
-# Chronicler Intent / Evidence / Activity
+# chronicler-intent-evidence-activity Specification
 
 ## Purpose
-
-Reframe chronicler projection around three layers — Intent (planned), Evidence
-(raw signals, consumed not owned), and Activity (inferred, counted) — so that
-only corroborated activity counts as lived time, every activity carries a
-confidence and an evidence chain, and the chronicler can synthesize durable
-insights within its own schema.
-
-## ADDED Requirements
-
+TBD - created by archiving change chronicler-intent-evidence-activity. Update Purpose after archive.
+## Requirements
 ### Requirement: Three-Layer Episode Classification
 
 Every chronicler episode SHALL be classified into exactly one layer: `intent`,
@@ -208,38 +201,3 @@ participants via `relationship.entity_facts`.
 - **THEN** a `social` activity is still emitted with an unattributed participant
 - **AND** the activity confidence reflects the missing resolution
 
-### Requirement: Memory Write-Back Within Own Schema
-
-The chronicler SHALL synthesize durable insights into its own schema via the
-memory module, and MAY propose entity-enrichment facts to the `relationship`
-butler over MCP. It SHALL NOT write directly to another butler's schema, ingest
-external data, or notify the owner.
-
-#### Scenario: Insight written to own schema
-
-- **WHEN** day-close synthesizes a durable insight (e.g. accumulating sleep debt)
-- **THEN** the insight is written to the chronicler's own memory tables with
-  `source=chronicler` provenance and a confidence
-- **AND** no other butler's schema is written directly
-
-#### Scenario: Entity enrichment proposed over MCP
-
-- **WHEN** repeated co-presence resolves to a person worth recording
-- **THEN** the chronicler proposes the fact to `relationship` over MCP
-- **AND** it does not write `entity_facts` directly
-
-#### Scenario: Low-confidence block scheduled for re-reconciliation
-
-- **WHEN** a block remains low-confidence at day-close
-- **THEN** a self-reminder is recorded so a later day-close re-reconciles it
-  after evidence backfill
-- **AND** the owner is not notified
-
-## Source References
-
-- `butler-chronicler/spec.md` §4.8 (No Per-Event LLM Invocation), §4.15
-  (Calendar Scheduled Blocks Are Not Attendance Assertions), §4.4 (Owner-Only
-  Adapter Entity Attribution).
-- Non-Negotiable Rules (vision.md): schema isolation; MCP-only inter-butler
-  communication.
-- RFC 0014 (Chronicler Time Butler).

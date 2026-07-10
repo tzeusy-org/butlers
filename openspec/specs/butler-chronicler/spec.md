@@ -3,9 +3,7 @@
 ## Purpose
 
 The Chronicler butler is a domain butler that reconstructs past time from already-captured evidence across the Butlers ecosystem. It owns retrospective time reconstruction with point events, overlapping episodes, correction overlays, and source projection adapters. Chronicler reads from approved migration-tracked source surfaces, writes only to its own schema, preserves source provenance, precision, and uncertainty on every row, and never invokes an LLM per ingestion event. Per RFC 0014, Chronicler does not plan, schedule, dispatch, ingest externally, or notify.
-
 ## Requirements
-
 ### Requirement: Butler Identity and Wire Contract
 
 The Chronicler butler SHALL expose a stable identity as a domain butler (not
@@ -54,7 +52,11 @@ evidence and SHALL NOT plan, schedule, dispatch, ingest externally, or notify.
 
 The Chronicler schema SHALL contain point events, episodes,
 **episode-entity links**, episode-event links, overrides, projection
-checkpoints, source adapter state, and idempotency keys.
+checkpoints, source adapter state, and idempotency keys. Episodes and point
+events SHALL retain their existing shape, with two additions: every episode
+MUST carry a `layer` (`intent` | `evidence` | `activity`) and every
+`activity`-layer episode MUST carry a `confidence` (`high` | `medium` | `low`)
+and `evidence_refs[]`. Overlapping episodes SHALL remain permitted.
 
 #### Scenario: Point events and episodes separated
 
@@ -64,11 +66,17 @@ checkpoints, source adapter state, and idempotency keys.
 - **AND** every row SHALL carry `source_name`, `source_ref`, `precision`,
   `privacy`, `retention_days`, and optional `tombstone_at`
 
+#### Scenario: Episode records its layer and confidence
+
+- **WHEN** an inferred activity is stored
+- **THEN** its `layer` is `activity`
+- **AND** it carries a `confidence` and links to its corroborating evidence
+
 #### Scenario: Overlapping episodes permitted
 
 - **WHEN** two episodes from different sources cover overlapping time
 - **THEN** both SHALL be stored
-- **AND** neither SHALL be merged or discarded
+- **AND** neither SHALL be merged or discarded at storage time
 - **AND** overlap queries SHALL return both
 
 #### Scenario: Idempotent replay
@@ -105,21 +113,8 @@ checkpoints, source adapter state, and idempotency keys.
 - **AND** `episode_id` SHALL have an ON DELETE CASCADE reference to
   `chronicler.episodes(id)` so episode tombstones cascade to the join
 - **AND** the table SHALL NOT enforce a foreign key on `entity_id`
-  against `public.entities(id)` (matching the existing
-  `chronicler.episodes.entity_id` convention so chronicler boots in
-  deployments where the relationship butler schema is not yet wired)
-
-#### Scenario: Derived owner column preserved during transition
-
-- **WHEN** an episode has at least one `episode_entities` row with
-  `role='owner'`
-- **THEN** the canonical `chronicler.episodes.entity_id` column SHALL
-  hold that same owner UUID
-- **AND** the adapter SHALL write both the column and the join in the
-  same transaction so they cannot drift
-- **AND** after the cleanup follow-up migration the
-  `episodes.entity_id` column SHALL be dropped, leaving the join table
-  as the sole entity surface
+  against `public.entities(id)`, so chronicler boots in deployments
+  where the relationship butler schema is not yet wired
 
 #### Scenario: Missing upstream join table degrades gracefully
 
@@ -142,11 +137,11 @@ checkpoints, source adapter state, and idempotency keys.
 
 ### Requirement: Owner-Only Adapter Entity Attribution
 
-Projection adapters whose source is owner-driven self-tracking data and
-carries no distinct participant set (focus, sessions, spotify, steam,
-meals, owntracks, reading, google_health) SHALL attribute every projected
-row to the owner entity, mirroring the calendar adapter's entity surface
-without invoking attendee resolution.
+Projection adapters for owner-driven self-tracking data SHALL attribute every
+projected row to the owner entity when the source carries no distinct
+participant set (focus, sessions, spotify, steam, meals, owntracks, reading,
+google_health), mirroring the calendar adapter's entity surface without
+invoking attendee resolution.
 
 #### Scenario: Owner entity resolved once per run
 
@@ -453,32 +448,18 @@ never through the user-facing `GET /api/chronicler/episodes` surface.
 
 ### Requirement: Calendar Scheduled Blocks Are Not Attendance Assertions
 
-Calendar `scheduled_block` episodes SHALL be treated as appointments that were
-scheduled, NOT as confirmed attendance (`source_name = google_calendar.completed`,
-`episode_type = scheduled_block`). A past calendar block proves only that the
-event was on the calendar and SHALL NOT be treated as evidence that the owner
-was present.
+Calendar blocks SHALL project to the `intent` layer and MUST NOT be counted as
+lived time on their own. Lived time SHALL be counted only from the `activity`
+layer; a calendar block contributes time to an aggregate solely when an
+independent activity corroborates it, attributed to that activity's lane.
 
-#### Scenario: Scheduled block is not an attendance fact
+#### Scenario: Calendar block never asserts attendance
 
-- **WHEN** Chronicler surfaces a `scheduled_block` episode in a summary,
-  drilldown, or routing handoff
-- **THEN** it SHALL phrase the block as scheduled (for example
-  "Calendar had X scheduled at HH:MM" or "X was on the calendar for
-  HH:MM to HH:MM")
-- **AND** it SHALL NOT describe the block as the owner having attended X
-- **AND** it SHALL NOT route the block to a domain butler as an attendance
-  fact, nor instruct any butler to record attendance from a calendar block
-  alone
-
-#### Scenario: Attendance requires a corroborating signal
-
-- **WHEN** attendance is to be asserted for a time that overlaps a
-  `scheduled_block`
-- **THEN** the assertion SHALL require a corroborating signal beyond the
-  calendar block, such as explicit user confirmation, a location ping at the
-  venue during the appointment window, or a calendar `status` of
-  completed/accepted plus user acknowledgement
+- **WHEN** a calendar block is projected
+- **THEN** it is layer `intent`
+- **AND** it is excluded from lived-time totals unless an activity corroborates
+  it
+- **AND** corroborated time is attributed to the activity's lane, not "calendar"
 
 ## Source References
 

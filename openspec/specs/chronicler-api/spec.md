@@ -5,9 +5,7 @@
 Defines the backend API contract for Chronicler-owned retrospective time reads
 and owner corrections. This capability intentionally does not define dashboard
 UX or claim the existing operational `/timeline` route.
-
 ## Requirements
-
 ### Requirement: Chronicler Temporal Reads
 
 The API SHALL expose Chronicler-owned read endpoints under `/api/chronicler/*`
@@ -193,6 +191,12 @@ The initial endpoint set SHALL include:
 
 All aggregate endpoints SHALL read exclusively from `chronicler.v_episodes_corrected` (and, where relevant, `chronicler.v_point_events_corrected`). Their SQL relation references — bare or schema-qualified — SHALL resolve only to relations within the `chronicler` schema. No aggregate handler SHALL invoke an LLM under any code path.
 
+`GET /api/chronicler/aggregate/by-category` SHALL count the `activity` layer only
+and roll up into the Activity lane taxonomy (`sleep`, `exercise`, `work`,
+`play`, `social`, `travel`, `eat`, `rest`). `intent` and `evidence` layers are
+excluded. No "calendar" lane is returned; calendar time appears only via the
+activity lane it corroborates. `by-day` follows the same counting rule.
+
 #### Scenario: Corrected-view-only reads
 
 - **WHEN** a client requests `/api/chronicler/aggregate/by-category` or
@@ -293,19 +297,30 @@ All aggregate endpoints SHALL read exclusively from `chronicler.v_episodes_corre
   `ErrorResponse` envelope (parallel to `Invalid correction
   rejected`)
 
-#### Scenario: Unmapped active source surfaces as warning bucket
+#### Scenario: By-category excludes intent and evidence layers
 
-- **WHEN** the aggregate handler encounters episodes from an `active`
-  source whose `(source_name, episode_type)` pair has no entry in the
-  `category_for()` mapping
-- **THEN** the contributing duration SHALL be summed into a bucket with
-  `category = "other"`
-- **AND** the handler SHALL emit a warning OTel span attribute
-  `chronicler.aggregate.unmapped_source = <source_name>` so operators
-  can detect taxonomy drift
-- **AND** the bucket's `source_breakdown` SHALL still cite the unmapped
-  `source_name` so the operator knows which adapter triggered the
-  drift
+- **WHEN** a window contains a 5-hour uncorroborated calendar block plus inferred
+  activities
+- **THEN** the calendar block contributes 0 seconds to every lane
+- **AND** the returned buckets use Activity lane names only
+
+#### Scenario: Lane buckets carry confidence breakdown
+
+- **WHEN** by-category is requested
+- **THEN** each lane bucket reports how much of its time is low-confidence
+- **AND** lanes are returned sorted by total time
+
+#### Scenario: Unmapped active source is dropped with a warning
+
+- **WHEN** the aggregate handler encounters an `activity`-layer episode
+  whose `(source_name, episode_type)` pair resolves to no Activity lane
+  (an unmapped source)
+- **THEN** the episode SHALL NOT contribute to any lane bucket (the lane
+  taxonomy has no `other` lane, so unmapped activity is dropped rather
+  than surfaced as an `other` bucket)
+- **AND** the handler SHALL emit a warning log and set the OTel span
+  attribute `chronicler.aggregate.unmapped_source = <source_name>` so
+  operators can detect taxonomy drift
 
 ### Requirement: Chronicler Source State Visibility
 
@@ -418,7 +433,6 @@ The endpoints SHALL be:
   (`{ error: { code, message, butler, details } }`) with
   `retry_after_seconds` carried inside `details`
 - **AND** no Tier-2 invocation SHALL occur
-
 
 ### Requirement: Episode Participant Resolution Read Path
 
@@ -533,6 +547,68 @@ ingestion errors are surfaced without direct database access.
   by `source_name ASC, subsource ASC`
 - **AND WHEN** the `projection_checkpoints` table is empty
 - **THEN** the endpoint SHALL return an empty `data` array
+
+### Requirement: Daily Balance Endpoint
+
+A read endpoint SHALL return the day's per-lane balance annotated against the
+owner's rolling baseline ("vs usual").
+
+#### Scenario: Balance returns deltas vs usual
+
+- **WHEN** a client requests the daily balance for a date
+- **THEN** each lane returns the day's total and a signed delta vs the owner's
+  rolling baseline
+- **AND** a lane with no activity returns zero with its baseline for context
+
+### Requirement: Trends Endpoint
+
+A read endpoint SHALL return week- and month-grained balance trends, streaks, and
+anomalies derived from the chronicler's own synthesized baselines.
+
+#### Scenario: Week trends return per-lane series
+
+- **WHEN** a client requests trends for a week window
+- **THEN** a per-lane time series is returned
+- **AND** notable streaks/anomalies (e.g. consecutive work days) are reported
+
+### Requirement: Who-You-Were-With Endpoint
+
+A read endpoint SHALL return the resolved people the owner spent time with in a
+window, with co-present time and channel, resolving identity via
+`relationship.entity_facts`.
+
+#### Scenario: Returns resolved companions for a day
+
+- **WHEN** a client requests who-you-were-with for a date
+- **THEN** each entry names a resolved entity, the co-present duration, and the
+  channel (in-person vs a comms channel)
+- **AND** unresolved participants are returned as unattributed rather than
+  dropped
+
+### Requirement: Activity Evidence Chain Endpoint
+
+A read endpoint SHALL return the evidence chain for an activity — each
+corroborating signal with its source — so a client can answer "why?".
+
+#### Scenario: Evidence chain returned for an activity
+
+- **WHEN** a client requests the evidence chain for an activity id
+- **THEN** the response lists each `evidence_ref` with its source name and a
+  human-readable descriptor
+- **AND** the activity's confidence is included
+
+### Requirement: Low-Confidence Correction Prompts
+
+A read endpoint SHALL return the day's low-confidence activities as correction
+prompts the owner can confirm or relabel, reusing the existing corrections
+overlay for writes.
+
+#### Scenario: Low-confidence blocks surfaced as prompts
+
+- **WHEN** a client requests correction prompts for a date
+- **THEN** low-confidence activities are returned with their best-guess lane and
+  evidence
+- **AND** confirming or relabeling writes a non-destructive correction overlay
 
 ## Source References
 
