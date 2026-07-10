@@ -505,6 +505,111 @@ def row_to_proposal(row: asyncpg.Record, *, db_butler: str) -> CalendarProposalR
 
 
 # ---------------------------------------------------------------------------
+# Linked-people resolution (bu-qs64f)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CalendarEntryPerson:
+    """A person linked to a calendar event, resolved to a display label.
+
+    ``entity_id`` is the identity-layer ``public.entities.id`` (as a string);
+    ``display_label`` is the resolved ``canonical_name`` (or ``"Unknown"`` when
+    the entity row is missing/tombstoned but the link still exists).
+    """
+
+    entity_id: str
+    display_label: str
+
+
+@dataclass
+class CalendarEntryPeopleResult:
+    """Result envelope for :func:`query_calendar_entry_people`.
+
+    ``by_event`` maps each ``calendar_events.id`` to its ordered linked people.
+    ``available`` is the honest degraded signal: ``True`` when every targeted
+    schema's resolution query ran (including "no links"), ``False`` when at least
+    one targeted schema's query FAILED — so the caller can flag "people
+    unavailable" rather than render a misleading empty list. Follows the repo's
+    fail-open + explicit-degraded convention.
+    """
+
+    by_event: dict[UUID, list[CalendarEntryPerson]]
+    available: bool = True
+
+
+#: Batch resolution of linked people for a set of events. ``$1`` is the event-id
+#: array; the join reaches ``public.entities`` (readable from every butler pool)
+#: for the display label. Keyed and ordered so avatar rendering is deterministic.
+_ENTRY_PEOPLE_SQL: str = """
+    SELECT ee.event_id AS event_id,
+           ee.entity_id AS entity_id,
+           en.canonical_name AS canonical_name
+    FROM calendar_event_entities ee
+    LEFT JOIN public.entities en ON en.id = ee.entity_id
+    WHERE ee.event_id = ANY($1::uuid[])
+    ORDER BY ee.event_id, lower(COALESCE(en.canonical_name, '')), ee.entity_id
+"""
+
+
+async def query_calendar_entry_people(
+    db: DatabaseManager,
+    *,
+    event_ids: list[UUID],
+    butlers: list[str] | None = None,
+) -> CalendarEntryPeopleResult:
+    """Batch-resolve linked people for workspace events (bu-qs64f).
+
+    Runs ONE fan-out batch-join per targeted schema over
+    ``calendar_event_entities`` (per-butler-schema junction) joined to the shared
+    ``public.entities`` for the display label — never an N+1 lookup per entry.
+    Event ids are globally-unique UUIDs, so passing the whole id array to every
+    targeted schema is safe (each schema matches only its own events).
+
+    ``butlers`` should be the exact set of schemas that produced the workspace
+    rows being hydrated (their ``db_butler``). Restricting to those schemas keeps
+    the target set minimal AND avoids a false degraded signal from a schema that
+    simply lacks the junction table (it never produced a row here, so it is not
+    targeted). When ``butlers`` is omitted, calendar-enabled butlers are used.
+
+    Degraded contract: uses :meth:`DatabaseManager.fan_out_with_status` so a
+    schema whose query FAILS marks ``available=False`` (the FE then shows
+    "people unavailable"); a clean run with no links is ``available=True`` with
+    an empty map. Any unexpected error degrades to
+    ``CalendarEntryPeopleResult({}, available=False)`` rather than raising.
+    """
+    if not event_ids:
+        return CalendarEntryPeopleResult(by_event={})
+
+    query_targets: list[str] | None
+    if butlers:
+        query_targets = sorted(set(butlers))
+    else:
+        query_targets = db.butlers_with_module("calendar")
+
+    try:
+        results, failed = await db.fan_out_with_status(
+            _ENTRY_PEOPLE_SQL, (list(event_ids),), butler_names=query_targets
+        )
+    except Exception:
+        logger.warning(
+            "query_calendar_entry_people fan-out failed; degrading (people unavailable)",
+            exc_info=True,
+        )
+        return CalendarEntryPeopleResult(by_event={}, available=False)
+
+    by_event: dict[UUID, list[CalendarEntryPerson]] = {}
+    for _butler_name, raw_rows in results.items():
+        for row in raw_rows:
+            event_id = row["event_id"]
+            label = row["canonical_name"] or "Unknown"
+            by_event.setdefault(event_id, []).append(
+                CalendarEntryPerson(entity_id=str(row["entity_id"]), display_label=label)
+            )
+    return CalendarEntryPeopleResult(by_event=by_event, available=not failed)
+
+
+# ---------------------------------------------------------------------------
 # Query functions
 # ---------------------------------------------------------------------------
 

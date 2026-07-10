@@ -20,6 +20,23 @@ UnifiedCalendarSourceType = Literal[
 CalendarSyncState = Literal["fresh", "stale", "syncing", "failed"]
 
 
+class CalendarLinkedPerson(BaseModel):
+    """A person linked to a calendar event via ``calendar_event_entities``.
+
+    Carries the identity-layer ``entity_id`` plus a resolved ``display_label``
+    (the person's ``public.entities.canonical_name``) so the frontend can render
+    a name/avatar chip for an *existing* event without a second round-trip — the
+    persistence counterpart to the creation-time ``ContactPeoplePicker`` chips
+    (bu-hzi4v / PR #3020).
+    """
+
+    entity_id: str = Field(..., description="public.entities.id (UUID as string)")
+    display_label: str = Field(
+        ...,
+        description="Resolved person label (public.entities.canonical_name), or 'Unknown'.",
+    )
+
+
 class UnifiedCalendarEntry(BaseModel):
     """Normalized calendar workspace row for user/butler views."""
 
@@ -55,6 +72,13 @@ class UnifiedCalendarEntry(BaseModel):
     # core_076 provenance columns — which butler session wrote this event
     source_butler: str | None = None
     source_session_id: str | None = None
+
+    #: People linked to this event via ``calendar_event_entities`` (bu-qs64f),
+    #: resolved to ``entity_id`` + ``display_label`` from ``public.entities`` so
+    #: existing event pills/detail panel can hydrate linked-people avatars — not
+    #: just at creation time. Additive and defaults to ``[]`` (clients that ignore
+    #: it observe the prior shape); populated only on the user/butler views.
+    linked_people: list[CalendarLinkedPerson] = Field(default_factory=list)
 
 
 class CalendarProposalAcceptRequest(BaseModel):
@@ -146,6 +170,13 @@ class CalendarWorkspaceReadResponse(BaseModel):
     #: Always ``False`` for the user/butler/proposals views (additive — clients
     #: that ignore it observe the prior shape).
     has_domain_context: bool = False
+    #: Linked-people resolution honesty flag (bu-qs64f). ``True`` when the
+    #: ``calendar_event_entities`` → ``public.entities`` resolution ran cleanly
+    #: (including "no links" — genuinely empty). ``False`` only when at least one
+    #: targeted schema's resolution query FAILED, so the FE renders a "people
+    #: unavailable" indicator rather than reading empty ``linked_people`` as
+    #: "no one is linked". Follows the fleet degraded-source convention.
+    people_source_available: bool = True
 
 
 class DayBriefingKindGroup(BaseModel):

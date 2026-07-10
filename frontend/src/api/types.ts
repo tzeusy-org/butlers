@@ -672,6 +672,18 @@ export type CalendarWorkspaceSyncState =
   | "failed";
 
 /** Normalized event row returned by GET /api/calendar/workspace. */
+/**
+ * A person linked to a calendar event via `calendar_event_entities`, resolved
+ * to `entity_id` + `display_label` (the person's `public.entities.canonical_name`)
+ * so an existing event pill/detail panel can hydrate linked-people avatars —
+ * the persistence counterpart to the creation-time `ContactPeoplePicker` chips.
+ * Mirrors backend `CalendarLinkedPerson`.
+ */
+export interface CalendarLinkedPerson {
+  entity_id: string;
+  display_label: string;
+}
+
 export interface UnifiedCalendarEntry {
   entry_id: string;
   /**
@@ -706,6 +718,13 @@ export interface UnifiedCalendarEntry {
   source_butler?: string | null;
   /** core_076 provenance: session that triggered the write (null when unknown). */
   source_session_id?: string | null;
+  /**
+   * People linked to this event via `calendar_event_entities` (bu-qs64f),
+   * resolved to `entity_id` + `display_label`. Additive and optional (defaults
+   * to `[]` server-side); populated only on the user/butler views so existing
+   * event pills/detail panel can render linked-people avatars.
+   */
+  linked_people?: CalendarLinkedPerson[];
 }
 
 /**
@@ -870,6 +889,14 @@ export interface CalendarWorkspaceReadResponse {
    * contributed. Always `false`/absent for the user/butler/proposals views.
    */
   has_domain_context?: boolean;
+  /**
+   * Linked-people resolution honesty flag (bu-qs64f). `true` (or absent) when
+   * the `calendar_event_entities` → `public.entities` resolution ran cleanly
+   * (including genuinely "no links"); `false` only when at least one schema's
+   * resolution query FAILED — so the UI shows a "people unavailable" indicator
+   * instead of reading empty `linked_people` as "no one is linked".
+   */
+  people_source_available?: boolean;
 }
 
 /** Cross-source dedup match strategy. Mirrors the backend `match_strategy` enum. */

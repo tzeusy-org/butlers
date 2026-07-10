@@ -81,6 +81,10 @@ import { CalendarPortabilityDialog } from "@/components/calendar/CalendarPortabi
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
 import { MeetingPrepRailContainer } from "@/components/calendar/MeetingPrepRail";
 import {
+  LinkedPeopleAvatars,
+  LinkedPeopleChips,
+} from "@/components/calendar/LinkedPeopleAvatars";
+import {
   ContactPeoplePicker,
   type SelectedPerson,
 } from "@/components/calendar/ContactPeoplePicker";
@@ -88,6 +92,7 @@ import { CalendarProposalsPanel } from "@/components/calendar/CalendarProposalsP
 import { CalendarDuplicatesPanel } from "@/components/calendar/CalendarDuplicatesPanel";
 import { QuickAddBar } from "@/pages/calendar/QuickAddBar";
 import { Textarea } from "@/components/ui/textarea";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Display } from "@/components/ui/Display";
@@ -1896,6 +1901,18 @@ function CalendarEntryDetailPanel({
         </div>
       ) : null}
 
+      {/* Linked people (bu-qs64f): identity-layer contacts linked to this event
+          via calendar_event_entities, hydrated on the read so existing events
+          show the same people chips the create dialog captured. */}
+      {entry.linked_people && entry.linked_people.length > 0 ? (
+        <div className="flex flex-col gap-1" data-testid="detail-linked-people">
+          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
+            People
+          </span>
+          <LinkedPeopleChips people={entry.linked_people} />
+        </div>
+      ) : null}
+
       {/* Meeting-prep rail (bu-rct3g): attendee relationships, notes, last-met,
           and per-attendee message context for an entity-linked meeting. Reads the
           precomputed prep view — fail-open to an honest "No prep context yet"
@@ -2785,6 +2802,12 @@ export default function CalendarWorkspacePage() {
     const rows = workspaceQuery.data?.data.entries ?? [];
     return [...rows].sort((a, b) => a.start_at.localeCompare(b.start_at));
   }, [workspaceQuery.data?.data.entries]);
+
+  // Linked-people resolution honesty (bu-qs64f): false only when the backend
+  // reported the entity-resolution query failed for a schema. Absent/true means
+  // it ran cleanly (empty linked_people is then genuinely "no one linked").
+  const peopleSourceAvailable =
+    workspaceQuery.data?.data.people_source_available !== false;
 
   // Jump from a search match: navigate the grid to the match's day, then flash it.
   const handleSearchJump = useCallback(
@@ -4734,6 +4757,17 @@ export default function CalendarWorkspacePage() {
         }
       >
         <div className="flex min-h-0 flex-1 flex-col pt-5">
+          {/* Linked-people resolution degraded (bu-qs64f): entries still render,
+              but avatars may be incomplete — name the degraded source rather
+              than let empty avatars read as "no one linked". */}
+          {!peopleSourceAvailable ? (
+            <div data-testid="linked-people-degraded" className="pb-2">
+              <SourceDegradedNote
+                label="Linked people"
+                detail="unavailable — some events may not show their people"
+              />
+            </div>
+          ) : null}
           {workspaceQuery.isLoading ? (
             <Voice variant="italic" className="text-[var(--mfg)]">
               Drawing the calendar…
@@ -5538,6 +5572,12 @@ export default function CalendarWorkspacePage() {
                                 >
                                   cancelled
                                 </KindTag>
+                              ) : null}
+                              {entry.linked_people &&
+                              entry.linked_people.length > 0 ? (
+                                <LinkedPeopleAvatars
+                                  people={entry.linked_people}
+                                />
                               ) : null}
                               <Mono muted className="hidden truncate sm:inline">
                                 {entry.butler_name ?? entry.source_key}

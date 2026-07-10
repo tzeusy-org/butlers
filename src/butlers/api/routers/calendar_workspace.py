@@ -46,6 +46,7 @@ from butlers.api.models.calendar_workspace import (
     CalendarIcsImportResponse,
     CalendarKeepSeparateRequest,
     CalendarKeepSeparateResponse,
+    CalendarLinkedPerson,
     CalendarPrepAttendee,
     CalendarPrepNote,
     CalendarPrepResponse,
@@ -90,6 +91,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     load_dedup_rules,
     load_keep_separate_keys,
     query_calendar_conflicts,
+    query_calendar_entry_people,
     query_calendar_event_search,
     query_calendar_overlays,
     query_calendar_prep,
@@ -1465,12 +1467,44 @@ async def get_workspace(
         if last_starts_at is not None and isinstance(last_instance_id, UUID):
             next_cursor = _encode_workspace_cursor(last_starts_at, last_instance_id)
 
+    # Hydrate linked people (bu-qs64f) for the events on THIS page only — one
+    # batch-join over calendar_event_entities → public.entities, keyed by
+    # event_id, scoped to exactly the schemas that produced the page rows (their
+    # db_butler). No N+1 per entry; a resolution failure sets
+    # ``people_source_available=false`` rather than silently dropping people.
+    page_event_ids: list[UUID] = []
+    page_schemas: set[str] = set()
+    for row, entry in page:
+        db_butler = row.get("db_butler")
+        if isinstance(db_butler, str) and db_butler:
+            page_schemas.add(db_butler)
+        if isinstance(entry.event_id, UUID):
+            page_event_ids.append(entry.event_id)
+    people_source_available = True
+    if page_event_ids:
+        people_result = await query_calendar_entry_people(
+            db,
+            event_ids=page_event_ids,
+            butlers=sorted(page_schemas) or None,
+        )
+        people_source_available = people_result.available
+        for _row, entry in page:
+            if not isinstance(entry.event_id, UUID):
+                continue
+            resolved = people_result.by_event.get(entry.event_id)
+            if resolved:
+                entry.linked_people = [
+                    CalendarLinkedPerson(entity_id=p.entity_id, display_label=p.display_label)
+                    for p in resolved
+                ]
+
     data = CalendarWorkspaceReadResponse(
         entries=[entry for _row, entry in page],
         source_freshness=source_freshness,
         lanes=_build_lane_definitions(source_freshness),
         next_cursor=next_cursor,
         has_more=has_more,
+        people_source_available=people_source_available,
     )
     return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 

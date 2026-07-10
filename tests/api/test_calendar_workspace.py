@@ -217,6 +217,8 @@ def _build_app(
     proposals_raise: bool = False,
     overlay_rows: dict[str, list[dict]] | None = None,
     overlays_raise: bool = False,
+    entity_link_rows: dict[str, list[dict]] | None = None,
+    entity_people_failed: list[str] | None = None,
     mcp_clients: dict[str, AsyncMock] | None = None,
     calendar_butlers: list[str] | None = None,
 ) -> tuple:
@@ -224,37 +226,40 @@ def _build_app(
     mock_db.butler_names = ["general", "relationship"]
     mock_db.butlers_with_module = MagicMock(return_value=calendar_butlers)
 
+    def _scan(rows_map: dict[str, list[dict]] | None, butler_names) -> dict[str, list[dict]]:
+        rows_to_scan = rows_map or {}
+        if butler_names is not None:
+            rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
+        return rows_to_scan
+
     async def _fan_out(query: str, args=(), butler_names=None):
         if "FROM calendar.v_overlay_contributions" in query:
             if overlays_raise:
                 raise RuntimeError('relation "calendar.v_overlay_contributions" does not exist')
-            rows_to_scan = overlay_rows or {}
-            if butler_names is not None:
-                rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
-            return rows_to_scan
+            return _scan(overlay_rows, butler_names)
         if "FROM calendar_event_proposals AS p" in query:
             if proposals_raise:
                 # Simulate the table being absent / query failing for every
                 # schema. The real fan_out isolates this per-butler, but a
                 # top-level raise must also fail open (empty entries, no 500).
                 raise RuntimeError('relation "calendar_event_proposals" does not exist')
-            rows_to_scan = proposal_rows or {}
-            if butler_names is not None:
-                rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
-            return rows_to_scan
+            return _scan(proposal_rows, butler_names)
+        if "FROM calendar_event_entities ee" in query:
+            return _scan(entity_link_rows, butler_names)
         if "FROM calendar_event_instances AS i" in query:
-            rows_to_scan = workspace_rows or {}
-            if butler_names is not None:
-                rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
-            return rows_to_scan
+            return _scan(workspace_rows, butler_names)
         if "FROM calendar_sources AS s" in query:
-            rows_to_scan = source_rows or {}
-            if butler_names is not None:
-                rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
-            return rows_to_scan
+            return _scan(source_rows, butler_names)
         return {}
 
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        # Linked-people resolution (bu-qs64f) uses the with-status variant so a
+        # failed schema flips ``people_source_available``. The mock reports the
+        # caller-supplied ``entity_people_failed`` schemas as failed.
+        return await _fan_out(query, args, butler_names), list(entity_people_failed or [])
+
     mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
     mock_mgr = AsyncMock(spec=MCPClientManager)
     mcp_map = mcp_clients or {}
@@ -326,6 +331,132 @@ async def test_workspace_returns_entries_and_source_freshness(app):
     # into the entry metadata rather than raising KeyError -> HTTP 500.
     assert entry["metadata"]["origin_instance_ref"] == user_row["origin_instance_ref"]
     assert len(body["source_freshness"]) == 1
+    # No linked-people rows configured → empty list, resolution ran cleanly.
+    assert entry["linked_people"] == []
+    assert body["people_source_available"] is True
+
+
+# ---------------------------------------------------------------------------
+# Linked people hydration on existing events (bu-qs64f)
+# ---------------------------------------------------------------------------
+
+
+async def test_workspace_hydrates_linked_people_on_existing_events(app):
+    """Regular workspace rows carry resolved linked people from the junction."""
+    source_key = "provider:google:primary"
+    user_row = _workspace_event_row(
+        lane="user",
+        source_key=source_key,
+        source_kind="provider_event",
+        butler_name=None,
+        calendar_id="primary",
+        metadata={"source_type": "provider_event"},
+    )
+    event_id = user_row["event_id"]
+    ada = uuid4()
+    grace = uuid4()
+    # Junction rows (calendar_event_entities ⨝ public.entities) for this event.
+    entity_link_rows = {
+        "general": [
+            {"event_id": event_id, "entity_id": ada, "canonical_name": "Ada Lovelace"},
+            {"event_id": event_id, "entity_id": grace, "canonical_name": "Grace Hopper"},
+        ]
+    }
+    app, _, _ = _build_app(
+        app,
+        workspace_rows={"general": [user_row]},
+        entity_link_rows=entity_link_rows,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "user",
+                "start": "2026-02-22T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["people_source_available"] is True
+    people = body["entries"][0]["linked_people"]
+    assert [p["display_label"] for p in people] == ["Ada Lovelace", "Grace Hopper"]
+    assert {p["entity_id"] for p in people} == {str(ada), str(grace)}
+
+
+async def test_workspace_linked_people_missing_name_falls_back_to_unknown(app):
+    """A link to a tombstoned/missing entity still surfaces (label 'Unknown')."""
+    user_row = _workspace_event_row(
+        lane="user",
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        butler_name=None,
+        calendar_id="primary",
+        metadata={"source_type": "provider_event"},
+    )
+    ghost = uuid4()
+    app, _, _ = _build_app(
+        app,
+        workspace_rows={"general": [user_row]},
+        entity_link_rows={
+            "general": [
+                {"event_id": user_row["event_id"], "entity_id": ghost, "canonical_name": None}
+            ]
+        },
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "user",
+                "start": "2026-02-22T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+    assert resp.status_code == 200
+    people = resp.json()["data"]["entries"][0]["linked_people"]
+    assert people == [{"entity_id": str(ghost), "display_label": "Unknown"}]
+
+
+async def test_workspace_linked_people_degraded_flag_on_resolution_failure(app):
+    """When the entity-resolution query fails for a schema, the flag flips false."""
+    user_row = _workspace_event_row(
+        lane="user",
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        butler_name=None,
+        calendar_id="primary",
+        metadata={"source_type": "provider_event"},
+    )
+    app, _, _ = _build_app(
+        app,
+        workspace_rows={"general": [user_row]},
+        entity_link_rows={"general": []},
+        entity_people_failed=["general"],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "user",
+                "start": "2026-02-22T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    # People are never silently dropped — the entry renders, but the honest
+    # degraded flag tells the FE resolution failed (show "people unavailable").
+    assert body["people_source_available"] is False
+    assert body["entries"][0]["linked_people"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +508,11 @@ def _build_paginating_app(app, *, rows: list[dict]):
             return {"general": data[:limit]}
         return {}
 
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        return await _fan_out(query, args, butler_names), []
+
     mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
@@ -509,7 +644,11 @@ async def test_workspace_editable_facet_filters_server_side(app):
             return {"general": data[: args[-1]]}
         return {}
 
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        return await _fan_out(query, args, butler_names), []
+
     mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
