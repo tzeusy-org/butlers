@@ -25,9 +25,19 @@ import { MemoryRouter } from 'react-router'
 // Mocks — must be declared before component imports
 // ---------------------------------------------------------------------------
 
+const archiveMutate = vi.fn()
+
 vi.mock('@/hooks/use-ingestion', () => ({
   useConnectorSummariesWithAggregates: vi.fn(),
   useAvailableConnectors: vi.fn(),
+  // ArchiveCandidatesList (bu-u19yv) calls this unconditionally; return a stable
+  // idle mutation so the roster mounts without a real QueryClient.
+  useArchiveConnector: vi.fn(() => ({
+    mutate: archiveMutate,
+    isPending: false,
+    isError: false,
+    variables: undefined,
+  })),
 }))
 
 import {
@@ -746,6 +756,92 @@ const ARCHIVED_CONNECTOR: ConnectorSummary = {
   archived: true,
   archived_at: '2026-06-07T00:00:00Z',
 }
+
+// ---------------------------------------------------------------------------
+// Archive review queue (bu-u19yv)
+//
+// An active identity the backend flags `archive_candidate` (offline >30d + a
+// newer online sibling) is surfaced as a review-queue row with a one-click
+// archive. It is a SUGGESTION overlay: the identity ALSO stays in the active
+// roster with its true (offline) liveness — never filed as "just a candidate".
+// ---------------------------------------------------------------------------
+
+const CANDIDATE_CONNECTOR: ConnectorSummary = {
+  connector_type: 'google_health',
+  endpoint_identity: 'dead-placeholder',
+  liveness: 'offline',
+  state: 'degraded',
+  error_message: null,
+  version: null,
+  uptime_s: null,
+  last_heartbeat_at: new Date(Date.now() - 45 * 24 * 3600_000).toISOString(),
+  first_seen_at: '2026-01-01T00:00:00Z',
+  today: { messages_ingested: 0, messages_failed: 0, uptime_pct: null },
+  hourly_events: Array(24).fill(0),
+  archive_candidate: true,
+}
+
+describe('archive review queue (bu-u19yv)', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    archiveMutate.mockClear()
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('renders a review-queue section listing the candidate', () => {
+    mockHooks([HEALTHY_CONNECTOR, CANDIDATE_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(
+      container.querySelector('[data-testid="archive-candidates-section"]'),
+    ).not.toBeNull()
+    expect(
+      container.querySelector(
+        '[data-testid="archive-candidate-row-google_health:dead-placeholder"]',
+      ),
+    ).not.toBeNull()
+  })
+
+  it('does not render the review queue when there are no candidates', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(
+      container.querySelector('[data-testid="archive-candidates-section"]'),
+    ).toBeNull()
+  })
+
+  it('keeps the candidate in the active roster (suggestion, not a filter)', () => {
+    mockHooks([HEALTHY_CONNECTOR, CANDIDATE_CONNECTOR])
+    renderRoster(container, root)
+
+    // The candidate still renders as an active roster row with its true state.
+    expect(
+      container.querySelector('[data-testid="connector-row-google_health"]'),
+    ).not.toBeNull()
+  })
+
+  it('one-click archive fires the archive mutation with the identity (no dead onClick)', () => {
+    mockHooks([HEALTHY_CONNECTOR, CANDIDATE_CONNECTOR])
+    renderRoster(container, root)
+
+    const btn = container.querySelector(
+      '[data-testid="archive-candidate-action-google_health:dead-placeholder"]',
+    )
+    expect(btn).not.toBeNull()
+    act(() => {
+      ;(btn as HTMLButtonElement).click()
+    })
+    expect(archiveMutate).toHaveBeenCalledTimes(1)
+    expect(archiveMutate).toHaveBeenCalledWith({
+      connectorType: 'google_health',
+      endpointIdentity: 'dead-placeholder',
+    })
+  })
+})
 
 describe('archived connectors section (bu-33dm2)', () => {
   let container: HTMLDivElement

@@ -619,6 +619,7 @@ export type {
 } from "./types.ts";
 
 export {
+  archiveConnector,
   bulkRetryEvents,
   getCrossConnectorSummaryWithAggregates,
   getConnectorDetail,
@@ -634,6 +635,7 @@ export {
 } from "./client.ts";
 
 export type {
+  ConnectorArchiveResult,
   ConnectorCheckpoint,
   ConnectorCrossSummaryResponse,
   ConnectorCounters,

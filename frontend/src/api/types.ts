@@ -3407,6 +3407,17 @@ export interface ConnectorSummary {
   archived?: boolean;
   /** ISO-8601 archival timestamp, or null when not archived (bu-33dm2). */
   archived_at?: string | null;
+  /**
+   * Flag-only archive review-queue SUGGESTION (bu-u19yv). `true` when this
+   * active (non-archived) identity last heartbeated >30d ago AND a newer,
+   * currently-online sibling identity of the same `connector_type` exists.
+   * A SUGGESTION only: the identity still appears in the active roster and its
+   * true (offline) liveness/KPIs are unchanged — this flag never masks a
+   * failing live connector, it only proposes archiving a superseded one. The
+   * roster surfaces candidates as a review queue with a one-click archive.
+   * Optional/additive: absent on older cached responses — treat as `false`.
+   */
+  archive_candidate?: boolean;
 }
 
 /** One OAuth scope entry from connector-oauth-scope-surface backend. */
@@ -3536,6 +3547,17 @@ export interface ConnectorSummariesResponse {
    * (bu-scyro; mirrors `device_liveness_available`). Optional/additive.
    */
   hourly_events_available?: boolean;
+}
+
+/**
+ * Result of POST /api/ingestion/connectors/{type}/{identity}/archive
+ * (and the unarchive variant). Audit-only soft-archive (bu-33dm2).
+ */
+export interface ConnectorArchiveResult {
+  connector_type: string;
+  endpoint_identity: string;
+  archived: boolean;
+  archived_at: string | null;
 }
 
 /**

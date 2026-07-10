@@ -16,6 +16,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  archiveConnector,
   getCrossConnectorSummaryWithAggregates,
   getConnectorDetail,
   getConnectorEvents,
@@ -175,6 +176,36 @@ export function useUpdateConnectorSettings(
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ingestionKeys.connectorDetail(connectorType, endpointIdentity),
+      });
+    },
+  });
+}
+
+/**
+ * Mutation to soft-archive a connector identity (bu-u19yv one-click archive from
+ * the review queue; reuses the audit-logged archive endpoint, no new mechanics).
+ *
+ * On success, invalidates the summaries + cross-summary queries so the archived
+ * identity moves from the active roster (and its review-queue candidate row)
+ * into the collapsed "archived" section and drops out of the fleet-health
+ * rollups — no manual refetch needed.
+ */
+export function useArchiveConnector() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      connectorType,
+      endpointIdentity,
+    }: {
+      connectorType: string;
+      endpointIdentity: string;
+    }) => archiveConnector(connectorType, endpointIdentity),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.connectorSummariesWithAggregates(),
+      });
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.crossSummaryWithAggregates(),
       });
     },
   });

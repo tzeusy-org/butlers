@@ -4373,6 +4373,7 @@ export function getEducationMindMapStrugglingNodes(
 // ---------------------------------------------------------------------------
 
 import type {
+  ConnectorArchiveResult,
   ConnectorAuthBlock,
   ConnectorCheckpoint,
   ConnectorCounters,
@@ -4394,6 +4395,7 @@ import type {
 
 // Re-export the types so they are accessible from this module too.
 export type {
+  ConnectorArchiveResult,
   ConnectorAuthBlock,
   ConnectorCheckpoint,
   ConnectorCrossSummaryResponse,
@@ -4741,6 +4743,23 @@ export async function updateConnectorSettings(
     ...resp,
     data: _toConnectorDetail(resp.data),
   };
+}
+
+/**
+ * POST /api/ingestion/connectors/{type}/{identity}/archive
+ *
+ * Soft-archive a superseded connector identity (audit-only, no Approvals gate).
+ * Reuses the existing archive mechanism (bu-33dm2) — the archive review queue
+ * (bu-u19yv) calls this for its one-click archive action. Idempotent.
+ */
+export async function archiveConnector(
+  connectorType: string,
+  endpointIdentity: string,
+): Promise<ApiResponse<ConnectorArchiveResult>> {
+  return apiFetch<ApiResponse<ConnectorArchiveResult>>(
+    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/archive`,
+    { method: "POST" },
+  );
 }
 
 // ---------------------------------------------------------------------------

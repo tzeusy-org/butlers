@@ -71,6 +71,69 @@ _DEVICE_STALE_THRESHOLD = _dt.timedelta(hours=48)
 # the `devices` list entirely rather than showing as maximally stale.
 _DEVICE_LOOKBACK_WINDOW = _dt.timedelta(days=90)
 
+# Minimum offline age for an active identity to become an archive REVIEW
+# CANDIDATE (bu-u19yv). An identity whose last heartbeat is strictly older than
+# this AND that has a newer, currently-online sibling of the same
+# connector_type is surfaced as a flag-only suggestion in the dashboard's
+# review queue — NEVER auto-archived (auto-archiving risks silencing a merely
+# quiet live connector). The comparison is strict (`> 30d`), so an identity that
+# last heartbeated exactly 30 days ago is not yet a candidate.
+_ARCHIVE_CANDIDATE_MIN_OFFLINE = _dt.timedelta(days=30)
+
+
+def _online_identities_by_type(
+    rows: list[Any] | Any,
+) -> dict[str, set[str]]:
+    """Map each connector_type to the set of its currently-online, non-archived identities.
+
+    Used as the "newer online sibling" test for the archive review queue
+    (bu-u19yv). An archived identity never counts as a live sibling — archiving
+    it must not, in turn, make its offline peers look archivable.
+
+    ``rows`` are registry rows (mappings) with ``connector_type``,
+    ``endpoint_identity``, ``archived_at`` and ``last_heartbeat_at`` keys.
+    """
+    by_type: dict[str, set[str]] = {}
+    for r in rows:
+        if r["archived_at"] is None and _liveness(r["last_heartbeat_at"]) == "online":
+            by_type.setdefault(r["connector_type"], set()).add(r["endpoint_identity"])
+    return by_type
+
+
+def _is_archive_candidate(
+    *,
+    connector_type: str,
+    endpoint_identity: str,
+    archived_at: _dt.datetime | None,
+    last_heartbeat_at: _dt.datetime | None,
+    online_identities_by_type: dict[str, set[str]],
+    now: _dt.datetime,
+) -> bool:
+    """Return whether an identity is a flag-only archive REVIEW candidate (bu-u19yv).
+
+    A candidate is an ACTIVE (non-archived) identity that BOTH:
+
+    - last heartbeated strictly more than ``_ARCHIVE_CANDIDATE_MIN_OFFLINE``
+      (30 days) ago, AND
+    - has at least one *other* identity of the same ``connector_type`` that is
+      currently ``online`` and not archived (a "newer online sibling").
+
+    This is a SUGGESTION only. It never affects health rollups or alerting, and
+    it can never mask a genuinely-failing live connector: a failing live
+    connector is not offline for 30+ days, and a merely-quiet identity with no
+    online sibling is not flagged. An identity that has never heartbeated
+    (``last_heartbeat_at is None``) is not a candidate — there is no heartbeat
+    age to compare, so the >30d test cannot be met deterministically.
+    """
+    if archived_at is not None:
+        return False
+    if last_heartbeat_at is None:
+        return False
+    if (now - last_heartbeat_at) <= _ARCHIVE_CANDIDATE_MIN_OFFLINE:
+        return False
+    siblings = online_identities_by_type.get(connector_type, set())
+    return any(identity != endpoint_identity for identity in siblings)
+
 
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
@@ -180,6 +243,17 @@ async def list_connector_summaries_with_aggregates(
     permanently-offline identity stops dragging fleet health down. Archived
     ``!=`` degraded: archiving never masks a genuinely-failing *live* connector,
     which stays in the active roster.
+
+    Each connector entry also includes ``archive_candidate`` (bool, bu-u19yv) —
+    a flag-only review-queue SUGGESTION, true when an active (non-archived)
+    identity last heartbeated >30d ago AND a newer online sibling of the same
+    ``connector_type`` exists. It is computed read-only from the same rows (no
+    extra query, no storage). It is a suggestion ONLY: it never feeds the
+    fleet-health rollups or alerting (those exclude ``archived`` only), never
+    removes the row from the active roster, and can never mask a
+    genuinely-failing live connector (which is not offline for 30+ days). The
+    dashboard surfaces candidates as a review queue with a one-click archive
+    that reuses the existing audit-logged archive endpoint — never auto-archived.
 
     Always returns HTTP 200 — connector registry errors fall back to an empty list.
     Hourly timeseries errors fall back to all-zero ``hourly_events`` arrays per connector.
@@ -422,6 +496,13 @@ async def list_connector_summaries_with_aggregates(
             device_liveness_available = False
             device_map = {}
 
+    # Precompute the "newer online sibling" lookup once for the archive review
+    # queue (bu-u19yv), then evaluate each row against it below. Read-only and
+    # derived entirely from the rows already fetched — no extra query, no
+    # storage, and deliberately kept out of the fleet-health rollups.
+    now_for_candidates = _dt.datetime.now(_dt.UTC)
+    online_by_type = _online_identities_by_type(rows)
+
     connectors = []
     for r in rows:
         liveness = _liveness(r["last_heartbeat_at"])
@@ -454,6 +535,22 @@ async def list_connector_summaries_with_aggregates(
                 # `archived_at` is set.
                 "archived": r["archived_at"] is not None,
                 "archived_at": (r["archived_at"].isoformat() if r["archived_at"] else None),
+                # Flag-only archive REVIEW-QUEUE suggestion (bu-u19yv): true when
+                # this active identity last heartbeated >30d ago AND a newer
+                # online sibling of the same connector_type exists. A pure
+                # SUGGESTION — it never feeds the health rollups/alerting (those
+                # only exclude `archived`), never removes the row from the active
+                # roster, and can never mask a failing live connector (which is
+                # not offline 30+ days). The dashboard surfaces these as a review
+                # queue with a one-click archive reusing the archive endpoint.
+                "archive_candidate": _is_archive_candidate(
+                    connector_type=r["connector_type"],
+                    endpoint_identity=r["endpoint_identity"],
+                    archived_at=r["archived_at"],
+                    last_heartbeat_at=r["last_heartbeat_at"],
+                    online_identities_by_type=online_by_type,
+                    now=now_for_candidates,
+                ),
                 "today": {
                     "messages_ingested": messages_ingested_24h,
                     "messages_failed": r["counter_messages_failed"] or 0,

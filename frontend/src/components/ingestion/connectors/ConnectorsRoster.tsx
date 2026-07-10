@@ -56,6 +56,7 @@ import { AttentionStrip } from './AttentionStrip'
 import { ConnectorRosterRow } from './ConnectorRosterRow'
 import { DormantList } from './DormantList'
 import { ArchivedConnectorsList } from './ArchivedConnectorsList'
+import { ArchiveCandidatesList } from './ArchiveCandidatesList'
 import { deriveConnectorDispatchInfo } from './connector-auth'
 import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 
@@ -233,6 +234,13 @@ export function ConnectorsRoster() {
 
       {/* Dormant / available connectors */}
       <DormantList profiles={dormantProfiles} />
+
+      {/* Archive review queue (bu-u19yv) — active identities flagged
+          `archive_candidate` (offline >30d + a newer online sibling). A
+          SUGGESTION overlay: these rows also remain in the active roster above
+          with their true offline liveness/KPIs; this queue only offers a
+          one-click archive reusing the audit-logged archive endpoint. */}
+      <ArchiveCandidatesList connectors={allConnectors} />
 
       {/* Archived / superseded connector identities (bu-33dm2) — collapsed,
           excluded from the active roster + KPIs above, history still reachable. */}
