@@ -27,6 +27,7 @@ import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
 import { Voice } from "@/components/ui/Voice";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { useButlers } from "@/hooks/use-butlers";
 import {
   useMemoryCompactionLog,
@@ -35,6 +36,7 @@ import {
 } from "@/hooks/use-memory";
 import { useReembedPending, useReembedRun } from "@/hooks/use-memory-reembed";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import { formatEpisodeTime } from "@/lib/memory-derived";
 import {
   dryRunResultLine,
   embeddingDriftSentence,
@@ -104,6 +106,7 @@ type RetentionEdit = { ttl_days: number | null; max_rows: number | null };
  * the confirmation.
  */
 function RetentionPolicies() {
+  const tz = useTimezone();
   const {
     data: policiesResp,
     isLoading,
@@ -264,7 +267,7 @@ function RetentionPolicies() {
                 onChange={(v) => handleChange(p.kind, "max_rows", v)}
               />
               <Mono muted className="text-right">
-                {formatUpdatedStamp(p.updated_at, p.updated_by)}
+                {formatUpdatedStamp(p.updated_at, p.updated_by, tz)}
               </Mono>
             </div>
           ))}
@@ -298,6 +301,7 @@ function RetentionPolicies() {
  * recorded."
  */
 function CompactionLog() {
+  const tz = useTimezone();
   const { data: logResp, isLoading, isError, refetch } = useMemoryCompactionLog(50);
   const entries = logResp?.data ?? [];
 
@@ -319,12 +323,7 @@ function CompactionLog() {
       ) : (
         <div className="flex flex-col">
           {entries.map((e) => {
-            const d = new Date(e.ts);
-            const time = Number.isNaN(d.getTime())
-              ? "--:--"
-              : `${String(d.getHours()).padStart(2, "0")}:${String(
-                  d.getMinutes(),
-                ).padStart(2, "0")}`;
+            const time = formatEpisodeTime(e.ts, tz);
             return (
               <div
                 key={e.id}

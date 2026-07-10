@@ -126,7 +126,7 @@ export function decayArithmeticLine(fact: Fact, now: Date = new Date()): string 
 
 /** A day-bucket of episodes for the daybook (register=episodes). */
 export interface DayGroup {
-  /** Local-day key `YYYY-MM-DD` — stable across the group. */
+  /** Owner-timezone day key `YYYY-MM-DD` — stable across the group. */
   key: string
   /** Rendered header label: `TODAY` · `YESTERDAY` · `THU 12 JUN`. */
   label: string
@@ -134,68 +134,79 @@ export interface DayGroup {
   episodes: Episode[]
 }
 
-/** Local-day key `YYYY-MM-DD` for an instant (NOT UTC — grouping is local). */
-function localDayKey(d: Date): string {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+/**
+ * Day key `YYYY-MM-DD` for an instant, resolved in the owner timezone `tz`
+ * (an IANA name from useTimezone()). Owner-tz, NOT UTC and NOT host-local: the
+ * whole memory subsystem buckets and stamps dates on the owner's clock so a
+ * viewer's browser timezone never shifts which day a memory lands on.
+ */
+export function dayKeyInTimeZone(d: Date, tz: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d)
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${lookup.year}-${lookup.month}-${lookup.day}`
 }
 
-const WEEKDAYS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'] as const
-const MONTHS = [
-  'JAN',
-  'FEB',
-  'MAR',
-  'APR',
-  'MAY',
-  'JUN',
-  'JUL',
-  'AUG',
-  'SEP',
-  'OCT',
-  'NOV',
-  'DEC',
-] as const
+/** The calendar day before `dayKey` (`YYYY-MM-DD`), computed on the numerals. */
+function previousDayKey(dayKey: string): string {
+  const [year, month, day] = dayKey.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10)
+}
 
 /**
- * Day header label for a day relative to `now`:
+ * Day header label for a day relative to `now`, all resolved in owner tz:
  *   today → "TODAY" · yesterday → "YESTERDAY" · older → "THU 12 JUN".
  */
-function dayLabel(day: Date, now: Date): string {
-  const dayKey = localDayKey(day)
-  if (dayKey === localDayKey(now)) return 'TODAY'
+function dayLabel(day: Date, now: Date, tz: string): string {
+  const dayKey = dayKeyInTimeZone(day, tz)
+  const nowKey = dayKeyInTimeZone(now, tz)
+  if (dayKey === nowKey) return 'TODAY'
+  if (dayKey === previousDayKey(nowKey)) return 'YESTERDAY'
 
-  const yesterday = new Date(now)
-  yesterday.setDate(now.getDate() - 1)
-  if (dayKey === localDayKey(yesterday)) return 'YESTERDAY'
-
-  return `${WEEKDAYS[day.getDay()]} ${day.getDate()} ${MONTHS[day.getMonth()]}`
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  }).formatToParts(day)
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${lookup.weekday.toUpperCase()} ${lookup.day} ${lookup.month.toUpperCase()}`
 }
 
 /**
- * Group episodes into days by local `created_at`, preserving the incoming
- * (reverse-chronological) order both across and within groups. Pure — operates
- * on a copy and never sorts; the API owns ordering. A day may legitimately
- * split across pages; this returns whatever the current page holds, and the
- * caller repeats the header at the top of the next page (re-grouping each page
- * yields exactly that). Adjacent same-day episodes share a group; a day that
- * reappears non-adjacently (page boundary) starts a fresh group.
+ * Group episodes into days by owner-timezone `created_at`, preserving the
+ * incoming (reverse-chronological) order both across and within groups. Pure —
+ * operates on a copy and never sorts; the API owns ordering. A day may
+ * legitimately split across pages; this returns whatever the current page
+ * holds, and the caller repeats the header at the top of the next page
+ * (re-grouping each page yields exactly that). Adjacent same-day episodes share
+ * a group; a day that reappears non-adjacently (page boundary) starts a fresh
+ * group.
  *
  * @param episodes  Episodes in API order (created_at desc).
+ * @param tz        Owner IANA timezone (from useTimezone()) — buckets on the
+ *                  owner's clock, never the viewer's host timezone.
  * @param now       Reference instant for TODAY/YESTERDAY labels (injectable).
  */
-export function groupEpisodesByDay(episodes: Episode[], now: Date = new Date()): DayGroup[] {
+export function groupEpisodesByDay(
+  episodes: Episode[],
+  tz: string,
+  now: Date = new Date(),
+): DayGroup[] {
   const groups: DayGroup[] = []
   let current: DayGroup | null = null
 
   for (const ep of episodes) {
     const d = new Date(ep.created_at)
     const valid = !Number.isNaN(d.getTime())
-    const key = valid ? localDayKey(d) : 'unknown'
+    const key = valid ? dayKeyInTimeZone(d, tz) : 'unknown'
 
     if (!current || current.key !== key) {
-      current = { key, label: valid ? dayLabel(d, now) : 'UNDATED', episodes: [] }
+      current = { key, label: valid ? dayLabel(d, now, tz) : 'UNDATED', episodes: [] }
       groups.push(current)
     }
     current.episodes.push(ep)
@@ -204,13 +215,35 @@ export function groupEpisodesByDay(episodes: Episode[], now: Date = new Date()):
   return groups
 }
 
-/** `HH:MM` local wall-clock time, or `--:--` for an unparseable timestamp. */
-export function formatEpisodeTime(iso: string): string {
+/**
+ * `YYYY-MM-DD` day stamp for a timestamp in the owner timezone `tz`, or null
+ * for a missing/unparseable input. Shared by the fact/rule/episode detail
+ * pages so their `created`/`last confirmed` stamps bucket on the same owner
+ * clock as the daybook, never the viewer's host timezone.
+ */
+export function formatDayStamp(iso: string | null | undefined, tz: string): string | null {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return dayKeyInTimeZone(d, tz)
+}
+
+/**
+ * `HH:MM` wall-clock time in the owner timezone `tz` (24-hour, h23 so midnight
+ * reads `00:00`), or `--:--` for an unparseable timestamp. Owner-tz, not
+ * host-local — the daybook gutter shows the owner's clock.
+ */
+export function formatEpisodeTime(iso: string, tz: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '--:--'
-  const h = String(d.getHours()).padStart(2, '0')
-  const m = String(d.getMinutes()).padStart(2, '0')
-  return `${h}:${m}`
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(d)
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return `${lookup.hour}:${lookup.minute}`
 }
 
 /** Consolidation status values that map to a glyph. */

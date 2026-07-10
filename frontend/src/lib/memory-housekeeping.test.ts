@@ -32,14 +32,28 @@ describe("retention kind constraint", () => {
 });
 
 describe("formatUpdatedStamp", () => {
-  it("renders ISO date · actor", () => {
-    expect(formatUpdatedStamp("2026-05-02T10:00:00Z", "api")).toMatch(
-      /^2026-05-0[12] · api$/,
+  it("renders the owner-timezone ISO date · actor", () => {
+    // 18:00 SGT on 2026-05-02 → owner-tz day 2026-05-02 (exact, no fuzz).
+    expect(formatUpdatedStamp("2026-05-02T10:00:00Z", "api", "Asia/Singapore")).toBe(
+      "2026-05-02 · api",
+    );
+  });
+
+  it("buckets on the owner clock, not UTC, across a date boundary", () => {
+    // 23:30Z on 2026-05-01 is already 2026-05-02 in Singapore (+08).
+    expect(formatUpdatedStamp("2026-05-01T23:30:00Z", "api", "Asia/Singapore")).toBe(
+      "2026-05-02 · api",
+    );
+    // The same instant is still 2026-05-01 in UTC.
+    expect(formatUpdatedStamp("2026-05-01T23:30:00Z", "api", "UTC")).toBe(
+      "2026-05-01 · api",
     );
   });
 
   it("falls back to system when actor is null", () => {
-    expect(formatUpdatedStamp("2026-04-18T00:00:00Z", null)).toContain("· system");
+    expect(formatUpdatedStamp("2026-04-18T00:00:00Z", null, "Asia/Singapore")).toContain(
+      "· system",
+    );
   });
 });
 

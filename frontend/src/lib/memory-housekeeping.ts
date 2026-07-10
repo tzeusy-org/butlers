@@ -12,6 +12,8 @@
 // - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §2, §4, §6
 // ---------------------------------------------------------------------------
 
+import { dayKeyInTimeZone } from "./memory-derived";
+
 /**
  * The backend's valid retention-policy kinds.
  *
@@ -38,18 +40,18 @@ export function isValidRetentionKind(kind: string): kind is RetentionKind {
 /**
  * Format an ISO timestamp as the retention `updated` stamp: `YYYY-MM-DD · by`.
  *
- * The `by` suffix is the actor that last wrote the row (`updated_by`), falling
- * back to `system` when null. The date is rendered in ISO calendar form (no
- * locale month names) to match the ledger's mono aesthetic.
+ * The date is bucketed in the owner timezone `tz` (an IANA name from
+ * useTimezone()), NOT the viewer's host timezone, so it agrees with the rest
+ * of the memory subsystem's day stamps. The `by` suffix is the actor that last
+ * wrote the row (`updated_by`), falling back to `system` when null. The date is
+ * rendered in ISO calendar form (no locale month names) to match the ledger's
+ * mono aesthetic.
  */
-export function formatUpdatedStamp(iso: string, by: string | null): string {
+export function formatUpdatedStamp(iso: string, by: string | null, tz: string): string {
   const actor = by ?? "system";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return `—  · ${actor}`;
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day} · ${actor}`;
+  return `${dayKeyInTimeZone(d, tz)} · ${actor}`;
 }
 
 /**

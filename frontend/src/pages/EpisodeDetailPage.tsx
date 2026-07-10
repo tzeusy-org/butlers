@@ -33,20 +33,10 @@ import { Mono } from "@/components/ui/Mono";
 import { Voice } from "@/components/ui/Voice";
 import { Badge } from "@/components/ui/badge";
 import { Page } from "@/components/ui/page";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { useEpisode, useFactsByEpisode } from "@/hooks/use-memory";
-import { consolidationGlyph } from "@/lib/memory-derived";
+import { consolidationGlyph, formatDayStamp } from "@/lib/memory-derived";
 import { cn } from "@/lib/utils";
-
-/** `2026-06-10` local date, or null for an unparseable timestamp. */
-function fmtDate(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 /** First 8 chars of an id for inline provenance labels. */
 function shortFragment(id: string): string {
@@ -54,6 +44,7 @@ function shortFragment(id: string): string {
 }
 
 export default function EpisodeDetailPage() {
+  const tz = useTimezone();
   const { episodeId } = useParams<{ episodeId: string }>();
   const { data, isLoading } = useEpisode(episodeId);
   const episode = data?.data;
@@ -158,9 +149,9 @@ export default function EpisodeDetailPage() {
                 ),
               },
               { key: "references", value: <Mono>{episode.reference_count}</Mono> },
-              { key: "created", value: <Mono>{fmtDate(episode.created_at)}</Mono> },
-              { key: "last referenced", value: episode.last_referenced_at ? <Mono>{fmtDate(episode.last_referenced_at)}</Mono> : null },
-              { key: "expires", value: episode.expires_at ? <Mono>{fmtDate(episode.expires_at)}</Mono> : null },
+              { key: "created", value: <Mono>{formatDayStamp(episode.created_at, tz)}</Mono> },
+              { key: "last referenced", value: episode.last_referenced_at ? <Mono>{formatDayStamp(episode.last_referenced_at, tz)}</Mono> : null },
+              { key: "expires", value: episode.expires_at ? <Mono>{formatDayStamp(episode.expires_at, tz)}</Mono> : null },
             ]}
           />
 

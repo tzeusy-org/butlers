@@ -31,25 +31,11 @@ import { Mono } from "@/components/ui/Mono";
 import { Voice } from "@/components/ui/Voice";
 import { Badge } from "@/components/ui/badge";
 import { Page } from "@/components/ui/page";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { useConfirmFact, useFact, useRetractFact } from "@/hooks/use-memory";
-import { decayArithmeticLine, permanenceTag } from "@/lib/memory-derived";
+import { decayArithmeticLine, formatDayStamp, permanenceTag } from "@/lib/memory-derived";
 import { cn } from "@/lib/utils";
 import type { Fact } from "@/api/types.ts";
-
-// ---------------------------------------------------------------------------
-// Date helper
-// ---------------------------------------------------------------------------
-
-/** `2026-06-02` local date, or "—" for an unparseable timestamp. */
-function fmtDate(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 // ---------------------------------------------------------------------------
 // Subject / object entity anchors
@@ -164,6 +150,7 @@ interface FactDetailPageProps {
 }
 
 export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
+  const tz = useTimezone();
   const { factId } = useParams<{ factId: string }>();
   const { data, isLoading } = useFact(factId ?? null);
   const fact = data?.data;
@@ -272,9 +259,9 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
                   ) : null,
               },
               { key: "permanence", value: <span className="font-mono text-[11px] tabular-nums">{permanenceTag(fact.permanence)}</span> },
-              { key: "created", value: <Mono>{fmtDate(fact.created_at)}</Mono> },
-              { key: "last referenced", value: fact.last_referenced_at ? <Mono>{fmtDate(fact.last_referenced_at)}</Mono> : null },
-              { key: "last confirmed", value: fact.last_confirmed_at ? <Mono>{fmtDate(fact.last_confirmed_at)}</Mono> : null },
+              { key: "created", value: <Mono>{formatDayStamp(fact.created_at, tz)}</Mono> },
+              { key: "last referenced", value: fact.last_referenced_at ? <Mono>{formatDayStamp(fact.last_referenced_at, tz)}</Mono> : null },
+              { key: "last confirmed", value: fact.last_confirmed_at ? <Mono>{formatDayStamp(fact.last_confirmed_at, tz)}</Mono> : null },
               { key: "references", value: <Mono>{fact.reference_count}</Mono> },
               { key: "source butler", value: fact.source_butler ? <Mono>{fact.source_butler}</Mono> : null },
               { key: "tags", value: fact.tags.length > 0 ? fact.tags.join(", ") : null },

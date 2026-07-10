@@ -7,14 +7,18 @@
  * confirm vs. old unconfirmed, large elapsed (floor), and clamp ceiling/floor.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Episode, Fact, MemoryRule } from '@/api/types.ts'
 import {
   consolidationGlyph,
+  dayKeyInTimeZone,
   daysSince,
   decayArithmeticLine,
   decayDaysAgo,
   effectiveConfidence,
+  formatDayStamp,
+  formatEpisodeTime,
+  groupEpisodesByDay,
   inspectResultToEpisode,
   inspectResultToFact,
   inspectResultToRule,
@@ -469,5 +473,209 @@ describe('decayArithmeticLine', () => {
     const effective = effectiveConfidence(fact, NOW)
     expect(effective).toBeLessThan(0.94)
     expect(line).toContain(`effective ${effective.toFixed(2)}`)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Owner-timezone day bucketing (bu-bqpec)
+//
+// The whole memory subsystem buckets and stamps dates on the OWNER's clock
+// (useTimezone(), default Asia/Singapore), never the viewer's host timezone.
+// These tests vary process.env.TZ — the host clock — and prove the owner-tz
+// day key / label / gutter never move with it. vitest pins TZ=UTC
+// (vite.config.ts), which is exactly why the pre-fix host-local getters looked
+// correct on CI while silently disagreeing on any non-UTC viewer.
+// ---------------------------------------------------------------------------
+
+/** The pre-fix host-local day key: getFullYear/getMonth/getDate on the host. */
+function hostLocalDayKey(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+describe('dayKeyInTimeZone / formatDayStamp — owner-tz day bucketing', () => {
+  const HOST_ZONES = ['UTC', 'America/Los_Angeles', 'Pacific/Kiritimati', 'Asia/Singapore']
+  const originalTZ = process.env.TZ
+
+  afterEach(() => {
+    process.env.TZ = originalTZ
+  })
+
+  it('resolves the day on the owner clock, not UTC', () => {
+    // 2026-06-11T20:00Z is already 2026-06-12 04:00 in Singapore (+08).
+    const instant = new Date('2026-06-11T20:00:00.000Z')
+    expect(dayKeyInTimeZone(instant, 'Asia/Singapore')).toBe('2026-06-12')
+    expect(dayKeyInTimeZone(instant, 'UTC')).toBe('2026-06-11')
+  })
+
+  it('is stable across the viewer host timezone (owner tz fixed)', () => {
+    const instant = new Date('2026-06-11T20:00:00.000Z')
+    const keys = new Set<string>()
+    for (const tz of HOST_ZONES) {
+      process.env.TZ = tz
+      keys.add(dayKeyInTimeZone(instant, 'Asia/Singapore'))
+    }
+    expect(keys.size).toBe(1)
+    expect([...keys][0]).toBe('2026-06-12')
+  })
+
+  it('matches the OLD host-local stamp when the viewer host tz == owner tz (no regression)', () => {
+    // A Singapore viewer (host tz == owner tz) must see exactly what the pre-fix
+    // host-local fmtDate rendered — the conversion is a no-op for owner-tz users.
+    process.env.TZ = 'Asia/Singapore'
+    for (const iso of [
+      '2026-06-11T20:00:00.000Z', // 04:00 next day SGT — crosses UTC midnight
+      '2026-06-11T23:30:00.000Z',
+      '2026-06-12T01:00:00.000Z',
+      '2026-01-01T15:59:00.000Z',
+    ]) {
+      const d = new Date(iso)
+      expect(dayKeyInTimeZone(d, 'Asia/Singapore')).toBe(hostLocalDayKey(d))
+    }
+  })
+
+  it('repro: the OLD host-local key crosses a date boundary the owner-tz key does not', () => {
+    // Same instant, same owner timezone — the fixed owner-tz key stays on
+    // 2026-06-12 for every host, but the pre-fix host-local key straddles the
+    // 11th/12th boundary as the host clock moves. That divergence is the bug.
+    const instant = new Date('2026-06-11T20:00:00.000Z')
+    const hostKeys = new Set<string>()
+    const ownerKeys = new Set<string>()
+    for (const tz of HOST_ZONES) {
+      process.env.TZ = tz
+      hostKeys.add(hostLocalDayKey(instant))
+      ownerKeys.add(dayKeyInTimeZone(instant, 'Asia/Singapore'))
+    }
+    // The old logic disagreed with itself across hosts...
+    expect(hostKeys.has('2026-06-11')).toBe(true)
+    expect(hostKeys.has('2026-06-12')).toBe(true)
+    expect(hostKeys.size).toBeGreaterThan(1)
+    // ...while the owner-tz key is a single, host-independent value.
+    expect(ownerKeys.size).toBe(1)
+    expect([...ownerKeys][0]).toBe('2026-06-12')
+  })
+
+  it('formatDayStamp returns null for missing/unparseable input', () => {
+    expect(formatDayStamp(null, 'Asia/Singapore')).toBeNull()
+    expect(formatDayStamp(undefined, 'Asia/Singapore')).toBeNull()
+    expect(formatDayStamp('', 'Asia/Singapore')).toBeNull()
+    expect(formatDayStamp('not-a-date', 'Asia/Singapore')).toBeNull()
+  })
+
+  it('formatDayStamp stamps the owner-tz calendar day', () => {
+    // 23:30Z on 2026-06-11 → 2026-06-12 in Singapore.
+    expect(formatDayStamp('2026-06-11T23:30:00.000Z', 'Asia/Singapore')).toBe('2026-06-12')
+    expect(formatDayStamp('2026-06-11T23:30:00.000Z', 'UTC')).toBe('2026-06-11')
+  })
+})
+
+describe('formatEpisodeTime — owner-tz wall clock', () => {
+  const originalTZ = process.env.TZ
+
+  afterEach(() => {
+    process.env.TZ = originalTZ
+  })
+
+  it('returns --:-- for an unparseable timestamp', () => {
+    expect(formatEpisodeTime('not-a-date', 'Asia/Singapore')).toBe('--:--')
+  })
+
+  it('renders the owner-tz 24-hour wall clock (h23: midnight is 00:00)', () => {
+    // 16:05Z → 00:05 next day in Singapore (+08).
+    expect(formatEpisodeTime('2026-06-11T16:05:00.000Z', 'Asia/Singapore')).toBe('00:05')
+    expect(formatEpisodeTime('2026-06-11T16:05:00.000Z', 'UTC')).toBe('16:05')
+  })
+
+  it('is stable across the viewer host timezone', () => {
+    const times = new Set<string>()
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Pacific/Kiritimati']) {
+      process.env.TZ = tz
+      times.add(formatEpisodeTime('2026-06-11T20:00:00.000Z', 'Asia/Singapore'))
+    }
+    expect(times.size).toBe(1)
+    expect([...times][0]).toBe('04:00')
+  })
+})
+
+describe('groupEpisodesByDay / dayLabel — owner-tz grouping', () => {
+  const originalTZ = process.env.TZ
+  // NOW is 2026-06-12 20:00 SGT (12:00Z) — "today" in the owner timezone.
+  const NOW_SGT = new Date('2026-06-12T12:00:00.000Z')
+
+  afterEach(() => {
+    process.env.TZ = originalTZ
+  })
+
+  it('buckets and labels on the owner clock (TODAY / YESTERDAY / dated)', () => {
+    const groups = groupEpisodesByDay(
+      [
+        // 2026-06-12 09:00 SGT → TODAY
+        makeEpisode({ id: 'today', created_at: '2026-06-12T01:00:00.000Z' }),
+        // 2026-06-12 04:00 SGT but written 2026-06-11T20:00Z → still TODAY in SGT
+        makeEpisode({ id: 'today-edge', created_at: '2026-06-11T20:00:00.000Z' }),
+        // 2026-06-11 22:00 SGT → YESTERDAY
+        makeEpisode({ id: 'yday', created_at: '2026-06-11T14:00:00.000Z' }),
+        // 2026-06-09 → dated
+        makeEpisode({ id: 'older', created_at: '2026-06-09T01:00:00.000Z' }),
+      ],
+      'Asia/Singapore',
+      NOW_SGT,
+    )
+    expect(groups.map((g) => g.key)).toEqual([
+      '2026-06-12',
+      '2026-06-11',
+      '2026-06-09',
+    ])
+    expect(groups.map((g) => g.label)).toEqual(['TODAY', 'YESTERDAY', 'TUE 9 JUN'])
+    expect(groups[0]!.episodes.map((e) => e.id)).toEqual(['today', 'today-edge'])
+  })
+
+  it('groups a host-day-straddling pair under one owner-tz day', () => {
+    // Both instants are the same SGT calendar day (2026-06-12) but fall on
+    // different Los Angeles days — under a host-local render they would split.
+    const episodes = [
+      makeEpisode({ id: 'a', created_at: '2026-06-12T15:00:00.000Z' }), // 23:00 SGT · 08:00 LA (06-12)
+      makeEpisode({ id: 'b', created_at: '2026-06-11T16:30:00.000Z' }), // 00:30 SGT · 09:30 LA (06-11)
+    ]
+
+    process.env.TZ = 'America/Los_Angeles'
+    const grouped = groupEpisodesByDay(episodes, 'Asia/Singapore', NOW_SGT)
+    expect(grouped).toHaveLength(1)
+    expect(grouped[0]!.key).toBe('2026-06-12')
+    expect(grouped[0]!.episodes.map((e) => e.id)).toEqual(['a', 'b'])
+
+    // A pre-fix host-local grouping of the very same instants straddles the UTC
+    // boundary in Los Angeles and would have split them into two days.
+    const hostKeys = new Set(episodes.map((e) => hostLocalDayKey(new Date(e.created_at))))
+    expect(hostKeys.size).toBe(2)
+  })
+
+  it('labels are stable across the viewer host timezone', () => {
+    const labelsPerZone = new Set<string>()
+    const episode = makeEpisode({ id: 'x', created_at: '2026-06-11T20:00:00.000Z' })
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Pacific/Kiritimati']) {
+      process.env.TZ = tz
+      const [group] = groupEpisodesByDay([episode], 'Asia/Singapore', NOW_SGT)
+      labelsPerZone.add(`${group!.key}|${group!.label}`)
+    }
+    expect(labelsPerZone.size).toBe(1)
+    expect([...labelsPerZone][0]).toBe('2026-06-12|TODAY')
+  })
+
+  it('uses fake timers for the default now (labels resolve against a fixed clock)', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-12T12:00:00.000Z'))
+    try {
+      // No explicit now → defaults to new Date() under the fake clock.
+      const [group] = groupEpisodesByDay(
+        [makeEpisode({ id: 't', created_at: '2026-06-12T01:00:00.000Z' })],
+        'Asia/Singapore',
+      )
+      expect(group!.label).toBe('TODAY')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

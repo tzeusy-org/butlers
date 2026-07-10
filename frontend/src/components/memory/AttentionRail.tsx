@@ -34,6 +34,7 @@ import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
 import { Voice } from "@/components/ui/Voice";
+import { useTimezone } from "@/components/ui/timezone-context";
 import {
   useFacts,
   useMemoryActivity,
@@ -165,6 +166,7 @@ interface AttentionRailProps {
  * ACTIVITY list. State color appears ONLY here.
  */
 export default function AttentionRail({ now }: AttentionRailProps) {
+  const tz = useTimezone();
   const {
     data: statsResp,
     isError: statsError,
@@ -314,7 +316,7 @@ export default function AttentionRail({ now }: AttentionRailProps) {
             {activity.map((item) => (
               <ActivityRow
                 key={`${item.type}-${item.id}`}
-                time={formatEpisodeTime(item.created_at)}
+                time={formatEpisodeTime(item.created_at, tz)}
                 butler={item.butler}
                 summary={item.summary}
               />

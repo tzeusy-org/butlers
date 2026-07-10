@@ -22,6 +22,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router";
 
 import EpisodesRegister from "@/components/memory/EpisodesRegister";
+import { AppTimezoneProvider } from "@/components/ui/timezone-context";
 import { useEpisodes } from "@/hooks/use-memory";
 import { groupEpisodesByDay } from "@/lib/memory-derived";
 import type { Episode } from "@/api/types";
@@ -87,15 +88,25 @@ function LocationProbe() {
   return null;
 }
 
-function renderRegister(initialEntries: string[] = ["/memory"]) {
+// The daybook fixtures are naive timestamps parsed as UTC (vitest pins
+// TZ=UTC), so the register is mounted under a UTC owner-timezone provider: the
+// day keys and time gutters then read the fixtures' wall-clock numerals
+// directly. The owner-timezone bucketing itself (Asia/Singapore, host-tz
+// stability) is exercised exhaustively in memory-derived.test.ts.
+function renderRegister(
+  initialEntries: string[] = ["/memory"],
+  timezone = "UTC",
+) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => {
     root.render(
       <MemoryRouter initialEntries={initialEntries}>
-        <EpisodesRegister now={NOW} />
-        <LocationProbe />
+        <AppTimezoneProvider timezone={timezone}>
+          <EpisodesRegister now={NOW} />
+          <LocationProbe />
+        </AppTimezoneProvider>
       </MemoryRouter>,
     );
   });
@@ -103,7 +114,7 @@ function renderRegister(initialEntries: string[] = ["/memory"]) {
 }
 
 describe("groupEpisodesByDay (pure)", () => {
-  it("groups by local day in incoming order and labels TODAY / YESTERDAY / dated", () => {
+  it("groups by owner-tz day in incoming order and labels TODAY / YESTERDAY / dated", () => {
     const groups = groupEpisodesByDay(
       [
         makeEpisode({ id: "today-a", created_at: "2026-06-13T14:21:00" }),
@@ -111,6 +122,7 @@ describe("groupEpisodesByDay (pure)", () => {
         makeEpisode({ id: "yday", created_at: "2026-06-12T23:00:00" }),
         makeEpisode({ id: "older", created_at: "2026-06-10T08:00:00" }),
       ],
+      "UTC",
       NOW,
     );
 
@@ -131,6 +143,7 @@ describe("groupEpisodesByDay (pure)", () => {
         makeEpisode({ id: "b", created_at: "2026-06-12T14:00:00" }),
         makeEpisode({ id: "c", created_at: "2026-06-13T08:00:00" }),
       ],
+      "UTC",
       NOW,
     );
     // Three groups even though day repeats — order is preserved, never sorted.
@@ -180,6 +193,19 @@ describe("EpisodesRegister — the daybook", () => {
     setEpisodes([makeEpisode({ created_at: "2026-06-13T14:21:00" })]);
     mounted = renderRegister();
     expect(mounted.container.textContent).toContain("14:21");
+  });
+
+  it("threads the owner timezone through the day header and time gutter", () => {
+    // 22:00Z on 2026-06-12 is 06:00 on 2026-06-13 in Singapore (+08). Under an
+    // Asia/Singapore owner timezone the episode buckets under TODAY (2026-06-13,
+    // matching NOW) and the gutter reads the SGT wall-clock 06:00 — not the UTC
+    // 22:00 a host-local render would show.
+    setEpisodes([makeEpisode({ created_at: "2026-06-12T22:00:00Z" })]);
+    mounted = renderRegister(["/memory"], "Asia/Singapore");
+    const text = mounted.container.textContent ?? "";
+    expect(text).toContain("TODAY");
+    expect(text).toContain("06:00");
+    expect(text).not.toContain("22:00");
   });
 
   it("renders zero red pixels for pending/consolidated rows", () => {

@@ -41,6 +41,7 @@ import { useNavigate } from "react-router";
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Mono } from "@/components/ui/Mono";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { Pill } from "@/components/ui/Pill";
 import { Voice } from "@/components/ui/Voice";
 import { useEpisodes } from "@/hooks/use-memory";
@@ -133,9 +134,10 @@ function ConsolidationGlyph({ status }: { status: string }) {
 
 export function EpisodeRow({ episode }: { episode: Episode }) {
   const navigate = useNavigate();
+  const tz = useTimezone();
   const [expanded, setExpanded] = useState(false);
 
-  const time = formatEpisodeTime(episode.created_at);
+  const time = formatEpisodeTime(episode.created_at, tz);
   // Importance is ink: the time gutter — and ONLY the time gutter — brightens to
   // --fg at importance >= 8. Content and glyph never take importance ink.
   const timeBright = episode.importance >= IMPORTANCE_INK_THRESHOLD;
@@ -318,6 +320,7 @@ interface EpisodesRegisterProps {
  * repeats at the top of the next page.
  */
 export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterProps) {
+  const tz = useTimezone();
   const { state, setState } = useMemoryUrlState();
   const { status, offset } = state;
 
@@ -334,7 +337,7 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
 
-  const groups = groupEpisodesByDay(episodes, now);
+  const groups = groupEpisodesByDay(episodes, tz, now);
 
   const onSelectStatus = (next: MemoryEpisodeStatus | null) => {
     // Switching filter resets paging to the first page.

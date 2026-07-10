@@ -31,20 +31,10 @@ import {
 import { Mono } from "@/components/ui/Mono";
 import { Badge } from "@/components/ui/badge";
 import { Page } from "@/components/ui/page";
+import { useTimezone } from "@/components/ui/timezone-context";
 import { useRule } from "@/hooks/use-memory";
-import { permanenceTag } from "@/lib/memory-derived";
+import { formatDayStamp, permanenceTag } from "@/lib/memory-derived";
 import { cn } from "@/lib/utils";
-
-/** `2026-06-10` local date, or null for an unparseable timestamp. */
-function fmtDate(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 /** First 8 chars of an id for inline provenance labels. */
 function shortFragment(id: string): string {
@@ -52,6 +42,7 @@ function shortFragment(id: string): string {
 }
 
 export default function RuleDetailPage() {
+  const tz = useTimezone();
   const { ruleId } = useParams<{ ruleId: string }>();
   const { data, isLoading } = useRule(ruleId ?? null);
   const rule = data?.data;
@@ -117,8 +108,8 @@ export default function RuleDetailPage() {
             </Mono>
             <Mono muted className="tabular-nums">
               {[
-                rule.last_applied_at ? `last applied ${fmtDate(rule.last_applied_at)}` : null,
-                rule.last_evaluated_at ? `last evaluated ${fmtDate(rule.last_evaluated_at)}` : null,
+                rule.last_applied_at ? `last applied ${formatDayStamp(rule.last_applied_at, tz)}` : null,
+                rule.last_evaluated_at ? `last evaluated ${formatDayStamp(rule.last_evaluated_at, tz)}` : null,
               ]
                 .filter(Boolean)
                 .join(" · ") || "never applied"}
@@ -131,7 +122,7 @@ export default function RuleDetailPage() {
               { key: "permanence", value: <span className="font-mono text-[11px] tabular-nums">{permanenceTag(rule.permanence)}</span> },
               { key: "confidence", value: <Mono>{rule.confidence.toFixed(2)}</Mono> },
               { key: "decay rate", value: <Mono>{rule.decay_rate.toFixed(3)}/day</Mono> },
-              { key: "created", value: <Mono>{fmtDate(rule.created_at)}</Mono> },
+              { key: "created", value: <Mono>{formatDayStamp(rule.created_at, tz)}</Mono> },
               { key: "source butler", value: rule.source_butler ? <Mono>{rule.source_butler}</Mono> : null },
               { key: "tags", value: rule.tags.length > 0 ? rule.tags.join(", ") : null },
             ]}
