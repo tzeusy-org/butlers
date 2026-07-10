@@ -25,6 +25,7 @@ from butlers.api.models import ApiResponse
 from butlers.api.models.schedule import Schedule, ScheduleCreate, ScheduleUpdate
 from butlers.api.routers.audit import log_audit_entry
 from butlers.api.routers.model_settings import _validate_complexity_tier
+from butlers.core.model_routing import coerce_complexity_tier
 
 logger = logging.getLogger(__name__)
 
@@ -47,26 +48,25 @@ _SCHEDULE_COLUMNS = (
 )
 _DISPATCH_MODE_PROMPT = "prompt"
 _DISPATCH_MODE_JOB = "job"
-_DEFAULT_COMPLEXITY_TIER = "workhorse"
-# "medium" was never a valid complexity tier (valid: reasoning/workhorse/cheap/
-# specialty/local/legacy) but was used as this function's erroneous fallback
-# value before bu-fev4q. Old rows may still have the literal string "medium"
-# persisted from that era, so coerce it explicitly on read rather than just
-# fixing the fallback -- this keeps the API from ever surfacing an invalid
-# tier to callers (bu-65nop: the frontend dropdown has no "medium" entry).
-_LEGACY_COMPLEXITY_COERCIONS = {"medium": _DEFAULT_COMPLEXITY_TIER}
 
 
 def _coerce_complexity(value: str | None) -> str:
-    """Coerce a stored complexity value to a valid tier.
+    """Coerce a stored complexity value to a valid canonical tier on read.
 
-    Missing/null values default to ``_DEFAULT_COMPLEXITY_TIER``. Known-invalid
-    legacy values (see ``_LEGACY_COMPLEXITY_COERCIONS``) are remapped to a
-    valid tier instead of being passed through unchanged.
+    Delegates to the shared ``coerce_complexity_tier`` (the single source of
+    truth for tier normalization, PR #3000) so that every retired tier —
+    trivial/medium/high/extra_high/discretion/self_healing — is remapped to
+    its canonical successor, not just ``medium``. Old rows persisted before
+    migration core_092 (or from the pre-bu-fev4q ``medium`` fallback bug) are
+    thus normalized instead of surfaced unchanged (bu-65nop: the frontend
+    dropdown has no legacy entries).
+
+    ``strict=False`` is used because this is a read path: missing/null values
+    default to ``workhorse`` and any unrecognized junk degrades to ``workhorse``
+    (with a logged warning) rather than raising — a list read must never crash
+    or surface an invalid tier to callers.
     """
-    if not value:
-        return _DEFAULT_COMPLEXITY_TIER
-    return _LEGACY_COMPLEXITY_COERCIONS.get(value, value)
+    return coerce_complexity_tier(value, strict=False).value
 
 
 def _row_value(row, key: str, default=None):

@@ -114,22 +114,44 @@ async def test_list_returns_paginated_structure(app):
     "stored,expected",
     [
         (None, "workhorse"),  # missing/null column defaults to workhorse, not medium
+        ("", "workhorse"),  # empty string treated as missing
+        # Every retired pre-core_092 tier normalizes to its canonical successor
+        # (bu-etpc3: previously only "medium" was remapped; the other five
+        # surfaced unnormalized). Contract shared with model_routing._DEPRECATED_TIER_MAP.
+        ("trivial", "cheap"),
         ("medium", "workhorse"),  # legacy invalid tier coerced on read (bu-fev4q/bu-65nop)
+        ("high", "reasoning"),
+        ("extra_high", "reasoning"),
+        ("discretion", "specialty"),
+        ("self_healing", "specialty"),
         ("reasoning", "reasoning"),  # valid tiers pass through unchanged
+        ("legacy", "legacy"),
+        # Unknown junk degrades to workhorse (read path never surfaces an
+        # invalid tier), matching coerce_complexity_tier(strict=False).
+        ("bogus-tier", "workhorse"),
     ],
 )
 def test_coerce_complexity(stored, expected):
     assert _coerce_complexity(stored) == expected
 
 
-async def test_list_coerces_legacy_medium_complexity(app):
-    _wire_db(app, fetch_rows=[_make_row(name="legacy", complexity="medium")])
+@pytest.mark.parametrize(
+    "stored,expected",
+    [
+        ("medium", "workhorse"),
+        ("high", "reasoning"),
+        ("self_healing", "specialty"),
+        ("bogus-tier", "workhorse"),
+    ],
+)
+async def test_list_coerces_legacy_complexity(app, stored, expected):
+    _wire_db(app, fetch_rows=[_make_row(name="legacy", complexity=stored)])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/butlers/atlas/schedules")
     assert resp.status_code == 200
-    assert resp.json()["data"][0]["complexity"] == "workhorse"
+    assert resp.json()["data"][0]["complexity"] == expected
 
 
 async def test_list_503_when_db_unavailable(app):
