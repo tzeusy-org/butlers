@@ -17,6 +17,29 @@ The Go bridge authenticates via a QR code pairing ceremony — the same mechanis
 uses when you link a new device. After pairing, the session is stored in PostgreSQL and
 survives restarts without re-pairing.
 
+### Bridge ownership (one authenticated session)
+
+WhatsApp permits only one active link per device slot. Two `whatsapp-bridge` processes
+authenticated against the same account race each other: the second login triggers a
+`StreamReplaced` and silently bumps the first offline (see §2.1.1). To guarantee a single
+session, ownership is explicit:
+
+- **The `connector-whatsapp-user` service is the sole owner** of the authenticated
+  `whatsapp-bridge` sidecar and the whatsmeow device session. It is the only process that
+  spawns a bridge subprocess. Its socket lives on the shared `wa_bridge_socket` Docker
+  volume at `/tmp/wa-bridge/bridge.sock`.
+- **The Messenger butler's `whatsapp` module is a client, not an owner.** Its
+  `whatsapp_send_message` / `whatsapp_reply_to_message` tools POST to the connector-owned
+  socket (resolved from `WHATSAPP_BRIDGE_SOCKET`, default `/tmp/wa-bridge/bridge.sock`),
+  exactly as the dashboard's pair/status endpoints do. The module never spawns its own
+  bridge, so flipping `send_enabled` to `true` cannot authenticate a second client.
+
+For this to work, every container that talks to the bridge (`connector-whatsapp-user`,
+`butlers-up`, `dashboard-api`) mounts the shared `wa_bridge_socket` volume and points
+`WHATSAPP_BRIDGE_SOCKET` at `/tmp/wa-bridge/bridge.sock`. If a send tool reports the bridge
+is *not reachable*, the connector service is down or the volume mount is missing; if it
+reports *not connected*, re-pair via the dashboard (§2.2).
+
 ---
 
 ## 1. QR Pairing Workflow

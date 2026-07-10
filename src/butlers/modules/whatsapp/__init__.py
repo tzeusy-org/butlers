@@ -1,4 +1,4 @@
-"""WhatsApp module — WhatsApp MCP tools via Go bridge sidecar.
+"""WhatsApp module — WhatsApp send/reply MCP tools over the connector-owned bridge.
 
 Uses a two-layer gating model:
 - ``send_tools`` (registration-time): controls whether send/reply tools are
@@ -8,20 +8,24 @@ Uses a two-layer gating model:
   execute. Default ``false`` so tools are present but refuse to execute until
   ban risk is assessed.
 
-Credentials are resolved exclusively from owner entity_info (DB-only).
-The Go bridge sidecar is managed via BridgeSubprocessManager.
+Bridge ownership (bu-0c69e): the ``connector-whatsapp-user`` process is the
+**sole owner** of the authenticated whatsapp-bridge sidecar and the whatsmeow
+device session. This module is a *client* of that bridge — its send/reply tools
+POST to the connector-owned Unix socket (shared via the ``wa_bridge_socket``
+Docker volume, default ``/tmp/wa-bridge/bridge.sock``), exactly as the dashboard
+API's pair/status endpoints do. It never spawns its own bridge subprocess, so
+enabling outbound delivery can never authenticate a second client against the
+same account (which would trigger WhatsApp's StreamReplaced and degrade ingress).
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
-from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from butlers.connectors.bridge_manager import BridgeConfig, BridgeSubprocessManager
-from butlers.credential_store import resolve_owner_entity_info
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
@@ -30,6 +34,17 @@ _SEND_DISABLED_ERROR = (
     "WhatsApp sending is disabled. Set modules.whatsapp.send_enabled=true in butler.toml "
     "to enable. WARNING: Sending via unofficial WhatsApp clients carries ban risk."
 )
+
+# Shared connector-owned bridge socket. The default matches the compose
+# ``wa_bridge_socket`` volume mount; ``WHATSAPP_BRIDGE_SOCKET`` overrides it (the
+# same env var the dashboard WhatsApp router reads — kept in lockstep so the two
+# client surfaces always target the one bridge the connector owns).
+_DEFAULT_BRIDGE_SOCKET = "/tmp/wa-bridge/bridge.sock"
+
+
+def _default_bridge_socket() -> str:
+    """Resolve the connector-owned bridge socket path from the environment."""
+    return os.environ.get("WHATSAPP_BRIDGE_SOCKET", _DEFAULT_BRIDGE_SOCKET)
 
 
 class WhatsAppUserCredentialScope(BaseModel):
@@ -51,7 +66,11 @@ class WhatsAppConfig(BaseModel):
     - ``send_enabled`` (bool, default ``false``) — controls whether registered
       send tools actually execute (runtime gate). Default ``false`` so the
       Messenger butler ships with tools present but functionally disabled.
-    - ``bridge_socket`` (str) — Unix socket path to the Go bridge sidecar.
+    - ``bridge_socket`` (str) — Unix socket path to the **connector-owned** Go
+      bridge sidecar. Defaults to ``WHATSAPP_BRIDGE_SOCKET`` (compose sets this
+      to the shared ``/tmp/wa-bridge/bridge.sock`` volume path). This module
+      does not spawn a bridge; it POSTs send/reply requests to the socket the
+      ``whatsapp_user_client`` connector already listens on.
 
     Setting ``send_enabled=true`` with ``send_tools=false`` is a configuration
     error raised at startup.
@@ -59,7 +78,7 @@ class WhatsAppConfig(BaseModel):
 
     send_tools: bool = False
     send_enabled: bool = False
-    bridge_socket: str = "/tmp/wa-bridge.sock"
+    bridge_socket: str = Field(default_factory=_default_bridge_socket)
     user: WhatsAppUserCredentialScope = Field(default_factory=WhatsAppUserCredentialScope)
     model_config = ConfigDict(extra="forbid")
 
@@ -74,21 +93,20 @@ class WhatsAppConfig(BaseModel):
 
 
 class WhatsAppModule(Module):
-    """WhatsApp module providing send/reply MCP tools via the Go bridge sidecar.
+    """WhatsApp module providing send/reply MCP tools over the connector's bridge.
 
     Uses a two-layer gating model: ``send_tools`` controls tool registration,
     ``send_enabled`` controls runtime execution.  Only the Messenger butler
     should set ``send_tools = true``.
 
-    The Go whatsapp-bridge binary is managed via BridgeSubprocessManager.
-    Session persistence is owned by the bridge (reads/writes whatsapp_sessions
-    table directly); the module does not own database tables.
+    This module does **not** own a whatsapp-bridge subprocess. The
+    ``whatsapp_user_client`` connector is the single owner of the authenticated
+    bridge and the whatsmeow session; this module's tools issue send/reply
+    requests to that connector-owned Unix socket. It owns no database tables.
     """
 
     def __init__(self) -> None:
         self._config: WhatsAppConfig = WhatsAppConfig()
-        self._bridge_manager: BridgeSubprocessManager | None = None
-        self._whatsapp_phone: str | None = None
 
     @property
     def name(self) -> str:
@@ -139,90 +157,68 @@ class WhatsAppModule(Module):
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
     ) -> None:
-        """Initialize module config, resolve credentials, start Go bridge.
+        """Parse configuration and record the connector-owned bridge socket.
 
-        Steps:
-        1. Parse and validate configuration.
-        2. Resolve ``whatsapp_phone`` from owner entity_info (log warning on miss).
-        3. Start the Go bridge sidecar via BridgeSubprocessManager.
-        4. Wait up to 30s for the bridge to become startup-ready.
-
-        Raises:
-            RuntimeError: If the whatsapp-bridge binary is not found in $PATH.
-            TimeoutError: If the bridge does not become startup-ready within 30s.
+        This module does not spawn or manage a whatsapp-bridge subprocess — the
+        ``whatsapp_user_client`` connector owns the single authenticated bridge
+        (bu-0c69e). Startup therefore performs no blocking bridge wait and never
+        authenticates a WhatsApp session; send/reply tools talk to the
+        connector-owned socket on demand.
         """
         self._config = (
             config if isinstance(config, WhatsAppConfig) else WhatsAppConfig(**(config or {}))
         )
-
-        # Resolve whatsapp_phone from owner entity_info (DB-only, no env fallback).
-        pool = getattr(db, "pool", None) if db is not None else None
-        if pool is not None:
-            phone = await resolve_owner_entity_info(pool, "whatsapp_phone")
-            if phone is not None:
-                self._whatsapp_phone = phone
-                logger.info("WhatsApp module: resolved owner phone %s", phone)
-            else:
-                logger.warning(
-                    "WhatsApp module: whatsapp_phone not found in owner entity_info; "
-                    "send/reply tools will return credential errors until configured"
-                )
-        else:
-            logger.debug("WhatsApp module: no DB pool available; skipping credential resolution")
-
-        # Build bridge config: pass DSN via env var to avoid leaking credentials
-        # in ps / /proc/<pid>/cmdline output.
-        bridge_env: dict[str, str] = {}
-        dsn = _get_db_dsn(db)
-        if dsn:
-            bridge_env["WA_BRIDGE_DSN"] = dsn
-
-        bridge_cfg = BridgeConfig(
-            binary="whatsapp-bridge",
-            args=["--listen", f"unix://{self._config.bridge_socket}"],
-            env=bridge_env,
-            bridge_socket=self._config.bridge_socket,
-            startup_timeout_s=30.0,
-            health_poll_interval_s=30.0,
-            startup_allow_degraded=True,
-        )
-        self._bridge_manager = BridgeSubprocessManager(bridge_cfg)
-
-        # BridgeSubprocessManager.start() raises RuntimeError for missing binary
-        # and TimeoutError if the bridge never becomes startup-ready.
-        await self._bridge_manager.start()
-        if self._bridge_manager.is_degraded:
-            logger.warning(
-                "WhatsApp module: bridge started in degraded mode (%s)",
-                self._bridge_manager.degraded_reason,
+        if self._config.send_tools:
+            logger.info(
+                "WhatsApp module: send tools registered; routing to connector-owned bridge at %s "
+                "(send_enabled=%s)",
+                self._config.bridge_socket,
+                self._config.send_enabled,
             )
-        else:
-            logger.info("WhatsApp module: bridge started and connected")
 
     async def on_shutdown(self) -> None:
-        """Gracefully shut down the Go bridge sidecar."""
-        if self._bridge_manager is not None:
-            await self._bridge_manager.stop()
-            self._bridge_manager = None
-            logger.info("WhatsApp module: bridge stopped")
+        """No-op: this module owns no bridge subprocess to tear down."""
+        return None
 
     # ------------------------------------------------------------------
     # Implementation helpers
     # ------------------------------------------------------------------
 
+    async def _check_bridge_ready(self) -> str | None:
+        """Probe the connector-owned bridge ``/status``.
+
+        Returns ``None`` when the bridge is reachable and its WhatsApp link is
+        live, or an actionable error string otherwise. The module holds no
+        BridgeSubprocessManager, so liveness is read from the connector's bridge
+        over the shared socket rather than from a locally-owned process.
+        """
+        from butlers.connectors.bridge_manager import _http_get_unix  # noqa: PLC0415
+
+        try:
+            status = await _http_get_unix(self._config.bridge_socket, "/status")
+        except Exception:
+            return (
+                f"WhatsApp bridge is not reachable at {self._config.bridge_socket}. "
+                "The whatsapp_user_client connector owns the bridge — ensure it is running "
+                "and the shared socket volume is mounted."
+            )
+
+        # connected/logged_in are the bridge's authoritative liveness fields
+        # (see docs/whatsapp-setup.md §2.1); state can lag a missed event.
+        linked = bool(status.get("connected")) and bool(status.get("logged_in"))
+        if not linked and status.get("state") != "connected":
+            state = status.get("state") or "unknown"
+            return (
+                f"WhatsApp bridge is not connected (state={state}). Re-pairing may be "
+                "required — open the dashboard WhatsApp settings."
+            )
+        return None
+
     async def _send_message(self, *, recipient: str, text: str) -> dict:
-        """POST /send to the Go bridge to deliver a WhatsApp message."""
-        if self._bridge_manager is None or not self._bridge_manager.is_running:
-            return {
-                "error": "WhatsApp bridge is not running. "
-                "Check bridge health and whatsapp_phone configuration."
-            }
-        if self._bridge_manager.is_degraded:
-            reason = self._bridge_manager.degraded_reason or "unknown"
-            return {
-                "error": f"WhatsApp bridge is in degraded mode: {reason}. "
-                "Re-pairing may be required."
-            }
+        """POST /send to the connector-owned bridge to deliver a WhatsApp message."""
+        error = await self._check_bridge_ready()
+        if error is not None:
+            return {"error": error}
 
         from butlers.connectors.bridge_manager import _http_post_unix_with_body  # noqa: PLC0415
 
@@ -235,18 +231,10 @@ class WhatsAppModule(Module):
         return result
 
     async def _reply_to_message(self, *, chat_jid: str, message_id: str, text: str) -> dict:
-        """POST /send with reply_to field to the Go bridge."""
-        if self._bridge_manager is None or not self._bridge_manager.is_running:
-            return {
-                "error": "WhatsApp bridge is not running. "
-                "Check bridge health and whatsapp_phone configuration."
-            }
-        if self._bridge_manager.is_degraded:
-            reason = self._bridge_manager.degraded_reason or "unknown"
-            return {
-                "error": f"WhatsApp bridge is in degraded mode: {reason}. "
-                "Re-pairing may be required."
-            }
+        """POST /send with reply_to field to the connector-owned bridge."""
+        error = await self._check_bridge_ready()
+        if error is not None:
+            return {"error": error}
 
         from butlers.connectors.bridge_manager import _http_post_unix_with_body  # noqa: PLC0415
 
@@ -257,34 +245,3 @@ class WhatsAppModule(Module):
             logger.error("WhatsApp reply failed: %s", type(exc).__name__)
             return {"error": "WhatsApp reply failed — check bridge health and configuration"}
         return result
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _get_db_dsn(db: Any) -> str | None:
-    """Extract the PostgreSQL DSN from the butler DB object, if available."""
-    if db is None:
-        return None
-    # Try common attribute patterns used by butler DB objects.
-    for attr in ("dsn", "db_dsn", "_dsn"):
-        val = getattr(db, attr, None)
-        if isinstance(val, str) and val:
-            return val
-
-    host = getattr(db, "host", None)
-    port = getattr(db, "port", None)
-    user = getattr(db, "user", None)
-    password = getattr(db, "password", None)
-    db_name = getattr(db, "db_name", None)
-    if not all(isinstance(val, str) and val for val in (host, user, password, db_name)):
-        return None
-    if not isinstance(port, int):
-        return None
-
-    return (
-        f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}"
-        f"@{host}:{port}/{quote(db_name, safe='')}"
-    )

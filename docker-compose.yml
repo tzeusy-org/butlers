@@ -566,9 +566,15 @@ services:
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
+      # The Messenger butler's whatsapp module sends over the bridge the
+      # connector-whatsapp-user service owns (bu-0c69e) — it never spawns its
+      # own. Point it at the shared wa_bridge_socket volume, matching the
+      # connector's WA_BRIDGE_SOCKET, so only one authenticated session exists.
+      WHATSAPP_BRIDGE_SOCKET: /tmp/wa-bridge/bridge.sock
     volumes:
       - ./roster:/app/roster:ro
       - ./logs:/app/logs
+      - wa_bridge_socket:/tmp/wa-bridge
       - runtime_claude:/root/.claude
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
