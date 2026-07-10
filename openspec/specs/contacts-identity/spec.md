@@ -17,35 +17,15 @@ The `entity-identity` and `relationship-facts` specs are the authoritative
 contracts for the live identity model. The table-centric requirements this spec
 formerly carried were archived by the `retire-contacts-table-specs` change (per
 owner decision on bead bu-qtsy4: archive, do not rewrite); their `Migration`
-notes in that change point at the authoritative replacements. Three requirements
-survive here because they are not table-centric: the module tool-naming contract
-("I/O model removal"), the owner-identity secret-key rename contract ("Secret key
-renames"), and the live entity-graph contact-search endpoint ("[TARGET-STATE]
-Contact search endpoint for typeahead", `GET /api/contacts/search`, implemented
-in `src/butlers/api/routers/contacts.py`).
+notes in that change point at the authoritative replacements. Two requirements
+survive here because they are not table-centric: the owner-identity secret-key
+rename contract ("Secret key renames") and the live entity-graph contact-search
+endpoint ("[TARGET-STATE] Contact search endpoint for typeahead", `GET
+/api/contacts/search`, implemented in `src/butlers/api/routers/contacts.py`). The
+module tool-naming contract that formerly lived here ("I/O model removal") was
+relocated to the `core-modules` spec ("Module Tool Naming Convention"), which is
+its proper owner.
 ## Requirements
-### Requirement: I/O model removal
-
-The `user_*/bot_*` tool naming convention, `ToolIODescriptor` dataclass, and all four `Module` ABC methods (`user_inputs`, `user_outputs`, `bot_inputs`, `bot_outputs`) SHALL be removed. Tool names SHALL revert to plain `<channel>_<action>` format (e.g., `telegram_send_message`, `email_send_message`). The `_validate_tool_name()`, `_validate_module_io_descriptors()`, `_is_user_send_or_reply_tool()`, `_with_default_gated_user_outputs()`, `_CHANNEL_EGRESS_ACTIONS`, and `ModuleToolValidationError` SHALL be removed from the daemon.
-
-#### Scenario: Tool registered with plain name
-
-- **WHEN** the Telegram module registers a send tool
-- **THEN** the tool MUST be named `telegram_send_message` (not `user_telegram_send_message` or `bot_telegram_send_message`)
-
-#### Scenario: Module ABC no longer requires descriptor methods
-
-- **WHEN** a module class implements the `Module` ABC
-- **THEN** it MUST NOT be required to implement `user_inputs()`, `user_outputs()`, `bot_inputs()`, or `bot_outputs()`
-
-#### Scenario: Legacy tool names rejected
-
-- **WHEN** a tool call uses a legacy `user_*` or `bot_*` prefixed name
-- **THEN** the daemon MUST log a warning with the legacy name and the new name
-- **AND** the call MUST fail with an error indicating the tool name has changed
-
----
-
 ### Requirement: Secret key renames
 
 Owner-identity secret keys SHALL be renamed for consistency. The following renames MUST be applied:

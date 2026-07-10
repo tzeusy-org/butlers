@@ -2,11 +2,9 @@
 
 ## Purpose
 Defines the pluggable module architecture for butlers: the Module abstract base class, automatic discovery and registration, topological dependency resolution, Pydantic config schema validation, tool registration, migration chains, and runtime enable/disable state management.
-
 ## Requirements
-
 ### Requirement: Module Abstract Base Class
-Every pluggable module must subclass `Module` (from `butlers.modules.base`) and implement all abstract members: `name` (property), `config_schema` (property returning Pydantic BaseModel class), `dependencies` (property returning list of module names), `register_tools(mcp, config, db, butler_name)`, `migration_revisions()` (returns Alembic branch label or None), `on_startup(config, db, credential_store)`, and `on_shutdown()`.
+Every pluggable module MUST subclass `Module` (from `butlers.modules.base`) and implement all abstract members: `name` (property), `config_schema` (property returning Pydantic BaseModel class), `dependencies` (property returning list of module names), `register_tools(mcp, config, db, butler_name)`, `migration_revisions()` (returns Alembic branch label or None), `on_startup(config, db, credential_store)`, and `on_shutdown()`.
 
 The `butler_name` parameter is the canonical butler identity string, passed by the daemon from its loaded configuration. Modules MUST NOT derive butler identity from database attributes (`db.schema`, `db.db_name`, or similar). Modules that need identity for tool logic MUST store it from this parameter.
 
@@ -34,7 +32,7 @@ The `butler_name` parameter is the canonical butler identity string, passed by t
 - **AND** it MUST NOT read `db.schema`, `db.db_name`, or any other database attribute for identity resolution
 
 ### Requirement: Tool Metadata for Approvals
-Modules may override `tool_metadata()` to return `dict[str, ToolMeta]` mapping tool names to `ToolMeta(arg_sensitivities)` instances. This declares which tool arguments are safety-critical for the approvals subsystem.
+Modules MAY override `tool_metadata()` to return `dict[str, ToolMeta]` mapping tool names to `ToolMeta(arg_sensitivities)` instances. When overridden, the returned mapping SHALL declare which tool arguments are safety-critical for the approvals subsystem.
 
 #### Scenario: Module declares sensitive arguments
 - **WHEN** a module returns `{"my_tool": ToolMeta(arg_sensitivities={"password": True})}` from `tool_metadata()`
@@ -58,7 +56,7 @@ The optional `wire_runtime()` method on modules that need runtime dependencies (
 - **THEN** the module already has its identity and can use it in runtime wiring logic
 
 ### Requirement: Module Registry with Auto-Discovery
-The `ModuleRegistry` discovers all concrete `Module` subclasses by walking the `butlers.modules` package tree via `pkgutil.walk_packages()`. Modules are registered by class, then instantiated when a butler's configuration is loaded.
+The `ModuleRegistry` SHALL discover all concrete `Module` subclasses by walking the `butlers.modules` package tree via `pkgutil.walk_packages()`. Modules SHALL be registered by class, then instantiated when a butler's configuration is loaded.
 
 #### Scenario: Built-in modules discovered
 - **WHEN** `default_registry()` is called
@@ -70,7 +68,7 @@ The `ModuleRegistry` discovers all concrete `Module` subclasses by walking the `
 - **THEN** a `ValueError` is raised
 
 ### Requirement: Dependency Resolution via Topological Sort
-Module loading orders modules by their declared `dependencies` using Kahn's algorithm (in-degree counting). The sort is deterministic: zero-degree nodes are processed in sorted (alphabetical) order within each batch.
+Module loading SHALL order modules by their declared `dependencies` using Kahn's algorithm (in-degree counting). The sort SHALL be deterministic: zero-degree nodes are processed in sorted (alphabetical) order within each batch.
 
 #### Scenario: Dependencies ordered correctly
 - **WHEN** module A depends on module B
@@ -85,14 +83,14 @@ Module loading orders modules by their declared `dependencies` using Kahn's algo
 - **THEN** `load_from_config()` raises `ValueError` stating C is not in the enabled module set
 
 ### Requirement: Unknown Module Names Block Startup
-When `modules_config` references a module name that is not registered in the registry, startup fails with a `ValueError`.
+When `modules_config` references a module name that is not registered in the registry, startup SHALL fail with a `ValueError`.
 
 #### Scenario: Unknown module name
 - **WHEN** `load_from_config({"nonexistent": {}})` is called
 - **THEN** a `ValueError` is raised: `"Unknown module: 'nonexistent'"`
 
 ### Requirement: Config Schema Validation
-Each module's `config_schema` is a Pydantic BaseModel class. The daemon validates module configuration against this schema at startup. Invalid configuration produces a `ModuleConfigError` with structured validation details.
+Each module's `config_schema` is a Pydantic BaseModel class. The daemon SHALL validate module configuration against this schema at startup. Invalid configuration SHALL produce a `ModuleConfigError` with structured validation details.
 
 #### Scenario: Valid module config
 - **WHEN** a module's configuration matches its `config_schema`
@@ -103,7 +101,7 @@ Each module's `config_schema` is a Pydantic BaseModel class. The daemon validate
 - **THEN** Pydantic `ValidationError` is caught and reported as a startup error for that module
 
 ### Requirement: Module Migration Chains
-Modules with persistent data provide an Alembic branch label via `migration_revisions()`. Migration chains are run at daemon startup after core migrations. Chains must be deterministic and conflict-free.
+Modules with persistent data SHALL provide an Alembic branch label via `migration_revisions()`. Migration chains are run at daemon startup after core migrations. Chains MUST be deterministic and conflict-free.
 
 #### Scenario: Module with migrations
 - **WHEN** a module returns a non-None Alembic branch label from `migration_revisions()`
@@ -114,7 +112,7 @@ Modules with persistent data provide an Alembic branch label via `migration_revi
 - **THEN** no module-specific migrations are run
 
 ### Requirement: Module Startup and Shutdown Hooks
-Module `on_startup(config, db, credential_store)` is called in topological order after migrations. Module `on_shutdown()` is called in reverse topological order during daemon shutdown.
+Module `on_startup(config, db, credential_store)` SHALL be called in topological order after migrations. Module `on_shutdown()` SHALL be called in reverse topological order during daemon shutdown.
 
 #### Scenario: Startup in dependency order
 - **WHEN** multiple modules are loaded
@@ -125,7 +123,7 @@ Module `on_startup(config, db, credential_store)` is called in topological order
 - **THEN** `on_shutdown()` is called for each module in reverse topological order
 
 ### Requirement: Load-All Module Loading
-The `load_all()` method instantiates ALL registered modules regardless of `butler.toml` config presence. Modules listed in config receive their explicit config dict; unconfigured modules receive `{}`. This enables runtime enable/disable management independent of static config.
+The `load_all()` method SHALL instantiate ALL registered modules regardless of `butler.toml` config presence. Modules listed in config receive their explicit config dict; unconfigured modules receive `{}`. This enables runtime enable/disable management independent of static config.
 
 #### Scenario: Unconfigured module loaded with empty config
 - **WHEN** `load_all(modules_config)` is called and a registered module is not in `modules_config`
@@ -133,7 +131,7 @@ The `load_all()` method instantiates ALL registered modules regardless of `butle
 
 ### Requirement: Tool Group Filtering
 
-Modules MAY partition their tools into named groups. When a butler's `butler.toml` specifies `groups = [...]` under a module section, only tools belonging to listed groups are registered. When `groups` is absent or empty, all groups are enabled (backwards compatible — existing configs are unaffected).
+Modules MAY partition their tools into named groups. When a butler's `butler.toml` specifies `groups = [...]` under a module section, only tools belonging to listed groups SHALL be registered. When `groups` is absent or empty, all groups are enabled (backwards compatible — existing configs are unaffected).
 
 #### Contract: ToolGroupMixin
 
@@ -205,7 +203,7 @@ groups = ["core"]
 ```
 
 ### Requirement: Channel Egress Ownership Enforcement
-Non-messenger butlers are prohibited from registering channel egress tools (matching `<channel>_(send_message|reply_to_message|send_email|reply_to_thread)`). A `ChannelEgressOwnershipError` is raised if a non-messenger butler attempts this.
+Non-messenger butlers SHALL NOT register channel egress tools (matching `<channel>_(send_message|reply_to_message|send_email|reply_to_thread)`). A `ChannelEgressOwnershipError` SHALL be raised if a non-messenger butler attempts this.
 
 #### Scenario: Non-messenger egress tool rejected
 - **WHEN** a non-messenger butler's module registers a tool matching the channel egress pattern (e.g., `telegram_send_message`, `email_send_message`)
@@ -232,3 +230,15 @@ This rule is cross-cutting: it applies to every MCP tool in every module. It est
 - **WHEN** a tool raises per this requirement
 - **THEN** the runtime adapter SHALL surface the exception as a failed tool call in the session's event stream (not as a silent empty result)
 - **AND** the spawner's degenerate-loop detector SHALL still treat identical failing calls as identical for loop-detection purposes
+
+### Requirement: Module Tool Naming Convention
+Module MCP tool names SHALL use the plain `<channel>_<action>` format (e.g. `telegram_send_message`, `email_send_message`). No `user_*` / `bot_*` prefix convention applies: the daemon SHALL NOT wrap module tools in a per-audience (user vs. bot) I/O model. Accordingly, the `Module` ABC SHALL NOT define `user_inputs()`, `user_outputs()`, `bot_inputs()`, or `bot_outputs()` descriptor methods, and the daemon SHALL NOT carry a tool-I/O validation layer — the `ToolIODescriptor` dataclass, `_validate_tool_name()`, `_validate_module_io_descriptors()`, `_is_user_send_or_reply_tool()`, `_with_default_gated_user_outputs()`, `_CHANNEL_EGRESS_ACTIONS`, and `ModuleToolValidationError` are absent and SHALL NOT be reintroduced.
+
+#### Scenario: Tool registered with plain name
+- **WHEN** the Telegram module registers a send tool
+- **THEN** the tool MUST be named `telegram_send_message` (not `user_telegram_send_message` or `bot_telegram_send_message`)
+
+#### Scenario: Module ABC does not require descriptor methods
+- **WHEN** a module class implements the `Module` ABC
+- **THEN** it MUST NOT be required to implement `user_inputs()`, `user_outputs()`, `bot_inputs()`, or `bot_outputs()`
+
