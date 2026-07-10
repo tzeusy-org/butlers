@@ -31,6 +31,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Time } from "@/components/ui/time";
+import { useTimezone } from "@/components/ui/timezone-context";
+import { classifyReviewBucket, type ReviewBucket } from "@/lib/review-buckets";
 import {
   useMindMaps,
   useAllPendingReviews,
@@ -369,11 +371,17 @@ interface TimelineGroup {
   entries: ReviewEntry[];
 }
 
-function groupByTimePeriod(entries: ReviewEntry[], now: Date): TimelineGroup[] {
-  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-  // weekEnd: strictly 7 days from now.
-  const weekEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+// Bucket order for this surface. `weekEnd` keeps its "strictly 7 days from now"
+// semantics via the `"now"` week anchor; the Today/This-week boundaries now come
+// from owner-tz midnight via classifyReviewBucket — see lib/review-buckets.ts.
+const BUCKET_INDEX: Record<ReviewBucket, number> = {
+  overdue: 0,
+  today: 1,
+  "this-week": 2,
+  later: 3,
+};
 
+function groupByTimePeriod(entries: ReviewEntry[], now: Date, tz: string): TimelineGroup[] {
   const groups: TimelineGroup[] = [
     { label: "Overdue", testId: "reviews-overdue-section", borderClass: "border-l-4 border-l-red-500", entries: [] },
     { label: "Today", testId: "reviews-today-section", borderClass: "border-l-4 border-l-amber-500", entries: [] },
@@ -382,16 +390,8 @@ function groupByTimePeriod(entries: ReviewEntry[], now: Date): TimelineGroup[] {
   ];
 
   for (const entry of entries) {
-    const reviewDate = new Date(entry.next_review_at);
-    if (reviewDate < now) {
-      groups[0].entries.push(entry);
-    } else if (reviewDate <= todayEnd) {
-      groups[1].entries.push(entry);
-    } else if (reviewDate <= weekEnd) {
-      groups[2].entries.push(entry);
-    } else {
-      groups[3].entries.push(entry);
-    }
+    const bucket = classifyReviewBucket(entry.next_review_at, now, tz, "now");
+    groups[BUCKET_INDEX[bucket]].entries.push(entry);
   }
 
   return groups;
@@ -406,7 +406,10 @@ function ReviewTimelinePanel({
   isLoading: boolean;
   now: Date;
 }) {
-  const groups = groupByTimePeriod(entries, now);
+  // Owner-configured timezone anchors the Today / This-week boundaries so
+  // bucketing is host-timezone independent (bu-fhsph).
+  const tz = useTimezone();
+  const groups = groupByTimePeriod(entries, now, tz);
   const hasAny = groups.some((g) => g.entries.length > 0);
 
   return (

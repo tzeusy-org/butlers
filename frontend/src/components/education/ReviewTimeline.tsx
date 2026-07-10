@@ -2,6 +2,8 @@ import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useAllPendingReviews, useMindMaps } from "@/hooks/use-education";
+import { useTimezone } from "@/components/ui/timezone-context";
+import { classifyReviewBucket, type ReviewBucket } from "@/lib/review-buckets";
 import type { PendingReviewNode } from "@/api/index.ts";
 
 interface ReviewEntry extends PendingReviewNode {
@@ -9,11 +11,17 @@ interface ReviewEntry extends PendingReviewNode {
   mind_map_id: string;
 }
 
-function groupByTimePeriod(entries: ReviewEntry[]) {
-  const now = new Date();
-  const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
-  const weekEnd = new Date(todayEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+// Bucket order for this surface. `weekEnd` is anchored to end-of-today (the
+// prior `todayEnd + 7d` semantics), and the Today/This-week boundaries now come
+// from owner-tz midnight via classifyReviewBucket — see lib/review-buckets.ts.
+const BUCKET_INDEX: Record<ReviewBucket, number> = {
+  overdue: 0,
+  today: 1,
+  "this-week": 2,
+  later: 3,
+};
 
+function groupByTimePeriod(entries: ReviewEntry[], now: Date, tz: string) {
   const groups: { label: string; entries: ReviewEntry[]; borderClass: string }[] = [
     { label: "Overdue", entries: [], borderClass: "border-l-red-500" },
     { label: "Today", entries: [], borderClass: "border-l-amber-500" },
@@ -22,16 +30,8 @@ function groupByTimePeriod(entries: ReviewEntry[]) {
   ];
 
   for (const entry of entries) {
-    const reviewDate = new Date(entry.next_review_at);
-    if (reviewDate < now) {
-      groups[0].entries.push(entry);
-    } else if (reviewDate <= todayEnd) {
-      groups[1].entries.push(entry);
-    } else if (reviewDate <= weekEnd) {
-      groups[2].entries.push(entry);
-    } else {
-      groups[3].entries.push(entry);
-    }
+    const bucket = classifyReviewBucket(entry.next_review_at, now, tz, "end-of-today");
+    groups[BUCKET_INDEX[bucket]].entries.push(entry);
   }
 
   return groups.filter((g) => g.entries.length > 0);
@@ -74,6 +74,10 @@ export default function ReviewTimeline() {
   // React's rules of hooks — no arbitrary cap, no map silently dropped.
   const reviewResults = useAllPendingReviews(mapIds);
 
+  // Owner-configured timezone anchors the Today / This-week boundaries so
+  // bucketing is host-timezone independent (bu-fhsph).
+  const tz = useTimezone();
+
   const allEntries = useMemo(() => {
     const entries: ReviewEntry[] = [];
     for (let i = 0; i < mindMaps.length; i++) {
@@ -93,7 +97,10 @@ export default function ReviewTimeline() {
     return entries;
   }, [mindMaps, reviewResults]);
 
-  const groups = useMemo(() => groupByTimePeriod(allEntries), [allEntries]);
+  const groups = useMemo(
+    () => groupByTimePeriod(allEntries, new Date(), tz),
+    [allEntries, tz],
+  );
 
   if (allEntries.length === 0) {
     return (

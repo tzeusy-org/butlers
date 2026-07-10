@@ -27,6 +27,7 @@ import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ButlerEducationReviewsTab from "./ButlerEducationReviewsTab";
+import { AppTimezoneProvider } from "@/components/ui/timezone-context";
 
 // ---------------------------------------------------------------------------
 // Mock education hooks
@@ -170,12 +171,17 @@ function makeQueryClient() {
 }
 
 function renderTab() {
+  // Pin the owner timezone to UTC so the host-local (TZ=UTC) fixtures above —
+  // e.g. the "23:59:59 today → Today bucket" review — keep their intended
+  // bucket. Owner-tz-varying bucketing is covered in lib/review-buckets.test.ts.
   return render(
-    <QueryClientProvider client={makeQueryClient()}>
-      <MemoryRouter>
-        <ButlerEducationReviewsTab />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <AppTimezoneProvider timezone="UTC">
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter>
+          <ButlerEducationReviewsTab />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </AppTimezoneProvider>,
   );
 }
 

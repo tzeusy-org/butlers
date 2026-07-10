@@ -13,7 +13,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 
 import ReviewTimeline from "./ReviewTimeline";
+import { AppTimezoneProvider } from "@/components/ui/timezone-context";
 import type { MindMap, PendingReviewNode } from "@/api/index.ts";
+
+/**
+ * Render with the owner timezone pinned to UTC so the host-local (TZ=UTC)
+ * relative fixtures below keep their intended buckets. Owner-tz-varying
+ * bucketing is covered in lib/review-buckets.test.ts.
+ */
+function renderTimeline() {
+  return render(
+    <AppTimezoneProvider timezone="UTC">
+      <ReviewTimeline />
+    </AppTimezoneProvider>,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Mock education hooks
@@ -107,7 +121,7 @@ describe("ReviewTimeline — renders all active mind maps", () => {
     );
     mockReviewsPerMap(maps);
 
-    render(<ReviewTimeline />);
+    renderTimeline();
 
     // Every one of the 7 maps must contribute its review — including maps 5 & 6,
     // which the old map0..map4 / Math.min(...,5) cap silently dropped.
@@ -123,7 +137,7 @@ describe("ReviewTimeline — renders all active mind maps", () => {
     );
     mockReviewsPerMap(maps);
 
-    render(<ReviewTimeline />);
+    renderTimeline();
 
     expect(mockUseAllPendingReviews).toHaveBeenCalledWith(
       maps.map((m) => m.id),
@@ -134,7 +148,7 @@ describe("ReviewTimeline — renders all active mind maps", () => {
     const maps = [makeMap("map-a", "Alpha"), makeMap("map-b", "Beta")];
     mockReviewsPerMap(maps);
 
-    render(<ReviewTimeline />);
+    renderTimeline();
 
     expect(screen.getByText("Review for map-a")).toBeTruthy();
     expect(screen.getByText("Review for map-b")).toBeTruthy();
@@ -153,7 +167,7 @@ describe("ReviewTimeline — renders all active mind maps", () => {
       ),
     );
 
-    render(<ReviewTimeline />);
+    renderTimeline();
 
     expect(screen.getByText(/no reviews scheduled/i)).toBeTruthy();
   });
@@ -182,7 +196,7 @@ describe("ReviewTimeline — mastery badge", () => {
       ),
     );
 
-    render(<ReviewTimeline />);
+    renderTimeline();
 
     // 0.37 * 100 rounded, never the fabricated 50%.
     expect(screen.getByText("37%")).toBeTruthy();
@@ -208,7 +222,7 @@ describe("ReviewTimeline — mastery badge", () => {
       ),
     );
 
-    render(<ReviewTimeline />);
+    renderTimeline();
 
     expect(screen.queryByText(/%/)).toBeNull();
     expect(screen.getByText("learning")).toBeTruthy();
