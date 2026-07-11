@@ -89,6 +89,11 @@ interface BreakdownData {
   // MCP fallback for this dimension, so an empty breakdown must never be read as
   // "genuinely no purpose-tagged spend this month" (see SourceDegradedNote below).
   source_error?: boolean
+  // Set on the butler/model/feature dimensions (bu-jad4j.3): butlers whose cost
+  // source failed and were dropped from the per-butler fan-out. When non-empty the
+  // breakdown undercounts, so an empty result must not read as a genuine "$0 month"
+  // and a populated result must footnote the missing butlers.
+  unavailable_butlers?: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -601,6 +606,12 @@ function BreakdownSection() {
   }, [data])
   const maxValue = entries[0]?.[1] ?? 0
   const sourceError = by === "purpose" && data?.data?.source_error === true
+  // butler/model/feature dimensions name any butler dropped from the fan-out in
+  // `unavailable_butlers` (purpose uses `source_error` above instead). When
+  // non-empty the breakdown undercounts, so an empty result is an outage — not a
+  // genuine "$0 month" — and a populated one must footnote the missing butlers
+  // (bu-jad4j.3).
+  const unavailableButlers = by === "purpose" ? [] : (data?.data?.unavailable_butlers ?? [])
 
   return (
     <section className="border border-border">
@@ -639,6 +650,15 @@ function BreakdownSection() {
           />
         ) : sourceError ? (
           <SourceDegradedNote label="Purpose breakdown" detail="spend source unavailable" />
+        ) : entries.length === 0 && unavailableButlers.length > 0 ? (
+          // Empty because butlers dropped out of the fan-out, not a genuine $0
+          // month — name them rather than the calm "nothing recorded" line
+          // (bu-jad4j.3).
+          <SourceDegradedNote
+            label="Spend breakdown"
+            detail={`no data, cost source unavailable: ${unavailableButlers.join(", ")}`}
+            testId="breakdown-unavailable"
+          />
         ) : entries.length === 0 ? (
           <p className="font-serif italic text-muted-foreground text-sm">
             No spend has been recorded yet.
@@ -654,6 +674,14 @@ function BreakdownSection() {
                 href={by === "butler" ? `/butlers/${label}?tab=spend` : undefined}
               />
             ))}
+            {unavailableButlers.length > 0 && (
+              // Populated but partial: some butlers are absent from the bars.
+              <SourceDegradedNote
+                label="Spend breakdown"
+                detail={`excluded, cost source unavailable: ${unavailableButlers.join(", ")}`}
+                testId="breakdown-unavailable"
+              />
+            )}
           </div>
         )}
       </div>
@@ -670,6 +698,11 @@ function BreakdownSection() {
 function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
   const { data, isLoading, isError } = useTopSessions(10, from, to)
   const sessions = data?.data ?? []
+  // Butlers dropped from the top-sessions fan-out (meta.unavailable_butlers).
+  // When non-empty the ranking omits their sessions, so an empty table is an
+  // outage — not "genuinely no expensive sessions" — and a populated one must
+  // footnote the missing butlers (bu-jad4j.3).
+  const unavailableButlers = data?.meta?.unavailable_butlers ?? []
 
   return (
     <section className="border border-border" data-testid="top-sessions-section">
@@ -689,12 +722,20 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
           </div>
         ) : isError ? (
           <p className="text-sm text-muted-foreground">Failed to load top sessions.</p>
+        ) : sessions.length === 0 && unavailableButlers.length > 0 ? (
+          // Empty because butlers dropped out of the fan-out, not a genuine
+          // absence of expensive sessions — name them (bu-jad4j.3).
+          <SourceDegradedNote
+            label="Top sessions"
+            detail={`no data, cost source unavailable: ${unavailableButlers.join(", ")}`}
+            testId="top-sessions-unavailable"
+          />
         ) : sessions.length === 0 ? (
           <p className="font-serif italic text-muted-foreground text-sm">
             No session data available.
           </p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto flex flex-col gap-3">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
@@ -734,6 +775,15 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
                 ))}
               </tbody>
             </table>
+            {unavailableButlers.length > 0 && (
+              // Populated but partial: some butlers' sessions are absent from
+              // the ranking.
+              <SourceDegradedNote
+                label="Top sessions"
+                detail={`excluded, cost source unavailable: ${unavailableButlers.join(", ")}`}
+                testId="top-sessions-unavailable"
+              />
+            )}
           </div>
         )}
       </div>
@@ -1396,6 +1446,9 @@ export default function SpendPage() {
     refetchInterval: timeWindow.pollingDisabled ? false : 60_000,
   })
   const dailyData = useMemo(() => dailyResponse?.data ?? [], [dailyResponse])
+  // Butlers dropped from GET /api/spend/daily's fan-out — passed to the stacked
+  // chart so vanished butlers are footnoted, not silently absent (bu-jad4j.3).
+  const dailyUnavailableButlers = dailyResponse?.meta?.unavailable_butlers ?? []
 
   // Movers — current window vs the immediately preceding window of equal
   // length (e.g. "last 7 days" vs "the 7 days before that").
@@ -1533,7 +1586,12 @@ export default function SpendPage() {
             <TimeWindowPicker window={timeWindow} />
           </div>
           <div className="p-4">
-            <CostStripeChart data={dailyData} isLoading={dailyLoading} isError={dailyError} />
+            <CostStripeChart
+              data={dailyData}
+              isLoading={dailyLoading}
+              isError={dailyError}
+              unavailableButlers={dailyUnavailableButlers}
+            />
           </div>
         </section>
 

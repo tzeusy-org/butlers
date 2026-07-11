@@ -652,6 +652,26 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 - **AND** per-model token counts from each butler are converted to USD using the pricing config
 - **AND** results are merged across butlers (e.g., daily spend is aggregated by date)
 
+#### Scenario: Spend fan-out names genuinely-failed butlers without failing the request
+- **WHEN** `GET /api/spend/daily`, `GET /api/spend/top-sessions`, or
+  `GET /api/spend/breakdown?by=butler|model|feature` fans out and a butler's
+  cost source fails (a genuine error, not a butler that legitimately has no
+  spend)
+- **THEN** the endpoint still returns HTTP 200 with the merged results from the
+  butlers that answered
+- **AND** the response names the dropped butlers (following the fleet-wide
+  degraded-envelope convention): `meta.unavailable_butlers: string[]` on
+  `/daily` and `/top-sessions`, and the payload's `data.unavailable_butlers`
+  key on `/breakdown`; the field is absent or empty when every butler answered
+- **AND** the frontend spend page SHALL NOT render the (undercounting) series,
+  ranking, or breakdown as complete — the stacked daily chart, Top Sessions
+  table, and breakdown bars each render a `SourceDegradedNote` naming the
+  dropped butlers inline, and an outage that empties any of these surfaces
+  names the failed source rather than falling through to a calm "No spend has
+  been recorded yet" / "No cost data" / "No session data available" empty state
+- **AND** a genuinely-empty-but-healthy fan-out (no unavailable butlers, zero
+  rows) keeps its honest empty state
+
 ### Requirement: Audit Log
 `src/butlers/api/routers/audit.py` SHALL query the switchboard butler's `dashboard_audit_log` table and provide a `log_audit_entry()` helper for other routers to record write operations.
 

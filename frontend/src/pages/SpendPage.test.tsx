@@ -62,8 +62,16 @@ vi.mock("sonner", () => ({
 // CostStripeChart.test.tsx. Here we only assert SpendPage wires the real
 // daily series into it.
 vi.mock("@/components/costs/CostStripeChart", () => ({
-  CostStripeChart: (props: { data: Array<{ date: string; by_butler?: Record<string, number> }> }) => (
-    <div data-testid="cost-stripe-chart-mock">{JSON.stringify(props.data)}</div>
+  CostStripeChart: (props: {
+    data: Array<{ date: string; by_butler?: Record<string, number> }>
+    unavailableButlers?: readonly string[]
+  }) => (
+    <div
+      data-testid="cost-stripe-chart-mock"
+      data-unavailable={JSON.stringify(props.unavailableButlers ?? [])}
+    >
+      {JSON.stringify(props.data)}
+    </div>
   ),
 }))
 
@@ -450,6 +458,36 @@ describe("SpendPage — what changed", () => {
     expect(chart.textContent).toContain("memory")
   })
 
+  it("wires daily meta.unavailable_butlers into the stacked chart (bu-jad4j.3)", async () => {
+    // A failed butler is dropped from GET /api/spend/daily's fan-out; the page
+    // must forward meta.unavailable_butlers so the chart can footnote it rather
+    // than let it silently vanish. (The footnote render itself is covered by
+    // CostStripeChart.test.tsx.)
+    setHooks()
+    mockUseDailySpend.mockReturnValue({
+      data: { data: DAILY_DATA, meta: { unavailable_butlers: ["finance"] } },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const chart = await screen.findByTestId("cost-stripe-chart-mock")
+    expect(JSON.parse(chart.getAttribute("data-unavailable") ?? "[]")).toEqual(["finance"])
+  })
+
+  it("passes no unavailable butlers to the chart on the happy path (bu-jad4j.3)", async () => {
+    // Mutation guard: the wiring must reflect the flag. An all-clear daily
+    // response forwards an empty list.
+    setHooks()
+    await act(async () => {
+      renderPage()
+    })
+    const chart = await screen.findByTestId("cost-stripe-chart-mock")
+    expect(JSON.parse(chart.getAttribute("data-unavailable") ?? "[]")).toEqual([])
+  })
+
   it("ranks movers by delta vs the prior window, marking new butlers honestly", async () => {
     setHooks({
       currentByButler: { general: 1.0, memory: 0.5 },
@@ -554,6 +592,71 @@ describe("SpendPage — spend breakdown", () => {
     expect(await screen.findByText("classification")).toBeTruthy()
   })
 
+  it("gates the empty state when butlers drop out of the butler breakdown fan-out (bu-jad4j.3)", async () => {
+    // An empty breakdown WITH unavailable_butlers is an outage, not a genuine
+    // "$0 month" — it must name the missing butlers, never the calm "No spend
+    // has been recorded yet." line.
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path.startsWith("/spend/breakdown")) {
+        return Promise.resolve({
+          data: { by: "butler", breakdown: {}, unavailable_butlers: ["finance", "home"] },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    const note = await screen.findByTestId("breakdown-unavailable")
+    expect(note.getAttribute("role")).toBe("alert")
+    expect(note.textContent).toContain("finance, home")
+    expect(screen.queryByText("No spend has been recorded yet.")).toBeNull()
+  })
+
+  it("footnotes dropped butlers alongside a populated butler breakdown (bu-jad4j.3)", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path.startsWith("/spend/breakdown")) {
+        return Promise.resolve({
+          data: { by: "butler", breakdown: { inbox: 1.5 }, unavailable_butlers: ["finance"] },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    expect(await screen.findByText("inbox")).toBeTruthy()
+    const note = await screen.findByTestId("breakdown-unavailable")
+    expect(note.textContent).toContain("finance")
+  })
+
+  it("keeps the honest empty state when the breakdown is genuinely empty (bu-jad4j.3)", async () => {
+    // Mutation guard: with no unavailable butlers, an empty breakdown is a real
+    // "$0 month" and keeps its calm empty copy.
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path.startsWith("/spend/breakdown")) {
+        return Promise.resolve({
+          data: { by: "butler", breakdown: {}, unavailable_butlers: [] },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    expect(await screen.findByText("No spend has been recorded yet.")).toBeTruthy()
+    expect(screen.queryByTestId("breakdown-unavailable")).toBeNull()
+  })
+
   it("shows a degraded-source note when the purpose breakdown source errors", async () => {
     apiFetchMock.mockImplementation((path: string) => {
       if (path === "/spend/breakdown?by=purpose") {
@@ -598,6 +701,56 @@ describe("SpendPage — why (evidence layer)", () => {
     expect(section.textContent).toContain("Most Expensive Sessions")
     expect(section.textContent).toContain("general")
     expect(section.textContent).toContain("$1.23")
+  })
+
+  it("footnotes dropped butlers alongside a populated Top Sessions table (bu-jad4j.3)", async () => {
+    // A butler dropped from the top-sessions fan-out (meta.unavailable_butlers)
+    // must be named beneath the ranking rather than silently omitted.
+    mockUseTopSessions.mockReturnValue({
+      data: {
+        data: [
+          {
+            session_id: "sess-1",
+            butler: "general",
+            cost_usd: 1.2345,
+            input_tokens: 5000,
+            output_tokens: 2500,
+            model: "claude-sonnet",
+            started_at: "2026-05-17T10:00:00Z",
+          },
+        ],
+        meta: { unavailable_butlers: ["finance"] },
+      },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const section = await screen.findByTestId("top-sessions-section")
+    expect(section.textContent).toContain("general")
+    const note = await screen.findByTestId("top-sessions-unavailable")
+    expect(note.textContent).toContain("finance")
+  })
+
+  it("gates the empty Top Sessions state on the unavailable-butlers outage (bu-jad4j.3)", async () => {
+    // Empty ranking WITH unavailable_butlers is an outage, not a genuine absence
+    // of expensive sessions — it must name the missing butlers, not the calm
+    // "No session data available." line.
+    mockUseTopSessions.mockReturnValue({
+      data: { data: [], meta: { unavailable_butlers: ["finance", "home"] } },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const note = await screen.findByTestId("top-sessions-unavailable")
+    expect(note.getAttribute("role")).toBe("alert")
+    expect(note.textContent).toContain("finance, home")
+    expect(screen.queryByText("No session data available.")).toBeNull()
   })
 
   it("renders the By Schedule evidence table", async () => {

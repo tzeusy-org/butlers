@@ -76,7 +76,8 @@ import type {
   ContactListResponse,
   ContactParams,
   SpendSummary,
-  DailySpend,
+  DailySpendResponse,
+  TopSessionsResponse,
   ErrorResponse,
   Group,
   GroupListResponse,
@@ -107,7 +108,6 @@ import type {
   StateSetRequest,
   TimelineParams,
   TimelineResponse,
-  TopSession,
   ScheduleCost,
   TriggerResponse,
   TickResponse,
@@ -1019,13 +1019,16 @@ export function getDailyCosts(
   from?: string,
   to?: string,
   butler?: string,
-): Promise<ApiResponse<DailySpend[]>> {
+): Promise<DailySpendResponse> {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
   if (to) params.set("to", to);
   if (butler) params.set("butler", butler);
   const query = params.toString() ? `?${params.toString()}` : "";
-  return apiFetch<ApiResponse<DailySpend[]>>(`/spend/daily${query}`);
+  // DailySpendResponse types `meta.unavailable_butlers` so the stacked chart can
+  // footnote butlers dropped from the fan-out instead of letting them silently
+  // vanish (bu-jad4j.3).
+  return apiFetch<DailySpendResponse>(`/spend/daily${query}`);
 }
 
 /** Fetch most expensive sessions, optionally scoped to a date range (YYYY-MM-DD). */
@@ -1033,13 +1036,16 @@ export function getTopSessions(
   limit?: number,
   from?: string,
   to?: string,
-): Promise<ApiResponse<TopSession[]>> {
+): Promise<TopSessionsResponse> {
   const params = new URLSearchParams();
   if (limit) params.set("limit", String(limit));
   if (from) params.set("from", from);
   if (to) params.set("to", to);
   const qs = params.toString() ? `?${params.toString()}` : "";
-  return apiFetch<ApiResponse<TopSession[]>>(`/spend/top-sessions${qs}`);
+  // TopSessionsResponse types `meta.unavailable_butlers` so the evidence table
+  // can name butlers dropped from the fan-out rather than reading as complete
+  // (bu-jad4j.3).
+  return apiFetch<TopSessionsResponse>(`/spend/top-sessions${qs}`);
 }
 
 /** Fetch per-schedule cost analysis (projected monthly USD per cron job), optionally scoped to a date range (YYYY-MM-DD). */

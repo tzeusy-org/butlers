@@ -643,6 +643,33 @@ export interface TopSession {
   started_at: string;
 }
 
+/**
+ * Metadata for the spend fan-out endpoints (GET /api/spend/daily,
+ * /api/spend/top-sessions). Extends the base bag with the degraded-envelope
+ * flag the backend emits when a butler's cost source fails and is dropped from
+ * the fan-out (spend.py -> `ApiMeta(unavailable_butlers=...)`). Mirrors the
+ * fleet-wide degraded convention (see CLAUDE.md API Conventions). Absent or
+ * empty means every butler answered; a non-empty list means the series/totals
+ * undercount — a failed butler silently vanishes from the stacked chart — and
+ * must NOT read as a complete all-clear.
+ */
+export interface SpendFanoutMeta extends ApiMeta {
+  /** Names of butlers whose cost source failed and were dropped from the fan-out. */
+  unavailable_butlers?: string[];
+}
+
+/** GET /api/spend/daily response: per-day series + degraded-butler meta. */
+export interface DailySpendResponse {
+  data: DailySpend[];
+  meta: SpendFanoutMeta;
+}
+
+/** GET /api/spend/top-sessions response: ranked sessions + degraded-butler meta. */
+export interface TopSessionsResponse {
+  data: TopSession[];
+  meta: SpendFanoutMeta;
+}
+
 /** Cost analysis for a single scheduled task (GET /api/spend/by-schedule). */
 export interface ScheduleCost {
   schedule_name: string;

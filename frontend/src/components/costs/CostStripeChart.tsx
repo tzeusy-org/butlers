@@ -28,6 +28,7 @@ import {
 } from "recharts"
 
 import { ChartSkeleton } from "@/components/skeletons"
+import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import type { DailySpend } from "@/api/types"
 import { chartColor } from "@/lib/chart-colors"
 import { formatCostUsd } from "@/lib/format-cost"
@@ -128,6 +129,15 @@ export interface CostStripeChartProps {
   data: DailySpend[]
   isLoading?: boolean
   isError?: boolean
+  /**
+   * Butlers whose cost source failed and were dropped from GET /api/spend/daily's
+   * fan-out (`meta.unavailable_butlers`). When non-empty, each vanished butler is
+   * missing from the stacked bars, so the chart under-represents real spend. Render
+   * a footnote naming them rather than letting them silently disappear — and, when
+   * the whole series is empty because of the outage, name the source instead of the
+   * calm "no cost data" line (CLAUDE.md degraded-envelope convention; bu-jad4j.3).
+   */
+  unavailableButlers?: readonly string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -138,9 +148,22 @@ export function CostStripeChart({
   data,
   isLoading,
   isError,
+  unavailableButlers = [],
 }: CostStripeChartProps) {
   const butlers = useMemo(() => collectButlers(data), [data])
   const hasButlerData = butlers.length > 0
+  const hasUnavailable = unavailableButlers.length > 0
+
+  // Footnote naming any butler dropped from the fan-out — shared by the
+  // populated and (below) empty-but-degraded branches so a failed butler is
+  // never silently absent from the stack.
+  const degradedFootnote = hasUnavailable ? (
+    <SourceDegradedNote
+      label="Daily spend"
+      detail={`excluded from the chart, cost source unavailable: ${unavailableButlers.join(", ")}`}
+      testId="cost-stripe-unavailable"
+    />
+  ) : null
 
   // Flatten each day's by_butler map into top-level numeric keys so recharts
   // can stack one <Bar> per butler (dataKey cannot address nested paths).
@@ -172,6 +195,12 @@ export function CostStripeChart({
   }
 
   if (data.length === 0) {
+    // A source failure that drops every butler leaves the series empty — that
+    // is an outage, not a genuine "$0 across the window". Name the vanished
+    // butlers instead of the calm empty line (bu-jad4j.3).
+    if (hasUnavailable) {
+      return <div className="py-4">{degradedFootnote}</div>
+    }
     return (
       <div
         className="flex h-[256px] items-center justify-center text-sm text-muted-foreground"
@@ -183,7 +212,7 @@ export function CostStripeChart({
   }
 
   return (
-    <div data-testid="cost-stripe-chart">
+    <div data-testid="cost-stripe-chart" className="flex flex-col gap-3">
       <ResponsiveContainer width="100%" height={256}>
         <BarChart data={rows} margin={{ top: 5, right: 5, bottom: 5, left: 0 }}>
           <XAxis
@@ -220,6 +249,7 @@ export function CostStripeChart({
           )}
         </BarChart>
       </ResponsiveContainer>
+      {degradedFootnote}
     </div>
   )
 }
