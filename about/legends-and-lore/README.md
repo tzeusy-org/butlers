@@ -40,6 +40,10 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0020](rfcs/0020-calendar-cross-domain-overlay-read-exception.md) | Calendar Cross-Domain Overlay Read Exception | **Proposed.** Tests the calendar overlays/prep-rail/briefing design against RFC 0010's reuse criteria: the naive per-open, on-demand, LLM-synthesis read FAILS criteria #2 (deterministic/no LLM) and #3 (batch/not real-time). Recommends the RFC-0010-compliant path — scheduled deterministic precompute into a read-only cached view, zero LLM at render — or dropping synthesis entirely. Owner acceptance pending. |
 | [0021](rfcs/0021-decision-loop-one-tap-approvals-and-decision-memory.md) | Decision Loop: One-Tap Approvals and Decision Memory | **Proposed.** Parked-action push with one-tap Telegram approve/reject (signed callback tokens, owner-channel verification, deterministic routing), structured decision dossier (blast radius, reversibility, typed evidence), deterministic decision-fact writeback to butler memory, and safety-critical-args fingerprint generalization. Human-confirmed ratchet preserved; does NOT un-park RFC 0019's automation engine. |
 
+## Related
+
+- [ideas-ledger.md](ideas-ledger.md) — parked ideas from the JARVIS pursuit dossiers, each with why it was parked and its unpark condition.
+
 ## Conventions
 
 - **Status values:** Draft, Accepted, Deprecated.
