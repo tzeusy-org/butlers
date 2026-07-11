@@ -70,7 +70,7 @@
 ## Deferred (sibling epic slices, not implemented here)
 
 - bu-9r3hd.3: `butlers deploy` one-command build/migrate/verify-health
-  pipeline.
+  pipeline (see `openspec/changes/deploy-command-verb`).
 - bu-9r3hd.4: feed drift (and other infra-health signals) into the QA
   patrol's `DiscoverySource` pipeline as a first-class discovery source --
   this slice escalates directly to `public.healing_attempts` without a

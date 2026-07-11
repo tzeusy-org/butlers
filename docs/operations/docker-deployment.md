@@ -27,6 +27,10 @@ cp .env.example .env
 docker compose up -d
 ```
 
+**Recommended for production redeploys:** use `butlers deploy` instead of a
+bare `docker compose up -d` — see [Production Deploys](#production-deploys-butlers-deploy)
+below.
+
 ## Dockerfile
 
 The production image is built on `python:3.12-slim`:
@@ -84,6 +88,40 @@ All butler containers use the same Docker image, mount their roster directory as
 | Image | `node:22.16.0-slim` |
 
 Start with: `docker compose --profile dev up`
+
+## Production Deploys (`butlers deploy`)
+
+`butlers deploy` (bu-9r3hd.3, `src/butlers/core/deploy.py`) replaces the
+manual build-then-`up -d` ceremony with one idempotent command:
+
+```bash
+uv run butlers deploy --dir /path/to/repo --timeout 180
+```
+
+It runs, in order:
+
+1. **Build** — `docker build --build-arg GIT_SHA=$(git rev-parse HEAD) -t butlers-app:latest .`
+2. **Migrate** — `docker compose run --rm migrations`, always a fresh
+   container. A plain `docker compose up -d` only reruns the one-shot
+   `migrations` service if its `service_completed_successfully` condition
+   isn't already satisfied — once that container has exited 0 *once*, compose
+   treats it as permanently satisfied even after the image is rebuilt with
+   new migrations baked in (bd bu-zhfd0: core_155..161 sat unrun in prod for
+   six days this way). `run --rm` sidesteps that entirely.
+3. **Recreate** — `docker compose up -d --remove-orphans`, with **no**
+   `--profile` flag ever passed and `COMPOSE_PROFILES` stripped from the
+   subprocess environment, so a leftover dev-shell
+   `COMPOSE_PROFILES=hotreload` cannot silently pull the bind-mounted
+   hotreload services into a prod recreate.
+4. **Verify** — polls `GET /health` until `status: "ok"` or the `--timeout`
+   elapses.
+5. **Record** — writes one row to `public.deployments` (git SHA, migration
+   head, `success` or `failed`) via `butlers.core.deployments`, on *every*
+   outcome — a failed deploy is visible in the ledger, not silent.
+
+Safe to re-run at any point: image builds reuse layer cache, migrations
+always get a fresh container, and `up -d` only recreates services whose
+config or image actually changed.
 
 ## Environment Variables
 

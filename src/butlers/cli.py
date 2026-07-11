@@ -231,6 +231,51 @@ def dashboard(host: str, port: int) -> None:
     uvicorn.run("butlers.api.app:create_app", host=host, port=port, factory=True)
 
 
+@cli.command()
+@click.option(
+    "--dir",
+    "repo_root",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=Path("."),
+    show_default=True,
+    help="Repo root containing docker-compose.yml and .env.prod",
+)
+@click.option(
+    "--timeout",
+    "health_timeout_s",
+    type=float,
+    default=180.0,
+    show_default=True,
+    help="Seconds to wait for /health before failing the deploy",
+)
+def deploy(repo_root: Path, health_timeout_s: float) -> None:
+    """Idempotent production deploy: build, migrate, recreate, verify, record.
+
+    Replaces the artisanal deploy ceremony (build an image by hand, hope
+    ``docker compose up -d`` reruns migrations, eyeball that things came back
+    up) with one verb: builds the ``butlers-app`` image stamped with the
+    current git SHA, force-reruns the one-shot migrations service (never
+    trusts a stale exited container — see bu-zhfd0), recreates services with
+    no compose profile ever selected (so a leftover dev-shell
+    ``COMPOSE_PROFILES=hotreload`` can't leak a bind-mounted hotreload
+    container into prod), polls ``/health``, and records the outcome to
+    ``public.deployments`` whether it succeeds or fails.
+    """
+    from butlers.core.deploy import DeployConfig, DeployError, run_deploy
+
+    config = DeployConfig(repo_root=repo_root.resolve(), health_timeout_s=health_timeout_s)
+    click.echo(f"Deploying {config.repo_root} (project={config.project_name})...")
+    try:
+        result = asyncio.run(run_deploy(config))
+    except DeployError as exc:
+        click.echo(f"Deploy failed at phase={exc.phase}: {exc}", err=True)
+        sys.exit(1)
+    click.echo(
+        f"Deployed {result.git_sha} (migration_head={result.migration_head}, "
+        f"result={result.result})"
+    )
+
+
 @cli.group()
 def db() -> None:
     """Database management commands."""

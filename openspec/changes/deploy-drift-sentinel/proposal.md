@@ -74,7 +74,7 @@ nothing could even detect it, let alone act on it.
 ## Out of Scope (deferred to sibling epic slices)
 
 - `butlers deploy` one-command build/migrate/verify-health pipeline
-  (bu-9r3hd.3).
+  (bu-9r3hd.3 — see `openspec/changes/deploy-command-verb`).
 - Feeding drift (and other infra-health signals: connector-offline,
   backup-stale, heartbeat-stale) into the QA patrol's `DiscoverySource`
   pipeline as a first-class discovery source (bu-9r3hd.4) — this slice's
