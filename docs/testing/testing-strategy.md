@@ -55,6 +55,13 @@ Sub-markers:
 
 Long-running tests excluded from default CI. Run with `-m nightly`. These cover stress tests, extended integration scenarios, and cross-butler workflow validation.
 
+## Scheduled CI (`.github/workflows/nightly.yml`)
+
+Two jobs run on a schedule (`0 2 * * *` UTC) and via `workflow_dispatch`, never on `push`/`pull_request` — they surface hazards early without gating PR merges or the required `check`/`frontend`/`frontend-e2e` checks:
+
+- **`nightly`** — the `@pytest.mark.nightly` long-running/stress suite plus migration tests.
+- **`faketime-matrix`** (bu-10fgt.4) — reruns the full unit+integration suite (excluding `e2e`/`bench`/`perf`/`nightly`) twice, with the runner's wall clock shifted `+45d` and `+120d` via `LD_PRELOAD`-ed `libfaketime`. This catches wall-clock time-bomb tests — a fixture that freezes one clock reading and compares it against a later, fresh `datetime.now()`/`date.today()` call, so the test only fails once real time drifts past whatever date was baked in at authoring time (the class of hazard fixed by bu-10fgt.1/.3 and bu-39t2s) — before it detonates on `main` at its real trigger date. libfaketime does not affect the monotonic clock (asyncio sleep/timeout semantics are unchanged) or the Postgres service container's own clock (SQL `NOW()` stays real), so it only reaches Python-level wall-clock reads.
+
 ## Parallel Execution
 
 Tests run in parallel via pytest-xdist with 3 workers (`-n 3`), using `loadfile` distribution to keep tests from the same file on the same worker. This ensures module-scoped fixtures (shared FastAPI app, module-scoped DB pools) are not torn down mid-module.

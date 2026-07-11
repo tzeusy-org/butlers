@@ -44,3 +44,94 @@ jobs:
         run: uv run pytest tests/config/test_schema_matrix_migrations.py tests/migrations/ -q --tb=short -m "nightly or integration" -n auto
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
+
+  faketime-matrix:
+    # bu-10fgt.4: catches wall-clock time-bomb tests -- fixtures/business logic
+    # that freeze one clock reading (e.g. a fixture-computed "_NOW") while
+    # comparing it against a fresh datetime.now()/date.today() call elsewhere,
+    # so the test only fails once real wall-clock time drifts past whatever
+    # date was baked in at authoring time (bu-10fgt.1's relationship binning
+    # tests, bu-10fgt.3's frozen-date sweep, bu-39t2s's midnight-rollover
+    # travel tests). Running the suite with the process clock pushed forward
+    # surfaces the *next* one of these before it detonates on main at its real
+    # trigger date, instead of after.
+    #
+    # Mechanism: libfaketime intercepts libc time syscalls via LD_PRELOAD, so
+    # it fakes time.time()/datetime.now()/date.today() for the pytest process
+    # tree. It deliberately does NOT touch the monotonic clock, so
+    # asyncio sleep/timeout semantics are unaffected (verified locally: a
+    # faked process still measures asyncio.sleep(0.2) as ~0.2s of monotonic
+    # time while datetime.now() reports the shifted date). Postgres runs as a
+    # separate service container whose own clock is NOT shifted -- SQL
+    # NOW()/CURRENT_TIMESTAMP stays real -- so this catches the Python-level
+    # frozen-fixture class above, not a DB-side clock skew.
+    #
+    # Scheduled/dispatch-only by design: this must never gate PR merges or
+    # slow the required `check` job, only surface future hazards early. A
+    # failure here is visible via GitHub's built-in scheduled-workflow-failure
+    # email notification -- no bespoke issue-tracking automation is added
+    # (kept in scope with the epic's cost budget).
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        offset: ["+45d", "+120d"]
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Install libfaketime
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends faketime
+
+      - name: Free disk space before testcontainers
+        # Same rationale as ci.yml's check job: testcontainers pulls
+        # pgvector/pgvector:pg17 and the runner only starts with ~14 GB free.
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/share/boost
+          sudo apt-get clean -q
+          docker image prune -f --filter "until=1h" || true
+
+      - name: Full suite at faketime offset ${{ matrix.offset }}
+        run: |
+          LIBFAKETIME_SO=$(dpkg -L libfaketime | grep -m1 '/libfaketime\.so\.1$')
+          echo "Using libfaketime shared library: ${LIBFAKETIME_SO}"
+          LD_PRELOAD="${LIBFAKETIME_SO}" FAKETIME="${{ matrix.offset }}" \
+            uv run pytest tests/ roster/ -q --tb=short --ignore=tests/e2e \
+            -m "not bench and not perf and not nightly" -n auto --dist loadfile
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
