@@ -169,17 +169,25 @@ jobs:
    safety check, and the test stages below with coverage:
 
 ```bash
-# Unit tests: excludes E2E, selects non-integration/non-e2e markers
+# Unit tests: excludes E2E, selects non-integration/non-e2e markers.
+# A command-line -m REPLACES addopts' own `-m` rather than ANDing with it, so
+# the nightly/bench/perf exclusion from addopts must be restated here too, or
+# nightly adapter tests (real creds/binaries) leak into this fast lane
+# (bu-y189y).
 uv run pytest tests/ -q --maxfail=1 --tb=short --ignore=tests/e2e \
-  -m "not integration and not e2e" --cov=src/butlers --cov-report=json:coverage.json
+  -m "not integration and not e2e and not nightly and not bench and not perf" \
+  --cov=src/butlers --cov-report=json:coverage.json
 
 # Smoke tests: fast operational gate plus release evidence
 uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short
 
-# Integration tests: requires Docker (testcontainers), runs in parallel
+# Integration tests: requires Docker (testcontainers), runs in parallel.
+# Same restatement applies: "not bench and not perf" keeps perf-opt-in tests
+# that are also marked integration (e.g. test_audit_log_index_perf.py) out of
+# this lane (bu-y189y).
 uv run pytest roster/ tests/integration/ tests/config/ tests/core/ tests/migrations/ \
-  -q --maxfail=5 --tb=short -m "integration and not nightly" -n auto --dist loadfile \
-  --cov=src/butlers --cov-append
+  -q --maxfail=5 --tb=short -m "integration and not nightly and not bench and not perf" \
+  -n auto --dist loadfile --cov=src/butlers --cov-append
 ```
 
 2. `frontend` (Node 24, `frontend/`). Runs `npm ci`, `npm run lint`
@@ -190,7 +198,8 @@ uv run pytest roster/ tests/integration/ tests/config/ tests/core/ tests/migrati
    and runs `npm run test:e2e`.
 
 Longer-running schema-matrix and migration tests run separately in the nightly
-workflow (`-m "nightly or integration"`), not on every push.
+workflow (`-m "(nightly or integration) and not bench and not perf"`), not on
+every push.
 
 The local quality-gate shortcut (`make test-qg`) runs the unit-test scope in
 parallel (`-n auto --dist loadfile`); `make test-qg-serial` is the serial

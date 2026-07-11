@@ -41,7 +41,12 @@ jobs:
         run: uv sync --frozen --dev
 
       - name: Nightly schema-matrix and migration tests
-        run: uv run pytest tests/config/test_schema_matrix_migrations.py tests/migrations/ -q --tb=short -m "nightly or integration" -n auto
+        # bu-y189y: parenthesized "and not bench and not perf" keeps this
+        # lane's opt-in nightly/integration selection from also sweeping in
+        # perf-marked tests (e.g. test_audit_log_index_perf.py, which is
+        # `pytest.mark.perf` + `pytest.mark.integration` and is documented as
+        # opt-in only via an explicit `-m perf` run).
+        run: uv run pytest tests/config/test_schema_matrix_migrations.py tests/migrations/ -q --tb=short -m "(nightly or integration) and not bench and not perf" -n auto
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
