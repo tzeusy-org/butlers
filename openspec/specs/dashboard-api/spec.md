@@ -701,6 +701,22 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
   dropped butlers inline, and an outage that empties any of these surfaces
   names the failed source rather than falling through to a calm "No spend has
   been recorded yet" / "No cost data" / "No session data available" empty state
+
+#### Scenario: Spend by-schedule fan-out names genuinely-failed butlers without failing the request
+- **WHEN** `GET /api/spend/by-schedule` fans out `schedule_costs` to every butler
+  and a butler's cost source fails (a genuine error, not a butler that
+  legitimately has no schedules)
+- **THEN** the endpoint still returns HTTP 200 with the merged ranking from the
+  butlers that answered
+- **AND** the response names the dropped butlers following the fleet-wide
+  degraded-envelope convention: `meta.unavailable_butlers: string[]` (mirroring
+  `/daily` and `/top-sessions`); the field is absent or empty when every butler
+  answered
+- **AND** the frontend By Schedule table SHALL NOT render the (undercounting)
+  ranking as complete — it renders a `SourceDegradedNote` naming the dropped
+  butlers inline, and an outage that empties the table names the failed source
+  rather than falling through to the calm "No scheduled-task cost data
+  available." empty state
 - **AND** a genuinely-empty-but-healthy fan-out (no unavailable butlers, zero
   rows) keeps its honest empty state
 

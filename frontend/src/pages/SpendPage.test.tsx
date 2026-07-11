@@ -763,6 +763,74 @@ describe("SpendPage — why (evidence layer)", () => {
     expect(section.textContent).toContain("$3.00")
   })
 
+  it("footnotes dropped butlers alongside a populated By Schedule table (bu-h3ej9)", async () => {
+    // A butler dropped from the by-schedule fan-out (meta.unavailable_butlers)
+    // must be named beneath the ranking rather than silently omitted.
+    mockUseCostsBySchedule.mockReturnValue({
+      data: {
+        data: [
+          {
+            schedule_name: "morning-briefing",
+            butler: "general",
+            cron: "0 7 * * *",
+            total_runs: 30,
+            total_cost_usd: 3.0,
+            avg_cost_per_run: 0.1,
+            runs_per_day: 1,
+            projected_monthly_usd: 3.0,
+          },
+        ],
+        meta: { unavailable_butlers: ["finance"] },
+      },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const section = await screen.findByTestId("by-schedule-section")
+    expect(section.textContent).toContain("morning-briefing")
+    const note = await screen.findByTestId("by-schedule-unavailable")
+    expect(note.getAttribute("role")).toBe("alert")
+    expect(note.textContent).toContain("finance")
+  })
+
+  it("gates the empty By Schedule state on the unavailable-butlers outage (bu-h3ej9)", async () => {
+    // Empty ranking WITH unavailable_butlers is an outage, not a genuine absence
+    // of scheduled-task cost data — it must name the missing butlers, not the
+    // calm "No scheduled-task cost data available." line.
+    mockUseCostsBySchedule.mockReturnValue({
+      data: { data: [], meta: { unavailable_butlers: ["finance", "home"] } },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    const note = await screen.findByTestId("by-schedule-unavailable")
+    expect(note.getAttribute("role")).toBe("alert")
+    expect(note.textContent).toContain("finance, home")
+    expect(screen.queryByText("No scheduled-task cost data available.")).toBeNull()
+  })
+
+  it("keeps the honest empty By Schedule state when the fan-out is genuinely empty (bu-h3ej9)", async () => {
+    // Mutation guard: with no unavailable butlers, an empty ranking is a real
+    // "nothing scheduled" result and keeps its calm empty copy.
+    mockUseCostsBySchedule.mockReturnValue({
+      data: { data: [], meta: { unavailable_butlers: [] } },
+      isLoading: false,
+      isError: false,
+    })
+    await act(async () => {
+      renderPage()
+    })
+
+    expect(await screen.findByText("No scheduled-task cost data available.")).toBeTruthy()
+    expect(screen.queryByTestId("by-schedule-unavailable")).toBeNull()
+  })
+
   it("scopes both evidence sections to the TimeWindowPicker window, not all-time [bu-oaiiw]", async () => {
     await act(async () => {
       renderPage()

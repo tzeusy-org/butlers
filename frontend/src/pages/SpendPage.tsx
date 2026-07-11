@@ -794,6 +794,11 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
 function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
   const { data, isLoading, isError } = useCostsBySchedule(from, to)
   const schedules = data?.data ?? []
+  // Butlers dropped from the by-schedule fan-out (meta.unavailable_butlers).
+  // When non-empty the ranking omits their schedules, so an empty table is an
+  // outage — not "genuinely no scheduled-task cost data" — and a populated one
+  // must footnote the missing butlers (bu-h3ej9).
+  const unavailableButlers = data?.meta?.unavailable_butlers ?? []
 
   return (
     <section className="border border-border" data-testid="by-schedule-section">
@@ -813,12 +818,20 @@ function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
           </div>
         ) : isError ? (
           <p className="text-sm text-muted-foreground">Failed to load schedule costs.</p>
+        ) : schedules.length === 0 && unavailableButlers.length > 0 ? (
+          // Empty because butlers dropped out of the fan-out, not a genuine
+          // absence of scheduled-task cost data — name them (bu-h3ej9).
+          <SourceDegradedNote
+            label="Schedule costs"
+            detail={`no data, cost source unavailable: ${unavailableButlers.join(", ")}`}
+            testId="by-schedule-unavailable"
+          />
         ) : schedules.length === 0 ? (
           <p className="font-serif italic text-muted-foreground text-sm">
             No scheduled-task cost data available.
           </p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto flex flex-col gap-3">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
@@ -854,6 +867,15 @@ function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
                 ))}
               </tbody>
             </table>
+            {unavailableButlers.length > 0 && (
+              // Populated but partial: some butlers' schedules are absent from
+              // the ranking (bu-h3ej9).
+              <SourceDegradedNote
+                label="Schedule costs"
+                detail={`excluded, cost source unavailable: ${unavailableButlers.join(", ")}`}
+                testId="by-schedule-unavailable"
+              />
+            )}
           </div>
         )}
       </div>

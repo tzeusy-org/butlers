@@ -108,7 +108,7 @@ import type {
   StateSetRequest,
   TimelineParams,
   TimelineResponse,
-  ScheduleCost,
+  ScheduleCostsResponse,
   TriggerResponse,
   TickResponse,
   ButlerMcpTool,
@@ -1049,12 +1049,15 @@ export function getTopSessions(
 }
 
 /** Fetch per-schedule cost analysis (projected monthly USD per cron job), optionally scoped to a date range (YYYY-MM-DD). */
-export function getCostsBySchedule(from?: string, to?: string): Promise<ApiResponse<ScheduleCost[]>> {
+export function getCostsBySchedule(from?: string, to?: string): Promise<ScheduleCostsResponse> {
   const params = new URLSearchParams();
   if (from) params.set("from", from);
   if (to) params.set("to", to);
   const qs = params.toString() ? `?${params.toString()}` : "";
-  return apiFetch<ApiResponse<ScheduleCost[]>>(`/spend/by-schedule${qs}`);
+  // ScheduleCostsResponse types `meta.unavailable_butlers` so the By Schedule
+  // table can footnote butlers dropped from the fan-out instead of letting
+  // their schedules silently vanish (bu-h3ej9).
+  return apiFetch<ScheduleCostsResponse>(`/spend/by-schedule${qs}`);
 }
 
 // ---------------------------------------------------------------------------

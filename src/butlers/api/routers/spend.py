@@ -1037,11 +1037,22 @@ async def get_costs_by_schedule(
     if butler is not None:
         configs = [c for c in configs if c.name == butler]
 
-    tasks = [_get_butler_schedule_costs(mgr, info, pricing, from_date, to_date) for info in configs]
+    # A butler whose schedule_costs call fails returns [] -- indistinguishable
+    # from "genuinely has no schedules" -- so it silently vanishes from the
+    # merged ranking. Track genuine failures and surface them in
+    # meta.unavailable_butlers so the frontend can footnote the (undercounting)
+    # table rather than read it as complete (mirrors /daily and /top-sessions;
+    # bu-h3ej9).
+    tracker = DegradedSources(logger)
+    tasks = [
+        _get_butler_schedule_costs(mgr, info, pricing, from_date, to_date, tracker=tracker)
+        for info in configs
+    ]
     results = await asyncio.gather(*tasks)
     all_costs = [c for butler_costs in results for c in butler_costs]
     all_costs.sort(key=lambda c: c.projected_monthly_usd, reverse=True)
-    return ApiResponse[list[ScheduleCost]](data=all_costs)
+    meta = ApiMeta(unavailable_butlers=sorted(tracker.names)) if tracker.failed else ApiMeta()
+    return ApiResponse[list[ScheduleCost]](data=all_costs, meta=meta)
 
 
 # Aggregate current-month token usage per (purpose, model_id) directly from the

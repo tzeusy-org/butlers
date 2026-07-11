@@ -682,6 +682,26 @@ export interface ScheduleCost {
   projected_monthly_usd: number;
 }
 
+/**
+ * Metadata for GET /api/spend/by-schedule. Extends the base bag with the
+ * degraded-envelope flag the backend emits when a butler's schedule_costs
+ * source fails and its schedules are dropped from the merged ranking
+ * (spend.py -> `ApiMeta(unavailable_butlers=...)`). Mirrors the fleet-wide
+ * degraded convention (see CLAUDE.md API Conventions). Absent or empty means
+ * every butler answered; a non-empty list means the ranking undercounts — a
+ * failed butler's schedules silently vanish — and must NOT read as complete.
+ */
+export interface ScheduleCostsMeta extends ApiMeta {
+  /** Names of butlers whose schedule_costs source failed and were dropped from the fan-out. */
+  unavailable_butlers?: string[];
+}
+
+/** GET /api/spend/by-schedule response: per-schedule ranking + degraded-butler meta. */
+export interface ScheduleCostsResponse {
+  data: ScheduleCost[];
+  meta: ScheduleCostsMeta;
+}
+
 // ---------------------------------------------------------------------------
 // Schedules
 // ---------------------------------------------------------------------------

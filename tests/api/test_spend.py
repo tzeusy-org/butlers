@@ -845,6 +845,58 @@ async def test_by_schedule_contract_and_zero_division(app):
     assert zero["projected_monthly_usd"] == 0.0
 
 
+async def test_by_schedule_reports_unavailable_butlers_for_genuine_failure(app):
+    """A butler whose schedule_costs call genuinely fails must be named in
+    meta.unavailable_butlers -- its schedules are dropped from the merged
+    ranking otherwise, indistinguishable from "has no schedules" (bu-h3ej9,
+    mirrors the /daily degraded pattern)."""
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="broken", port=41101),
+    ]
+    sched = {
+        "name": "daily-report",
+        "cron": "0 8 * * *",
+        "model": "claude-sonnet-4-20250514",
+        "total_runs": 30,
+        "total_input_tokens": 30000,
+        "total_output_tokens": 15000,
+        "runs_per_day": 1.0,
+    }
+    mgr = _mock_mgr(
+        {
+            "sw": _make_tool_result({"schedules": [sched]}),
+            "broken": ButlerUnreachableError("broken"),
+        }
+    )
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    body = resp.json()
+    # sw's schedule still lands...
+    assert any(i["schedule_name"] == "daily-report" for i in body["data"])
+    # ...and the failed butler is named, not silently dropped.
+    assert body["meta"]["unavailable_butlers"] == ["broken"]
+
+
+async def test_by_schedule_all_reachable_reports_no_unavailable_butlers(app):
+    """When every butler's schedule_costs call succeeds, meta must not carry a
+    degraded flag -- a truthful complete result must not read as partial
+    (bu-h3ej9)."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    mgr = _mock_mgr({"sw": _make_tool_result({"schedules": []})})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    assert "unavailable_butlers" not in resp.json()["meta"]
+
+
 # ---------------------------------------------------------------------------
 # GET /api/spend — ?butler= filter [bu-iuol4.12]
 # ---------------------------------------------------------------------------
