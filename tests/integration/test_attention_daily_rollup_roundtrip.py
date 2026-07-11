@@ -1,6 +1,6 @@
-"""Real-Postgres regression: public.attention_daily_rollup (core_164, bu-tdd4k.5).
+"""Real-Postgres regression: public.attention_daily_rollup (core_165, bu-tdd4k.5).
 
-Exercises core_164 against a fully migrated Postgres instance (testcontainers),
+Exercises core_165 against a fully migrated Postgres instance (testcontainers),
 not just mocked-pool unit tests:
 
 - ``public.attention_daily_rollup`` is created with the expected columns and a

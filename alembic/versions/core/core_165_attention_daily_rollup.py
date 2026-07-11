@@ -1,7 +1,7 @@
 """attention_daily_rollup: durable daily owner-engagement signal past the 30-day purge.
 
-Revision ID: core_164
-Revises: core_163
+Revision ID: core_165
+Revises: core_164
 Create Date: 2026-07-11 02:30:00.000000
 
 bu-tdd4k.5 (epic bu-tdd4k "proactivity spine", slice 5/5) — per the
@@ -30,8 +30,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_164"
-down_revision = "core_163"
+revision = "core_165"
+down_revision = "core_164"
 branch_labels = None
 depends_on = None
 

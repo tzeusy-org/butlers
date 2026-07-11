@@ -125,7 +125,7 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
         ON insight_engagement (delivered_at, engaged)
     """)
     # bu-tdd4k.5: durable daily rollup — mirrors
-    # alembic/versions/core/core_164_attention_daily_rollup.py exactly.
+    # alembic/versions/core/core_165_attention_daily_rollup.py exactly.
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS attention_daily_rollup (
             day                  DATE PRIMARY KEY,

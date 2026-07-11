@@ -9,12 +9,18 @@ for the error paths (unknown chain, multiple unmerged heads).
 
 from __future__ import annotations
 
+import ast
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from butlers.migrations import get_all_chains, get_chain_head, get_chain_revision_ids
+from butlers.migrations import (
+    _resolve_chain_dir,
+    get_all_chains,
+    get_chain_head,
+    get_chain_revision_ids,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -51,6 +57,50 @@ def test_every_recognized_chain_resolves_exactly_one_head():
         assert head in get_chain_revision_ids(chain)
 
 
+def _collect_revision_locations(chain_dirs: dict[str, Path]) -> dict[str, list[str]]:
+    revision_locations: dict[str, list[str]] = {}
+    for chain, chain_dir in chain_dirs.items():
+        for migration_path in chain_dir.glob("*.py"):
+            if migration_path.name == "__init__.py":
+                continue
+            tree = ast.parse(migration_path.read_text(encoding="utf-8"))
+            revision_id = None
+            for node in tree.body:
+                is_revision_assignment = isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == "revision"
+                    for target in node.targets
+                )
+                is_typed_revision_assignment = (
+                    isinstance(node, ast.AnnAssign)
+                    and isinstance(node.target, ast.Name)
+                    and node.target.id == "revision"
+                )
+                if is_revision_assignment or is_typed_revision_assignment:
+                    assert isinstance(node.value, ast.Constant)
+                    assert isinstance(node.value.value, str)
+                    revision_id = node.value.value
+                    break
+            assert revision_id is not None, f"Migration {migration_path} has no revision id"
+            revision_locations.setdefault(revision_id, []).append(f"{chain}/{migration_path.name}")
+    return revision_locations
+
+
+def test_every_recognized_chain_has_globally_unique_revision_ids():
+    chain_dirs = {}
+    for chain in get_all_chains():
+        chain_dir = _resolve_chain_dir(chain)
+        assert chain_dir is not None
+        chain_dirs[chain] = chain_dir
+
+    duplicates = {
+        revision_id: locations
+        for revision_id, locations in _collect_revision_locations(chain_dirs).items()
+        if len(locations) > 1
+    }
+
+    assert duplicates == {}, f"Duplicate migration revisions: {duplicates}"
+
+
 def _write_revision(directory: Path, *, revision: str, down_revision: str | None) -> None:
     directory.joinpath(f"{revision}.py").write_text(
         textwrap.dedent(
@@ -68,6 +118,22 @@ def _write_revision(directory: Path, *, revision: str, down_revision: str | None
             """
         )
     )
+
+
+def test_revision_guard_catches_cross_chain_collision(tmp_path):
+    first_chain = tmp_path / "first"
+    second_chain = tmp_path / "second"
+    first_chain.mkdir()
+    second_chain.mkdir()
+    _write_revision(first_chain, revision="shared_001", down_revision=None)
+    _write_revision(second_chain, revision="shared_001", down_revision=None)
+
+    revision_locations = _collect_revision_locations({"first": first_chain, "second": second_chain})
+
+    assert revision_locations["shared_001"] == [
+        "first/shared_001.py",
+        "second/shared_001.py",
+    ]
 
 
 def test_get_chain_head_raises_on_multiple_unmerged_heads(tmp_path, monkeypatch):
