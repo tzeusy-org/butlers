@@ -1,11 +1,29 @@
 # v1 Status Matrix
 
-**Last updated:** 2026-06-28
-**Branch:** current `main` (as of commit `10c8a1bd6`)
+**Last updated:** 2026-07-11
+**Branch:** current `main` (as of commit `1b199ea81`)
 
 Maps every success criterion from [`v1.md`](v1.md) to its current status and
 concrete evidence. Honest by design: partial and unproven are not failure states
 — they are the signal that tells us what work remains.
+
+## Refresh Rule
+
+This matrix rots if it is only updated on request. It **must** be refreshed:
+
+1. **On every epic close** — whenever an epic that touches a success criterion
+   or component-coverage row closes, its refresh lands in the same delivery.
+2. **At least monthly** — even absent a qualifying epic close, re-walk this
+   file against `git log --since=<last-updated>` and `bd list --status closed`
+   at least once a month.
+
+Whichever trigger fires first wins; update the **Last updated** date/commit
+above on every refresh so staleness is self-evident at a glance. To refresh:
+diff each Success Criterion and Component Coverage row against
+`git log --since=<last-updated date> --oneline` and recently closed epics
+(`bd list --status closed --type epic --json`), then correct statuses and
+evidence honestly — do not fabricate progress, and do not silently drop a gap
+that is still open.
 
 ---
 
@@ -76,12 +94,14 @@ claude-code) has no captured benchmark run, and the best recorded result
 | WhatsApp user client | `src/butlers/connectors/whatsapp_user_client.py` — Go sidecar bridge |
 | **Discord connector** | `src/butlers/connectors/discord_user.py` — "**DRAFT — v2-only WIP, not production-ready**"; auth flow, scope validation, consent UI, error recovery all incomplete |
 | Routing benchmark harness | `tests/benchmarks/switchboard/` — not run in CI |
-| Accuracy results | `tests/benchmarks/switchboard/results.md` — best: **80.6%** (opencode-go/glm-5, 100 scenarios); Claude not benchmarked |
+| Accuracy results | `tests/benchmarks/switchboard/results.md` — best: **80.6%** (opencode-go/glm-5, 100 scenarios), last run 2026-04-08; Claude not benchmarked |
 | Switchboard routing tests | `tests/contracts/test_mcp_only_inter_butler.py` — contract-level; not accuracy tests |
+| Routing verdict mining substrate | `roster/switchboard/` — `routing_verdict_log` table capturing live routing decisions for future ground-truth mining (bu-aga08, #2983); feeds a future benchmark refresh, does not itself close the accuracy gap |
 
 **Gaps:**
 1. Discord connector is draft/v2-only; cannot be included in "all active connectors."
-2. Accuracy >90% threshold unverified for the primary model (Claude).
+2. Accuracy >90% threshold unverified for the primary model (Claude); the
+   results table has not been refreshed since 2026-04-08.
 3. Benchmark not included in CI; accuracy regressions could go undetected.
 
 ---
@@ -131,6 +151,8 @@ LRU-based promotion/eviction and cross-butler fact sharing.
 | Maturity promotion | `storage.py` — candidate → established → proven lifecycle |
 | Cross-butler sharing | `public.memory_catalog` table (referenced in migrations) |
 | Entity resolution | `src/butlers/modules/memory/tools/entities.py` |
+| Vector index | `src/butlers/modules/memory/migrations/007_hnsw_embedding_indexes.py` — episodes/facts/rules embedding indexes swapped from ivfflat to HNSW (m=16, ef_construction=64); ivfflat had been running uncalibrated (probes=1) since inception |
+| Recall benchmark | `src/butlers/testing/recall_bench.py`; `tests/migrations/test_memory_hnsw_recall_nightly.py` — recall@10 >= 0.85 gate at 4000 synthetic rows, run nightly |
 | Memory tests | `tests/modules/memory/` |
 
 ---
@@ -160,6 +182,7 @@ ingestion monitoring, settings console, audit log, webhooks, data ops.
 | Webhooks | `src/butlers/api/routers/webhooks.py` — HMAC-SHA256, test-fire endpoint |
 | Data ops | `src/butlers/api/routers/data_ops.py` — 60-min signed URL export + phrase-gated wipe |
 | Insight delivery tile | `frontend/src/components/system/InsightDeliveryTile.tsx` |
+| Owner chat widget | `frontend/src/components/chat/FloatingChatWidget.tsx`, `ChatPanel.tsx` — global dashboard chat routed through real Switchboard ingestion (`conversation_reply`), not a mock (epic bu-p6ey8, closed 2026-07-05) |
 | Backend API | `src/butlers/api/` — per-butler routers, auto-discovered via `router_discovery.py` |
 
 ---
@@ -214,7 +237,7 @@ phases of the RFC 0011 pipeline are wired end-to-end: butler-side insight
 generation, Switchboard brokering (dedup, budget, adaptive ratchet, anti-spam),
 and durable delivery via Messenger. The dashboard surfaces live delivery state.
 A gen-1 spec-to-code reconciliation confirmed faithful implementation across
-98 tests. Field-proven delivery cadence at scale is not yet attested.
+84 tests. Field-proven delivery cadence at scale is not yet attested.
 
 | Evidence | Detail |
 |----------|--------|
@@ -222,7 +245,7 @@ A gen-1 spec-to-code reconciliation confirmed faithful implementation across
 | Scheduled delivery cron | `roster/switchboard/butler.toml` — `cron = "0 8 * * *"`, job `insight_delivery_cycle` |
 | API endpoint | `GET /api/system/insights/delivery-state` (`src/butlers/api/routers/system.py`) |
 | Dashboard tile | `frontend/src/components/system/InsightDeliveryTile.tsx` |
-| Test coverage | `tests/modules/test_module_insight_broker.py` (11 tests), `tests/modules/test_insight_engine.py` (69 tests), `tests/api/test_system_insight_delivery.py` (8 tests), `tests/jobs/test_insight_delivery_job.py` (10 tests) — **98 tests total** |
+| Test coverage | `tests/modules/test_module_insight_broker.py` (8 tests), `tests/modules/test_insight_engine.py` (56 tests), `tests/api/test_system_insight_delivery.py` (8 tests), `tests/jobs/test_insight_delivery_job.py` (12 tests) — **84 tests total** (test-condensation cycles have trimmed this since the original count) |
 | Adaptive ratchet | `broker.py::compute_effective_budget()` — one-way ratchet; `check_total_disengagement_auto_off()` — auto-off on sustained disengagement |
 | Global budget + cooldowns | `broker.py` — `public.insight_candidates`, `public.insight_cooldowns`, per-key cooldown enforcement |
 
@@ -255,6 +278,7 @@ A condensed view of the broader feature set listed in v1.md, for orientation.
 | Module | Status | Evidence |
 |--------|--------|----------|
 | Memory | **implemented** | `src/butlers/modules/memory/` — Eden/Mid-Term/Long-Term tiers |
+| Contacts | **implemented** | `src/butlers/modules/contacts/` — `ContactsModule`; `tests/modules/test_module_contacts.py` |
 | Calendar | **implemented** | `src/butlers/modules/calendar.py` |
 | Email | **implemented** | `src/butlers/modules/email.py` |
 | Telegram | **implemented** | `src/butlers/modules/telegram.py` |
@@ -265,6 +289,7 @@ A condensed view of the broader feature set listed in v1.md, for orientation.
 | Self-healing | **implemented** | `src/butlers/modules/self_healing/` |
 | Home Assistant | **implemented** | `roster/home/modules/__init__.py` — `HomeAssistantModule` |
 | Google Drive | **implemented** | `src/butlers/modules/google_drive/` — `GoogleDriveModule` |
+| Google Health | **implemented** | `src/butlers/modules/google_health.py` — `GoogleHealthModule`; `tests/modules/test_module_google_health.py` |
 | WhatsApp | **implemented** | `src/butlers/modules/whatsapp/` — `WhatsAppModule` |
 | Steam | **implemented** | `src/butlers/modules/steam.py` (`SteamModule`); enabled in `roster/lifestyle/butler.toml` (`[modules.steam]`); `tests/modules/test_module_steam.py` |
 | Insight broker | **implemented** | `roster/switchboard/modules/insight_broker.py` (see SC-8) |
