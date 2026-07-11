@@ -2979,6 +2979,28 @@ export interface ApprovalSummary {
   why?: string | null;
 }
 
+/**
+ * Metadata for the approvals list endpoints (GET /api/approvals and
+ * /api/approvals/history). Extends the base bag with the degraded-envelope
+ * flag the backend emits when the per-butler pool fan-out drops one or more
+ * pools (approvals.py::list_approvals_flat / list_approvals_history ->
+ * `ApiMeta(sources_degraded=...)` via `DegradedSources`). Mirrors the
+ * fleet-wide `meta.sources_degraded` convention (see CLAUDE.md API
+ * Conventions). Absent or empty means every queried pool answered; a
+ * non-empty list means the queue/history undercounts and must NOT read as an
+ * all-clear.
+ */
+export interface ApprovalsListMeta extends ApiMeta {
+  /** Names of butler pools whose approvals query failed and were dropped from the list. */
+  sources_degraded?: string[];
+}
+
+/** GET /api/approvals and /history response: summaries + degraded-pool meta. */
+export interface ApprovalsListResponse {
+  data: ApprovalSummary[];
+  meta: ApprovalsListMeta;
+}
+
 /** Full dossier for GET /api/approvals/{id}. */
 export interface ApprovalDetail {
   id: string;

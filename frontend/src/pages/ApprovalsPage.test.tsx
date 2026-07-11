@@ -128,6 +128,12 @@ function makeApiResponse<T>(data: T) {
   return Promise.resolve({ data, meta: {} });
 }
 
+// Degraded fan-out: same envelope, but meta names the butler pools that were
+// dropped from the response (approvals `meta.sources_degraded`; bu-jad4j.4).
+function makeDegradedResponse<T>(data: T, sourcesDegraded: string[]) {
+  return Promise.resolve({ data, meta: { sources_degraded: sourcesDegraded } });
+}
+
 function makeEmptyHistory() {
   return makeApiResponse([]);
 }
@@ -303,6 +309,55 @@ describe("ApprovalsPage — load-more", () => {
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
     // A retry affordance must be present.
     expect(findButton(container, "Retry")).toBeDefined();
+  });
+
+  it("names the degraded pools instead of the calm empty state when the queue fan-out drops a pool (bu-jad4j.4)", async () => {
+    // Degraded 200: the queue is empty because a butler pool dropped out of the
+    // fan-out, not because nothing is waiting. The rail must name the pool, not
+    // render "No pending approvals." as an all-clear.
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeDegradedResponse([], ["finance", "home"]) as AnyMock,
+    );
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    const note = container.querySelector('[data-testid="approvals-queue-degraded"]');
+    expect(note).not.toBeNull();
+    expect(note?.getAttribute("role")).toBe("alert");
+    expect(note?.textContent).toContain("finance, home");
+    // The calm empty state must NOT appear alongside the degraded note.
+    expect(container.textContent).not.toContain("No pending approvals.");
+  });
+
+  it("renders the degraded note above the (incomplete) rows when a partial fan-out still returned rows (bu-jad4j.4)", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeDegradedResponse([makeSummary("a1", "send_email")], ["finance"]) as AnyMock,
+    );
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    // Both the note and the surviving row render.
+    expect(container.querySelector('[data-testid="approvals-queue-degraded"]')).not.toBeNull();
+    expect(container.textContent).toContain("send email");
+  });
+
+  it("keeps the honest empty state for a reachable-but-empty queue (mutation guard, bu-jad4j.4)", async () => {
+    // Flag absent + zero rows: a legitimate all-clear. No degraded note.
+    vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+
+    renderPage();
+    await act(async () => {
+      await flush();
+    });
+
+    expect(container.querySelector('[data-testid="approvals-queue-degraded"]')).toBeNull();
+    expect(container.textContent).toContain("No pending approvals.");
   });
 
   it("re-calls getApprovalsFlat with bumped limit after clicking 'Load more'", async () => {

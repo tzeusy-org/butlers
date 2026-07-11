@@ -30,8 +30,28 @@ function countdownText(expiresAt: string | null | undefined): string | null {
   return `expires in ${days}d`;
 }
 
-function buildClauses(pending: ApprovalSummary[], history: ApprovalSummary[]): VerdictClause[] {
+function buildClauses(
+  pending: ApprovalSummary[],
+  history: ApprovalSummary[],
+  sourcesDegraded: string[],
+): VerdictClause[] {
   const clauses: VerdictClause[] = [];
+
+  // Degraded fan-out (bu-jad4j.4): the backend fans the queue + history across
+  // each butler's pool and drops any that error, naming them in
+  // `meta.sources_degraded` rather than failing the request (approvals.py's
+  // DegradedSources). When that list is non-empty the counts below undercount,
+  // so the calm "No approvals waiting." verdict is a half-truth. Prepend a
+  // named clause (source-health first, mirroring DispatchVerdict's own
+  // error-clause ordering) — its mere presence suppresses the all-clear line
+  // so a downed pool never renders as a clear queue (CLAUDE.md degraded-
+  // envelope convention).
+  if (sourcesDegraded.length > 0) {
+    clauses.push({
+      key: "sources-degraded",
+      text: `${sourcesDegraded.join(", ")} unreachable — some approvals may be missing`,
+    });
+  }
 
   if (pending.length > 0) {
     clauses.push({ key: "waiting", text: `${pending.length} waiting`, href: "/approvals" });
@@ -73,18 +93,30 @@ export function ApprovalsVerdictOpener({
   pending,
   pendingLoading,
   pendingError,
+  pendingSourcesDegraded = [],
   history,
   historyLoading,
   historyError,
+  historySourcesDegraded = [],
 }: {
   pending: ApprovalSummary[];
   pendingLoading: boolean;
   pendingError: boolean;
+  /** Butler pools dropped from the queue fan-out (queue `meta.sources_degraded`). */
+  pendingSourcesDegraded?: string[];
   history: ApprovalSummary[];
   historyLoading: boolean;
   historyError: boolean;
+  /** Butler pools dropped from the history fan-out (history `meta.sources_degraded`). */
+  historySourcesDegraded?: string[];
 }) {
-  const clauses = buildClauses(pending, history);
+  // A pool that dropped from either fan-out means this whole verdict may be
+  // incomplete; dedupe the two lists into one named clause (a butler down for
+  // the queue is almost always down for history too).
+  const sourcesDegraded = [
+    ...new Set([...pendingSourcesDegraded, ...historySourcesDegraded]),
+  ];
+  const clauses = buildClauses(pending, history, sourcesDegraded);
 
   return (
     <DispatchVerdict

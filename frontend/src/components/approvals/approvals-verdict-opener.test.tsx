@@ -138,6 +138,93 @@ describe("ApprovalsVerdictOpener -- clauses", () => {
   });
 });
 
+describe("ApprovalsVerdictOpener -- degraded-source honesty (bu-jad4j.4)", () => {
+  it("names the degraded pools and suppresses the all-clear when sources_degraded is set", () => {
+    // Degraded fan-out: the backend answered 200 but dropped one or more butler
+    // pools, naming them in meta.sources_degraded. An empty queue here is NOT a
+    // truthful "No approvals waiting." -- the opener names the dropped pools
+    // instead so a downed pool never reads as a clear queue.
+    const html = render(
+      <ApprovalsVerdictOpener
+        pending={[]}
+        pendingLoading={false}
+        pendingError={false}
+        pendingSourcesDegraded={["finance", "home"]}
+        history={[]}
+        historyLoading={false}
+        historyError={false}
+      />,
+    );
+    expect(html).toContain('data-testid="approvals-verdict-clauses"');
+    expect(html).toContain("finance, home unreachable");
+    expect(html).toContain("some approvals may be missing");
+    // The calm all-clear line must NOT render alongside a degraded source.
+    expect(html).not.toContain("No approvals waiting.");
+    expect(html).not.toContain('data-testid="approvals-verdict-all-clear"');
+  });
+
+  it("dedupes queue + history degraded pools into one named clause", () => {
+    // A butler down for the queue is almost always down for history too; the
+    // opener merges both lists so the same pool is not named twice.
+    const html = render(
+      <ApprovalsVerdictOpener
+        pending={[]}
+        pendingLoading={false}
+        pendingError={false}
+        pendingSourcesDegraded={["finance"]}
+        history={[]}
+        historyLoading={false}
+        historyError={false}
+        historySourcesDegraded={["finance", "home"]}
+      />,
+    );
+    // "finance" appears once in the clause, not twice.
+    const occurrences = html.split("finance").length - 1;
+    expect(occurrences).toBe(1);
+    expect(html).toContain("finance, home unreachable");
+  });
+
+  it("keeps the honest all-clear when no sources are degraded (mutation guard)", () => {
+    // The degraded clause must depend on the flag: with every pool answering,
+    // an empty queue is a legitimate all-clear.
+    const html = render(
+      <ApprovalsVerdictOpener
+        pending={[]}
+        pendingLoading={false}
+        pendingError={false}
+        pendingSourcesDegraded={[]}
+        history={[]}
+        historyLoading={false}
+        historyError={false}
+        historySourcesDegraded={[]}
+      />,
+    );
+    expect(html).toContain('data-testid="approvals-verdict-all-clear"');
+    expect(html).toContain("No approvals waiting.");
+    expect(html).not.toContain("unreachable");
+  });
+
+  it("names degraded pools alongside real waiting clauses (both render)", () => {
+    // A partial fan-out that still returned rows: the waiting clause and the
+    // degraded clause coexist, degraded first (source-health leads).
+    const html = render(
+      <ApprovalsVerdictOpener
+        pending={[summary({ id: "a-1" })]}
+        pendingLoading={false}
+        pendingError={false}
+        pendingSourcesDegraded={["home"]}
+        history={[]}
+        historyLoading={false}
+        historyError={false}
+      />,
+    );
+    expect(html).toContain("home unreachable");
+    expect(html).toContain("1 waiting");
+    // Degraded clause precedes the waiting clause in DOM order.
+    expect(html.indexOf("home unreachable")).toBeLessThan(html.indexOf("1 waiting"));
+  });
+});
+
 describe("ApprovalsVerdictOpener -- isError-suppression contract", () => {
   it("renders the skeleton while either source is loading", () => {
     const html = render(

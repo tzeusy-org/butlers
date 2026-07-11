@@ -313,6 +313,24 @@ The API SHALL expose the following complete endpoint inventory, grouped by domai
 | GET | `/api/approvals/rules/suggestions/{actionId}` | Constraint suggestions |
 | GET | `/api/approvals/metrics` | Aggregate approval metrics |
 
+#### Scenario: Approvals degraded pools are named, not rendered as an empty queue
+- **WHEN** `GET /api/approvals` or `GET /api/approvals/history` fans out across
+  each butler's pool and one or more pools fail their query (a genuine error —
+  the request still returns HTTP 200 with the summaries from the pools that
+  answered)
+- **THEN** the response includes `meta.sources_degraded: string[]` naming the
+  dropped pools (following the fleet-wide degraded-envelope convention); the
+  field is absent or empty when every queried pool answered
+- **AND** the frontend approvals verdict opener SHALL NOT render the calm "No
+  approvals waiting." all-clear while a pool is degraded — it names the dropped
+  pools inline as a clause that suppresses the all-clear line
+- **AND** the approvals queue rail SHALL NOT render the "No pending approvals."
+  empty state as an all-clear while a pool is degraded — it names the dropped
+  pools via a `SourceDegradedNote` (in place of the empty state when zero rows
+  survived, above the rows when some did)
+- **AND** a reachable queue with `meta.sources_degraded` absent or empty keeps
+  its honest empty state and calm verdict
+
 #### Search
 | Method | Path | Purpose |
 |--------|------|---------|

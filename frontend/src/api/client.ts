@@ -18,8 +18,8 @@ import type {
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
+  ApprovalsListResponse,
   ApprovalsPolicy,
-  ApprovalSummary,
   AutonomySuggestion,
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
@@ -3628,15 +3628,24 @@ export function getApprovalMetrics(): Promise<ApiResponse<ApprovalMetrics>> {
 // New Dispatch-language approvals API (§8.3)
 // ---------------------------------------------------------------------------
 
+/**
+ * Fetch the flat approvals queue.
+ *
+ * Returns {@link ApprovalsListResponse} so `meta.sources_degraded` — the
+ * backend's degraded-envelope flag naming any butler pool dropped from the
+ * fan-out — is typed and consumable (the verdict opener qualifies its
+ * all-clear and the queue rail shows a named degraded note when it is
+ * non-empty; bu-jad4j.4).
+ */
 export function getApprovalsFlat(
   state?: "waiting" | "decided" | "all",
   limit?: number,
-): Promise<ApiResponse<ApprovalSummary[]>> {
+): Promise<ApprovalsListResponse> {
   const qs = new URLSearchParams();
   if (state) qs.set("state", state);
   if (limit != null) qs.set("limit", String(limit));
   const s = qs.toString();
-  return apiFetch<ApiResponse<ApprovalSummary[]>>(s ? `/approvals?${s}` : "/approvals");
+  return apiFetch<ApprovalsListResponse>(s ? `/approvals?${s}` : "/approvals");
 }
 
 export function getApprovalDetail(actionId: string): Promise<ApiResponse<ApprovalDetail>> {
@@ -3710,15 +3719,23 @@ export function updateApprovalsPolicy(
   });
 }
 
+/**
+ * Fetch decided approvals history.
+ *
+ * Returns {@link ApprovalsListResponse} so `meta.sources_degraded` — the
+ * backend's degraded-envelope flag naming any butler pool dropped from the
+ * fan-out — is typed and feeds the verdict opener's all-clear qualifier
+ * (bu-jad4j.4).
+ */
 export function getApprovalsHistory(
   since?: string,
   limit?: number,
-): Promise<ApiResponse<ApprovalSummary[]>> {
+): Promise<ApprovalsListResponse> {
   const qs = new URLSearchParams();
   if (since) qs.set("since", since);
   if (limit != null) qs.set("limit", String(limit));
   const s = qs.toString();
-  return apiFetch<ApiResponse<ApprovalSummary[]>>(s ? `/approvals/history?${s}` : "/approvals/history");
+  return apiFetch<ApprovalsListResponse>(s ? `/approvals/history?${s}` : "/approvals/history");
 }
 
 function autonomySuggestionSearchParams(params?: AutonomySuggestionParams): URLSearchParams {

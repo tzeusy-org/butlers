@@ -526,6 +526,8 @@ export type {
   ApprovalRuleCreateRequest,
   ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
+  ApprovalsListMeta,
+  ApprovalsListResponse,
   ApprovalsPolicy,
   ApprovalSummary,
   AutonomySuggestion,

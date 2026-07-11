@@ -64,7 +64,7 @@ import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-sugge
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
-import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
+import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1208,6 +1208,33 @@ export default function ApprovalsPage() {
   );
   const pending = rankedPending;
 
+  // Degraded fan-out (bu-jad4j.4): both approvals list endpoints fan across
+  // each butler's pool and, rather than failing the request, drop any pool
+  // that errors and name it in `meta.sources_degraded`. A non-empty list means
+  // the queue/history undercounts, so neither the opener's "No approvals
+  // waiting." verdict nor the rail's "No pending approvals." empty state may
+  // read as an all-clear — they name the dropped pools instead (CLAUDE.md
+  // degraded-envelope convention). An absent/empty flag with zero rows keeps
+  // the honest empty state.
+  const pendingSourcesDegraded = data?.meta?.sources_degraded ?? [];
+  const historySourcesDegraded = historyData?.meta?.sources_degraded ?? [];
+
+  // Single source of truth for the rail's degraded note — rendered in the empty
+  // fallback (in place of "No pending approvals.") when zero rows survived the
+  // fan-out, and above the rows when some did. Both branches are mutually
+  // exclusive, so the shared testId never appears twice.
+  const queueDegradedNote =
+    pendingSourcesDegraded.length > 0 ? (
+      <div className="p-4">
+        <SourceDegradedNote
+          label="Approvals queue"
+          detail={`${pendingSourcesDegraded.join(", ")} unreachable — queue may be incomplete`}
+          onRetry={() => void refetch()}
+          testId="approvals-queue-degraded"
+        />
+      </div>
+    ) : null;
+
   // Advance the URL selection past a just-decided item, skipping any ids in
   // `skipIds` (other items already scheduled mid-triage). Shared by the
   // instant dossier-button path (via onDecided below) and the keyboard
@@ -1396,9 +1423,11 @@ export default function ApprovalsPage() {
           pending={pending}
           pendingLoading={isLoading}
           pendingError={isError}
+          pendingSourcesDegraded={pendingSourcesDegraded}
           history={historyData?.data ?? []}
           historyLoading={historyLoading}
           historyError={historyIsError}
+          historySourcesDegraded={historySourcesDegraded}
         />
       </div>
 
@@ -1424,11 +1453,22 @@ export default function ApprovalsPage() {
                 </div>
               }
               emptyFallback={
-                <div className="p-4 text-sm text-muted-foreground font-mono">
-                  No pending approvals.
-                </div>
+                // Degraded before empty: a non-empty `sources_degraded` means the
+                // queue is empty because pools dropped out of the fan-out, not
+                // because nothing is waiting. Name the dropped pools instead of
+                // the calm "No pending approvals." all-clear (bu-jad4j.4). A
+                // reachable-but-empty queue keeps the honest empty state.
+                queueDegradedNote ?? (
+                  <div className="p-4 text-sm text-muted-foreground font-mono">
+                    No pending approvals.
+                  </div>
+                )
               }
             >
+              {/* Partial fan-out with rows present: the rail still shows its
+                  (incomplete) rows, but a named note above them keeps the list
+                  from reading as the whole truth (bu-jad4j.4). */}
+              {queueDegradedNote}
               {pending.map((summary) => (
                 <RailItem
                   key={summary.id}
