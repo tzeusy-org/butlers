@@ -55,9 +55,9 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
   };
 }
 
-function setupDefaults(issues: Issue[] = []) {
+function setupDefaults(issues: Issue[] = [], meta: Record<string, unknown> = {}) {
   vi.mocked(useIssues).mockReturnValue({
-    data: { data: issues, meta: {} },
+    data: { data: issues, meta },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useIssues>);
@@ -154,6 +154,32 @@ describe("IssuesPage — ?q= deep-link filter", () => {
 
     expect(container.textContent).toContain("Connection refused");
     expect(container.querySelector('[data-testid="q-filter"]')).toBeNull();
+
+    act(() => root.unmount());
+    container.remove();
+  });
+});
+
+describe("IssuesPage — degraded feed threading (bu-tpudw.3)", () => {
+  it("threads meta.sources_degraded into the panel so the all-clear is suppressed", () => {
+    setupDefaults([], { sources_degraded: ["audit-groups"] });
+    const { container, root } = renderPage("/issues");
+
+    const note = container.querySelector('[data-testid="issues-feed-degraded"]');
+    expect(note).toBeTruthy();
+    expect(note?.textContent).toContain("audit-groups");
+    expect(container.textContent).not.toContain("No issues recorded.");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("renders the honest empty state when meta carries no degraded sources", () => {
+    setupDefaults([], {});
+    const { container, root } = renderPage("/issues");
+
+    expect(container.querySelector('[data-testid="issues-feed-degraded"]')).toBeNull();
+    expect(container.textContent).toContain("No issues recorded.");
 
     act(() => root.unmount());
     container.remove();

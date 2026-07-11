@@ -12,6 +12,7 @@ import re
 from datetime import UTC, datetime, timedelta
 
 import anyio
+from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.audit_grouping import (
@@ -20,6 +21,7 @@ from butlers.api.audit_grouping import (
     issue_from_audit_group_row,
 )
 from butlers.api.db import DatabaseManager
+from butlers.api.degraded import DegradedSources
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
@@ -53,6 +55,30 @@ _STATUS_TIMEOUT_S = 5.0
 _DEFAULT_ISSUES_WINDOW = "7d"
 _MAX_AUDIT_GROUP_ROWS = 500
 _WINDOW_RE = re.compile(r"^(\d+)(h|d)$")
+
+# Degraded-source names for the ``meta.sources_degraded`` envelope (bu-tpudw.3).
+# This surface's whole product IS failure, so a query error on either source
+# must never silently zero-fill into an all-clear empty feed (CLAUDE.md
+# Degraded-Mode Response Envelope). Both sources read from the switchboard pool
+# (``public.audit_log`` grouped errors + ``public.dismissed_issues`` acks).
+_SOURCE_AUDIT_GROUPS = "audit-groups"
+_SOURCE_ACKS = "acks"
+
+
+def _is_missing_relation_error(exc: Exception) -> bool:
+    """Return whether *exc* means the backing table simply does not exist yet.
+
+    A pre-migration ``public.audit_log`` / ``public.dismissed_issues`` is a
+    legitimately-absent source, not a degraded one (classify-before-flagging;
+    mirrors :func:`butlers.api.routers.memory._is_missing_memory_schema_error`).
+    Any other failure -- a dropped connection, a timeout, a permission error --
+    is genuine and MUST be flagged so an incomplete feed never reads as a
+    truthful all-clear.
+    """
+    if isinstance(exc, UndefinedTableError):
+        return True
+    msg = str(exc).lower()
+    return "does not exist" in msg and ("relation" in msg or "table" in msg)
 
 
 def _parse_issues_window(window: str) -> timedelta | None:
@@ -91,6 +117,7 @@ def _get_db_manager() -> DatabaseManager | None:
 async def _list_audit_error_issues(
     db: DatabaseManager | None,
     since: datetime | None,
+    tracker: DegradedSources | None = None,
 ) -> list[Issue]:
     """Return grouped error issues derived from the audit log.
 
@@ -100,6 +127,13 @@ async def _list_audit_error_issues(
     ``since`` (bu-qvnce.13) bounds the underlying CTE to rows at or after that
     timestamp -- ``None`` (the ``window=all`` case) skips the time bound but
     the query is still capped at ``_MAX_AUDIT_GROUP_ROWS`` groups.
+
+    ``tracker`` (bu-tpudw.3): when the fetch fails for a *genuine* reason (a
+    dropped connection, a timeout, a permission error), the ``audit-groups``
+    source is flagged so :func:`list_issues` can surface it via
+    ``meta.sources_degraded`` instead of returning an all-clear empty feed. A
+    legitimately-absent table (pre-migration ``public.audit_log``) is NOT a
+    degraded source and is not flagged (see :func:`_is_missing_relation_error`).
     """
     if db is None:
         return []
@@ -119,14 +153,20 @@ async def _list_audit_error_issues(
         else:
             query = build_audit_group_query(limit=_MAX_AUDIT_GROUP_ROWS)
             rows = await pool.fetch(query)
-    except Exception:
-        logger.warning("Failed to query audit-derived issues", exc_info=True)
+    except Exception as exc:
+        if tracker is not None and not _is_missing_relation_error(exc):
+            tracker.mark(_SOURCE_AUDIT_GROUPS, msg="Failed to query audit-derived issues")
+        else:
+            logger.warning("Failed to query audit-derived issues", exc_info=True)
         return []
 
     return [issue_from_audit_group_row(row) for row in rows]
 
 
-async def _list_dismissed_acks(db: DatabaseManager | None) -> dict[str, datetime | None]:
+async def _list_dismissed_acks(
+    db: DatabaseManager | None,
+    tracker: DegradedSources | None = None,
+) -> dict[str, datetime | None]:
     """Return every acked issue_key mapped to its ack-time ``last_seen_at``.
 
     The mapped value is the recurrence watermark (JARVIS audit move 6,
@@ -134,6 +174,11 @@ async def _list_dismissed_acks(db: DatabaseManager | None) -> dict[str, datetime
     ``last_seen_at`` has not advanced past this value. A ``None`` value means
     no watermark was recorded (a legacy ack, or an issue type that never
     carries a timestamp) and falls back to dismiss-forever for that row.
+
+    ``tracker`` (bu-tpudw.3): a genuine query failure flags the ``acks`` source
+    so the feed is not silently under-filtered (a dropped ack lets an
+    already-acknowledged group reappear as if active). A legitimately-absent
+    ``public.dismissed_issues`` table is not flagged.
     """
     if db is None:
         return {}
@@ -143,8 +188,11 @@ async def _list_dismissed_acks(db: DatabaseManager | None) -> dict[str, datetime
         return {}
     try:
         rows = await pool.fetch("SELECT issue_key, last_seen_at FROM public.dismissed_issues")
-    except Exception:
-        logger.warning("Failed to query dismissed issues", exc_info=True)
+    except Exception as exc:
+        if tracker is not None and not _is_missing_relation_error(exc):
+            tracker.mark(_SOURCE_ACKS, msg="Failed to query dismissed issues")
+        else:
+            logger.warning("Failed to query dismissed issues", exc_info=True)
         return {}
     return {str(row["issue_key"]): row["last_seen_at"] for row in rows}
 
@@ -269,14 +317,27 @@ async def list_issues(
     own.
 
     Results are sorted by recency (most recent ``last_seen_at`` first).
+
+    Degraded sources (bu-tpudw.3): when a DB-backed source fails for a genuine
+    reason, the response still returns HTTP 200 but carries
+    ``meta.sources_degraded: list[str]`` naming the dropped source(s)
+    (``audit-groups`` and/or ``acks``) per the fleet-wide degraded-envelope
+    convention. The field is absent when every source answered. The frontend
+    MUST NOT render its all-clear empty state while this list is non-empty --
+    an incomplete feed is not an honest "no issues".
     """
     window_delta = _parse_issues_window(window)
     since = datetime.now(UTC) - window_delta if window_delta is not None else None
     tasks = [_check_butler_reachability(mgr, info) for info in configs]
+    # bu-tpudw.3: this feed's product IS failure, so a query error on either
+    # DB-backed source must be surfaced (meta.sources_degraded), never
+    # zero-filled into an all-clear empty feed. The tracker accumulates any
+    # genuinely-failed source across both queries below.
+    tracker = DegradedSources(logger)
     reachability_results, audit_issues, acked_by_key = await asyncio.gather(
         asyncio.gather(*tasks),
-        _list_audit_error_issues(db, since),
-        _list_dismissed_acks(db),
+        _list_audit_error_issues(db, since, tracker),
+        _list_dismissed_acks(db, tracker),
     )
 
     now = datetime.now(UTC)
@@ -326,7 +387,8 @@ async def list_issues(
         )
     )
 
-    return ApiResponse[list[Issue]](data=issues)
+    meta = ApiMeta(sources_degraded=tracker.names) if tracker.failed else ApiMeta()
+    return ApiResponse[list[Issue]](data=issues, meta=meta)
 
 
 @router.post("/dismiss", response_model=ApiResponse[dict], status_code=200)

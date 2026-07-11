@@ -9,6 +9,7 @@ import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { EmptyState } from '../ui/empty-state'
 import { ErrorState } from '../ui/error-state'
+import { SourceDegradedNote } from '../ui/query-boundary'
 import { Skeleton } from '../ui/skeleton'
 import type { AuditLogEntry, Issue } from '../../api/types'
 
@@ -31,6 +32,15 @@ interface IssuesPanelProps {
   issues: Issue[]
   isLoading?: boolean
   isError?: boolean
+  /**
+   * Names of backend feed sources that failed their query (issues
+   * `meta.sources_degraded`, bu-tpudw.3). A non-empty list means the feed
+   * undercounts: the "No issues recorded." all-clear is suppressed in favour
+   * of a named {@link SourceDegradedNote}, and the note also renders above the
+   * rows when some issues did survive. An honest empty feed (this absent/empty
+   * + zero rows) keeps the existing empty state.
+   */
+  sourcesDegraded?: string[]
   /** Called with the full issue when the user acknowledges it. */
   onDismiss?: (issue: Issue) => void
   /** Disables the Acknowledge control while an ack is in flight. */
@@ -152,6 +162,7 @@ export default function IssuesPanel({
   issues,
   isLoading,
   isError,
+  sourcesDegraded = [],
   onDismiss,
   isDismissing,
   onRestore,
@@ -201,6 +212,20 @@ export default function IssuesPanel({
     )
   }
 
+  // Degraded feed (bu-tpudw.3): a non-empty `sourcesDegraded` means a backend
+  // source errored, so the feed undercounts. The same note serves both the
+  // empty branch (in place of the all-clear) and the populated branch (above
+  // the rows); the two branches are mutually exclusive on `issues.length`, so
+  // the shared testid never appears twice.
+  const degradedNote =
+    sourcesDegraded.length > 0 ? (
+      <SourceDegradedNote
+        label="Issues feed"
+        detail={`${sourcesDegraded.join(', ')} unavailable — some issues may be missing`}
+        testId="issues-feed-degraded"
+      />
+    ) : null
+
   if (issues.length === 0) {
     return (
       <Card>
@@ -208,15 +233,17 @@ export default function IssuesPanel({
           <CardTitle>Issues</CardTitle>
         </CardHeader>
         <CardContent>
-          <EmptyState
-            variant="page"
-            title={dismissedView ? 'No acknowledged issues.' : 'No issues recorded.'}
-            description={
-              dismissedView
-                ? 'Issues you acknowledge appear here until they recur, or you restore them.'
-                : 'Issues appear when butlers report errors or warnings.'
-            }
-          />
+          {degradedNote ?? (
+            <EmptyState
+              variant="page"
+              title={dismissedView ? 'No acknowledged issues.' : 'No issues recorded.'}
+              description={
+                dismissedView
+                  ? 'Issues you acknowledge appear here until they recur, or you restore them.'
+                  : 'Issues appear when butlers report errors or warnings.'
+              }
+            />
+          )}
         </CardContent>
       </Card>
     )
@@ -229,6 +256,7 @@ export default function IssuesPanel({
         <Badge variant={dismissedView ? 'secondary' : 'destructive'}>{issues.length}</Badge>
       </CardHeader>
       <CardContent>
+        {degradedNote && <div className="mb-3">{degradedNote}</div>}
         <div className="space-y-3">
           {issues.map((issue) => {
             // Remedies only make sense once a single, real butler is

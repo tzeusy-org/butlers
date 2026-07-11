@@ -519,6 +519,27 @@ export interface Issue {
   dismissed?: boolean;
 }
 
+/**
+ * Metadata for the issues feed (GET /api/issues). Extends the base bag with
+ * the degraded-envelope flag the backend emits when one of the feed's
+ * DB-backed sources (audit-groups or acks) fails a genuine query
+ * (issues.py::list_issues -> `ApiMeta(sources_degraded=...)` via
+ * `DegradedSources`, bu-tpudw.3). Mirrors the fleet-wide
+ * `meta.sources_degraded` convention (see CLAUDE.md API Conventions). Absent
+ * or empty means every source answered; a non-empty list means the feed is
+ * incomplete and MUST NOT render as an all-clear "no issues".
+ */
+export interface IssuesListMeta extends ApiMeta {
+  /** Names of the feed sources whose query failed and were dropped. */
+  sources_degraded?: string[];
+}
+
+/** GET /api/issues response: grouped issues + degraded-source meta. */
+export interface IssuesListResponse {
+  data: Issue[];
+  meta: IssuesListMeta;
+}
+
 /** Result of dismissing (acking) an issue group. */
 export interface DismissIssueResult {
   issue_key: string;

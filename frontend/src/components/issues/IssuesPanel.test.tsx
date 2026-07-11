@@ -109,6 +109,49 @@ describe("IssuesPanel", () => {
     expect(screen.queryByText("No issues recorded.")).toBeNull();
   });
 
+  // Degraded feed (bu-tpudw.3): a backend source that failed its query is
+  // named in meta.sources_degraded. The panel must never let that read as an
+  // honest all-clear — the three-way distinction below is tested both
+  // directions so the flag can't be ignored.
+  describe("degraded feed (bu-tpudw.3)", () => {
+    it("names the degraded source in place of the all-clear when zero issues survived", () => {
+      renderPanel({ issues: [], sourcesDegraded: ["audit-groups"] });
+
+      const note = screen.getByTestId("issues-feed-degraded");
+      expect(note.textContent).toContain("Issues feed");
+      // Mutation strength: the source name is surfaced, not swallowed.
+      expect(note.textContent).toContain("audit-groups");
+      // The misleading all-clear MUST NOT render while a source is degraded.
+      expect(screen.queryByText("No issues recorded.")).toBeNull();
+    });
+
+    it("renders the degraded note above the rows when some issues did survive", () => {
+      renderPanel({ issues: [makeIssue()], sourcesDegraded: ["acks"] });
+
+      const note = screen.getByTestId("issues-feed-degraded");
+      expect(note.textContent).toContain("acks");
+      // The surviving rows are still shown alongside the degraded note.
+      expect(screen.getByText("boom (general)")).toBeTruthy();
+    });
+
+    it("keeps the honest empty state when no source is degraded", () => {
+      renderPanel({ issues: [], sourcesDegraded: [] });
+
+      expect(screen.getByText("No issues recorded.")).toBeTruthy();
+      expect(screen.queryByTestId("issues-feed-degraded")).toBeNull();
+    });
+
+    it("does not render the degraded note on a transport error (error state wins)", () => {
+      renderPanel({ issues: [], isError: true, sourcesDegraded: ["acks"] });
+
+      // A hard fetch failure is the existing ErrorState's job, not the
+      // partial-degraded note (which only applies to a 200 with a dropped
+      // source).
+      expect(screen.getByText("Could not load issues.")).toBeTruthy();
+      expect(screen.queryByTestId("issues-feed-degraded")).toBeNull();
+    });
+  });
+
   describe("Ping butler remedy", () => {
     it("renders for a single-butler 'unreachable' issue and calls onPingButler with the butler name", () => {
       const onPingButler = vi.fn();

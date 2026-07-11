@@ -927,6 +927,28 @@ pattern and MUST NOT breach per-butler schema isolation.
 - **AND** scheduled task failures are classified as critical severity
 - **AND** results are sorted by recency (newest `last_seen_at` first)
 
+#### Scenario: Issues degraded sources are named, not rendered as an all-clear
+- **WHEN** `GET /api/issues` runs its two DB-backed sources (grouped audit
+  errors and the acknowledgement watermarks) and one or more fail their query
+  for a genuine reason — a dropped connection, a timeout, a permission error —
+  the request still returns HTTP 200 with whatever the surviving source(s)
+  produced
+- **THEN** the response includes `meta.sources_degraded: string[]` naming the
+  dropped source(s) (`audit-groups` and/or `acks`, following the fleet-wide
+  degraded-envelope convention); the field is absent or empty when every source
+  answered
+- **AND** a *legitimately-absent* source — a pre-migration `public.audit_log` or
+  `public.dismissed_issues` table surfaced as `UndefinedTableError` / a
+  "relation does not exist" error — is NOT flagged (classify-before-flagging),
+  so a genuinely empty feed is not falsely marked degraded
+- **AND** the frontend issues panel SHALL NOT render the calm "No issues
+  recorded." all-clear empty state while a source is degraded — it names the
+  dropped source(s) via a `SourceDegradedNote` (in place of the empty state when
+  zero issues survived, above the rows when some did)
+- **AND** a reachable feed with `meta.sources_degraded` absent or empty keeps
+  the honest empty state, and a hard transport error keeps the existing error
+  state (the degraded note applies only to a 200 with a dropped source)
+
 ### Requirement: Butler Eligibility Control
 Butler-specific routers that expose domain-specific API endpoints SHALL have them auto-discovered and mounted.
 

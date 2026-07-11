@@ -75,6 +75,15 @@ export default function IssuesPage() {
   const runNow = useForceButlerTick();
   const windowedIssues = useMemo(() => data?.data ?? [], [data]);
 
+  // Degraded feed (bu-tpudw.3): this feed's product IS failure, so a backend
+  // source that errored is named in `meta.sources_degraded` rather than
+  // zero-filled into an all-clear empty feed. A non-empty list means the feed
+  // undercounts, so IssuesPanel must NOT render its "No issues recorded."
+  // all-clear — it names the dropped sources via a SourceDegradedNote instead
+  // (CLAUDE.md degraded-envelope convention). Absent/empty keeps the honest
+  // empty state.
+  const sourcesDegraded = data?.meta?.sources_degraded ?? [];
+
   // Butler options are derived from the currently-loaded (windowed) feed so
   // the pill row never offers a butler with zero issues in view.
   const availableButlers = useMemo(() => {
@@ -390,6 +399,7 @@ export default function IssuesPage() {
         issues={issues}
         isLoading={isLoading}
         isError={isError}
+        sourcesDegraded={sourcesDegraded}
         dismissedView={showDismissed}
         onDismiss={handleDismiss}
         isDismissing={dismiss.isPending}

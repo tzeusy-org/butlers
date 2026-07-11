@@ -83,7 +83,7 @@ import type {
   GroupListResponse,
   GroupParams,
   HealthResponse,
-  Issue,
+  IssuesListResponse,
   DismissIssueResult,
   UndismissIssueResult,
   Label,
@@ -942,12 +942,12 @@ export function getAttentionLedgerSummary(
  */
 export function getIssues(
   params: { includeDismissed?: boolean; window?: string } = {},
-): Promise<ApiResponse<Issue[]>> {
+): Promise<IssuesListResponse> {
   const qs = new URLSearchParams();
   if (params.includeDismissed) qs.set("include_dismissed", "true");
   if (params.window) qs.set("window", params.window);
   const query = qs.toString();
-  return apiFetch<ApiResponse<Issue[]>>(`/issues${query ? `?${query}` : ""}`);
+  return apiFetch<IssuesListResponse>(`/issues${query ? `?${query}` : ""}`);
 }
 
 /**
