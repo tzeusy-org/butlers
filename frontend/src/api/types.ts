@@ -8268,6 +8268,28 @@ export interface BreaksCatalogueParams {
   provider?: string;
 }
 
+/**
+ * Metadata for GET /api/secrets/breaks-catalogue. Extends the base bag with
+ * the degraded-envelope flag the backend emits when the shared credential
+ * pool is unreachable (secrets_v2.py::get_breaks_catalogue ->
+ * `ApiMeta(catalogue_available=False)`). Mirrors the fleet-wide
+ * `meta.<flag>` convention (see CLAUDE.md API Conventions — Degraded-Mode
+ * Response Envelope). `false` means the shared pool could not be reached, so
+ * the empty `data` list must NOT read as "no breaks tracked for this
+ * provider" — a legitimately-absent table (pre-migration) is a different
+ * case and is not flagged, keeping the honest empty state.
+ */
+export interface BreaksCatalogueMeta extends ApiMeta {
+  /** False only when the shared credential pool was unreachable. */
+  catalogue_available?: boolean;
+}
+
+/** GET /api/secrets/breaks-catalogue response: entries + degraded-pool meta. */
+export interface BreaksCatalogueResponse {
+  data: BreakEntry[];
+  meta: BreaksCatalogueMeta;
+}
+
 // ---------------------------------------------------------------------------
 // Secrets v2 — inventory endpoint (GET /api/secrets/inventory)
 // bu-nrgk9

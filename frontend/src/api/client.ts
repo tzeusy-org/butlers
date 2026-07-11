@@ -6735,7 +6735,7 @@ export function killButler(name: string, body: KillRequest): Promise<ApiResponse
 // Secrets v2 — breaks catalogue (bu-qo3sf)
 // ---------------------------------------------------------------------------
 
-import type { BreakEntry, BreaksCatalogueParams } from "./types.ts";
+import type { BreaksCatalogueParams, BreaksCatalogueResponse } from "./types.ts";
 
 /**
  * GET /api/secrets/breaks-catalogue
@@ -6743,16 +6743,17 @@ import type { BreakEntry, BreaksCatalogueParams } from "./types.ts";
  * Returns the list of butler features that depend on a given provider's
  * credential. When `?provider=` is omitted the full catalogue is returned.
  *
- * Response shape: ApiResponse<BreakEntry[]>
+ * Response shape: BreaksCatalogueResponse (data: BreakEntry[], meta carries
+ * the degraded-envelope `catalogue_available` flag).
  * When provider is omitted, meta.by_provider contains entries keyed by provider.
  */
 export function getBreaksCatalogue(
   params?: BreaksCatalogueParams,
-): Promise<ApiResponse<BreakEntry[]>> {
+): Promise<BreaksCatalogueResponse> {
   const qs = params?.provider
     ? `?provider=${encodeURIComponent(params.provider)}`
     : "";
-  return apiFetch<ApiResponse<BreakEntry[]>>(`/secrets/breaks-catalogue${qs}`);
+  return apiFetch<BreaksCatalogueResponse>(`/secrets/breaks-catalogue${qs}`);
 }
 
 // ---------------------------------------------------------------------------

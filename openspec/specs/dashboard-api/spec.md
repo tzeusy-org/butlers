@@ -693,6 +693,11 @@ The `/api/secrets/*` namespace SHALL expose two read-side endpoints supporting t
 - **AND** each `BreakEntry` includes `butler`, `feature`, `severity` (one of `high` / `medium` / `low`), `required_scopes` (jsonb array)
 - **AND** when `?provider=` is omitted, the endpoint returns the full catalogue keyed by provider in `meta.by_provider`
 
+#### Scenario: Breaks-catalogue degraded source is flagged, never a false empty
+- **WHEN** `GET /api/secrets/breaks-catalogue` is called and the shared credential pool is unreachable
+- **THEN** the response is still HTTP 200 with `data: []` and `meta.catalogue_available: false`
+- **BECAUSE** an empty catalogue must not read as "no breaks tracked for this provider" when the pool itself could not be queried -- mirrors the fleet-wide `meta.<flag>` degraded-envelope convention (see CLAUDE.md API Conventions). A legitimately-absent `provider_feature_catalogue` table (pre-migration) is a different case: it is NOT flagged and keeps `data: []` with `catalogue_available` absent (an honest empty, not a degraded source).
+
 ### Requirement: OAuth Per-Provider Generalisation
 The existing `/api/oauth/*` namespace (currently Google-only per `src/butlers/api/routers/oauth.py:156-1893`) SHALL be generalised to accept a `<provider>` path segment. Provider scope-sets SHALL be resolved from each butler's `butler.toml` declaration. The `/api/oauth/google/*` endpoints SHALL continue to function unchanged (path generalisation is additive; existing routes resolve via `provider=google`).
 
