@@ -67,7 +67,7 @@ def _mock_db_with_switchboard(registered_at: datetime | None = None) -> Database
         sw_pool.fetchrow = AsyncMock(return_value=None)
 
     db = MagicMock(spec=DatabaseManager)
-    db.fan_out = AsyncMock(return_value={})
+    db.fan_out_with_status = AsyncMock(return_value=({}, []))
     db.pool = MagicMock(return_value=sw_pool)
     return db
 
@@ -75,7 +75,7 @@ def _mock_db_with_switchboard(registered_at: datetime | None = None) -> Database
 def _mock_db_no_switchboard() -> DatabaseManager:
     """Build a mock DatabaseManager where pool("switchboard") raises KeyError."""
     db = MagicMock(spec=DatabaseManager)
-    db.fan_out = AsyncMock(return_value={})
+    db.fan_out_with_status = AsyncMock(return_value=({}, []))
     db.pool = MagicMock(side_effect=KeyError("switchboard not available"))
     return db
 

@@ -66,10 +66,10 @@ _CHRONICLER_RELATIONS: frozenset[str] = frozenset(
         "tier2_cache",
         # ── Core butler tables (every butler schema) ──────────────────────
         "scheduled_tasks",
-        # ── Per-butler tables accessed via fan_out (not via chronicler pool) ─
-        # GET /api/chronicler/ops/sessions uses db.fan_out() to query each
-        # butler's sessions table through its own schema-scoped pool.  This
-        # does NOT violate D17 — fan_out never runs SQL through the chronicler
+        # ── Per-butler tables accessed via fan-out (not via chronicler pool) ─
+        # GET /api/chronicler/ops/sessions uses db.fan_out_with_status() to query
+        # each butler's sessions table through its own schema-scoped pool.  This
+        # does NOT violate D17 — the fan-out never runs SQL through the chronicler
         # pool; it runs through each butler's own connection pool.
         "sessions",
         # GET /api/chronicler/who-you-were-with uses

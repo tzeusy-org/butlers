@@ -105,7 +105,10 @@ def _build_prep_app(
             return rows_to_scan
         return {}
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        return await _fan_out(query, args, butler_names), []
+
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_db.seen_queries = seen_queries  # type: ignore[attr-defined]
 
     mock_mgr = AsyncMock(spec=MCPClientManager)

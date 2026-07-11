@@ -67,10 +67,12 @@ class _FakeFanoutDB:
     def pool(self, name: str):
         raise RuntimeError("_FakeFanoutDB.pool() should not be called in DB-fallback tests")
 
-    async def fan_out(self, query: str, args: tuple = (), butler_names=None) -> dict:
+    async def fan_out_with_status(
+        self, query: str, args: tuple = (), butler_names=None
+    ) -> tuple[dict, list[str]]:
         self._fan_out_calls.append(query)
         self._fan_out_args.append(args)
-        return self._fan_out_result
+        return self._fan_out_result, []
 
 
 class _FakeRow(dict):
@@ -257,7 +259,9 @@ async def test_db_fallback_exception_returns_empty():
     os.environ.pop("PROMETHEUS_URL", None)
 
     class _FailFanoutDB(_FakeFanoutDB):
-        async def fan_out(self, query: str, args: tuple = (), butler_names=None) -> dict:
+        async def fan_out_with_status(
+            self, query: str, args: tuple = (), butler_names=None
+        ) -> tuple[dict, list[str]]:
             raise RuntimeError("DB connection failed")
 
     db = _FailFanoutDB()

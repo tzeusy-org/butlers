@@ -381,7 +381,7 @@ async def test_query_contact_search_swallows_exception():
 
 def _make_db_with_fan_out(result: dict) -> MagicMock:
     db = MagicMock()
-    db.fan_out = AsyncMock(return_value=result)
+    db.fan_out_with_status = AsyncMock(return_value=(result, []))
     return db
 
 
@@ -417,7 +417,7 @@ async def test_query_session_search_empty_fan_out_returns_empty_dict():
 
 async def test_query_session_search_swallows_exception():
     db = MagicMock()
-    db.fan_out = AsyncMock(side_effect=RuntimeError("fan-out failure"))
+    db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("fan-out failure"))
 
     result = await query_session_search(db, "%foo%", 5)
     assert result == {}
@@ -447,13 +447,13 @@ async def test_query_state_search_empty_fan_out_returns_empty_dict():
 async def test_query_state_search_passes_pattern_and_limit():
     db = _make_db_with_fan_out({})
     await query_state_search(db, "%prefs%", 15)
-    args = db.fan_out.call_args[0]
+    args = db.fan_out_with_status.call_args[0]
     assert args[1] == ("%prefs%", 15)
 
 
 async def test_query_state_search_swallows_exception():
     db = MagicMock()
-    db.fan_out = AsyncMock(side_effect=RuntimeError("fan-out failure"))
+    db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("fan-out failure"))
 
     result = await query_state_search(db, "%foo%", 5)
     assert result == {}

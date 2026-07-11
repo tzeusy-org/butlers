@@ -385,7 +385,7 @@ async def query_session_search(
         " LIMIT $2"
     )
     try:
-        raw = await db.fan_out(sql, (pattern, limit))
+        raw, _failed = await db.fan_out_with_status(sql, (pattern, limit))
     except Exception:
         logger.warning("Session search fan-out failed", exc_info=True)
         return {}
@@ -423,7 +423,7 @@ async def query_state_search(
         " LIMIT $2"
     )
     try:
-        raw = await db.fan_out(sql, (pattern, limit))
+        raw, _failed = await db.fan_out_with_status(sql, (pattern, limit))
     except Exception:
         logger.warning("State search fan-out failed", exc_info=True)
         return {}

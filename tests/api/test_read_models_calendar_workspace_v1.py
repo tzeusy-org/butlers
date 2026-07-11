@@ -125,7 +125,7 @@ def _workspace_dict(**overrides) -> dict:
 
 def _make_db(fan_out_result: dict) -> MagicMock:
     db = MagicMock()
-    db.fan_out = AsyncMock(return_value=fan_out_result)
+    db.fan_out_with_status = AsyncMock(return_value=(fan_out_result, []))
     db.butlers_with_module = MagicMock(return_value=["assistant"])
     return db
 
@@ -317,7 +317,7 @@ async def test_query_calendar_sources_uses_butlers_with_module_when_no_butlers_a
     await query_calendar_sources(db)
 
     db.butlers_with_module.assert_called_once_with("calendar")
-    _, kwargs = db.fan_out.call_args
+    _, kwargs = db.fan_out_with_status.call_args
     assert kwargs.get("butler_names") == ["assistant"]
 
 
@@ -326,7 +326,7 @@ async def test_query_calendar_sources_uses_explicit_butlers_arg():
 
     await query_calendar_sources(db, butlers=["secretary"])
 
-    _, kwargs = db.fan_out.call_args
+    _, kwargs = db.fan_out_with_status.call_args
     assert kwargs.get("butler_names") == ["secretary"]
     # should NOT call butlers_with_module
     db.butlers_with_module.assert_not_called()
@@ -389,7 +389,7 @@ async def test_query_calendar_workspace_uses_explicit_butlers_arg():
 
     await query_calendar_workspace(db, view="butler", start=start, end=end, butlers=["secretary"])
 
-    _, kwargs = db.fan_out.call_args
+    _, kwargs = db.fan_out_with_status.call_args
     assert kwargs.get("butler_names") == ["secretary"]
     db.butlers_with_module.assert_not_called()
 
@@ -401,11 +401,11 @@ async def test_query_calendar_workspace_sql_has_time_range_filter():
 
     await query_calendar_workspace(db, view="user", start=start, end=end)
 
-    sql = db.fan_out.call_args[0][0]
+    sql = db.fan_out_with_status.call_args[0][0]
     assert "starts_at" in sql
     assert "ends_at" in sql
     # start and end are passed as positional args
-    args = db.fan_out.call_args[0][1]
+    args = db.fan_out_with_status.call_args[0][1]
     assert end in args
     assert start in args
 
@@ -444,7 +444,7 @@ async def test_query_calendar_workspace_sql_has_lateral_join():
 
     await query_calendar_workspace(db, view="user", start=start, end=end)
 
-    sql = db.fan_out.call_args[0][0]
+    sql = db.fan_out_with_status.call_args[0][0]
     assert "LATERAL" in sql
     assert "calendar_event_instances" in sql
     assert "calendar_events" in sql
@@ -462,8 +462,8 @@ async def test_query_calendar_workspace_status_facet_adds_predicate():
 
     await query_calendar_workspace(db, view="user", start=start, end=end, status="paused")
 
-    sql = db.fan_out.call_args[0][0]
-    args = db.fan_out.call_args[0][1]
+    sql = db.fan_out_with_status.call_args[0][0]
+    args = db.fan_out_with_status.call_args[0][1]
     # Status is computed over the instance/event status (server-side CASE expr).
     assert "i.status" in sql
     assert "paused" in args
@@ -478,8 +478,8 @@ async def test_query_calendar_workspace_source_type_facet_adds_predicate():
         db, view="user", start=start, end=end, source_type="provider_event"
     )
 
-    sql = db.fan_out.call_args[0][0]
-    args = db.fan_out.call_args[0][1]
+    sql = db.fan_out_with_status.call_args[0][0]
+    args = db.fan_out_with_status.call_args[0][1]
     # source_type is computed over the source_kind / event metadata.
     assert "s.source_kind" in sql
     assert "provider_event" in args
@@ -492,8 +492,8 @@ async def test_query_calendar_workspace_editable_facet_adds_writable_predicate()
 
     await query_calendar_workspace(db, view="user", start=start, end=end, editable=True)
 
-    sql = db.fan_out.call_args[0][0]
-    args = db.fan_out.call_args[0][1]
+    sql = db.fan_out_with_status.call_args[0][0]
+    args = db.fan_out_with_status.call_args[0][1]
     assert "COALESCE(s.writable, false) =" in sql
     assert True in args
 
@@ -513,7 +513,7 @@ async def test_query_calendar_workspace_facets_and_together():
         editable=False,
     )
 
-    args = db.fan_out.call_args[0][1]
+    args = db.fan_out_with_status.call_args[0][1]
     # All three facet values bind as positional params (combined with AND).
     assert "active" in args
     assert "provider_event" in args
@@ -528,8 +528,8 @@ async def test_query_calendar_workspace_cursor_adds_keyset_predicate():
 
     await query_calendar_workspace(db, view="user", start=start, end=end, cursor=(_NOW, cursor_id))
 
-    sql = db.fan_out.call_args[0][0]
-    args = db.fan_out.call_args[0][1]
+    sql = db.fan_out_with_status.call_args[0][0]
+    args = db.fan_out_with_status.call_args[0][1]
     assert "(i.starts_at, i.id) >" in sql
     assert _NOW in args
     assert cursor_id in args
@@ -542,8 +542,8 @@ async def test_query_calendar_workspace_limit_adds_limit_clause():
 
     await query_calendar_workspace(db, view="user", start=start, end=end, limit=5)
 
-    sql = db.fan_out.call_args[0][0]
-    args = db.fan_out.call_args[0][1]
+    sql = db.fan_out_with_status.call_args[0][0]
+    args = db.fan_out_with_status.call_args[0][1]
     assert "LIMIT $" in sql
     assert 5 in args
 
@@ -556,7 +556,7 @@ async def test_query_calendar_workspace_no_facets_preserves_base_query():
 
     await query_calendar_workspace(db, view="user", start=start, end=end)
 
-    sql = db.fan_out.call_args[0][0]
+    sql = db.fan_out_with_status.call_args[0][0]
     assert "(i.starts_at, i.id) >" not in sql
     assert "LIMIT $" not in sql  # the LATERAL subquery uses a literal LIMIT 1
     # ``s.writable`` appears in the SELECT projection, but no editable predicate.
@@ -611,8 +611,8 @@ async def test_query_calendar_proposals_sql_filters_pending_and_range():
 
     await query_calendar_proposals(db, start=start, end=end)
 
-    sql = db.fan_out.call_args[0][0]
-    args = db.fan_out.call_args[0][1]
+    sql = db.fan_out_with_status.call_args[0][0]
+    args = db.fan_out_with_status.call_args[0][1]
     assert "calendar_event_proposals" in sql
     assert "p.status = 'pending'" in sql
     assert "p.start_at >= $1" in sql
@@ -628,7 +628,7 @@ async def test_query_calendar_proposals_uses_butlers_with_module_when_no_butlers
 
 async def test_query_calendar_proposals_fail_open_on_fan_out_error():
     db = _make_db({})
-    db.fan_out = AsyncMock(side_effect=RuntimeError("relation does not exist"))
+    db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("relation does not exist"))
 
     rows = await query_calendar_proposals(db, start=_NOW, end=_NOW + timedelta(hours=1))
 
@@ -664,14 +664,14 @@ async def test_query_calendar_overlays_reads_through_single_pool():
     db = _make_db({})
     db.butlers_with_module = MagicMock(return_value=["travel", "finance", "health"])
     row = {"butler": "finance", "key": "calendar/overlay/2026-02-22", "value": {"date": "x"}}
-    db.fan_out = AsyncMock(return_value={"finance": [row]})
+    db.fan_out_with_status = AsyncMock(return_value=({"finance": [row]}, []))
 
     rows = await query_calendar_overlays(db)
 
     # Deterministic single reader = sorted(candidates)[0] == "finance".
-    _, kwargs = db.fan_out.call_args
+    _, kwargs = db.fan_out_with_status.call_args
     assert kwargs.get("butler_names") == ["finance"]
-    sql = db.fan_out.call_args[0][0]
+    sql = db.fan_out_with_status.call_args[0][0]
     assert "calendar.v_overlay_contributions" in sql
     assert len(rows) == 1
     assert isinstance(rows[0], CalendarOverlayRow)
@@ -680,7 +680,7 @@ async def test_query_calendar_overlays_reads_through_single_pool():
 
 async def test_query_calendar_overlays_fail_open_on_error():
     db = _make_db({})
-    db.fan_out = AsyncMock(side_effect=RuntimeError("view does not exist"))
+    db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("view does not exist"))
     assert await query_calendar_overlays(db) == []
 
 

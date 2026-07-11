@@ -80,7 +80,9 @@ def _make_app_filtering_on_success(rows: list[dict]) -> object:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(side_effect=_side_effect)
+    mock_db.fan_out_with_status = AsyncMock(
+        side_effect=lambda sql, args, **kw: (_side_effect(sql, args, **kw), [])
+    )
 
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db

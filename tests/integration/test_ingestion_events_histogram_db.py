@@ -440,7 +440,9 @@ async def test_histogram_endpoint_trace_id_filters_to_matching_events(pool):
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    mock_db.fan_out = AsyncMock(return_value={"atlas": [{"request_id": str(traced_id)}]})
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [{"request_id": str(traced_id)}]}, [])
+    )
 
     application = create_app()
     from butlers.api.routers import ingestion_events as ingestion_events_router_module

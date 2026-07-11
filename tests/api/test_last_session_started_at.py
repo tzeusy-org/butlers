@@ -68,7 +68,7 @@ def _mock_db(last_session_started_at: datetime | None) -> DatabaseManager:
         return butler_pool
 
     db = MagicMock(spec=DatabaseManager)
-    db.fan_out = AsyncMock(return_value={})
+    db.fan_out_with_status = AsyncMock(return_value=({}, []))
     db.pool = MagicMock(side_effect=_pool)
     return db
 

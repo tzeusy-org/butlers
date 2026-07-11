@@ -684,7 +684,7 @@ async def query_calendar_sources(
     else:
         query_targets = db.butlers_with_module("calendar")
 
-    results = await db.fan_out(sql, tuple(args), butler_names=query_targets)
+    results, _failed = await db.fan_out_with_status(sql, tuple(args), butler_names=query_targets)
     rows: list[CalendarSourceRow] = []
     for butler_name, raw_rows in results.items():
         for row in raw_rows:
@@ -722,7 +722,7 @@ async def query_calendar_workspace_entry(
     """
 
     query_targets = db.butlers_with_module("calendar")
-    results = await db.fan_out(sql, (entry_id,), butler_names=query_targets)
+    results, _failed = await db.fan_out_with_status(sql, (entry_id,), butler_names=query_targets)
     for butler_name, raw_rows in results.items():
         for row in raw_rows:
             return row_to_workspace(row, db_butler=butler_name)
@@ -851,7 +851,7 @@ async def query_calendar_workspace(
     else:
         query_targets = db.butlers_with_module("calendar")
 
-    results = await db.fan_out(sql, tuple(args), butler_names=query_targets)
+    results, _failed = await db.fan_out_with_status(sql, tuple(args), butler_names=query_targets)
     rows: list[CalendarWorkspaceRow] = []
     for butler_name, raw_rows in results.items():
         for row in raw_rows:
@@ -877,8 +877,8 @@ async def query_calendar_proposals(
     **Fail-open contract.** This read MUST NOT raise when the
     ``calendar_event_proposals`` table is absent (calendar module disabled or a
     schema that pre-dates the migration) or when the query otherwise fails.
-    :meth:`DatabaseManager.fan_out` already isolates per-butler failures (a
-    failing schema yields an empty result, logged), and the whole function is
+    :meth:`DatabaseManager.fan_out_with_status` already isolates per-butler
+    failures (a failing schema yields an empty result, logged), and the whole function is
     additionally wrapped so an unexpected failure degrades to an empty list
     rather than propagating an HTTP 500.
 
@@ -927,7 +927,9 @@ async def query_calendar_proposals(
         query_targets = db.butlers_with_module("calendar")
 
     try:
-        results = await db.fan_out(sql, tuple(args), butler_names=query_targets)
+        results, _failed = await db.fan_out_with_status(
+            sql, tuple(args), butler_names=query_targets
+        )
     except Exception:
         logger.warning("query_calendar_proposals fan-out failed; returning empty", exc_info=True)
         return []
@@ -1044,7 +1046,9 @@ async def query_calendar_proposal_by_id(
     """
     query_targets = db.butlers_with_module("calendar")
     try:
-        results = await db.fan_out(sql, (proposal_id,), butler_names=query_targets)
+        results, _failed = await db.fan_out_with_status(
+            sql, (proposal_id,), butler_names=query_targets
+        )
     except Exception:
         logger.warning(
             "query_calendar_proposal_by_id fan-out failed; returning None", exc_info=True
@@ -1111,7 +1115,7 @@ async def update_calendar_proposal_status(
         RETURNING {PROPOSAL_RETURNING_COLUMNS}
     """
 
-    results = await db.fan_out(sql, tuple(args), butler_names=[schema])
+    results, _failed = await db.fan_out_with_status(sql, tuple(args), butler_names=[schema])
     for _butler_name, raw_rows in results.items():
         for row in raw_rows:
             return row_to_proposal(row, db_butler=schema)
@@ -1161,7 +1165,7 @@ async def query_calendar_overlays(
 
     sql = "SELECT butler, key, value FROM calendar.v_overlay_contributions"
     try:
-        results = await db.fan_out(sql, (), butler_names=[target])
+        results, _failed = await db.fan_out_with_status(sql, (), butler_names=[target])
     except Exception:
         logger.warning(
             "query_calendar_overlays read failed; returning empty (fail-open)",
@@ -1221,7 +1225,7 @@ async def query_calendar_prep(
     key = f"calendar/prep/{event_id}"
     sql = "SELECT butler, key, value FROM calendar.v_prep_contributions WHERE key = $1"
     try:
-        results = await db.fan_out(sql, (key,), butler_names=[target])
+        results, _failed = await db.fan_out_with_status(sql, (key,), butler_names=[target])
     except Exception:
         logger.warning(
             "query_calendar_prep read failed; returning empty (fail-open)",

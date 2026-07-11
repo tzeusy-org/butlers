@@ -87,8 +87,10 @@ class _FakeDBWithRows:
     def butler_names(self) -> list[str]:
         return []
 
-    async def fan_out(self, query: str, args: tuple = (), butler_names=None) -> dict:
-        return {}
+    async def fan_out_with_status(
+        self, query: str, args: tuple = (), butler_names=None
+    ) -> tuple[dict, list[str]]:
+        return {}, []
 
 
 class _FakeDB:
@@ -99,8 +101,10 @@ class _FakeDB:
     def butler_names(self) -> list[str]:
         return []
 
-    async def fan_out(self, query: str, args: tuple = (), butler_names=None) -> dict:
-        return {}
+    async def fan_out_with_status(
+        self, query: str, args: tuple = (), butler_names=None
+    ) -> tuple[dict, list[str]]:
+        return {}, []
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +436,7 @@ async def test_get_ingestion_fanout_no_prometheus_url_uses_db_fallback():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    # _FakeDB.fan_out returns empty dict (no butlers / no rows) → empty data list
+    # _FakeDB.fan_out_with_status returns empty dict (no butlers / no rows) → empty data list
     result = await mod.get_ingestion_fanout(
         period="24h",
         db=_FakeDB(),
@@ -508,7 +512,7 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
-            # _FakeDB.fan_out returns empty dict → empty data list
+            # _FakeDB.fan_out_with_status returns empty dict → empty data list
             result = await mod.get_ingestion_fanout(
                 period="24h",
                 db=_FakeDB(),
@@ -603,8 +607,10 @@ async def test_connector_stats_db_query_uses_coalesce_and_tz_aware_bucket():
         def butler_names(self) -> list[str]:
             return []
 
-        async def fan_out(self, query: str, args: tuple = (), butler_names=None) -> dict:
-            return {}
+        async def fan_out_with_status(
+            self, query: str, args: tuple = (), butler_names=None
+        ) -> tuple[dict, list[str]]:
+            return {}, []
 
     sys.modules.pop("switchboard_api_models", None)
     router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"

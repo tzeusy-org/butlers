@@ -1067,7 +1067,7 @@ async def list_ops_sessions(
         LIMIT ${len(args)}
     """
 
-    fan_results: dict[str, list[Any]] = await db.fan_out(sql, args=tuple(args))
+    fan_results, _failed = await db.fan_out_with_status(sql, args=tuple(args))
 
     rows: list[OpsSessionRow] = []
     for butler_name, butler_rows in sorted(fan_results.items()):

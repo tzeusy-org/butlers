@@ -88,7 +88,7 @@ async def test_contact_found_by_name(app: FastAPI) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     body = await _get(app, "alice")
@@ -118,7 +118,7 @@ async def test_contact_without_entity_no_snippet(app: FastAPI) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     body = await _get(app, "bob")
@@ -143,7 +143,7 @@ async def test_contact_search_exception_swallowed(app: FastAPI) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     body = await _get(app, "anything")
@@ -155,7 +155,7 @@ async def test_empty_query_returns_empty_results(app: FastAPI) -> None:
     """Empty query string → immediate empty response without DB calls."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = []
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     async with httpx.AsyncClient(
@@ -197,7 +197,7 @@ async def test_contact_snippet_includes_phone(app: FastAPI) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     body = await _get(app, "charlie")
@@ -234,7 +234,7 @@ async def test_contact_snippet_email_and_phone_both_shown(app: FastAPI) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["relationship"]
     mock_db.pool = MagicMock(return_value=pool)
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     body = await _get(app, "dana")

@@ -140,7 +140,7 @@ def _make_app(
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     # fan_out returns the provided dict (keyed by butler name).
-    db.fan_out = AsyncMock(return_value=fan_out_results or {})
+    db.fan_out_with_status = AsyncMock(return_value=(fan_out_results or {}, []))
 
     app = create_app(api_key="")
     app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
@@ -225,8 +225,8 @@ class TestOpsSessionsEndpoint:
         data = resp.json()["data"]
         assert data[0]["trigger_source"] == "tick"
         # fan_out was called with SQL that included the trigger_source filter.
-        assert db_mock.fan_out.called
-        call_kwargs = db_mock.fan_out.call_args
+        assert db_mock.fan_out_with_status.called
+        call_kwargs = db_mock.fan_out_with_status.call_args
         args_tuple = call_kwargs.kwargs["args"]
         # The specific trigger_source value should be in the args tuple.
         assert "tick" in args_tuple

@@ -258,7 +258,6 @@ def _build_app(
         # caller-supplied ``entity_people_failed`` schemas as failed.
         return await _fan_out(query, args, butler_names), list(entity_people_failed or [])
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
     mock_mgr = AsyncMock(spec=MCPClientManager)
@@ -511,7 +510,6 @@ def _build_paginating_app(app, *, rows: list[dict]):
     async def _fan_out_with_status(query: str, args=(), butler_names=None):
         return await _fan_out(query, args, butler_names), []
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -647,7 +645,6 @@ async def test_workspace_editable_facet_filters_server_side(app):
     async def _fan_out_with_status(query: str, args=(), butler_names=None):
         return await _fan_out(query, args, butler_names), []
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -1313,7 +1310,10 @@ def _build_audit_app(
             return rows_to_scan
         return {}
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        return await _fan_out(query, args, butler_names), []
+
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
     mock_mgr = AsyncMock(spec=MCPClientManager)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -1531,7 +1531,10 @@ def _build_undo_app(
             return rows
         return {}
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        return await _fan_out(query, args, butler_names), []
+
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     _pool = MagicMock()
     _pool.execute = AsyncMock()
 

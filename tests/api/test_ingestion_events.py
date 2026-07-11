@@ -62,7 +62,7 @@ def _app_with_mock_db(app: FastAPI, *, shared_pool=None, shared_pool_error=None)
             shared_pool.fetchrow = AsyncMock(return_value=None)
             shared_pool.execute = AsyncMock(return_value=None)
         mock_db.credential_shared_pool.return_value = shared_pool
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
@@ -709,7 +709,7 @@ async def test_list_events_enriches_rows_with_sessions_and_sender(app):
         "trace_id": None,
         "model": None,
     }
-    mock_db.fan_out = AsyncMock(return_value={"atlas": [session_row]})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": [session_row]}, []))
 
     sender_row = {
         "predicate": "has-email",
@@ -744,7 +744,7 @@ async def test_list_events_enriches_rows_with_sessions_and_sender(app):
     assert item["sender_display"] == "Alice Smith"
 
     # Exactly one grouped fan-out call for the whole page — never per row.
-    assert mock_db.fan_out.await_count == 1
+    assert mock_db.fan_out_with_status.await_count == 1
     # Exactly one bulk sender-contact query for the whole page.
     shared_pool.fetch.assert_awaited_once()
 
@@ -769,7 +769,7 @@ async def test_list_events_enrichment_prefers_denormalized_cost_usd(app):
         "trace_id": None,
         "model": None,
     }
-    mock_db.fan_out = AsyncMock(return_value={"atlas": [session_row]})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": [session_row]}, []))
 
     with patch(
         "butlers.api.routers.ingestion_events.ingestion_events_list",
@@ -793,7 +793,7 @@ async def test_list_events_enrichment_fails_open_on_session_fan_out_error(app):
     row = _make_event_row(event_id=event_id, status="ingested")
 
     mock_db = _app_with_mock_db(app)
-    mock_db.fan_out = AsyncMock(side_effect=Exception("db unreachable"))
+    mock_db.fan_out_with_status = AsyncMock(side_effect=Exception("db unreachable"))
 
     with patch(
         "butlers.api.routers.ingestion_events.ingestion_events_list",
@@ -828,7 +828,7 @@ async def test_list_events_empty_page_skips_enrichment_calls(app):
 
     assert resp.status_code == 200
     assert resp.json()["data"] == []
-    mock_db.fan_out.assert_not_awaited()
+    mock_db.fan_out_with_status.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -847,7 +847,7 @@ def _app_with_mock_rollup_db(app: FastAPI, *, shared_pool=None, shared_pool_erro
             shared_pool.fetchval = AsyncMock(return_value=0)
             shared_pool.fetch = AsyncMock(return_value=[])
         mock_db.credential_shared_pool.return_value = shared_pool
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_rollup_db_manager] = lambda: mock_db
     return mock_db
 
@@ -971,7 +971,7 @@ def _app_with_switchboard_pool(
         )
     else:
         mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
     return mock_db
@@ -1176,7 +1176,7 @@ async def test_event_rollup_writes_cost_usd_back(app):
     shared_pool.execute = AsyncMock(return_value="UPDATE 1")
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = shared_pool
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 
@@ -1226,7 +1226,7 @@ async def test_event_rollup_skips_write_when_no_sessions(app):
     request_id = str(_uuid4())
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = AsyncMock()
-    mock_db.fan_out = AsyncMock(return_value={})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(models={})
 

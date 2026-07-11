@@ -65,7 +65,7 @@ def _make_app(*, owning_butler: str, row: dict | None) -> object:
         result = {"atlas": [], "general": []}
         if row is not None:
             result[owning_butler] = [_make_record(row)]
-        return result
+        return result, []
 
     owning_pool = AsyncMock()
     owning_pool.fetchrow = AsyncMock(return_value=None)
@@ -73,7 +73,7 @@ def _make_app(*, owning_butler: str, row: dict | None) -> object:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out)
     mock_db.pool.return_value = owning_pool
 
     app = create_app()

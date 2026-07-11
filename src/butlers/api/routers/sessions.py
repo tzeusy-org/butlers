@@ -323,7 +323,7 @@ async def list_sessions(
 ) -> KeysetResponse[SessionSummary]:
     """Return keyset-paginated sessions aggregated across all butler databases.
 
-    Uses ``DatabaseManager.fan_out()`` to query every registered butler DB
+    Uses ``DatabaseManager.fan_out_with_status()`` to query every registered butler DB
     concurrently for ``limit + 1`` rows after the cursor position, then merges,
     sorts ``(started_at DESC, id DESC)``, and truncates to ``limit``.  When the
     ``butler`` query parameter is provided, only that butler's DB is queried.
@@ -484,7 +484,7 @@ async def get_session(
 
     Session ids are globally unique UUIDs but live in per-butler schemas, so
     this endpoint fans out the detail lookup across every registered butler DB
-    via ``DatabaseManager.fan_out()`` and returns the first (and only) match.
+    via ``DatabaseManager.fan_out_with_status()`` and returns the first (and only) match.
     The response is the same ``SessionDetail`` shape produced by the
     butler-scoped ``GET /api/butlers/{name}/sessions/{session_id}`` path,
     including best-effort process log and correction count.

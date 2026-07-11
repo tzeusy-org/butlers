@@ -368,7 +368,9 @@ async def query_session_summaries_keyset_fan_out(
         f"ORDER BY started_at DESC, id DESC LIMIT {limit + 1}"
     )
 
-    data_results = await db.fan_out(data_sql, tuple(keyset_args), butler_names=butler_names)
+    data_results, _failed = await db.fan_out_with_status(
+        data_sql, tuple(keyset_args), butler_names=butler_names
+    )
 
     merged: list[SessionSummaryRow] = []
     for butler_name, db_rows in data_results.items():
@@ -437,7 +439,7 @@ async def query_session_aggregate_fan_out(
         Combined scalar totals and per-butler counts.
     """
     sql = _AGGREGATE_SQL_TEMPLATE.format(where_clause=where_clause)
-    results = await db.fan_out(sql, args, butler_names=butler_names)
+    results, _failed = await db.fan_out_with_status(sql, args, butler_names=butler_names)
 
     combined = FanOutAggregateResult()
     by_butler: list[ButlerCount] = []
@@ -505,7 +507,7 @@ async def query_session_trigger_breakdown_fan_out(
         Combined per-trigger_source counts, sorted count descending.
     """
     sql = _TRIGGER_BREAKDOWN_SQL_TEMPLATE.format(where_clause=where_clause)
-    results = await db.fan_out(sql, args, butler_names=butler_names)
+    results, _failed = await db.fan_out_with_status(sql, args, butler_names=butler_names)
 
     counts: dict[str, int] = {}
     for _butler_name, db_rows in results.items():
@@ -540,7 +542,7 @@ async def query_session_detail_fan_out(
         The matched :class:`SessionDetailRow` and the owning butler name, or
         ``row=None`` if not found in any butler.
     """
-    results = await db.fan_out(
+    results, _failed = await db.fan_out_with_status(
         f"SELECT {DETAIL_COLUMNS} FROM sessions WHERE id = $1",
         (session_id,),
     )

@@ -152,9 +152,9 @@ class _FakeDb:
         except KeyError:
             raise KeyError(name) from None
 
-    async def fan_out(self, sql, *, args=(), butler_names=None):
+    async def fan_out_with_status(self, sql, *, args=(), butler_names=None):
         """Stand in for the 24h-sessions fan-out used by _fetch_sessions_24h."""
-        return {}
+        return {}, []
 
 
 def _registry_row(

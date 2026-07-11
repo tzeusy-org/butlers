@@ -91,7 +91,10 @@ def _build_app(app, *, workspace_rows: dict[str, list[dict]] | None = None) -> t
             return rows_to_scan
         return {}
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        return await _fan_out(query, args, butler_names), []
+
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
     # MCP client whose call_tool returns a minimal create-event payload.
     mock_client = AsyncMock()
@@ -206,7 +209,7 @@ async def test_subscribe_read_only_no_provider_write(app):
 
     assert resp.status_code == 200
     mock_mgr.get_client.assert_not_called()
-    assert mock_db.fan_out.await_count >= 1
+    assert mock_db.fan_out_with_status.await_count >= 1
 
 
 async def test_subscribe_rejects_unknown_facet(app):
@@ -421,7 +424,7 @@ def _collect_dedup_windows(mock_db) -> list[tuple[datetime, datetime]]:
     window it scanned.
     """
     windows: list[tuple[datetime, datetime]] = []
-    for call in mock_db.fan_out.await_args_list:
+    for call in mock_db.fan_out_with_status.await_args_list:
         sql = call.args[0]
         if "FROM calendar_event_instances AS i" not in sql:
             continue
@@ -459,7 +462,10 @@ def _build_filtering_app(app, *, rows_by_butler: dict[str, list[dict]]) -> tuple
                 filtered[butler] = kept
         return filtered
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        return await _fan_out(query, args, butler_names), []
+
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
     mock_client = AsyncMock()
     mock_client.call_tool = AsyncMock(

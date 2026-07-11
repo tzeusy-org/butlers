@@ -86,8 +86,8 @@ async def query_sessions_24h(
 
     since = datetime.now(UTC) - timedelta(hours=24)
     try:
-        raw = await asyncio.wait_for(
-            db.fan_out(SESSIONS_24H_SQL, args=(since,), butler_names=butler_names),
+        raw, _failed = await asyncio.wait_for(
+            db.fan_out_with_status(SESSIONS_24H_SQL, args=(since,), butler_names=butler_names),
             timeout=timeout_s,
         )
     except Exception:

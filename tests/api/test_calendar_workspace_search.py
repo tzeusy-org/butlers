@@ -5,8 +5,8 @@ lane + butler/source scoping, and the degraded (pg_trgm unavailable) fail-open
 path (ILIKE fallback and skip-on-double-failure).
 
 The search read-model issues its queries directly against ``db.pool(name)``
-(rather than ``db.fan_out``) so it can fall back per-schema, so these tests mock
-``pool(name).fetch`` instead of ``fan_out``.
+(rather than ``db.fan_out_with_status``) so it can fall back per-schema, so these
+tests mock ``pool(name).fetch`` instead of the fan-out.
 """
 
 from __future__ import annotations

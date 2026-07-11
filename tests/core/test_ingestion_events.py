@@ -135,11 +135,11 @@ class _FakeDatabaseManager:
     def butler_names(self):
         return list(self._results.keys())
 
-    async def fan_out(self, query, args=(), butler_names=None):
+    async def fan_out_with_status(self, query, args=(), butler_names=None):
         self.fan_out_calls.append((query, args, butler_names))
         if butler_names is not None:
-            return {k: self._results.get(k, []) for k in butler_names}
-        return dict(self._results)
+            return {k: self._results.get(k, []) for k in butler_names}, []
+        return dict(self._results), []
 
 
 _EXPECTED_EVENT_FIELDS = (

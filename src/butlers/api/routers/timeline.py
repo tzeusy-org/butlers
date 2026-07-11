@@ -5,7 +5,7 @@ Provides:
 - ``router`` — timeline endpoint at ``GET /api/timeline``
 
 Merges sessions and notifications from all butler databases into a single
-time-ordered event stream using ``DatabaseManager.fan_out()``. Supports
+time-ordered event stream using ``DatabaseManager.fan_out_with_status()``. Supports
 composite ``(timestamp, id)`` keyset pagination (``before`` cursor + ``limit``)
 and SQL-level filtering by butler and event type.
 

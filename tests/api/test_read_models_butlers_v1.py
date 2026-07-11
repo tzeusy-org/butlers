@@ -76,7 +76,7 @@ def _make_fan_out_row(count: int) -> MagicMock:
 
 def _make_db(fan_out_result: dict) -> MagicMock:
     db = MagicMock()
-    db.fan_out = AsyncMock(return_value=fan_out_result)
+    db.fan_out_with_status = AsyncMock(return_value=(fan_out_result, []))
     return db
 
 
@@ -118,7 +118,7 @@ async def test_query_sessions_24h_passes_butler_names():
     """butler_names kwarg is forwarded to fan_out."""
     db = _make_db({"assistant": [_make_fan_out_row(1)]})
     await query_sessions_24h(db, butler_names=["assistant"])
-    _, kwargs = db.fan_out.call_args
+    _, kwargs = db.fan_out_with_status.call_args
     assert kwargs.get("butler_names") == ["assistant"]
 
 
@@ -155,7 +155,7 @@ async def test_query_sessions_24h_custom_timeout_forwarded():
 async def test_query_sessions_24h_swallows_db_exception():
     """DB errors are swallowed — returns {} rather than raising."""
     db = MagicMock()
-    db.fan_out = AsyncMock(side_effect=RuntimeError("db failure"))
+    db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("db failure"))
     result = await query_sessions_24h(db)
     assert result == {}
 
@@ -163,7 +163,7 @@ async def test_query_sessions_24h_swallows_db_exception():
 async def test_query_sessions_24h_swallows_timeout():
     """asyncio.TimeoutError is swallowed — returns {}."""
     db = MagicMock()
-    db.fan_out = AsyncMock(side_effect=TimeoutError())
+    db.fan_out_with_status = AsyncMock(side_effect=TimeoutError())
     result = await query_sessions_24h(db)
     assert result == {}
 

@@ -3025,8 +3025,12 @@ async def get_calendar_audit(
         query_targets = db.butlers_with_module("calendar")
 
     # Fan out — gather raw rows from every calendar butler schema.
-    results = await db.fan_out(_AUDIT_SQL, (limit + offset, 0), butler_names=query_targets)
-    count_results = await db.fan_out(_AUDIT_COUNT_SQL, (), butler_names=query_targets)
+    results, _failed = await db.fan_out_with_status(
+        _AUDIT_SQL, (limit + offset, 0), butler_names=query_targets
+    )
+    count_results, _count_failed = await db.fan_out_with_status(
+        _AUDIT_COUNT_SQL, (), butler_names=query_targets
+    )
 
     raw_rows: list[dict[str, Any]] = []
     for butler_rows in results.values():
@@ -3196,7 +3200,9 @@ async def _find_action_owner(
     matching ``calendar_action_log`` row owns it.
     """
     targets = db.butlers_with_module("calendar")
-    results = await db.fan_out(_UNDO_LOOKUP_SQL, (action_id,), butler_names=targets)
+    results, _failed = await db.fan_out_with_status(
+        _UNDO_LOOKUP_SQL, (action_id,), butler_names=targets
+    )
     for butler_name, rows in results.items():
         if rows:
             return butler_name, dict(rows[0])

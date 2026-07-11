@@ -57,7 +57,7 @@ def _make_app_with_aggregate(per_butler: dict[str, dict]) -> object:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = list(per_butler.keys())
-    mock_db.fan_out = AsyncMock(return_value=fan_out_return)
+    mock_db.fan_out_with_status = AsyncMock(return_value=(fan_out_return, []))
 
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db
@@ -155,7 +155,9 @@ async def test_aggregate_passes_filters_through_to_sql() -> None:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["health"]
-    mock_db.fan_out = AsyncMock(side_effect=_side_effect)
+    mock_db.fan_out_with_status = AsyncMock(
+        side_effect=lambda sql, args, **kw: (_side_effect(sql, args, **kw), [])
+    )
 
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db
@@ -216,7 +218,9 @@ async def test_aggregate_by_trigger_source_populated_when_requested() -> None:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["health", "finance"]
-    mock_db.fan_out = AsyncMock(side_effect=_side_effect)
+    mock_db.fan_out_with_status = AsyncMock(
+        side_effect=lambda sql, args, **kw: (_side_effect(sql, args, **kw), [])
+    )
 
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db
@@ -249,7 +253,9 @@ async def test_aggregate_status_running_uses_success_is_null() -> None:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["health"]
-    mock_db.fan_out = AsyncMock(side_effect=_side_effect)
+    mock_db.fan_out_with_status = AsyncMock(
+        side_effect=lambda sql, args, **kw: (_side_effect(sql, args, **kw), [])
+    )
 
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db
@@ -301,7 +307,9 @@ async def test_list_status_running_filters_to_null_success() -> None:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(side_effect=_side_effect)
+    mock_db.fan_out_with_status = AsyncMock(
+        side_effect=lambda sql, args, **kw: (_side_effect(sql, args, **kw), [])
+    )
 
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db
@@ -320,7 +328,7 @@ async def test_list_status_running_is_accepted_literal() -> None:
     """'running' is a valid status literal (not a 422)."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": []})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
 
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db

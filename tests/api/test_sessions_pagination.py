@@ -65,8 +65,8 @@ def _make_app_with_sessions(rows: list[dict]) -> object:
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(
-        side_effect=lambda sql, args, **kw: {"atlas": [_make_record(r) for r in rows]}
+    mock_db.fan_out_with_status = AsyncMock(
+        side_effect=lambda sql, args, **kw: ({"atlas": [_make_record(r) for r in rows]}, [])
     )
 
     app = create_app()

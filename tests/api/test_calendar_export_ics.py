@@ -87,7 +87,10 @@ def _build_app(app, *, workspace_rows: dict[str, list[dict]] | None = None) -> t
             return rows_to_scan
         return {}
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        return await _fan_out(query, args, butler_names), []
+
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
     mock_mgr = AsyncMock(spec=MCPClientManager)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -189,7 +192,7 @@ async def test_export_ics_read_only_no_provider_write(app):
     # No MCP client is ever requested (no provider write / no LLM session).
     mock_mgr.get_client.assert_not_called()
     # Only the read fan-out is used; no write/execute path is invoked.
-    assert mock_db.fan_out.await_count >= 1
+    assert mock_db.fan_out_with_status.await_count >= 1
 
 
 async def test_export_ics_empty_range_is_valid_empty_calendar(app):

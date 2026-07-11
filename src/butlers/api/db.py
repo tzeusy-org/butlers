@@ -32,7 +32,7 @@ class DatabaseManager:
         await mgr.add_butler("atlas", db_name="butlers", db_schema="general")
 
         pool = mgr.pool("switchboard")
-        results = await mgr.fan_out("SELECT count(*) FROM sessions")
+        results, failed = await mgr.fan_out_with_status("SELECT count(*) FROM sessions")
     """
 
     def __init__(
@@ -219,33 +219,6 @@ class DatabaseManager:
         """
         self._role_enforcement_disabled = disabled
 
-    async def fan_out(
-        self,
-        query: str,
-        args: tuple[Any, ...] = (),
-        butler_names: list[str] | None = None,
-    ) -> dict[str, list[asyncpg.Record]]:
-        """Execute a query concurrently across multiple butler databases.
-
-        Parameters
-        ----------
-        query:
-            The SQL query to execute.
-        args:
-            Query arguments (positional).
-        butler_names:
-            Subset of butlers to query. Defaults to all registered butlers.
-
-        Returns
-        -------
-        dict[str, list[asyncpg.Record]]
-            Mapping of butler_name -> query results. If a query fails for a
-            specific butler, that butler's entry will be an empty list and the
-            error is logged.
-        """
-        results, _failed = await self.fan_out_with_status(query, args, butler_names)
-        return results
-
     async def fan_out_with_status(
         self,
         query: str,
@@ -254,10 +227,13 @@ class DatabaseManager:
     ) -> tuple[dict[str, list[asyncpg.Record]], list[str]]:
         """Execute a query concurrently across multiple butler databases.
 
-        Same semantics as :meth:`fan_out`, but also reports which butlers'
-        queries failed — callers that need to distinguish "genuinely empty"
-        from "this source errored" (e.g. to surface a degraded-source flag in
-        a response envelope) should use this instead of :meth:`fan_out`.
+        Every targeted butler gets an entry in the returned ``results`` map
+        (empty list on failure); ``failed_butler_names`` names the ones whose
+        query raised. This is the *only* fan-out primitive: the failed list is
+        returned rather than swallowed so callers must decide whether to
+        distinguish "genuinely empty" from "this source errored" (e.g. to
+        surface a degraded-source flag in a response envelope) instead of
+        silently fabricating an all-clear from a partial result.
 
         Returns
         -------

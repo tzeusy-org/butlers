@@ -294,7 +294,7 @@ GROUP BY 1;
 Operational sessions are **never projected** into `chronicler.episodes`.
 Engineers who need to audit scheduler cadence, switchboard tick rate, or QA
 canary health can use the dedicated ops endpoint, which reads the raw sessions
-tables directly via `fan_out`.
+tables directly via `fan_out_with_status`.
 
 **Endpoint:** `GET /api/chronicler/ops/sessions`
 

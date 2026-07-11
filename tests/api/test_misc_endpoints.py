@@ -131,7 +131,7 @@ class TestSessionsAPI:
         db = MagicMock(spec=DatabaseManager)
         db.pool.return_value = pool
         db.butler_names = ["atlas"]
-        db.fan_out = AsyncMock(return_value={})
+        db.fan_out_with_status = AsyncMock(return_value=({}, []))
         app.dependency_overrides[_sessions_get_db] = lambda: db
         return app
 

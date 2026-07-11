@@ -1108,7 +1108,7 @@ async def ingestion_event_sessions(
     """Fan-out across all butler schemas and return sessions matching request_id.
 
     Queries every registered butler pool concurrently (via
-    :meth:`DatabaseManager.fan_out`) for sessions whose ``request_id`` equals
+    :meth:`DatabaseManager.fan_out_with_status`) for sessions whose ``request_id`` equals
     the given value.  Rows from each butler are augmented with ``butler_name``
     and a computed ``cost_usd`` field (numeric USD cost, or ``None``).
 
@@ -1126,7 +1126,7 @@ async def ingestion_event_sessions(
         and ``cost_usd``.
     """
     sql = f"SELECT {_SESSION_COLUMNS} FROM sessions WHERE request_id = $1"
-    fan_results: dict[str, list[asyncpg.Record]] = await db.fan_out(sql, (request_id,))
+    fan_results, _failed = await db.fan_out_with_status(sql, (request_id,))
 
     sessions: list[dict[str, Any]] = []
     for butler_name, rows in fan_results.items():
@@ -1166,7 +1166,7 @@ async def ingestion_events_request_ids_for_trace(
         caller should treat that as "zero matching events", not "no filter".
     """
     sql = "SELECT DISTINCT request_id FROM sessions WHERE trace_id = $1"
-    fan_results: dict[str, list[asyncpg.Record]] = await db.fan_out(sql, (trace_id,))
+    fan_results, _failed = await db.fan_out_with_status(sql, (trace_id,))
 
     request_ids: set[str] = set()
     for rows in fan_results.values():
@@ -1246,7 +1246,7 @@ async def ingestion_events_sessions_for_ids(
         return sessions_by_id
 
     sql = f"SELECT request_id, {_SESSION_COLUMNS} FROM sessions WHERE request_id = ANY($1::text[])"
-    fan_results: dict[str, list[asyncpg.Record]] = await db.fan_out(sql, (event_ids,))
+    fan_results, _failed = await db.fan_out_with_status(sql, (event_ids,))
 
     for butler_name, rows in fan_results.items():
         for row in rows:
@@ -1429,7 +1429,7 @@ async def ingestion_window_rollup(
     Counts events from the unified timeline (public.ingestion_events UNION ALL
     connectors.filtered_events) filtered by the same parameters as
     ingestion_events_list.  Session count is derived by summing sessions across
-    all registered butler schemas (fan-out via db.fan_out).
+    all registered butler schemas (fan-out via db.fan_out_with_status).
 
     When ``pricing`` is supplied, ``cost`` is populated by summing per-model
     token counts across all matching sessions and estimating USD cost via
@@ -1554,7 +1554,7 @@ async def ingestion_window_rollup(
 
         if event_ids:
             try:
-                fan_results: dict[str, list] = await db.fan_out(
+                fan_results, _failed = await db.fan_out_with_status(
                     """
                     SELECT
                         COUNT(*) AS cnt,

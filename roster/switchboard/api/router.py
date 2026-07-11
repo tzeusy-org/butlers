@@ -1856,7 +1856,7 @@ async def _ingestion_fanout_from_db(
             ie.source_endpoint_identity
     """
 
-    fan_results: dict[str, list[Any]] = await db.fan_out(sql, args=(hours,))
+    fan_results, _failed = await db.fan_out_with_status(sql, args=(hours,))
 
     # Aggregate across butlers: accumulate counts per
     # (connector_type, endpoint_identity, butler_name)

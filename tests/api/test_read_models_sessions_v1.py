@@ -243,7 +243,7 @@ async def test_keyset_fan_out_merges_and_sorts_across_butlers():
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": [a1, a2], "general": [g1]})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": [a1, a2], "general": [g1]}, []))
 
     result = await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=50)
 
@@ -271,7 +271,7 @@ async def test_keyset_fan_out_has_more_and_next_cursor():
     rows = [_summary_at(_NOW - timedelta(seconds=i)) for i in range(3)]
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": rows})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": rows}, []))
 
     result = await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=2)
 
@@ -300,7 +300,9 @@ async def test_keyset_fan_out_has_more_boundary_crosses_butlers():
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": [a0, a1], "general": [g2, g3, g4]})
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [a0, a1], "general": [g2, g3, g4]}, [])
+    )
 
     result = await query_session_summaries_keyset_fan_out(
         mock_db, "", (), limit=3, butler_names=["atlas", "general"]
@@ -324,13 +326,13 @@ async def test_keyset_fan_out_appends_cursor_predicate():
     cursor = encode_session_cursor(_NOW, uuid4())
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": []})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
 
     await query_session_summaries_keyset_fan_out(
         mock_db, " WHERE success = $1", (True,), limit=50, cursor=cursor, butler_names=["atlas"]
     )
 
-    call = mock_db.fan_out.call_args_list[0]
+    call = mock_db.fan_out_with_status.call_args_list[0]
     sql = call.args[0]
     assert "(started_at, id) < ($2, $3)" in sql
     assert "LIMIT 51" in sql  # limit + 1
@@ -347,11 +349,11 @@ async def test_keyset_fan_out_first_page_no_predicate():
     """Without a cursor, no keyset predicate is added and only WHERE args bind."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": []})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
 
     await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=50)
 
-    sql = mock_db.fan_out.call_args_list[0].args[0]
+    sql = mock_db.fan_out_with_status.call_args_list[0].args[0]
     assert "(started_at, id) <" not in sql
     assert "ORDER BY started_at DESC, id DESC" in sql
 
@@ -378,29 +380,32 @@ async def test_aggregate_fan_out_sums_scalars_across_butlers():
     """Scalar fields are summed; by_butler holds per-butler totals desc."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
-    mock_db.fan_out = AsyncMock(
-        return_value={
-            "atlas": [
-                _agg_row(
-                    total=10,
-                    success_count=8,
-                    failed_count=1,
-                    running_count=1,
-                    input_tokens=1000,
-                    output_tokens=400,
-                )
-            ],
-            "general": [
-                _agg_row(
-                    total=5,
-                    success_count=5,
-                    failed_count=0,
-                    running_count=0,
-                    input_tokens=200,
-                    output_tokens=100,
-                )
-            ],
-        }
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=(
+            {
+                "atlas": [
+                    _agg_row(
+                        total=10,
+                        success_count=8,
+                        failed_count=1,
+                        running_count=1,
+                        input_tokens=1000,
+                        output_tokens=400,
+                    )
+                ],
+                "general": [
+                    _agg_row(
+                        total=5,
+                        success_count=5,
+                        failed_count=0,
+                        running_count=0,
+                        input_tokens=200,
+                        output_tokens=100,
+                    )
+                ],
+            },
+            [],
+        )
     )
 
     result = await query_session_aggregate_fan_out(mock_db, "", ())
@@ -420,11 +425,14 @@ async def test_aggregate_fan_out_omits_zero_count_butlers():
     """Butlers with total==0 are excluded from by_butler."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "idle"]
-    mock_db.fan_out = AsyncMock(
-        return_value={
-            "atlas": [_agg_row(total=3, success_count=3)],
-            "idle": [_agg_row(total=0)],
-        }
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=(
+            {
+                "atlas": [_agg_row(total=3, success_count=3)],
+                "idle": [_agg_row(total=0)],
+            },
+            [],
+        )
     )
 
     result = await query_session_aggregate_fan_out(mock_db, "", ())
@@ -437,13 +445,15 @@ async def test_aggregate_fan_out_uses_filter_sql_and_butler_names():
     """The aggregate SQL carries the FILTER clauses, WHERE, and butler_names."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": [_agg_row(total=1, success_count=1)]})
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [_agg_row(total=1, success_count=1)]}, [])
+    )
 
     await query_session_aggregate_fan_out(
         mock_db, " WHERE success = $1", (True,), butler_names=["atlas"]
     )
 
-    call = mock_db.fan_out.call_args_list[0]
+    call = mock_db.fan_out_with_status.call_args_list[0]
     sql = call.args[0]
     assert "FILTER (WHERE success IS NULL)" in sql
     assert "coalesce(sum(input_tokens), 0)" in sql
@@ -464,16 +474,19 @@ async def test_trigger_breakdown_merges_and_sums_across_butlers():
     """Same trigger_source in two different butlers' DBs sums into one entry."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
-    mock_db.fan_out = AsyncMock(
-        return_value={
-            "atlas": [
-                _trigger_row(trigger_source="schedule", count=7),
-                _trigger_row(trigger_source="webhook", count=2),
-            ],
-            "general": [
-                _trigger_row(trigger_source="schedule", count=3),
-            ],
-        }
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=(
+            {
+                "atlas": [
+                    _trigger_row(trigger_source="schedule", count=7),
+                    _trigger_row(trigger_source="webhook", count=2),
+                ],
+                "general": [
+                    _trigger_row(trigger_source="schedule", count=3),
+                ],
+            },
+            [],
+        )
     )
 
     result = await query_session_trigger_breakdown_fan_out(mock_db, "", ())
@@ -487,7 +500,7 @@ async def test_trigger_breakdown_merges_and_sums_across_butlers():
 async def test_trigger_breakdown_empty_when_no_rows():
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": []})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
 
     result = await query_session_trigger_breakdown_fan_out(mock_db, "", ())
 
@@ -497,15 +510,15 @@ async def test_trigger_breakdown_empty_when_no_rows():
 async def test_trigger_breakdown_uses_group_by_sql_and_butler_names():
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(
-        return_value={"atlas": [_trigger_row(trigger_source="schedule", count=1)]}
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [_trigger_row(trigger_source="schedule", count=1)]}, [])
     )
 
     await query_session_trigger_breakdown_fan_out(
         mock_db, " WHERE success = $1", (False,), butler_names=["atlas"]
     )
 
-    call = mock_db.fan_out.call_args_list[0]
+    call = mock_db.fan_out_with_status.call_args_list[0]
     sql = call.args[0]
     assert "GROUP BY trigger_source" in sql
     assert " WHERE success = $1" in sql
@@ -523,7 +536,9 @@ async def test_query_session_detail_fan_out_returns_first_match():
     detail_row = _make_record(_detail_record())
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "general"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": [], "general": [detail_row]})
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [], "general": [detail_row]}, [])
+    )
 
     result = await query_session_detail_fan_out(mock_db, _SESSION_ID)
 
@@ -537,7 +552,7 @@ async def test_query_session_detail_fan_out_not_found():
     """Returns FanOutDetailResult with row=None when no butler has the session."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
-    mock_db.fan_out = AsyncMock(return_value={"atlas": []})
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
 
     result = await query_session_detail_fan_out(mock_db, _SESSION_ID)
     assert result.row is None

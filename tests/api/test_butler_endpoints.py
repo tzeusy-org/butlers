@@ -55,7 +55,7 @@ def _mock_audit_db(sessions_24h: dict[str, int] | None = None):
     db.pool.return_value = pool
     # fan_out is used by list_butlers to aggregate per-butler 24h session counts
     fan_out_return = _mock_fan_out_rows(sessions_24h) if sessions_24h else {}
-    db.fan_out = AsyncMock(return_value=fan_out_return)
+    db.fan_out_with_status = AsyncMock(return_value=(fan_out_return, []))
     return db
 
 

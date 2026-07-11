@@ -264,7 +264,10 @@ def _build_app(app, *, workspace_rows=None, proposal_rows=None):
             rows = {k: v for k, v in rows.items() if k in butler_names}
         return rows
 
-    mock_db.fan_out = AsyncMock(side_effect=_fan_out)
+    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+        return await _fan_out(query, args, butler_names), []
+
+    mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
