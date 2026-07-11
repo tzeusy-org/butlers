@@ -245,3 +245,63 @@ async def test_contact_snippet_email_and_phone_both_shown(app: FastAPI) -> None:
     assert "dana@example.com" in snippet
     assert "+6599887766" in snippet
     assert "·" in snippet
+
+
+# ---------------------------------------------------------------------------
+# Degraded-source honesty (bu-tpudw.4) — meta.sources_degraded
+# ---------------------------------------------------------------------------
+
+
+async def test_clean_search_reports_no_degraded_sources(app: FastAPI) -> None:
+    """A fully-healthy fan-out attaches no sources_degraded flag."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["relationship"]
+    mock_db.pool = MagicMock(return_value=pool)
+    mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    body = await _get(app, "anything")
+
+    assert "sources_degraded" not in body["meta"]
+
+
+async def test_partial_fan_out_failure_flags_the_butler(app: FastAPI) -> None:
+    """One butler's session/state query failing names it in sources_degraded
+    rather than letting the empty result read as a clean 'no results'."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["relationship", "finance"]
+    mock_db.pool = MagicMock(return_value=pool)
+    # sessions fan-out: finance failed; state fan-out: clean.
+    mock_db.fan_out_with_status = AsyncMock(
+        side_effect=[({"relationship": [], "finance": []}, ["finance"]), ({}, [])]
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    body = await _get(app, "anything")
+
+    assert body["meta"]["sources_degraded"] == ["finance"]
+
+
+async def test_structural_fan_out_failure_flags_sentinels(app: FastAPI) -> None:
+    """When the whole fan-out raises, both source sentinels are flagged and
+    the result is never a deceptive clean empty."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["relationship"]
+    mock_db.pool = MagicMock(return_value=pool)
+    mock_db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("fleet down"))
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    body = await _get(app, "anything")
+
+    assert body["data"]["sessions"] == []
+    assert body["data"]["state"] == []
+    assert body["meta"]["sources_degraded"] == ["sessions", "state"]

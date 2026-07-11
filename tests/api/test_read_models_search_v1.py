@@ -8,10 +8,12 @@ Verifies:
 - ``query_entity_search`` returns [] on exception
 - ``query_contact_search`` returns a list of ContactSearchRow with snippet data
 - ``query_contact_search`` returns [] on exception
-- ``query_session_search`` returns a {butler: [SessionSearchRow]} mapping
-- ``query_session_search`` returns {} on exception
-- ``query_state_search`` returns a {butler: [StateSearchRow]} mapping
-- ``query_state_search`` returns {} on exception
+- ``query_session_search`` returns a ({butler: [SessionSearchRow]}, degraded) tuple
+- ``query_session_search`` threads the fan_out_with_status failed list as degraded sources
+- ``query_session_search`` returns ({}, ["sessions"]) on a structural fan-out exception
+- ``query_state_search`` returns a ({butler: [StateSearchRow]}, degraded) tuple
+- ``query_state_search`` threads the fan_out_with_status failed list as degraded sources
+- ``query_state_search`` returns ({}, ["state"]) on a structural fan-out exception
 """
 
 from __future__ import annotations
@@ -379,20 +381,21 @@ async def test_query_contact_search_swallows_exception():
 # ---------------------------------------------------------------------------
 
 
-def _make_db_with_fan_out(result: dict) -> MagicMock:
+def _make_db_with_fan_out(result: dict, failed: list[str] | None = None) -> MagicMock:
     db = MagicMock()
-    db.fan_out_with_status = AsyncMock(return_value=(result, []))
+    db.fan_out_with_status = AsyncMock(return_value=(result, failed or []))
     return db
 
 
 async def test_query_session_search_returns_typed_dtos():
     db = _make_db_with_fan_out({"assistant": [_make_record(_session_dict())]})
 
-    result = await query_session_search(db, "%weather%", 20)
+    result, degraded = await query_session_search(db, "%weather%", 20)
 
     assert "assistant" in result
     assert len(result["assistant"]) == 1
     assert isinstance(result["assistant"][0], SessionSearchRow)
+    assert degraded == []
 
 
 async def test_query_session_search_multiple_butlers():
@@ -403,24 +406,42 @@ async def test_query_session_search_multiple_butlers():
         }
     )
 
-    result = await query_session_search(db, "%weather%", 20)
+    result, degraded = await query_session_search(db, "%weather%", 20)
 
     assert len(result) == 2
     assert result["secretary"][0].matched_field == "result"
+    assert degraded == []
 
 
 async def test_query_session_search_empty_fan_out_returns_empty_dict():
     db = _make_db_with_fan_out({})
-    result = await query_session_search(db, "%nothing%", 20)
+    result, degraded = await query_session_search(db, "%nothing%", 20)
     assert result == {}
+    assert degraded == []
 
 
-async def test_query_session_search_swallows_exception():
+async def test_query_session_search_threads_per_butler_degraded_sources():
+    """A butler whose fan-out query failed is surfaced as a degraded source,
+    not silently merged into a truthful-looking empty result."""
+    db = _make_db_with_fan_out(
+        {"assistant": [_make_record(_session_dict())], "finance": []},
+        failed=["finance"],
+    )
+
+    result, degraded = await query_session_search(db, "%weather%", 20)
+
+    assert "assistant" in result
+    assert degraded == ["finance"]
+
+
+async def test_query_session_search_structural_failure_flags_sentinel():
     db = MagicMock()
     db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("fan-out failure"))
 
-    result = await query_session_search(db, "%foo%", 5)
+    result, degraded = await query_session_search(db, "%foo%", 5)
     assert result == {}
+    # Never a clean empty: the whole source is flagged degraded.
+    assert degraded == ["sessions"]
 
 
 # ---------------------------------------------------------------------------
@@ -431,17 +452,19 @@ async def test_query_session_search_swallows_exception():
 async def test_query_state_search_returns_typed_dtos():
     db = _make_db_with_fan_out({"assistant": [_make_record(_state_dict())]})
 
-    result = await query_state_search(db, "%theme%", 20)
+    result, degraded = await query_state_search(db, "%theme%", 20)
 
     assert "assistant" in result
     assert isinstance(result["assistant"][0], StateSearchRow)
     assert result["assistant"][0].key == "user.prefs.theme"
+    assert degraded == []
 
 
 async def test_query_state_search_empty_fan_out_returns_empty_dict():
     db = _make_db_with_fan_out({})
-    result = await query_state_search(db, "%nothing%", 20)
+    result, degraded = await query_state_search(db, "%nothing%", 20)
     assert result == {}
+    assert degraded == []
 
 
 async def test_query_state_search_passes_pattern_and_limit():
@@ -451,9 +474,22 @@ async def test_query_state_search_passes_pattern_and_limit():
     assert args[1] == ("%prefs%", 15)
 
 
-async def test_query_state_search_swallows_exception():
+async def test_query_state_search_threads_per_butler_degraded_sources():
+    db = _make_db_with_fan_out(
+        {"assistant": [_make_record(_state_dict())], "health": []},
+        failed=["health"],
+    )
+
+    result, degraded = await query_state_search(db, "%theme%", 20)
+
+    assert "assistant" in result
+    assert degraded == ["health"]
+
+
+async def test_query_state_search_structural_failure_flags_sentinel():
     db = MagicMock()
     db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("fan-out failure"))
 
-    result = await query_state_search(db, "%foo%", 5)
+    result, degraded = await query_state_search(db, "%foo%", 5)
     assert result == {}
+    assert degraded == ["state"]

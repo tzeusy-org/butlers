@@ -32,8 +32,17 @@ Row DTOs:
 Query functions (all async):
     query_entity_search(pool, pattern, limit) -> list[EntitySearchRow]
     query_contact_search(pool, pattern, limit) -> list[ContactSearchRow]
-    query_session_search(db, pattern, limit) -> dict[str, list[SessionSearchRow]]
-    query_state_search(db, pattern, limit) -> dict[str, list[StateSearchRow]]
+    query_session_search(db, pattern, limit)
+        -> tuple[dict[str, list[SessionSearchRow]], list[str]]
+    query_state_search(db, pattern, limit)
+        -> tuple[dict[str, list[StateSearchRow]], list[str]]
+
+The two per-butler fan-out queries return a ``(results, degraded_sources)``
+tuple so the endpoint never mistakes a half-down fleet for "no results": the
+second element names the sources whose query failed (per-butler names from
+``fan_out_with_status``, or the sentinel category name on a structural
+fan-out failure). See ``degraded.py`` and CLAUDE.md "Degraded-Mode Response
+Envelope".
 
 Version marker:
     READ_MODEL_VERSION
@@ -359,8 +368,14 @@ async def query_session_search(
     db: DatabaseManager,
     pattern: str,
     limit: int,
-) -> dict[str, list[SessionSearchRow]]:
+) -> tuple[dict[str, list[SessionSearchRow]], list[str]]:
     """Fan-out ILIKE search across all butler ``sessions`` tables.
+
+    ``sessions`` is a core table present in every butler schema, so any
+    per-butler fan-out failure is a genuine transport/permission error, never
+    a legitimately-absent schema — there is no "classify before flagging"
+    exemption here (contrast the memory-module reads that must skip absent
+    tables).  Every failed source is therefore reported as degraded.
 
     Parameters
     ----------
@@ -373,9 +388,15 @@ async def query_session_search(
 
     Returns
     -------
-    dict[str, list[SessionSearchRow]]
-        ``{butler_name: [SessionSearchRow, ...]}`` for each butler that
-        responded.  Empty if no butler has data or an error occurred.
+    tuple[dict[str, list[SessionSearchRow]], list[str]]
+        ``({butler_name: [SessionSearchRow, ...]}, degraded_sources)``.  The
+        first element holds rows for every butler that responded (empty list
+        on a per-butler failure).  ``degraded_sources`` names the sources
+        whose query failed: the per-butler names from
+        :meth:`~butlers.api.db.DatabaseManager.fan_out_with_status` on the
+        normal path, or the single sentinel ``["sessions"]`` when the whole
+        fan-out raised structurally (so a zero-result response can never read
+        as a clean "no results").
     """
     sql = (
         f"SELECT {SESSION_COLUMNS}"
@@ -385,20 +406,30 @@ async def query_session_search(
         " LIMIT $2"
     )
     try:
-        raw, _failed = await db.fan_out_with_status(sql, (pattern, limit))
+        raw, failed = await db.fan_out_with_status(sql, (pattern, limit))
     except Exception:
+        # Structural fan-out failure (not a single butler): we cannot tell
+        # which butlers have data, so flag the whole source degraded rather
+        # than swallow into a deceptive empty result. Keeps the always-200
+        # contract while refusing to fabricate calm.
         logger.warning("Session search fan-out failed", exc_info=True)
-        return {}
+        return {}, ["sessions"]
 
-    return {butler_name: [row_to_session(r) for r in rows] for butler_name, rows in raw.items()}
+    mapped = {butler_name: [row_to_session(r) for r in rows] for butler_name, rows in raw.items()}
+    return mapped, failed
 
 
 async def query_state_search(
     db: DatabaseManager,
     pattern: str,
     limit: int,
-) -> dict[str, list[StateSearchRow]]:
+) -> tuple[dict[str, list[StateSearchRow]], list[str]]:
     """Fan-out ILIKE search across all butler ``state`` tables.
+
+    ``state`` is a core table present in every butler schema, so any
+    per-butler fan-out failure is a genuine transport/permission error, never
+    a legitimately-absent schema — every failed source is reported as
+    degraded (see :func:`query_session_search`).
 
     Parameters
     ----------
@@ -411,9 +442,12 @@ async def query_state_search(
 
     Returns
     -------
-    dict[str, list[StateSearchRow]]
-        ``{butler_name: [StateSearchRow, ...]}`` for each butler that
-        responded.  Empty if no butler has data or an error occurred.
+    tuple[dict[str, list[StateSearchRow]], list[str]]
+        ``({butler_name: [StateSearchRow, ...]}, degraded_sources)``.  The
+        first element holds rows for every butler that responded (empty list
+        on a per-butler failure).  ``degraded_sources`` names the per-butler
+        sources that failed, or the sentinel ``["state"]`` when the whole
+        fan-out raised structurally.
     """
     sql = (
         f"SELECT {STATE_COLUMNS}"
@@ -423,9 +457,10 @@ async def query_state_search(
         " LIMIT $2"
     )
     try:
-        raw, _failed = await db.fan_out_with_status(sql, (pattern, limit))
+        raw, failed = await db.fan_out_with_status(sql, (pattern, limit))
     except Exception:
         logger.warning("State search fan-out failed", exc_info=True)
-        return {}
+        return {}, ["state"]
 
-    return {butler_name: [row_to_state(r) for r in rows] for butler_name, rows in raw.items()}
+    mapped = {butler_name: [row_to_state(r) for r in rows] for butler_name, rows in raw.items()}
+    return mapped, failed

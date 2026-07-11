@@ -29,6 +29,7 @@ import {
   useEntityFinderSearch,
   useEntityNeighbours,
 } from "@/hooks/use-entities";
+import { useSearch } from "@/hooks/use-search";
 import type { NeighbourEntry } from "@/api/index.ts";
 
 /** Renders the current location path+search for navigation assertions. */
@@ -65,6 +66,10 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityMessageThreads: vi.fn(),
   useEntityDates: vi.fn(),
   useUpdateEntityDunbarTier: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-search", () => ({
+  useSearch: vi.fn(),
 }));
 
 vi.mock("@/api/index", () => ({
@@ -145,6 +150,19 @@ function mockSearchError(): void {
   } as UseEntityFinderSearchResult);
 }
 
+/**
+ * Control the shared GET /api/search hook (sessions/state + degraded meta).
+ * `response` is the ApiResponse envelope ({ data, meta }) or undefined for the
+ * pre-fetch state. Default (undefined) reproduces the prior behaviour where
+ * this surface contributed no session/state rows and no degraded flag.
+ */
+function mockGenericSearch(response: unknown): void {
+  vi.mocked(useSearch).mockReturnValue({
+    data: response,
+    isFetching: false,
+  } as unknown as ReturnType<typeof useSearch>);
+}
+
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
@@ -157,6 +175,7 @@ describe("EntityFinder", () => {
     vi.resetAllMocks();
     mockSearchEmpty();
     mockNeighboursEmpty();
+    mockGenericSearch(undefined);
     localStorage.clear();
 
     container = document.createElement("div");
@@ -493,6 +512,100 @@ describe("EntityFinder", () => {
     expect(
       document.body.querySelector("[data-testid='entity-finder-search-error']"),
     ).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // bu-tpudw.4: GET /api/search sessions/state fan-out honesty. A half-down
+  // fleet reports meta.sources_degraded; a zero-result search must then NAME
+  // the degraded source, never render as a clean "No results".
+  // -------------------------------------------------------------------------
+
+  it("names the degraded search source and suppresses 'No results' when a fan-out source failed", async () => {
+    mockGenericSearch({
+      data: { entities: [], contacts: [], sessions: [], state: [] },
+      meta: { sources_degraded: ["finance"] },
+    });
+
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const input = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(input, "zzznomatch");
+      await flush();
+    });
+
+    const degraded = document.body.querySelector(
+      "[data-testid='entity-finder-generic-degraded']",
+    );
+    expect(degraded).toBeTruthy();
+    // The failed butler is named inline (not a generic "something went wrong").
+    expect(degraded?.textContent).toContain("finance");
+    // A degraded fan-out must NOT read as a truthful empty result.
+    expect(document.body.textContent).not.toContain("No results for");
+  });
+
+  // -------------------------------------------------------------------------
+
+  it("shows the honest 'No results' empty copy and NO degraded note on a clean empty search", async () => {
+    // Mutation guard opposite direction: a clean fan-out (no sources_degraded)
+    // must still render the plain empty state and never a spurious note.
+    mockGenericSearch({
+      data: { entities: [], contacts: [], sessions: [], state: [] },
+      meta: {},
+    });
+
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const input = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(input, "zzznomatch");
+      await flush();
+    });
+
+    expect(
+      document.body.querySelector("[data-testid='entity-finder-generic-degraded']"),
+    ).toBeNull();
+    expect(document.body.textContent).toContain("No results for");
   });
 
   // -------------------------------------------------------------------------

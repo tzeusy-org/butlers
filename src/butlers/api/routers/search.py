@@ -17,7 +17,7 @@ import logging
 from fastapi import APIRouter, Depends, Query
 
 from butlers.api.db import DatabaseManager
-from butlers.api.models import ApiResponse
+from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.models.search import SearchResponse, SearchResult
 from butlers.api.read_models.search_v1 import (
     query_contact_search,
@@ -158,7 +158,7 @@ async def search(
         )
 
     # --- Sessions search (per-butler fan-out) via search_v1 read-model ---
-    session_fan_out = await query_session_search(db, pattern, limit)
+    session_fan_out, session_degraded = await query_session_search(db, pattern, limit)
     for butler_name, rows in session_fan_out.items():
         for session_row in rows:
             source_text = (
@@ -179,7 +179,7 @@ async def search(
             )
 
     # --- State search (per-butler fan-out) via search_v1 read-model ---
-    state_fan_out = await query_state_search(db, pattern, limit)
+    state_fan_out, state_degraded = await query_state_search(db, pattern, limit)
     for butler_name, rows in state_fan_out.items():
         for state_row in rows:
             source_text = (
@@ -197,6 +197,14 @@ async def search(
                 )
             )
 
+    # Degraded-source honesty (bu-tpudw.4): a search over a half-down fleet
+    # must never render as a clean "no results". The per-butler fan-outs report
+    # which sources failed; surface them via meta.sources_degraded (the shared
+    # ApiMeta bag convention) so the finder can name the missing sources inline
+    # instead of showing a fabricated empty result.
+    degraded = sorted(set(session_degraded) | set(state_degraded))
+    meta = ApiMeta(sources_degraded=degraded) if degraded else ApiMeta()
+
     # Trim to limit (fan_out may return limit per butler, need global trim)
     return ApiResponse[SearchResponse](
         data=SearchResponse(
@@ -204,5 +212,6 @@ async def search(
             contacts=contact_results[:limit],
             sessions=session_results[:limit],
             state=state_results[:limit],
-        )
+        ),
+        meta=meta,
     )

@@ -393,6 +393,15 @@ export default function EntityFinder() {
     () => genericSearchData?.data?.state ?? [],
     [genericSearchData],
   );
+  // Degraded-source honesty (bu-tpudw.4): GET /api/search fans sessions/state
+  // out across every butler DB; when one (or the whole fan-out) fails the
+  // backend names the source in meta.sources_degraded instead of silently
+  // zero-filling. A search over a half-down fleet must NOT read as a clean
+  // "no results" — surface a named note and suppress the empty copy below.
+  const genericDegraded = useMemo<string[]>(() => {
+    const raw = genericSearchData?.meta?.sources_degraded;
+    return Array.isArray(raw) ? raw.filter((s): s is string => typeof s === "string") : [];
+  }, [genericSearchData]);
 
   // -------------------------------------------------------------------------
   // Palette-highlight prefetch (bu-qvnce.14 slice 4, deferred from PR #2927).
@@ -601,11 +610,30 @@ export default function EntityFinder() {
               </div>
             )}
 
-            {/* Empty state */}
-            {!isLoading && !isEmptyQuery && !isError && !hasResults && (
-              <Command.Empty className="py-6 text-center text-sm text-muted-foreground">
-                No results for &ldquo;{query}&rdquo;
-              </Command.Empty>
+            {/* Empty state — suppressed when a search source degraded
+             * (genericDegraded): a partial/failed fan-out must never claim a
+             * clean "No results". The SourceDegradedNote below takes its place. */}
+            {!isLoading &&
+              !isEmptyQuery &&
+              !isError &&
+              !hasResults &&
+              genericDegraded.length === 0 && (
+                <Command.Empty className="py-6 text-center text-sm text-muted-foreground">
+                  No results for &ldquo;{query}&rdquo;
+                </Command.Empty>
+              )}
+
+            {/* Sessions/state degraded note (bu-tpudw.4) — rendered whether or
+             * not any session/state rows survived, so a half-down fleet is
+             * named inline instead of collapsing into the empty state. Sits
+             * above the Sessions/State groups; independent of hasResults. */}
+            {!isEmptyQuery && genericDegraded.length > 0 && (
+              <div data-testid="entity-finder-generic-degraded" className="mb-1">
+                <SourceDegradedNote
+                  label="Sessions & state"
+                  detail={`search partial — ${genericDegraded.join(", ")} unavailable`}
+                />
+              </div>
             )}
 
             {/* Loading indicator */}

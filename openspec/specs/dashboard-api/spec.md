@@ -173,6 +173,32 @@ The `DatabaseManager.fan_out()` method SHALL execute a SQL query concurrently ac
 - **AND** the frontend session drawer renders a distinct, named pool-down state
   for the 503 case, separate from the not-found state
 
+#### Scenario: Fan-out failure reporting for degraded envelopes
+- **WHEN** `fan_out_with_status(query, args)` is called
+- **THEN** it returns `(results, failed_butler_names)` where every failed butler also has an empty-list entry in `results`
+- **AND** callers that must surface a degraded-source flag use this instead of `fan_out()`, which discards the failed list
+
+### Requirement: Cross-Butler Search Degraded-Source Honesty
+`GET /api/search` fans its sessions and state searches out across every butler DB. A source that fails MUST NOT be silently zero-filled into a truthful-looking empty result. `sessions` and `state` are core tables present in every butler schema, so a fan-out failure is always a genuine transport/permission error (never a legitimately-absent schema) and is always reported. The response envelope SHALL carry `meta.sources_degraded` (the shared `ApiMeta` bag convention) naming every degraded source, so the finder renders a named note rather than a clean "no results".
+
+#### Scenario: Healthy fan-out
+- **WHEN** every butler's sessions/state query succeeds
+- **THEN** `meta.sources_degraded` is absent and results are returned normally
+
+#### Scenario: Partial per-butler failure
+- **WHEN** one butler's sessions or state query fails during fan-out
+- **THEN** that butler's rows are omitted but its name appears in `meta.sources_degraded`
+- **AND** the endpoint still returns HTTP 200 with the surviving results
+
+#### Scenario: Structural fan-out failure
+- **WHEN** the whole sessions or state fan-out raises before any per-butler status is available
+- **THEN** the affected source is flagged with the sentinel name (`"sessions"` / `"state"`) in `meta.sources_degraded`
+- **AND** the endpoint returns HTTP 200 with empty results for that source rather than a 500 or a deceptive clean empty
+
+#### Scenario: Finder names the degraded source
+- **WHEN** `meta.sources_degraded` is non-empty
+- **THEN** the command finder renders a `SourceDegradedNote` naming the source(s) and suppresses the plain "No results" empty copy so a half-down fleet never reads as a clean empty result
+
 ### Requirement: MCP Client Proxy
 `src/butlers/api/deps.py` SHALL provide `MCPClientManager` for lazy FastMCP client connections to running butler MCP daemons. Write operations (state set/delete, schedule CRUD, triggers) are proxied through MCP to preserve the architectural constraint that only the butler mutates its own database.
 
