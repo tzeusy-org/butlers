@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -155,7 +156,22 @@ const fullCase: QaCaseDossier = {
     url: "https://github.com/Tzeusy/butlers/pull/1677",
   },
   journal,
+  healing_session_id: "11111111-2222-3333-4444-555555555555",
+  session_ids: [
+    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    "99999999-8888-7777-6666-555555555555",
+  ],
 };
+
+// CaseDossier renders react-router <Link> session doors, so every mount needs
+// a Router ancestor.
+function renderDossier(caseId: string | undefined) {
+  return render(
+    <MemoryRouter>
+      <CaseDossier caseId={caseId} />
+    </MemoryRouter>,
+  );
+}
 
 function caseResponse(dossier: QaCaseDossier) {
   return {
@@ -184,7 +200,7 @@ describe("QA case dossier composition", () => {
   });
 
   it("test_dossier_renders_full_case", () => {
-    const { container } = render(<CaseDossier caseId="case-1" />);
+    const { container } = renderDossier("case-1");
 
     expect(vi.mocked(useQaCase)).toHaveBeenCalledWith("case-1");
     expect(vi.mocked(useQaCaseJournal)).toHaveBeenCalledWith("case-1", { limit: 50 });
@@ -196,6 +212,13 @@ describe("QA case dossier composition", () => {
     expect(screen.getByText("Proposed fix")).toBeTruthy();
     expect(screen.getByText("Patrol journal · every QA decision on this case")).toBeTruthy();
     expect(screen.getByText("2 entries · patrol every 10m")).toBeTruthy();
+    // Session doors close the trace spine: investigation + failing sessions.
+    const doors = screen.getAllByTestId("qa-session-door");
+    expect(doors.map((el) => el.getAttribute("href"))).toEqual([
+      "/sessions/11111111-2222-3333-4444-555555555555",
+      "/sessions/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "/sessions/99999999-8888-7777-6666-555555555555",
+    ]);
     expect(container.querySelector("[data-testid='qa-case-dossier']")).toMatchSnapshot();
   });
 
@@ -211,7 +234,7 @@ describe("QA case dossier composition", () => {
     );
     qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
 
-    render(<CaseDossier caseId="case-1" />);
+    renderDossier("case-1");
 
     expect(screen.getByText("Diagnosing…")).toBeTruthy();
     expect(screen.queryByText("Evidence · log fragments")).toBeNull();
@@ -235,7 +258,7 @@ describe("QA case dossier composition", () => {
     );
     qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
 
-    render(<CaseDossier caseId="case-1" />);
+    renderDossier("case-1");
 
     expect(screen.getByText("No PR. Escalated to user.")).toBeTruthy();
   });
@@ -257,7 +280,7 @@ describe("QA case dossier composition", () => {
       );
       qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
 
-      render(<CaseDossier caseId="case-1" />);
+      renderDossier("case-1");
 
       expect(
         screen.getByText("No investigation notes were captured for this case."),
@@ -270,7 +293,7 @@ describe("QA case dossier composition", () => {
   );
 
   it("test_dossier_lifts_hover_state", () => {
-    render(<CaseDossier caseId="case-1" />);
+    renderDossier("case-1");
 
     fireEvent.mouseEnter(screen.getByTestId("qa-claim-c-timeout"));
     expect(screen.getByTestId("qa-evidence-row-e-timeout").className).toContain(

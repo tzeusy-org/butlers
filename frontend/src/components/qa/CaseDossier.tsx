@@ -10,6 +10,7 @@ import { CounterEvidence } from "./CounterEvidence";
 import { EvidenceLog } from "./EvidenceLog";
 import { PatrolJournal } from "./PatrolJournal";
 import { PRPanel } from "./PRPanel";
+import { SessionDoors } from "./SessionDoors";
 import type { QaCaseDossier } from "@/api/types";
 
 // Stages where the investigation has produced a PR or reached a terminal
@@ -157,6 +158,11 @@ export function CaseDossier({
           />
         </section>
       </div>
+
+      <SessionDoors
+        healingSessionId={dossier.healing_session_id ?? null}
+        sessionIds={dossier.session_ids ?? []}
+      />
 
       <PatrolJournal
         events={journalEvents}

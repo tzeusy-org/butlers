@@ -510,6 +510,15 @@ class QaCaseDossier(BaseModel):
     investigation_notes: InvestigationNotes | None = None
     pr: QaPrSummary | None = None
     journal: list[QaJournalEvent] = Field(default_factory=list)
+    # Session doors: the investigation session the QA staffer ran, plus the
+    # failing sessions that seeded the finding. Both link out to
+    # ``/sessions/:id`` so the trace spine reaches the investigation session
+    # instead of dead-ending on the dossier. ``healing_session_id`` is null
+    # for cases that never spawned an investigation session; ``session_ids``
+    # is empty when no failing sessions were captured — the UI renders no door
+    # in either case rather than a broken link.
+    healing_session_id: uuid.UUID | None = None
+    session_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class QaCircuitBreaker(BaseModel):
@@ -1987,6 +1996,8 @@ async def get_case(
             a.created_at,
             a.closed_at,
             a.error_detail,
+            a.healing_session_id,
+            a.session_ids,
             COALESCE(f.severity, a.severity) AS case_severity,
             COALESCE(f.detected_at, a.created_at) AS detected,
             EXTRACT(EPOCH FROM (now() - COALESCE(f.detected_at, a.created_at)))::int
@@ -2065,6 +2076,8 @@ async def get_case(
         investigation_notes=_investigation_notes_from_case_row(row),
         pr=pr_summary,
         journal=[_row_to_journal_event(journal_row) for journal_row in journal_rows],
+        healing_session_id=row.get("healing_session_id"),
+        session_ids=list(row.get("session_ids") or []),
     )
     return ApiResponse(data=dossier)
 

@@ -10,6 +10,7 @@ export type { DiffPreviewLine } from "./DiffPreview";
 export { EvidenceLog } from "./EvidenceLog";
 export { PatrolJournal } from "./PatrolJournal";
 export { PRPanel } from "./PRPanel";
+export { SessionDoors } from "./SessionDoors";
 export { QaKpiStrip } from "./QaKpiStrip";
 export { QaVerdictOpener } from "./QaVerdictOpener";
 export { StateTrack } from "./StateTrack";

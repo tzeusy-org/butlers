@@ -43,6 +43,8 @@ const EMPTY_DOSSIER = {
     investigation_notes: null,
     pr: null,
     journal: [],
+    healing_session_id: null,
+    session_ids: [],
   },
   meta: {},
 };

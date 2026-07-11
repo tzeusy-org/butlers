@@ -220,6 +220,11 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
   - Mono footer caption with `opened <HH:MM>` and optional `· merged <HH:MM>`
 - **AND** when `pr` is null, the column renders a single serif-italic line "No PR — escalated to user."
 
+#### Scenario: Session trace doors
+- **WHEN** the Case Dossier renders a case whose attempt carries a `healing_session_id` and/or a non-empty `session_ids[]`
+- **THEN** it renders a "Session trace" section with a real navigation door (a react-router `<Link>` to `/sessions/:id`, not a dead onClick) for the investigation session (`healing_session_id`) and one door per failing session in `session_ids[]`
+- **AND** when `healing_session_id` is null AND `session_ids` is empty, the section is not rendered at all — no empty header and no broken link
+
 #### Scenario: Patrol journal section
 - **WHEN** the Case Dossier renders the full-width patrol journal section
 - **THEN** the section renders a mono row for each event from `/api/qa/cases/:id/journal`, in chronological order: ts (`HH:MM`), step name in step color (flagged/opened amber, sampled/cross-checked/drafted neutral, considered/wait/tick dim, concluded/merged green, escalated amber), text, and an optional dim detail line beneath
@@ -236,7 +241,7 @@ The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for t
 
 #### Scenario: GET /api/qa/cases/:id
 - **WHEN** `GET /api/qa/cases/:id` is called with an attempt UUID
-- **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), and the most recent 50 journal events
+- **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), and its `session_ids[]` (empty when none)
 - **AND** when the attempt id does not exist, it returns the standard 404 envelope from RFC 0007
 
 #### Scenario: GET /api/qa/cases/:id/journal

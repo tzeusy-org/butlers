@@ -5538,6 +5538,10 @@ export interface QaCaseDossier {
   investigation_notes: QaInvestigationNotes | null;
   pr: QaPrSummary | null;
   journal: QaJournalEvent[];
+  /** The QA staffer's investigation session. Null when no session was spawned — the dossier renders no door rather than a broken link. */
+  healing_session_id: string | null;
+  /** Failing sessions that seeded the finding. Empty when none were captured. Each links to /sessions/:id. */
+  session_ids: string[];
 }
 
 /** Params for listing QA cases */

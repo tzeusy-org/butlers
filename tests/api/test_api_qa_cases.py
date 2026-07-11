@@ -57,6 +57,8 @@ def _make_case_row(**overrides: Any) -> dict[str, Any]:
         "created_at": _NOW,
         "closed_at": None,
         "error_detail": None,
+        "healing_session_id": None,
+        "session_ids": [],
         "case_severity": 1,
         "detected": detected,
         "age_seconds": 7200,
@@ -422,6 +424,46 @@ async def test_case_detail_full_notes() -> None:
         "journal event 1",
     ]
     assert "ORDER BY ts DESC" in pool.fetch.await_args.args[0]
+
+
+async def test_case_dossier_projects_session_doors() -> None:
+    """The dossier SELECT projects the investigation + failing session ids so
+    the frontend can render trace-spine doors to /sessions/:id."""
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_895)
+    healing_session_id = uuid.uuid4()
+    failing = [uuid.uuid4(), uuid.uuid4()]
+    row = _make_case_row(
+        id=attempt_id,
+        healing_session_id=healing_session_id,
+        session_ids=failing,
+    )
+    app, pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["healing_session_id"] == str(healing_session_id)
+    assert body["data"]["session_ids"] == [str(s) for s in failing]
+    # The columns must actually be selected from the attempts table.
+    select_sql = pool.fetchrow.await_args_list[0].args[0]
+    assert "a.healing_session_id" in select_sql
+    assert "a.session_ids" in select_sql
+
+
+async def test_case_dossier_session_doors_null_safe() -> None:
+    """A case with no investigation session and no failing sessions renders no
+    door: healing_session_id is null and session_ids is empty, never broken."""
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_896)
+    row = _make_case_row(id=attempt_id, healing_session_id=None, session_ids=[])
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["healing_session_id"] is None
+    assert body["data"]["session_ids"] == []
 
 
 async def test_case_dossier_includes_active_dismissal() -> None:
