@@ -39,7 +39,7 @@
 
 ## Close-out
 
-- [ ] `openspec validate deploy-command-verb --strict`
-- [ ] Archive on merge; add the new requirement to
+- [x] `openspec validate deploy-command-verb --strict`
+- [x] Archive on merge; add the new requirement to
   `openspec/specs/deployment-and-drift/` (or fold into the sibling
   `deploy-drift-sentinel` archive if that lands first).

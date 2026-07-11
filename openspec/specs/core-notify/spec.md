@@ -6,15 +6,22 @@ Defines the `notify` MCP tool and its versioned envelope contract (`notify.v1`) 
 ## Requirements
 
 ### Requirement: Notify Tool Registration
-Every butler daemon SHALL register a `notify(channel, message, entity_id?, recipient?, subject?, intent?, emoji?, request_context?, priority?)` MCP tool during startup. Runtime instances MUST be able to call this tool to send outbound notifications. The tool MUST be available in every butler's MCP tool surface regardless of which modules are enabled.
+Every butler daemon SHALL register a `notify(channel?, message, entity_id?, recipient?, subject?, intent?, emoji?, request_context?, priority?)` MCP tool during startup. Runtime instances MUST be able to call this tool to send outbound notifications. The tool MUST be available in every butler's MCP tool surface regardless of which modules are enabled.
 
 Note: target resolution is keyed on `entity_id` (a `public.entities` UUID), resolved against `relationship.entity_facts`. An earlier design used a `contact_id` keyed on `public.contacts` / `public.contact_info`; that identity path was retired in favor of the entity graph. The requirements below reflect the entity-graph reality.
 
 The `priority` parameter (enum: `high`, `medium`, `low`, default `medium`) is added to support time-aware delivery. Priority determines quiet-hours behavior: high-priority notifications always deliver immediately; medium and low-priority notifications are subject to quiet-hours deferral when delivery preferences are configured.
 
+`channel` is OPTIONAL. When the caller omits it, the notify tool resolves it
+before any channel-dependent validation runs (see the **Preferred-Channel
+Resolution on Omitted Channel** requirement): an `entity_id`-targeted call
+honours the entity's `prefers-channel` fact when deliverable, else falls back
+to telegram → email; a call with no `entity_id` defaults to telegram. A
+caller-forced `channel` is never overridden by preference resolution.
+
 #### Scenario: Tool available to runtime instance
 - **WHEN** a runtime instance spawned by a butler lists available MCP tools
-- **THEN** the `notify` tool MUST appear in the tool list with parameters `channel` (required string), `message` (required string), `entity_id` (optional UUID string), `recipient` (optional string), `subject` (optional string), `intent` (optional string), `emoji` (optional string), `request_context` (optional object), and `priority` (optional string, default `medium`)
+- **THEN** the `notify` tool MUST appear in the tool list with parameters `channel` (optional string; resolved when omitted), `message` (required string), `entity_id` (optional UUID string), `recipient` (optional string), `subject` (optional string), `intent` (optional string), `emoji` (optional string), `request_context` (optional object), and `priority` (optional string, default `medium`)
 
 #### Scenario: Tool registered at startup
 - **WHEN** a butler daemon starts up
@@ -44,6 +51,149 @@ Before constructing the notification envelope, the `notify()` tool SHALL check t
 - **AND** delivery preferences have `override_channels={"email": {quiet_hours_start: "20:00", quiet_hours_end: "09:00"}}`
 - **AND** the current time is 21:00 local
 - **THEN** the email-specific quiet hours apply and the notification is deferred
+
+### Requirement: Owner-Default-Page Suppression (Drop, Not Defer)
+The notify tool SHALL also consult the `approvals_policy` quiet-hours window
+and the context bus for notifications destined for the owner via the default
+resolution path (no `entity_id` and no explicit `recipient`, intent `send` or
+`insight`, priority not `high`) — distinct from the `delivery_preferences`
+quiet-hours gate above, which defers to `deferred_notifications`. When either
+check suppresses, the notification is **dropped**: it is recorded as an
+attention event and returned to the caller as suppressed, but it is NOT queued
+for later delivery and NOT retried. This is a separate mechanism from, and
+evaluated after, the `delivery_preferences` defer gate (which is checked
+first; if that gate already deferred the notification, this gate is not
+reached).
+
+#### Scenario: Approvals-policy quiet hours drops the notification
+- **WHEN** `notify(message="Heads up", priority="medium")` is called with no
+  `entity_id` and no `recipient`
+- **AND** the current time falls inside the `approvals_policy` quiet-hours
+  window
+- **THEN** the tool returns `{"status": "suppressed_quiet_hours", ...}` without
+  writing to `deferred_notifications`
+- **AND** an attention event is recorded with `outcome="suppressed"`,
+  `reason="quiet_hours"`
+
+#### Scenario: Context bus signal drops the notification
+- **WHEN** `notify(message="Heads up", priority="medium")` is called with no
+  `entity_id` and no `recipient`
+- **AND** a suppressing context-bus signal (e.g. do-not-disturb, sleeping) is
+  currently active
+- **THEN** the tool returns `{"status": "suppressed_context_bus", ...}`
+- **AND** an attention event is recorded with `outcome="suppressed"`,
+  `reason="context_bus:<signal>"`
+
+#### Scenario: High priority and targeted notifications are exempt
+- **WHEN** `notify(..., priority="high")` is called, OR `entity_id` or
+  `recipient` is provided
+- **THEN** neither the approvals-policy quiet-hours check nor the context-bus
+  check runs, and this requirement does not apply
+
+#### Scenario: Context-bus check is skipped when quiet hours already suppressed
+- **WHEN** approvals-policy quiet hours already suppress the notification
+- **THEN** the context-bus signal (`public.user_context`, RFC 0009) is not
+  queried — this is a deterministic check (no LLM in the read path) and
+  avoids a redundant DB round-trip on an already-decided path
+
+### Requirement: Attention Ledger Recording at the notify() Boundary
+Every terminal decision the `notify()` owner-default quiet-hours gate makes SHALL be recorded to `public.attention_ledger` with a closed outcome vocabulary (`delivered`, `deferred`, `suppressed`) and a machine-readable `reason`. A ledger-write failure MUST NOT block or fail the notification it describes (best-effort, fail-open).
+
+#### Scenario: Quiet-hours suppression is recorded
+- **WHEN** `notify()`'s owner-default path is suppressed by `public.approvals_policy` quiet hours
+- **THEN** a `public.attention_ledger` row is written with `outcome="suppressed"` and `reason="quiet_hours"`
+- **AND** the notify() call still returns `{"status": "suppressed_quiet_hours", ...}` to the caller unchanged
+
+#### Scenario: Context-bus suppression is recorded
+- **WHEN** `notify()`'s owner-default path is suppressed because an active `dnd` or `sleeping` context-bus signal is present (and quiet hours did not already suppress)
+- **THEN** a `public.attention_ledger` row is written with `outcome="suppressed"` and `reason="context_bus:<signal_type>"`
+- **AND** the notify() call returns `{"status": "suppressed_context_bus", "channel": ..., "context_signal": "<signal_type>"}`
+
+#### Scenario: Delivery-preferences defer is recorded
+- **WHEN** `notify()` defers a notification via the existing per-butler `delivery_preferences` quiet-hours mechanism
+- **THEN** a `public.attention_ledger` row is written with `outcome="deferred"` and `reason="delivery_preferences_quiet_hours"`, and `notification_ref` set to the `deferred_notifications` row id
+
+#### Scenario: Successful delivery is recorded
+- **WHEN** `notify()` successfully delivers a notification (either via direct Switchboard self-delivery or via the switchboard client)
+- **THEN** a `public.attention_ledger` row is written with `outcome="delivered"`, and `notification_ref` set to the delivery's `notification_id` when the delivery result provides one
+
+#### Scenario: Ledger write failure never blocks delivery
+- **WHEN** the `public.attention_ledger` table is unavailable (e.g. an unmigrated database) or the INSERT otherwise fails
+- **THEN** `notify()` proceeds exactly as it would without this requirement — the ledger write is logged at WARNING and swallowed, never raised
+
+### Requirement: Attention Ledger Recording at the Deferred-Notification Flush
+Every successful flush-time delivery SHALL be recorded to `public.attention_ledger` with `source="notify"`: `outcome="delivered"` for a solo-row send, `outcome="coalesced"` (one ledger row per underlying notification) for a composed digest send (see the **Same-Window Coalescing of Deferred Notifications** requirement below). A ledger-write failure MUST NOT block or fail the notification it describes (best-effort, fail-open — same contract as every other ledger-recording call site).
+
+#### Scenario: Composed digest records one coalesced row per underlying notification
+- **WHEN** the flush pass delivers a composed digest of 3 due notifications
+- **THEN** 3 `public.attention_ledger` rows are written, each with
+  `source="notify"`, `outcome="coalesced"`, and its own row's
+  `notification_ref`
+
+### Requirement: Same-Window Coalescing of Deferred Notifications
+When the deferred-notification flush pass (`_tick_deferred_notification_pass`) finds more than one due (`status='pending' AND deliver_at <= now`) row targeting the same delivery target (channel + recipient), it SHALL compose them into ONE message and deliver them via a single `notify_fn` call instead of one send per row. A delivery target with exactly one due row SHALL be delivered unchanged (its stored envelope, verbatim).
+
+#### Scenario: Multiple same-target due notifications compose into one send
+- **WHEN** the flush pass runs and finds 3 due notifications all addressed to
+  the same (channel, recipient) pair
+- **THEN** exactly one `notify_fn` call is made, carrying a composed message
+  that includes all 3 underlying messages
+- **AND** all 3 underlying rows are marked `status='delivered'` with the same
+  `delivered_at`
+
+#### Scenario: A solo due notification is delivered unchanged
+- **WHEN** the flush pass finds exactly one due notification for a given
+  delivery target
+- **THEN** `notify_fn` is called with that row's stored envelope, unmodified
+- **AND** the row is marked `delivered` exactly as it was before this change
+
+#### Scenario: Different recipients are never coalesced
+- **WHEN** two due notifications target different explicit recipients (or one
+  targets an explicit recipient and the other targets none, i.e. the owner's
+  default channel)
+- **THEN** each is delivered via its own `notify_fn` call — never folded into
+  one composed message together
+
+#### Scenario: A failed composed send leaves the whole group pending
+- **WHEN** `notify_fn` raises for a composed multi-row digest
+- **THEN** every row in that group remains `status='pending'` for retry on
+  the next tick — no row in the group is marked `delivered` while others are
+  not
+
+### Requirement: Priority Normalization for Ledger Comparability
+`notify()`'s 3-level `priority` enum (`high`/`medium`/`low`) SHALL be normalized onto the same 1-100 `priority_score` scale the insight pipeline uses (RFC 0011 Priority Scoring Convention), so `public.attention_ledger` rows from both boundaries are comparable. `"high"` MUST normalize to a score at or above `URGENT_PRIORITY_THRESHOLD` (90).
+
+#### Scenario: high/medium/low map to comparable scores
+- **WHEN** a ledger row is recorded for `notify(priority="high")`, `notify(priority="medium")`, and `notify(priority="low")`
+- **THEN** the recorded `priority_score` values are 90, 50, and 20 respectively, and `priority_label` preserves the original string
+
+### Requirement: Attention Ledger Reader
+The dashboard API SHALL expose a windowed, filterable reader over `public.attention_ledger` and a per-source delivery-vs-suppression summary, so that a source silently failing at either choke point (`notify()` or `delivery_cycle()`) is observable instead of requiring direct DB access.
+
+`GET /api/attention/ledger` SHALL return a paginated, newest-first list of ledger rows, filterable by `intent`, `source` (the ledger's own `notify`/`insight` choke-point column), `outcome`, and `origin_butler`, and windowed by `since`/`until` (`occurred_at` bounds). `GET /api/attention/ledger/summary` SHALL return, for a `since`/`until` window (defaulting to the last 7 days when `since` is omitted), one row per distinct `origin_butler` with `delivered`/`coalesced`/`deferred`/`suppressed`/`total` counts and a `suppressed_never_delivered` boolean: `true` when that `origin_butler` has `suppressed > 0` and `delivered == 0` in the window. Both endpoints MUST follow the repo's degraded-envelope convention (`butlers/CLAUDE.md` API Conventions): a genuinely unreachable ledger pool renders `source_available=false` on an otherwise-empty/zero payload, never a truthful "no suppression" or "no rows".
+
+Naming note: the summary's "per source" grouping is `origin_butler` (which butler/job attempted the egress — e.g. `secrets_lifecycle`, `home`), a distinct dimension from the ledger's own `source` column (the `notify`/`insight` choke-point literal). Both are independently exposed: `origin_butler` as the summary's grouping key and an optional list-endpoint filter, `source` as a list/summary filter on the choke-point column.
+
+#### Scenario: Suppressed-but-never-delivered source is flagged
+- **WHEN** `GET /api/attention/ledger/summary` is called for a window in which `origin_butler="secrets_lifecycle"` has 120 rows with `outcome="suppressed"` and 0 rows with `outcome="delivered"`
+- **THEN** the response's `by_source` includes an entry for `secrets_lifecycle` with `suppressed=120`, `delivered=0`, and `suppressed_never_delivered=true`
+- **AND** `"secrets_lifecycle"` appears in the response's `flagged_sources` list
+
+#### Scenario: A healthy source is not flagged
+- **WHEN** an `origin_butler` has both `delivered > 0` and `suppressed > 0` rows in the window
+- **THEN** its `suppressed_never_delivered` is `false`
+
+#### Scenario: List endpoint is windowed and filterable
+- **WHEN** `GET /api/attention/ledger?since=<t1>&until=<t2>&outcome=suppressed&origin_butler=secrets_lifecycle` is called
+- **THEN** only rows with `occurred_at` between `t1` and `t2`, `outcome="suppressed"`, and `origin_butler="secrets_lifecycle"` are returned, newest-first, paginated
+
+#### Scenario: Unreachable ledger pool degrades honestly
+- **WHEN** the ledger's DB pool is unreachable
+- **THEN** both endpoints return HTTP 200 with an empty/zero payload and `source_available=false` — never a truthful-looking "no suppression happened" or "no rows match"
+
+#### Scenario: Unmigrated table is a true empty result, not a degraded one
+- **WHEN** `public.attention_ledger` does not exist yet (pre-migration database)
+- **THEN** both endpoints return an empty/zero payload with `source_available=true` — this is a genuinely-empty state, not a source failure
 
 ### Requirement: notify.v1 Envelope Schema
 The notify envelope includes `schema_version` ("notify.v1"), `origin_butler` (requesting butler's name), `delivery` (intent, channel, message, optional recipient/subject/emoji), and optional `request_context` for reply/react targeting.
@@ -98,6 +248,51 @@ Only `telegram` and `email` channels are currently supported. Unsupported channe
 #### Scenario: Unsupported channel
 - **WHEN** `channel="sms"` is passed
 - **THEN** the tool returns `{"status": "error", "error": "Unsupported channel 'sms'..."}`
+
+### Requirement: Preferred-Channel Resolution on Omitted Channel
+When the caller omits `channel`, the notify tool SHALL resolve it before any
+channel-dependent validation runs, and a caller-forced `channel` SHALL never be
+overridden by this resolution:
+- if `entity_id` is provided, resolve via `resolve_outbound_channel()` against
+  the entity's active `prefers-channel` fact (see the `relationship-facts`
+  spec), constrained to the deliverable set (`telegram`, `email`); if the
+  preferred channel is not deliverable, or no preference exists, or the entity
+  or database is unavailable, fall back to telegram, then email (first
+  deliverable and reachable);
+- if `entity_id` is not provided, default to `telegram` (the historical
+  owner-page channel), preserving behavior for callers that relied on a
+  channel always being present.
+
+This requirement adds no new deliverable channels; the deliverable set remains
+as defined by the Channel Validation requirement above.
+
+#### Scenario: Preference honored when deliverable
+- **WHEN** a notification targets an `entity_id` whose entity has an active
+  `prefers-channel="telegram"` fact, the entity has a telegram handle, and the
+  caller did not force a different channel
+- **THEN** the notification is sent on telegram
+
+#### Scenario: Preference skipped when not deliverable
+- **WHEN** a notification targets an `entity_id` whose entity prefers a channel
+  not in the deliverable set (e.g. `prefers-channel="discord"`)
+- **THEN** the preference is ignored without error
+- **AND** channel selection falls back to telegram, then email
+
+#### Scenario: No preference falls back unchanged
+- **WHEN** a notification targets an `entity_id` whose entity has no active
+  `prefers-channel` fact
+- **THEN** channel selection falls back to telegram, then email, exactly as
+  before the `prefers-channel` fact existed
+
+#### Scenario: Explicit channel still wins
+- **WHEN** the caller forces a specific deliverable channel and the entity has a
+  different `prefers-channel` preference
+- **THEN** the forced channel is used and the preference is not consulted
+
+#### Scenario: No entity_id defaults to telegram
+- **WHEN** `notify(message="Alert")` is called with no `channel` and no
+  `entity_id`
+- **THEN** `channel` resolves to `telegram`
 
 ### Requirement: Request Context Propagation
 For `reply` and `react` intents, the `request_context` must carry lineage from the originating inbound request. This enables the Messenger butler to route the delivery to the correct conversation thread.

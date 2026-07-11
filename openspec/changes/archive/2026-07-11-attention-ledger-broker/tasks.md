@@ -88,8 +88,8 @@
 
 ## 6. Close-out
 
-- [ ] 6.1 `openspec validate attention-ledger-broker --strict`
-- [ ] 6.2 Archive on merge; update `core-notify` / `proactive-insight-engine`
+- [x] 6.1 `openspec validate attention-ledger-broker --strict`
+- [x] 6.2 Archive on merge; update `core-notify` / `proactive-insight-engine`
   main specs.
 
 ## Deferred (proposed as follow-up beads, not half-implemented here)

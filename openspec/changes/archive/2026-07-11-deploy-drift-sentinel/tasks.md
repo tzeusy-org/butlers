@@ -64,8 +64,8 @@
 
 ## 6. Close-out
 
-- [ ] 6.1 `openspec validate deploy-drift-sentinel --strict`
-- [ ] 6.2 Archive on merge; add `deployment-and-drift` to `openspec/specs/`.
+- [x] 6.1 `openspec validate deploy-drift-sentinel --strict`
+- [x] 6.2 Archive on merge; add `deployment-and-drift` to `openspec/specs/`.
 
 ## Deferred (sibling epic slices, not implemented here)
 

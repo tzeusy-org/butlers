@@ -160,18 +160,12 @@ The spawner SHALL use an `asyncio.Semaphore` with a configurable concurrency lim
 ### Requirement: Spawner Session Lifecycle
 Each invocation creates a session record before the runtime call and completes it after, regardless of success or failure. Sessions are trace-correlated via OpenTelemetry span context. After completing a runtime invocation, the spawner SHALL check `runtime.last_process_info` and, if non-null and a session_id and database pool are available, write the process metadata to the `session_process_logs` table via `session_process_log_write()`. This applies to both the success path (after `session_complete` with `success=True`) and the error path (after `session_complete` with `success=False`). The write is best-effort: exceptions are caught and logged at DEBUG level without affecting the session result or propagating to the caller. On the error path, after all existing error handling (session_complete, process log, runtime reset, audit entry), the spawner SHALL invoke the self-healing dispatcher as a **fallback** — this catches hard crashes where the butler agent never got a chance to call the `report_error` MCP tool.
 
+On the normal-completion (non-raising) path the spawner SHALL additionally run delivery accounting (see the **Interactive Reply Delivery Accounting** requirement) before persisting the session. Delivery accounting MAY downgrade the persisted session record to `success=False` even though the runtime invocation itself completed cleanly. Because this runs on the success path and does not raise, it SHALL NOT trigger same-tier failover or the self-healing fallback dispatcher.
+
 #### Scenario: Successful session
 - **WHEN** a runtime invocation completes successfully
-- **AND** no post-invoke accounting check marks the user-visible outcome as failed
+- **AND** delivery accounting does not flag the session as an undelivered interactive reply
 - **THEN** `session_create()` is called before invocation and `session_complete()` is called after with `success=True`, output text, tool calls, duration, and token counts
-
-#### Scenario: Undelivered interactive reply records a failed session
-- **WHEN** a route-triggered session originates from an interactive source channel
-- **AND** the runtime attempts one or more `notify()` calls
-- **AND** none of the captured notify attempts returns a delivered or deferred status
-- **THEN** `session_complete()` is called with `success=False`
-- **AND** the `error` value contains the `undelivered_interactive_reply` marker
-- **AND** this accounting failure does not raise into same-tier failover or self-healing
 
 #### Scenario: Failed session — spawner fallback dispatch
 - **WHEN** a runtime invocation raises an exception
@@ -531,3 +525,50 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 - **THEN** the failover classifier SHALL recognise the guardrail marker substring in the exception message (`degenerate_tool_loop`, `tool_call_budget_exceeded`, `token_budget_exceeded`)
 - **AND** SHALL classify the failure as not failover-eligible so no automatic retry is attempted
 - **AND** the suppressed-failover metric SHALL be recorded for observability
+
+### Requirement: Interactive Reply Delivery Accounting
+On the normal-completion (non-raising) path, the spawner SHALL evaluate whether a route-triggered interactive session attempted a reply via `notify()` but delivered nothing, and SHALL persist that session record with `success=False` and a human-readable reason in the session `error` column.
+
+This is a **third session outcome**, distinct from the two in the Spawner Session Lifecycle requirement: the runtime invocation completed successfully (it did not raise), yet the user received no reply. It is detected on the success path, NOT via a raised exception. Therefore it SHALL NOT trigger same-tier model failover and SHALL NOT trigger the self-healing fallback dispatcher. This is the explicit difference from the "Failed session - spawner fallback dispatch" scenario, which DOES heal: an undelivered interactive reply is not a crash, and re-running the runtime would not have helped.
+
+The in-memory `SpawnerResult.success` SHALL remain `True` for this outcome so that downstream memory extraction and the route reply flow are unaffected; only the persisted session record reflects the undelivered delivery.
+
+**Delivered-status set.** A `notify()` tool-call counts as delivered only when its captured result is a dict whose `status` is in the delivered set `{ok, deferred}`. Every other outcome is undelivered, including `suppressed_quiet_hours`, `pending_approval`, `pending_missing_identifier`, `error`, a record whose `outcome` is `error`, and a record with no result dict at all (the schema-rejection / null-result incident shape). `deferred` is delivered because the notification is persisted to the deferred queue with a concrete `deliver_at` and WILL be delivered later; `suppressed_quiet_hours` is undelivered because the message is dropped with no queue entry and no later delivery.
+
+**Scope guards** (deliberately conservative, to avoid false positives):
+- only sessions whose `trigger_source` is `route` are considered;
+- only sessions whose captured routing-context source channel is in the interactive set (`telegram_bot`, `whatsapp`) are considered;
+- a session that made zero `notify()` attempts is left alone (the runtime may have legitimately decided no reply was warranted);
+- if any single `notify()` attempt delivered, the session is not flagged.
+
+#### Scenario: Undelivered interactive reply recorded as failed without healing
+- **WHEN** a `route`-triggered session whose source channel is `telegram_bot` completes successfully without raising
+- **AND** it made one or more `notify()` attempts and none of them delivered (every notify result status is outside `{ok, deferred}`, or carries no result dict)
+- **THEN** `session_complete()` is called with `success=False` and a reason describing the undelivered interactive reply
+- **AND** the spawner SHALL NOT raise, SHALL NOT attempt same-tier model failover, and SHALL NOT invoke the self-healing fallback dispatcher
+- **AND** the in-memory `SpawnerResult.success` SHALL remain `True`
+
+#### Scenario: Delivered reply leaves the session successful
+- **WHEN** a `route`-triggered interactive session made at least one `notify()` attempt whose result `status` is `ok` or `deferred`
+- **THEN** delivery accounting does not flag the session
+- **AND** `session_complete()` is called with `success=True`
+
+#### Scenario: suppressed_quiet_hours counts as undelivered
+- **WHEN** a `route`-triggered interactive session's only `notify()` attempt returned `status="suppressed_quiet_hours"`
+- **THEN** the attempt is treated as undelivered (the message was dropped with no later delivery)
+- **AND** the session is recorded with `success=False`
+
+#### Scenario: Null-result notify attempt counts as undelivered
+- **WHEN** a `route`-triggered interactive session's `notify()` tool-call record has no result dict (a schema rejection left an unexecuted parser-side record) or an `outcome` of `error`
+- **THEN** the attempt is treated as undelivered
+- **AND** the session is recorded with `success=False`
+
+#### Scenario: Zero notify attempts leaves the session untouched
+- **WHEN** a `route`-triggered interactive session made no `notify()` attempt at all
+- **THEN** delivery accounting does not flag the session
+- **AND** `session_complete()` is called with `success=True`
+
+#### Scenario: Non-route or non-interactive sessions are exempt
+- **WHEN** a session's `trigger_source` is not `route`, or its source channel is not in the interactive set (`telegram_bot`, `whatsapp`)
+- **THEN** delivery accounting does not run and the session outcome is unchanged from the ordinary success path
+

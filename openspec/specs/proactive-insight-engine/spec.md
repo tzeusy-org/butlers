@@ -175,6 +175,120 @@ The user SHALL be able to configure quiet hours during which no insights are del
 - **WHEN** no quiet hours are configured in `public.insight_settings`
 - **THEN** delivery SHALL proceed at the scheduled delivery cycle time without time-based suppression
 
+### Requirement: Priority-Urgent Bypass of Quiet Hours and the Context Bus
+Neither the hour-based quiet-hours check (`public.insight_settings`) nor a context-bus `dnd`/`sleeping` signal SHALL suppress a candidate whose `priority` is at or above `URGENT_PRIORITY_THRESHOLD` (90 — RFC 0011's "time-critical" floor). When at least one such candidate is pending during what would otherwise be a fully-suppressed cycle, the delivery cycle proceeds for urgent candidates only; candidates below the threshold remain `status='pending'`, untouched, for a later non-suppressed cycle.
+
+#### Scenario: Urgent candidate delivered during quiet hours, routine candidate untouched
+- **WHEN** the delivery cycle runs during active quiet hours
+- **AND** one pending candidate has `priority=95` and another has `priority=70`
+- **THEN** the `priority=95` candidate is delivered (or included in a digest)
+- **AND** the `priority=70` candidate's status remains `'pending'` — it is neither delivered nor marked `filtered`/`expired` by this cycle
+
+#### Scenario: Fully suppressed cycle when no candidate is urgent
+- **WHEN** the delivery cycle runs during active quiet hours (or an active context-bus `dnd`/`sleeping` signal)
+- **AND** every pending candidate has `priority < 90`
+- **THEN** the cycle returns `skipped=True` and delivers nothing, exactly as before this requirement
+- **AND** one `public.attention_ledger` row is written with `outcome="suppressed"` and the triggering `reason`
+
+#### Scenario: Expiry runs regardless of suppression
+- **WHEN** the delivery cycle would otherwise be fully suppressed (quiet hours or context bus, no urgent candidate)
+- **THEN** the expiry step (marking `expires_at`-past candidates as `expired`) still runs unconditionally before the suppression check
+
+### Requirement: Context-Bus Gating of the Delivery Cycle
+The delivery cycle SHALL consult the situational context bus (`public.user_context`) for an active `dnd` or `sleeping` signal, deterministically, as an additional suppression input alongside the existing hour-based quiet-hours check defined in `public.insight_settings`.
+
+#### Scenario: dnd signal suppresses when no quiet hours are configured
+- **WHEN** `public.insight_settings.quiet_start`/`quiet_end` are NULL (quiet hours not configured or not active)
+- **AND** `public.user_context` has an active `dnd` signal
+- **AND** no pending candidate is priority>=90
+- **THEN** the cycle is suppressed exactly as if quiet hours were active, with `reason="context_bus:dnd"`
+
+### Requirement: Seeded Owner-Level Quiet Hours
+`public.insight_settings` SHALL be seeded with a sane owner-level quiet-hours default (23:00-08:00 Asia/Singapore) on migration, applied only when the row is currently unconfigured (`quiet_start`, `quiet_end`, and `quiet_timezone` all NULL). An owner who has already configured quiet hours before this migration runs MUST NOT have their configuration overwritten.
+
+#### Scenario: Fresh install gets seeded defaults
+- **WHEN** a database has never had `insight_settings.quiet_start`/`quiet_end`/`quiet_timezone` configured
+- **AND** the seed migration runs
+- **THEN** `quiet_start=23`, `quiet_end=8`, `quiet_timezone='Asia/Singapore'`
+
+#### Scenario: Existing configuration is preserved
+- **WHEN** `insight_settings` already has a non-NULL `quiet_start`/`quiet_end`/`quiet_timezone` (owner-configured)
+- **AND** the seed migration (or a re-run of its guarded UPDATE) executes
+- **THEN** the existing values are unchanged
+
+### Requirement: Attention Ledger Recording of Delivered/Coalesced Candidates
+Every candidate the delivery cycle successfully delivers SHALL be recorded to `public.attention_ledger`. A single-candidate delivery is recorded with `outcome="delivered"`; when multiple candidates are folded into one digest message (`deliver_count > 1`), each candidate in the digest is recorded with `outcome="coalesced"` — distinguishing "sent alone" from "sent as part of a composed batch" for later dashboard/audit use.
+
+#### Scenario: Standalone delivery recorded as delivered
+- **WHEN** the delivery cycle selects exactly one candidate and delivers it
+- **THEN** one `public.attention_ledger` row is written with `outcome="delivered"`, `dedup_key` set to the candidate's `dedup_key`, and `notification_ref` set to the candidate's id
+
+#### Scenario: Digest delivery recorded as coalesced, one row per candidate
+- **WHEN** the delivery cycle selects 3 candidates and delivers them as one digest message
+- **THEN** 3 `public.attention_ledger` rows are written, each with `outcome="coalesced"` and its own candidate's `dedup_key`/id
+
+#### Scenario: Failed delivery is not recorded to the ledger
+- **WHEN** the `notify_fn` call for a selected candidate fails
+- **THEN** no `public.attention_ledger` row is written for that cycle's delivery attempt — the existing `delivery_attempt_count`/3-strikes `filtered` mechanism (unchanged by this requirement) remains the record of the failure
+
+### Requirement: Hourly Urgent Sub-Cycle
+`delivery_cycle()` SHALL accept an `urgent_only` mode used by a dedicated hourly schedule (distinct from the existing daily schedule), so a candidate at or above `URGENT_PRIORITY_THRESHOLD` (90) is delivered within the hour rather than waiting for the next daily cycle.
+
+In this mode:
+- candidate selection is narrowed to `priority >= URGENT_PRIORITY_THRESHOLD`
+  from the start — routine (sub-threshold) candidates are never selected,
+  filtered, deduplicated, or otherwise touched by this cycle;
+- the quiet-hours/context-bus consult is skipped outright (not merely
+  bypassed after being computed) — an urgent candidate is never suppressed by
+  either, so querying them is unnecessary;
+- the daily adaptive budget cap does not apply — every eligible urgent
+  candidate is delivered (or folded into one digest) this cycle, not just the
+  top-B;
+- end-of-cycle maintenance (`cleanup_old_rows`, disengagement auto-off) is
+  skipped — these are daily-cadence concerns the regular cycle already
+  covers once a day.
+
+An explicit `verbosity=off` configuration SHALL still suppress delivery in
+`urgent_only` mode exactly as it does in the regular cycle — this is a hard
+user opt-out, not a time-based deferral the urgent bypass is meant to
+override.
+
+#### Scenario: Urgent candidates delivered hourly, routine candidates untouched
+- **WHEN** the hourly urgent sub-cycle runs with one candidate at
+  `priority=95` and another at `priority=70` both pending
+- **THEN** the `priority=95` candidate is delivered
+- **AND** the `priority=70` candidate's status remains `'pending'`,
+  untouched — it is neither delivered, filtered, nor deduplicated by this
+  cycle
+
+#### Scenario: No daily budget cap in urgent_only mode
+- **WHEN** the hourly urgent sub-cycle runs with 3 eligible urgent candidates
+  pending and the configured daily verbosity budget is 1
+- **THEN** all 3 are delivered this cycle, composed into one digest message
+  (not capped to 1 by the daily budget)
+
+#### Scenario: Quiet hours and the context bus are bypassed without being queried
+- **WHEN** the hourly urgent sub-cycle runs during active quiet hours with an
+  eligible urgent candidate pending
+- **THEN** the candidate is delivered
+- **AND** the context-bus consult is never invoked (the urgent_only path
+  narrows to urgent candidates first and skips both suppression checks
+  entirely, rather than computing and then ignoring them)
+
+#### Scenario: verbosity=off still suppresses urgent candidates
+- **WHEN** `insight_settings.verbosity = 'off'`
+- **AND** the hourly urgent sub-cycle runs with an urgent candidate pending
+- **THEN** the cycle is skipped and the candidate is marked `filtered`,
+  exactly as the regular daily cycle already behaves under `verbosity=off`
+
+#### Scenario: A candidate the urgent sub-cycle already delivered is never re-sent
+- **WHEN** the hourly urgent sub-cycle delivers a `priority=95` candidate
+- **AND** the next daily cycle runs afterward
+- **THEN** the daily cycle's `pending`-status fetch does not include that
+  candidate — it was already transitioned to `status='delivered'` by the
+  urgent sub-cycle, which is the same row-status guard against double-send
+  the daily cycle already relies on for its own deliveries
+
 ### Requirement: Insight Candidate Submission via Switchboard MCP
 Butlers SHALL submit insight candidates exclusively through the Switchboard's `propose_insight_candidate()` MCP tool. Direct writes to `public.insight_candidates` are prohibited (Rule 3: inter-butler communication is MCP-only through the Switchboard).
 

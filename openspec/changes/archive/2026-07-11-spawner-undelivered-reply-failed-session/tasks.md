@@ -33,13 +33,13 @@ close-out.
 
 ## 3. Spec amendment (this change)
 
-- [ ] 3.1 `specs/core-spawner/spec.md` delta: MODIFY `Spawner Session Lifecycle`
+- [x] 3.1 `specs/core-spawner/spec.md` delta: MODIFY `Spawner Session Lifecycle`
   to amend the "Successful session" scenario; ADD the `Interactive Reply Delivery
   Accounting` requirement with its scenarios.
-- [ ] 3.2 `openspec validate spawner-undelivered-reply-failed-session --strict`
+- [x] 3.2 `openspec validate spawner-undelivered-reply-failed-session --strict`
   passes.
 
 ## 4. Close-out
 
-- [ ] 4.1 On archive, fold the amended scenario + new requirement into the
+- [x] 4.1 On archive, fold the amended scenario + new requirement into the
   normative `openspec/specs/core-spawner/spec.md`.

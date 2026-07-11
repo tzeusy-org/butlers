@@ -48,8 +48,8 @@
 
 ## 3. Close-out
 
-- [ ] 3.1 `openspec validate attention-ledger-coalescing-urgent-subcycle --strict`
-- [ ] 3.2 Archive on merge; update `core-notify` / `proactive-insight-engine`
+- [x] 3.1 `openspec validate attention-ledger-coalescing-urgent-subcycle --strict`
+- [x] 3.2 Archive on merge; update `core-notify` / `proactive-insight-engine`
   main specs. (Note: `attention-ledger-broker`'s own slices 1-2 main-spec
   merge, task 6.2 there, is still pending as of this change and is out of
   scope here — it belongs to bu-qvnce.8, not bu-o8233.)
