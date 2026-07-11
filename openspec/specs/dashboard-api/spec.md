@@ -802,6 +802,19 @@ pools without memory tables are silently skipped.
 - **THEN** pools without memory tables (episodes, facts, rules) are silently skipped
 - **AND** results from pools with memory tables are merged and paginated
 
+#### Scenario: Stats names genuinely-failed pools without failing the request
+- **WHEN** `GET /api/memory/stats` fans out and a pool with memory tables
+  fails its stats query (a genuine error — not a legitimately-absent memory
+  schema, which is silently skipped per the graceful-skip scenario)
+- **THEN** the endpoint still returns HTTP 200 with the merged totals from the
+  pools that answered
+- **AND** the response includes `meta.pools_failed: string[]` naming the dropped
+  pools (following the fleet-wide degraded-envelope convention); the field is
+  absent or empty when every queried pool answered
+- **AND** the frontend memory overture SHALL NOT render the (undercounting)
+  totals as a complete all-clear — it names the failed pools inline via a
+  `SourceDegradedNote` rather than suppressing the missing source
+
 #### Scenario: Stats carries consolidation fields
 - **WHEN** `GET /api/memory/stats` is called
 - **THEN** the response includes `last_consolidation_at`,

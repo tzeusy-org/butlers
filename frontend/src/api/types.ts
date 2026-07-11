@@ -2699,6 +2699,25 @@ export interface MemoryStats {
   dead_letter_episodes: number;
 }
 
+/**
+ * Metadata for GET /api/memory/stats. Extends the base bag with the
+ * degraded-envelope flag the backend emits when the per-pool fan-out drops one
+ * or more memory pools (memory.py::get_stats -> `ApiMeta(pools_failed=...)`).
+ * Mirrors the fleet-wide `meta.<flag>` degraded convention (see CLAUDE.md API
+ * Conventions). Absent or empty means every queried pool answered; a non-empty
+ * list means the aggregate totals undercount and must NOT read as an all-clear.
+ */
+export interface MemoryStatsMeta extends ApiMeta {
+  /** Names of memory pools whose stats query failed and were dropped from the totals. */
+  pools_failed?: string[];
+}
+
+/** GET /api/memory/stats response: aggregate totals + degraded-pool meta. */
+export interface MemoryStatsResponse {
+  data: MemoryStats;
+  meta: MemoryStatsMeta;
+}
+
 /** A recent memory activity event. */
 export interface MemoryActivity {
   id: string;

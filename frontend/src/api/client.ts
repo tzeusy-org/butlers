@@ -164,7 +164,7 @@ import type {
   MemoryInspectResult,
   MemoryRetentionPolicy,
   MemoryRule,
-  MemoryStats,
+  MemoryStatsResponse,
   CompactionLogEntry,
   ReembedPendingCounts,
   ReembedRunRequest,
@@ -2615,9 +2615,15 @@ function ruleSearchParams(params?: RuleParams): URLSearchParams {
   return sp;
 }
 
-/** Fetch aggregated memory statistics. */
-export function getMemoryStats(): Promise<ApiResponse<MemoryStats>> {
-  return apiFetch<ApiResponse<MemoryStats>>("/memory/stats");
+/**
+ * Fetch aggregated memory statistics.
+ *
+ * Returns {@link MemoryStatsResponse} so `meta.pools_failed` — the backend's
+ * degraded-envelope flag naming any memory pool dropped from the fan-out — is
+ * typed and consumable (MemoryOverture gates its all-clear on it).
+ */
+export function getMemoryStats(): Promise<MemoryStatsResponse> {
+  return apiFetch<MemoryStatsResponse>("/memory/stats");
 }
 
 /** Fetch a paginated list of episodes. */

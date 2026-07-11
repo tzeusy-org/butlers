@@ -19,7 +19,7 @@ import { createRoot, type Root } from "react-dom/client";
 
 import MemoryOverture from "@/components/memory/MemoryOverture";
 import { useMemoryStats } from "@/hooks/use-memory";
-import type { MemoryStats } from "@/api/types";
+import type { MemoryStats, MemoryStatsMeta } from "@/api/types";
 
 vi.mock("@/hooks/use-memory", () => ({
   useMemoryStats: vi.fn(),
@@ -53,12 +53,14 @@ function makeStats(overrides: Partial<MemoryStats> = {}): MemoryStats {
   };
 }
 
-function setStats(stats: MemoryStats | undefined) {
-  // useMemoryStats() resolves to ApiResponse<MemoryStats> = { data, meta },
-  // so the component reads response.data. Mirror that envelope here.
+function setStats(stats: MemoryStats | undefined, meta: MemoryStatsMeta = {}) {
+  // useMemoryStats() resolves to MemoryStatsResponse = { data, meta }, so the
+  // component reads response.data and response.meta.pools_failed. Mirror that
+  // envelope here.
   vi.mocked(useMemoryStats).mockReturnValue({
-    data: stats == null ? undefined : { data: stats, meta: {} },
+    data: stats == null ? undefined : { data: stats, meta },
     isLoading: stats == null,
+    refetch: vi.fn(),
   } as unknown as UseMemoryStatsResult);
 }
 
@@ -219,6 +221,39 @@ describe("MemoryOverture", () => {
     expect(errorEl!.textContent).toContain("load memory stats");
     // The pipeline band's "dead letters" numeral must NOT render on outage.
     expect(container.textContent).not.toContain("dead letters");
+  });
+
+  it("names the failed pools inline (not an all-clear) when meta.pools_failed is set", () => {
+    // Degraded fan-out: the backend answered 200 with partial totals and named
+    // the dropped pools in meta.pools_failed. The overture must surface a named
+    // SourceDegradedNote so the confident KPI/pipeline totals are not read as a
+    // complete verdict — never suppress the missing source (bu-jad4j.1).
+    setStats(makeStats(), { pools_failed: ["relationship", "finance"] });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    const note = container.querySelector('[data-testid="memory-overture-pools-degraded"]');
+    expect(note).not.toBeNull();
+    expect(note!.getAttribute("role")).toBe("alert");
+    // The failed pools are named inline (em-dash qualifier), not hidden.
+    expect(note!.textContent).toContain("relationship, finance");
+    expect(note!.textContent).toContain("—");
+    // The pipeline band still renders its (partial) totals — the note qualifies
+    // them, it does not swap the band out.
+    expect(container.textContent).toContain("dead letters");
+  });
+
+  it("shows no degraded note on the happy path (meta.pools_failed absent)", () => {
+    // Mutation guard: the degraded note must depend on the flag. With every pool
+    // answering, the note is absent and the band renders its all-clear totals.
+    setStats(makeStats());
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    expect(
+      container.querySelector('[data-testid="memory-overture-pools-degraded"]'),
+    ).toBeNull();
+    expect(container.textContent).toContain("dead letters");
   });
 
   it("renders the headline while stats are still loading (reserved height, no shift)", () => {

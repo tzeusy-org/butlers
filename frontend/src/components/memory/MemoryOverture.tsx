@@ -24,6 +24,7 @@ import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
 import { Display } from "@/components/ui/Display";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Voice } from "@/components/ui/Voice";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { useMemoryStats } from "@/hooks/use-memory";
@@ -168,6 +169,15 @@ export default function MemoryOverture() {
   const { data: statsResponse, isError, refetch } = useMemoryStats();
   const stats = statsResponse?.data;
 
+  // Degraded fan-out: the backend fans /memory/stats across each butler's pool
+  // and drops any that error, naming them in `meta.pools_failed` rather than
+  // failing the whole request (memory.py::get_stats). When that list is
+  // non-empty the KPI + pipeline totals below undercount, so the confident
+  // "everything is remembered" verdict is a half-truth. Name the missing pools
+  // inline instead of letting the numbers read as an all-clear (CLAUDE.md
+  // degraded-envelope convention; bu-jad4j.1).
+  const poolsFailed = statsResponse?.meta?.pools_failed ?? [];
+
   // Stats down with nothing cached: the Voice/KPI/pipeline bands would
   // otherwise render blank forever, reading as still-loading when the source
   // is actually unreachable. Surface it instead (bu-mkd5r). A background
@@ -204,9 +214,19 @@ export default function MemoryOverture() {
       </div>
 
       {/* Band 2 — Pipeline. Reserve the band height (rules + line) so the page
-          below does not jump when stats arrive. */}
+          below does not jump when stats arrive. When one or more butler pools
+          dropped out of the fan-out, a named degraded note precedes the band so
+          its confident totals are not read as a complete all-clear. */}
       {!statsUnavailable && (
-        <div className="min-h-[49px]">
+        <div className="flex min-h-[49px] flex-col gap-3">
+          {poolsFailed.length > 0 && (
+            <SourceDegradedNote
+              label="Memory stats"
+              detail={`${poolsFailed.join(", ")} unreachable — totals may undercount`}
+              onRetry={() => void refetch()}
+              testId="memory-overture-pools-degraded"
+            />
+          )}
           {stats != null && <PipelineBand stats={stats} />}
         </div>
       )}
