@@ -3187,10 +3187,16 @@ async def _is_circuit_breaker_tripped(
     if any of the last N terminal attempts was a success (e.g., ``pr_merged``),
     the breaker stays open.
 
-    Only launched executions (``healing_session_id IS NOT NULL``) are counted,
-    plus synthetic QA dashboard reset rows (``status = 'manual_reset'``).
-    Gate rejections that were cleaned up as dispatch events do not have a
-    ``healing_session_id`` and remain excluded from the circuit-breaker signal.
+    Only launched executions (``healing_session_id IS NOT NULL``) that closed
+    *after* the latest manual reset (``public.breaker_resets`` for breaker
+    ``'qa'``) are counted. An operator reset records a timestamp there, which
+    excludes every prior failure from the window and re-admits dispatches
+    WITHOUT fabricating a clean patrol. Gate rejections that were cleaned up as
+    dispatch events do not have a ``healing_session_id`` and remain excluded
+    from the circuit-breaker signal.
+
+    Kept byte-identical to the dashboard filter in
+    ``butlers.api.routers.qa._QA_CIRCUIT_BREAKER_WHERE_CLAUSE``.
     """
     # Check only QA-originated terminal attempts where an investigation actually
     # launched (healing_session_id IS NOT NULL).  Admission-control rejections
@@ -3202,9 +3208,10 @@ async def _is_circuit_breaker_tripped(
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL
           AND closed_at IS NOT NULL
-          AND (
-                healing_session_id IS NOT NULL
-                OR status = 'manual_reset'
+          AND healing_session_id IS NOT NULL
+          AND closed_at > COALESCE(
+                (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
+                '-infinity'::timestamptz
               )
         ORDER BY closed_at DESC
         LIMIT $1

@@ -809,16 +809,22 @@ class TestListPatrols:
 
 
 class TestGetCircuitBreakerStatus:
-    async def test_counts_manual_reset_without_session_as_chain_break(self) -> None:
-        """Status endpoint must match dispatch semantics for QA breaker reset rows."""
+    async def test_status_query_consults_breaker_resets_not_synthetic_rows(self) -> None:
+        """The breaker filter reads the real reset ledger, never a forged status.
+
+        The reset boundary lives in SQL (``closed_at > latest breaker_resets``),
+        so the endpoint no longer keys off a fabricated ``manual_reset`` sentinel
+        row. This asserts the query shape AND that five real post-reset failures
+        still trip the breaker. Boundary-clearing behaviour is proven end-to-end
+        against a real Postgres in the integration suite.
+        """
+        captured: list[str] = []
 
         def _fetch_side_effect(query: str, *_args: Any):
-            if "status = 'manual_reset'" in query and "healing_session_id IS NOT NULL" in query:
-                return [
-                    _r({"id": uuid.uuid4(), "status": s, "closed_at": _NOW})
-                    for s in ("failed", "failed", "failed", "failed", "manual_reset")
-                ]
-            return [_r({"status": "failed"}) for _ in range(5)]
+            captured.append(query)
+            return [
+                _r({"id": uuid.uuid4(), "status": "failed", "closed_at": _NOW}) for _ in range(5)
+            ]
 
         body = (
             await _call(
@@ -827,8 +833,11 @@ class TestGetCircuitBreakerStatus:
                 "/api/qa/circuit-breaker",
             )
         ).json()
-        assert body["data"]["tripped"] is False
-        assert body["data"]["recent_statuses"][-1] == "manual_reset"
+        assert body["data"]["tripped"] is True
+        assert body["data"]["recent_statuses"] == ["failed"] * 5
+        cb_query = next(q for q in captured if "healing_session_id IS NOT NULL" in q)
+        assert "breaker_resets" in cb_query
+        assert "manual_reset" not in cb_query
 
 
 class TestGetPatrol:

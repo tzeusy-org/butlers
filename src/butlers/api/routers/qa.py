@@ -1154,13 +1154,21 @@ def _row_to_journal_event(row: Any) -> QaJournalEvent:
 # ---------------------------------------------------------------------------
 
 _CIRCUIT_BREAKER_THRESHOLD = 5
+# Only real launched QA investigations (healing_session_id IS NOT NULL) that
+# closed AFTER the latest manual reset count toward the breaker. Consulting
+# ``public.breaker_resets`` (rather than a forged clean-patrol sentinel) is what
+# lets an operator reset clear the failure chain while the real, un-fabricated
+# attempt/patrol history stays visible in summary + all-time stats. Kept
+# byte-identical to the dispatch-admission filter in
+# ``butlers.core.qa.dispatch._is_circuit_breaker_tripped``.
 _QA_CIRCUIT_BREAKER_WHERE_CLAUSE = """
 FROM public.healing_attempts
 WHERE qa_patrol_id IS NOT NULL
   AND closed_at IS NOT NULL
-  AND (
-        healing_session_id IS NOT NULL
-        OR status = 'manual_reset'
+  AND healing_session_id IS NOT NULL
+  AND closed_at > COALESCE(
+        (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
+        '-infinity'::timestamptz
       )
 """
 
@@ -1500,9 +1508,9 @@ async def get_qa_summary(
         success_rate=round(success_rate, 4),
     )
 
-    # Circuit breaker — mirror the exact launched-attempt + manual_reset
-    # sentinel filter used by the QA dispatch gate so dashboard reporting
-    # matches actual dispatcher semantics.
+    # Circuit breaker — mirror the exact launched-attempt + latest-reset filter
+    # used by the QA dispatch gate so dashboard reporting matches actual
+    # dispatcher semantics.
     cb_rows = await _fetch_recent_circuit_breaker_rows(
         pool,
         limit=_CIRCUIT_BREAKER_THRESHOLD,
@@ -3146,9 +3154,14 @@ async def get_circuit_breaker_status(
 async def reset_circuit_breaker(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[CircuitBreakerResetResponse]:
-    """Reset the QA circuit breaker by inserting a synthetic success record.
+    """Reset the QA circuit breaker by recording an auditable reset marker.
 
-    This breaks the consecutive-failure chain so future dispatches can proceed.
+    Writes one ``public.breaker_resets`` row (who/when/why). The dispatch
+    admission gate and every dashboard breaker query only count investigation
+    attempts that closed *after* the latest reset, so this clears the
+    consecutive-failure chain and re-admits dispatches — WITHOUT fabricating a
+    clean patrol or a fake attempt. The real failure history (patrols, attempts,
+    all-time stats, ``staffer_status``) therefore stays visible and truthful.
     """
     pool = _shared_pool(db)
 
@@ -3171,43 +3184,15 @@ async def reset_circuit_breaker(
             meta=ApiMeta(),
         )
 
-    # Insert a synthetic patrol + manual_reset healing attempt so that:
-    # 1. The healing_attempts row has qa_patrol_id set (visible to CB queries)
-    # 2. The status breaks the all-failures chain (manual_reset ∉ failure statuses)
-    # 3. The FK constraint on qa_patrol_id → qa_patrols(id) is satisfied
-    # Note: manual_reset is not in VALID_STATUSES so it bypasses the state machine
-    # (direct INSERT, not via update_attempt_status). This is intentional — it's a
-    # synthetic record that only exists to break the failure chain.
-    synthetic_patrol_id = uuid.uuid4()
     await pool.execute(
         """
-        INSERT INTO public.qa_patrols (id, status, completed_at)
-        VALUES ($1, 'clean', now())
+        INSERT INTO public.breaker_resets (breaker, reset_by, reason)
+        VALUES ('qa', 'dashboard', $1)
         """,
-        synthetic_patrol_id,
-    )
-    await pool.execute(
-        """
-        INSERT INTO public.healing_attempts (
-            fingerprint, butler_name, status, severity,
-            exception_type, call_site, created_at, updated_at, closed_at,
-            error_detail, qa_patrol_id
-        ) VALUES (
-            'circuit-breaker-reset-' || gen_random_uuid()::text,
-            'dashboard',
-            'manual_reset',
-            4,
-            'CircuitBreakerReset',
-            'dashboard.circuit_breaker.reset',
-            now(), now(), now(),
-            'Manual reset via QA dashboard',
-            $1
-        )
-        """,
-        synthetic_patrol_id,
+        "Manual reset via QA dashboard",
     )
 
-    logger.info("QA circuit breaker reset via dashboard")
+    logger.info("QA circuit breaker reset via dashboard (breaker_resets recorded)")
 
     return ApiResponse(
         data=CircuitBreakerResetResponse(

@@ -135,6 +135,18 @@ The dashboard API SHALL expose endpoints under `/api/qa/` to support the fronten
 - **THEN** a patrol cycle is triggered immediately regardless of the schedule
 - **AND** returns `{ patrol_id, status: "triggered" }`
 
+#### Scenario: GET /api/qa/circuit-breaker
+- **WHEN** `GET /api/qa/circuit-breaker` is called
+- **THEN** it returns `{ tripped, threshold, recent_statuses, recent_attempts }` derived from the last `threshold` (default 5) real launched QA investigation attempts (`healing_session_id IS NOT NULL`) that closed **after** the latest recorded reset
+
+#### Scenario: POST /api/qa/circuit-breaker/reset
+- **WHEN** `POST /api/qa/circuit-breaker/reset` is called while the breaker is tripped
+- **THEN** it records one auditable row in `public.breaker_resets` (`breaker='qa'`, `reset_by`, `reset_at`, optional `reason`) and returns `{ reset: true, message }`
+- **AND** it SHALL NOT fabricate history — no synthetic `qa_patrols` row and no synthetic `healing_attempts` row are created
+- **AND** the dispatch-admission gate and every dashboard breaker query count only attempts that closed after the latest reset, so the breaker admits new dispatches while the real failure history (patrols, attempts, all-time stats, and the derived `staffer_status`) remains visible and un-fabricated
+- **WHEN** `POST /api/qa/circuit-breaker/reset` is called while the breaker is **not** tripped
+- **THEN** it is a no-op and returns `{ reset: false, message }` without writing a `breaker_resets` row
+
 #### Scenario: GET /api/qa/trends
 - **WHEN** `GET /api/qa/trends` is called with `days` parameter (default: 7)
 - **THEN** it returns daily aggregated stats: `[{ date, patrols, findings, novel, dispatched, prs_opened, prs_merged, success_rate, by_source: { source_type: count } }]`
