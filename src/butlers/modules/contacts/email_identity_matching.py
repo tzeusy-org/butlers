@@ -55,9 +55,33 @@ DEFAULT_ROW_LIMIT = 20_000
 # stray miss here is not a fact silently written, only a candidate silently
 # not considered.
 _BULK_LOCAL_PART_RE = re.compile(
-    r"no.?reply|do.?not.?reply|notifications?|newsletter|newsletters?|mailer.?daemon|"
-    r"postmaster|automated|automation|bounce|digest|updates?|alerts?|billing|"
-    r"marketing|info|hello|support|noreply",
+    r"no.?reply|do.?not.?reply|notifications?|notices?|notify|newsletter|newsletters?|"
+    r"mailer.?daemon|postmaster|automated|automation|bounce|digest|updates?|alerts?|"
+    r"billing|marketing|info|hello|support|noreply|receipts?|invoices?|welcome|"
+    r"verif(?:y|ication)|confirm(?:ation)?",
+    re.IGNORECASE,
+)
+
+# Domain labels that mark a sender as automated/bulk even when the local-part
+# looks human (e.g. ``notice@email.anthropic.com``). Transactional and marketing
+# mail is almost always sent from a dedicated sending subdomain — the leading
+# label of the domain (``email.``, ``mail.``, ``e.``, ``mailer.``, ...) — or
+# from a known email-service-provider domain. A real human's From address is
+# the apex/registrable domain (``@anthropic.com``), never one of these sending
+# subdomains, so matching the leading label carries a low false-positive risk.
+_BULK_DOMAIN_LABEL_RE = re.compile(
+    r"^(?:email|mail|mailer|mailing|e|em|mg|news|newsletter|notify|notifications?|"
+    r"send|sender|smtp|bounce|bounces|reply|noreply|no-reply|marketing|mkt|mktg|"
+    r"edm|campaigns?|click|links?|t)\.",
+    re.IGNORECASE,
+)
+
+# Registrable domains of common email-service providers — mail from these is
+# bulk/transactional regardless of the local-part or subdomain shape.
+_BULK_ESP_DOMAIN_RE = re.compile(
+    r"(?:^|\.)(?:sendgrid\.net|amazonses\.com|mailgun\.(?:org|net)|mcsv\.net|"
+    r"mailchimpapp\.net|sparkpostmail\.com|mandrillapp\.com|postmarkapp\.com|"
+    r"mailjet\.com|sendinblue\.com|sib\.email|rsgsv\.net)$",
     re.IGNORECASE,
 )
 
@@ -169,13 +193,25 @@ async def fetch_email_sender_stats(
 def is_bulk_or_noreply_address(address: str) -> bool:
     """Heuristic: does *address* look like an automated/bulk sender?
 
-    Matches on the local-part only (before ``@``) against a conservative
-    denylist of automated-sender substrings (``noreply``, ``notifications``,
-    ``mailer-daemon``, ...). See module docstring for the false-negative /
-    false-positive tradeoff rationale.
+    Two independent signals, either of which flags the address:
+
+    1. **Local-part** (before ``@``) against a conservative denylist of
+       automated-sender substrings (``noreply``, ``notifications``, ``notice``,
+       ``mailer-daemon``, ...).
+    2. **Domain** — either a dedicated sending subdomain (leading label like
+       ``email.``/``mail.``/``e.`` in ``notice@email.anthropic.com``) or a known
+       email-service-provider registrable domain. This catches human-looking
+       local-parts that are really transactional/marketing senders.
+
+    See module docstring for the false-negative / false-positive tradeoff
+    rationale.
     """
-    local = address.split("@", 1)[0]
-    return bool(_BULK_LOCAL_PART_RE.search(local))
+    local, _, domain = address.partition("@")
+    if _BULK_LOCAL_PART_RE.search(local):
+        return True
+    if domain and (_BULK_DOMAIN_LABEL_RE.search(domain) or _BULK_ESP_DOMAIN_RE.search(domain)):
+        return True
+    return False
 
 
 def derive_display_name_from_address(address: str) -> str:

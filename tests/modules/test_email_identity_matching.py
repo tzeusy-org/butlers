@@ -134,6 +134,17 @@ class TestIsBulkOrNoreplyAddress:
             "postmaster@example.com",
             "support@example.com",
             "billing@example.com",
+            # bu: bare "notice"/"notify" were missed by the old denylist and
+            # produced spurious "Notice" Person proposals in the approvals queue.
+            "notice@example.com",
+            "notices@example.com",
+            "notify@example.com",
+            "receipts@example.com",
+            "invoice@example.com",
+            "welcome@example.com",
+            "verify@example.com",
+            "verification@example.com",
+            "confirmation@example.com",
         ],
     )
     def test_flags_known_bulk_patterns(self, address: str) -> None:
@@ -141,7 +152,34 @@ class TestIsBulkOrNoreplyAddress:
 
     @pytest.mark.parametrize(
         "address",
-        ["john.doe@example.com", "jane_smith@example.com", "alex@example.com"],
+        [
+            # Human-looking local-parts sent from dedicated sending subdomains —
+            # the reported misfire (notice@email.anthropic.com) and its family.
+            "notice@email.anthropic.com",
+            "hey@mail.github.com",
+            "someone@e.marketing.com",
+            "person@mailer.example.com",
+            "digest@news.example.com",
+            # Known ESP registrable domains.
+            "bob@bounce.sendgrid.net",
+            "alice@u123.mail.amazonses.com",
+            "carol@mg.mailgun.org",
+        ],
+    )
+    def test_flags_bulk_sending_domains(self, address: str) -> None:
+        assert is_bulk_or_noreply_address(address) is True
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "john.doe@example.com",
+            "jane_smith@example.com",
+            "alex@example.com",
+            # Apex/registrable domains for the same brands must NOT be flagged —
+            # a real human at @anthropic.com is a valid candidate.
+            "jane@anthropic.com",
+            "dev@github.com",
+        ],
     )
     def test_does_not_flag_plausible_human_addresses(self, address: str) -> None:
         assert is_bulk_or_noreply_address(address) is False
