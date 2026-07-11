@@ -41,7 +41,7 @@ The QA Staffer SHALL support a pluggable `DiscoverySource` protocol for error de
 #### Scenario: Source registration at startup
 - **WHEN** the QA Staffer daemon starts
 - **THEN** it registers all enabled discovery sources from `[modules.qa].enabled_sources` config
-- **AND** default enabled sources are: `["log_scanner", "session_records", "butler_reports", "tool_call_failures"]`
+- **AND** default enabled sources are: `["log_scanner", "session_records", "butler_reports", "tool_call_failures", "infra_state"]`
 - **AND** disabled sources are logged at INFO level and skipped during patrol
 - **AND** adapter diagnostics that are only useful through structured session
   records are suppressed by `log_scanner` only when `session_records` actually
@@ -74,7 +74,7 @@ The QA Staffer SHALL support a pluggable `DiscoverySource` protocol for error de
 - **AND** the patrol record includes the failed source in `error_detail`
 
 ### Requirement: V1 Discovery Sources
-The QA Staffer SHALL ship with four discovery sources in v1.
+The QA Staffer SHALL ship with five discovery sources in v1.
 
 #### Scenario: Log scanner source
 - **WHEN** the `log_scanner` source is enabled
@@ -106,6 +106,17 @@ The QA Staffer SHALL ship with four discovery sources in v1.
 - **THEN** it queries recent failed MCP tool calls within the lookback window and produces `QaFinding` objects with fingerprints derived from the tool name and call site
 - **AND** all filtering is tool-based (SQL queries); no LLM invocation
 
+#### Scenario: Infra state source
+- **WHEN** the `infra_state` source is enabled
+- **THEN** it checks four infra health signals every patrol tick, ignoring `lookback_minutes` (each check is a point-in-time liveness/staleness comparison against a fixed cadence, not a rolling scan window):
+  - **connector-offline**: queries `public.v_qa_connector_state` (sanctioned cross-schema view per RFC 0010, over `switchboard.connector_registry`) and flags a connector whose derived liveness (`butlers.api.models.connector.derive_liveness`) is `"offline"` — excluding a `state = 'paused'` connector (a deliberate operator action) and excluding a connector within a 15-minute grace window of its first registration
+  - **heartbeat-stale**: queries `public.v_qa_butler_heartbeat` (same migration, over `switchboard.butler_registry`) and flags a butler whose `last_seen_at` plus its own `liveness_ttl_seconds` has elapsed, or that is quarantined (`quarantined_at IS NOT NULL`) — recomputed independently of the stored `eligibility_state` column, which is only reconciled lazily on routing calls and can go stale forever for a butler nobody routes to
+  - **backup-stale**: reads `BUTLERS_BACKUP_DIR`; an unset env var is a legitimate absence (no finding); a configured-but-unreachable directory, one with no backup on record, or a most-recent backup older than 36 hours produces a finding
+  - **external-deadman-stale**: reads the last successful external-deadman ping recorded by `butlers.jobs.external_deadman` in `public.audit_log`; an unconfigured `EXTERNAL_DEADMAN_URL` is a legitimate absence (no finding); a last-success timestamp older than 3x the configured ping interval (or no successful ping ever) produces a finding
+- **AND** each check's finding fingerprint is derived from a stable identity (connector type/identity, butler name, or a fixed backup/deadman call-site) via the same sanitize-then-hash pattern the other sources use, so the fingerprint stays stable across patrol ticks even though the human-readable `event_summary` carries the live timestamp/age
+- **AND** all filtering is tool-based (SQL queries, env var reads, filesystem stat calls); no LLM invocation
+- **AND** a health-check query against both views runs before row processing; a failure (e.g. a revoked grant) is raised and logged rather than silently returning an empty (falsely clean) result
+
 ### Requirement: Future Discovery Source Catalog
 The discovery source architecture SHALL accommodate future sources without requiring changes to the triage, dispatch, or dashboard layers.
 
@@ -123,11 +134,6 @@ The discovery source architecture SHALL accommodate future sources without requi
 - **WHEN** a `scheduler_drift` source is implemented
 - **THEN** it compares expected vs. actual tick timestamps for all butlers' scheduled jobs
 - **AND** drift exceeding a configurable threshold produces a finding
-
-#### Scenario: Connector heartbeat source (post-v1)
-- **WHEN** a `connector_heartbeat` source is implemented
-- **THEN** it checks connector last-seen timestamps against expected heartbeat intervals
-- **AND** silent connectors (no heartbeat within 2x interval) produce findings
 
 #### Scenario: Git regression source (post-v1)
 - **WHEN** a `git_regression` source is implemented
@@ -181,7 +187,7 @@ The QA Staffer's patrol behavior SHALL be configurable via `butler.toml` under `
 
 #### Scenario: Default configuration
 - **WHEN** `[modules.qa]` is absent or has no overrides
-- **THEN** defaults apply: `patrol_interval_minutes = 10`, `log_lookback_minutes = 15`, `max_concurrent_investigations = 2`, `severity_threshold = 2`, `enabled = true`, `enabled_sources = ["log_scanner", "session_records", "butler_reports", "tool_call_failures"]`, `max_reactive_buffer = 50`, `log_scanner_max_entries = 10000`, `log_scanner_max_findings = 100`
+- **THEN** defaults apply: `patrol_interval_minutes = 10`, `log_lookback_minutes = 15`, `max_concurrent_investigations = 2`, `severity_threshold = 2`, `enabled = true`, `enabled_sources = ["log_scanner", "session_records", "butler_reports", "tool_call_failures", "infra_state"]`, `max_reactive_buffer = 50`, `log_scanner_max_entries = 10000`, `log_scanner_max_findings = 100`
 - **NOTE** `log_scanner_max_entries` counts only error/warning candidates (benign INFO/DEBUG lines do not consume the budget); `log_scanner_max_findings` caps the maximum distinct fingerprints returned per scan; file order within each subdirectory is randomised to prevent systematic starvation of later-sorted files under high load
 - **NOTE** the module also exposes `retention_cleanup_hour` (UTC hour for the daily raw-evidence cleanup, default 4) and log-scanner safety caps `log_scanner_max_total_lines` and `log_scanner_max_scan_seconds`; the QA roster runs `qa_evidence_cleanup` (hourly tick that acts only at the configured hour) and `qa_pr_status_check` schedules alongside `qa_patrol`
 

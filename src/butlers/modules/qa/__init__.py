@@ -3,7 +3,8 @@
 This module is the runtime heart of the QA Staffer. It:
   - Registers three MCP tools: report_finding, force_patrol, get_qa_status
   - Manages the patrol loop (scheduler-driven, asyncio.Lock for overlap prevention)
-  - Registers discovery sources (log_scanner, session_records, butler_reports)
+  - Registers discovery sources (log_scanner, session_records, butler_reports,
+    tool_call_failures, infra_state)
   - Delegates triage and dispatch to core.qa.*
   - Handles severity-0 reactive mini-patrols
   - Recovers stale patrol rows and stale investigating attempts on startup
@@ -48,6 +49,7 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
+from butlers.core.qa.sources.infra_state import InfraStateSource
 from butlers.core.qa.sources.log_scanner import (
     DEFAULT_MAX_SCAN_SECONDS,
     DEFAULT_MAX_TOTAL_LINES,
@@ -227,7 +229,13 @@ _DEFAULT_RETENTION_CLEANUP_HOUR = 4
 
 #: Known source names (for config validation).
 _KNOWN_SOURCES = frozenset(
-    {"log_scanner", "session_records", "butler_reports", "tool_call_failures"}
+    {
+        "log_scanner",
+        "session_records",
+        "butler_reports",
+        "tool_call_failures",
+        "infra_state",
+    }
 )
 
 #: Maps caller-supplied integer severity (0–4) to the hint string accepted by
@@ -276,7 +284,7 @@ class QaConfig(BaseModel):
         Maximum severity score that triggers investigation.  Lower is more
         severe.  Default 2 (medium).
     enabled_sources:
-        List of source names to enable.  Default all three v1 sources.
+        List of source names to enable.  Default all five known sources.
     max_reactive_buffer:
         Max buffered reactive findings in the butler_reports source.
         Default 50.
@@ -309,6 +317,7 @@ class QaConfig(BaseModel):
         "session_records",
         "butler_reports",
         "tool_call_failures",
+        "infra_state",
     ]
     max_reactive_buffer: int = _DEFAULT_MAX_REACTIVE_BUFFER
     log_scanner_max_entries: int = 10_000
@@ -592,6 +601,13 @@ class QaModule(Module):
                 logger.info("QaModule: registered tool_call_failures source")
             else:
                 logger.info("QaModule: tool_call_failures source skipped (no DB pool at startup)")
+
+        if "infra_state" in enabled:
+            if pool is not None:
+                self._sources.append(InfraStateSource(pool))
+                logger.info("QaModule: registered infra_state source")
+            else:
+                logger.info("QaModule: infra_state source skipped (no DB pool at startup)")
 
         disabled = _KNOWN_SOURCES - enabled
         for src_name in sorted(disabled):

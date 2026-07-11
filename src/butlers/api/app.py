@@ -131,6 +131,11 @@ from butlers.jobs.deploy_drift import (
     DEFAULT_DRIFT_CHECK_INTERVAL_S,
     run_migration_drift_loop,
 )
+from butlers.jobs.external_deadman import (
+    DEFAULT_DEADMAN_CHECK_INTERVAL_S,
+    EXTERNAL_DEADMAN_URL_ENV,
+    run_external_deadman_loop,
+)
 from butlers.jobs.secrets_lifecycle import (
     DEFAULT_SCAN_INTERVAL_S,
     run_secrets_lifecycle_loop,
@@ -147,6 +152,7 @@ _SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV = "SECRETS_LIFECYCLE_SCAN_INTERVAL_S"
 _SECRETS_STALENESS_SCAN_INTERVAL_ENV = "SECRETS_STALENESS_SCAN_INTERVAL_S"
 _SECRETS_STALENESS_WINDOW_ENV = "SECRETS_STALENESS_WINDOW_S"
 _MIGRATION_DRIFT_CHECK_INTERVAL_ENV = "MIGRATION_DRIFT_CHECK_INTERVAL_S"
+_EXTERNAL_DEADMAN_CHECK_INTERVAL_ENV = "EXTERNAL_DEADMAN_CHECK_INTERVAL_S"
 
 
 def _resolve_positive_float_env(env_var: str, default: float) -> float:
@@ -219,6 +225,7 @@ async def lifespan(app: FastAPI):
     settings_console_delta_task: asyncio.Task | None = None
     secrets_staleness_task: asyncio.Task | None = None
     migration_drift_task: asyncio.Task | None = None
+    external_deadman_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
         # Wire DB dependencies for both static and dynamic routers
@@ -327,6 +334,35 @@ async def lifespan(app: FastAPI):
                 exc_info=True,
             )
 
+        # External deadman (bu-9r3hd.4): periodic outbound ping to an
+        # operator-configured URL, catching a silently broken host/egress
+        # firewall after a reboot -- see butlers.jobs.external_deadman for
+        # the full design rationale. Only started when EXTERNAL_DEADMAN_URL
+        # is actually configured; with no target there is nothing useful to
+        # do every tick, and InfraStateSource treats "unconfigured" as a
+        # legitimate absence rather than a failure.
+        deadman_url = os.environ.get(EXTERNAL_DEADMAN_URL_ENV, "").strip()
+        if deadman_url:
+            try:
+                deadman_interval_s = _resolve_positive_float_env(
+                    _EXTERNAL_DEADMAN_CHECK_INTERVAL_ENV, DEFAULT_DEADMAN_CHECK_INTERVAL_S
+                )
+                external_deadman_task = asyncio.create_task(
+                    run_external_deadman_loop(
+                        get_db_manager(), url=deadman_url, interval_s=deadman_interval_s
+                    )
+                )
+                _BACKGROUND_TASKS.add(external_deadman_task)
+                external_deadman_task.add_done_callback(_BACKGROUND_TASKS.discard)
+            except Exception:
+                logger.warning("Failed to start external-deadman ping loop", exc_info=True)
+        else:
+            logger.info(
+                "%s is not set; external-deadman ping loop disabled "
+                "(no outside heartbeat monitor configured)",
+                EXTERNAL_DEADMAN_URL_ENV,
+            )
+
     except Exception:
         logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
 
@@ -354,6 +390,10 @@ async def lifespan(app: FastAPI):
         migration_drift_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await migration_drift_task
+    if external_deadman_task is not None:
+        external_deadman_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await external_deadman_task
     await shutdown_db_manager()
     await shutdown_dependencies()
 

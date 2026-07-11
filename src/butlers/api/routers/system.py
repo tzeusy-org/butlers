@@ -589,7 +589,7 @@ async def get_database_facts(
 # ---------------------------------------------------------------------------
 
 
-def _read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
+def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
     """Scan *backup_dir* for timestamped pg_dump files and return BackupFacts.
 
     Backup files must match the pattern ``butlers_*.sql.gz`` (written by
@@ -600,6 +600,11 @@ def _read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
     - the directory does not exist
     - the directory is not readable (OSError)
     No exception is propagated.
+
+    Public (not module-private) because ``butlers.core.qa.sources.infra_state``
+    (bu-9r3hd.4) reuses it for the ``backup-stale`` QA discovery check — the
+    same recency/reachability facts this endpoint surfaces, read once and
+    shared rather than reimplemented.
     """
     if not backup_dir.is_dir():
         return BackupFacts(
@@ -693,7 +698,7 @@ async def get_backup_facts() -> ApiResponse[BackupFacts]:
         )
 
     backup_dir = Path(backup_dir_env)
-    return ApiResponse(data=_read_backup_facts_from_dir(backup_dir))
+    return ApiResponse(data=read_backup_facts_from_dir(backup_dir))
 
 
 # ---------------------------------------------------------------------------

@@ -81,6 +81,11 @@ nothing could even detect it, let alone act on it.
   escalation writes directly to `public.healing_attempts` without going
   through a patrol cycle, which is sufficient for QA-dossier visibility but
   not yet a full discovery-source integration.
+  **DONE** (bu-9r3hd.4): connector-offline, backup-stale, heartbeat-stale,
+  and external-deadman-stale now flow through a genuine, registered
+  `InfraStateSource` — see `openspec/specs/staffer-qa/spec.md`'s "Infra
+  state source" scenario. Migration drift itself was intentionally left on
+  this slice's own direct-escalation path (not folded into the new source).
 - Backup status honesty (bu-9r3hd.5).
 
 ## Impact

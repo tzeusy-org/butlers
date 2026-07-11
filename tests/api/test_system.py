@@ -31,7 +31,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
 from butlers.api.routers.system import (
     _get_db_manager,
-    _read_backup_facts_from_dir,
+    read_backup_facts_from_dir,
     system_egress_reads_total,
     system_instance_reads_total,
 )
@@ -390,7 +390,7 @@ async def test_backups_reachable_with_files(tmp_path: Path, monkeypatch: pytest.
 
 
 # ---------------------------------------------------------------------------
-# _read_backup_facts_from_dir unit tests (no HTTP stack needed)
+# read_backup_facts_from_dir unit tests (no HTTP stack needed)
 #
 # The missing/empty/with-files paths are covered through the /backups endpoint
 # tests above; only the file-glob filtering invariant is unique here.
@@ -401,7 +401,7 @@ def test_read_backup_facts_ignores_non_matching_files(tmp_path: Path):
     """Files that don't match butlers_*.sql.gz are not counted."""
     (tmp_path / "other_dump.sql.gz").write_bytes(b"x" * 100)
     (tmp_path / "butlers_latest.tar.gz").write_bytes(b"x" * 100)
-    facts = _read_backup_facts_from_dir(tmp_path)
+    facts = read_backup_facts_from_dir(tmp_path)
     assert facts.backup_source_reachable is True
     assert facts.backup_history == []
 
@@ -421,7 +421,7 @@ def test_read_backup_facts_caps_history_at_7_most_recent(tmp_path: Path):
         ts = base + i  # larger i == more recent
         os.utime(f, (ts, ts))
 
-    facts = _read_backup_facts_from_dir(tmp_path)
+    facts = read_backup_facts_from_dir(tmp_path)
 
     assert facts.backup_source_reachable is True
     # Capped at 7 even though 10 dumps exist.
@@ -443,7 +443,7 @@ def test_read_backup_facts_returns_all_when_fewer_than_7(tmp_path: Path):
         ts = base + i
         os.utime(f, (ts, ts))
 
-    facts = _read_backup_facts_from_dir(tmp_path)
+    facts = read_backup_facts_from_dir(tmp_path)
 
     assert len(facts.backup_history) == 3
     assert [e.size_bytes for e in facts.backup_history] == [3, 2, 1]

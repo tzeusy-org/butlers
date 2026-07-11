@@ -89,6 +89,7 @@ class TestModuleABCAndConfig:
             "session_records",
             "butler_reports",
             "tool_call_failures",
+            "infra_state",
         ]
 
         with pytest.raises(ValidationError):
