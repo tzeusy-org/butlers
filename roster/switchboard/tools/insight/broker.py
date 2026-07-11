@@ -124,6 +124,17 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
         CREATE INDEX IF NOT EXISTS idx_insight_engagement_delivered_engaged
         ON insight_engagement (delivered_at, engaged)
     """)
+    # bu-tdd4k.5: durable daily rollup — mirrors
+    # alembic/versions/core/core_164_attention_daily_rollup.py exactly.
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS attention_daily_rollup (
+            day                  DATE PRIMARY KEY,
+            owner_ingress_count  INTEGER NOT NULL DEFAULT 0,
+            insights_delivered   INTEGER NOT NULL DEFAULT 0,
+            insights_engaged     INTEGER NOT NULL DEFAULT 0,
+            updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +600,10 @@ async def cleanup_old_rows(
 
     - insight_candidates: non-pending rows older than retention_days
     - insight_cooldowns: rows where cooldown_until is older than retention_days
-    - insight_engagement: rows older than retention_days
+    - insight_engagement: rows older than retention_days, after first rolling
+      each affected day's delivered/engaged counts into
+      ``attention_daily_rollup`` (bu-tdd4k.5) so the disengagement ratchet's
+      history survives this purge
     """
     if now is None:
         now = datetime.now(UTC)
@@ -609,6 +623,37 @@ async def cleanup_old_rows(
         """,
         cutoff,
     )
+
+    # Roll up the day's delivered/engaged counts BEFORE the rows disappear —
+    # this is the durable signal check_total_disengagement_auto_off falls
+    # back to once a day is no longer present in insight_engagement.
+    # Best-effort: a rollup failure (e.g. mid-deploy, migration not yet
+    # applied) must not block the deletes below.
+    try:
+        await pool.execute(
+            """
+            INSERT INTO attention_daily_rollup (day, insights_delivered, insights_engaged)
+            SELECT
+                DATE_TRUNC('day', delivered_at)::date AS day,
+                COUNT(*) AS insights_delivered,
+                COUNT(*) FILTER (WHERE engaged = TRUE) AS insights_engaged
+            FROM insight_engagement
+            WHERE delivered_at < $1
+            GROUP BY DATE_TRUNC('day', delivered_at)
+            ON CONFLICT (day) DO UPDATE
+            SET insights_delivered = EXCLUDED.insights_delivered,
+                insights_engaged = EXCLUDED.insights_engaged,
+                updated_at = now()
+            """,
+            cutoff,
+        )
+    except Exception:
+        logger.warning(
+            "cleanup_old_rows: failed to roll up insight_engagement into "
+            "attention_daily_rollup before purge; continuing with delete",
+            exc_info=True,
+        )
+
     await pool.execute(
         """
         DELETE FROM insight_engagement
@@ -649,20 +694,55 @@ async def check_total_disengagement_auto_off(
     today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     window_start = today_midnight - timedelta(days=14)
     window_end = today_midnight  # exclusive: don't include today's partial day
-    rows = await pool.fetch(
-        """
-        SELECT
-            DATE_TRUNC('day', delivered_at) AS day,
-            COUNT(*) AS total,
-            COUNT(*) FILTER (WHERE engaged = TRUE) AS engaged_count
-        FROM insight_engagement
-        WHERE delivered_at >= $1 AND delivered_at < $2
-        GROUP BY DATE_TRUNC('day', delivered_at)
-        ORDER BY day ASC
-        """,
-        window_start,
-        window_end,
-    )
+
+    # bu-tdd4k.5: fall back to attention_daily_rollup for any day in the
+    # window that insight_engagement's 30-day purge has already reaped. The
+    # 14-day window normally fits comfortably inside the 30-day raw retention,
+    # but a shortened retention_days config or a rollup-first cleanup ordering
+    # would otherwise silently truncate the ratchet's history.
+    try:
+        rows = await pool.fetch(
+            """
+            WITH raw_days AS (
+                SELECT
+                    DATE_TRUNC('day', delivered_at)::date AS day,
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE engaged = TRUE) AS engaged_count
+                FROM insight_engagement
+                WHERE delivered_at >= $1 AND delivered_at < $2
+                GROUP BY DATE_TRUNC('day', delivered_at)
+            ),
+            rollup_days AS (
+                SELECT day, insights_delivered AS total, insights_engaged AS engaged_count
+                FROM attention_daily_rollup
+                WHERE day >= $1::date AND day < $2::date
+                  AND day NOT IN (SELECT day FROM raw_days)
+            )
+            SELECT day, total, engaged_count FROM raw_days
+            UNION ALL
+            SELECT day, total, engaged_count FROM rollup_days
+            ORDER BY day ASC
+            """,
+            window_start,
+            window_end,
+        )
+    except asyncpg.UndefinedTableError:
+        # attention_daily_rollup not migrated yet on this DB — degrade to the
+        # original raw-only read rather than crashing the daily cycle.
+        rows = await pool.fetch(
+            """
+            SELECT
+                DATE_TRUNC('day', delivered_at) AS day,
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE engaged = TRUE) AS engaged_count
+            FROM insight_engagement
+            WHERE delivered_at >= $1 AND delivered_at < $2
+            GROUP BY DATE_TRUNC('day', delivered_at)
+            ORDER BY day ASC
+            """,
+            window_start,
+            window_end,
+        )
 
     if not rows:
         return False

@@ -20,6 +20,7 @@ from butlers.core.attention_ledger import (
     is_priority_urgent,
     normalize_priority,
     record_attention_event,
+    record_owner_ingress_rollup,
 )
 
 pytestmark = pytest.mark.unit
@@ -251,3 +252,42 @@ class TestGetSuppressingContextSignal:
 
         monkeypatch.setattr("butlers.context_bus.get_active_context", _raising)
         assert await get_suppressing_context_signal(AsyncMock()) is None
+
+
+class TestRecordOwnerIngressRollup:
+    """bu-tdd4k.5: durable per-day owner-ingress counter."""
+
+    async def test_none_pool_is_noop(self):
+        # Must not raise — the pipeline's engagement gate is best-effort.
+        await record_owner_ingress_rollup(None)
+
+    async def test_upserts_current_utc_day_by_default(self):
+        pool = AsyncMock()
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+
+        before = datetime.now(UTC).date()
+        await record_owner_ingress_rollup(pool)
+        after = datetime.now(UTC).date()
+
+        pool.execute.assert_awaited_once()
+        query, day = pool.execute.await_args.args
+        assert "INSERT INTO public.attention_daily_rollup" in query
+        assert "ON CONFLICT (day) DO UPDATE" in query
+        assert before <= day <= after
+
+    async def test_upserts_explicit_occurred_at_day(self):
+        pool = AsyncMock()
+        pool.execute = AsyncMock(return_value="INSERT 0 1")
+
+        occurred_at = datetime(2026, 3, 4, 23, 30, tzinfo=UTC)
+        await record_owner_ingress_rollup(pool, occurred_at=occurred_at)
+
+        _, day = pool.execute.await_args.args
+        assert day == occurred_at.date()
+
+    async def test_db_error_swallowed_and_logged(self):
+        pool = AsyncMock()
+        pool.execute = AsyncMock(side_effect=Exception("relation does not exist"))
+
+        # Must not raise.
+        await record_owner_ingress_rollup(pool)

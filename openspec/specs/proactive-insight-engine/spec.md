@@ -121,7 +121,8 @@ The system SHALL track user engagement with delivered insights and automatically
 #### Scenario: Engagement detection
 - **WHEN** an insight is delivered
 - **THEN** the system SHALL record a row in `public.insight_engagement` with `insight_id`, `delivered_at`, and `engaged` (BOOLEAN, default FALSE)
-- **AND** if the user sends any message to any butler within 60 minutes of `delivered_at`, the `engaged` field SHALL be set to TRUE
+- **AND** if the OWNER sends any message to any butler within 60 minutes of `delivered_at`, the `engaged` field SHALL be set to TRUE
+- **AND** ingress from a connector, an automated source, or any non-owner (including unresolved/unknown) sender SHALL NOT count toward engagement (bu-tdd4k.5) — the sender's identity is resolved via the standard channel reverse-lookup before the engagement sweep runs
 
 #### Scenario: Engagement rate computation
 - **WHEN** the delivery cycle computes the engagement rate
@@ -145,6 +146,7 @@ The system SHALL track user engagement with delivered insights and automatically
 - **THEN** the system SHALL auto-downgrade verbosity to `off`
 - **AND** SHALL deliver a final notification: "I've paused proactive insights since you haven't found them useful. You can re-enable them anytime."
 - **AND** this final notification SHALL be delivered via direct `notify` (not through the insight pipeline)
+- **AND** for any day in the 14-day window no longer present in `public.insight_engagement` (purged), the day's delivered/engaged totals SHALL be read from `public.attention_daily_rollup` instead, so the raw-event purge cannot silently truncate the window (bu-tdd4k.5)
 
 #### Scenario: No automatic increase
 - **WHEN** the user's engagement rate improves after a budget reduction
@@ -254,7 +256,24 @@ The system SHALL periodically clean up old insight data to prevent unbounded tab
 
 #### Scenario: Engagement row cleanup
 - **WHEN** the delivery cycle runs its cleanup step
-- **THEN** it SHALL DELETE rows from `public.insight_engagement` where `delivered_at` is older than 30 days
+- **THEN** it SHALL first upsert each affected day's delivered/engaged counts into `public.attention_daily_rollup` (see Requirement: Attention Daily Rollup)
+- **AND** it SHALL DELETE rows from `public.insight_engagement` where `delivered_at` is older than 30 days
+
+### Requirement: Attention Daily Rollup
+The system SHALL persist a durable daily rollup of owner-engagement signal in `public.attention_daily_rollup`, so the disengagement ratchet's history survives the 30-day `insight_engagement` purge and cannot be poisoned by non-owner ingress (bu-tdd4k.5).
+
+#### Scenario: Rollup schema
+- **WHEN** the `public.attention_daily_rollup` table is created
+- **THEN** it SHALL include: `day` (DATE, primary key), `owner_ingress_count` (INTEGER, default 0), `insights_delivered` (INTEGER, default 0), `insights_engaged` (INTEGER, default 0), `updated_at` (TIMESTAMPTZ, auto-updated)
+
+#### Scenario: Owner ingress recorded daily
+- **WHEN** the Switchboard's engagement gate resolves an ingress sender to the owner
+- **THEN** it SHALL upsert the current UTC day's `owner_ingress_count` in `public.attention_daily_rollup`, incrementing it by 1
+- **AND** a rollup-write failure SHALL NOT block ingress routing
+
+#### Scenario: Insight delivery rolled up before purge
+- **WHEN** the delivery cycle's cleanup step purges `public.insight_engagement` rows older than 30 days
+- **THEN** it SHALL first upsert each affected day's delivered/engaged counts into `public.attention_daily_rollup`
 
 ### Requirement: [TARGET-STATE] Switchboard insight reader endpoint
 

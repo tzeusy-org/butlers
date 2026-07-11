@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import asyncpg
@@ -200,6 +201,56 @@ async def record_attention_event(
         )
         return None
     return str(row_id) if row_id is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Daily attention rollup (bu-tdd4k.5)
+# ---------------------------------------------------------------------------
+#
+# The 60-minute engagement proxy (``check_and_update_engagement`` in the
+# insight broker) is only meaningful when it counts OWNER-authored ingress —
+# connector/automated traffic hitting the Switchboard must never impersonate
+# owner engagement, or the disengagement ratchet
+# (``check_total_disengagement_auto_off``) can never fire. This writer is
+# called from the Switchboard pipeline's engagement gate, once identity
+# resolution confirms the sender is the owner, so ``public.
+# attention_daily_rollup`` accumulates a durable per-day owner-activity count
+# that survives ``insight_engagement``'s 30-day purge (see
+# ``roster/switchboard/tools/insight/broker.py``'s ``cleanup_old_rows`` for
+# the companion rollup of insight delivered/engaged counts).
+
+
+async def record_owner_ingress_rollup(
+    pool: asyncpg.Pool | None,
+    *,
+    occurred_at: datetime | None = None,
+) -> None:
+    """Increment the UTC day's owner-ingress count in the daily rollup.
+
+    Best-effort — a rollup-write failure must never block ingress routing.
+    Callers must only invoke this for ingress already resolved to the owner;
+    this function does not perform identity resolution itself.
+    """
+    if pool is None:
+        return
+    day = (occurred_at or datetime.now(UTC)).date()
+    try:
+        await pool.execute(
+            """
+            INSERT INTO public.attention_daily_rollup (day, owner_ingress_count)
+            VALUES ($1, 1)
+            ON CONFLICT (day) DO UPDATE
+            SET owner_ingress_count = attention_daily_rollup.owner_ingress_count + 1,
+                updated_at = now()
+            """,
+            day,
+        )
+    except Exception:
+        logger.warning(
+            "record_owner_ingress_rollup: failed to record rollup row for day=%s",
+            day,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

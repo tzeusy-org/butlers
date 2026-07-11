@@ -4,7 +4,9 @@ Covers:
 - check_and_update_engagement: importable; returns 0/count; correct SQL; window bounds; custom window
 - Integration: within-window updated; outside-window skipped; already-engaged skipped;
   batch updates; boundary row included; empty table returns 0
-- Pipeline.process(): engagement check called once per invocation; exception non-fatal
+- Pipeline.process(): engagement check called once per invocation when the sender
+  resolves to the owner (bu-tdd4k.5); exception non-fatal; non-owner/connector
+  ingress does NOT call the engagement check or the daily rollup writer.
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from butlers.identity import ResolvedContact
 
 _docker_available = shutil.which("docker") is not None
 
@@ -104,6 +108,16 @@ class TestCheckAndUpdateEngagementIntegration:
 
 _MOCK_BUTLERS = [{"name": "general", "description": "General purpose butler."}]
 
+# bu-tdd4k.5: the engagement gate resolves the ingress sender before deciding
+# whether to touch insight_engagement / the daily rollup at all.
+_OWNER_CONTACT = ResolvedContact(contact_id=None, name="Owner", roles=["owner"], entity_id=None)
+_NON_OWNER_CONTACT = ResolvedContact(contact_id=None, name="Chloe", roles=[], entity_id=None)
+
+# All pipeline.process() calls below pass an explicit channel + sender id so
+# the engagement gate's resolve_contact_by_channel(source, sender_value) call
+# actually fires (an "unknown"/"unknown" pair short-circuits before resolution).
+_OWNER_TOOL_ARGS = {"source_channel": "telegram", "source_id": "1"}
+
 
 class TestPipelineEngagementDetection:
     @patch(
@@ -112,7 +126,8 @@ class TestPipelineEngagementDetection:
         return_value=_MOCK_BUTLERS,
     )
     async def test_engagement_called_per_process_and_exception_nonfatal(self, _mock_load):
-        """check_and_update_engagement called once per process(); exception doesn't block routing."""
+        """check_and_update_engagement called once per owner-authored process();
+        exception doesn't block routing."""
         from butlers.modules.pipeline import MessagePipeline
         from tests.modules.test_module_pipeline import FakeSpawnerResult
 
@@ -134,23 +149,172 @@ class TestPipelineEngagementDetection:
                 ],
             )
 
-        with patch(
-            "butlers.tools.switchboard.insight.broker.check_and_update_engagement",
-            side_effect=mock_engagement,
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new_callable=AsyncMock,
+                return_value=_OWNER_CONTACT,
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.check_and_update_engagement",
+                side_effect=mock_engagement,
+            ),
         ):
             pipeline = MessagePipeline(switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch)
-            await pipeline.process("msg one")
-            await pipeline.process("msg two")
+            await pipeline.process("msg one", tool_args=dict(_OWNER_TOOL_ARGS))
+            await pipeline.process("msg two", tool_args=dict(_OWNER_TOOL_ARGS))
         assert sum(counts) == 2
 
         # Exception non-fatal
         async def mock_raise(pool, **kwargs):
             raise RuntimeError("DB down")
 
-        with patch(
-            "butlers.tools.switchboard.insight.broker.check_and_update_engagement",
-            side_effect=mock_raise,
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new_callable=AsyncMock,
+                return_value=_OWNER_CONTACT,
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.check_and_update_engagement",
+                side_effect=mock_raise,
+            ),
         ):
             pipeline2 = MessagePipeline(switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch)
-            result = await pipeline2.process("hello")
+            result = await pipeline2.process("hello", tool_args=dict(_OWNER_TOOL_ARGS))
         assert result.target_butler == "general"
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_non_owner_ingress_does_not_call_engagement_check(self, _mock_load):
+        """bu-tdd4k.5: connector/non-owner ingress must NOT count as engagement —
+        only an owner-resolved sender may update insight_engagement or the
+        daily rollup, or the disengagement ratchet can never fire."""
+        from butlers.modules.pipeline import MessagePipeline
+        from tests.modules.test_module_pipeline import FakeSpawnerResult
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="ok",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "general", "prompt": "hi"},
+                        "result": {"status": "ok", "butler": "general"},
+                    },
+                ],
+            )
+
+        engagement_mock = AsyncMock(return_value=0)
+        rollup_mock = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new_callable=AsyncMock,
+                return_value=_NON_OWNER_CONTACT,
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.check_and_update_engagement",
+                engagement_mock,
+            ),
+            patch(
+                "butlers.core.attention_ledger.record_owner_ingress_rollup",
+                rollup_mock,
+            ),
+        ):
+            pipeline = MessagePipeline(switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch)
+            await pipeline.process("connector event", tool_args=dict(_OWNER_TOOL_ARGS))
+
+        engagement_mock.assert_not_called()
+        rollup_mock.assert_not_called()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_unresolved_sender_does_not_call_engagement_check(self, _mock_load):
+        """An unresolved/unknown sender (resolve_contact_by_channel -> None)
+        must not be treated as owner-authored ingress."""
+        from butlers.modules.pipeline import MessagePipeline
+        from tests.modules.test_module_pipeline import FakeSpawnerResult
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="ok",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "general", "prompt": "hi"},
+                        "result": {"status": "ok", "butler": "general"},
+                    },
+                ],
+            )
+
+        engagement_mock = AsyncMock(return_value=0)
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.check_and_update_engagement",
+                engagement_mock,
+            ),
+        ):
+            pipeline = MessagePipeline(switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch)
+            await pipeline.process("unknown sender", tool_args=dict(_OWNER_TOOL_ARGS))
+
+        engagement_mock.assert_not_called()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_owner_ingress_records_daily_rollup(self, _mock_load):
+        """Owner-authored ingress records the daily rollup alongside the
+        60-minute engagement sweep (bu-tdd4k.5)."""
+        from butlers.modules.pipeline import MessagePipeline
+        from tests.modules.test_module_pipeline import FakeSpawnerResult
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="ok",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "general", "prompt": "hi"},
+                        "result": {"status": "ok", "butler": "general"},
+                    },
+                ],
+            )
+
+        rollup_mock = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new_callable=AsyncMock,
+                return_value=_OWNER_CONTACT,
+            ),
+            patch(
+                "butlers.tools.switchboard.insight.broker.check_and_update_engagement",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            patch(
+                "butlers.core.attention_ledger.record_owner_ingress_rollup",
+                rollup_mock,
+            ),
+        ):
+            pipeline = MessagePipeline(switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch)
+            await pipeline.process("hi owner", tool_args=dict(_OWNER_TOOL_ARGS))
+
+        rollup_mock.assert_called_once()

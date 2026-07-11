@@ -1285,6 +1285,65 @@ class TestCleanup:
         assert old_id not in ids
         assert recent_id in ids
 
+    async def test_cleanup_rolls_up_engagement_into_daily_rollup_before_delete(self, insight_pool):
+        """bu-tdd4k.5: purged insight_engagement rows are summarized into
+        attention_daily_rollup before deletion, so the disengagement ratchet's
+        per-day signal survives the 30-day purge."""
+        from butlers.tools.switchboard.insight.broker import cleanup_old_rows
+
+        # Anchor to midnight (not raw "now") so a test run close to UTC
+        # midnight can't push the +hours offsets below across a day boundary
+        # (see bu-39t2s: wall-clock midnight-rollover time bombs).
+        today_midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        old_day_midnight = today_midnight - timedelta(days=35)
+        recent_day_midnight = today_midnight - timedelta(days=5)
+        old_day = old_day_midnight.date()
+        recent_day = recent_day_midnight.date()
+
+        # Two old rows on the same day, one engaged, one not — plus a recent
+        # row that should NOT be rolled up (it isn't being purged yet).
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+            VALUES ($1::uuid, $2, TRUE)
+            """,
+            str(uuid.uuid4()),
+            old_day_midnight + timedelta(hours=2),
+        )
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+            VALUES ($1::uuid, $2, FALSE)
+            """,
+            str(uuid.uuid4()),
+            old_day_midnight + timedelta(hours=3),
+        )
+        await insight_pool.execute(
+            """
+            INSERT INTO insight_engagement (insight_id, delivered_at, engaged)
+            VALUES ($1::uuid, $2, FALSE)
+            """,
+            str(uuid.uuid4()),
+            recent_day_midnight + timedelta(hours=2),
+        )
+
+        await cleanup_old_rows(insight_pool)
+
+        rollup = await insight_pool.fetchrow(
+            "SELECT insights_delivered, insights_engaged FROM attention_daily_rollup WHERE day = $1",
+            old_day,
+        )
+        assert rollup is not None
+        assert rollup["insights_delivered"] == 2
+        assert rollup["insights_engaged"] == 1
+
+        # The recent (not-yet-purged) day must not have a rollup row.
+        assert (
+            await insight_pool.fetchrow(
+                "SELECT 1 FROM attention_daily_rollup WHERE day = $1", recent_day
+            )
+        ) is None
+
 
 # ===========================================================================
 # Category: Delivery attempt tracking and repeated-failure filtering [bu-a3wr]
@@ -1651,6 +1710,72 @@ class TestAutoOffTotalDisengagement:
         )
         assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
         assert (await get_insight_settings(insight_pool))["verbosity"] != "off"
+
+    async def test_auto_off_uses_rollup_fallback_for_purged_days(self, insight_pool):
+        """bu-tdd4k.5: days already purged from insight_engagement (no raw rows)
+        still count toward the 14-day disengagement window when
+        attention_daily_rollup has a same-day zero-engagement summary."""
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+            get_insight_settings,
+        )
+
+        now = datetime.now(UTC)
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # 7 complete days still present as raw insight_engagement rows.
+        await self._insert_daily_engagement(
+            insight_pool, num_days=7, engaged=False, reference_now=now
+        )
+
+        # 7 older complete days (day -14 .. day -8) already purged from the
+        # raw table — simulated by writing only the rollup, as cleanup_old_rows
+        # would have left behind.
+        for day_offset in range(8, 15):
+            day = (today_midnight - timedelta(days=day_offset)).date()
+            await insight_pool.execute(
+                """
+                INSERT INTO attention_daily_rollup (day, insights_delivered, insights_engaged)
+                VALUES ($1, 1, 0)
+                """,
+                day,
+            )
+
+        notify_mock = AsyncMock(return_value={"status": "ok"})
+        triggered = await check_total_disengagement_auto_off(
+            insight_pool, now=now, notify_fn=notify_mock
+        )
+
+        assert triggered is True
+        assert (await get_insight_settings(insight_pool))["verbosity"] == "off"
+
+    async def test_auto_off_rollup_engagement_blocks_trigger(self, insight_pool):
+        """A rollup day recording real engagement (insights_engaged > 0) for a
+        purged day must block auto-off, same as a raw engaged=TRUE row would."""
+        from butlers.tools.switchboard.insight.broker import (
+            check_total_disengagement_auto_off,
+        )
+
+        now = datetime.now(UTC)
+        today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        await self._insert_daily_engagement(
+            insight_pool, num_days=7, engaged=False, reference_now=now
+        )
+
+        for day_offset in range(8, 15):
+            day = (today_midnight - timedelta(days=day_offset)).date()
+            engaged = 1 if day_offset == 10 else 0
+            await insight_pool.execute(
+                """
+                INSERT INTO attention_daily_rollup (day, insights_delivered, insights_engaged)
+                VALUES ($1, 1, $2)
+                """,
+                day,
+                engaged,
+            )
+
+        assert await check_total_disengagement_auto_off(insight_pool, now=now) is False
 
 
 # ===========================================================================
