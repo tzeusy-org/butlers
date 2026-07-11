@@ -31,6 +31,11 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
 - **THEN** the case list rail renders a single serif-italic line "Nothing in the dossier." and the dossier body is hidden
 - **AND** the KPI strip continues to render with zero values
 
+#### Scenario: Patrol pulse strip degraded source
+- **WHEN** the overview page's recent-patrols pulse strip queries `GET /api/qa/patrols` and that query errors (network failure or non-2xx)
+- **THEN** the strip renders a single-line `role="alert"` degraded note naming the patrols source inline with an em-dash qualifier (e.g. "Recent patrols: patrol source unreachable — recent patrols unavailable"), never vanishing into the same nothing as a genuinely clear stream
+- **AND** a reachable-but-empty patrols source (no error, zero patrols) legitimately hides the strip, as does the still-loading state (no fabricated strip before the first response)
+
 #### Scenario: KPI strip values
 - **WHEN** the KPI strip renders
 - **THEN** each cell shows:

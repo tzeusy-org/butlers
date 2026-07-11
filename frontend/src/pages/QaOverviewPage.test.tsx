@@ -518,14 +518,46 @@ describe("QaOverviewPage -- patrol pulse strip", () => {
     expect(html).not.toContain("Recent patrols");
   });
 
-  it("renders nothing while patrols are loading or on error (no fabricated strip)", () => {
+  it("renders nothing while patrols are loading (no fabricated strip)", () => {
     (useQaPatrols as AnyMock).mockReturnValue({ data: undefined, isLoading: true, isError: false });
     const loadingHtml = renderPage();
     expect(loadingHtml).not.toContain("Recent patrols");
+    expect(loadingHtml).not.toContain('data-testid="qa-patrol-strip-source-unavailable"');
+  });
 
-    (useQaPatrols as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: true });
-    const errorHtml = renderPage();
-    expect(errorHtml).not.toContain("Recent patrols");
+  // A patrols-API outage must NOT vanish into the same nothing as "no patrols
+  // ran" — that silent conflation is the honesty defect bu-jad4j.6 consumes.
+  // The strip names the patrols source with a one-line degraded note instead.
+  it("names the patrols source (not the empty state) when the patrols query errors", () => {
+    (useQaPatrols as AnyMock).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    });
+    const html = renderPage();
+    const note = 'data-testid="qa-patrol-strip-source-unavailable"';
+    expect(html).toContain(note);
+    // The degraded note announces itself to assistive tech and names the
+    // source inline with an em-dash qualifier — never a suppressed source.
+    const noteIdx = html.indexOf(note);
+    const window = html.slice(noteIdx - 200, noteIdx + 300);
+    expect(window).toContain('role="alert"');
+    expect(html).toContain("Recent patrols");
+    expect(html).toContain("patrol source unreachable");
+    expect(html).toContain("—");
+  });
+
+  // Mutation guard: the degraded note must depend on isError. If isError still
+  // returned null (the pre-fix behavior), this fails because the note is absent
+  // yet the query is genuinely down.
+  it("does not render the degraded note for a reachable-but-empty source", () => {
+    (useQaPatrols as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    const html = renderPage();
+    // Legitimately-empty source keeps its current hidden strip — no note, no
+    // fabricated "Recent patrols" heading.
+    expect(html).not.toContain('data-testid="qa-patrol-strip-source-unavailable"');
+    expect(html).not.toContain("Recent patrols");
   });
 
   // The backend only ever emits "findings_dispatched" (qa.py _VALID_PATROL_STATUSES),

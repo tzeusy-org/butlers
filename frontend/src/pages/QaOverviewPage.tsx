@@ -27,6 +27,7 @@ import { toast } from "sonner";
 
 import type { QaCaseSummary } from "@/api/types";
 import { CaseDossier, CaseList, QaKpiStrip, QaVerdictOpener } from "@/components/qa";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { Tip } from "@/components/ui/tip";
 import { useButlers } from "@/hooks/use-butlers";
@@ -336,7 +337,29 @@ function PatrolPulseStrip() {
   const patrols = useQaPatrols({ limit: PATROL_STRIP_LIMIT });
   const rows = patrols.data?.data ?? [];
 
-  if (patrols.isLoading || patrols.isError || rows.length === 0) return null;
+  // Loading: no fabricated strip until the first response lands. But a failed
+  // patrols query is NOT "no patrols ran" — vanishing here makes a patrols-API
+  // outage indistinguishable from a genuinely clear stream. Name the source
+  // with a one-line degraded note instead (bu-jad4j.6 — the fleet
+  // degraded-envelope convention; see CLAUDE.md API Conventions and
+  // SourceDegradedNote). A reachable-but-empty source (no error, zero patrols)
+  // still legitimately hides the strip.
+  if (patrols.isLoading) return null;
+
+  if (patrols.isError) {
+    return (
+      <div className="border-b border-border/60 px-6 py-2">
+        <SourceDegradedNote
+          label="Recent patrols"
+          detail="patrol source unreachable — recent patrols unavailable"
+          onRetry={() => void patrols.refetch()}
+          testId="qa-patrol-strip-source-unavailable"
+        />
+      </div>
+    );
+  }
+
+  if (rows.length === 0) return null;
 
   return (
     <div className="flex items-center gap-2 overflow-x-auto border-b border-border/60 px-6 py-2">
