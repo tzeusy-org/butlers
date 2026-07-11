@@ -23,6 +23,7 @@ import shutil
 import asyncpg
 import pytest
 
+from butlers.api.routers.attention_ledger import _query_ledger, _query_ledger_summary
 from butlers.core.attention_ledger import record_attention_event
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -290,3 +291,142 @@ async def test_record_attention_event_notify_priority_label_normalization(
     assert row["priority_label"] == "high"
     assert row["priority_score"] == 90
     assert row["reason"] == "quiet_hours"
+
+
+# ---------------------------------------------------------------------------
+# Reader endpoint queries (bu-tdd4k.4) -- against the real table, not a
+# mocked pool. Uses origin_butler names not touched by any test above so
+# counts stay deterministic regardless of module-scoped DB/test ordering.
+# ---------------------------------------------------------------------------
+
+
+async def test_query_ledger_list_filters_by_outcome_and_origin_butler(pool: asyncpg.Pool) -> None:
+    for outcome in ("delivered", "suppressed", "suppressed"):
+        await record_attention_event(
+            pool,
+            origin_butler="reader_test_alpha",
+            source="notify",
+            outcome=outcome,
+            channel="telegram",
+            intent="send",
+        )
+    await record_attention_event(
+        pool,
+        origin_butler="reader_test_beta",
+        source="notify",
+        outcome="suppressed",
+        channel="telegram",
+        intent="send",
+    )
+
+    result = await _query_ledger(
+        pool,
+        offset=0,
+        limit=50,
+        since=None,
+        until=None,
+        intent=None,
+        source=None,
+        outcome="suppressed",
+        origin_butler="reader_test_alpha",
+    )
+
+    assert result.meta.total == 2
+    assert len(result.data) == 2
+    assert all(e.origin_butler == "reader_test_alpha" for e in result.data)
+    assert all(e.outcome == "suppressed" for e in result.data)
+    # newest-first ordering
+    assert result.data[0].occurred_at >= result.data[1].occurred_at
+
+
+async def test_query_ledger_list_windows_by_since_until(pool: asyncpg.Pool) -> None:
+    import datetime as dt
+
+    await record_attention_event(
+        pool,
+        origin_butler="reader_test_gamma",
+        source="insight",
+        outcome="delivered",
+        intent="insight",
+    )
+
+    far_future = dt.datetime.now(dt.UTC) + dt.timedelta(days=1)
+    far_past = dt.datetime.now(dt.UTC) - dt.timedelta(days=1)
+
+    in_window = await _query_ledger(
+        pool,
+        offset=0,
+        limit=50,
+        since=far_past,
+        until=far_future,
+        intent=None,
+        source=None,
+        outcome=None,
+        origin_butler="reader_test_gamma",
+    )
+    assert in_window.meta.total == 1
+
+    out_of_window = await _query_ledger(
+        pool,
+        offset=0,
+        limit=50,
+        since=far_future,
+        until=None,
+        intent=None,
+        source=None,
+        outcome=None,
+        origin_butler="reader_test_gamma",
+    )
+    assert out_of_window.meta.total == 0
+
+
+async def test_query_ledger_summary_flags_suppressed_never_delivered(pool: asyncpg.Pool) -> None:
+    """The real GROUP BY/FILTER SQL against Postgres -- not a mocked
+    aggregate -- computes suppressed_never_delivered exactly as the epic's
+    live secrets_lifecycle failure required (120 suppressed / 0 delivered)."""
+    import datetime as dt
+
+    for _ in range(3):
+        await record_attention_event(
+            pool,
+            origin_butler="reader_test_delta",
+            source="notify",
+            outcome="suppressed",
+            channel="telegram",
+            intent="send",
+        )
+    await record_attention_event(
+        pool,
+        origin_butler="reader_test_epsilon",
+        source="notify",
+        outcome="delivered",
+        channel="telegram",
+        intent="send",
+    )
+    await record_attention_event(
+        pool,
+        origin_butler="reader_test_epsilon",
+        source="notify",
+        outcome="suppressed",
+        channel="telegram",
+        intent="send",
+    )
+
+    since = dt.datetime.now(dt.UTC) - dt.timedelta(hours=1)
+    result = await _query_ledger_summary(
+        pool,
+        since=since,
+        until=None,
+        intent=None,
+        source=None,
+        origin_butler=None,
+    )
+
+    by_name = {s.origin_butler: s for s in result.by_source}
+    assert by_name["reader_test_delta"].suppressed == 3
+    assert by_name["reader_test_delta"].delivered == 0
+    assert by_name["reader_test_delta"].suppressed_never_delivered is True
+    assert by_name["reader_test_epsilon"].delivered == 1
+    assert by_name["reader_test_epsilon"].suppressed_never_delivered is False
+    assert "reader_test_delta" in result.flagged_sources
+    assert "reader_test_epsilon" not in result.flagged_sources

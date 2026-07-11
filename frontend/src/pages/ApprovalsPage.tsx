@@ -20,6 +20,8 @@
  *   - Policy section: quiet-hours editor
  *   - History section: last 30 decided approvals — each row opens its
  *     (read-only) dossier via /approvals/:id.
+ *   - Attention Ledger section: delivery-vs-suppression per source, with any
+ *     suppressed-but-never-delivered source flagged loudly (bu-tdd4k.4).
  *
  * Every approval has a URL (/approvals/:id) so a notification, a history
  * row, or a bookmark can land the owner directly on the decision.
@@ -60,6 +62,7 @@ import {
 } from "@/hooks/use-approval-decisions.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
+import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
 
@@ -1492,10 +1495,11 @@ export default function ApprovalsPage() {
         <AutonomyPanel />
       </div>
 
-      {/* Bottom sections — policy and history */}
+      {/* Bottom sections — policy, history, and the attention ledger */}
       <div className="px-6 pb-8 border-t border-border overflow-y-auto shrink-0 max-h-[40vh]">
         <PolicySection />
         <HistorySection />
+        <AttentionLedgerPanel />
       </div>
     </div>
   );

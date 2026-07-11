@@ -418,6 +418,86 @@ export interface AckFailedResult {
 }
 
 // ---------------------------------------------------------------------------
+// Attention ledger (bu-tdd4k.4) -- the ledger's first reader.
+// Mirrors src/butlers/api/models/attention_ledger.py.
+// ---------------------------------------------------------------------------
+
+/** One row of `public.attention_ledger`. */
+export interface AttentionLedgerEntry {
+  id: string;
+  occurred_at: string;
+  origin_butler: string;
+  source: string;
+  channel: string | null;
+  intent: string | null;
+  priority_label: string | null;
+  priority_score: number | null;
+  dedup_key: string | null;
+  outcome: string;
+  reason: string | null;
+  notification_ref: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/**
+ * Paginated ledger list, plus a source-availability flag.
+ * `source_available === false` means the ledger's DB pool was unreachable --
+ * an empty/short page in that case is NOT a truthful "no matching rows".
+ */
+export interface AttentionLedgerListResponse extends PaginatedResponse<AttentionLedgerEntry> {
+  source_available?: boolean;
+}
+
+/** Query parameters for GET /api/attention/ledger. */
+export interface AttentionLedgerParams {
+  offset?: number;
+  limit?: number;
+  since?: string;
+  until?: string;
+  intent?: string;
+  source?: string;
+  outcome?: string;
+  origin_butler?: string;
+}
+
+/**
+ * Delivery-vs-suppression counts for one `origin_butler` over a window.
+ * `suppressed_never_delivered` is the marquee signal: true when this source
+ * has been suppressed at least once and never delivered in the window --
+ * the exact live failure bu-tdd4k.2 fixed for secrets_lifecycle (120
+ * suppressed / 0 delivered).
+ */
+export interface AttentionSourceSummary {
+  origin_butler: string;
+  delivered: number;
+  coalesced: number;
+  deferred: number;
+  suppressed: number;
+  total: number;
+  suppressed_never_delivered: boolean;
+}
+
+/** Response for GET /api/attention/ledger/summary. */
+export interface AttentionLedgerSummaryResponse {
+  since: string | null;
+  until: string | null;
+  by_source: AttentionSourceSummary[];
+  /** Convenience projection of by_source's flagged origin_butler names. */
+  flagged_sources: string[];
+  /** False when the ledger's DB pool was unreachable -- all counts above are empty in that case. */
+  source_available?: boolean;
+}
+
+/** Query parameters for GET /api/attention/ledger/summary. */
+export interface AttentionLedgerSummaryParams {
+  since?: string;
+  until?: string;
+  intent?: string;
+  source?: string;
+  origin_butler?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Issues
 // ---------------------------------------------------------------------------
 

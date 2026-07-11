@@ -877,6 +877,56 @@ export function acknowledgeAllFailed(): Promise<ApiResponse<AckFailedResult>> {
 }
 
 // ---------------------------------------------------------------------------
+// Attention ledger (bu-tdd4k.4) -- the ledger's first reader
+// ---------------------------------------------------------------------------
+
+import type {
+  AttentionLedgerListResponse,
+  AttentionLedgerParams,
+  AttentionLedgerSummaryParams,
+  AttentionLedgerSummaryResponse,
+} from "./types.ts";
+
+/** Fetch a windowed, filterable page of attention-ledger rows, newest first. */
+export function getAttentionLedger(
+  params?: AttentionLedgerParams,
+): Promise<AttentionLedgerListResponse> {
+  const sp = new URLSearchParams();
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  if (params?.since != null && params.since !== "") sp.set("since", params.since);
+  if (params?.until != null && params.until !== "") sp.set("until", params.until);
+  if (params?.intent != null && params.intent !== "") sp.set("intent", params.intent);
+  if (params?.source != null && params.source !== "") sp.set("source", params.source);
+  if (params?.outcome != null && params.outcome !== "") sp.set("outcome", params.outcome);
+  if (params?.origin_butler != null && params.origin_butler !== "")
+    sp.set("origin_butler", params.origin_butler);
+  const qs = sp.toString();
+  const path = qs ? `/attention/ledger?${qs}` : "/attention/ledger";
+  return apiFetch<AttentionLedgerListResponse>(path);
+}
+
+/**
+ * Fetch the per-source (per-`origin_butler`) delivery-vs-suppression summary
+ * -- the Trust Console panel's data source. Defaults to the last 7 days
+ * server-side when `since` is omitted.
+ */
+export function getAttentionLedgerSummary(
+  params?: AttentionLedgerSummaryParams,
+): Promise<AttentionLedgerSummaryResponse> {
+  const sp = new URLSearchParams();
+  if (params?.since != null && params.since !== "") sp.set("since", params.since);
+  if (params?.until != null && params.until !== "") sp.set("until", params.until);
+  if (params?.intent != null && params.intent !== "") sp.set("intent", params.intent);
+  if (params?.source != null && params.source !== "") sp.set("source", params.source);
+  if (params?.origin_butler != null && params.origin_butler !== "")
+    sp.set("origin_butler", params.origin_butler);
+  const qs = sp.toString();
+  const path = qs ? `/attention/ledger/summary?${qs}` : "/attention/ledger/summary";
+  return apiFetch<AttentionLedgerSummaryResponse>(path);
+}
+
+// ---------------------------------------------------------------------------
 // Issues
 // ---------------------------------------------------------------------------
 

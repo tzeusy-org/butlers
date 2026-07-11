@@ -490,6 +490,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
     from butlers.api.routers import (
         activity_feed,
         approvals,
+        attention_ledger,
         audit,
         blob_storage,
         butler_logs,
@@ -541,6 +542,7 @@ def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> N
     for module in [
         activity_feed,
         approvals,
+        attention_ledger,
         audit,
         blob_storage,
         butler_logs,

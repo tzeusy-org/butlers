@@ -66,6 +66,26 @@
 - [x] 5.2 `openspec` spec deltas for `core-notify` and
   `proactive-insight-engine` (this change).
 
+## 5b. Attention ledger reader + Trust Console panel (bu-tdd4k.4, slice 5)
+
+- [x] 5b.1 `GET /api/attention/ledger`: windowed (`since`/`until`), filterable
+  (`intent`/`source`/`outcome`/`origin_butler`) paginated row list, newest
+  first. Degraded envelope (`source_available=false`) on an unreachable
+  pool; a true empty/unmigrated-table result stays `source_available=true`.
+- [x] 5b.2 `GET /api/attention/ledger/summary`: per-`origin_butler`
+  delivered/coalesced/deferred/suppressed/total rollup over a window
+  (defaults to the last 7 days), with a `suppressed_never_delivered` flag
+  (`suppressed > 0 AND delivered == 0`) -- the exact live failure this epic
+  fixed for secrets_lifecycle (bu-tdd4k.2: 120 suppressed / 0 delivered).
+- [x] 5b.3 Trust Console (`ApprovalsPage.tsx`) panel rendering the summary,
+  with flagged sources surfaced loudly (not folded into the calm case).
+- [x] 5b.4 Tests: `tests/api/test_attention_ledger.py` (mocked-pool --
+  degraded envelope, filter threading, suppressed_never_delivered), real-
+  Postgres additions to `tests/integration/test_attention_ledger_roundtrip.py`
+  (the actual GROUP BY/FILTER SQL, windowing), frontend vitest for the panel.
+- [x] 5b.5 `openspec` spec delta: `core-notify` gains the "Attention Ledger
+  Reader" requirement (this file's sibling `specs/core-notify/spec.md`).
+
 ## 6. Close-out
 
 - [ ] 6.1 `openspec validate attention-ledger-broker --strict`
@@ -82,6 +102,5 @@
   hourly urgent sub-cycle (priority>=90 as "hours, not one daily slot").~~
   Delivered via bu-o8233 — see `openspec/changes/attention-ledger-coalescing-urgent-subcycle`
   and RFC 0011 Amendment 2.
-- Slice 5: dashboard attention-ledger panel under Trust Console (the ledger
-  schema and `count_attention_events_since()` groundwork already exist for
-  this).
+- ~~Slice 5: dashboard attention-ledger panel under Trust Console.~~
+  Delivered via bu-tdd4k.4 — see section 5b above.

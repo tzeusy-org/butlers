@@ -50,3 +50,31 @@ The `notify()` owner-default quiet-hours gate SHALL also consult the situational
 #### Scenario: high/medium/low map to comparable scores
 - **WHEN** a ledger row is recorded for `notify(priority="high")`, `notify(priority="medium")`, and `notify(priority="low")`
 - **THEN** the recorded `priority_score` values are 90, 50, and 20 respectively, and `priority_label` preserves the original string
+
+### Requirement: Attention Ledger Reader
+The dashboard API SHALL expose a windowed, filterable reader over `public.attention_ledger` and a per-source delivery-vs-suppression summary, so that a source silently failing at either choke point (`notify()` or `delivery_cycle()`) is observable instead of requiring direct DB access. This is slice 5 of this change (previously deferred — see RFC 0011 Amendment 1's Integration note).
+
+`GET /api/attention/ledger` SHALL return a paginated, newest-first list of ledger rows, filterable by `intent`, `source` (the ledger's own `notify`/`insight` choke-point column), `outcome`, and `origin_butler`, and windowed by `since`/`until` (`occurred_at` bounds). `GET /api/attention/ledger/summary` SHALL return, for a `since`/`until` window (defaulting to the last 7 days when `since` is omitted), one row per distinct `origin_butler` with `delivered`/`coalesced`/`deferred`/`suppressed`/`total` counts and a `suppressed_never_delivered` boolean: `true` when that `origin_butler` has `suppressed > 0` and `delivered == 0` in the window. Both endpoints MUST follow the repo's degraded-envelope convention (`butlers/CLAUDE.md` API Conventions): a genuinely unreachable ledger pool renders `source_available=false` on an otherwise-empty/zero payload, never a truthful "no suppression" or "no rows".
+
+Naming note: the summary's "per source" grouping is `origin_butler` (which butler/job attempted the egress — e.g. `secrets_lifecycle`, `home`), a distinct dimension from the ledger's own `source` column (the `notify`/`insight` choke-point literal). Both are independently exposed: `origin_butler` as the summary's grouping key and an optional list-endpoint filter, `source` as a list/summary filter on the choke-point column.
+
+#### Scenario: Suppressed-but-never-delivered source is flagged
+- **WHEN** `GET /api/attention/ledger/summary` is called for a window in which `origin_butler="secrets_lifecycle"` has 120 rows with `outcome="suppressed"` and 0 rows with `outcome="delivered"`
+- **THEN** the response's `by_source` includes an entry for `secrets_lifecycle` with `suppressed=120`, `delivered=0`, and `suppressed_never_delivered=true`
+- **AND** `"secrets_lifecycle"` appears in the response's `flagged_sources` list
+
+#### Scenario: A healthy source is not flagged
+- **WHEN** an `origin_butler` has both `delivered > 0` and `suppressed > 0` rows in the window
+- **THEN** its `suppressed_never_delivered` is `false`
+
+#### Scenario: List endpoint is windowed and filterable
+- **WHEN** `GET /api/attention/ledger?since=<t1>&until=<t2>&outcome=suppressed&origin_butler=secrets_lifecycle` is called
+- **THEN** only rows with `occurred_at` between `t1` and `t2`, `outcome="suppressed"`, and `origin_butler="secrets_lifecycle"` are returned, newest-first, paginated
+
+#### Scenario: Unreachable ledger pool degrades honestly
+- **WHEN** the ledger's DB pool is unreachable
+- **THEN** both endpoints return HTTP 200 with an empty/zero payload and `source_available=false` — never a truthful-looking "no suppression happened" or "no rows match"
+
+#### Scenario: Unmigrated table is a true empty result, not a degraded one
+- **WHEN** `public.attention_ledger` does not exist yet (pre-migration database)
+- **THEN** both endpoints return an empty/zero payload with `source_available=true` — this is a genuinely-empty state, not a source failure

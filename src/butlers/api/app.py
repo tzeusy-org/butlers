@@ -38,6 +38,7 @@ from butlers.api.middleware import ApiKeyMiddleware, register_error_handlers
 from butlers.api.router_discovery import discover_butler_routers
 from butlers.api.routers.activity_feed import router as activity_feed_router
 from butlers.api.routers.approvals import router as approvals_router
+from butlers.api.routers.attention_ledger import router as attention_ledger_router
 from butlers.api.routers.audit import router as audit_router
 from butlers.api.routers.blob_storage import router as blob_storage_router
 from butlers.api.routers.butler_logs import router as butler_logs_router
@@ -448,6 +449,7 @@ def create_app(
 
     # --- Core Static Routers ---
     app.include_router(approvals_router)
+    app.include_router(attention_ledger_router)
     app.include_router(events_router)
     app.include_router(butler_logs_router)
     app.include_router(butlers_router)
