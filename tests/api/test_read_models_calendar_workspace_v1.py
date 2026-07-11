@@ -123,9 +123,9 @@ def _workspace_dict(**overrides) -> dict:
     return base
 
 
-def _make_db(fan_out_result: dict) -> MagicMock:
+def _make_db(fan_out_result: dict, failed: list[str] | None = None) -> MagicMock:
     db = MagicMock()
-    db.fan_out_with_status = AsyncMock(return_value=(fan_out_result, []))
+    db.fan_out_with_status = AsyncMock(return_value=(fan_out_result, failed or []))
     db.butlers_with_module = MagicMock(return_value=["assistant"])
     return db
 
@@ -365,11 +365,12 @@ async def test_query_calendar_workspace_returns_typed_dtos():
     start = _NOW - timedelta(days=1)
     end = _NOW + timedelta(days=1)
 
-    result = await query_calendar_workspace(db, view="user", start=start, end=end)
+    rows, failed = await query_calendar_workspace(db, view="user", start=start, end=end)
 
-    assert len(result) == 1
-    assert isinstance(result[0], CalendarWorkspaceRow)
-    assert result[0].title == "Team standup"
+    assert len(rows) == 1
+    assert isinstance(rows[0], CalendarWorkspaceRow)
+    assert rows[0].title == "Team standup"
+    assert failed == []
 
 
 async def test_query_calendar_workspace_uses_butlers_with_module_when_no_butlers_arg():
@@ -415,9 +416,9 @@ async def test_query_calendar_workspace_db_butler_set_on_dto():
     start = _NOW - timedelta(hours=1)
     end = _NOW + timedelta(hours=1)
 
-    result = await query_calendar_workspace(db, view="user", start=start, end=end)
+    rows, _failed = await query_calendar_workspace(db, view="user", start=start, end=end)
 
-    assert result[0].db_butler == "secretary"
+    assert rows[0].db_butler == "secretary"
 
 
 async def test_query_calendar_workspace_multiple_butlers_flattened():
@@ -430,11 +431,28 @@ async def test_query_calendar_workspace_multiple_butlers_flattened():
     start = _NOW - timedelta(hours=1)
     end = _NOW + timedelta(hours=1)
 
-    result = await query_calendar_workspace(db, view="user", start=start, end=end)
+    rows, _failed = await query_calendar_workspace(db, view="user", start=start, end=end)
 
-    assert len(result) == 2
-    titles = {r.title for r in result}
+    assert len(rows) == 2
+    titles = {r.title for r in rows}
     assert titles == {"Team standup", "1:1"}
+
+
+async def test_query_calendar_workspace_returns_failed_butlers():
+    """A partial fan-out failure is surfaced in the returned failed list so
+    callers (conflicts, the workspace grid) can flag a degraded source rather
+    than read a short result as an honest empty window."""
+    db = _make_db(
+        {"assistant": [_make_record(_workspace_dict())], "secretary": []},
+        failed=["secretary"],
+    )
+    start = _NOW - timedelta(hours=1)
+    end = _NOW + timedelta(hours=1)
+
+    rows, failed = await query_calendar_workspace(db, view="user", start=start, end=end)
+
+    assert len(rows) == 1
+    assert failed == ["secretary"]
 
 
 async def test_query_calendar_workspace_sql_has_lateral_join():

@@ -818,6 +818,11 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 - **AND** entries are normalized into `UnifiedCalendarEntry` objects with computed `source_type`, `status`, and `sync_state`
 - **AND** optional `timezone` parameter converts all timestamps to the requested display timezone
 
+#### Scenario: Partial events fan-out failure flags degraded sources
+- **WHEN** `GET /api/calendar/workspace` (user/butler lane) is called and at least one targeted butler schema's events fan-out query FAILS while others respond
+- **THEN** the response is HTTP 200 carrying the entries from the schemas that DID respond, with `entries_source_available: false` in the envelope
+- **BECAUSE** a partial failure silently drops the failed schema's entries, so a short grid MUST NOT read as an honest "nothing scheduled" — the frontend renders a "some sources unavailable" note. A clean fan-out (or a genuinely empty window) reports `entries_source_available: true` (default), and clients that ignore the field observe the prior shape. The `calendar_event_instances`/`calendar_events`/`calendar_sources` tables are core to every calendar-enabled butler, so a failure is a genuine degraded source, never a legitimately-absent table. The proposals and overlays lanes do not set this flag (they do not fan out the events read).
+
 #### Scenario: Workspace mutations
 - **WHEN** user-event or butler-event mutation endpoints are called
 - **THEN** the request is proxied to the owning butler via MCP tool calls (`calendar_create_event`, `calendar_update_event`, etc.)
@@ -1457,6 +1462,19 @@ self-explaining and deep-linkable to the originating session.
   `calendar_action_log` rows exist (or the table is absent in a deployment)
 - **THEN** the response is HTTP 200 with an empty list (fail-open), not an error
 
+#### Scenario: Partial audit fan-out failure flags degraded sources
+
+- **WHEN** `GET /api/calendar/workspace/audit` is called and at least one targeted
+  calendar schema's `calendar_action_log` fan-out (rows or count) fails while
+  others respond
+- **THEN** the response is HTTP 200 carrying the rows and count from the schemas
+  that DID respond, with `sources_available: false` in the envelope
+- **BECAUSE** a partial failure silently drops the failed schema's mutations and
+  undercounts `total`, so the log MUST NOT read as a complete, merely-shorter
+  history — the frontend renders a "some sources unavailable" note. A clean
+  fan-out (or a legitimately empty log) reports `sources_available: true`
+  (default), and clients that ignore the field observe the prior shape.
+
 ### Requirement: Calendar Mutation Undo Endpoint
 
 `src/butlers/api/routers/calendar_workspace.py` SHALL expose
@@ -1516,8 +1534,19 @@ undone, or whose pre-state is unavailable.
 
 #### Scenario: Undo of an unknown action id returns not found
 
-- **WHEN** `{action_id}` does not match any `calendar_action_log` row
+- **WHEN** `{action_id}` does not match any `calendar_action_log` row **and every
+  targeted calendar schema's owner-lookup fan-out responded successfully**
 - **THEN** the endpoint returns HTTP 404 and dispatches no mutation
+
+#### Scenario: Undo owner-lookup inconclusive on a source failure returns 503
+
+- **WHEN** `{action_id}` matches no returned row but at least one targeted calendar
+  schema's owner-lookup fan-out FAILED (so the owning schema may simply have been
+  unreachable)
+- **THEN** the endpoint returns HTTP 503 (retryable) naming that one or more
+  calendar sources were unavailable, and dispatches no mutation
+- **BECAUSE** a transient source failure MUST NOT be reported as a definitive 404
+  "this action does not exist" — that would fabricate absence from a degraded read
 
 #### Scenario: Repeated undo of the same action is rejected
 

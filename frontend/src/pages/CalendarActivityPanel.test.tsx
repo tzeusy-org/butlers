@@ -42,12 +42,23 @@ function auditEntry(overrides: Partial<CalendarAuditEntry>): CalendarAuditEntry 
 function renderPanel(
   entries: CalendarAuditEntry[],
   onUndo: (entry: CalendarAuditEntry) => void = () => {},
+  sourcesAvailable?: boolean,
 ) {
   const auditQuery = {
     isLoading: false,
     isError: false,
     error: null,
-    data: { data: { entries, total: entries.length, offset: 0, limit: 50 } },
+    data: {
+      data: {
+        entries,
+        total: entries.length,
+        offset: 0,
+        limit: 50,
+        ...(sourcesAvailable === undefined
+          ? {}
+          : { sources_available: sourcesAvailable }),
+      },
+    },
   };
   return render(
     <MemoryRouter>
@@ -129,5 +140,29 @@ describe("CalendarActivityPanel — undo affordance", () => {
     const res = await dispatched!;
     expect(res.data.request_id).toBe("undo-abc123");
     expect(res.data.request_id.startsWith("undo-")).toBe(true);
+  });
+});
+
+describe("CalendarActivityPanel — degraded-source note (bu-yjfk2)", () => {
+  it("renders the degraded note when sources_available is false (with rows)", () => {
+    renderPanel([auditEntry({})], () => {}, false);
+    expect(screen.getByTestId("audit-sources-degraded")).toBeTruthy();
+  });
+
+  it("renders the degraded note when sources_available is false and the log is empty", () => {
+    renderPanel([], () => {}, false);
+    // The empty-state must NOT read as a clean, complete history when a source failed.
+    expect(screen.getByTestId("audit-sources-degraded")).toBeTruthy();
+    expect(screen.getByText(/No calendar mutations logged yet/i)).toBeTruthy();
+  });
+
+  it("omits the degraded note when sources_available is true", () => {
+    renderPanel([auditEntry({})], () => {}, true);
+    expect(screen.queryByTestId("audit-sources-degraded")).toBeNull();
+  });
+
+  it("omits the degraded note when sources_available is absent (default healthy)", () => {
+    renderPanel([auditEntry({})]);
+    expect(screen.queryByTestId("audit-sources-degraded")).toBeNull();
   });
 });

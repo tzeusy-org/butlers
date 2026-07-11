@@ -538,7 +538,7 @@ async def _fetch_workspace_rows(
     limit: int | None = None,
     dedup_strategy: str | None = None,
     keep_separate: set[str] | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Fetch calendar event-instance rows via the versioned read-model boundary.
 
     Delegates to
@@ -558,8 +558,12 @@ async def _fetch_workspace_rows(
     ``dedup_strategy`` selects which collapse passes run (defaults to
     ``balanced``); ``keep_separate`` pins cluster keys the user chose not to
     collapse.  Both flow into :func:`_dedup_workspace_rows`.
+
+    Returns ``(deduped_rows, failed_butlers)`` — ``failed_butlers`` is threaded up
+    so the endpoint can surface an honest degraded flag on a partial fan-out
+    failure.
     """
-    flattened = await _fetch_flattened_workspace_rows(
+    flattened, failed = await _fetch_flattened_workspace_rows(
         db,
         view=view,
         start=start,
@@ -575,7 +579,7 @@ async def _fetch_workspace_rows(
     deduped, _clusters = _dedup_workspace_rows(
         flattened, strategy=dedup_strategy, keep_separate=keep_separate
     )
-    return deduped
+    return deduped, failed
 
 
 async def _fetch_flattened_workspace_rows(
@@ -591,16 +595,21 @@ async def _fetch_flattened_workspace_rows(
     editable: bool | None = None,
     cursor: tuple[datetime, UUID] | None = None,
     limit: int | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Fetch pre-dedup workspace rows (flat dicts), globally sorted by keyset.
 
     Splits the fetch+flatten+sort half out of :func:`_fetch_workspace_rows` so
     both the deduped workspace read **and** the duplicate-review surface can share
     the same source rows (the surface needs the rows *before* collapse).
+
+    Returns ``(flattened_rows, failed_butlers)`` — the failed list is threaded up
+    from :func:`query_calendar_workspace` so the endpoint can flag a partial
+    fan-out failure (silently-dropped schema) instead of rendering a short result
+    as an honest empty grid.
     """
     import dataclasses
 
-    workspace_dtos = await query_calendar_workspace(
+    workspace_dtos, failed = await query_calendar_workspace(
         db,
         view=view,
         start=start,
@@ -618,7 +627,7 @@ async def _fetch_flattened_workspace_rows(
     # Re-sort across schemas by the global keyset order so dedup keeps the
     # lowest-id copy deterministically and cursor pagination is stable.
     flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
-    return flattened
+    return flattened, failed
 
 
 def _cluster_key(row: Mapping[str, Any], match_pass: str, *, aggressive: bool) -> str:
@@ -1376,7 +1385,7 @@ async def get_workspace(
 
     # Fetch one extra row beyond the page so we can derive ``has_more`` without
     # a separate count query (keyset pagination, no ``total``).
-    workspace_rows = await _fetch_workspace_rows(
+    workspace_rows, workspace_failed = await _fetch_workspace_rows(
         db,
         view=view,
         start=start,
@@ -1391,6 +1400,12 @@ async def get_workspace(
         dedup_strategy=dedup_rules.match_strategy,
         keep_separate=keep_separate,
     )
+    # Honesty flag: a partial events fan-out failure silently drops the failed
+    # schema's entries, so a short grid would otherwise read as "nothing
+    # scheduled". False whenever ANY targeted schema errored (core calendar
+    # tables exist in every calendar butler, so a failure is genuine — never a
+    # legitimately-absent table).
+    entries_source_available = not workspace_failed
     source_rows = await _fetch_sources(
         db,
         lane=view,
@@ -1505,6 +1520,7 @@ async def get_workspace(
         next_cursor=next_cursor,
         has_more=has_more,
         people_source_available=people_source_available,
+        entries_source_available=entries_source_available,
     )
     return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 
@@ -1643,7 +1659,7 @@ async def get_workspace_duplicates(
     rules = await load_dedup_rules(db)
     try:
         keep_separate = await load_keep_separate_keys(db)
-        flattened = await _fetch_flattened_workspace_rows(
+        flattened, failed = await _fetch_flattened_workspace_rows(
             db,
             view=view,
             start=start,
@@ -1661,6 +1677,10 @@ async def get_workspace_duplicates(
                 clusters=[], rules=_rules_to_model(rules), available=False
             )
         )
+    # A partial fan-out failure means the dedup ran over an incomplete row set, so
+    # a cluster could be under-counted or missed entirely — flag it degraded even
+    # though the surface still renders the clusters it could compute.
+    duplicates_available = not failed
 
     cluster_models: list[CalendarDuplicateCluster] = []
     for cluster in clusters:
@@ -1688,7 +1708,7 @@ async def get_workspace_duplicates(
     cluster_models.sort(key=lambda c: (-c.member_count, c.kept_entry.start_at))
     return ApiResponse[CalendarDuplicatesResponse](
         data=CalendarDuplicatesResponse(
-            clusters=cluster_models, rules=_rules_to_model(rules), available=True
+            clusters=cluster_models, rules=_rules_to_model(rules), available=duplicates_available
         )
     )
 
@@ -3025,12 +3045,17 @@ async def get_calendar_audit(
         query_targets = db.butlers_with_module("calendar")
 
     # Fan out — gather raw rows from every calendar butler schema.
-    results, _failed = await db.fan_out_with_status(
+    results, failed = await db.fan_out_with_status(
         _AUDIT_SQL, (limit + offset, 0), butler_names=query_targets
     )
-    count_results, _count_failed = await db.fan_out_with_status(
+    count_results, count_failed = await db.fan_out_with_status(
         _AUDIT_COUNT_SQL, (), butler_names=query_targets
     )
+    # A partial fan-out failure silently drops a schema's audit rows and
+    # undercounts ``total`` — flag it so the log is never read as a complete
+    # (merely shorter) history. Either the row or the count fan-out failing is a
+    # genuine source failure (core ``calendar_action_log`` table).
+    sources_available = not failed and not count_failed
 
     raw_rows: list[dict[str, Any]] = []
     for butler_rows in results.values():
@@ -3062,7 +3087,13 @@ async def get_calendar_audit(
     page = raw_rows[offset : offset + limit]
 
     entries = [CalendarAuditEntry.model_validate(row) for row in page]
-    data = CalendarAuditResponse(entries=entries, total=total, offset=offset, limit=limit)
+    data = CalendarAuditResponse(
+        entries=entries,
+        total=total,
+        offset=offset,
+        limit=limit,
+        sources_available=sources_available,
+    )
     return ApiResponse[CalendarAuditResponse](data=data)
 
 
@@ -3193,20 +3224,26 @@ def _created_event_id(action_result: dict[str, Any], origin_ref: object) -> str 
 
 async def _find_action_owner(
     db: DatabaseManager, action_id: UUID
-) -> tuple[str, dict[str, Any]] | None:
+) -> tuple[tuple[str, dict[str, Any]] | None, list[str]]:
     """Locate the butler schema and row owning *action_id*.
 
     Action ids are globally unique UUIDs, so the first calendar butler with a
     matching ``calendar_action_log`` row owns it.
+
+    Returns ``(owner_or_none, failed_butlers)``. When ``owner`` is ``None`` but
+    ``failed_butlers`` is non-empty the lookup was inconclusive — the owning
+    schema may simply have been unreachable — so the caller must NOT report a
+    definitive 404 (that would fabricate "this action does not exist" from a
+    transient source failure).
     """
     targets = db.butlers_with_module("calendar")
-    results, _failed = await db.fan_out_with_status(
+    results, failed = await db.fan_out_with_status(
         _UNDO_LOOKUP_SQL, (action_id,), butler_names=targets
     )
     for butler_name, rows in results.items():
         if rows:
-            return butler_name, dict(rows[0])
-    return None
+            return (butler_name, dict(rows[0])), failed
+    return None, failed
 
 
 @router.post("/undo/{action_id}", response_model=ApiResponse[CalendarUndoResponse])
@@ -3224,13 +3261,24 @@ async def undo_calendar_mutation(
     provider call from the API layer itself.
 
     Fail-fast guards:
-    - unknown ``action_id`` → 404
+    - unknown ``action_id`` (all calendar sources answered, no match) → 404
+    - ``action_id`` unresolved because a calendar source was unreachable → 503
     - status not ``applied`` (pending/failed/noop) → 409
     - already undone → 409
     - applied but missing/expired pre-state (or unreversible type) → 422
     """
-    owner = await _find_action_owner(db, action_id)
+    owner, lookup_failed = await _find_action_owner(db, action_id)
     if owner is None:
+        if lookup_failed:
+            # Inconclusive: a schema that could own this action was unreachable.
+            # Return 503 (retryable) rather than a fabricated 404 "does not exist".
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Could not confirm the calendar action exists — "
+                    f"{len(lookup_failed)} calendar source(s) unavailable; retry shortly."
+                ),
+            )
         raise HTTPException(status_code=404, detail=f"Unknown calendar action: {action_id}")
     butler_name, row = owner
 
@@ -3801,7 +3849,10 @@ async def _render_workspace_ics(
     want every entry in the range, not a single page. Timestamps stay in their
     source instant (``display_tz=None`` → UTC), which ICS serializes as ``Z``.
     """
-    workspace_rows = await _fetch_workspace_rows(
+    # The ICS feed is a raw calendar serialization with no envelope to carry a
+    # degraded flag, so a partial fan-out failure is only logged (below), not
+    # surfaced per-source; the JSON workspace read owns the honest signal.
+    workspace_rows, ics_failed = await _fetch_workspace_rows(
         db,
         view=view,
         start=start,
@@ -3811,6 +3862,13 @@ async def _render_workspace_ics(
         status=status,
         source_type=source_type,
     )
+    if ics_failed:
+        logger.warning(
+            "workspace ICS render: %d calendar source(s) failed the events fan-out "
+            "(%s); the feed may be missing their events",
+            len(ics_failed),
+            ", ".join(sorted(ics_failed)),
+        )
     entries: list[UnifiedCalendarEntry] = []
     for row in workspace_rows:
         try:
@@ -4077,14 +4135,26 @@ async def import_calendar_ics(
     range_start = min(event.start_at for event in parsed)
     range_end = max(event.end_at for event in parsed) + timedelta(seconds=1)
     seen_keys: set[tuple[str, int]] = set()
+    dedup_failed: set[str] = set()
     for window_start, window_end in _ics_dedup_windows(range_start, range_end):
-        existing_rows = await _fetch_workspace_rows(
+        existing_rows, window_failed = await _fetch_workspace_rows(
             db,
             view="user",
             start=window_start,
             end=window_end,
         )
+        dedup_failed.update(window_failed)
         seen_keys.update(_title_collapse_key(row) for row in existing_rows)
+    if dedup_failed:
+        # A partial fan-out failure means the existing-event set used to dedup the
+        # import is incomplete, so a duplicate could slip through — log it rather
+        # than silently import over a half-read calendar.
+        logger.warning(
+            "ICS import dedup: %d calendar source(s) failed the events fan-out "
+            "(%s); imported events may duplicate existing ones from those sources",
+            len(dedup_failed),
+            ", ".join(sorted(dedup_failed)),
+        )
 
     imported_events: list[CalendarIcsImportedEvent] = []
     skipped = 0

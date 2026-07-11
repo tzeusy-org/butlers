@@ -177,6 +177,17 @@ class CalendarWorkspaceReadResponse(BaseModel):
     #: unavailable" indicator rather than reading empty ``linked_people`` as
     #: "no one is linked". Follows the fleet degraded-source convention.
     people_source_available: bool = True
+    #: Events fan-out honesty flag (bu-yjfk2). ``True`` (default) when every
+    #: targeted butler schema's workspace query ran cleanly. ``False`` when at
+    #: least one schema FAILED — a partial fan-out failure silently drops that
+    #: schema's entries, so the FE must render a "some sources unavailable" note
+    #: instead of reading a short grid as an honest "nothing scheduled". The core
+    #: ``calendar_event_instances`` / ``calendar_events`` / ``calendar_sources``
+    #: tables exist in every calendar butler, so a failure is genuine (never a
+    #: legitimately-absent table). Always ``True`` for the proposals/overlays
+    #: lanes (they do not fan out the events read). Additive — clients that ignore
+    #: it observe the prior shape.
+    entries_source_available: bool = True
 
 
 class DayBriefingKindGroup(BaseModel):
@@ -686,6 +697,15 @@ class CalendarAuditResponse(BaseModel):
     total: int = 0
     offset: int = 0
     limit: int = 50
+    #: Audit fan-out honesty flag. ``True`` (default) when every targeted
+    #: calendar schema's ``calendar_action_log`` fan-out ran cleanly. ``False``
+    #: when at least one targeted schema FAILED — a partial failure silently
+    #: drops that schema's mutations AND undercounts ``total``, so the FE must
+    #: render a "some sources unavailable" note rather than let the log read as a
+    #: complete, shorter history. ``calendar_action_log`` is a core calendar
+    #: table present in every calendar butler, so a failure is genuine (never a
+    #: legitimately-absent table). Follows the fleet degraded-source convention.
+    sources_available: bool = True
 
 
 # ---------------------------------------------------------------------------

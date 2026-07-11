@@ -938,6 +938,15 @@ export interface CalendarAuditResponse {
   total: number;
   offset: number;
   limit: number;
+  /**
+   * Audit fan-out honesty flag. `true` (or absent) when every targeted calendar
+   * schema's `calendar_action_log` fan-out ran cleanly; `false` when at least
+   * one schema FAILED — a partial failure silently drops that schema's
+   * mutations and undercounts `total`, so the UI must render a "some sources
+   * unavailable" note rather than let the log read as a complete, shorter
+   * history.
+   */
+  sources_available?: boolean;
 }
 
 /** Query parameters for GET /api/calendar/workspace/audit. */
@@ -1053,6 +1062,15 @@ export interface CalendarWorkspaceReadResponse {
    * instead of reading empty `linked_people` as "no one is linked".
    */
   people_source_available?: boolean;
+  /**
+   * Events fan-out honesty flag. `true` (or absent) when every targeted butler
+   * schema's workspace query ran cleanly; `false` when at least one schema
+   * FAILED — a partial fan-out failure silently drops that schema's entries, so
+   * the UI must show a "some sources unavailable" note instead of reading a
+   * short grid as "nothing scheduled". Always `true` for the proposals/overlays
+   * lanes (they do not fan out the events read).
+   */
+  entries_source_available?: boolean;
 }
 
 /** Cross-source dedup match strategy. Mirrors the backend `match_strategy` enum. */

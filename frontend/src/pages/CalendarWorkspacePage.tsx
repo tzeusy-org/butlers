@@ -1119,6 +1119,7 @@ interface CalendarActivityPanelProps {
         total?: number;
         offset?: number;
         limit?: number;
+        sources_available?: boolean;
       };
     };
   };
@@ -1407,6 +1408,11 @@ export function CalendarActivityPanel({
 }: CalendarActivityPanelProps) {
   const entries = auditQuery.data?.data?.entries ?? [];
   const total = auditQuery.data?.data?.total ?? 0;
+  // Audit fan-out honesty (bu-yjfk2): false only when a calendar schema's
+  // action-log fan-out failed. A partial failure silently drops that schema's
+  // rows and undercounts `total`, so an empty/short log would otherwise read as
+  // a complete, quiet history. Absent/true means every source answered.
+  const sourcesAvailable = auditQuery.data?.data?.sources_available !== false;
   const hasPrev = offset > 0;
   const hasNext = offset + limit < total;
 
@@ -1434,14 +1440,30 @@ export function CalendarActivityPanel({
   }
   if (entries.length === 0) {
     return (
-      <Voice variant="italic" className="text-[var(--mfg)]">
-        No calendar mutations logged yet.
-      </Voice>
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
+        {!sourcesAvailable ? (
+          <SourceDegradedNote
+            testId="audit-sources-degraded"
+            label="Activity log"
+            detail="some sources unavailable — recent mutations may be missing"
+          />
+        ) : null}
+        <Voice variant="italic" className="text-[var(--mfg)]">
+          No calendar mutations logged yet.
+        </Voice>
+      </div>
     );
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
+      {!sourcesAvailable ? (
+        <SourceDegradedNote
+          testId="audit-sources-degraded"
+          label="Activity log"
+          detail="some sources unavailable — recent mutations may be missing"
+        />
+      ) : null}
       <div className="flex items-center justify-between gap-4">
         <Mono muted className="tabular-nums">
           {total} {total === 1 ? "entry" : "entries"} total · showing{" "}
@@ -2881,6 +2903,13 @@ export default function CalendarWorkspacePage() {
   // it ran cleanly (empty linked_people is then genuinely "no one linked").
   const peopleSourceAvailable =
     workspaceQuery.data?.data.people_source_available !== false;
+
+  // Events fan-out honesty: false only when a butler schema's workspace query
+  // failed. A partial failure silently drops that schema's entries, so the grid
+  // would otherwise read as a complete (merely emptier) calendar. Absent/true
+  // means every source answered.
+  const entriesSourceAvailable =
+    workspaceQuery.data?.data.entries_source_available !== false;
 
   // Jump from a search match: navigate the grid to the match's day, then flash it.
   const handleSearchJump = useCallback(
@@ -4830,6 +4859,18 @@ export default function CalendarWorkspacePage() {
         }
       >
         <div className="flex min-h-0 flex-1 flex-col pt-5">
+          {/* Events fan-out degraded (bu-yjfk2): a butler schema's workspace
+              query failed, so the grid may be missing that schema's events —
+              name the degraded source rather than let a short grid read as an
+              honest "nothing scheduled". */}
+          {!entriesSourceAvailable ? (
+            <div data-testid="entries-source-degraded" className="pb-2">
+              <SourceDegradedNote
+                label="Calendar events"
+                detail="some sources unavailable — this view may be missing events"
+              />
+            </div>
+          ) : null}
           {/* Linked-people resolution degraded (bu-qs64f): entries still render,
               but avatars may be incomplete — name the degraded source rather
               than let empty avatars read as "no one linked". */}

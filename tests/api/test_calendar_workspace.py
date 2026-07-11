@@ -219,6 +219,7 @@ def _build_app(
     overlays_raise: bool = False,
     entity_link_rows: dict[str, list[dict]] | None = None,
     entity_people_failed: list[str] | None = None,
+    workspace_failed: list[str] | None = None,
     mcp_clients: dict[str, AsyncMock] | None = None,
     calendar_butlers: list[str] | None = None,
 ) -> tuple:
@@ -253,10 +254,18 @@ def _build_app(
         return {}
 
     async def _fan_out_with_status(query: str, args=(), butler_names=None):
-        # Linked-people resolution (bu-qs64f) uses the with-status variant so a
-        # failed schema flips ``people_source_available``. The mock reports the
-        # caller-supplied ``entity_people_failed`` schemas as failed.
-        return await _fan_out(query, args, butler_names), list(entity_people_failed or [])
+        # Each fan-out surface reports only its own simulated failures so the
+        # honesty flags stay independent: ``entity_people_failed`` flips
+        # ``people_source_available`` (bu-qs64f); ``workspace_failed`` flips
+        # ``entries_source_available`` (bu-yjfk2). A failure on the wrong query
+        # would conflate the two signals.
+        if "FROM calendar_event_entities ee" in query:
+            failed = list(entity_people_failed or [])
+        elif "FROM calendar_event_instances AS i" in query:
+            failed = list(workspace_failed or [])
+        else:
+            failed = []
+        return await _fan_out(query, args, butler_names), failed
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
@@ -456,6 +465,72 @@ async def test_workspace_linked_people_degraded_flag_on_resolution_failure(app):
     # degraded flag tells the FE resolution failed (show "people unavailable").
     assert body["people_source_available"] is False
     assert body["entries"][0]["linked_people"] == []
+    # The events fan-out itself was clean, so entries_source_available stays true
+    # — the two honesty signals are independent.
+    assert body["entries_source_available"] is True
+
+
+async def test_workspace_read_clean_reports_entries_source_available(app):
+    """A clean events fan-out sets entries_source_available=true (default)."""
+    user_row = _workspace_event_row(
+        lane="user",
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        butler_name=None,
+        calendar_id="primary",
+        metadata={"source_type": "provider_event"},
+    )
+    app, _, _ = _build_app(app, workspace_rows={"general": [user_row]})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "user",
+                "start": "2026-02-22T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["entries_source_available"] is True
+
+
+async def test_workspace_read_partial_fan_out_failure_flags_degraded(app):
+    """A partial events fan-out failure silently drops the failed schema's
+    entries, so entries_source_available must be false rather than let a short
+    grid read as an honest empty window (bu-yjfk2)."""
+    user_row = _workspace_event_row(
+        lane="user",
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        butler_name=None,
+        calendar_id="primary",
+        metadata={"source_type": "provider_event"},
+    )
+    app, _, _ = _build_app(
+        app,
+        workspace_rows={"general": [user_row]},
+        calendar_butlers=["general", "relationship"],
+        workspace_failed=["relationship"],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "user",
+                "start": "2026-02-22T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    # The responding schema's entry still renders ...
+    assert len(body["entries"]) == 1
+    # ... but the grid is honestly flagged incomplete.
+    assert body["entries_source_available"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1288,6 +1363,7 @@ def _build_audit_app(
     *,
     audit_rows: dict[str, list[dict]] | None = None,
     calendar_butlers: list[str] | None = None,
+    audit_failed: list[str] | None = None,
 ):
     """Build a test app wired with a fan_out mock that handles audit queries."""
     mock_db = MagicMock(spec=DatabaseManager)
@@ -1297,6 +1373,7 @@ def _build_audit_app(
     )
 
     _audit_rows = audit_rows or {}
+    _audit_failed = audit_failed or []
 
     async def _fan_out(query: str, args=(), butler_names=None):
         if "FROM calendar_action_log" in query:
@@ -1311,7 +1388,8 @@ def _build_audit_app(
         return {}
 
     async def _fan_out_with_status(query: str, args=(), butler_names=None):
-        return await _fan_out(query, args, butler_names), []
+        failed = list(_audit_failed) if "FROM calendar_action_log" in query else []
+        return await _fan_out(query, args, butler_names), failed
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
 
@@ -1378,6 +1456,47 @@ async def test_audit_empty_when_no_rows(app):
     data = resp.json()["data"]
     assert data["total"] == 0
     assert data["entries"] == []
+    # Clean fan-out (genuinely empty log) reports sources_available=true.
+    assert data["sources_available"] is True
+
+
+async def test_audit_clean_fan_out_reports_sources_available(app):
+    """A successful audit fan-out sets sources_available=true (default honesty)."""
+    rows = {"general": [_audit_row(action_type="workspace_user_create", action_status="applied")]}
+    app, _ = _build_audit_app(app, audit_rows=rows)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/audit")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["sources_available"] is True
+
+
+async def test_audit_partial_fan_out_failure_flags_degraded(app):
+    """A partial audit fan-out failure silently drops a schema's rows and
+    undercounts total, so the response must set sources_available=false rather
+    than let the shorter log read as a complete history (bu-yjfk2)."""
+    rows = {"general": [_audit_row(action_type="workspace_user_create", action_status="applied")]}
+    app, _ = _build_audit_app(
+        app,
+        audit_rows=rows,
+        calendar_butlers=["general", "relationship"],
+        audit_failed=["relationship"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/audit")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # The responding schema's row is still surfaced ...
+    assert len(data["entries"]) == 1
+    # ... but the log is honestly flagged incomplete.
+    assert data["sources_available"] is False
 
 
 async def test_audit_payload_summary_redacts_to_allowlist(app):
@@ -1516,12 +1635,14 @@ def _build_undo_app(
     action_rows: dict[str, list[dict]],
     mcp_status: str = "updated",
     calendar_butlers: list[str] | None = None,
+    lookup_failed: list[str] | None = None,
 ):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["general"]
     mock_db.butlers_with_module = MagicMock(
         return_value=calendar_butlers if calendar_butlers is not None else ["general"]
     )
+    _lookup_failed = lookup_failed or []
 
     async def _fan_out(query: str, args=(), butler_names=None):
         if "FROM calendar_action_log" in query:
@@ -1532,7 +1653,8 @@ def _build_undo_app(
         return {}
 
     async def _fan_out_with_status(query: str, args=(), butler_names=None):
-        return await _fan_out(query, args, butler_names), []
+        failed = list(_lookup_failed) if "FROM calendar_action_log" in query else []
+        return await _fan_out(query, args, butler_names), failed
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     _pool = MagicMock()
@@ -1699,6 +1821,27 @@ async def test_undo_unknown_id_returns_404(app):
         resp = await client.post(f"/api/calendar/workspace/undo/{uuid4()}")
 
     assert resp.status_code == 404
+    mock_client.call_tool.assert_not_awaited()
+
+
+async def test_undo_lookup_source_failure_returns_503(app):
+    """When no owner row is found BUT a calendar schema's owner-lookup fan-out
+    failed, the endpoint returns 503 (retryable) — not a fabricated 404 — because
+    the owning schema may simply have been unreachable (bu-yjfk2)."""
+    app, _, mock_client = _build_undo_app(
+        app,
+        action_rows={"general": []},
+        calendar_butlers=["general", "relationship"],
+        lookup_failed=["relationship"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{uuid4()}")
+
+    assert resp.status_code == 503
+    assert "unavailable" in resp.json()["detail"].lower()
     mock_client.call_tool.assert_not_awaited()
 
 

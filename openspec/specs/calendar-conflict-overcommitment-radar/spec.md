@@ -65,19 +65,35 @@ with `issues: []` and `issues_available: false`; HTTP 500 MUST NOT be returned.
 
 #### Scenario: DB unreachable (degraded mode)
 
-- **WHEN** any fan-out query fails during the scan
+- **WHEN** the entire events fan-out fails during the scan (no schema responded)
 - **THEN** HTTP 200 with `issues: []` and `issues_available: false`
 - **AND** no HTTP 500 is returned
+
+#### Scenario: Partial fan-out failure (degraded mode)
+
+- **WHEN** at least one targeted butler schema's events fan-out query fails but
+  one or more other schemas respond successfully
+- **THEN** HTTP 200 with `issues_available: false`
+- **AND** `issues` reflects only the conflicts detectable among the schemas that
+  DID respond (it MAY be non-empty)
+- **BECAUSE** the failed schema's events were silently dropped, so a real overlap
+  could be hidden — the scan MUST NOT report a fabricated "all clear". A
+  non-empty `issues` list with `issues_available: false` therefore means "these
+  are real, but the set is incomplete", and the FE hides the banner (silent
+  degraded mode) exactly as for a total failure.
 
 ### Requirement: [TARGET-STATE] ConflictScanResponse Model
 
 The response envelope MUST conform to the following schema, with all fields
-present. `issues_available` SHALL be `false` only in degraded mode; `issues`
-SHALL be an empty list when no problems exist in a healthy scan.
+present. `issues_available` SHALL be `false` in degraded mode — which includes
+BOTH a total fan-out failure AND a partial per-schema failure (any targeted
+schema erroring). `issues` SHALL be an empty list when no problems exist in a
+healthy scan, MAY be non-empty on a partial degraded scan (the conflicts found
+among the responding schemas), and is empty on a total failure.
 
 ```
 ConflictScanResponse {
-  issues: ConflictIssue[]        # list of detected issues, empty on degraded
+  issues: ConflictIssue[]        # detected issues; empty on total-fail, may be partial+incomplete on partial-fail
   scan_window: { start, end }    # the requested window (ISO-8601)
   issues_available: bool         # false on degraded; FE hides banner when false
 }

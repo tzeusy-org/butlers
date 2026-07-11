@@ -21,7 +21,8 @@ Row DTOs:
 
 Query functions (all async):
     query_calendar_sources(db, lane, butlers, sources) -> list[CalendarSourceRow]
-    query_calendar_workspace(db, view, start, end, butlers, sources) -> list[CalendarWorkspaceRow]
+    query_calendar_workspace(db, view, start, end, butlers, sources)
+        -> tuple[list[CalendarWorkspaceRow], list[str]]  # (rows, failed_butlers)
 
 Version marker:
     READ_MODEL_VERSION
@@ -742,7 +743,7 @@ async def query_calendar_workspace(
     editable: bool | None = None,
     cursor: tuple[datetime, UUID] | None = None,
     limit: int | None = None,
-) -> list[CalendarWorkspaceRow]:
+) -> tuple[list[CalendarWorkspaceRow], list[str]]:
     """Fan-out query for calendar event instances in a time range.
 
     Joins ``calendar_event_instances``, ``calendar_events``,
@@ -781,9 +782,17 @@ async def query_calendar_workspace(
 
     Returns
     -------
-    list[CalendarWorkspaceRow]
-        Flat list of event-instance rows from all queried butler schemas,
-        ordered by ``instance_starts_at ASC, instance_id ASC``.
+    tuple[list[CalendarWorkspaceRow], list[str]]
+        ``(rows, failed_butlers)`` — the flat list of event-instance rows from
+        all queried butler schemas (ordered by ``instance_starts_at ASC,
+        instance_id ASC``), plus the names of any targeted schemas whose fan-out
+        query FAILED. ``calendar_event_instances`` / ``calendar_events`` /
+        ``calendar_sources`` are core tables present in every calendar-enabled
+        butler, so a name in ``failed_butlers`` is a genuine source failure
+        (pool down, permission, timeout) — never a legitimately-absent table —
+        and callers MUST surface it (a partial failure silently drops that
+        schema's events, so an empty/short result would otherwise read as an
+        honest "nothing scheduled" when it is really "one source is down").
     """
     conditions: list[str] = [
         "s.lane = $1",
@@ -851,13 +860,13 @@ async def query_calendar_workspace(
     else:
         query_targets = db.butlers_with_module("calendar")
 
-    results, _failed = await db.fan_out_with_status(sql, tuple(args), butler_names=query_targets)
+    results, failed = await db.fan_out_with_status(sql, tuple(args), butler_names=query_targets)
     rows: list[CalendarWorkspaceRow] = []
     for butler_name, raw_rows in results.items():
         for row in raw_rows:
             dto = row_to_workspace(row, db_butler=butler_name)
             rows.append(dto)
-    return rows
+    return rows, failed
 
 
 async def query_calendar_proposals(
@@ -946,8 +955,16 @@ class CalendarConflictScan:
     """Result envelope for :func:`query_calendar_conflicts`.
 
     ``issues`` carries the detected, proposal-joined issues; ``available`` is the
-    honest degraded signal (``False`` only when the fan-out scan failed), letting
-    the endpoint follow the repo's fail-open + explicit-degraded convention.
+    honest degraded signal, letting the endpoint follow the repo's fail-open +
+    explicit-degraded convention.
+
+    ``available`` is ``False`` whenever ANY targeted butler schema's events
+    fan-out failed — not only on a *total* scan failure. A partial per-butler
+    failure silently drops that schema's events, so a real overlap could go
+    undetected; flagging the scan degraded stops the FE from rendering a
+    fabricated "all clear". ``issues`` may still be non-empty in that case (the
+    conflicts found among the schemas that DID respond) — the flag warns the set
+    is incomplete, it does not imply emptiness.
     """
 
     issues: list[DetectedIssue]
@@ -972,12 +989,15 @@ async def query_calendar_conflicts(
     joins any ``pending`` ``calendar_event_proposals`` whose ``source_event_id``
     equals an overlap issue's canonical pair id.
 
-    **Fail-open contract.** Any fan-out failure degrades to
-    ``CalendarConflictScan(issues=[], available=False)`` rather than raising — the
-    endpoint must never return HTTP 500.
+    **Fail-open + honest-partial contract.** A *total* fan-out failure degrades
+    to ``CalendarConflictScan(issues=[], available=False)`` rather than raising
+    (the endpoint must never return HTTP 500). A *partial* per-butler failure —
+    where some schemas answered and others errored — still returns the issues
+    detected among the responders but sets ``available=False``, because the
+    missing schema's events could have hidden a real conflict.
     """
     try:
-        rows = await query_calendar_workspace(
+        rows, failed = await query_calendar_workspace(
             db,
             view="user",
             start=start,
@@ -1021,7 +1041,10 @@ async def query_calendar_conflicts(
             if issue.pair_id is not None:
                 issue.proposal_ids = by_source.get(str(issue.pair_id), [])
 
-    return CalendarConflictScan(issues=issues, available=True)
+    # A partial events fan-out failure means we scanned an incomplete event set,
+    # so a real conflict could be hidden — degrade honestly even though ``issues``
+    # may be non-empty from the schemas that did respond.
+    return CalendarConflictScan(issues=issues, available=not failed)
 
 
 async def query_calendar_proposal_by_id(

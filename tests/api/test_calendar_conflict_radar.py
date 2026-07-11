@@ -246,9 +246,10 @@ def _proposal_row(*, proposal_id, source_event_id: str, start: datetime, status=
     }
 
 
-def _build_app(app, *, workspace_rows=None, proposal_rows=None):
+def _build_app(app, *, workspace_rows=None, proposal_rows=None, workspace_failed=None):
     workspace_rows = workspace_rows or {}
     proposal_rows = proposal_rows or {}
+    workspace_failed = workspace_failed or []
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["general", "relationship"]
     mock_db.butlers_with_module = MagicMock(return_value=["general", "relationship"])
@@ -265,7 +266,10 @@ def _build_app(app, *, workspace_rows=None, proposal_rows=None):
         return rows
 
     async def _fan_out_with_status(query: str, args=(), butler_names=None):
-        return await _fan_out(query, args, butler_names), []
+        rows = await _fan_out(query, args, butler_names)
+        # Only the events fan-out carries the simulated partial failure.
+        failed = list(workspace_failed) if "FROM calendar_event_instances AS i" in query else []
+        return rows, failed
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
     mock_mgr = AsyncMock(spec=MCPClientManager)
@@ -336,6 +340,47 @@ async def test_conflicts_endpoint_fails_open_on_db_error(app, monkeypatch):
     data = resp.json()["data"]
     assert data["issues_available"] is False
     assert data["issues"] == []
+
+
+async def test_conflicts_endpoint_partial_failure_flags_degraded(app):
+    """Named bug (bu-yjfk2): a partial per-butler events fan-out failure must set
+    issues_available=False even though the responding schema still produced a
+    (possibly non-empty, but incomplete) issue set — otherwise the radar reports
+    a fabricated all-clear when a failed schema's events could hide a conflict."""
+    a = _ws_row(entry_id="a", title="Design review", start=_DAY)
+    b = _ws_row(entry_id="b", title="1:1", start=_DAY + timedelta(minutes=30))
+    app, _ = _build_app(
+        app,
+        workspace_rows={"general": [a, b]},
+        workspace_failed=["relationship"],
+    )
+
+    resp = await _get(app)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    # The overlap from the schema that DID respond is still surfaced ...
+    overlaps = [i for i in data["issues"] if i["kind"] == "overlap"]
+    assert len(overlaps) == 1
+    # ... but the scan is honestly flagged incomplete because a schema errored.
+    assert data["issues_available"] is False
+
+
+async def test_conflicts_endpoint_partial_failure_flags_degraded_even_when_clean(app):
+    """A partial failure on an otherwise-clean window must NOT read as an honest
+    empty all-clear: issues=[] with issues_available=False (the dropped schema
+    could have held the only conflict)."""
+    a = _ws_row(entry_id="a", title="Standup", start=_DAY, minutes=30)
+    app, _ = _build_app(
+        app,
+        workspace_rows={"general": [a]},
+        workspace_failed=["relationship"],
+    )
+
+    resp = await _get(app)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["issues"] == []
+    assert data["issues_available"] is False
 
 
 async def test_conflicts_endpoint_rejects_inverted_window(app):
