@@ -173,6 +173,68 @@ describe("SessionsVerdictOpener -- clauses", () => {
   });
 });
 
+describe("SessionsVerdictOpener -- degraded fan-out (bu-tpudw.2)", () => {
+  it("names the degraded pools and suppresses the all-clear when sources_degraded is set", () => {
+    // The reachable pools report zero failures, but a pool dropped from the
+    // fan-out (meta.sources_degraded). An empty window here is NOT a truthful
+    // all-clear — the down pool is named and the calm line is suppressed.
+    const html = render(
+      <SessionsVerdictOpener
+        failedAggregate={aggregate()}
+        failedLoading={false}
+        failedError={false}
+        failedSourcesDegraded={["finance", "health"]}
+        runningSessions={[]}
+        runningLoading={false}
+        runningError={false}
+      />,
+    );
+    expect(html).toContain('data-testid="sessions-verdict-clauses"');
+    expect(html).toContain("finance, health unreachable — some failures may be missing");
+    expect(html).not.toContain("No sessions failed");
+  });
+
+  it("keeps the calm all-clear when sources_degraded is empty", () => {
+    const html = render(
+      <SessionsVerdictOpener
+        failedAggregate={aggregate()}
+        failedLoading={false}
+        failedError={false}
+        failedSourcesDegraded={[]}
+        runningSessions={[]}
+        runningLoading={false}
+        runningError={false}
+      />,
+    );
+    expect(html).toContain('data-testid="sessions-verdict-all-clear"');
+    expect(html).not.toContain("unreachable");
+  });
+
+  it("prepends the degraded clause ahead of a real failure clause", () => {
+    const agg = aggregate({
+      total: 2,
+      failed_count: 2,
+      by_butler: [{ butler: "chronicler", count: 2 }],
+    });
+    const html = render(
+      <SessionsVerdictOpener
+        failedAggregate={agg}
+        failedLoading={false}
+        failedError={false}
+        failedSourcesDegraded={["finance"]}
+        runningSessions={[]}
+        runningLoading={false}
+        runningError={false}
+      />,
+    );
+    const degradedIdx = html.indexOf("finance unreachable");
+    const failedIdx = html.indexOf("2 sessions failed");
+    expect(degradedIdx).toBeGreaterThanOrEqual(0);
+    expect(failedIdx).toBeGreaterThanOrEqual(0);
+    expect(degradedIdx).toBeLessThan(failedIdx);
+  });
+});
+
 describe("SessionsVerdictOpener -- isError-suppression contract", () => {
   it("renders the skeleton while either source is loading", () => {
     const html = render(

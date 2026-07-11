@@ -59,6 +59,14 @@ export interface KeysetMeta {
   limit: number;
   next_cursor: string | null;
   has_more: boolean;
+  /**
+   * Butler pools dropped from the fan-out that produced this page (a genuine
+   * query error, not a legitimately-empty source). Absent/omitted when every
+   * queried pool answered. Mirrors the fleet-wide `meta.sources_degraded`
+   * convention (see CLAUDE.md API Conventions — Degraded-Mode Response
+   * Envelope) so a partial page never reads as the whole list.
+   */
+  sources_degraded?: string[];
 }
 
 /** API response wrapper for keyset-paginated list endpoints. */

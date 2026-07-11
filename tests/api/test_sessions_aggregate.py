@@ -51,13 +51,19 @@ def _make_agg_record(values: dict):
     return m
 
 
-def _make_app_with_aggregate(per_butler: dict[str, dict]) -> object:
-    """Wire an app whose fan_out returns one aggregate row per butler."""
+def _make_app_with_aggregate(
+    per_butler: dict[str, dict], *, degraded: list[str] | None = None
+) -> object:
+    """Wire an app whose fan_out returns one aggregate row per butler.
+
+    ``degraded`` names any pool the fan-out reports as failed (the ``failed``
+    element of ``fan_out_with_status``'s return tuple).
+    """
     fan_out_return = {name: [_make_agg_record(vals)] for name, vals in per_butler.items()}
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = list(per_butler.keys())
-    mock_db.fan_out_with_status = AsyncMock(return_value=(fan_out_return, []))
+    mock_db.fan_out_with_status = AsyncMock(return_value=(fan_out_return, list(degraded or [])))
 
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db
@@ -141,6 +147,36 @@ async def test_aggregate_by_butler_omits_zero_count() -> None:
         resp = await client.get("/api/sessions/aggregate")
     data = resp.json()["data"]
     assert [b["butler"] for b in data["by_butler"]] == ["health"]
+
+
+async def test_aggregate_names_degraded_pool_in_meta() -> None:
+    """A failed pool is named in meta.sources_degraded, not silently zeroed.
+
+    The reachable pool reports failed_count=0; without the flag that reads as a
+    truthful "No sessions failed" all-clear while a pool is actually down.
+    """
+    app = _make_app_with_aggregate(
+        {"health": {"total": 5, "success_count": 5, "failed_count": 0}},
+        degraded=["finance"],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions/aggregate")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["failed_count"] == 0
+    assert body["meta"]["sources_degraded"] == ["finance"]
+
+
+async def test_aggregate_meta_has_no_degraded_when_all_pools_answer() -> None:
+    """Every pool answering -> no sources_degraded key (honest empty)."""
+    app = _make_app_with_aggregate({"health": {"total": 5, "success_count": 5}})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions/aggregate")
+    assert "sources_degraded" not in resp.json()["meta"]
 
 
 async def test_aggregate_passes_filters_through_to_sql() -> None:

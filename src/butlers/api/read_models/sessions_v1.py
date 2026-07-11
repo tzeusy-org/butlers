@@ -19,7 +19,6 @@ Query functions (all async):
     query_session_trigger_breakdown_fan_out(db, where, args, *, butler_names)
         -> list[TriggerSourceCount]
     query_session_detail_fan_out(db, session_id) -> FanOutDetailResult
-    query_session_detail_single(pool, session_id) -> SingleDetailResult
 
 Cursor helpers:
     encode_session_cursor(started_at, row_id) -> str
@@ -139,6 +138,14 @@ class FanOutKeysetResult:
     rows: list[SessionSummaryRow] = field(default_factory=list)
     has_more: bool = False
     next_cursor: str | None = None
+    #: Butler pools whose per-butler query raised during the fan-out. Non-empty
+    #: means the merged page UNDERCOUNTS — the caller must surface these as a
+    #: degraded source (``meta.sources_degraded``) rather than presenting the
+    #: partial page as the whole truth. ``sessions`` is a core table present in
+    #: every schema, so any fan-out failure here is a genuine pool/connection
+    #: fault (never a legitimate table-absence), so classify-before-flagging
+    #: resolves to "always a degraded source" for this domain.
+    degraded_sources: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -174,25 +181,29 @@ class FanOutAggregateResult:
     input_tokens: int = 0
     output_tokens: int = 0
     by_butler: list[ButlerCount] = field(default_factory=list)
+    #: Butler pools whose aggregate scan raised during the fan-out. Non-empty
+    #: means the summed scalars UNDERCOUNT — surface as ``meta.sources_degraded``
+    #: so a downed pool never renders as a truthful zero (e.g. "No sessions
+    #: failed"). See ``FanOutKeysetResult.degraded_sources`` for the
+    #: classify-before-flagging rationale (sessions is a core table).
+    degraded_sources: list[str] = field(default_factory=list)
 
 
 @dataclass
 class FanOutDetailResult:
-    """Result of a cross-butler session detail fan-out (first match wins)."""
+    """Result of a cross-butler session detail fan-out (first match wins).
+
+    ``degraded_sources`` names any butler pool whose lookup raised. It lets the
+    router split a genuine 404 (``row is None`` AND every queried pool answered
+    — the id is unknown across all reachable schemas) from a 503 (``row is
+    None`` but one or more pools were unreachable — the session may live in a
+    pool we could not reach) instead of collapsing a pool outage into a
+    misleading "Session not found".
+    """
 
     row: SessionDetailRow | None = None
     butler: str | None = None
-
-
-@dataclass
-class SingleDetailResult:
-    """Result of a single-butler session detail lookup."""
-
-    row: SessionDetailRow | None = None
-
-    @property
-    def found(self) -> bool:
-        return self.row is not None
+    degraded_sources: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +379,7 @@ async def query_session_summaries_keyset_fan_out(
         f"ORDER BY started_at DESC, id DESC LIMIT {limit + 1}"
     )
 
-    data_results, _failed = await db.fan_out_with_status(
+    data_results, failed = await db.fan_out_with_status(
         data_sql, tuple(keyset_args), butler_names=butler_names
     )
 
@@ -386,7 +397,12 @@ async def query_session_summaries_keyset_fan_out(
         encode_session_cursor(page[-1].started_at, page[-1].id) if has_more and page else None
     )
 
-    return FanOutKeysetResult(rows=page, has_more=has_more, next_cursor=next_cursor)
+    return FanOutKeysetResult(
+        rows=page,
+        has_more=has_more,
+        next_cursor=next_cursor,
+        degraded_sources=failed,
+    )
 
 
 # Query-budget: one aggregate scan per butler over the filtered window — no row
@@ -439,9 +455,9 @@ async def query_session_aggregate_fan_out(
         Combined scalar totals and per-butler counts.
     """
     sql = _AGGREGATE_SQL_TEMPLATE.format(where_clause=where_clause)
-    results, _failed = await db.fan_out_with_status(sql, args, butler_names=butler_names)
+    results, failed = await db.fan_out_with_status(sql, args, butler_names=butler_names)
 
-    combined = FanOutAggregateResult()
+    combined = FanOutAggregateResult(degraded_sources=failed)
     by_butler: list[ButlerCount] = []
     for butler_name, db_rows in results.items():
         if not db_rows:
@@ -540,9 +556,11 @@ async def query_session_detail_fan_out(
     -------
     FanOutDetailResult
         The matched :class:`SessionDetailRow` and the owning butler name, or
-        ``row=None`` if not found in any butler.
+        ``row=None`` if not found in any butler. ``degraded_sources`` names any
+        pool that was unreachable, so a not-found result over a partial fan-out
+        can be reported as a 503 rather than a false 404.
     """
-    results, _failed = await db.fan_out_with_status(
+    results, failed = await db.fan_out_with_status(
         f"SELECT {DETAIL_COLUMNS} FROM sessions WHERE id = $1",
         (session_id,),
     )
@@ -552,39 +570,7 @@ async def query_session_detail_fan_out(
             return FanOutDetailResult(
                 row=row_to_detail(db_rows[0], butler=butler_name),
                 butler=butler_name,
+                degraded_sources=failed,
             )
 
-    return FanOutDetailResult()
-
-
-async def query_session_detail_single(
-    pool: asyncpg.Pool,
-    session_id: UUID,
-    *,
-    butler: str | None = None,
-) -> SingleDetailResult:
-    """Fetch a single session detail from a specific butler pool.
-
-    Parameters
-    ----------
-    pool:
-        The asyncpg pool for a specific butler.
-    session_id:
-        UUID of the session to fetch.
-    butler:
-        Optional butler name to attach to the DTO (for cross-butler callers).
-
-    Returns
-    -------
-    SingleDetailResult
-        The matched :class:`SessionDetailRow`, or ``row=None`` if not found.
-    """
-    db_row = await pool.fetchrow(
-        f"SELECT {DETAIL_COLUMNS} FROM sessions WHERE id = $1",
-        session_id,
-    )
-
-    if db_row is None:
-        return SingleDetailResult()
-
-    return SingleDetailResult(row=row_to_detail(db_row, butler=butler))
+    return FanOutDetailResult(degraded_sources=failed)

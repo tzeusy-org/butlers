@@ -142,7 +142,10 @@ class TestSessionsAPI:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             r_list = await client.get("/api/sessions")
-            r_404 = await client.get(f"/api/butlers/atlas/sessions/{sid}")
+            # Detail resolves ONLY via the global cross-butler fan-out now (the
+            # butler-scoped detail route was deleted, bu-tpudw.2). fan_out is
+            # stubbed empty with no degraded pools -> a genuine 404.
+            r_404 = await client.get(f"/api/sessions/{sid}")
         assert r_list.status_code == 200
         assert "data" in r_list.json() and "meta" in r_list.json()
         assert r_404.status_code == 404

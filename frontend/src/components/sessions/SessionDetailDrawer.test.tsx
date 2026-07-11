@@ -5,16 +5,17 @@ import { act } from "react-dom/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 
+import { ApiError } from "@/api/client";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
-import { useSessionDetail } from "@/hooks/use-sessions";
+import { useGlobalSessionDetail } from "@/hooks/use-sessions";
 
 vi.mock("@/hooks/use-sessions", () => ({
-  useSessionDetail: vi.fn(),
+  useGlobalSessionDetail: vi.fn(),
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-type UseSessionDetailResult = ReturnType<typeof useSessionDetail>;
+type UseSessionDetailResult = ReturnType<typeof useGlobalSessionDetail>;
 
 const SESSION_DETAIL = {
   id: "sess-123",
@@ -41,7 +42,7 @@ const SESSION_DETAIL = {
 };
 
 function setQueryState(state: Partial<UseSessionDetailResult>) {
-  vi.mocked(useSessionDetail).mockReturnValue({
+  vi.mocked(useGlobalSessionDetail).mockReturnValue({
     data: undefined,
     isLoading: false,
     isError: false,
@@ -68,7 +69,7 @@ describe("SessionDetailDrawer", () => {
     act(() => {
       root.render(
         <MemoryRouter>
-          <SessionDetailDrawer butler="switchboard" sessionId="sess-123" onClose={() => {}} />
+          <SessionDetailDrawer sessionId="sess-123" onClose={() => {}} />
         </MemoryRouter>,
       );
     });
@@ -89,6 +90,16 @@ describe("SessionDetailDrawer", () => {
     vi.restoreAllMocks();
   });
 
+  it("resolves the session by id via the global endpoint (deep-link/pinned-row path)", () => {
+    // bu-tpudw.2: the drawer takes only a sessionId (no butler hint), so a deep
+    // link or pinned row that isn't on the current page still resolves.
+    setQueryState({ data: { data: SESSION_DETAIL, meta: {} } });
+
+    renderDrawer();
+
+    expect(vi.mocked(useGlobalSessionDetail)).toHaveBeenCalledWith("sess-123");
+  });
+
   it("renders overlay on open, keeps close behavior, and emits no ref warning", () => {
     setQueryState({
       data: {
@@ -102,7 +113,7 @@ describe("SessionDetailDrawer", () => {
     act(() => {
       root.render(
         <MemoryRouter>
-          <SessionDetailDrawer butler="switchboard" sessionId="sess-123" onClose={onClose} />
+          <SessionDetailDrawer sessionId="sess-123" onClose={onClose} />
         </MemoryRouter>,
       );
     });
@@ -400,12 +411,49 @@ describe("SessionDetailDrawer", () => {
   });
 
   it("shows an error message (not a hung skeleton) when the detail fetch fails", () => {
-    setQueryState({ data: undefined, isError: true });
+    setQueryState({ data: undefined, isError: true, error: new Error("boom") });
 
     renderDrawer();
 
     expect(document.body.textContent).toContain("could not be loaded");
     expect(document.body.textContent).not.toContain("Loading session information");
+  });
+
+  // bu-tpudw.2: the global detail endpoint returns 503 (not 404) when a butler
+  // pool is unreachable, so a session that might live in the down pool must not
+  // read as "not found". The drawer renders a distinct, named pool-down state.
+  it("renders a distinct pool-down state (not 'not found') on a 503 from a down pool", () => {
+    setQueryState({
+      data: undefined,
+      isError: true,
+      error: new ApiError(
+        "SERVICE_UNAVAILABLE",
+        "Session detail unavailable: 1 butler database(s) unreachable (finance)",
+        503,
+      ),
+    });
+
+    renderDrawer();
+
+    // The dedicated pool-down landmark renders...
+    expect(document.body.querySelector('[data-testid="session-detail-pool-down"]')).not.toBeNull();
+    // ...naming the down pool from the backend detail...
+    expect(document.body.textContent).toContain("finance");
+    // ...and it is NOT the generic not-found/could-not-be-loaded copy.
+    expect(document.body.textContent).not.toContain("could not be loaded");
+  });
+
+  it("uses the generic could-not-load state for a 404 (not the pool-down state)", () => {
+    setQueryState({
+      data: undefined,
+      isError: true,
+      error: new ApiError("NOT_FOUND", "Session not found", 404),
+    });
+
+    renderDrawer();
+
+    expect(document.body.querySelector('[data-testid="session-detail-pool-down"]')).toBeNull();
+    expect(document.body.textContent).toContain("could not be loaded");
   });
 
   it("surfaces failed-then-retried tool call outcomes as separate timeline entries", () => {

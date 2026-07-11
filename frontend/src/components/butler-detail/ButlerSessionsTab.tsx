@@ -147,9 +147,8 @@ export default function ButlerSessionsTab({
         </div>
       )}
 
-      {/* Session detail drawer */}
+      {/* Session detail drawer — resolves globally by id (bu-tpudw.2). */}
       <SessionDetailDrawer
-        butler={butlerName}
         sessionId={selectedSessionId}
         onClose={() => setSelectedSessionId(null)}
       />

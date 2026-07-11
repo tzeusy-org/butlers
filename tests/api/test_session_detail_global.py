@@ -2,8 +2,14 @@
 
 The global session detail path must resolve a session by id across all
 butler schemas without requiring a ``?butler=`` hint, mirroring how the
-cross-butler LIST endpoint fans out. It returns the same ``SessionDetail``
-shape as the butler-scoped ``GET /api/butlers/{name}/sessions/{id}`` path.
+cross-butler LIST endpoint fans out. It is the ONLY single-session detail
+route (the butler-scoped ``GET /api/butlers/{name}/sessions/{id}`` path was
+deleted in bu-tpudw.2).
+
+It also splits not-found from source-degraded: a miss over a fully-reachable
+fan-out is a 404, but a miss while one or more pools were unreachable is a 503
+(the session may live in a pool that could not be queried) — never a false
+404.
 """
 
 from __future__ import annotations
@@ -54,18 +60,20 @@ def _make_record(row: dict):
     return m
 
 
-def _make_app(*, owning_butler: str, row: dict | None) -> object:
+def _make_app(*, owning_butler: str, row: dict | None, degraded: list[str] | None = None) -> object:
     """Wire an app whose fan_out returns ``row`` only for ``owning_butler``.
 
-    The owning butler's pool answers the best-effort process-log /
-    correction-count follow-up queries with no extra data.
+    ``degraded`` names any pool the fan-out reports as failed (the second
+    element of ``fan_out_with_status``'s ``(results, failed)`` tuple). The
+    owning butler's pool answers the best-effort process-log / correction-count
+    follow-up queries with no extra data.
     """
 
     async def _fan_out(sql, args, **kw):
         result = {"atlas": [], "general": []}
         if row is not None:
             result[owning_butler] = [_make_record(row)]
-        return result, []
+        return result, list(degraded or [])
 
     owning_pool = AsyncMock()
     owning_pool.fetchrow = AsyncMock(return_value=None)
@@ -113,6 +121,36 @@ async def test_global_session_detail_404_when_no_butler_has_it() -> None:
         resp = await client.get(f"/api/sessions/{session_id}")
 
     assert resp.status_code == 404
+
+
+async def test_global_session_detail_503_when_a_pool_is_unreachable() -> None:
+    """A miss while a pool errored is a 503 naming the pool, not a false 404."""
+    session_id = uuid4()
+    app = _make_app(owning_butler="general", row=None, degraded=["general"])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{session_id}")
+
+    assert resp.status_code == 503
+    # The down pool is named so the drawer can render a distinct pool-down state.
+    assert "general" in resp.json()["detail"]
+
+
+async def test_global_session_detail_prefers_hit_over_degraded() -> None:
+    """A found row wins even if a sibling pool errored — 200, not 503."""
+    session_id = uuid4()
+    row = _make_detail_row(session_id)
+    app = _make_app(owning_butler="general", row=row, degraded=["atlas"])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{session_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["butler"] == "general"
 
 
 async def test_global_session_detail_rejects_non_uuid() -> None:

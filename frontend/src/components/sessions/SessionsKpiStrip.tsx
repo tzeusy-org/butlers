@@ -50,6 +50,14 @@ export function SessionsKpiStrip({ filterParams }: SessionsKpiStripProps) {
   // refetch error, so this only trips when nothing is cached.
   const aggUnavailable = isError && agg == null
 
+  // Partial degradation (bu-tpudw.2): the aggregate returned, but one or more
+  // butler pools dropped from its fan-out (meta.sources_degraded). Every KPI
+  // below then UNDERCOUNTS, so name the missing pools rather than presenting
+  // the partial totals as window-true.
+  // ApiMeta is an untyped extensible bag; sources_degraded rides it per the
+  // fleet-wide convention (see the aggregate endpoint's ApiMeta(...) write).
+  const sourcesDegraded = (data?.meta?.sources_degraded as string[] | undefined) ?? []
+
   return (
     <div data-testid="sessions-kpi-strip">
       <p className="tnum uppercase" style={{ ...KPI_EYEBROW_STYLE, marginBottom: "12px" }}>
@@ -61,6 +69,15 @@ export function SessionsKpiStrip({ filterParams }: SessionsKpiStripProps) {
           detail="unavailable"
           onRetry={() => void refetch()}
           className="mb-3"
+        />
+      )}
+      {!aggUnavailable && sourcesDegraded.length > 0 && (
+        <SourceDegradedNote
+          label="Session metrics"
+          detail={`partial — ${sourcesDegraded.join(", ")} unreachable`}
+          onRetry={() => void refetch()}
+          className="mb-3"
+          testId="sessions-kpi-degraded"
         />
       )}
       <KpiStrip

@@ -400,7 +400,6 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
     </ButlerPanelGrid>
 
     <SessionDetailDrawer
-      butler={butlerName}
       sessionId={selectedSessionId}
       onClose={() => setSelectedSessionId(null)}
     />

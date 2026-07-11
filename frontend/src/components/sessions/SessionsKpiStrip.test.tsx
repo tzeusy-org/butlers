@@ -81,6 +81,30 @@ describe("SessionsKpiStrip", () => {
     expect(getByTestId("sessions-kpi-strip")).toBeTruthy();
   });
 
+  it("names partially-degraded pools when the aggregate returned but a pool dropped", () => {
+    // bu-tpudw.2: the aggregate resolved, but meta.sources_degraded names a
+    // pool that failed its fan-out — the totals UNDERCOUNT, so name the missing
+    // pool rather than presenting them as window-true.
+    mockUseSessionAggregate.mockReturnValue({
+      data: { data: makeAggregate({ failed_count: 0 }), meta: { sources_degraded: ["finance"] } },
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useSessionAggregate>);
+    const { getByTestId } = render(<SessionsKpiStrip filterParams={{}} />);
+    const note = getByTestId("sessions-kpi-degraded");
+    expect(note.textContent).toContain("partial");
+    expect(note.textContent).toContain("finance");
+    // The KPI numbers still render beneath the note (partial, not blanked).
+    expect(getByTestId("sessions-kpi-strip").textContent).toContain("100");
+  });
+
+  it("shows no degraded note when every pool answered", () => {
+    setAggregate(makeAggregate());
+    const { queryByTestId } = render(<SessionsKpiStrip filterParams={{}} />);
+    expect(queryByTestId("sessions-kpi-degraded")).toBeNull();
+  });
+
   it("passes the filter params straight through to the aggregate hook", () => {
     setAggregate(makeAggregate());
     render(<SessionsKpiStrip filterParams={{ butler: "finance", status: "running" }} />);

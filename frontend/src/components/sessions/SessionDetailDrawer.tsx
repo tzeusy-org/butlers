@@ -1,4 +1,5 @@
-import { useSessionDetail } from "@/hooks/use-sessions";
+import { ApiError } from "@/api/client";
+import { useGlobalSessionDetail } from "@/hooks/use-sessions";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -15,7 +16,6 @@ import { SessionDossier } from "./SessionDossier";
 // ---------------------------------------------------------------------------
 
 export interface SessionDetailDrawerProps {
-  butler: string;
   sessionId: string | null; // null = closed
   onClose: () => void;
 }
@@ -44,17 +44,37 @@ function DrawerSkeleton() {
 // ---------------------------------------------------------------------------
 
 export function SessionDetailDrawer({
-  butler,
   sessionId,
   onClose,
 }: SessionDetailDrawerProps) {
-  const { data, isLoading, isError } = useSessionDetail(butler, sessionId);
+  // Global (cross-butler) resolution: session ids are globally unique, so a
+  // pinned row or deep link resolves without a ?butler= hint (bu-tpudw.2).
+  const { data, isLoading, isError, error } = useGlobalSessionDetail(sessionId);
   const session = data?.data ?? null;
+
+  // The global detail endpoint splits 404 (id genuinely unknown across every
+  // reachable pool) from 503 (a butler database was unreachable, so the session
+  // may live in a pool we could not query). A 503 must NOT read as "not found"
+  // — name the pool-down state distinctly so a transient outage is not
+  // mistaken for a deleted/invalid session (CLAUDE.md degraded-envelope
+  // convention). The backend's 503 `detail` names the down pool(s).
+  const poolDown = isError && error instanceof ApiError && error.status === 503;
 
   return (
     <Sheet open={sessionId != null} onOpenChange={(open) => !open && onClose()}>
       <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto">
-        {isError || (!isLoading && !session) ? (
+        {poolDown ? (
+          <>
+            <SheetHeader>
+              <SheetTitle>Session detail unavailable</SheetTitle>
+              <SheetDescription data-testid="session-detail-pool-down" role="alert">
+                A butler database is unreachable, so this session could not be
+                resolved — it may live in a pool that is currently down.{" "}
+                {error instanceof ApiError && error.message ? error.message : null}
+              </SheetDescription>
+            </SheetHeader>
+          </>
+        ) : isError || (!isLoading && !session) ? (
           <>
             <SheetHeader>
               <SheetTitle>Session detail</SheetTitle>

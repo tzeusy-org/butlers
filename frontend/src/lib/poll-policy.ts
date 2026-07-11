@@ -32,8 +32,8 @@ export const POLL_BUS_RECONCILE_MS = 5 * 60_000;
  * tool-call, so a running session's streaming tool-call tail has no bus event
  * to ride until the session ends. A short poll is the honest primary
  * mechanism while `success === null` (StatusBadge's own "running" test) —
- * once terminal, the query stops polling (see useGlobalSessionDetail /
- * useSessionDetail) and relies entirely on the bus's end-of-session
- * invalidation, same as every other bus-covered surface.
+ * once terminal, the query stops polling (see useGlobalSessionDetail) and
+ * relies entirely on the bus's end-of-session invalidation, same as every
+ * other bus-covered surface.
  */
 export const POLL_RUNNING_SESSION_MS = 3_000;

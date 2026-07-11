@@ -35,14 +35,12 @@ vi.mock("@/components/sessions/SessionsKpiStrip", () => ({
 vi.mock("@/components/sessions/SessionDetailDrawer", () => ({
   SessionDetailDrawer: ({
     sessionId,
-    butler,
     onClose,
   }: {
     sessionId: string | null;
-    butler: string;
     onClose: () => void;
   }) => (
-    <div data-testid="drawer-stub" data-session-id={sessionId ?? ""} data-butler={butler}>
+    <div data-testid="drawer-stub" data-session-id={sessionId ?? ""}>
       <button type="button" data-testid="drawer-stub-close" onClick={onClose}>
         Close
       </button>
@@ -227,7 +225,7 @@ describe("SessionsPage — error state", () => {
 // ---------------------------------------------------------------------------
 
 describe("SessionsPage — ?selected= URL mirroring", () => {
-  it("clicking a row writes ?selected=<id> and passes it + the row's butler to the drawer", () => {
+  it("clicking a row writes ?selected=<id> and passes it to the drawer (resolved globally by id)", () => {
     setSessions({
       data: keysetResponse(
         [makeSession({ id: "sess-1", butler: "health" }), makeSession({ id: "sess-2", butler: "spend" })],
@@ -240,8 +238,9 @@ describe("SessionsPage — ?selected= URL mirroring", () => {
     fireEvent.click(getAllByTestId("session-row")[1]);
 
     expect(getByTestId("location-search").textContent).toContain("selected=sess-2");
+    // The drawer resolves the session by id via the global endpoint — no butler
+    // hint is threaded through the page anymore (bu-tpudw.2).
     expect(getByTestId("drawer-stub").getAttribute("data-session-id")).toBe("sess-2");
-    expect(getByTestId("drawer-stub").getAttribute("data-butler")).toBe("spend");
   });
 
   it("initializes selection from ?selected= on the URL (shareable/reloadable)", () => {

@@ -49,10 +49,30 @@ function dominantClusterLabel(agg: SessionAggregate): { label: string; href: str
   return null;
 }
 
-function buildClauses(agg: SessionAggregate, runningSessions: SessionSummary[]): VerdictClause[] {
+function buildClauses(
+  agg: SessionAggregate | undefined,
+  runningSessions: SessionSummary[],
+  sourcesDegraded: string[],
+): VerdictClause[] {
   const clauses: VerdictClause[] = [];
 
-  if (agg.total > 0) {
+  // Degraded fan-out (bu-tpudw.2): the failed-window aggregate fans out across
+  // each butler's pool and drops any that error, naming them in
+  // meta.sources_degraded rather than failing the request. When that list is
+  // non-empty the failure count below UNDERCOUNTS, so the calm "No sessions
+  // failed" verdict is a half-truth. Prepend a named clause (source-health
+  // first, mirroring DispatchVerdict's own error-clause ordering) — its mere
+  // presence suppresses the all-clear line so a downed pool never renders as a
+  // clean window (CLAUDE.md degraded-envelope convention; mirrors
+  // ApprovalsVerdictOpener).
+  if (sourcesDegraded.length > 0) {
+    clauses.push({
+      key: "sources-degraded",
+      text: `${sourcesDegraded.join(", ")} unreachable — some failures may be missing`,
+    });
+  }
+
+  if (agg && agg.total > 0) {
     const cluster = dominantClusterLabel(agg);
     const suffix = cluster ? `, clustered on ${cluster.label}` : "";
     clauses.push({
@@ -87,6 +107,8 @@ export interface SessionsVerdictOpenerProps {
   failedAggregate: SessionAggregate | undefined;
   failedLoading: boolean;
   failedError: boolean;
+  /** Butler pools dropped from the failed-window aggregate fan-out (its `meta.sources_degraded`). */
+  failedSourcesDegraded?: string[];
   /** GET /api/sessions?status=running&limit=1 -- first row (started_at DESC) is the nearest-started running session. */
   runningSessions: SessionSummary[];
   runningLoading: boolean;
@@ -97,11 +119,12 @@ export function SessionsVerdictOpener({
   failedAggregate,
   failedLoading,
   failedError,
+  failedSourcesDegraded = [],
   runningSessions,
   runningLoading,
   runningError,
 }: SessionsVerdictOpenerProps) {
-  const clauses = failedAggregate ? buildClauses(failedAggregate, runningSessions) : [];
+  const clauses = buildClauses(failedAggregate, runningSessions, failedSourcesDegraded);
 
   return (
     <DispatchVerdict

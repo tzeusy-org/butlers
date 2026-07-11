@@ -10,13 +10,15 @@ Provides two routers:
 - ``butler_sessions_router`` — butler-scoped endpoints:
 
   - ``GET /api/butlers/{name}/sessions``
-  - ``GET /api/butlers/{name}/sessions/{session_id}``
   - ``GET /api/butlers/{name}/analytics/latency-stats``
 
-Cross-butler reads (list + detail fan-outs) go through the versioned read-model
-boundary in ``butlers.api.read_models.sessions_v1`` rather than constructing
-ad-hoc SQL inline.  Butler-scoped single-pool queries also route through the
-same module's ``query_session_detail_single``.
+Single-session detail is served ONLY by the cross-butler ``GET
+/api/sessions/{session_id}`` fan-out (there is no butler-scoped detail route):
+session ids are globally unique, and the global path resolves pinned rows and
+deep links without a ``?butler=`` hint. Cross-butler reads (list + detail
+fan-outs) go through the versioned read-model boundary in
+``butlers.api.read_models.sessions_v1`` rather than constructing ad-hoc SQL
+inline.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import (
+    ApiMeta,
     ApiResponse,
     KeysetMeta,
     KeysetResponse,
@@ -60,7 +63,6 @@ from butlers.api.read_models.sessions_v1 import (
     decode_session_cursor,
     query_session_aggregate_fan_out,
     query_session_detail_fan_out,
-    query_session_detail_single,
     query_session_summaries_keyset_fan_out,
     query_session_trigger_breakdown_fan_out,
     row_to_summary,
@@ -365,12 +367,18 @@ async def list_sessions(
         butler_names=target_butlers,
     )
 
+    # A pool that failed its fan-out query undercounts this page; name it in
+    # meta.sources_degraded (fleet-wide degraded-envelope convention) rather
+    # than letting the partial page read as the whole list. `sessions` is a
+    # core table in every schema, so a fan-out failure is always a genuine
+    # source fault (classify-before-flagging resolves to "flag").
     return KeysetResponse[SessionSummary](
         data=[_dto_to_summary(dto, pricing) for dto in result.rows],
         meta=KeysetMeta(
             limit=limit,
             next_cursor=result.next_cursor,
             has_more=result.has_more,
+            sources_degraded=result.degraded_sources or None,
         ),
     )
 
@@ -453,6 +461,16 @@ async def get_session_aggregate(
     rated = result.success_count + result.failed_count
     success_rate = (result.success_count / rated) if rated > 0 else None
 
+    # A pool that failed its aggregate scan undercounts every scalar here — most
+    # dangerously turning a real failure into a truthful-looking `failed_count:
+    # 0` ("No sessions failed"). Name it in meta.sources_degraded (fleet-wide
+    # degraded-envelope convention) so the KPI strip and verdict opener gate
+    # their all-clear on it. See the list endpoint above for the classify-
+    # before-flagging rationale.
+    meta = (
+        ApiMeta(sources_degraded=result.degraded_sources) if result.degraded_sources else ApiMeta()
+    )
+
     return ApiResponse[SessionAggregate](
         data=SessionAggregate(
             total=result.total,
@@ -466,7 +484,8 @@ async def get_session_aggregate(
                 SessionAggregateButler(butler=b.butler, count=b.count) for b in result.by_butler
             ],
             by_trigger_source=by_trigger_source,
-        )
+        ),
+        meta=meta,
     )
 
 
@@ -484,15 +503,29 @@ async def get_session(
 
     Session ids are globally unique UUIDs but live in per-butler schemas, so
     this endpoint fans out the detail lookup across every registered butler DB
-    via ``DatabaseManager.fan_out_with_status()`` and returns the first (and only) match.
-    The response is the same ``SessionDetail`` shape produced by the
-    butler-scoped ``GET /api/butlers/{name}/sessions/{session_id}`` path,
+    via ``DatabaseManager.fan_out_with_status()`` and returns the first (and only) match,
     including best-effort process log and correction count.
+
+    Not-found is split from source-degraded: a 404 means the id is genuinely
+    unknown across every *reachable* pool, whereas a 503 means the session was
+    not found but one or more pools were unreachable — so it may live in a pool
+    we could not query. Collapsing the latter into a 404 "Session not found"
+    would fabricate a definitive absence from a partial fan-out.
     """
     # Fan out via the versioned sessions read-model boundary (sessions_v1)
     fan_out_result = await query_session_detail_fan_out(db, session_id)
 
     if fan_out_result.row is None or fan_out_result.butler is None:
+        if fan_out_result.degraded_sources:
+            names = ", ".join(fan_out_result.degraded_sources)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Session detail unavailable: {len(fan_out_result.degraded_sources)} "
+                    f"butler database(s) unreachable ({names}); the session may live in "
+                    "a pool that could not be queried."
+                ),
+            )
         raise HTTPException(status_code=404, detail="Session not found")
 
     detail = _dto_to_detail(fan_out_result.row)
@@ -573,41 +606,6 @@ async def list_butler_sessions(
         data=sessions,
         meta=PaginationMeta(total=total, offset=offset, limit=limit),
     )
-
-
-# ---------------------------------------------------------------------------
-# Butler-scoped detail: GET /api/butlers/{name}/sessions/{session_id}
-# ---------------------------------------------------------------------------
-
-
-@butler_sessions_router.get(
-    "/{name}/sessions/{session_id}",
-    response_model=ApiResponse[SessionDetail],
-)
-async def get_butler_session(
-    name: str,
-    session_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[SessionDetail]:
-    """Return full detail for a single session from a butler's database."""
-    try:
-        pool = db.pool(name)
-    except KeyError:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Butler '{name}' database is not available",
-        )
-
-    # Route through the versioned sessions read-model boundary (sessions_v1)
-    single_result = await query_session_detail_single(pool, session_id, butler=name)
-
-    if single_result.row is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    detail = _dto_to_detail(single_result.row)
-    await _attach_session_extras(detail, pool, session_id)
-
-    return ApiResponse[SessionDetail](data=detail)
 
 
 # ---------------------------------------------------------------------------

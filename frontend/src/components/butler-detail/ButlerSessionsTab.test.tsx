@@ -29,7 +29,7 @@ import ButlerSessionsTab from "./ButlerSessionsTab";
 
 vi.mock("@/hooks/use-sessions", () => ({
   useButlerSessions: vi.fn(),
-  useSessionDetail: vi.fn(() => ({ data: null, isLoading: false })),
+  useGlobalSessionDetail: vi.fn(() => ({ data: null, isLoading: false })),
 }));
 
 // Stub SessionTable to keep test output controllable

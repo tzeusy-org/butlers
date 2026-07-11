@@ -15,7 +15,7 @@ vi.mock("@/api/index.ts", () => ({
   getSessionAggregate: (...args: unknown[]) => mockGetSessionAggregate(...args),
   // The hook module also imports these; provide inert stubs.
   getSessions: vi.fn(),
-  getButlerSession: vi.fn(),
+  getSession: vi.fn(),
   getButlerSessions: vi.fn(),
 }));
 

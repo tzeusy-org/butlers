@@ -49,13 +49,16 @@ def _make_session_row(*, butler: str = "atlas", started_at: datetime | None = No
     }
 
 
-def _make_app_with_sessions(rows: list[dict]) -> object:
+def _make_app_with_sessions(rows: list[dict], *, degraded: list[str] | None = None) -> object:
     """Wire a fresh app with mock fan_out returning the given rows.
 
     The keyset list endpoint runs a single data fan_out per request (no
     count(*)); this mock returns the supplied rows for that query.  The
     read-model fetches ``limit + 1`` and computes ``has_more`` from the merged
     length, so pass ``limit + 1`` rows to exercise ``has_more=True``.
+
+    ``degraded`` names any pool the fan-out reports as failed (the ``failed``
+    element of ``fan_out_with_status``'s return tuple).
     """
 
     def _make_record(row: dict):
@@ -66,7 +69,10 @@ def _make_app_with_sessions(rows: list[dict]) -> object:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
     mock_db.fan_out_with_status = AsyncMock(
-        side_effect=lambda sql, args, **kw: ({"atlas": [_make_record(r) for r in rows]}, [])
+        side_effect=lambda sql, args, **kw: (
+            {"atlas": [_make_record(r) for r in rows]},
+            list(degraded or []),
+        )
     )
 
     app = create_app()
@@ -99,6 +105,31 @@ def _make_butler_app_with_sessions(rows: list[dict], *, total: int | None = None
 # ---------------------------------------------------------------------------
 # Cross-butler /api/sessions pagination tests
 # ---------------------------------------------------------------------------
+
+
+async def test_sessions_names_degraded_pool_in_meta() -> None:
+    """A failed pool is named in meta.sources_degraded on the list envelope."""
+    app = _make_app_with_sessions([_make_session_row()], degraded=["finance"])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions")
+    assert resp.status_code == 200
+    body = resp.json()
+    # Partial page still returns the reachable rows...
+    assert len(body["data"]) == 1
+    # ...but names the dropped pool so it never reads as the whole list.
+    assert body["meta"]["sources_degraded"] == ["finance"]
+
+
+async def test_sessions_meta_no_degraded_when_all_pools_answer() -> None:
+    """Every pool answering -> sources_degraded is null (honest complete page)."""
+    app = _make_app_with_sessions([_make_session_row()])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions")
+    assert resp.json()["meta"]["sources_degraded"] is None
 
 
 async def test_sessions_accepts_limit_500() -> None:

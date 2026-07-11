@@ -30,7 +30,7 @@ vi.mock("@/components/ui/time", () => ({
 }))
 
 vi.mock("@/hooks/use-sessions", () => ({
-  useSessionDetail: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  useGlobalSessionDetail: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
 }))
 
 import { useButler } from "@/hooks/use-butlers"

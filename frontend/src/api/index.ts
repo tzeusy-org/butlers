@@ -29,7 +29,6 @@ export {
   getButlerMcpTools,
   getButlerNotifications,
   getButlerSchedules,
-  getButlerSession,
   getButlerSessions,
   getButlerSkills,
   getButlerState,

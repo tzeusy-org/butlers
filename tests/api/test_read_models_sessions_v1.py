@@ -7,7 +7,8 @@ Verifies:
 - ``query_session_aggregate_fan_out`` sums scalars + builds by_butler
 - ``encode_session_cursor`` / ``decode_session_cursor`` round-trip
 - ``query_session_detail_fan_out`` returns the first matching butler's row
-- ``query_session_detail_single`` returns a typed SingleDetailResult
+- fan-out functions thread ``fan_out_with_status``'s failed list into
+  ``degraded_sources`` (never silently discarded)
 - Version marker is stable and matches the module name
 """
 
@@ -28,12 +29,10 @@ from butlers.api.read_models.sessions_v1 import (
     FanOutAggregateResult,
     FanOutDetailResult,
     FanOutKeysetResult,
-    SingleDetailResult,
     decode_session_cursor,
     encode_session_cursor,
     query_session_aggregate_fan_out,
     query_session_detail_fan_out,
-    query_session_detail_single,
     query_session_summaries_keyset_fan_out,
     query_session_trigger_breakdown_fan_out,
     row_to_detail,
@@ -557,35 +556,89 @@ async def test_query_session_detail_fan_out_not_found():
     result = await query_session_detail_fan_out(mock_db, _SESSION_ID)
     assert result.row is None
     assert result.butler is None
+    assert result.degraded_sources == []
 
 
-# ---------------------------------------------------------------------------
-# query_session_detail_single
-# ---------------------------------------------------------------------------
+async def test_query_session_detail_fan_out_not_found_over_degraded_pool():
+    """A miss with an unreachable pool carries that pool in degraded_sources.
 
+    This is the 404-vs-503 split at the read-model layer: the row is absent
+    but a pool errored, so the router must NOT report a definitive 404.
+    """
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "general"]
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [], "general": []}, ["general"])
+    )
 
-async def test_query_session_detail_single_found():
-    """Returns a SingleDetailResult with the row when found."""
-    detail_row = _make_record(_detail_record())
-    mock_pool = AsyncMock()
-    mock_pool.fetchrow = AsyncMock(return_value=detail_row)
-
-    result = await query_session_detail_single(mock_pool, _SESSION_ID, butler="atlas")
-
-    assert isinstance(result, SingleDetailResult)
-    assert result.found is True
-    assert result.row is not None
-    assert result.row.butler == "atlas"
-
-
-async def test_query_session_detail_single_not_found():
-    """Returns SingleDetailResult with found=False when pool returns None."""
-    mock_pool = AsyncMock()
-    mock_pool.fetchrow = AsyncMock(return_value=None)
-
-    result = await query_session_detail_single(mock_pool, _SESSION_ID)
-    assert result.found is False
+    result = await query_session_detail_fan_out(mock_db, _SESSION_ID)
     assert result.row is None
+    assert result.butler is None
+    assert result.degraded_sources == ["general"]
+
+
+async def test_query_session_detail_fan_out_found_still_carries_degraded():
+    """A hit still reports any sibling pool that errored during the fan-out."""
+    detail_row = _make_record(_detail_record())
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "general"]
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [], "general": [detail_row]}, ["atlas"])
+    )
+
+    result = await query_session_detail_fan_out(mock_db, _SESSION_ID)
+    assert result.butler == "general"
+    assert result.degraded_sources == ["atlas"]
+
+
+# ---------------------------------------------------------------------------
+# degraded_sources threading (list + aggregate)
+# ---------------------------------------------------------------------------
+
+
+async def test_keyset_fan_out_threads_degraded_sources():
+    """A failed per-butler query surfaces in FanOutKeysetResult.degraded_sources."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "general"]
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [_make_record(_summary_record())], "general": []}, ["general"])
+    )
+
+    result = await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=10)
+
+    assert isinstance(result, FanOutKeysetResult)
+    assert result.degraded_sources == ["general"]
+    # The reachable butler's rows still come back — partial, not empty.
+    assert len(result.rows) == 1
+
+
+async def test_keyset_fan_out_no_degraded_when_all_ok():
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [_make_record(_summary_record())]}, [])
+    )
+
+    result = await query_session_summaries_keyset_fan_out(mock_db, "", (), limit=10)
+    assert result.degraded_sources == []
+
+
+async def test_aggregate_fan_out_threads_degraded_sources():
+    """A failed aggregate scan surfaces in FanOutAggregateResult.degraded_sources.
+
+    The reachable butler's failed_count is real; the degraded flag is what
+    stops the summed failed_count==0 case from reading as a truthful all-clear.
+    """
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas", "general"]
+    mock_db.fan_out_with_status = AsyncMock(
+        return_value=({"atlas": [_agg_row(total=3, success_count=3)], "general": []}, ["general"])
+    )
+
+    result = await query_session_aggregate_fan_out(mock_db, "", ())
+
+    assert result.degraded_sources == ["general"]
+    assert result.total == 3
 
 
 # ---------------------------------------------------------------------------

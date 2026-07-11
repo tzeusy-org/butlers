@@ -719,16 +719,6 @@ export function getButlerSessions(
   return apiFetch<PaginatedResponse<SessionSummary>>(path);
 }
 
-/** Fetch a single session by ID for a specific butler. */
-export function getButlerSession(
-  name: string,
-  id: string,
-): Promise<ApiResponse<SessionDetail>> {
-  return apiFetch<ApiResponse<SessionDetail>>(
-    `/butlers/${encodeURIComponent(name)}/sessions/${encodeURIComponent(id)}`,
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Butler analytics (bu-iuol4.16)
 // ---------------------------------------------------------------------------

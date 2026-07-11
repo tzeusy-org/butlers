@@ -110,6 +110,13 @@ class KeysetMeta(BaseModel):
     limit: int
     next_cursor: str | None = None
     has_more: bool
+    #: Butler pools dropped from the fan-out that produced this page (a genuine
+    #: query error, not a legitimately-empty source). ``None`` / omitted when
+    #: every queried pool answered. Mirrors the fleet-wide
+    #: ``meta.sources_degraded`` convention (see CLAUDE.md API Conventions —
+    #: Degraded-Mode Response Envelope) so a partial page never reads as the
+    #: whole truth.
+    sources_degraded: list[str] | None = None
 
 
 class KeysetResponse[T](BaseModel):

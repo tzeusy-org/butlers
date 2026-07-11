@@ -285,8 +285,14 @@ export default function SessionsPage() {
     selectSession(session.id);
   }
 
-  const selectedSessionButler =
-    sessions.find((s) => s.id === selectedSessionId)?.butler ?? "";
+  // The failed-window aggregate fans out across butler pools; a pool that
+  // dropped is named in meta.sources_degraded (bu-tpudw.2). Non-empty means the
+  // "No sessions failed in the last 24h" all-clear would be a half-truth, so we
+  // feed it to the verdict opener to suppress + name it (mirrors approvals).
+  // ApiMeta is an untyped extensible bag; sources_degraded rides it per the
+  // fleet-wide convention (the aggregate endpoint writes ApiMeta(...)).
+  const failedSourcesDegraded =
+    (failedAggregateResponse?.meta?.sources_degraded as string[] | undefined) ?? [];
 
   // -- j/k/[/]/y keyboard loop (bu-qvnce.5, pursuit move 5 slice 4) ----------
   // j/k rove the current page's rows; [ / ] step Older/Newer (matching the
@@ -367,6 +373,7 @@ export default function SessionsPage() {
           failedAggregate={failedAggregateResponse?.data}
           failedLoading={failedAggregateLoading}
           failedError={failedAggregateError}
+          failedSourcesDegraded={failedSourcesDegraded}
           runningSessions={runningSessionsResponse?.data ?? []}
           runningLoading={runningSessionsLoading}
           runningError={runningSessionsError}
@@ -562,9 +569,9 @@ export default function SessionsPage() {
         </div>
       )}
 
-      {/* Session detail drawer */}
+      {/* Session detail drawer — resolves globally by id (bu-tpudw.2), so a
+          pinned row, deep link, or paged-away row opens without a butler hint. */}
       <SessionDetailDrawer
-        butler={selectedSessionButler}
         sessionId={selectedSessionId}
         onClose={() => selectSession(null)}
       />

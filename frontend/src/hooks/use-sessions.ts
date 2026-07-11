@@ -7,7 +7,6 @@ import type { ApiResponse, SessionDetail, SessionParams, SessionSummary } from "
 import { POLL_BUS_RECONCILE_MS, POLL_RUNNING_SESSION_MS } from "@/lib/poll-policy";
 
 import {
-  getButlerSession,
   getButlerSessions,
   getSession,
   getSessionAggregate,
@@ -83,28 +82,20 @@ export function useButlerSessions(name: string, params?: SessionParams) {
   });
 }
 
-/** Fetch full session detail for a specific butler session. */
-export function useSessionDetail(butler: string, id: string | null) {
-  return useQuery({
-    queryKey: ["session-detail", butler, id],
-    queryFn: () => getButlerSession(butler, id!),
-    enabled: !!butler && !!id,
-    // See POLL_RUNNING_SESSION_MS: primary path for a running session's
-    // streaming tool-call tail, off entirely once terminal.
-    refetchInterval: sessionDetailRefetchInterval,
-  });
-}
-
 /**
- * Fetch full session detail cross-butler (GET /api/session/:id) — the ONE
- * query key SessionDetailPage uses (bu-qvnce.5, pursuit move 5 slice 2).
+ * Fetch full session detail cross-butler (GET /api/sessions/:id) — the ONE
+ * query key both SessionDetailPage AND the sessions drawer use (bu-qvnce.5
+ * pursuit move 5 slice 2; drawer folded on in bu-tpudw.2).
  *
- * Previously SessionDetailPage hand-rolled this as an inline useQuery keyed
- * ["session-detail-global", id] with no refetch policy and no bus coverage —
- * the exact gap behind "the palette's own trigger->session flow lands on a
- * frozen 'Running' page" (GlobalActionsRegistrar navigates here straight
- * after triggering a butler). event-cache-registry.ts's sessionPatch now
- * invalidates this key too; see event-cache-manifest.ts.
+ * Global-only by design: session ids are globally unique, so resolving a
+ * pinned row or a deep link never needs a `?butler=` hint (the old
+ * butler-scoped `useSessionDetail` could not resolve a session that wasn't on
+ * the current page, and was deleted). The backend splits 404 (id unknown
+ * across reachable pools) from 503 (a pool was unreachable), so a caller can
+ * render a distinct pool-down state via the thrown `ApiError.status`.
+ *
+ * event-cache-registry.ts's sessionPatch invalidates this key on every
+ * session start/end bus event; see event-cache-manifest.ts.
  */
 export function useGlobalSessionDetail(id: string | null) {
   return useQuery({
@@ -124,20 +115,17 @@ export function useGlobalSessionDetail(id: string | null) {
  * Uses `useQueries` (the same pattern as `useGoogleAccountsHealth` /
  * `useAllPendingReviews`) so the query count tracks the live `sessions` list
  * without violating React's rules of hooks. Each query is keyed identically
- * to `useSessionDetail` (`["session-detail", butler, id]`) and calls the same
- * `getButlerSession` — the exact "existing session-detail affordance" the
- * drawer uses — so a row already rendered here is a cache hit, not a
- * duplicate fetch, when the user clicks through to the full drawer.
- *
- * Sessions with no `butler` (should not happen for a real row, but the field
- * is optional on the type) are skipped via `enabled: false`.
+ * to `useGlobalSessionDetail` (`["session-detail-global", id]`) and calls the
+ * same global `getSession` — the exact affordance the drawer uses — so a row
+ * already rendered here is a cache hit, not a duplicate fetch, when the user
+ * clicks through to the full drawer. Global-only (no `?butler=`) matches the
+ * drawer's fold onto the cross-butler endpoint (bu-tpudw.2).
  */
 export function useSessionErrorExcerpts(sessions: SessionSummary[]) {
   const results = useQueries({
     queries: sessions.map((s) => ({
-      queryKey: ["session-detail", s.butler ?? "", s.id],
-      queryFn: () => getButlerSession(s.butler!, s.id),
-      enabled: !!s.butler,
+      queryKey: ["session-detail-global", s.id],
+      queryFn: () => getSession(s.id),
       refetchInterval: sessionDetailRefetchInterval,
     })),
   });

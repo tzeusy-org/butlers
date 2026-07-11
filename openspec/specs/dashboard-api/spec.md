@@ -140,6 +140,39 @@ The `DatabaseManager.fan_out()` method SHALL execute a SQL query concurrently ac
 - **THEN** fan-out queries every butler DB for sessions
 - **AND** results are merged, sorted by `started_at DESC`, and paginated with correct cross-butler total count
 
+#### Scenario: Sessions degraded pools are named, not rendered as an all-clear
+- **WHEN** `GET /api/sessions` or `GET /api/sessions/aggregate` fans out across
+  each butler's pool and one or more pools fail their query (a genuine error —
+  the request still returns HTTP 200 with the rows/scalars from the pools that
+  answered). `sessions` is a core table present in every schema, so a fan-out
+  failure is always a genuine source fault (classify-before-flagging resolves
+  to "flag"), never a legitimate table-absence
+- **THEN** the list response includes `meta.sources_degraded: string[]` naming
+  the dropped pools (following the fleet-wide degraded-envelope convention); the
+  aggregate response carries the same list on its extensible `meta` bag. The
+  field is absent/`null` when every queried pool answered
+- **AND** the frontend sessions verdict opener SHALL NOT render the calm "No
+  sessions failed in the last 24h" all-clear while a pool is degraded — it names
+  the dropped pools inline as a clause that suppresses the all-clear line
+- **AND** the sessions KPI strip SHALL name the dropped pools via a
+  `SourceDegradedNote` rather than presenting the undercounted totals as
+  window-true
+
+#### Scenario: Session detail splits not-found from source-degraded
+- **WHEN** `GET /api/sessions/{id}` fans out the detail lookup and no reachable
+  pool owns the id
+- **THEN** the response is **404** ("Session not found") only when every queried
+  pool answered (the id is genuinely unknown across all reachable schemas)
+- **AND** the response is **503** — naming the unreachable pool(s) in `detail` —
+  when one or more pools failed their query, because the session may live in a
+  pool that could not be queried (a 404 there would fabricate a definitive
+  absence from a partial fan-out)
+- **AND** a found row wins over a degraded sibling pool: the endpoint returns
+  **200** for a session that lives in a reachable pool even while another pool
+  is down
+- **AND** the frontend session drawer renders a distinct, named pool-down state
+  for the 503 case, separate from the not-found state
+
 ### Requirement: MCP Client Proxy
 `src/butlers/api/deps.py` SHALL provide `MCPClientManager` for lazy FastMCP client connections to running butler MCP daemons. Write operations (state set/delete, schedule CRUD, triggers) are proxied through MCP to preserve the architectural constraint that only the butler mutates its own database.
 
@@ -229,8 +262,13 @@ The API SHALL expose the following complete endpoint inventory, grouped by domai
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/sessions` | Cross-butler paginated session list (fan-out) |
+| GET | `/api/sessions/{id}` | Cross-butler session detail (fan-out; the ONLY detail route) |
 | GET | `/api/butlers/{name}/sessions` | Butler-scoped paginated session list |
-| GET | `/api/butlers/{name}/sessions/{id}` | Session detail |
+
+Single-session detail is served ONLY by the cross-butler `GET /api/sessions/{id}`
+fan-out. Session ids are globally unique, so the global path resolves pinned
+rows and deep links without a `?butler=` hint; the butler-scoped detail route
+was removed (no compat shim).
 
 #### Ingestion Events
 | Method | Path | Purpose |
