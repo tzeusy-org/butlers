@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/root/.npm \
     npm install -g \
     @anthropic-ai/claude-code@2.1.179 \
     @google/gemini-cli@0.46.0 \
-    @openai/codex@0.140.0 \
+    @openai/codex@0.144.1 \
     opencode-ai@1.17.7
 
 # Emit an auditable CLI version manifest — inspect with:
