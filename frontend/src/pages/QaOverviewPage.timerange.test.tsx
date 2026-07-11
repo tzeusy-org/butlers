@@ -27,6 +27,7 @@ vi.mock("@/hooks/use-qa", () => ({
   useRemoveDismissal: vi.fn(),
   useForceQaPatrol: vi.fn(),
   useResetQaCircuitBreaker: vi.fn(),
+  useQaCircuitBreaker: vi.fn(),
   useQaPatrols: vi.fn(),
 }));
 
@@ -43,6 +44,7 @@ import {
   useRemoveDismissal,
   useForceQaPatrol,
   useResetQaCircuitBreaker,
+  useQaCircuitBreaker,
   useQaPatrols,
 } from "@/hooks/use-qa";
 import { useButlers } from "@/hooks/use-butlers";
@@ -77,6 +79,26 @@ const MOCK_SUMMARY = {
   patrol_interval_minutes: 10,
 };
 
+const MOCK_BREAKER_CLOSED = {
+  tripped: false,
+  threshold: 5,
+  recent_statuses: [],
+  recent_attempts: [],
+};
+
+const MOCK_BREAKER_TRIPPED = {
+  tripped: true,
+  threshold: 5,
+  recent_statuses: ["failed", "failed", "failed", "failed", "failed"],
+  recent_attempts: [
+    { id: "attempt-0001", status: "failed", closed_at: "2026-05-16T00:00:00Z" },
+    { id: "attempt-0002", status: "failed", closed_at: "2026-05-16T00:10:00Z" },
+    { id: "attempt-0003", status: "timeout", closed_at: "2026-05-16T00:20:00Z" },
+    { id: "attempt-0004", status: "failed", closed_at: "2026-05-16T00:30:00Z" },
+    { id: "attempt-0005", status: "unfixable", closed_at: "2026-05-16T00:40:00Z" },
+  ],
+};
+
 const MOCK_CASE = {
   id: "case-uuid-001",
   short_id: "#001",
@@ -93,9 +115,11 @@ const MOCK_CASE = {
 function renderPage({
   summary = MOCK_SUMMARY,
   resetCircuitBreaker = { mutate: vi.fn(), isPending: false },
+  circuitBreaker = MOCK_BREAKER_CLOSED,
 }: {
   summary?: typeof MOCK_SUMMARY;
   resetCircuitBreaker?: { mutate: ReturnType<typeof vi.fn>; isPending: boolean };
+  circuitBreaker?: typeof MOCK_BREAKER_CLOSED | typeof MOCK_BREAKER_TRIPPED;
 } = {}) {
   (useQaSummary as AnyMock).mockReturnValue({
     data: { data: summary },
@@ -112,6 +136,11 @@ function renderPage({
   (useRemoveDismissal as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
   (useForceQaPatrol as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
   (useResetQaCircuitBreaker as AnyMock).mockReturnValue(resetCircuitBreaker);
+  (useQaCircuitBreaker as AnyMock).mockReturnValue({
+    data: { data: circuitBreaker },
+    isLoading: false,
+    isError: false,
+  });
   (useQaPatrols as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
   (useButlers as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
 
@@ -183,7 +212,6 @@ describe("QaOverviewPage -- time range selector", () => {
 describe("QaOverviewPage -- circuit breaker reset", () => {
   it("shows an inert closed-state button when the breaker is closed", () => {
     const mutate = vi.fn();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderPage({ resetCircuitBreaker: { mutate, isPending: false } });
 
@@ -195,15 +223,16 @@ describe("QaOverviewPage -- circuit breaker reset", () => {
 
     fireEvent.click(button);
 
-    expect(confirmSpy).not.toHaveBeenCalled();
+    // Closed is inert -- no confirm dialog, no mutation.
+    expect(screen.queryByTestId("qa-breaker-reset-dialog")).toBeNull();
     expect(mutate).not.toHaveBeenCalled();
-
-    confirmSpy.mockRestore();
   });
 
-  it("confirms before dispatching the reset mutation", () => {
+  // Reset now opens an evidence-bearing AlertDialog instead of firing a bare
+  // window.confirm (bu-533qx.2) -- the operator must see the failing attempts
+  // before the mutation dispatches.
+  it("opens the evidence-bearing confirm dialog, then dispatches the reset mutation on confirm", () => {
     const mutate = vi.fn();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderPage({
       summary: {
@@ -212,15 +241,16 @@ describe("QaOverviewPage -- circuit breaker reset", () => {
         circuit_breaker: { tripped: true, consecutive_failures: 5 },
       },
       resetCircuitBreaker: { mutate, isPending: false },
+      circuitBreaker: MOCK_BREAKER_TRIPPED,
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Reset QA circuit breaker" }));
 
-    expect(confirmSpy).toHaveBeenCalledWith(
-      "Reset the QA circuit breaker and allow new investigations?",
-    );
-    expect(mutate).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("qa-breaker-reset-dialog")).toBeTruthy();
+    expect(mutate).not.toHaveBeenCalled();
 
-    confirmSpy.mockRestore();
+    fireEvent.click(screen.getByTestId("qa-breaker-reset-confirm"));
+
+    expect(mutate).toHaveBeenCalledOnce();
   });
 });

@@ -25,8 +25,18 @@ import { ChevronDownIcon } from "lucide-react";
 import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
-import type { QaCaseSummary } from "@/api/types";
+import type { CircuitBreakerAttempt, QaCaseSummary } from "@/api/types";
 import { CaseDossier, CaseList, QaKpiStrip, QaVerdictOpener } from "@/components/qa";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 import { Tip } from "@/components/ui/tip";
@@ -34,6 +44,7 @@ import { useButlers } from "@/hooks/use-butlers";
 import {
   useForceQaPatrol,
   useQaCases,
+  useQaCircuitBreaker,
   useQaPatrols,
   useQaSummary,
   useResetQaCircuitBreaker,
@@ -80,6 +91,34 @@ function caseListSinceLabel(since: SinceFilter): string {
 }
 
 // ---------------------------------------------------------------------------
+// Circuit-breaker tri-state (bu-533qx.2)
+//
+// The breaker has three honest states, not two: `closed` (proven healthy),
+// `tripped` (proven halted), and `unknown` (the feeding query is loading or
+// errored, so the breaker's real state cannot be proven). A dead summary
+// query must NEVER paint the calm `closed` over a state we cannot see —
+// unknown is named, not defaulted away. Reset is only offered under `tripped`,
+// where trippedness is proven; under `unknown` reset is withheld because we
+// cannot prove the breaker is actually open.
+// ---------------------------------------------------------------------------
+
+type BreakerState = "closed" | "tripped" | "unknown";
+
+/** Derive the breaker's tri-state from its feeding query. Loading and error
+ *  both map to `unknown` — an errored query forces `unknown` even if a stale
+ *  success is still cached, so a dead feed is never rendered as calm. */
+function deriveBreakerState({
+  isError,
+  tripped,
+}: {
+  isError: boolean;
+  tripped: boolean | undefined;
+}): BreakerState {
+  if (isError || tripped === undefined) return "unknown";
+  return tripped ? "tripped" : "closed";
+}
+
+// ---------------------------------------------------------------------------
 // Sticky top bar
 // ---------------------------------------------------------------------------
 
@@ -93,7 +132,7 @@ function StickyTopBar({
   selectedButlers,
   onToggleButler,
   butlerOptions,
-  breakerTripped,
+  breakerState,
   onResetCircuitBreaker,
   resetCircuitBreakerPending,
   onForcePatrol,
@@ -108,7 +147,7 @@ function StickyTopBar({
   selectedButlers: Set<string>;
   onToggleButler: (name: string) => void;
   butlerOptions: string[];
-  breakerTripped: boolean;
+  breakerState: BreakerState;
   onResetCircuitBreaker: () => void;
   resetCircuitBreakerPending: boolean;
   onForcePatrol: () => void;
@@ -121,11 +160,15 @@ function StickyTopBar({
     selectedButlers.size === 0
       ? "All butlers"
       : `${selectedButlers.size} butler${selectedButlers.size === 1 ? "" : "s"}`;
+  const breakerTripped = breakerState === "tripped";
+  const breakerUnknown = breakerState === "unknown";
   const circuitBreakerButtonClass = [
     "rounded border px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition-colors duration-fast focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
     breakerTripped
       ? "border-destructive/50 text-destructive hover:border-destructive hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
-      : "border-border/60 text-muted-foreground disabled:cursor-default disabled:opacity-100",
+      : breakerUnknown
+        ? "border-[var(--amber)]/50 text-[var(--amber-text)] disabled:cursor-default disabled:opacity-100"
+        : "border-border/60 text-muted-foreground disabled:cursor-default disabled:opacity-100",
   ].join(" ");
 
   return (
@@ -239,14 +282,22 @@ function StickyTopBar({
           type="button"
           onClick={breakerTripped ? onResetCircuitBreaker : undefined}
           disabled={!breakerTripped || resetCircuitBreakerPending}
-          aria-label={breakerTripped ? "Reset QA circuit breaker" : "QA circuit breaker closed"}
+          aria-label={
+            breakerTripped
+              ? "Reset QA circuit breaker"
+              : breakerUnknown
+                ? "QA circuit breaker state unknown"
+                : "QA circuit breaker closed"
+          }
           className={circuitBreakerButtonClass}
         >
           {breakerTripped
             ? resetCircuitBreakerPending
               ? "Resetting…"
               : "Reset breaker"
-            : "Circuit breaker closed"}
+            : breakerUnknown
+              ? "Circuit breaker unknown"
+              : "Circuit breaker closed"}
         </button>
 
         {/* Force patrol — trigger an immediate patrol cycle */}
@@ -261,6 +312,98 @@ function StickyTopBar({
         </button>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Evidence-bearing reset confirm (bu-533qx.2)
+//
+// Resetting the breaker re-admits dispatches after five consecutive failures.
+// The operator must not reset blind: the five failing attempts that tripped
+// the breaker are already on the wire (GET /api/qa/circuit-breaker →
+// recent_attempts), so the confirm shows them as the evidence the reset acts
+// on. Replaces the bare window.confirm the toolbar used to fire.
+// ---------------------------------------------------------------------------
+
+function ResetBreakerDialog({
+  open,
+  onOpenChange,
+  attempts,
+  attemptsAvailable,
+  onConfirm,
+  pending,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  attempts: CircuitBreakerAttempt[];
+  attemptsAvailable: boolean;
+  onConfirm: () => void;
+  pending: boolean;
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent data-testid="qa-breaker-reset-dialog">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Reset the QA circuit breaker?</AlertDialogTitle>
+          <AlertDialogDescription>
+            The breaker tripped after {attempts.length > 0 ? "these" : "five"} consecutive
+            investigation failures. Resetting re-admits new dispatches — the failure history stays
+            recorded and un-fabricated.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        {attempts.length > 0 ? (
+          <ul
+            data-testid="qa-breaker-reset-evidence"
+            className="max-h-56 space-y-1 overflow-y-auto border-y border-border/60 py-2 font-mono text-[11px]"
+          >
+            {attempts.map((attempt) => (
+              <li
+                key={attempt.id}
+                data-testid="qa-breaker-reset-attempt"
+                className="flex items-baseline justify-between gap-3"
+              >
+                <span className="truncate text-muted-foreground">{attempt.id}</span>
+                <span className="text-destructive uppercase tracking-[0.08em]">
+                  {attempt.status}
+                </span>
+                <Time
+                  value={attempt.closed_at}
+                  mode="relative"
+                  className="shrink-0 text-muted-foreground tabular-nums"
+                />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p
+            data-testid="qa-breaker-reset-evidence-unavailable"
+            className="border-y border-border/60 py-2 font-mono text-[11px] text-[var(--amber-text)]"
+          >
+            {attemptsAvailable
+              ? "No failing attempts on record — the breaker's evidence is empty."
+              : "Failing-attempt evidence unavailable — the circuit-breaker source is unreachable."}
+          </p>
+        )}
+
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={pending}
+            data-testid="qa-breaker-reset-confirm"
+            onClick={(event) => {
+              // Keep the dialog mounted through the mutation so its pending
+              // state is visible; the caller closes it on settle.
+              event.preventDefault();
+              onConfirm();
+            }}
+          >
+            {pending ? "Resetting…" : "Reset breaker"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -415,6 +558,11 @@ export default function QaOverviewPage() {
   const summary = useQaSummary();
   const forcePatrol = useForceQaPatrol();
   const resetCircuitBreaker = useResetQaCircuitBreaker();
+  // The five failing attempts that tripped the breaker — shown as evidence in
+  // the reset confirm dialog (bu-533qx.2). GET /api/qa/circuit-breaker already
+  // carries them; the toolbar just never consumed them.
+  const circuitBreaker = useQaCircuitBreaker();
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const butlersQuery = useButlers();
   const cases = useQaCases({
     sev: severity === "all" ? undefined : severity,
@@ -478,9 +626,16 @@ export default function QaOverviewPage() {
     });
   }
 
+  // Open the evidence-bearing confirm instead of a bare window.confirm — the
+  // operator sees the five failing attempts before re-admitting dispatches
+  // (bu-533qx.2). Only reachable while the breaker is proven tripped.
   function handleResetCircuitBreaker() {
     if (resetCircuitBreaker.isPending) return;
-    if (!window.confirm("Reset the QA circuit breaker and allow new investigations?")) return;
+    setResetDialogOpen(true);
+  }
+
+  function confirmResetCircuitBreaker() {
+    if (resetCircuitBreaker.isPending) return;
     resetCircuitBreaker.mutate(undefined, {
       onSuccess: (res) => {
         toast.success(res.data?.message ?? "Circuit breaker reset");
@@ -490,24 +645,44 @@ export default function QaOverviewPage() {
           `Circuit breaker reset failed: ${err instanceof Error ? err.message : "Unknown error"}`,
         );
       },
+      onSettled: () => setResetDialogOpen(false),
     });
   }
 
-  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
-  // the sticky top bar's existing "Force patrol" handler, confirm dialog and
-  // all -- no new behavior.
-  const qaCommands = useMemo<PaletteCommand[]>(
-    () => [
+  // Breaker tri-state derived from the summary query (its feed for the
+  // toolbar). Loading/error → unknown; never the calm default `closed`
+  // (bu-533qx.2).
+  const summaryData = summary.data?.data;
+  const breakerState = deriveBreakerState({
+    isError: summary.isError,
+    tripped: summaryData?.circuit_breaker.tripped,
+  });
+
+  // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).
+  // "Force patrol" reuses the sticky top bar's handler. "Reset circuit breaker"
+  // is registered ONLY while the breaker is proven tripped (bu-533qx.2) — under
+  // closed there is nothing to reset, and under unknown trippedness is not
+  // proven, so offering a reset would be a calm assertion the surface cannot back.
+  const qaCommands = useMemo<PaletteCommand[]>(() => {
+    const commands: PaletteCommand[] = [
       {
         id: "qa-force-patrol",
         label: "Force patrol",
         keywords: ["run", "patrol", "trigger"],
         perform: handleForcePatrol,
       },
-    ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleForcePatrol is recreated every render and closes over forcePatrol directly.
-    [forcePatrol.isPending],
-  );
+    ];
+    if (breakerState === "tripped") {
+      commands.push({
+        id: "qa-reset-circuit-breaker",
+        label: "Reset circuit breaker",
+        keywords: ["breaker", "reset", "dispatch", "unblock"],
+        perform: handleResetCircuitBreaker,
+      });
+    }
+    return commands;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the handlers are recreated every render and close over their mutations directly; re-register only when pending or breaker state changes.
+  }, [forcePatrol.isPending, resetCircuitBreaker.isPending, breakerState]);
   useRegisterCommands(qaCommands);
 
   const casesData = cases.data?.data ?? [];
@@ -529,9 +704,6 @@ export default function QaOverviewPage() {
     });
   }
 
-  const summaryData = summary.data?.data;
-  const breakerTripped = summaryData?.circuit_breaker.tripped ?? false;
-
   return (
     <div className="flex min-h-full flex-col">
       <StickyTopBar
@@ -544,11 +716,24 @@ export default function QaOverviewPage() {
         selectedButlers={selectedButlers}
         onToggleButler={handleToggleButler}
         butlerOptions={butlerOptions}
-        breakerTripped={breakerTripped}
+        breakerState={breakerState}
         onResetCircuitBreaker={handleResetCircuitBreaker}
         resetCircuitBreakerPending={resetCircuitBreaker.isPending}
         onForcePatrol={handleForcePatrol}
         forcePatrolPending={forcePatrol.isPending}
+      />
+
+      <ResetBreakerDialog
+        open={resetDialogOpen}
+        onOpenChange={(open) => {
+          // Don't let a backdrop/Escape dismiss abandon an in-flight reset.
+          if (resetCircuitBreaker.isPending) return;
+          setResetDialogOpen(open);
+        }}
+        attempts={circuitBreaker.data?.data.recent_attempts ?? []}
+        attemptsAvailable={!circuitBreaker.isError}
+        onConfirm={confirmResetCircuitBreaker}
+        pending={resetCircuitBreaker.isPending}
       />
 
       <PageHeader summary={summary} />

@@ -584,6 +584,24 @@ describe("ButlerQaInvestigationsTab — circuit breaker", () => {
     expect(screen.getByTestId("circuit-breaker-tripped")).toBeDefined();
     expect(screen.queryByTestId("circuit-breaker-closed")).toBeNull();
   });
+
+  // Mutation-strength (bu-533qx.2): a failed circuit-breaker query must render
+  // the honest `unknown` chip, never the calm green `closed`. If the chip
+  // regressed to `status?.tripped ?? false`, isError would silently paint
+  // `closed` over a dead feed and this fails.
+  it("shows 'unknown' chip (not closed) when the circuit-breaker query errors", () => {
+    vi.resetAllMocks();
+    setupWithData();
+    vi.mocked(useQaCircuitBreaker).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    } as unknown as ReturnType<typeof useQaCircuitBreaker>);
+    renderTab();
+    expect(screen.getByTestId("circuit-breaker-unknown")).toBeDefined();
+    expect(screen.queryByTestId("circuit-breaker-closed")).toBeNull();
+    expect(screen.queryByTestId("circuit-breaker-tripped")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

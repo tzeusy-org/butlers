@@ -51,6 +51,25 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
   - `triggered: false` or absent → a warning toast carrying the response `message`, which names why no patrol ran (e.g. the QA daemon is unreachable, or a cycle is already in progress) — never a success toast
 - **AND** a transport error (non-2xx / network failure) renders an error toast naming the failure
 
+#### Scenario: Circuit-breaker control renders an honest tri-state
+- **WHEN** the sticky top bar renders the QA circuit-breaker control, deriving its state from the `/api/qa/summary` query that feeds it
+- **THEN** the control renders exactly one of three states, never defaulting a dead or in-flight feed to the calm "closed":
+  - **closed** — the summary loaded and `circuit_breaker.tripped` is `false`: a muted, disabled "Circuit breaker closed" control (aria-label `QA circuit breaker closed`)
+  - **tripped** — the summary loaded and `circuit_breaker.tripped` is `true`: an enabled destructive "Reset breaker" control (aria-label `Reset QA circuit breaker`)
+  - **unknown** — the summary query is loading or errored: an amber, disabled "Circuit breaker unknown" control (aria-label `QA circuit breaker state unknown`); reset is withheld because trippedness is not proven
+- **AND** the same tri-state (closed / tripped / **unknown** on `isError`) governs the butler-detail QA tab's `CircuitBreakerChip`, which derives from `GET /api/qa/circuit-breaker`
+
+#### Scenario: Reset confirm shows the failing attempts as evidence
+- **WHEN** a user activates the "Reset breaker" control while the breaker is tripped
+- **THEN** the dashboard opens a confirm dialog (not a bare browser prompt) that lists the failing attempts from `GET /api/qa/circuit-breaker` (`recent_attempts` — id, status, relative close time), the evidence the breaker tripped on, before any reset is issued
+- **AND** confirming issues `POST /api/qa/circuit-breaker/reset` and reports the outcome via toast; cancelling (or dismissing) issues no request
+- **AND** when the circuit-breaker source is unreachable, the dialog names the missing evidence inline rather than presenting an empty confirm as calm
+
+#### Scenario: Reset is a command-palette verb while tripped
+- **WHEN** the QA overview page is mounted and the breaker is tripped
+- **THEN** a "Reset circuit breaker" command is registered in the command palette's Actions group (alongside the always-present "Force patrol" verb), opening the same evidence-bearing confirm dialog
+- **AND** the command is NOT registered while the breaker is closed or unknown — trippedness must be proven before the reset verb is offered
+
 ### Requirement: Patrol Detail Page
 The dashboard SHALL have a drill-down page at `/qa/patrols/:patrolId` rendered in the Dispatch design language. It narrates a single patrol cycle as a rule-separated list with mono eyebrows, not as a tabular dashboard.
 

@@ -17,7 +17,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
@@ -51,6 +51,7 @@ vi.mock("@/hooks/use-qa", () => ({
   useRemoveDismissal: vi.fn(),
   useForceQaPatrol: vi.fn(),
   useResetQaCircuitBreaker: vi.fn(),
+  useQaCircuitBreaker: vi.fn(),
   useQaPatrols: vi.fn(),
 }));
 
@@ -70,9 +71,15 @@ import {
   useRemoveDismissal,
   useForceQaPatrol,
   useResetQaCircuitBreaker,
+  useQaCircuitBreaker,
   useQaPatrols,
 } from "@/hooks/use-qa";
 import { useButlers } from "@/hooks/use-butlers";
+import {
+  CommandRegistryProvider,
+  useCommandMenuActions,
+  type PaletteCommand,
+} from "@/lib/command-registry";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
@@ -110,6 +117,26 @@ const MOCK_SUMMARY = {
   port: 41110,
   model: "claude-sonnet-4-5",
   patrol_interval_minutes: 10,
+};
+
+const MOCK_BREAKER_CLOSED = {
+  tripped: false,
+  threshold: 5,
+  recent_statuses: [],
+  recent_attempts: [],
+};
+
+const MOCK_BREAKER_TRIPPED = {
+  tripped: true,
+  threshold: 5,
+  recent_statuses: ["failed", "failed", "failed", "failed", "failed"],
+  recent_attempts: [
+    { id: "attempt-0001", status: "failed", closed_at: "2026-05-16T00:00:00Z" },
+    { id: "attempt-0002", status: "failed", closed_at: "2026-05-16T00:10:00Z" },
+    { id: "attempt-0003", status: "timeout", closed_at: "2026-05-16T00:20:00Z" },
+    { id: "attempt-0004", status: "failed", closed_at: "2026-05-16T00:30:00Z" },
+    { id: "attempt-0005", status: "unfixable", closed_at: "2026-05-16T00:40:00Z" },
+  ],
 };
 
 const MOCK_CASE_1 = {
@@ -157,6 +184,31 @@ function renderPage(route = "/qa") {
     </QueryClientProvider>,
   );
 }
+
+// Publishes the current command-palette labels via a callback fired in an
+// effect (not during render — reassigning an outer variable mid-render trips
+// the react-hooks/globals purity rule). Mirrors the onReady-sink pattern in
+// use-memory-url-state.back-nav.test.tsx.
+function CommandLabelsProbe({ onLabels }: { onLabels: (labels: string[]) => void }) {
+  const labels = useCommandMenuActions().map((c: PaletteCommand) => c.label);
+  useEffect(() => {
+    onLabels(labels);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- labels is a fresh array each render; compare by content via the join key.
+  }, [labels.join("|")]);
+  return null;
+}
+
+// Default the circuit-breaker query to a healthy closed state for every test.
+// Runs before each describe's own beforeEach; tests that need tripped/unknown
+// override in their own body (which runs after all beforeEach hooks). The
+// force-patrol describe clears all mocks in its beforeEach and re-sets this.
+beforeEach(() => {
+  (useQaCircuitBreaker as AnyMock).mockReturnValue({
+    data: { data: MOCK_BREAKER_CLOSED },
+    isLoading: false,
+    isError: false,
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -659,6 +711,11 @@ describe("QaOverviewPage -- force-patrol toast honesty", () => {
     });
     (useRemoveDismissal as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
     (useResetQaCircuitBreaker as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useQaCircuitBreaker as AnyMock).mockReturnValue({
+      data: { data: MOCK_BREAKER_CLOSED },
+      isLoading: false,
+      isError: false,
+    });
     (useQaCase as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: false });
     (useQaCaseJournal as AnyMock).mockReturnValue({ data: undefined });
 
@@ -745,5 +802,212 @@ describe("QaOverviewPage -- force-patrol toast honesty", () => {
     expect(toast.error).toHaveBeenCalledWith("Force patrol failed: network down");
     expect(toast.success).not.toHaveBeenCalled();
     expect(toast.warning).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Breaker tri-state: closed / tripped / unknown (bu-533qx.2)
+//
+// The toolbar breaker control must render three honest states, never default a
+// dead/loading summary query to the calm "Circuit breaker closed".
+// ---------------------------------------------------------------------------
+
+describe("QaOverviewPage -- breaker tri-state", () => {
+  beforeEach(() => {
+    (useForceQaPatrol as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useQaPatrols as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useButlers as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  // Mutation-strength: if breakerState regressed to `tripped ?? false`, an
+  // errored summary would paint "Circuit breaker closed" and this fails.
+  it("renders UNKNOWN (not closed) when the summary query errors", () => {
+    (useQaSummary as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: true });
+    const html = renderPage();
+    expect(html).toContain("Circuit breaker unknown");
+    expect(html).toContain('aria-label="QA circuit breaker state unknown"');
+    expect(html).not.toContain("Circuit breaker closed");
+    expect(html).not.toContain("Reset breaker");
+  });
+
+  it("renders UNKNOWN (not closed) while the summary query is loading", () => {
+    (useQaSummary as AnyMock).mockReturnValue({ data: undefined, isLoading: true, isError: false });
+    const html = renderPage();
+    expect(html).toContain("Circuit breaker unknown");
+    expect(html).not.toContain("Circuit breaker closed");
+    expect(html).not.toContain("Reset breaker");
+  });
+
+  it("renders CLOSED (not unknown) when the summary reports a healthy breaker", () => {
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: { data: MOCK_SUMMARY },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).toContain("Circuit breaker closed");
+    expect(html).not.toContain("Circuit breaker unknown");
+    expect(html).not.toContain("Reset breaker");
+  });
+
+  it("renders TRIPPED with an enabled reset control when the breaker is open", () => {
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: {
+        data: {
+          ...MOCK_SUMMARY,
+          circuit_breaker: { tripped: true, consecutive_failures: 5 },
+        },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    const html = renderPage();
+    expect(html).toContain("Reset breaker");
+    expect(html).toContain('aria-label="Reset QA circuit breaker"');
+    expect(html).not.toContain("Circuit breaker unknown");
+    expect(html).not.toContain("Circuit breaker closed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Evidence-bearing reset confirm + palette verb (bu-533qx.2)
+// ---------------------------------------------------------------------------
+
+describe("QaOverviewPage -- evidence-bearing reset + palette verb", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  function setupTripped() {
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: {
+        data: {
+          ...MOCK_SUMMARY,
+          staffer_status: "circuit_breaker_tripped",
+          circuit_breaker: { tripped: true, consecutive_failures: 5 },
+        },
+      },
+      isLoading: false,
+      isError: false,
+    });
+    (useQaCircuitBreaker as AnyMock).mockReturnValue({
+      data: { data: MOCK_BREAKER_TRIPPED },
+      isLoading: false,
+      isError: false,
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (useForceQaPatrol as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useResetQaCircuitBreaker as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useQaPatrols as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useButlers as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+    (useRemoveDismissal as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useQaCase as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: false });
+    (useQaCaseJournal as AnyMock).mockReturnValue({ data: undefined });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    document.body.innerHTML = "";
+  });
+
+  function mount() {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <MemoryRouter initialEntries={["/qa"]}>
+            <QaOverviewPage />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("shows the five failing attempts in the reset confirm dialog when the breaker is tripped", () => {
+    setupTripped();
+    mount();
+
+    // Dialog is closed until the operator opens it — no evidence leaks early.
+    expect(document.querySelector('[data-testid="qa-breaker-reset-dialog"]')).toBeNull();
+
+    const btn = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Reset QA circuit breaker"]',
+    );
+    expect(btn).not.toBeNull();
+    act(() => {
+      btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Evidence renders one row per failing attempt (the five that tripped it).
+    const attempts = document.querySelectorAll('[data-testid="qa-breaker-reset-attempt"]');
+    expect(attempts).toHaveLength(5);
+    const evidenceText = document.querySelector(
+      '[data-testid="qa-breaker-reset-evidence"]',
+    )?.textContent;
+    expect(evidenceText).toContain("attempt-0001");
+    expect(evidenceText).toContain("unfixable");
+  });
+
+  it("does not register the reset palette verb while the breaker is closed", () => {
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: { data: MOCK_SUMMARY },
+      isLoading: false,
+      isError: false,
+    });
+    (useQaCircuitBreaker as AnyMock).mockReturnValue({
+      data: { data: MOCK_BREAKER_CLOSED },
+      isLoading: false,
+      isError: false,
+    });
+
+    let labels: string[] = [];
+    act(() => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <CommandRegistryProvider>
+            <MemoryRouter initialEntries={["/qa"]}>
+              <QaOverviewPage />
+            </MemoryRouter>
+            <CommandLabelsProbe onLabels={(l) => (labels = l)} />
+          </CommandRegistryProvider>
+        </QueryClientProvider>,
+      );
+    });
+    expect(labels).toContain("Force patrol");
+    expect(labels).not.toContain("Reset circuit breaker");
+  });
+
+  it("registers the reset palette verb only while the breaker is tripped", () => {
+    setupTripped();
+
+    let labels: string[] = [];
+    act(() => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <CommandRegistryProvider>
+            <MemoryRouter initialEntries={["/qa"]}>
+              <QaOverviewPage />
+            </MemoryRouter>
+            <CommandLabelsProbe onLabels={(l) => (labels = l)} />
+          </CommandRegistryProvider>
+        </QueryClientProvider>,
+      );
+    });
+    expect(labels).toContain("Reset circuit breaker");
   });
 });

@@ -483,13 +483,27 @@ function InvestigationDetailPanel({
 // ---------------------------------------------------------------------------
 
 function CircuitBreakerChip() {
-  const { data, isLoading } = useQaCircuitBreaker();
+  const { data, isLoading, isError } = useQaCircuitBreaker();
   const status = data?.data;
-  const tripped = status?.tripped ?? false;
 
   if (isLoading) return <Skeleton className="h-5 w-28 rounded-full" />;
 
-  return tripped ? (
+  // Tri-state honesty (bu-533qx.2): a failed circuit-breaker query is NOT a
+  // closed breaker. `unknown` when the feed errored or returned nothing —
+  // never the calm green "closed" over a state the surface cannot prove.
+  if (isError || status === undefined) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-[var(--amber)] text-[var(--amber-text)] text-xs"
+        data-testid="circuit-breaker-unknown"
+      >
+        Circuit breaker: unknown
+      </Badge>
+    );
+  }
+
+  return status.tripped ? (
     <Badge variant="destructive" className="text-xs" data-testid="circuit-breaker-tripped">
       Circuit breaker: open
     </Badge>
