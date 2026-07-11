@@ -35,10 +35,29 @@ When learning about a person or recording new information:
 - **entity_resolve/get/update/neighbors**: Entity graph operations
 - **contact_create/get/update/search/resolve**: Manage contact records (always linked to entities)
 - **fact_set/list**: Store and retrieve facts (stored on entities via contacts)
+- **memory_search/memory_recall**: Search and recall facts from the entity graph
+- **memory_store_fact**: Store edge-facts (works_at, friend_of, etc.) with object_entity_id
+- **memory_forget**: Soft-retract a memory fact by type and ID (use for corrections)
 - **interaction_log/list**: Track conversations and interactions
 - **date_add/list**: Track birthdays, anniversaries, and milestones
 - **gift_add/list/update**: Manage gift ideas and tracking
 - **calendar_list_events/calendar_get_event/calendar_create_event/calendar_update_event**: Read and manage calendar events (use calendar tools for reminders and follow-up scheduling)
+
+## Correcting Facts (Retract + Replace — NOT Append)
+
+When the user says "X works at Y, not Z" or "actually X is at company Y now", this is a **correction**, not new information. You MUST retract the old fact and replace it — never append a new fact while leaving the old one active.
+
+**Required workflow for workplace/employment corrections:**
+
+1. **Find the old fact**: Use `memory_search(query="<person> works_at", types=["fact"], filters={"entity_id": "<uuid>", "predicate": "works_at"})` to locate active `works_at` edge-facts for the person.
+2. **Retract the old fact(s)**: Call `memory_forget(memory_type="fact", memory_id="<old-fact-id>")` for each active `works_at` fact referencing the old employer.
+3. **Retract auxiliary facts**: Also retract any related property-facts that are now stale (e.g. `workplace` property-facts, colleague location facts).
+4. **Resolve or create the new organization**: Use `memory_entity_resolve(name="<new org>", entity_type="organization")` — if zero candidates, create with `memory_entity_create(...)`.
+5. **Store the new edge-fact**: Call `memory_store_fact(subject="<person>", predicate="works_at", content="<role/context>", entity_id="<person-uuid>", object_entity_id="<new-org-uuid>", permanence="stable", importance=7.0, tags=["work"], metadata={"correction_source": "user", "corrected_from": "<old org name>"})`.
+
+**Do NOT** synthesize audit predicates like `workplace_correction` — use `metadata` on the new fact to record provenance.
+
+**Key rule:** Supersession in the facts system is keyed on `(entity_id, predicate, scope)`. A new `workplace` property-fact does NOT supersede a `works_at` edge-fact because they have different predicates. You must explicitly retract the old edge-fact using `memory_forget`.
 
 ## Calendar Usage
 - Use calendar tools for relationship-related scheduling: birthdays, anniversary dinners, catch-up meetings, and follow-ups.
@@ -93,5 +112,6 @@ AND f.scope IN ('global', 'relationship')
 # Notes to self
 
 - MCP tool input gotcha: `contact_create.details` and `interaction_log.metadata` validate as dicts (Pydantic `dict_type`), even if some tool signatures/docs imply strings — pass JSON objects, not JSON-encoded strings.
+- Workplace corrections MUST retract the old `works_at` edge-fact via `memory_forget` before storing the new one. A new `workplace` property-fact does NOT supersede a `works_at` edge-fact (different predicates). See "Correcting Facts" section above.
 - Priority contacts: `public.priority_contacts` is butler-agnostic (the `butler` dimension was dropped in core_129 / bu-gx13h; PK is now `contact_id`). The global set is read by GmailPolicyEvaluator (15-min TTL DB cache) to assign `high_priority` policy tier. Add/remove entries via `POST {contact_id}` / `DELETE /{contact_id}` on `/api/ingestion/priority-contacts`. The old `GMAIL_KNOWN_CONTACTS_PATH` flat-file env var has been removed.
 - `conf` column on `entity_facts` is NOT write-orphaned (audited bu-9u0of). It is read by: SQL SELECTs in `roster/relationship/api/router.py` (dozens of `f.conf` → API responses), merge-conflict resolution (`ORDER BY ef.conf DESC` in the `merge_entities` query), `relationship_assert_fact.py` deduplication comparison, `merge_review.py`, and frontend `types.ts`. The ConfBar UI was removed in PR #2355 (bu-8j0ir), but the column remains live backend data. Do not drop it without first adding a real confidence calibration path or a deliberate descope migration.

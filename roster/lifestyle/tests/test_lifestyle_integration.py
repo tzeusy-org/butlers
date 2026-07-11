@@ -41,6 +41,20 @@ _SWITCHBOARD_SKILLS_DIR = (
 )
 
 
+def _resolve_includes(path: Path) -> str:
+    """Resolve bare `@file.md` include directives (e.g. CLAUDE.md -> AGENTS.md)."""
+    lines: list[str] = []
+    for raw_line in path.read_text().splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("@"):
+            ref = path.parent / stripped[1:]
+            if ref.is_file():
+                lines.append(_resolve_includes(ref))
+                continue
+        lines.append(raw_line)
+    return "\n".join(lines)
+
+
 # ===========================================================================
 # Test Category 1: Butler Startup
 # Verify lifestyle butler.toml loads correctly with the expected modules
@@ -700,7 +714,9 @@ class TestSwitchboardFoodPreferenceRouting:
         """Lifestyle butler CLAUDE.md explicitly refuses nutrition tracking (→ Health)."""
         claude_path = _LIFESTYLE_ROSTER_DIR / "CLAUDE.md"
         assert claude_path.exists(), f"CLAUDE.md not found at {claude_path}"
-        content = claude_path.read_text()
+        # CLAUDE.md delegates to AGENTS.md via an `@AGENTS.md` file reference —
+        # resolve the include chain rather than reading CLAUDE.md's raw content.
+        content = _resolve_includes(claude_path)
         lower = content.lower()
         # Lifestyle butler should explicitly say: no nutrition, refer to health
         has_nutrition_boundary = (
