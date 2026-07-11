@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-session-links bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-session-links lint-decision-beads bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -88,6 +88,13 @@ check: lint check-for-update-joins check-integration-coverage test
 # check, not a full substitute for the CI job.
 check-session-links:
 	python3 scripts/session_link_guard.py --commit-range "origin/main..HEAD"
+
+# Decision-bead convention (bu-ckkpz.1): lint open beads carrying the
+# `decision` label for structured options/default/deadline. Reads live via
+# `bd`, so it needs the local Dolt server and is a manual/local check, not a
+# `check` or CI member (GitHub Actions cannot reach the Dolt server).
+lint-decision-beads:
+	python3 scripts/lint_decision_beads.py
 
 # Version management — single source of truth is pyproject.toml
 # Usage: make bump-version VERSION=1.2.3

@@ -744,6 +744,54 @@ make test-qg
 - For `task` issues include `## Acceptance Criteria` in `description`; for `epic` issues include `## Success Criteria`.
 - For `bug` issues created with `--validate`, include `## Acceptance Criteria` in `description` (the separate `--acceptance` flag alone is not sufficient).
 
+### Decision-bead convention (bu-ckkpz.1, epic bu-ckkpz "Owner Decision Desk")
+Today, owner-attention decisions are marked only by title text ("DECISION
+REQUIRED (owner)", "[OWNER-GATED]", "OWNER:", "ARCHITECTURAL DECISION"), which
+is invisible to tooling and easy to miss. Any bead that asks the owner to
+choose among options (not just "do this task") should instead follow this
+machine-checkable convention, built entirely on native `bd` fields — no new
+issue type and no bespoke deadline format:
+
+1. **Label** — add the `decision` label: `bd create ... --label decision` /
+   `bd update <id> --labels decision`. This is the marker a linter or
+   dashboard query filters on (`bd list --label decision`).
+2. **Structured options** — set `metadata.decision.options` (a non-empty list
+   of distinct, non-blank strings) and `metadata.decision.default` (one
+   string that exactly matches an entry in `options` — the fallback applied
+   if the owner does not respond by the deadline), e.g.:
+   ```bash
+   bd create "DECISION REQUIRED (owner): re-enable the api-haiku lane?" \
+     --type task --label decision --due 2026-07-25 \
+     --metadata '{"decision": {"options": ["A: re-enable now", "B: keep disabled", "C: descope"], "default": "B: keep disabled"}}' \
+     --description "Context: ...\n\nOption A: ...\nOption B: ...\nOption C: ..."
+   ```
+3. **Deadline** — set bd's native `due_at` via `--due` (e.g. `--due 2026-07-25`,
+   `--due +2w`). Do not invent a second, text-only deadline field; `due_at` is
+   already filterable (`bd list --due-before ...`, `bd list --overdue`).
+4. `description` stays free-form prose (context, rationale, links) — it is
+   not required to restate the options verbatim; `metadata.decision` is the
+   single structured source of truth consumers should parse.
+
+**Do not reuse bd's built-in `issue_type: decision`.** That type is a
+pre-existing, unrelated ADR-style "decision already made" template — `bd
+create --type decision --validate` demands `## Decision` / `## Rationale` /
+`## Alternatives Considered`, which describes a decision that has already
+happened, not one awaiting the owner. Owner-decision beads keep their normal
+`issue_type` (usually `task`) and use the `decision` *label* instead.
+
+**Linter:** `scripts/lint_decision_beads.py` checks that every `decision`-labeled
+bead carries the four properties above (run via `make lint-decision-beads` or
+directly with `python3 scripts/lint_decision_beads.py [issue-id...]`). It
+reads live via `bd` (or an offline `--issues-json-file` snapshot for
+tests/CI), so it is a manual/local check, not part of `make check` or CI —
+GitHub Actions cannot reach the local Dolt server backing `bd`.
+
+**Known consumer, not yet updated:** `src/butlers/jobs/decision_review.py`
+(the weekly decision-review digest + P1/deploy escalation cron) still detects
+decision beads via the legacy title-marker regex, because it predates this
+convention. Switching it to `labels`/`metadata.decision` is tracked
+separately (bu-97qrw) — not done as part of defining the convention itself.
+
 ### Relationship `important_dates` column contract
 - Relationship schema stores date kind in `important_dates.label` (not `important_dates.date_type`).
 - API queries touching birthdays/upcoming dates should use `label` consistently to avoid `UndefinedColumnError` on production schema.
