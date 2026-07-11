@@ -4,7 +4,7 @@ Surfaces seven ownership-fact domains:
 
     GET /api/system/instance       -- software version and process uptime
     GET /api/system/database       -- PostgreSQL catalog size breakdown
-    GET /api/system/backups        -- backup recency and source reachability
+    GET /api/system/backups        -- verified backup health + restore-drill state (bu-9r3hd.5)
     GET /api/system/egress         -- external-actor egress catalog (owner-only)
     GET /api/system/butlers/heartbeat -- per-butler liveness registry snapshot
     GET /api/system/deployments    -- current + recent deployment ledger entries
@@ -22,7 +22,11 @@ process boot; see src/butlers/core/deployments.py), never by this router.
 /api/system/drift is also read-only from this router's perspective: it computes
 the comparison live on each request (butlers.jobs.deploy_drift.compute_drift_report)
 and reads (never writes) the first-detected/escalated debounce markers the
-background sentinel loop persists to public.audit_log.
+background sentinel loop persists to public.audit_log. /api/system/backups is
+similarly read-only: artifact integrity (gzip decompression, size floor) is
+computed live per request (memoized per file), while the restore-drill result
+is read (never written) from the ledger butlers.jobs.backup_health's weekly
+background loop maintains in public.audit_log.
 
 Operation names assumed in the actor registry for /api/system/egress
 (documented here for the bu-n28xh audit):
@@ -38,6 +42,7 @@ externally-visible API calls.
 
 from __future__ import annotations
 
+import gzip
 import importlib.metadata
 import logging
 import os
@@ -202,20 +207,45 @@ class DatabaseFacts(BaseModel):
 
 
 class BackupEvent(BaseModel):
-    """Single backup event in the backup history list."""
+    """Single backup event in the backup history list.
+
+    ``status`` (bu-9r3hd.5) is a REAL per-artifact verdict, not a fabricated
+    constant: ``"healthy"`` (read back through gzip cleanly and cleared the
+    size floor), ``"corrupt"`` (failed gzip decompression -- truncated
+    transfer, bit rot, a killed pg_dump), or ``"empty"`` (present but smaller
+    than any real dump could plausibly be). See ``_verify_backup_artifact``.
+    """
 
     completed_at: str
     size_bytes: int
-    status: str  # "success" or "failed"
+    status: str  # "healthy" | "corrupt" | "empty"
+
+
+class RestoreDrillFacts(BaseModel):
+    """Result of the most recent weekly restore-drill attempt (bu-9r3hd.5).
+
+    Populated from ``public.audit_log`` (action ``restore_drill_result``,
+    written by ``butlers.jobs.backup_health.run_restore_drill_loop``) -- this
+    router only reads it. ``result="pending"`` means the drill has never run
+    yet (a fresh deploy, or the loop hasn't reached its weekly tick), which
+    is a real "we don't know" state, not a fabricated pass.
+    """
+
+    checked_at: str | None
+    result: str  # "pass" | "fail" | "pending" | "degraded"
+    detail: str | None
 
 
 class BackupFacts(BaseModel):
-    """Backup recency and source reachability facts."""
+    """Backup recency, artifact health, and source reachability facts."""
 
     last_backup_at: str | None
     last_backup_size_bytes: int | None
     backup_source_reachable: bool
     backup_history: list[BackupEvent]
+    last_backup_status: str  # "healthy" | "corrupt" | "empty" | "missing"
+    backup_stale: bool
+    restore_drill: RestoreDrillFacts
 
 
 class EgressActor(BaseModel):
@@ -588,13 +618,106 @@ async def get_database_facts(
 # GET /api/system/backups
 # ---------------------------------------------------------------------------
 
+#: Env var read by butlers.jobs.backup_health (kept in sync here rather than
+#: imported, to avoid a hard import-time dependency for a single string).
+BACKUP_DIR_ENV = "BUTLERS_BACKUP_DIR"
+
+#: A gzip stream this small cannot possibly hold a real pg_dump -- it is, at
+#: most, an empty/truncated write (gzip's own header+footer overhead alone is
+#: ~20 bytes). Below this floor an artifact is "empty", not "healthy", without
+#: needing to open it at all.
+_BACKUP_MIN_SIZE_BYTES = 256
+
+#: Daily backup cron (BACKUP_CRON default ``0 2 * * *``) plus slack for one
+#: missed/late run before the most recent backup counts as stale -- a single
+#: skipped night is not yet an emergency, several days silent is.
+#:
+#: Public (not module-private) because ``butlers.core.qa.sources.infra_state``
+#: (bu-9r3hd.4) imports this instead of maintaining its own independently-set
+#: threshold for the same signal -- one number, not two that could drift.
+BACKUP_STALE_THRESHOLD_HOURS = 36
+
+#: In-process memoization of _verify_backup_artifact, keyed by (path, mtime,
+#: size) so a file that hasn't changed since the last request is never
+#: re-decompressed -- GET /api/system/backups is polled every 120s (see
+#: useBackupFacts) and a full gzip integrity read of a large dump on every
+#: poll would be wasteful. Bounded defensively; in steady state this only
+#: ever holds ~BACKUP_RETAIN_DAYS distinct entries (one new file per day).
+_verify_cache: dict[tuple[str, float, int], tuple[str, str | None]] = {}
+_VERIFY_CACHE_MAX_ENTRIES = 64
+
+
+def _verify_backup_artifact(path: Path, stat: os.stat_result) -> tuple[str, str | None]:
+    """Return (status, detail) for one backup file: "healthy" | "corrupt" | "empty".
+
+    "empty" -- file is smaller than any real dump could plausibly be; not
+    worth even attempting to open.
+    "corrupt" -- gzip decompression failed (truncated transfer, bit rot, a
+    dump that was killed mid-write and never reached its final ``mv``).
+    Streaming the whole stream through gzip validates its embedded CRC32 +
+    size footer -- gzip's own built-in checksum -- so no separate checksum
+    sidecar file is needed.
+    "healthy" -- decompressed cleanly and cleared the size floor.
+
+    Never raises; any unexpected OSError is treated as "corrupt" with the
+    exception text as the detail.
+    """
+    key = (str(path), stat.st_mtime, stat.st_size)
+    cached = _verify_cache.get(key)
+    if cached is not None:
+        return cached
+
+    if stat.st_size < _BACKUP_MIN_SIZE_BYTES:
+        result = ("empty", f"{stat.st_size} bytes, below the {_BACKUP_MIN_SIZE_BYTES}-byte floor")
+    else:
+        try:
+            with gzip.open(path, "rb") as f:
+                while f.read(1 << 20):
+                    pass
+            result = ("healthy", None)
+        except OSError as exc:
+            result = ("corrupt", f"gzip integrity check failed: {exc}")
+
+    if len(_verify_cache) >= _VERIFY_CACHE_MAX_ENTRIES:
+        _verify_cache.clear()
+    _verify_cache[key] = result
+    return result
+
+
+def latest_backup_path(backup_dir: Path) -> Path | None:
+    """Return the most recent ``butlers_*.sql.gz`` file in *backup_dir*, or None.
+
+    Shared with ``butlers.jobs.backup_health`` so the weekly restore drill
+    targets the exact same "most recent dump" this endpoint reports on.
+    """
+    try:
+        candidates = list(backup_dir.glob("butlers_*.sql.gz"))
+    except OSError:
+        return None
+    stamped: list[tuple[float, Path]] = []
+    for p in candidates:
+        try:
+            stamped.append((p.stat().st_mtime, p))
+        except OSError:
+            continue  # race: file removed between glob and stat
+    if not stamped:
+        return None
+    return max(stamped, key=lambda t: t[0])[1]
+
+
+_PENDING_RESTORE_DRILL = RestoreDrillFacts(checked_at=None, result="pending", detail=None)
+
 
 def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
     """Scan *backup_dir* for timestamped pg_dump files and return BackupFacts.
 
     Backup files must match the pattern ``butlers_*.sql.gz`` (written by
     ``deploy/backup/pg_dump.sh``).  Files are sorted by mtime descending so
-    the most-recent dump is always first.
+    the most-recent dump is always first. Each entry's ``status`` is a real,
+    verified verdict (see ``_verify_backup_artifact``) -- not a fabricated
+    constant. ``restore_drill`` is always returned as "pending" here; the
+    caller (``get_backup_facts``) overwrites it with the DB-backed ledger
+    read, keeping this function DB-free and independently unit-testable.
 
     Returns a degraded (backup_source_reachable=False) payload when:
     - the directory does not exist
@@ -612,6 +735,9 @@ def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
             last_backup_size_bytes=None,
             backup_source_reachable=False,
             backup_history=[],
+            last_backup_status="missing",
+            backup_stale=False,
+            restore_drill=_PENDING_RESTORE_DRILL,
         )
 
     # Stat each file individually so a single racy disappearance can't abort
@@ -626,13 +752,16 @@ def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
             last_backup_size_bytes=None,
             backup_source_reachable=False,
             backup_history=[],
+            last_backup_status="missing",
+            backup_stale=False,
+            restore_drill=_PENDING_RESTORE_DRILL,
         )
 
-    stamped: list[tuple[float, os.stat_result]] = []
+    stamped: list[tuple[float, os.stat_result, Path]] = []
     for p in candidates:
         try:
             st = p.stat()
-            stamped.append((st.st_mtime, st))
+            stamped.append((st.st_mtime, st, p))
         except OSError:
             continue  # race: file removed between glob and stat
 
@@ -642,13 +771,14 @@ def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
     # "up to 7 most recent backup events". stamped is sorted most-recent-first,
     # so the first 7 entries are the events to surface.
     history: list[BackupEvent] = []
-    for _mtime, stat in stamped[:7]:
+    for _mtime, stat, p in stamped[:7]:
         mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+        status, _detail = _verify_backup_artifact(p, stat)
         history.append(
             BackupEvent(
                 completed_at=mtime_dt.isoformat(),
                 size_bytes=stat.st_size,
-                status="success",
+                status=status,
             )
         )
 
@@ -659,46 +789,96 @@ def read_backup_facts_from_dir(backup_dir: Path) -> BackupFacts:
             last_backup_size_bytes=None,
             backup_source_reachable=True,
             backup_history=[],
+            last_backup_status="missing",
+            backup_stale=False,
+            restore_drill=_PENDING_RESTORE_DRILL,
         )
 
     latest = history[0]
+    age_hours = (
+        datetime.now(UTC) - datetime.fromisoformat(latest.completed_at)
+    ).total_seconds() / 3600
     return BackupFacts(
         last_backup_at=latest.completed_at,
         last_backup_size_bytes=latest.size_bytes,
         backup_source_reachable=True,
         backup_history=history,
+        last_backup_status=latest.status,
+        backup_stale=age_hours > BACKUP_STALE_THRESHOLD_HOURS,
+        restore_drill=_PENDING_RESTORE_DRILL,
     )
 
 
 @router.get("/backups", response_model=ApiResponse[BackupFacts])
-async def get_backup_facts() -> ApiResponse[BackupFacts]:
-    """Return backup recency and source reachability.
+async def get_backup_facts(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[BackupFacts]:
+    """Return backup recency, verified artifact health, and restore-drill state.
 
     Reads filesystem pg_dump files from the directory configured by the
     ``BUTLERS_BACKUP_DIR`` environment variable (written by
-    ``deploy/backup/pg_dump.sh`` via the ``backup-cron`` sidecar).
+    ``deploy/backup/pg_dump.sh`` via the ``backup-cron`` sidecar). Each
+    file's status is a real, verified verdict (bu-9r3hd.5) -- artifact
+    integrity (gzip decompression, size floor) is cheap enough to check live
+    on every request and is memoized per (path, mtime, size) so an unchanged
+    file is never re-verified. ``restore_drill`` is read from the ledger
+    ``butlers.jobs.backup_health`` maintains in ``public.audit_log`` --
+    actually attempting a restore is expensive and mutates state, so it only
+    happens on the weekly background loop, never inline with this request.
 
     When ``BUTLERS_BACKUP_DIR`` is not set or the directory is absent, the
     endpoint returns ``backup_source_reachable=false`` with null fields.
     This is the expected state for unconfigured deployments — not an error.
+    A failed ledger read degrades ``restore_drill`` to "degraded" rather than
+    failing the whole response.
 
     Graceful degradation: always returns HTTP 200, never HTTP 503.
     """
     system_backups_reads_total.inc()
 
-    backup_dir_env = os.environ.get("BUTLERS_BACKUP_DIR", "").strip()
+    backup_dir_env = os.environ.get(BACKUP_DIR_ENV, "").strip()
     if not backup_dir_env:
-        return ApiResponse(
-            data=BackupFacts(
-                last_backup_at=None,
-                last_backup_size_bytes=None,
-                backup_source_reachable=False,
-                backup_history=[],
-            )
+        facts = BackupFacts(
+            last_backup_at=None,
+            last_backup_size_bytes=None,
+            backup_source_reachable=False,
+            backup_history=[],
+            last_backup_status="missing",
+            backup_stale=False,
+            restore_drill=_PENDING_RESTORE_DRILL,
+        )
+    else:
+        facts = read_backup_facts_from_dir(Path(backup_dir_env))
+
+    facts.restore_drill = await _read_restore_drill_facts(db)
+    return ApiResponse(data=facts)
+
+
+async def _read_restore_drill_facts(db: DatabaseManager) -> RestoreDrillFacts:
+    """Read the most recent restore-drill result from the ledger. Never raises."""
+    from butlers.jobs.backup_health import get_last_restore_drill
+
+    try:
+        pool = db.pool("switchboard")
+    except KeyError:
+        return RestoreDrillFacts(
+            checked_at=None, result="degraded", detail="switchboard pool unavailable"
         )
 
-    backup_dir = Path(backup_dir_env)
-    return ApiResponse(data=read_backup_facts_from_dir(backup_dir))
+    try:
+        row = await get_last_restore_drill(pool)
+    except Exception as exc:
+        logger.warning("backup facts: restore-drill ledger read failed", exc_info=True)
+        return RestoreDrillFacts(checked_at=None, result="degraded", detail=str(exc))
+
+    if row is None:
+        return _PENDING_RESTORE_DRILL
+
+    return RestoreDrillFacts(
+        checked_at=row["checked_at"],
+        result=row["result"],
+        detail=row["detail"],
+    )
 
 
 # ---------------------------------------------------------------------------

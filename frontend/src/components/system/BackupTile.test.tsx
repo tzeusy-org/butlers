@@ -152,9 +152,9 @@ describe("BackupTile -- reachable with last_backup_at", () => {
     expect(render()).toContain("backup-tile-content")
   })
 
-  it("renders reachable badge", () => {
+  it("renders a status badge", () => {
     mockResult = { isPending: false, data: makeBackupFacts() }
-    expect(render()).toContain("backup-tile-reachable-badge")
+    expect(render()).toContain("backup-tile-status-badge")
   })
 
   it("renders the last_backup_at timestamp via <Time>", () => {
@@ -193,5 +193,124 @@ describe("BackupTile -- reachable without last_backup_at", () => {
       data: makeBackupFacts({ last_backup_at: null }),
     }
     expect(render()).not.toContain("<time")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 6. Verified status badge (bu-9r3hd.5) -- never fabricates a green "Healthy"
+// ---------------------------------------------------------------------------
+
+describe("BackupTile -- verified status badge (bu-9r3hd.5)", () => {
+  it("renders 'Healthy' when the artifact verified healthy and isn't stale", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({ last_backup_status: "healthy", backup_stale: false }),
+    }
+    expect(render()).toContain("Healthy")
+  })
+
+  it("renders 'Corrupt' when the artifact failed integrity verification", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({ last_backup_status: "corrupt" }),
+    }
+    const html = render()
+    expect(html).toContain("Corrupt")
+    expect(html).not.toContain(">Healthy<")
+  })
+
+  it("renders 'Empty' when the artifact is below the size floor", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({ last_backup_status: "empty" }),
+    }
+    expect(render()).toContain("Empty")
+  })
+
+  it("renders 'Stale' when the artifact is healthy but past the age threshold", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({ last_backup_status: "healthy", backup_stale: true }),
+    }
+    expect(render()).toContain("Stale")
+  })
+
+  it("renders 'Unverified' rather than a fabricated 'Healthy' when status fields are absent", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({ last_backup_status: undefined, backup_stale: undefined }),
+    }
+    const html = render()
+    expect(html).toContain("Unverified")
+    expect(html).not.toContain(">Healthy<")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 7. Restore drill row (bu-9r3hd.5)
+// ---------------------------------------------------------------------------
+
+describe("BackupTile -- restore drill row (bu-9r3hd.5)", () => {
+  it("renders 'No drill yet' when restore_drill is absent", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({ restore_drill: undefined }),
+    }
+    expect(render()).toContain("backup-tile-drill-pending")
+  })
+
+  it("renders 'No drill yet' when restore_drill.result is 'pending'", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        restore_drill: { checked_at: null, result: "pending", detail: null },
+      }),
+    }
+    expect(render()).toContain("backup-tile-drill-pending")
+  })
+
+  it("renders a pass row when restore_drill.result is 'pass'", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        restore_drill: {
+          checked_at: "2026-07-04T02:00:00Z",
+          result: "pass",
+          detail: "restored 12 tables",
+        },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("backup-tile-drill-pass")
+    expect(html).toContain("Passed")
+  })
+
+  it("renders a problem row with detail when restore_drill.result is 'fail'", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        restore_drill: {
+          checked_at: "2026-07-04T02:00:00Z",
+          result: "fail",
+          detail: "restore failed: relation already exists",
+        },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("backup-tile-drill-problem")
+    expect(html).toContain("Failed")
+    expect(html).toContain("relation already exists")
+  })
+
+  it("renders a problem row when restore_drill.result is 'degraded'", () => {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({
+        restore_drill: { checked_at: null, result: "degraded", detail: "pool unavailable" },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("backup-tile-drill-problem")
+    expect(html).toContain("Unavailable")
   })
 })

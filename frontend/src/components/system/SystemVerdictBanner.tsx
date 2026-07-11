@@ -132,11 +132,33 @@ export function SystemVerdictBanner() {
     });
   }
 
+  // bu-9r3hd.5: a reachable, recently-run backup used to read as an
+  // unconditional all-clear. It no longer does -- a corrupt/empty artifact,
+  // a stale backup, or a failed/never-run restore drill are each their own
+  // real problem, surfaced the same way "never backed up" already was.
   const backupData = backups.data?.data;
   if (backupData && !backupData.backup_source_reachable) {
     problems.push({ key: "backup-unreachable", text: "backup source unreachable" });
   } else if (backupData && !backupData.last_backup_at) {
     problems.push({ key: "backup-never", text: "never backed up" });
+  } else if (backupData) {
+    if (backupData.last_backup_status === "corrupt" || backupData.last_backup_status === "empty") {
+      problems.push({
+        key: "backup-artifact",
+        text: `backup artifact ${backupData.last_backup_status}`,
+      });
+    }
+    if (backupData.backup_stale) {
+      problems.push({ key: "backup-stale", text: "backup is stale" });
+    }
+    const drill = backupData.restore_drill;
+    if (drill?.result === "fail") {
+      problems.push({ key: "restore-drill-fail", text: "restore drill failed" });
+    } else if (drill?.result === "degraded") {
+      problems.push({ key: "restore-drill-degraded", text: "restore drill status unavailable" });
+    } else if (!drill || drill.result === "pending") {
+      problems.push({ key: "restore-drill-pending", text: "restore drill never run" });
+    }
   }
 
   const postureData = posture.data;

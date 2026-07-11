@@ -6814,19 +6814,42 @@ export interface DatabaseFacts {
   growth_rate_bytes_per_day: number | null;
 }
 
-/** Single backup event in the backup history list. */
+/** Single backup event in the backup history list.
+ *
+ * `status` (bu-9r3hd.5) is a real, verified per-artifact verdict, not a
+ * fabricated constant -- see `BackupFacts.last_backup_status`.
+ */
 export interface BackupEvent {
   completed_at: string;
   size_bytes: number;
-  status: "success" | "failed";
+  status: "healthy" | "corrupt" | "empty";
 }
 
-/** Backup recency and source reachability facts. */
+/** Result of the most recent weekly restore-drill attempt (bu-9r3hd.5).
+ *
+ * `result: "pending"` means the drill has never run yet -- a real "unknown"
+ * state, never rendered as a passing drill.
+ */
+export interface RestoreDrillFacts {
+  checked_at: string | null;
+  result: "pass" | "fail" | "pending" | "degraded";
+  detail: string | null;
+}
+
+/** Backup recency, verified artifact health, and restore-drill facts.
+ *
+ * `last_backup_status`/`backup_stale`/`restore_drill` are optional so
+ * fixtures written before bu-9r3hd.5 keep typechecking; components must
+ * treat their absence as "unknown", never as a fabricated healthy state.
+ */
 export interface BackupFacts {
   last_backup_at: string | null;
   last_backup_size_bytes: number | null;
   backup_source_reachable: boolean;
   backup_history: BackupEvent[];
+  last_backup_status?: "healthy" | "corrupt" | "empty" | "missing";
+  backup_stale?: boolean;
+  restore_drill?: RestoreDrillFacts;
 }
 
 /** A single external actor that has received data from this instance. */

@@ -230,7 +230,18 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
   } as AnyMock);
 
   vi.mocked(useBackupFacts).mockReturnValue({
-    data: { data: { last_backup_at: "2026-01-01T00:00:00Z", last_backup_size_bytes: 2048, backup_source_reachable: true, backup_history: [] }, meta: {} },
+    data: {
+      data: {
+        last_backup_at: "2026-01-01T00:00:00Z",
+        last_backup_size_bytes: 2048,
+        backup_source_reachable: true,
+        backup_history: [],
+        last_backup_status: "healthy",
+        backup_stale: false,
+        restore_drill: { checked_at: "2026-01-01T00:00:00Z", result: "pass", detail: "restored 12 tables" },
+      },
+      meta: {},
+    },
     isLoading: false,
     error: null,
   } as AnyMock);
@@ -576,6 +587,104 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("backup source unreachable");
+  });
+
+  it("surfaces a corrupt backup artifact instead of a falsely confident all-clear (bu-9r3hd.5)", () => {
+    setAllSuccess();
+    vi.mocked(useBackupFacts).mockReturnValue({
+      data: {
+        data: {
+          last_backup_at: "2026-01-01T00:00:00Z",
+          last_backup_size_bytes: 2048,
+          backup_source_reachable: true,
+          backup_history: [],
+          last_backup_status: "corrupt",
+          backup_stale: false,
+          restore_drill: { checked_at: null, result: "pending", detail: null },
+        },
+        meta: {},
+      },
+      isLoading: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("backup artifact corrupt");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces a stale backup as a problem (bu-9r3hd.5)", () => {
+    setAllSuccess();
+    vi.mocked(useBackupFacts).mockReturnValue({
+      data: {
+        data: {
+          last_backup_at: "2026-01-01T00:00:00Z",
+          last_backup_size_bytes: 2048,
+          backup_source_reachable: true,
+          backup_history: [],
+          last_backup_status: "healthy",
+          backup_stale: true,
+          restore_drill: { checked_at: "2026-01-01T00:00:00Z", result: "pass", detail: null },
+        },
+        meta: {},
+      },
+      isLoading: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("backup is stale");
+  });
+
+  it("surfaces a failed restore drill as a problem (bu-9r3hd.5)", () => {
+    setAllSuccess();
+    vi.mocked(useBackupFacts).mockReturnValue({
+      data: {
+        data: {
+          last_backup_at: "2026-01-01T00:00:00Z",
+          last_backup_size_bytes: 2048,
+          backup_source_reachable: true,
+          backup_history: [],
+          last_backup_status: "healthy",
+          backup_stale: false,
+          restore_drill: {
+            checked_at: "2026-01-01T00:00:00Z",
+            result: "fail",
+            detail: "restore failed",
+          },
+        },
+        meta: {},
+      },
+      isLoading: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("restore drill failed");
+  });
+
+  it("surfaces a never-run restore drill as a problem rather than a fabricated all-clear (bu-9r3hd.5)", () => {
+    setAllSuccess();
+    vi.mocked(useBackupFacts).mockReturnValue({
+      data: {
+        data: {
+          last_backup_at: "2026-01-01T00:00:00Z",
+          last_backup_size_bytes: 2048,
+          backup_source_reachable: true,
+          backup_history: [],
+          last_backup_status: "healthy",
+          backup_stale: false,
+          restore_drill: { checked_at: null, result: "pending", detail: null },
+        },
+        meta: {},
+      },
+      isLoading: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("restore drill never run");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
   });
 
   it("surfaces degraded fleet sources rather than a falsely confident all-clear", () => {

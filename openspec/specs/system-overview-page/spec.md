@@ -171,7 +171,10 @@ guaranteed on the dashboard API role).
 ### Requirement: Backup State Facts
 
 The `/api/system/backups` endpoint SHALL return the recency and size of the most recent
-database backup, plus a short history of recent backup events.
+database backup, plus a short history of recent backup events, plus a genuinely
+verified health verdict for the most recent backup and the most recent weekly restore
+drill. No field in this response SHALL be a hardcoded or assumed value -- every status
+is derived from an actual check (bu-9r3hd.5).
 
 #### Scenario: Backup endpoint returns recency
 
@@ -185,7 +188,22 @@ database backup, plus a short history of recent backup events.
   - `backup_source_reachable: boolean` -- `true` if the backup metadata source
     (Minio/S3 bucket or filesystem) responded to the health check, `false` otherwise
   - `backup_history: BackupEvent[]` -- up to 7 most recent backup events, each having
-    `completed_at: string`, `size_bytes: number`, and `status: "success" | "failed"`
+    `completed_at: string`, `size_bytes: number`, and `status: "healthy" | "corrupt" |
+    "empty"` -- a REAL, verified per-artifact verdict (never a hardcoded constant):
+    `"empty"` when the file is smaller than a real dump could plausibly be, `"corrupt"`
+    when the file fails a full gzip-integrity read (validating gzip's own embedded
+    CRC32 + size footer), `"healthy"` otherwise. Verification is computed live per
+    request but memoized per `(path, mtime, size)` so an unchanged file is never
+    re-verified on every poll.
+  - `last_backup_status: "healthy" | "corrupt" | "empty" | "missing"` -- convenience
+    mirror of `backup_history[0].status`, or `"missing"` when there is no backup file
+  - `backup_stale: boolean` -- `true` when the most recent backup's age exceeds the
+    expected daily-cadence-plus-slack window (36 hours)
+  - `restore_drill: RestoreDrillFacts` -- result of the most recent weekly restore-drill
+    attempt (see Requirement: Weekly Restore Drill), having `checked_at: string | null`,
+    `result: "pass" | "fail" | "pending" | "degraded"`, and `detail: string | null`.
+    `"pending"` means the drill has never run yet -- a real "unknown" state, never
+    presented as a passing drill.
 - **AND** the response wraps in the standard `ApiResponse<BackupFacts>` envelope
 
 #### Scenario: Unavailable backup source degrades gracefully
@@ -194,9 +212,55 @@ database backup, plus a short history of recent backup events.
 - **THEN** `last_backup_at` and `last_backup_size_bytes` are `null`
 - **AND** `backup_source_reachable` is `false`
 - **AND** `backup_history` is an empty array
+- **AND** `last_backup_status` is `"missing"` and `backup_stale` is `false`
 - **AND** the response is HTTP 200 with the degraded payload -- not HTTP 503
 - **AND** the frontend renders a "backup status unavailable" indicator rather than an
   error state
+
+#### Scenario: Restore-drill ledger read failure degrades only that field
+
+- **WHEN** the restore-drill ledger (`public.audit_log`) cannot be read (switchboard
+  pool unavailable, or the query itself fails)
+- **THEN** `restore_drill.result` is `"degraded"` with a non-null `detail`
+- **AND** every other field in the response (backup recency, artifact health) is
+  unaffected
+- **AND** the response is still HTTP 200 -- a ledger read failure never fails the
+  whole endpoint
+
+### Requirement: Weekly Restore Drill
+
+Once a week, the system SHALL attempt to actually restore the most recent backup
+artifact into a scratch database, verify the restore produced real data, tear the
+scratch database down, and record the true pass/fail result -- proving the backup is
+usable, not merely present (bu-9r3hd.5).
+
+#### Scenario: Drill succeeds
+
+- **WHEN** the weekly restore-drill loop ticks and a backup file is present
+- **THEN** it creates a scratch database, restores the backup into it via the real
+  Postgres client (`psql`, required for `COPY ... FROM stdin` support that a
+  SQL-statement-only executor cannot replay), asserts the restore produced at least
+  one non-system table, and drops the scratch database
+- **AND** it records `result: "pass"` to `public.audit_log`, readable via
+  `GET /api/system/backups`'s `restore_drill` field
+
+#### Scenario: Drill fails at any stage
+
+- **WHEN** any stage fails -- the artifact is corrupt, `createdb` is denied by a
+  Postgres role lacking `CREATEDB`, the restore itself errors, the restore produces
+  zero tables, or the process times out
+- **THEN** the scratch database is unconditionally dropped (cleanup always runs, even
+  on failure)
+- **AND** `result: "fail"` is recorded with a human-readable `detail` describing what
+  failed
+- **AND** the loop is never crashed by a failed tick -- it keeps retrying on the next
+  weekly cadence
+
+#### Scenario: No backup file yet
+
+- **WHEN** the weekly restore-drill loop ticks and no backup file exists
+- **THEN** the tick is skipped with no ledger write -- a legitimate absence, not a
+  failure to record
 
 ### Requirement: Data Egress Catalog
 

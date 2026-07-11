@@ -49,7 +49,9 @@ Four checks, one discovery source
    absence (not every deployment enables backups) and is silently skipped,
    matching that endpoint's own documented contract. A *configured* but
    unreachable directory, or one with no dump ever recorded, or a most-recent
-   dump older than :data:`_BACKUP_STALE_THRESHOLD`, is a genuine failure.
+   dump the endpoint itself already flagged ``backup_stale`` (against
+   :data:`butlers.api.routers.system.BACKUP_STALE_THRESHOLD_HOURS`), is a
+   genuine failure.
 4. **external-deadman-stale** — reads the last successful ping recorded by
    ``butlers.jobs.external_deadman`` (``EXTERNAL_DEADMAN_URL`` env var). Also
    a legitimate absence when unconfigured.
@@ -101,12 +103,6 @@ _BACKUP_DIR_ENV = "BUTLERS_BACKUP_DIR"
 #: its registration time before being flagged -- avoids firing on the very
 #: first patrol tick after a fresh registration.
 _NEVER_SEEN_GRACE = timedelta(minutes=15)
-
-#: Daily backup cron (BACKUP_CRON default ``0 2 * * *``) plus slack for one
-#: missed/late run before treating the backup as stale. Deliberately looser
-#: than the connector/heartbeat thresholds -- a single skipped night is not
-#: yet an emergency, several days silent is.
-_BACKUP_STALE_THRESHOLD = timedelta(hours=36)
 
 #: How many missed external-deadman ping intervals to tolerate before
 #: flagging staleness -- absorbs a transient network blip without noise.
@@ -306,7 +302,10 @@ class InfraStateSource:
             # deployments") -- a legitimate absence, not a finding.
             return []
 
-        from butlers.api.routers.system import read_backup_facts_from_dir
+        from butlers.api.routers.system import (
+            BACKUP_STALE_THRESHOLD_HOURS,
+            read_backup_facts_from_dir,
+        )
 
         facts = read_backup_facts_from_dir(Path(backup_dir_raw))
 
@@ -338,10 +337,10 @@ class InfraStateSource:
                 )
             ]
 
-        last_backup_at = datetime.fromisoformat(facts.last_backup_at)
-        if (now - last_backup_at) <= _BACKUP_STALE_THRESHOLD:
+        if not facts.backup_stale:
             return []
 
+        last_backup_at = datetime.fromisoformat(facts.last_backup_at)
         return [
             self._build_finding(
                 exception_type="BackupStale",
@@ -349,7 +348,7 @@ class InfraStateSource:
                 raw_summary=(
                     f"Last successful backup was {last_backup_at.isoformat()} "
                     f"({_format_age(now, last_backup_at)} ago, threshold "
-                    f"{_BACKUP_STALE_THRESHOLD})"
+                    f"{BACKUP_STALE_THRESHOLD_HOURS}h)"
                 ),
                 severity=_SEVERITY_BACKUP_STALE,
                 source_butler="switchboard",

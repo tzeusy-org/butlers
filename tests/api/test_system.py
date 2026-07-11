@@ -318,9 +318,9 @@ async def test_drift_check_unavailable_returns_flag_not_503(monkeypatch):
 async def test_backups_degraded_when_env_var_unset(monkeypatch: pytest.MonkeyPatch):
     """No BUTLERS_BACKUP_DIR → backup_source_reachable=false, null fields."""
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
-    app = create_app()
+    mock_db = MagicMock(spec=DatabaseManager)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
     ) as client:
         resp = await client.get("/api/system/backups")
     assert resp.status_code == 200
@@ -328,14 +328,16 @@ async def test_backups_degraded_when_env_var_unset(monkeypatch: pytest.MonkeyPat
     assert data["last_backup_at"] is None
     assert data["backup_source_reachable"] is False
     assert data["backup_history"] == []
+    assert data["last_backup_status"] == "missing"
+    assert data["backup_stale"] is False
 
 
 async def test_backups_degraded_when_dir_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """BUTLERS_BACKUP_DIR points to a non-existent path → degraded."""
     monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path / "nonexistent"))
-    app = create_app()
+    mock_db = MagicMock(spec=DatabaseManager)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
     ) as client:
         resp = await client.get("/api/system/backups")
     assert resp.status_code == 200
@@ -347,9 +349,9 @@ async def test_backups_degraded_when_dir_missing(tmp_path: Path, monkeypatch: py
 async def test_backups_reachable_empty_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """BUTLERS_BACKUP_DIR exists but contains no dumps → reachable, empty history."""
     monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
-    app = create_app()
+    mock_db = MagicMock(spec=DatabaseManager)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
     ) as client:
         resp = await client.get("/api/system/backups")
     assert resp.status_code == 200
@@ -373,9 +375,9 @@ async def test_backups_reachable_with_files(tmp_path: Path, monkeypatch: pytest.
     os.utime(newer, (newer_ts, newer_ts))
 
     monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
-    app = create_app()
+    mock_db = MagicMock(spec=DatabaseManager)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
     ) as client:
         resp = await client.get("/api/system/backups")
     assert resp.status_code == 200
@@ -387,6 +389,174 @@ async def test_backups_reachable_with_files(tmp_path: Path, monkeypatch: pytest.
     # Most-recent file first
     assert data["backup_history"][0]["size_bytes"] == 2048
     assert data["backup_history"][1]["size_bytes"] == 1024
+    # Neither fixture is a real gzip stream -> both fail the integrity check.
+    assert data["backup_history"][0]["status"] == "corrupt"
+    assert data["last_backup_status"] == "corrupt"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/backups -- artifact verification (bu-9r3hd.5)
+#
+# Replaces the previously-hardcoded status="success": each history entry now
+# carries a real, verified verdict.
+# ---------------------------------------------------------------------------
+
+
+async def test_backups_healthy_artifact_verified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A real gzip stream above the size floor verifies as healthy."""
+    import gzip as gzip_mod
+
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill", AsyncMock(return_value=None)
+    )
+    dump = tmp_path / "butlers_2026-05-07T02-00-00.sql.gz"
+    with gzip_mod.open(dump, "wb") as f:
+        # Random (incompressible) payload -- guarantees the .gz output itself
+        # clears the size floor regardless of gzip's compression ratio.
+        f.write(os.urandom(1024))
+
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    data = resp.json()["data"]
+    assert data["backup_history"][0]["status"] == "healthy"
+    assert data["last_backup_status"] == "healthy"
+
+
+async def test_backups_corrupt_artifact_flagged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A file above the size floor that isn't valid gzip verifies as corrupt."""
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill", AsyncMock(return_value=None)
+    )
+    dump = tmp_path / "butlers_2026-05-07T02-00-00.sql.gz"
+    dump.write_bytes(b"not actually gzip data" * 20)  # > 256 bytes, invalid gzip
+
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    data = resp.json()["data"]
+    assert data["backup_history"][0]["status"] == "corrupt"
+    assert data["last_backup_status"] == "corrupt"
+
+
+async def test_backups_empty_artifact_below_size_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A file smaller than the size floor verifies as empty without opening it."""
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill", AsyncMock(return_value=None)
+    )
+    dump = tmp_path / "butlers_2026-05-07T02-00-00.sql.gz"
+    dump.write_bytes(b"x" * 10)
+
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    data = resp.json()["data"]
+    assert data["backup_history"][0]["status"] == "empty"
+    assert data["last_backup_status"] == "empty"
+
+
+async def test_backups_stale_when_older_than_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A most-recent backup older than the stale threshold sets backup_stale=True."""
+    import gzip as gzip_mod
+
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill", AsyncMock(return_value=None)
+    )
+    dump = tmp_path / "butlers_2026-04-01T00-00-00.sql.gz"
+    with gzip_mod.open(dump, "wb") as f:
+        f.write(os.urandom(1024))
+    old_ts = time.time() - (48 * 3600)  # 48h ago, past the 36h threshold
+    os.utime(dump, (old_ts, old_ts))
+
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    data = resp.json()["data"]
+    assert data["backup_stale"] is True
+
+
+# ---------------------------------------------------------------------------
+# GET /api/system/backups -- restore_drill ledger read (bu-9r3hd.5)
+# ---------------------------------------------------------------------------
+
+
+async def test_backups_restore_drill_pending_when_never_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill",
+        AsyncMock(return_value=None),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    data = resp.json()["data"]
+    assert data["restore_drill"] == {"checked_at": None, "result": "pending", "detail": None}
+
+
+async def test_backups_restore_drill_surfaces_last_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill",
+        AsyncMock(
+            return_value={
+                "checked_at": "2026-05-07T02-00-00+00:00",
+                "result": "fail",
+                "detail": "restore failed: relation already exists",
+            }
+        ),
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = AsyncMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    data = resp.json()["data"]
+    assert data["restore_drill"]["result"] == "fail"
+    assert "relation already exists" in data["restore_drill"]["detail"]
+
+
+async def test_backups_restore_drill_degraded_when_pool_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A switchboard-pool lookup failure degrades restore_drill, never 503s."""
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.side_effect = KeyError("switchboard")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/backups")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["restore_drill"]["result"] == "degraded"
 
 
 # ---------------------------------------------------------------------------

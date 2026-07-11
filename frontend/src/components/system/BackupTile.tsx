@@ -1,11 +1,21 @@
 // ---------------------------------------------------------------------------
-// BackupTile -- backup recency and source reachability
-// (bu-ngfzz.6)
+// BackupTile -- backup recency, verified artifact health, and restore-drill
+// state (bu-ngfzz.6, deepened by bu-9r3hd.5)
 //
 // Data source: useBackupFacts -> GET /api/system/backups
-// Fields used: backup_source_reachable, last_backup_at
+// Fields used: backup_source_reachable, last_backup_at, last_backup_status,
+// backup_stale, restore_drill
+//
+// bu-9r3hd.5: the "Reachable" badge used to render green purely from
+// backup_source_reachable, regardless of whether the backup artifact was
+// ever actually verified -- a fabricated all-clear. The badge now reflects
+// the REAL verified state: corrupt/empty artifact or a stale backup renders
+// as a problem, and a failed restore drill (the strongest possible check --
+// an actual restore attempt) is surfaced as its own row, never silently
+// folded into a green badge.
 // ---------------------------------------------------------------------------
 
+import type { BackupFacts, RestoreDrillFacts } from "@/api/types"
 import {
   Card,
   CardContent,
@@ -59,7 +69,98 @@ function TileError() {
 // ---------------------------------------------------------------------------
 
 /**
- * Displays backup source reachability and the most recent backup timestamp.
+ * Real, verified status badge -- never defaults to green. Absent fields (an
+ * older backend, or a fixture predating bu-9r3hd.5) render as "Unverified"
+ * rather than silently assuming health. Tailwind classes are static per
+ * branch (not built from a dynamic string) so the JIT compiler can see them.
+ */
+function BackupStatusBadge({ facts }: { facts: BackupFacts }) {
+  if (facts.last_backup_status === "corrupt" || facts.last_backup_status === "empty") {
+    return (
+      <span
+        data-testid="backup-tile-status-badge"
+        className="bg-[var(--red)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+      >
+        {facts.last_backup_status === "corrupt" ? "Corrupt" : "Empty"}
+      </span>
+    )
+  }
+  if (facts.backup_stale) {
+    return (
+      <span
+        data-testid="backup-tile-status-badge"
+        className="bg-[var(--amber)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+      >
+        Stale
+      </span>
+    )
+  }
+  if (facts.last_backup_status === "healthy") {
+    return (
+      <span
+        data-testid="backup-tile-status-badge"
+        className="bg-[var(--green)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+      >
+        Healthy
+      </span>
+    )
+  }
+  return (
+    <span
+      data-testid="backup-tile-status-badge"
+      className="bg-[var(--amber)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+    >
+      Unverified
+    </span>
+  )
+}
+
+function RestoreDrillRow({ drill }: { drill: RestoreDrillFacts | undefined }) {
+  if (!drill || drill.result === "pending") {
+    return (
+      <div>
+        <dt className="text-muted-foreground text-xs">Restore drill</dt>
+        <dd data-testid="backup-tile-drill-pending" className="text-muted-foreground text-sm">
+          No drill yet
+        </dd>
+      </div>
+    )
+  }
+
+  if (drill.result === "pass") {
+    return (
+      <div>
+        <dt className="text-muted-foreground text-xs">Restore drill</dt>
+        <dd data-testid="backup-tile-drill-pass" className="text-sm">
+          <span className="text-[var(--green)]">Passed</span>
+          {drill.checked_at ? (
+            <>
+              {" "}
+              <Time value={drill.checked_at} mode="relative" />
+            </>
+          ) : null}
+        </dd>
+      </div>
+    )
+  }
+
+  // "fail" or "degraded" -- both are real problems, never silently dropped.
+  return (
+    <div>
+      <dt className="text-muted-foreground text-xs">Restore drill</dt>
+      <dd data-testid="backup-tile-drill-problem" className="text-sm">
+        <span className="text-[var(--red-text)]">
+          {drill.result === "fail" ? "Failed" : "Unavailable"}
+        </span>
+        {drill.detail ? <span className="text-muted-foreground"> -- {drill.detail}</span> : null}
+      </dd>
+    </div>
+  )
+}
+
+/**
+ * Displays backup recency, a verified artifact-health badge, and the most
+ * recent restore-drill result.
  *
  * When the backup source is unreachable (or not yet configured), renders a
  * graceful unavailable notice rather than an error state. The endpoint always
@@ -102,12 +203,7 @@ export function BackupTile() {
           <div>
             <dt className="text-muted-foreground text-xs">Status</dt>
             <dd>
-              <span
-                data-testid="backup-tile-reachable-badge"
-                className="bg-[var(--green)] text-white inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
-              >
-                Reachable
-              </span>
+              <BackupStatusBadge facts={facts} />
             </dd>
           </div>
           <div>
@@ -120,6 +216,7 @@ export function BackupTile() {
               )}
             </dd>
           </div>
+          <RestoreDrillRow drill={facts.restore_drill} />
         </dl>
       </CardContent>
     </Card>
