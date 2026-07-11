@@ -44,6 +44,13 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
   - A mono sub-label describing context (`+2 vs prior 24h`, `−12m vs 7d`, `+4pp vs prior week`, `N awaiting CI · M escalated`, where N = `active_breakdown.awaiting_ci` and M = `active_breakdown.escalated_open_cases`)
 - **AND** when MTTR is computed over an empty sample, the cell shows `—` and the sub-label reads `no terminal cases in 24h`
 
+#### Scenario: Force-patrol control surfaces the honest outcome
+- **WHEN** a user activates the "Force patrol" control in the sticky top bar and confirms the prompt
+- **THEN** the dashboard calls `POST /api/qa/force-patrol` and branches the toast on the response's `triggered` flag, not on the HTTP 202 accept alone (the endpoint accepts the request even when no patrol runs):
+  - `triggered: true` → a success toast carrying the response `message`
+  - `triggered: false` or absent → a warning toast carrying the response `message`, which names why no patrol ran (e.g. the QA daemon is unreachable, or a cycle is already in progress) — never a success toast
+- **AND** a transport error (non-2xx / network failure) renders an error toast naming the failure
+
 ### Requirement: Patrol Detail Page
 The dashboard SHALL have a drill-down page at `/qa/patrols/:patrolId` rendered in the Dispatch design language. It narrates a single patrol cycle as a rule-separated list with mono eyebrows, not as a tabular dashboard.
 

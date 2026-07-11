@@ -458,7 +458,17 @@ export default function QaOverviewPage() {
     if (!window.confirm("Trigger an immediate QA patrol cycle now?")) return;
     forcePatrol.mutate(undefined, {
       onSuccess: (res) => {
-        toast.success(res.data?.message ?? "Patrol triggered");
+        // The endpoint returns HTTP 202 even when no patrol actually ran -- the
+        // QA daemon may be unreachable or a cycle may already be in progress.
+        // `triggered` is the honest signal; a 2xx alone is not. Only toast
+        // success when a patrol was genuinely triggered; otherwise surface the
+        // response's reason as a warning so a suppressed dispatch is not
+        // mistaken for a dispatched one (bu-533qx.4).
+        if (res.data?.triggered) {
+          toast.success(res.data.message ?? "Patrol triggered");
+        } else {
+          toast.warning(res.data?.message ?? "Patrol not triggered");
+        }
       },
       onError: (err) => {
         toast.error(

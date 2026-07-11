@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 /**
  * Tests for QaOverviewPage (dossier shell, bu-21uf7).
  *
@@ -10,12 +12,30 @@
  * - bu-86c4c.19: severity/since/state/butler filters are all URL-persisted
  *   (folded in from the retired /qa/investigations index), and the patrol
  *   pulse strip links the overview to patrol detail
+ * - bu-533qx.4: the Force-patrol control toasts on the honest `triggered`
+ *   outcome, not unconditionally on a 2xx accept
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+// sonner's real export is a callable toast() carrying .success/.error/.warning
+// statics. QaOverviewPage uses the statics; mock them so the force-patrol
+// branch can be asserted without a real toast surface.
+vi.mock("sonner", () => {
+  const toastFn = Object.assign(vi.fn(), {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  });
+  return { toast: toastFn };
+});
+
+import { toast } from "sonner";
 
 import QaOverviewPage from "@/pages/QaOverviewPage";
 
@@ -56,6 +76,12 @@ import { useButlers } from "@/hooks/use-butlers";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
+
+// Opt into React's act() environment so the interactive force-patrol specs
+// below (createRoot + act) do not emit "not configured to support act(...)".
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -590,5 +616,134 @@ describe("QaOverviewPage -- patrol pulse strip", () => {
     const window = html.slice(linkIdx, linkIdx + 300);
     expect(window).toContain("bg-[var(--amber)]");
     expect(window).not.toContain("bg-[var(--green)]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Force-patrol toast honesty (bu-533qx.4)
+//
+// The POST /api/qa/force-patrol endpoint returns HTTP 202 even when no patrol
+// actually ran (QA daemon unreachable, or a cycle already in progress). The
+// control MUST branch on the response's `triggered` flag: success toast only
+// when triggered, warning toast (naming the reason) when suppressed, error
+// toast on transport failure.
+// ---------------------------------------------------------------------------
+
+describe("QaOverviewPage -- force-patrol toast honesty", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let confirmSpy: AnyMock;
+  // Captures the callbacks the page hands to forcePatrol.mutate() so the test
+  // can drive onSuccess/onError with fabricated responses.
+  let mutateArgs: Array<[unknown, { onSuccess?: (r: unknown) => void; onError?: (e: unknown) => void }]>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mutateArgs = [];
+    const mutate = vi.fn((vars: unknown, opts: AnyMock) => {
+      mutateArgs.push([vars, opts]);
+    });
+
+    (useQaSummary as AnyMock).mockReturnValue({
+      data: { data: MOCK_SUMMARY },
+      isLoading: false,
+      isError: false,
+    });
+    (useForceQaPatrol as AnyMock).mockReturnValue({ mutate, isPending: false });
+    (useQaPatrols as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useButlers as AnyMock).mockReturnValue({ data: { data: [] }, isLoading: false, isError: false });
+    (useQaCases as AnyMock).mockReturnValue({
+      data: { data: [MOCK_CASE_1] },
+      isLoading: false,
+      isError: false,
+    });
+    (useRemoveDismissal as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useResetQaCircuitBreaker as AnyMock).mockReturnValue({ mutate: vi.fn(), isPending: false });
+    (useQaCase as AnyMock).mockReturnValue({ data: undefined, isLoading: false, isError: false });
+    (useQaCaseJournal as AnyMock).mockReturnValue({ data: undefined });
+
+    confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <MemoryRouter initialEntries={["/qa"]}>
+            <QaOverviewPage />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    confirmSpy.mockRestore();
+  });
+
+  function clickForcePatrol() {
+    const btn = container.querySelector<HTMLButtonElement>('button[aria-label="Force patrol"]');
+    expect(btn).not.toBeNull();
+    act(() => {
+      btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    // The page calls forcePatrol.mutate(undefined, { onSuccess, onError }).
+    expect(mutateArgs).toHaveLength(1);
+    return mutateArgs[0][1];
+  }
+
+  it("warns (not success) when the response reports the patrol was NOT triggered", () => {
+    const opts = clickForcePatrol();
+    act(() => {
+      opts.onSuccess?.({
+        data: {
+          accepted: false,
+          triggered: false,
+          message: "Force patrol unavailable — QA daemon unreachable, no patrol triggered.",
+        },
+      });
+    });
+
+    // Mutation-strength: if the toast stayed unconditional this warning path
+    // would never fire and success would fire on a suppressed dispatch.
+    expect(toast.warning).toHaveBeenCalledWith(
+      "Force patrol unavailable — QA daemon unreachable, no patrol triggered.",
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("warns when `triggered` is absent (treat unknown as not-triggered)", () => {
+    const opts = clickForcePatrol();
+    act(() => {
+      opts.onSuccess?.({ data: { accepted: false, message: "Patrol skipped: already running" } });
+    });
+
+    expect(toast.warning).toHaveBeenCalledWith("Patrol skipped: already running");
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("toasts success when the response reports the patrol WAS triggered", () => {
+    const opts = clickForcePatrol();
+    act(() => {
+      opts.onSuccess?.({
+        data: { accepted: true, triggered: true, message: "Patrol triggered: clean (0 findings)" },
+      });
+    });
+
+    expect(toast.success).toHaveBeenCalledWith("Patrol triggered: clean (0 findings)");
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("toasts an error on transport failure", () => {
+    const opts = clickForcePatrol();
+    act(() => {
+      opts.onError?.(new Error("network down"));
+    });
+
+    expect(toast.error).toHaveBeenCalledWith("Force patrol failed: network down");
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.warning).not.toHaveBeenCalled();
   });
 });
