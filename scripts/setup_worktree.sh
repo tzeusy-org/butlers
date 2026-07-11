@@ -8,22 +8,31 @@
 
 set -euo pipefail
 
-# Detect the main repo root by walking up from the worktree until we find
-# a directory whose .git is a directory (not a file).
+# Detect the main repo root via git's own common-dir resolution.
+#
+# NOTE: this repo's worktrees live outside the main repo tree (e.g.
+# /home/tze/.butlers-worktrees/<name>, per AGENTS.md), not nested inside it,
+# so a parent-directory walk from the worktree can never reach the main repo
+# root. `git rev-parse --git-common-dir` is the mechanism git (and bd) use
+# internally to find the shared .git across all linked worktrees; the main
+# repo root is simply its parent directory.
 _find_main_repo_root() {
-  local current_dir
-  current_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  local worktree_dir git_common_dir
+  worktree_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-  while [ "$current_dir" != "/" ]; do
-    if [ -d "$current_dir/.git" ] && [ ! -f "$current_dir/.git" ]; then
-      echo "$current_dir"
-      return 0
-    fi
-    current_dir="$(dirname "$current_dir")"
-  done
+  if ! git_common_dir="$(git -C "$worktree_dir" rev-parse --git-common-dir 2>/dev/null)"; then
+    echo "Error: Could not determine git common dir from $worktree_dir" >&2
+    return 1
+  fi
 
-  echo "Error: Could not find main repo root" >&2
-  return 1
+  # --git-common-dir may be returned relative to $worktree_dir; resolve to
+  # absolute before taking the parent.
+  case "$git_common_dir" in
+    /*) : ;;
+    *) git_common_dir="$worktree_dir/$git_common_dir" ;;
+  esac
+
+  (cd "$git_common_dir/.." && pwd)
 }
 
 MAIN_REPO_ROOT="$(_find_main_repo_root)"
@@ -62,7 +71,28 @@ done
 
 if [ "$SYMLINKED_COUNT" -eq 0 ]; then
   echo "No caches available to symlink (main repo hasn't run npm install yet)."
-  exit 0
+else
+  echo "Symlinked $SYMLINKED_COUNT cache directory(ies) from main repo."
 fi
 
-echo "Symlinked $SYMLINKED_COUNT cache directory(ies) from main repo."
+# Copy the machine-local Dolt server pointer into the new worktree.
+#
+# .beads/metadata.json is untracked (gitignored, per-machine runtime state)
+# and is NOT carried into a fresh `git worktree add` checkout. Without it, bd
+# invoked from git hooks (post-checkout/pre-commit/etc., which fire on every
+# checkout/commit inside the worktree) can fail to discover the shared Dolt
+# server and fall back to a from-scratch import of the multi-MB
+# .beads/issues.export.jsonl — an 8+ minute operation that contends the
+# shared :3307 Dolt server for every agent working in the fleet (bu-dna8i).
+BEADS_METADATA_SOURCE="${MAIN_REPO_ROOT}/.beads/metadata.json"
+BEADS_METADATA_TARGET="${WORKTREE_ROOT}/.beads/metadata.json"
+
+if [ -f "$BEADS_METADATA_SOURCE" ]; then
+  if [ ! -f "$BEADS_METADATA_TARGET" ]; then
+    mkdir -p "${WORKTREE_ROOT}/.beads"
+    cp "$BEADS_METADATA_SOURCE" "$BEADS_METADATA_TARGET"
+    echo "Copied .beads/metadata.json from main repo."
+  fi
+else
+  echo "Warning: ${BEADS_METADATA_SOURCE} not found; skipping .beads/metadata.json copy." >&2
+fi

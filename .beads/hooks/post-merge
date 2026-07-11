@@ -1,4 +1,9 @@
 #!/usr/bin/env sh
+# Disable bd's post-merge JSONL->Dolt auto-import (bu-dna8i). See
+# .beads/hooks/post-checkout for the full explanation of why
+# .beads/config.yaml's `import.auto: false` is a no-op on bd v1.0.4 and why
+# this env var is the actual fix.
+export BD_IMPORT_AUTO=false
 # --- BEGIN BEADS INTEGRATION v0.58.0 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then

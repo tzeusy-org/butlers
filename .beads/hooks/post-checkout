@@ -1,4 +1,14 @@
 #!/usr/bin/env sh
+# Disable bd's post-checkout JSONL->Dolt auto-import (bu-dna8i). The
+# `import.auto: false` entry in .beads/config.yaml is NOT effective on bd
+# v1.0.4 — that build's YAML config loader does not wire up the `import.auto`
+# key (confirmed empirically: `bd config show` reports it as "(default)"
+# even when config.yaml sets it, and `bd config get import.auto` reports
+# "(not set)" from a repo root whose checked-out config.yaml contains the
+# line). The env var below IS honored (`bd config show` reports
+# "(env: BD_IMPORT_AUTO)") and is outside the BEADS INTEGRATION markers, so
+# `bd doctor --fix` hook regeneration preserves it. See PR #3144 review.
+export BD_IMPORT_AUTO=false
 # --- BEGIN BEADS INTEGRATION v0.58.0 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then
