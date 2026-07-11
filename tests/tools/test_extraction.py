@@ -29,8 +29,17 @@ class FakeSpawnerResult:
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with switchboard tables."""
-    async with provisioned_postgres_pool() as p:
+    """Provision a fresh database with switchboard tables.
+
+    Scoped to the real ``switchboard`` schema (not ``public``) to mirror
+    production's one-db/multi-schema topology — matching
+    ``roster/switchboard/tests/test_tools.py`` — so that
+    resolve_routing_target()'s schema-qualified ``switchboard.butler_registry``
+    query resolves against the same tables this fixture's bare/unqualified
+    references create via search_path.
+    """
+    async with provisioned_postgres_pool(schema="switchboard") as p:
+        await p.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
         await p.execute("""
             CREATE TABLE IF NOT EXISTS butler_registry (
                 name TEXT PRIMARY KEY,
@@ -410,8 +419,15 @@ class TestExtractSignals:
 
 @pytest.fixture
 async def calendar_pool(provisioned_postgres_pool):
-    """Provision switchboard tables plus the calendar proposals store."""
-    async with provisioned_postgres_pool() as p:
+    """Provision switchboard tables plus the calendar proposals store.
+
+    Scoped to the real ``switchboard`` schema (see the ``pool`` fixture above)
+    so registry lookups resolve correctly; ``calendar_event_proposals`` is a
+    core-chain table (core_136) and stays explicitly ``public.``-qualified so
+    it isn't accidentally created under ``switchboard`` by the search_path.
+    """
+    async with provisioned_postgres_pool(schema="switchboard") as p:
+        await p.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
         await p.execute("""
             CREATE TABLE IF NOT EXISTS butler_registry (
                 name TEXT PRIMARY KEY,
@@ -457,7 +473,7 @@ async def calendar_pool(provisioned_postgres_pool):
         """)
         # Mirrors core_136 (FK on accepted_event_id dropped for fixture simplicity).
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS calendar_event_proposals (
+            CREATE TABLE IF NOT EXISTS public.calendar_event_proposals (
                 id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 butler_name      TEXT NOT NULL,
                 title            TEXT NOT NULL,
@@ -484,7 +500,7 @@ async def calendar_pool(provisioned_postgres_pool):
         """)
         await p.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS uq_calendar_event_proposals_source_event_id
-            ON calendar_event_proposals (source_event_id)
+            ON public.calendar_event_proposals (source_event_id)
             WHERE source_event_id IS NOT NULL
         """)
         yield p

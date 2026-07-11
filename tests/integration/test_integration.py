@@ -55,8 +55,16 @@ async def _make_pool(postgres_container, *chains: str):
     if not chains:
         chains = ("core",)
 
+    # The "switchboard" chain lands in the real ``switchboard`` schema (matching
+    # production one-db/multi-schema topology), so the pool's search_path must
+    # include it — otherwise resolve_routing_target()'s schema-qualified
+    # ``switchboard.butler_registry`` query and this fixture's bare/unqualified
+    # references disagree on where the tables live.
+    schema = "switchboard" if "switchboard" in chains else None
+
     db = Database(
         db_name=_unique_db_name(),
+        schema=schema,
         host=postgres_container.get_container_host_ip(),
         port=int(postgres_container.get_exposed_port(5432)),
         user=postgres_container.username,
@@ -68,7 +76,9 @@ async def _make_pool(postgres_container, *chains: str):
 
     db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
     for chain in chains:
-        await run_migrations(db_url, chain=chain)
+        await run_migrations(
+            db_url, chain=chain, schema="switchboard" if chain == "switchboard" else None
+        )
 
     pool: _asyncpg.Pool = await db.connect()
     return pool
