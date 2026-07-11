@@ -1950,6 +1950,96 @@ describe("TimelineTab — failed-load retry button", () => {
 });
 
 // ---------------------------------------------------------------------------
+// TimelineTab — live-status "Down" signal (bu-jad4j.5)
+//
+// The events head poll's isError is threaded to the parent page through the
+// onFreshnessChange callback's second argument so the header LiveStatusBadge
+// can render a distinct "Down" state instead of the muted "Idle" dot a
+// genuinely quiet pipeline gets — the dead-API-impersonates-idle defect
+// bu-qvnce.2 fixed on /timeline, now closed on the badge's original home.
+// ---------------------------------------------------------------------------
+
+describe("TimelineTab — reports live-feed down-ness via onFreshnessChange", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = makeQueryClient();
+    setupDefaultMocks();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    queryClient.clear();
+    vi.clearAllMocks();
+  });
+
+  function renderWithFreshness(onFreshnessChange: (ra: string | null, isDown: boolean) => void) {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <TimelineTab isActive={true} onFreshnessChange={onFreshnessChange} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("reports isDown=true (with the stale received_at) when the head poll errors while cached events remain", () => {
+    // React Query keeps the last successful pages on `data` while a background
+    // refetch fails, so `isError` is true even though stale events are still
+    // rendered — the parent must hear about the failure, not read it as calm.
+    const onFreshnessChange = vi.fn();
+    vi.mocked(useIngestionEvents).mockReturnValue({
+      data: {
+        pages: [
+          {
+            data: [makeEvent({ id: "aabbccdd-0000-0000-0000-0000000000e1", received_at: "2026-01-01T10:00:00Z" })],
+            meta: { next_cursor: null, has_more: false },
+          },
+        ],
+        pageParams: [null],
+      },
+      isLoading: false,
+      isError: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useIngestionEvents>);
+
+    renderWithFreshness(onFreshnessChange);
+
+    expect(onFreshnessChange).toHaveBeenCalled();
+    const lastCall = onFreshnessChange.mock.calls[onFreshnessChange.mock.calls.length - 1];
+    expect(lastCall[0]).toBe("2026-01-01T10:00:00Z");
+    expect(lastCall[1]).toBe(true);
+  });
+
+  it("reports isDown=false when the head poll is healthy", () => {
+    const onFreshnessChange = vi.fn();
+    vi.mocked(useIngestionEvents).mockReturnValue(
+      makeInfiniteEventsResult([
+        makeEvent({ id: "aabbccdd-0000-0000-0000-0000000000e2", received_at: "2026-01-01T10:00:00Z" }),
+      ]) as unknown as ReturnType<typeof useIngestionEvents>,
+    );
+
+    renderWithFreshness(onFreshnessChange);
+
+    expect(onFreshnessChange).toHaveBeenCalled();
+    const lastCall = onFreshnessChange.mock.calls[onFreshnessChange.mock.calls.length - 1];
+    expect(lastCall[0]).toBe("2026-01-01T10:00:00Z");
+    expect(lastCall[1]).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TimelineTab — sender title attribute (bu-4utdw.4 honesty fix)
 // ---------------------------------------------------------------------------
 

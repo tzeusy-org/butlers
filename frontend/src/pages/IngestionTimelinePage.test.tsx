@@ -7,9 +7,12 @@
  * - "Idle"       → TimelineTab reports null (empty pipeline, no events)
  * - "Live"       → TimelineTab reports a received_at within the last 60 s
  * - "Idle"       → TimelineTab reports a received_at older than 60 s
+ * - "Down"       → TimelineTab reports isDown=true (events head poll erroring),
+ *                  which must win over any freshness value (bu-jad4j.5)
  *
  * TimelineTab is mocked to a stub that accepts and calls onFreshnessChange
- * so we can control what freshness value the page receives.
+ * (with an `isDown` flag) so we can control what freshness/health the page
+ * receives.
  */
 
 import React, { type ComponentProps } from 'react'
@@ -22,10 +25,14 @@ import { MemoryRouter } from 'react-router'
 // Mock TimelineTab so we can control onFreshnessChange calls
 // ---------------------------------------------------------------------------
 
-let capturedOnFreshnessChange: ((ra: string | null) => void) | undefined
+let capturedOnFreshnessChange: ((ra: string | null, isDown: boolean) => void) | undefined
 
 vi.mock('@/components/ingestion/TimelineTab', () => ({
-  TimelineTab: (props: ComponentProps<'div'> & { onFreshnessChange?: (ra: string | null) => void }) => {
+  TimelineTab: (
+    props: ComponentProps<'div'> & {
+      onFreshnessChange?: (ra: string | null, isDown: boolean) => void
+    },
+  ) => {
     capturedOnFreshnessChange = props.onFreshnessChange
     return <div data-testid="timeline-tab-stub">Timeline tab</div>
   },
@@ -111,7 +118,7 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
   it('shows "Live" when TimelineTab reports a recent received_at', async () => {
     await renderPage()
     act(() => {
-      capturedOnFreshnessChange?.(recentIso())
+      capturedOnFreshnessChange?.(recentIso(), false)
     })
     expect(container.querySelector('[data-testid="live-status-badge-live"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="live-status-badge-idle"]')).toBeNull()
@@ -120,7 +127,7 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
   it('shows "Idle" when TimelineTab reports null (empty pipeline)', async () => {
     await renderPage()
     act(() => {
-      capturedOnFreshnessChange?.(null)
+      capturedOnFreshnessChange?.(null, false)
     })
     expect(container.querySelector('[data-testid="live-status-badge-idle"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="live-status-badge-live"]')).toBeNull()
@@ -129,7 +136,7 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
   it('shows "Idle" when TimelineTab reports a stale received_at', async () => {
     await renderPage()
     act(() => {
-      capturedOnFreshnessChange?.(staleIso())
+      capturedOnFreshnessChange?.(staleIso(), false)
     })
     expect(container.querySelector('[data-testid="live-status-badge-idle"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="live-status-badge-live"]')).toBeNull()
@@ -138,12 +145,12 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
   it('transitions from "Live" to "Idle" when freshness update brings a stale timestamp', async () => {
     await renderPage()
     act(() => {
-      capturedOnFreshnessChange?.(recentIso())
+      capturedOnFreshnessChange?.(recentIso(), false)
     })
     expect(container.querySelector('[data-testid="live-status-badge-live"]')).not.toBeNull()
 
     act(() => {
-      capturedOnFreshnessChange?.(staleIso())
+      capturedOnFreshnessChange?.(staleIso(), false)
     })
     expect(container.querySelector('[data-testid="live-status-badge-idle"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="live-status-badge-live"]')).toBeNull()
@@ -154,7 +161,7 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
     try {
       await renderPage()
       act(() => {
-        capturedOnFreshnessChange?.(recentIso())
+        capturedOnFreshnessChange?.(recentIso(), false)
       })
       expect(container.querySelector('[data-testid="live-status-badge-live"]')).not.toBeNull()
 
@@ -171,6 +178,44 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // A dead events poll must not decay into the same muted "Idle" dot a
+  // genuinely quiet pipeline gets — the dead-API-impersonates-idle defect
+  // bu-qvnce.2 fixed on /timeline, now closed on the badge's original home
+  // (bu-jad4j.5). This test fails if isDown is not threaded into the badge:
+  // an unwired page would render "Live" (a recent timestamp is reported).
+  it('shows "Down" when TimelineTab reports isDown=true, overriding a recent received_at', async () => {
+    await renderPage()
+    act(() => {
+      capturedOnFreshnessChange?.(recentIso(), true)
+    })
+    expect(container.querySelector('[data-testid="live-status-badge-down"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="live-status-badge-live"]')).toBeNull()
+    expect(container.querySelector('[data-testid="live-status-badge-idle"]')).toBeNull()
+  })
+
+  it('keeps "Idle" (not "Down") when the feed is merely quiet (isDown=false)', async () => {
+    await renderPage()
+    act(() => {
+      capturedOnFreshnessChange?.(staleIso(), false)
+    })
+    expect(container.querySelector('[data-testid="live-status-badge-idle"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="live-status-badge-down"]')).toBeNull()
+  })
+
+  it('recovers from "Down" to "Live" when a later report clears isDown', async () => {
+    await renderPage()
+    act(() => {
+      capturedOnFreshnessChange?.(recentIso(), true)
+    })
+    expect(container.querySelector('[data-testid="live-status-badge-down"]')).not.toBeNull()
+
+    act(() => {
+      capturedOnFreshnessChange?.(recentIso(), false)
+    })
+    expect(container.querySelector('[data-testid="live-status-badge-live"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="live-status-badge-down"]')).toBeNull()
   })
 
   it('renders the range-driven page headline, defaulting to the 24h range', async () => {

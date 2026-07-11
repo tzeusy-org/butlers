@@ -18,6 +18,12 @@
  * latestReceivedAt changed, so a pipeline that went quiet kept showing a
  * stale "Live" forever.
  *
+ * onFreshnessChange also carries an `isDown` flag (the events head poll's
+ * isError), threaded into the badge's distinct "Down" state so a dead API
+ * no longer decays into the same muted "Idle" dot a genuinely quiet
+ * pipeline gets — the dead-API-impersonates-idle defect bu-qvnce.2 fixed on
+ * /timeline, now closed on the badge's original home (bu-jad4j.5).
+ *
  * Spec: openspec/changes/complete-ingestion-redesign-parity/specs/
  *       dashboard-ingestion-dispatch-console/spec.md §"Timeline route replaces legacy tab landing"
  *       §"Timeline Ledger" — header band with live freshness/status pill
@@ -50,8 +56,16 @@ export default function IngestionTimelinePage() {
   // undefined = still loading; null = empty pipeline; string = has events.
   const [latestReceivedAt, setLatestReceivedAt] = useState<string | null | undefined>(undefined)
 
-  const handleFreshnessChange = useCallback((ra: string | null) => {
+  // True whenever TimelineTab's events head poll is currently erroring. Kept
+  // separate from freshness so a dead API renders the badge's distinct "Down"
+  // state instead of the muted "Idle" dot a genuinely quiet pipeline gets —
+  // the exact dead-API-impersonates-idle defect bu-qvnce.2 fixed on /timeline,
+  // now closed on the badge's original home (bu-jad4j.5).
+  const [isLiveFeedDown, setIsLiveFeedDown] = useState(false)
+
+  const handleFreshnessChange = useCallback((ra: string | null, isDown: boolean) => {
     setLatestReceivedAt(ra)
+    setIsLiveFeedDown(isDown)
   }, [])
 
   // Range-driven headline: defaults to TimelineTab's own default ("24h")
@@ -67,7 +81,7 @@ export default function IngestionTimelinePage() {
         eyebrow="Ingestion · timeline"
         headline={RANGE_HEADLINE[activeRange]}
         description="Every external signal the house received, with end-to-end pipeline detail behind each row."
-        aside={<LiveStatusBadge latestReceivedAt={latestReceivedAt} />}
+        aside={<LiveStatusBadge latestReceivedAt={latestReceivedAt} isDown={isLiveFeedDown} />}
       />
       <IngestionSubNav />
       <DispatchSurface>

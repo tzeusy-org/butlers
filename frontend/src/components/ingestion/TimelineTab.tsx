@@ -1360,8 +1360,14 @@ interface TimelineTabProps {
    * Called whenever the latest event's received_at changes.
    * The parent page uses this to drive the live-status badge honestly.
    * Passes null when no events have loaded yet.
+   *
+   * `isDown` is true whenever the events head poll is currently erroring —
+   * even if stale cached events are still on screen. Without it, a dead API
+   * after the first successful paint decays to the same muted "Idle" dot a
+   * genuinely quiet pipeline gets, silently impersonating a calm period
+   * (bu-jad4j.5, mirroring the /timeline fix in bu-qvnce.2).
    */
-  onFreshnessChange?: (latestReceivedAt: string | null) => void;
+  onFreshnessChange?: (latestReceivedAt: string | null, isDown: boolean) => void;
   /**
    * Called whenever the active range changes (and once on mount). The parent
    * page uses this to make the header headline range-driven instead of a
@@ -2030,9 +2036,13 @@ export function TimelineTab({
   const latestReceivedAt = infiniteData?.pages[0]?.data[0]?.received_at ?? null;
   useEffect(() => {
     if (!isLoading && onFreshnessChange) {
-      onFreshnessChange(latestReceivedAt);
+      // `isError` stays true while React Query retains the last successful
+      // pages, so a head poll that starts failing after the first paint is
+      // reported as down even though stale events are still rendered — the
+      // badge distinguishes "Down" from a quiet "Idle" (bu-jad4j.5).
+      onFreshnessChange(latestReceivedAt, !!isError);
     }
-  }, [latestReceivedAt, isLoading, onFreshnessChange]);
+  }, [latestReceivedAt, isLoading, isError, onFreshnessChange]);
 
   // Evict stale overrides — syncing optimistic overrides to freshly-fetched
   // server state (external system) is the sanctioned effect use case; the
