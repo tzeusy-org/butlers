@@ -593,6 +593,13 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
+      # bu-ckkpz.4: read-only mount of ONLY the bd JSONL export (never the
+      # whole .beads/ dir -- that also holds .beads-credential-key, which
+      # must never enter a container). Feeds Switchboard's
+      # decision-review-digest / decision-escalation-check jobs; see
+      # butlers.jobs.decision_review's module docstring for why this is the
+      # only path from beads issue data into the running system today.
+      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41100/health || exit 1"]
       interval: 5s
@@ -721,6 +728,9 @@ services:
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
       - runtime_gemini:/root/.gemini
+      # bu-ckkpz.4: see butlers-up's own volumes block above for why only
+      # this one file is mounted, never the whole .beads/ dir.
+      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     networks:
       db:
       backend:

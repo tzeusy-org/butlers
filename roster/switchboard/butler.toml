@@ -96,3 +96,24 @@ name = "rule-promotion-trigger"
 cron = "50 * * * *"
 dispatch_mode = "job"
 job_name = "rule_promotion_trigger"
+
+# Decision-review digest (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk") —
+# weekly digest of open owner-decision beads ("N decisions waiting, oldest
+# Xd"), Monday 09:00 UTC. Reads the beads JSONL export bind-mounted into this
+# container (see docker-compose.yml + butlers.jobs.decision_review's module
+# docstring for why: no butler daemon has a live path to the Dolt/bd server).
+[[butler.schedule]]
+name = "decision-review-digest"
+cron = "0 9 * * 1"
+dispatch_mode = "job"
+job_name = "decision_review_digest"
+
+# P1/deploy decision-block age escalation (bu-ckkpz.4) — every 6h, escalates
+# once (via the same notify/attention-ledger path, debounced through
+# public.audit_log) when an open decision bead has blocked a P1 bug or a
+# deploy-marked bead for more than 48h.
+[[butler.schedule]]
+name = "decision-escalation-check"
+cron = "0 */6 * * *"
+dispatch_mode = "job"
+job_name = "decision_escalation_check"

@@ -46,6 +46,30 @@ def test_butler_toml_has_eligibility_sweep_schedule():
     assert sweep["cron"] == "*/5 * * * *"
 
 
+def test_butler_toml_has_decision_review_schedules():
+    """bu-ckkpz.4: weekly decision-review digest + 6h P1/deploy escalation check."""
+    import tomllib
+    from pathlib import Path
+
+    toml_path = Path(__file__).resolve().parents[2] / "roster" / "switchboard" / "butler.toml"
+    with toml_path.open("rb") as fh:
+        config = tomllib.load(fh)
+
+    schedules = config.get("butler", {}).get("schedule", [])
+
+    digest = next((s for s in schedules if s["name"] == "decision-review-digest"), None)
+    assert digest is not None
+    assert digest["cron"] == "0 9 * * 1"
+    assert digest["dispatch_mode"] == "job"
+    assert digest["job_name"] == "decision_review_digest"
+
+    escalation = next((s for s in schedules if s["name"] == "decision-escalation-check"), None)
+    assert escalation is not None
+    assert escalation["cron"] == "0 */6 * * *"
+    assert escalation["dispatch_mode"] == "job"
+    assert escalation["job_name"] == "decision_escalation_check"
+
+
 async def test_eligibility_sweep_state_transitions():
     """Butler transitions to stale/quarantined when TTL thresholds are exceeded."""
     from butlers.tools.switchboard.registry.sweep import run_eligibility_sweep

@@ -113,6 +113,34 @@ async def _run_switchboard_rule_promotion_trigger_job(
     return await run_rule_promotion_trigger_job(pool, job_args)
 
 
+async def _run_switchboard_decision_review_digest_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the weekly decision-review digest job for the Switchboard butler.
+
+    Delegates to ``butlers.jobs.decision_review.run_decision_review_digest``
+    (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk").
+    """
+    from butlers.jobs.decision_review import run_decision_review_digest
+
+    return await run_decision_review_digest(pool, job_args)
+
+
+async def _run_switchboard_decision_escalation_check_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the P1/deploy decision-block age-escalation check for Switchboard.
+
+    Delegates to ``butlers.jobs.decision_review.run_decision_escalation_check``
+    (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk").
+    """
+    from butlers.jobs.decision_review import run_decision_escalation_check
+
+    return await run_decision_escalation_check(pool, job_args)
+
+
 def _build_switchboard_insight_notify_fn(
     pool: asyncpg.Pool,
 ) -> Any:
@@ -1679,6 +1707,8 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "insight_urgent_subcycle": _run_switchboard_insight_urgent_subcycle_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
+            "decision_review_digest": _run_switchboard_decision_review_digest_job,
+            "decision_escalation_check": _run_switchboard_decision_escalation_check_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },

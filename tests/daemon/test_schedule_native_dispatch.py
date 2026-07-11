@@ -36,7 +36,11 @@ class TestNativeScheduleDispatch:
             missing = expected_memory_jobs - set(jobs)
             assert not missing, f"Missing memory jobs for {butler_name}: {sorted(missing)}"
         switchboard_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("switchboard", {})
-        assert {"eligibility_sweep"} <= set(switchboard_jobs)
+        assert {
+            "eligibility_sweep",
+            "decision_review_digest",
+            "decision_escalation_check",
+        } <= set(switchboard_jobs)
         removed = {
             "connector_stats_hourly_rollup",
             "connector_stats_daily_rollup",

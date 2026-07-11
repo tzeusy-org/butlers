@@ -30,8 +30,15 @@ small, known set of egress paths:
   docstring for why it goes through the MCP tool rather than an in-process
   ``deliver()`` call, even though ``deliver()``/``route()``'s
   ``butler_registry`` lookups are now schema-qualified — bu-tdd4k.2).
+- ``butlers.jobs.decision_review`` (bu-ckkpz.4) — Switchboard's weekly
+  decision-review digest and P1/deploy age-escalation crons. Run inside the
+  Switchboard daemon process itself, so unlike Home's crons above they call
+  ``switchboard.notification.deliver`` in-process (no MCP round-trip needed
+  — mirrors ``secrets_lifecycle``'s composition, not Home's). See that
+  module's docstring for why the underlying beads data is read from a
+  bind-mounted JSONL file rather than a live query.
 
-All four call :func:`record_attention_event` at each terminal decision point
+All five call :func:`record_attention_event` at each terminal decision point
 so a notification is never silently dropped: it is recorded as delivered,
 coalesced (folded into a digest), deferred (retryable later), or suppressed
 (quiet hours / context bus), always with a machine-readable ``reason``.
