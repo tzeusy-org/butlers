@@ -172,6 +172,32 @@ describe("NotificationsPage", () => {
     expect(html).toContain("No notifications found");
   });
 
+  it("wires source_available=false into a named degraded feed state, not the empty state (bu-jad4j.2)", () => {
+    // The Switchboard notifications source is unreachable: stats em-dashes its
+    // tiles and the feed names the degraded source rather than claiming a clear
+    // stream. An empty page here is NOT a truthful "no notifications" result.
+    setStatsState({
+      data: {
+        data: { total: 0, sent: 0, failed: 0, by_channel: {}, by_butler: {}, source_available: false },
+        meta: {},
+      },
+    });
+    setNotificationsState({
+      data: {
+        data: [],
+        meta: { total: 0, offset: 0, limit: 20, has_more: false },
+        source_available: false,
+      },
+    });
+
+    const html = renderPage();
+    expect(html).toContain('data-testid="notification-feed-source-unavailable"');
+    expect(html).not.toContain("No notifications found");
+    // Stats tiles em-dash rather than fabricating a green 0.0%.
+    expect(html).toContain('data-testid="stat-value-failure-rate"');
+    expect(html).not.toContain("0.0%");
+  });
+
   it("shows stats summary counts from stats endpoint", () => {
     setStatsState({
       data: {

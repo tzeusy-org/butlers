@@ -116,3 +116,45 @@ describe("NotificationFeed triage controls", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Degraded-source honesty (bu-jad4j.2): an empty page with source_available=
+// false is the Switchboard source being unreachable, not a genuinely clear
+// stream. It must render a named degraded note, never the calm empty state.
+// ---------------------------------------------------------------------------
+
+describe("NotificationFeed degraded-source honesty", () => {
+  afterEach(() => cleanup());
+
+  it("names the degraded source (not the empty state) when the list is empty and source is down", () => {
+    renderFeed({ notifications: [], sourceUnavailable: true });
+
+    const note = screen.getByTestId("notification-feed-source-unavailable");
+    expect(note.getAttribute("role")).toBe("alert");
+    // Named inline with an em-dash qualifier — never suppressed.
+    expect(note.textContent).toContain("Notifications");
+    expect(note.textContent).toContain("—");
+    // The calm empty-state copy must NOT appear alongside the degraded note.
+    expect(screen.queryByText("No notifications found.")).toBeNull();
+  });
+
+  it("keeps the honest empty state for a reachable-but-empty source", () => {
+    // Mutation guard: the degraded note must depend on the flag. With the source
+    // reachable, an empty list is a legitimate all-clear.
+    renderFeed({ notifications: [], sourceUnavailable: false });
+
+    expect(screen.queryByTestId("notification-feed-source-unavailable")).toBeNull();
+    expect(screen.getByText("No notifications found.")).toBeDefined();
+  });
+
+  it("renders rows normally even if the flag is set (rows win over the note)", () => {
+    // A non-empty page still shows its rows; the degraded note only stands in
+    // for the empty state.
+    renderFeed({
+      notifications: [makeNotification({ message: "Delivered anyway" })],
+      sourceUnavailable: true,
+    });
+    expect(screen.getByText("Delivered anyway")).toBeDefined();
+    expect(screen.queryByTestId("notification-feed-source-unavailable")).toBeNull();
+  });
+});

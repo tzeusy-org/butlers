@@ -252,6 +252,20 @@ The API SHALL expose the following complete endpoint inventory, grouped by domai
 | GET | `/api/notifications/stats` | Aggregate notification statistics |
 | GET | `/api/butlers/{name}/notifications` | Butler-scoped notification list |
 
+#### Scenario: Notifications degraded source is named, not rendered as an all-clear
+- **WHEN** `GET /api/notifications` or `GET /api/notifications/stats` returns
+  HTTP 200 but the Switchboard notifications source was unreachable (so the
+  counts are zero placeholders and the list page is empty)
+- **THEN** the response carries `source_available: false` (following the
+  fleet-wide degraded-envelope convention); the field is absent or `true` when
+  the source answered
+- **AND** the frontend notifications page SHALL NOT render the fabricated zeros
+  as a truthful tally — the stats tiles show an em-dash (not a green `0.0%`
+  failure rate) and the feed shows a named `SourceDegradedNote` naming the
+  unreachable source rather than the calm "No notifications found" empty state
+- **AND** a reachable-but-empty source (`source_available` absent or `true`
+  with genuine zeros) keeps its honest zeros and empty state
+
 #### State Store
 | Method | Path | Purpose |
 |--------|------|---------|

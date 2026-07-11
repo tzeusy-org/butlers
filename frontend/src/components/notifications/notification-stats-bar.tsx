@@ -16,11 +16,23 @@ interface NotificationStatsBarProps {
   onFilterClick?: (status: "sent" | "failed") => void
 }
 
+/** Em-dash placeholder for a tile whose real value is unknown because the
+ * source is down. Never a fabricated zero (which reads as a truthful "nothing
+ * happened" all-clear). */
+const EM_DASH = "—"
+
 export function NotificationStatsBar({ stats, isLoading, onFilterClick }: NotificationStatsBarProps) {
   if (isLoading) {
     return <StatsSkeleton count={4} />
   }
 
+  // source_available === false means the Switchboard notifications source was
+  // unreachable: every count below is a zero placeholder, not a real tally.
+  // Em-dash the tiles rather than rendering a green 0.0% failure rate that
+  // reads as "all delivered" (CLAUDE.md degraded-envelope convention;
+  // bu-jad4j.2). Classify-before-flagging: an absent flag (older payload) or
+  // `true` with genuine zeros is a legitimate empty state and keeps its 0s.
+  const sourceUnavailable = stats?.source_available === false
   const total = stats?.total ?? 0
   const sent = stats?.sent ?? 0
   const failed = stats?.failed ?? 0
@@ -39,7 +51,9 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
             <Bell className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{total.toLocaleString()}</div>
+            <div className="text-2xl font-bold" data-testid="stat-value-total">
+              {sourceUnavailable ? EM_DASH : total.toLocaleString()}
+            </div>
           </CardContent>
         </Card>
 
@@ -66,8 +80,11 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
             <CheckCircle className="h-4 w-4 text-[var(--green)]" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-[var(--green)]">
-              {sent.toLocaleString()}
+            <div
+              className={`text-2xl font-bold ${sourceUnavailable ? "text-muted-foreground" : "text-[var(--green)]"}`}
+              data-testid="stat-value-sent"
+            >
+              {sourceUnavailable ? EM_DASH : sent.toLocaleString()}
             </div>
           </CardContent>
         </Card>
@@ -95,8 +112,11 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
             <XCircle className="h-4 w-4 text-[var(--red-text)]" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-[var(--red-text)]">
-              {failed.toLocaleString()}
+            <div
+              className={`text-2xl font-bold ${sourceUnavailable ? "text-muted-foreground" : "text-[var(--red-text)]"}`}
+              data-testid="stat-value-failed"
+            >
+              {sourceUnavailable ? EM_DASH : failed.toLocaleString()}
             </div>
           </CardContent>
         </Card>
@@ -112,14 +132,17 @@ export function NotificationStatsBar({ stats, isLoading, onFilterClick }: Notifi
           <CardContent>
             <div
               className={`text-2xl font-bold ${
-                Number(failureRate) > 10
-                  ? "text-[var(--red-text)]"
-                  : Number(failureRate) > 0
-                    ? "text-[var(--amber-text)]"
-                    : "text-[var(--green)]"
+                sourceUnavailable
+                  ? "text-muted-foreground"
+                  : Number(failureRate) > 10
+                    ? "text-[var(--red-text)]"
+                    : Number(failureRate) > 0
+                      ? "text-[var(--amber-text)]"
+                      : "text-[var(--green)]"
               }`}
+              data-testid="stat-value-failure-rate"
             >
-              {failureRate}%
+              {sourceUnavailable ? EM_DASH : `${failureRate}%`}
             </div>
           </CardContent>
         </Card>

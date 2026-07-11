@@ -1,5 +1,6 @@
 import { Link } from "react-router";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Time } from "@/components/ui/time";
 
 import type { NotificationSummary } from "@/api/types";
@@ -43,6 +44,14 @@ export interface NotificationFeedProps {
    * NotificationsPage can sync DOM focus to it.
    */
   selectedId?: string | null;
+  /**
+   * True when the notifications list response carried `source_available:
+   * false` — the Switchboard notifications source was unreachable, so an empty
+   * page is NOT a truthful "no notifications" result. When set, an empty feed
+   * renders a named degraded note instead of the calm empty state (CLAUDE.md
+   * degraded-envelope convention; bu-jad4j.2).
+   */
+  sourceUnavailable?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +135,7 @@ export function NotificationFeed({
   onDismiss,
   pendingAckIds,
   selectedId = null,
+  sourceUnavailable = false,
 }: NotificationFeedProps) {
   // Triage controls render whenever a triage handler is wired.
   const hasTriageControls = Boolean(onMarkRead || onDismiss);
@@ -134,6 +144,21 @@ export function NotificationFeed({
   }
 
   if (notifications.length === 0) {
+    // Degraded before empty: a source_available=false page is empty because the
+    // Switchboard notifications source was unreachable, not because the stream
+    // is genuinely clear. Name the source instead of the calm empty state
+    // (bu-jad4j.2). A reachable-but-empty source keeps the honest EmptyState.
+    if (sourceUnavailable) {
+      return (
+        <div className="py-8">
+          <SourceDegradedNote
+            label="Notifications"
+            detail="Switchboard source unreachable — this list may be incomplete"
+            testId="notification-feed-source-unavailable"
+          />
+        </div>
+      );
+    }
     return <EmptyState hasActiveFilters={hasActiveFilters} />;
   }
 

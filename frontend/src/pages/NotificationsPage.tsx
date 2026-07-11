@@ -445,6 +445,7 @@ export default function NotificationsPage() {
                 onDismiss={handleDismiss}
                 pendingAckIds={pendingAckIds}
                 selectedId={selectedNotificationId}
+                sourceUnavailable={notificationsResponse?.source_available === false}
               />
             </FetchingDim>
           )}
