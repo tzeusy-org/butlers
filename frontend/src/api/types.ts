@@ -8956,3 +8956,52 @@ export interface InsightCandidatesParams {
   status?: string;
   limit?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Owner Decision Desk -- Decisions lane (bu-ckkpz.2, epic bu-ckkpz)
+// Read from GET /api/decisions
+// ---------------------------------------------------------------------------
+
+/**
+ * One open, decision-marked bead, oldest-first (mirrors
+ * `butlers.jobs.decision_review.DecisionBead` / `EscalationHit`).
+ *
+ * Detection is a title-marker heuristic today ("DECISION REQUIRED",
+ * "OWNER-GATED", "OWNER DECISION") -- bu-ckkpz.1's structured
+ * options/default/deadline convention has not shipped yet, so there is no
+ * per-bead "options" payload beyond what is listed here (tracked follow-up:
+ * bu-97qrw).
+ */
+export interface DecisionBeadSummary {
+  id: string;
+  title: string;
+  priority: number | null;
+  created_at: string;
+  age_hours: number;
+  /** True when this decision has blocked a P1 bug or a deploy-marked bead for >48h. */
+  escalated: boolean;
+  escalated_blocked_id?: string | null;
+  escalated_blocked_title?: string | null;
+  /** "p1_bug" | "deploy" */
+  escalated_blocked_kind?: string | null;
+  escalated_block_hours?: number | null;
+}
+
+/**
+ * Metadata for GET /api/decisions. `decisions_available: false` means the
+ * beads-export digest could not be read (missing/stale/unreadable) -- the
+ * empty `data` MUST NOT be rendered as "no decisions waiting" (fleet-wide
+ * degraded-envelope convention -- see CLAUDE.md API Conventions). A genuine
+ * zero (export readable, zero decision-marked beads open) reports
+ * `decisions_available: true` with an empty list.
+ */
+export interface DecisionsListMeta extends ApiMeta {
+  decisions_available: boolean;
+  unavailable_reason?: string | null;
+}
+
+/** GET /api/decisions response: open decision beads + digest-availability meta. */
+export interface DecisionsListResponse {
+  data: DecisionBeadSummary[];
+  meta: DecisionsListMeta;
+}

@@ -12,6 +12,7 @@
 import { useQaSummary } from './use-qa'
 import { useButlers } from './use-butlers'
 import { useApprovalMetrics } from './use-approvals'
+import { useDecisions } from './use-decisions'
 
 /**
  * Returns the count of open QA escalations for the sidebar badge.
@@ -36,12 +37,27 @@ export function useApprovalsPendingBadge(): number {
   return data?.data.total_pending ?? 0
 }
 
+/**
+ * Returns the count of open decision-marked beads for the sidebar badge
+ * (bu-ckkpz.2). `meta.decisions_available === false` (beads export
+ * unreachable) degrades to 0 rather than an error state -- the badge has no
+ * "unavailable" affordance, unlike the /decisions page's own verdict opener,
+ * which does surface that flag loudly.
+ */
+export function useDecisionsOpenBadge(): number {
+  const { data } = useDecisions()
+  if (!data || data.meta?.decisions_available === false) return 0
+  return data.data.length
+}
+
 /** Badge registry — maps badgeKey to a hook that returns a count (or 0). */
 export function useBadgeCounts(): Record<string, number> {
   const qaEscalations = useQaEscalationsBadge()
   const approvalsPending = useApprovalsPendingBadge()
+  const decisionsOpen = useDecisionsOpenBadge()
   return {
     'qa-escalations': qaEscalations,
     'approvals-pending': approvalsPending,
+    'decisions-open': decisionsOpen,
   }
 }

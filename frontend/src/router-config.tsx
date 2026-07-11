@@ -37,6 +37,7 @@ import SymptomsPage from './pages/SymptomsPage.tsx'
 import MealsPage from './pages/MealsPage.tsx'
 import ResearchPage from './pages/ResearchPage.tsx'
 import ApprovalsPage from './pages/ApprovalsPage.tsx'
+import DecisionsPage from './pages/DecisionsPage.tsx'
 import SecretsPage from './pages/SecretsPage.tsx'
 import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
 import EducationPage from './pages/EducationPage.tsx'
@@ -80,6 +81,7 @@ export const router = createBrowserRouter(
         { path: '/audit-log', element: <AuditLogPage /> },
         { path: '/approvals', element: <ApprovalsPage /> },
         { path: '/approvals/:id', element: <ApprovalsPage /> },
+        { path: '/decisions', element: <DecisionsPage /> },
         { path: '/calendar', element: <CalendarWorkspacePage /> },
         // /contacts → /entities?has=contact (§8.10 entity-redesign redirect)
         { path: '/contacts', element: <Navigate to="/entities/index?has=contact" replace /> },

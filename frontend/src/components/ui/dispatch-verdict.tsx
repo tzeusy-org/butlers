@@ -87,6 +87,7 @@ export function DispatchVerdict({
     return (
       <div role="region" aria-label={landmarkLabel} className={className}>
         <div
+          role="status"
           className="h-8 w-full rounded bg-muted"
           data-testid={`${testId}-verdict-skeleton`}
           aria-label={`Loading ${landmarkLabel}`}

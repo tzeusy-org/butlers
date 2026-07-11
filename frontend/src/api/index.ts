@@ -1293,3 +1293,15 @@ export type {
   TimelineSavedViewFilterSpec,
   TimelineSavedViewUpdateRequest,
 } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// Owner Decision Desk -- Decisions lane (bu-ckkpz.2)
+// ---------------------------------------------------------------------------
+
+export { getDecisions } from "./client.ts";
+
+export type {
+  DecisionBeadSummary,
+  DecisionsListMeta,
+  DecisionsListResponse,
+} from "./types.ts";

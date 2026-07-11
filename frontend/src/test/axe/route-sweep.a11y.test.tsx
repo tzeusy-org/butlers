@@ -54,6 +54,7 @@ const COVERED_ELSEWHERE: Record<string, string> = {
   // route) — recorded here, not the skip manifest, since it's genuinely
   // covered, just not via this exact route path.
   "/ingestion": "src/components/ingestion/TimelineTab.a11y.test.tsx (component-level, not routed)",
+  "/decisions": "src/pages/DecisionsPage.a11y.test.tsx",
 };
 
 // ---------------------------------------------------------------------------

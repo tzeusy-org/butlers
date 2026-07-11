@@ -60,6 +60,7 @@ from butlers.api.routers.conversations import router as conversations_router
 from butlers.api.routers.dashboard_briefing import router as dashboard_briefing_router
 from butlers.api.routers.data_ops import _is_production
 from butlers.api.routers.data_ops import router as data_ops_router
+from butlers.api.routers.decisions import router as decisions_router
 from butlers.api.routers.delegation import router as delegation_router
 from butlers.api.routers.events import router as events_router
 from butlers.api.routers.general_settings import router as general_settings_router
@@ -584,6 +585,7 @@ def create_app(
     app.include_router(permissions_router)
     app.include_router(settings_console_router)
     app.include_router(data_ops_router)
+    app.include_router(decisions_router)
     app.include_router(delegation_router)
     app.include_router(webhooks_router)
 

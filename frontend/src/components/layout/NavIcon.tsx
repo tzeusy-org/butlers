@@ -21,6 +21,7 @@ export type NavIconName =
   | 'audit'
   | 'system'
   | 'spend'
+  | 'decisions'
 
 const PATHS: Record<NavIconName, React.ReactNode> = {
   overview: (
@@ -122,6 +123,14 @@ const PATHS: Record<NavIconName, React.ReactNode> = {
     <>
       <path d="M3 13.5V9M7.5 13.5V5M12 13.5V7.5" />
       <path d="M2 13.5h12" />
+    </>
+  ),
+  decisions: (
+    <>
+      <path d="M8 2v4" />
+      <path d="M8 6L3.5 13.5M8 6l4.5 7.5" />
+      <circle cx="3.5" cy="14" r="1" />
+      <circle cx="12.5" cy="14" r="1" />
     </>
   ),
 }
