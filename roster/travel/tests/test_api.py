@@ -828,10 +828,52 @@ async def test_get_upcoming_travel_window_dates():
     assert response.status_code == 200
     body = response.json()
 
-    today = date.today()
-    window_end = today + timedelta(days=7)
-    assert body["window_start"] == today.isoformat()
+    # Assert against the SAME anchor the router's clock is pinned to by the
+    # autouse `_freeze_travel_clock` fixture (`_TODAY`), never a fresh
+    # `date.today()`. A second wall-clock read here can straddle a UTC-midnight
+    # boundary relative to the frozen router clock and flip the assertion
+    # (main-red 2026-07-11: window_start '2026-07-10' != today '2026-07-11').
+    window_end = _TODAY + timedelta(days=7)
+    assert body["window_start"] == _TODAY.isoformat()
     assert body["window_end"] == window_end.isoformat()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset_days", [0, 30, 90])
+async def test_upcoming_window_tracks_router_clock_under_future_wall_clock(
+    monkeypatch, offset_days
+):
+    """window_start/window_end track the router's OWN clock however far the
+    wall clock has advanced past the day this test was written.
+
+    Standing regression guard for the midnight-straddle bomb fixed above
+    (main-red 2026-07-11): the window is derived entirely from a single
+    ``date.today()`` call inside the router, so the assertion must anchor its
+    expectation to that same simulated instant — never a second independent
+    read. We simulate the system clock running ``offset_days`` into the future
+    via ``_ShiftedDate`` (leaving ``.fromisoformat``/construction untouched,
+    overriding the autouse freeze) and re-derive the expected window from the
+    same shift. Mirrors the ``_ShiftedNow`` guard from bu-10fgt.1 (#3079).
+    """
+    anchor = _TODAY + timedelta(days=offset_days)
+
+    class _ShiftedDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return anchor
+
+    monkeypatch.setattr(_travel_router_mod, "date", _ShiftedDate)
+
+    app, _ = _make_app(fetch_rows=[])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/travel/upcoming?within_days=7")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["window_start"] == anchor.isoformat()
+    assert body["window_end"] == (anchor + timedelta(days=7)).isoformat()
 
 
 @pytest.mark.asyncio
@@ -1076,10 +1118,12 @@ async def test_get_expiring_documents_default_days():
     # Positional args: [0]=sql, [1]=today, [2]=cutoff
     today_arg = call_args[0][1]
     cutoff = call_args[0][2]
-    from datetime import date, timedelta
 
-    assert today_arg == date.today()
-    expected = date.today() + timedelta(days=180)
+    # `today_arg` is the router's clock (pinned to `_TODAY` by the autouse
+    # fixture); compare against that same anchor, not a fresh `date.today()`
+    # that could straddle midnight and read a different day.
+    assert today_arg == _TODAY
+    expected = _TODAY + timedelta(days=180)
     assert cutoff == expected
 
 

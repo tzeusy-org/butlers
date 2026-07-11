@@ -13,13 +13,71 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
+# Single time source for the whole module. Fixtures build rows via `_today()` /
+# `_utcnow()`, and the autouse `_freeze_travel_clock` fixture pins the job
+# module's own `datetime.now()` to the same anchors. The jobs compute day-deltas
+# (`days_until_departure`, `days_until_expiry`) from *their* clock at run time;
+# if the fixture-build read and the job's read straddle a UTC-midnight boundary
+# they differ by a day and date-anchored assertions flake (e.g.
+# ``assert days_until_departure == 5`` failing 4 or 6, or an
+# ``expiry_date=_today()`` doc landing at -1 days and dropping out of the scan).
+# Sharing one frozen clock eliminates the off-by-one regardless of wall time.
+_TODAY = date.today()
+_NOW = datetime.now(UTC)
+
 
 def _today() -> date:
-    return datetime.now(UTC).date()
+    return _TODAY
 
 
 def _utcnow() -> datetime:
-    return datetime.now(UTC)
+    return _NOW
+
+
+class _RealInstanceCheck(type):
+    """Metaclass making ``isinstance(x, Frozen)`` match the real base class.
+
+    The job isinstance-checks raw ``date``/``datetime`` values read straight from
+    the DB against the module-level ``date``/``datetime`` names we monkeypatch
+    below. A plain subclass would make those checks return False for real
+    (non-subclass) DB values and silently drop rows, so route the instance check
+    back to the true base (the next class in the MRO).
+    """
+
+    def __instancecheck__(cls, obj: object) -> bool:
+        return isinstance(obj, cls.__mro__[1])
+
+
+class _FrozenDate(date, metaclass=_RealInstanceCheck):
+    @classmethod
+    def today(cls) -> date:
+        return _TODAY
+
+
+class _FrozenDateTime(datetime, metaclass=_RealInstanceCheck):
+    @classmethod
+    def now(cls, tz=None) -> datetime:
+        return _NOW
+
+
+@pytest.fixture(autouse=True)
+def _freeze_travel_clock(monkeypatch):
+    """Pin the travel job module's clock to the module-import anchors."""
+    import sys
+
+    # The roster job module is registered in sys.modules under this dotted name
+    # by the _roster_loader (conftest preloads it); the intermediate
+    # ``butlers.jobs._roster`` is not a real package, so ``from ... import`` on it
+    # fails — reach the module object via sys.modules, loading it if needed.
+    _key = "butlers.jobs._roster.travel_jobs"
+    if _key not in sys.modules:
+        from butlers.jobs._roster_loader import load_roster_jobs
+
+        load_roster_jobs("travel")
+    _jobs_mod = sys.modules[_key]
+
+    monkeypatch.setattr(_jobs_mod, "date", _FrozenDate)
+    monkeypatch.setattr(_jobs_mod, "datetime", _FrozenDateTime)
 
 
 # ---------------------------------------------------------------------------

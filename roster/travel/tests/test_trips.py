@@ -15,6 +15,52 @@ pytestmark = [
     pytest.mark.skipif(not _docker_available, reason="Docker not available"),
 ]
 
+# Single time source for the whole module. Fixtures below build rows from these
+# import-time anchors, and the autouse `_freeze_travel_clock` fixture pins the
+# travel tool's own `date.today()` / `datetime.now()` to the same anchors. The
+# tool computes day-deltas (`days_until_departure`, the upcoming-trip window)
+# from *its* clock at call time; if the fixture-build read and the tool's read
+# straddle a UTC-midnight boundary they differ by a day and date-anchored
+# assertions flake (e.g. ``assert days_until_departure == 5`` failing 4 or 6).
+# Sharing one frozen clock eliminates the off-by-one regardless of wall time.
+_TODAY = date.today()
+_NOW = datetime.now(UTC)
+
+
+class _RealInstanceCheck(type):
+    """Metaclass making ``isinstance(x, Frozen)`` match the real base class.
+
+    The tool isinstance-checks ``date``/``datetime`` values against the
+    module-level names we monkeypatch below; a plain subclass would make those
+    checks return False for real (non-subclass) values. Route the instance check
+    back to the true base (the next class in the MRO).
+    """
+
+    def __instancecheck__(cls, obj: object) -> bool:
+        return isinstance(obj, cls.__mro__[1])
+
+
+class _FrozenDate(date, metaclass=_RealInstanceCheck):
+    @classmethod
+    def today(cls) -> date:
+        return _TODAY
+
+
+class _FrozenDateTime(datetime, metaclass=_RealInstanceCheck):
+    @classmethod
+    def now(cls, tz=None) -> datetime:
+        return _NOW
+
+
+@pytest.fixture(autouse=True)
+def _freeze_travel_clock(monkeypatch):
+    """Pin the travel tool's clock to the module-import anchors (`_TODAY`/`_NOW`)."""
+    from butlers.tools.travel import trips as _trips_mod
+
+    monkeypatch.setattr(_trips_mod, "date", _FrozenDate)
+    monkeypatch.setattr(_trips_mod, "datetime", _FrozenDateTime)
+
+
 # ---------------------------------------------------------------------------
 # Schema helpers
 # ---------------------------------------------------------------------------
@@ -129,7 +175,7 @@ async def _insert_trip(
     status: str = "planned",
 ) -> str:
     """Insert a trip and return its string ID."""
-    today = date.today()
+    today = _TODAY
     if start_date is None:
         start_date = today + timedelta(days=10)
     if end_date is None:
@@ -164,7 +210,7 @@ async def _insert_leg(
     seat: str | None = None,
     pnr: str | None = None,
 ) -> str:
-    now = datetime.now(UTC)
+    now = _NOW
     if departure_at is None:
         departure_at = now + timedelta(days=10)
     if arrival_at is None:
@@ -201,7 +247,7 @@ async def _insert_accommodation(
     check_in: datetime | None = None,
     check_out: datetime | None = None,
 ) -> str:
-    now = datetime.now(UTC)
+    now = _NOW
     if check_in is None:
         check_in = now + timedelta(days=11)
     if check_out is None:
@@ -230,7 +276,7 @@ async def _insert_reservation(
     res_datetime: datetime | None = None,
 ) -> str:
     if res_datetime is None:
-        res_datetime = datetime.now(UTC) + timedelta(days=12)
+        res_datetime = _NOW + timedelta(days=12)
     row = await pool.fetchrow(
         """
         INSERT INTO travel.reservations (trip_id, type, provider, datetime)
@@ -312,7 +358,7 @@ class TestListTrips:
         """from_date excludes trips starting before the bound."""
         from butlers.tools.travel.trips import list_trips
 
-        today = date.today()
+        today = _TODAY
         await _insert_trip(pool, name="Near Trip", start_date=today + timedelta(days=5))
         await _insert_trip(pool, name="Far Trip", start_date=today + timedelta(days=30))
 
@@ -324,7 +370,7 @@ class TestListTrips:
         """to_date excludes trips starting after the bound."""
         from butlers.tools.travel.trips import list_trips
 
-        today = date.today()
+        today = _TODAY
         await _insert_trip(pool, name="Near Trip", start_date=today + timedelta(days=3))
         await _insert_trip(pool, name="Far Trip", start_date=today + timedelta(days=40))
 
@@ -336,7 +382,7 @@ class TestListTrips:
         """limit and offset paginate results correctly."""
         from butlers.tools.travel.trips import list_trips
 
-        today = date.today()
+        today = _TODAY
         for i in range(5):
             await _insert_trip(pool, name=f"Trip {i}", start_date=today + timedelta(days=i + 1))
 
@@ -363,7 +409,7 @@ class TestListTrips:
         """from_date and to_date accept ISO-8601 strings."""
         from butlers.tools.travel.trips import list_trips
 
-        today = date.today()
+        today = _TODAY
         await _insert_trip(pool, start_date=today + timedelta(days=5))
 
         result = await list_trips(
@@ -377,7 +423,7 @@ class TestListTrips:
         """Results are sorted by start_date DESC by default."""
         from butlers.tools.travel.trips import list_trips
 
-        today = date.today()
+        today = _TODAY
         await _insert_trip(pool, name="Earlier", start_date=today + timedelta(days=5))
         await _insert_trip(pool, name="Later", start_date=today + timedelta(days=20))
 
@@ -468,7 +514,7 @@ class TestTripSummary:
         """Timeline entries are sorted chronologically by sort_key."""
         from butlers.tools.travel.trips import trip_summary
 
-        now = datetime.now(UTC)
+        now = _NOW
         trip_id = await _insert_trip(pool)
 
         # Leg departs at T+5d, accommodation check_in at T+6d, reservation at T+7d
@@ -575,7 +621,7 @@ class TestUpcomingTravel:
         """Returns trips with start_date within the window."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         # Trip starts in 5 days — within default 14-day window
         await _insert_trip(pool, name="Upcoming Trip", start_date=today + timedelta(days=5))
 
@@ -587,7 +633,7 @@ class TestUpcomingTravel:
         """Trips starting beyond the window are excluded."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         await _insert_trip(pool, name="Far Future Trip", start_date=today + timedelta(days=30))
 
         result = await upcoming_travel(pool, within_days=14)
@@ -597,7 +643,7 @@ class TestUpcomingTravel:
         """Completed and cancelled trips are not returned."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         await _insert_trip(
             pool,
             name="Completed Trip",
@@ -618,7 +664,7 @@ class TestUpcomingTravel:
         """days_until_departure is correctly computed from start_date."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         await _insert_trip(pool, name="5 Days Away", start_date=today + timedelta(days=5))
 
         result = await upcoming_travel(pool, within_days=14)
@@ -629,7 +675,7 @@ class TestUpcomingTravel:
         """include_pretrip_actions=True surfaces missing boarding pass action."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         trip_id = await _insert_trip(pool, name="Flight Trip", start_date=today + timedelta(days=3))
         await _insert_leg(pool, trip_id, leg_type="flight")
 
@@ -641,7 +687,7 @@ class TestUpcomingTravel:
         """include_pretrip_actions=False returns empty actions list."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         trip_id = await _insert_trip(pool, start_date=today + timedelta(days=3))
         await _insert_leg(pool, trip_id, leg_type="flight")
 
@@ -652,7 +698,7 @@ class TestUpcomingTravel:
         """Actions have urgency_rank field assigned."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         trip_id = await _insert_trip(pool, start_date=today + timedelta(days=3))
         await _insert_leg(pool, trip_id, leg_type="flight")
 
@@ -665,7 +711,7 @@ class TestUpcomingTravel:
         """High severity actions are ranked before low severity actions."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         trip_id = await _insert_trip(pool, start_date=today + timedelta(days=3))
         # Flight with no seat (low) and no boarding pass (high)
         await _insert_leg(pool, trip_id, leg_type="flight", seat=None)
@@ -683,7 +729,7 @@ class TestUpcomingTravel:
         """window_start and window_end reflect today and today+within_days."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         result = await upcoming_travel(pool, within_days=7)
         assert result["window_start"] == today.isoformat()
         assert result["window_end"] == (today + timedelta(days=7)).isoformat()
@@ -699,7 +745,7 @@ class TestUpcomingTravel:
         """Legs are included in each upcoming_trip entry."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         trip_id = await _insert_trip(pool, start_date=today + timedelta(days=3))
         leg_id = await _insert_leg(pool, trip_id)
 
@@ -713,7 +759,7 @@ class TestUpcomingTravel:
         """Actions include trip_id and trip_name for context."""
         from butlers.tools.travel.trips import upcoming_travel
 
-        today = date.today()
+        today = _TODAY
         trip_id = await _insert_trip(pool, name="My Vacation", start_date=today + timedelta(days=3))
         await _insert_leg(pool, trip_id, leg_type="flight")
 
@@ -733,7 +779,7 @@ class TestHelpers:
         """_build_timeline returns entries in chronological order."""
         from butlers.tools.travel._helpers import _build_timeline
 
-        now = datetime.now(UTC)
+        now = _NOW
         legs = [
             {"id": "leg-1", "departure_at": (now + timedelta(days=1)).isoformat(), "type": "flight"}
         ]
@@ -765,7 +811,7 @@ class TestHelpers:
         """_build_timeline places entities with None timestamps at end."""
         from butlers.tools.travel._helpers import _build_timeline
 
-        now = datetime.now(UTC)
+        now = _NOW
         legs = [
             {
                 "id": "leg-1",
@@ -785,7 +831,7 @@ class TestHelpers:
         """_build_timeline sets correct entity_type labels."""
         from butlers.tools.travel._helpers import _build_timeline
 
-        now = datetime.now(UTC)
+        now = _NOW
         legs = [
             {"id": "l1", "departure_at": (now + timedelta(hours=1)).isoformat(), "type": "train"}
         ]
@@ -805,7 +851,7 @@ class TestHelpers:
         """_build_timeline includes a non-empty summary for each entry."""
         from butlers.tools.travel._helpers import _build_timeline
 
-        now = datetime.now(UTC)
+        now = _NOW
         legs = [
             {
                 "id": "l1",
