@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 CREATE TABLE IF NOT EXISTS rules (
     id       BIGSERIAL PRIMARY KEY,
-    maturity TEXT NOT NULL DEFAULT 'candidate'
+    maturity TEXT NOT NULL DEFAULT 'candidate',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 CREATE TABLE IF NOT EXISTS public.consolidation_runs (
     id                 BIGSERIAL PRIMARY KEY,

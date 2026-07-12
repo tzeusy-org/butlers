@@ -136,6 +136,26 @@ run so a fading fact can recover to `active` (e.g. after `memory_confirm`) or
 progress to `expired`. Rules have no `validity` column and keep using
 `metadata.status = 'fading'`.
 
+Rules' terminal soft-delete state — the equivalent of a fact's `expired` /
+`retracted` validity — is the boolean `metadata->>'forgotten'` flag, set by
+`memory_forget` and by the decay sweep once a rule's effective confidence
+falls below its expiry threshold. Unlike fading, there is no separate
+"forgotten" column to add: a rule has exactly two liveness states (live, or
+forgotten), not a multi-value lifecycle, so a boolean JSONB flag is the
+right-sized representation (bu-5ud8p.2). Every reader that reports rule
+counts or lists rules — the dashboard API (`GET /api/memory/stats`'s
+`candidate_rules`/`established_rules`/`proven_rules`/`anti_pattern_rules`,
+including the "Proven rules" KPI; `GET /api/memory/rules`; the
+`GET /api/memory/inspect?kind=rule` search bar), the `memory_stats` MCP tool,
+and the recall/search/consolidation/catalog-backfill internals — filters on
+`(metadata->>'forgotten')::boolean IS NOT TRUE` so a forgotten rule never
+counts as a live belief or shows up in a browse/search list. `GET
+/api/memory/rules` accepts an explicit `?forgotten=true` override for
+auditing forgotten rules; `GET /api/memory/rules/{id}` (fetch by ID) and
+`GET /api/memory/activity` (the chronological creation feed) are intentionally
+unfiltered, mirroring how a fact stays fetchable by ID regardless of
+validity.
+
 Anti-pattern detection: rules with repeated harmful, low-effectiveness outcomes transition to `anti_pattern` status and are surfaced as warnings rather than guidance.
 
 Episode cleanup removes expired rows and enforces capacity limits starting with the oldest consolidated rows.

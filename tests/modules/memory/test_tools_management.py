@@ -51,6 +51,27 @@ class TestMemoryStats:
         result = await memory_stats(pool)
         assert result["episodes"]["total"] == 5
 
+    async def test_every_maturity_bucket_excludes_forgotten_rules(self, pool: AsyncMock) -> None:
+        """bu-5ud8p.2: rules_anti_pattern used to be the one maturity bucket
+        that didn't exclude forgotten rules, unlike its candidate/established/
+        proven siblings in this same function -- an MCP-internal inconsistency.
+        Assert every SELECT COUNT(*) FROM rules WHERE maturity = '...' query
+        also carries the forgotten-exclusion predicate.
+        """
+        queries: list[str] = []
+
+        async def _fetchval(query: str, *args: object) -> int:
+            queries.append(query)
+            return 0
+
+        pool.fetchval = AsyncMock(side_effect=_fetchval)
+        await memory_stats(pool)
+
+        maturity_queries = [q for q in queries if "FROM rules WHERE maturity" in q]
+        assert len(maturity_queries) == 4, maturity_queries
+        for query in maturity_queries:
+            assert "(metadata->>'forgotten')::boolean IS NOT TRUE" in query, query
+
 
 # ---------------------------------------------------------------------------
 # predicate_list

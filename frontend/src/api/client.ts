@@ -2568,6 +2568,7 @@ function ruleSearchParams(params?: RuleParams): URLSearchParams {
   if (params?.q) sp.set("q", params.q);
   if (params?.scope) sp.set("scope", params.scope);
   if (params?.maturity) sp.set("maturity", params.maturity);
+  if (params?.forgotten != null) sp.set("forgotten", String(params.forgotten));
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   return sp;

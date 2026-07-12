@@ -252,20 +252,29 @@ async def get_memory_stats(
             )
             or 0,
             "total_rules": await pool.fetchval("SELECT count(*) FROM rules") or 0,
+            # Maturity buckets exclude forgotten rules (metadata->>'forgotten' —
+            # rules have no validity column, so this JSONB flag is the sole
+            # soft-delete signal; see forget_memory/run_decay_sweep in storage.py).
+            # A forgotten rule is not a live belief and must not inflate any
+            # maturity count, matching the memory_stats MCP tool's convention.
             "candidate_rules": await pool.fetchval(
                 "SELECT count(*) FROM rules WHERE maturity = 'candidate'"
+                " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
             )
             or 0,
             "established_rules": await pool.fetchval(
                 "SELECT count(*) FROM rules WHERE maturity = 'established'"
+                " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
             )
             or 0,
             "proven_rules": await pool.fetchval(
                 "SELECT count(*) FROM rules WHERE maturity = 'proven'"
+                " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
             )
             or 0,
             "anti_pattern_rules": await pool.fetchval(
                 "SELECT count(*) FROM rules WHERE maturity = 'anti_pattern'"
+                " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
             )
             or 0,
             "last_consolidation_at": last_run["consolidated_at"] if last_run else None,
@@ -722,11 +731,26 @@ async def list_rules(
     q: str | None = Query(None, description="Text search query"),
     scope: str | None = Query(None, description="Filter by scope"),
     maturity: str | None = Query(None, description="Filter by maturity"),
+    forgotten: bool | None = Query(
+        None,
+        description=(
+            "Filter by forgotten (soft-deleted) status. Omit (default) to "
+            "exclude forgotten rules — a forgotten rule is not a live "
+            "standing order. Pass true to view only forgotten rules "
+            "(audit), or false to be explicit about the default."
+        ),
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Rule]:
-    """List/search rules with optional filters, paginated."""
+    """List/search rules with optional filters, paginated.
+
+    Forgotten rules (soft-deleted via ``memory_forget`` or decay expiry —
+    ``metadata->>'forgotten' = 'true'``) are excluded by default so this
+    register never counts a retracted rule as a live standing order. Pass
+    ``?forgotten=true`` to audit forgotten rules explicitly.
+    """
     conditions: list[str] = []
     args: list[object] = []
     idx = 1
@@ -745,6 +769,12 @@ async def list_rules(
         conditions.append(f"maturity = ${idx}")
         args.append(maturity)
         idx += 1
+
+    if forgotten:
+        conditions.append("(metadata->>'forgotten')::boolean IS TRUE")
+    else:
+        # Default (forgotten is None or explicitly False): live rules only.
+        conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -2221,13 +2251,22 @@ async def inspect_memory(
                 )
 
         if "rule" in target_kinds:
-            rule_cond = ""
+            # Forgotten rules are excluded unconditionally here (no override,
+            # unlike GET /rules) — this is the inspect search bar, and the MCP
+            # recall/keyword_search paths (search.py) already hard-exclude
+            # forgotten rules from search results the same way.
+            forgotten_clause = "(metadata->>'forgotten')::boolean IS NOT TRUE"
             rule_args: list[object] = []
             idx = 1
             if q:
-                rule_cond = f" WHERE search_vector @@ plainto_tsquery('english', ${idx})"
+                rule_cond = (
+                    f" WHERE search_vector @@ plainto_tsquery('english', ${idx})"
+                    f" AND {forgotten_clause}"
+                )
                 rule_args.append(q)
                 idx += 1
+            else:
+                rule_cond = f" WHERE {forgotten_clause}"
             rule_rows = await pool.fetch(
                 f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
                 f" effectiveness_score, applied_count, success_count, harmful_count,"

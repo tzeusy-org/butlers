@@ -56,6 +56,13 @@ export default function RuleDetailPage() {
 
   const harmful = rule?.harmful_count ?? 0;
 
+  // Forgotten (soft-deleted) rules are excluded from the register and the
+  // Proven-rules KPI by default (bu-5ud8p.2), so this page is the one place
+  // a forgotten rule can still be reached (direct link, ?forgotten=true
+  // audit query). Label it explicitly rather than leaving it distinguishable
+  // only via the raw metadata block below.
+  const forgotten = rule?.metadata?.["forgotten"] === true;
+
   const provenance =
     rule?.source_episode_id != null ? (
       <ProvenanceLink
@@ -71,7 +78,10 @@ export default function RuleDetailPage() {
       breadcrumbs={[{ label: "standing orders", href: "/memory?register=rules" }]}
       status={
         rule ? (
-          <Badge variant="secondary">{rule.maturity}</Badge>
+          <div className="flex gap-1.5">
+            <Badge variant="secondary">{rule.maturity}</Badge>
+            {forgotten && <Badge variant="secondary">forgotten</Badge>}
+          </div>
         ) : undefined
       }
       loading={isLoading}

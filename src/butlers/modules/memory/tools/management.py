@@ -131,7 +131,8 @@ async def memory_stats(
         *scope_params,
     )
     rules_anti_pattern = await pool.fetchval(
-        "SELECT COUNT(*) FROM rules WHERE maturity = 'anti_pattern'" + scope_filter_rules,
+        "SELECT COUNT(*) FROM rules WHERE maturity = 'anti_pattern'"
+        " AND (metadata->>'forgotten')::boolean IS NOT TRUE" + scope_filter_rules,
         *scope_params,
     )
     rules_forgotten = await pool.fetchval(

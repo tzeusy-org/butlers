@@ -116,6 +116,35 @@ The decay sweep SHALL consult `memory_policies` to determine per-class threshold
 
 ---
 
+### Requirement: Forgotten rules are excluded from live rule readers
+
+Rules have no `validity` column. Their terminal soft-delete state is the boolean `metadata->>'forgotten'` flag, written by `forget_memory` and by the decay sweep's expiry branch. Every reader that reports a rule count or returns a list/search of rules MUST filter on this same flag so a forgotten rule is never counted or displayed as a live belief — mirroring, for rules, the same "one vocabulary, every reader agrees" contract the validity column establishes for facts.
+
+#### Scenario: Dashboard maturity counts and the Proven-rules KPI exclude forgotten rules
+
+- **WHEN** `GET /api/memory/stats` computes `candidate_rules`, `established_rules`, `proven_rules`, or `anti_pattern_rules`
+- **THEN** each query MUST include `(metadata->>'forgotten')::boolean IS NOT TRUE`
+- **AND** `total_rules` remains an unfiltered raw table count (matching the `total_facts` convention), since it reports storage volume, not live-belief count
+
+#### Scenario: The rules register excludes forgotten rules by default
+
+- **WHEN** `GET /api/memory/rules` is called without an explicit `forgotten` parameter
+- **THEN** the response MUST exclude rules with `metadata->>'forgotten' = 'true'`
+- **AND** passing `?forgotten=true` MUST return only forgotten rules, for auditing
+- **AND** `GET /api/memory/rules/{id}` (fetch by ID) remains unfiltered, mirroring how a fact stays fetchable by ID regardless of validity
+
+#### Scenario: The inspect search bar excludes forgotten rules
+
+- **WHEN** `GET /api/memory/inspect?kind=rule` (or `kind` omitted) searches rules
+- **THEN** forgotten rules MUST NOT appear in the results, with no override — matching the MCP `memory_search`/`memory_recall` semantic and keyword search paths, which already hard-exclude forgotten rules unconditionally
+
+#### Scenario: MCP and API readers agree on the forgotten predicate
+
+- **WHEN** the `memory_stats` MCP tool computes any of its `rules.candidate`, `rules.established`, `rules.proven`, or `rules.anti_pattern` counts
+- **THEN** each query MUST include the same `(metadata->>'forgotten')::boolean IS NOT TRUE` predicate the dashboard API uses, so the MCP and API surfaces never disagree about whether a given rule counts as live
+
+---
+
 ### Requirement: Retention class on memory store operations
 
 All memory write tools SHALL accept an optional `retention_class` parameter that is persisted on the stored row. The retention class determines the memory's lifecycle policy.

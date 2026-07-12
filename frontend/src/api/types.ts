@@ -2880,6 +2880,12 @@ export interface RuleParams {
   q?: string;
   scope?: string;
   maturity?: string;
+  /**
+   * Filter by forgotten (soft-deleted) status. Omit (default) to exclude
+   * forgotten rules — the API's default is "live rules only". Pass `true`
+   * to audit forgotten rules explicitly.
+   */
+  forgotten?: boolean;
   offset?: number;
   limit?: number;
 }

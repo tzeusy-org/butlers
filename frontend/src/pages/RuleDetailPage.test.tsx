@@ -137,4 +137,16 @@ describe("RuleDetailPage", () => {
     const out = html();
     expect(out).toContain("not on the books");
   });
+
+  it("does not render a forgotten badge for a live rule", () => {
+    setRule(BASE_RULE);
+    const out = html();
+    expect(out).not.toContain("forgotten");
+  });
+
+  it("labels a forgotten rule with a badge (bu-5ud8p.2)", () => {
+    setRule({ ...BASE_RULE, metadata: { forgotten: true } });
+    const out = html();
+    expect(out).toContain("forgotten");
+  });
 });
