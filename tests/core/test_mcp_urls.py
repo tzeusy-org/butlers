@@ -7,6 +7,7 @@ import pytest
 from butlers.core.mcp_urls import (
     canonical_runtime_mcp_url,
     prefer_ipv4_loopback_url,
+    resolve_cross_container_mcp_url,
     resolve_runtime_mcp_transport,
     runtime_mcp_transport_from_url,
     runtime_mcp_url,
@@ -61,6 +62,56 @@ def test_mcp_url_and_transport():
 
     # Falls back to URL inference
     assert resolve_runtime_mcp_transport({"url": "http://localhost:41103/sse"}) == "sse"
+
+
+def test_resolve_cross_container_mcp_url_rewrites_localhost_when_butlers_host_set(monkeypatch):
+    """bu-hmdqz.3: dashboard-api sets BUTLERS_HOST=butlers-up so it can reach
+    butler MCP servers registered as http://localhost:<port> from
+    butlers-up's own point of view."""
+    monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41104/mcp")
+        == "http://butlers-up:41104/mcp"
+    )
+    # Preserves query strings and any userinfo.
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41104/mcp?x=1")
+        == "http://butlers-up:41104/mcp?x=1"
+    )
+
+
+def test_resolve_cross_container_mcp_url_noop_when_butlers_host_unset(monkeypatch):
+    """Inside butlers-up itself (or any test env) BUTLERS_HOST is unset, so
+    every daemon-to-daemon call keeps its bare localhost URL unchanged."""
+    monkeypatch.delenv("BUTLERS_HOST", raising=False)
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41104/mcp")
+        == "http://localhost:41104/mcp"
+    )
+
+
+def test_resolve_cross_container_mcp_url_noop_for_non_localhost_host(monkeypatch):
+    """Never touches a URL whose host isn't the exact literal 'localhost' --
+    e.g. an already-remote or already-rewritten endpoint."""
+    monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+    assert (
+        resolve_cross_container_mcp_url("http://example.com:8080/mcp")
+        == "http://example.com:8080/mcp"
+    )
+    assert (
+        resolve_cross_container_mcp_url("http://127.0.0.1:41104/mcp")
+        == "http://127.0.0.1:41104/mcp"
+    )
+
+
+def test_resolve_cross_container_mcp_url_noop_when_butlers_host_is_localhost(monkeypatch):
+    """An explicit BUTLERS_HOST=localhost (the ButlerConnectionInfo.sse_url
+    default) is treated the same as unset -- never a no-op rewrite to itself."""
+    monkeypatch.setenv("BUTLERS_HOST", "localhost")
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41104/mcp")
+        == "http://localhost:41104/mcp"
+    )
 
 
 def test_prefer_ipv4_loopback_url():

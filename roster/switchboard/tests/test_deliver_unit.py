@@ -320,6 +320,35 @@ class TestDeliverTelegramSuccess:
         # Legacy ``/sse`` registry URLs are canonicalized to ``/mcp`` before dispatch.
         assert captured_urls == ["http://tg-host:9200/mcp"]
 
+    async def test_telegram_routes_to_container_dns_endpoint_when_butlers_host_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """bu-hmdqz.3: a caller running in a separate container from the
+        target butler daemon (e.g. secrets_lifecycle inside dashboard-api)
+        must connect via the container-DNS host, not the self-registered
+        'localhost' the daemon sees itself as."""
+        from butlers.tools.switchboard import deliver
+
+        monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+
+        pool = _make_mock_pool(
+            fetchrow_side_effect=[
+                _registry_row("tg-butler", "http://localhost:41104/mcp"),
+                _registry_row("tg-butler", "http://localhost:41104/mcp"),
+                _notif_id_row(),
+            ],
+        )
+
+        captured_urls: list[str] = []
+
+        async def mock_call(endpoint_url, tool_name, args):
+            captured_urls.append(endpoint_url)
+            return {"ok": True}
+
+        await deliver(pool, channel="telegram", message="Test", recipient="123", call_fn=mock_call)
+
+        assert captured_urls == ["http://butlers-up:41104/mcp"]
+
 
 # ---------------------------------------------------------------------------
 # Tests: deliver() — successful email delivery

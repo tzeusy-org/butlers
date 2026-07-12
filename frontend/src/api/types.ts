@@ -481,6 +481,12 @@ export interface AttentionSourceSummary {
   coalesced: number;
   deferred: number;
   suppressed: number;
+  /**
+   * Genuine terminal failures (no recipient, transport/delivery error, an
+   * unexpected exception) -- bu-hmdqz.3. Distinct from `deferred`, which is
+   * a benign hold that resolves on its own.
+   */
+  failed: number;
   total: number;
   suppressed_never_delivered: boolean;
 }

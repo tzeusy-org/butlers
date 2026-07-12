@@ -84,7 +84,7 @@ function SourceRow({ summary }: { summary: AttentionSourceSummary }) {
       data-testid="attention-source-row"
       data-flagged={summary.suppressed_never_delivered}
       className={cn(
-        "grid grid-cols-[1fr_repeat(5,minmax(0,72px))] items-center gap-2 py-2",
+        "grid grid-cols-[1fr_repeat(6,minmax(0,72px))] items-center gap-2 py-2",
         "border-t border-border/50 first:border-t-0 font-mono text-xs",
       )}
     >
@@ -108,6 +108,18 @@ function SourceRow({ summary }: { summary: AttentionSourceSummary }) {
         )}
       >
         {summary.suppressed}
+      </span>
+      {/* Genuine terminal failures (bu-hmdqz.3) -- always red-toned when
+          non-zero, never rendered as calm/neutral like coalesced/deferred:
+          a "failed" row is never automatically retried unless the caller
+          explicitly queued a retry envelope. */}
+      <span
+        className={cn(
+          "text-right",
+          summary.failed > 0 ? "text-[var(--red-text)] font-semibold" : "text-muted-foreground",
+        )}
+      >
+        {summary.failed}
       </span>
       <span className="text-right text-muted-foreground">{summary.total}</span>
     </div>
@@ -186,12 +198,13 @@ export function AttentionLedgerPanel() {
 
           <FlaggedSourceBanner sources={summary?.flagged_sources ?? []} />
 
-          <div className="grid grid-cols-[1fr_repeat(5,minmax(0,72px))] gap-2 pb-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+          <div className="grid grid-cols-[1fr_repeat(6,minmax(0,72px))] gap-2 pb-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             <span>Source</span>
             <span className="text-right">Delivered</span>
             <span className="text-right">Coalesced</span>
             <span className="text-right">Deferred</span>
             <span className="text-right">Suppressed</span>
+            <span className="text-right">Failed</span>
             <span className="text-right">Total</span>
           </div>
           {bySource.map((s) => (

@@ -6,6 +6,7 @@ During cutover we still accept legacy SSE URLs where explicitly provided.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from typing import Any, Literal
 from urllib.parse import urlparse, urlunparse
@@ -59,6 +60,47 @@ def prefer_ipv4_loopback_url(url: str) -> str:
 
     # Replace host with 127.0.0.1 while preserving raw userinfo and port.
     netloc = f"{userinfo}{sep}127.0.0.1{port_sep}{port}"
+
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
+def resolve_cross_container_mcp_url(url: str) -> str:
+    """Rewrite a self-registered ``localhost`` MCP URL for cross-container callers.
+
+    Every butler daemon self-registers its MCP endpoint as
+    ``http://localhost:<port>/mcp`` (see :func:`runtime_mcp_url`) from its own
+    point of view -- correct only when the caller lives in the same container
+    (``butlers-up``, where every butler daemon runs). ``switchboard.route()``
+    is also invoked from processes that live in a SEPARATE container -- e.g.
+    ``butlers.jobs.secrets_lifecycle`` runs as an ``asyncio.Task`` inside the
+    ``dashboard-api`` FastAPI process (bu-hmdqz.3). There, "localhost"
+    resolves to dashboard-api itself, not butlers-up, so every cross-container
+    delivery attempt silently fails to connect and never reaches its target
+    (164 delivery attempts / 0 delivered was the live symptom).
+
+    Mirrors the existing ``BUTLERS_HOST`` convention already used by the
+    dashboard API's own butler-MCP client
+    (``ButlerConnectionInfo.sse_url`` / ``_build_process_facts`` in
+    ``butlers.api.routers.butlers``, and ``MCPClientManager`` in
+    ``butlers.api.deps``): Docker Compose sets ``BUTLERS_HOST=butlers-up`` on
+    the ``dashboard-api`` / ``dashboard-api-hotreload`` containers so they can
+    reach butler MCP servers across the Docker network. When ``BUTLERS_HOST``
+    is unset (e.g. inside butlers-up itself, where every daemon already sees
+    its siblings via bare ``localhost``) this is a no-op, and it never
+    touches a URL whose host isn't the exact literal ``localhost``.
+    """
+    host = os.environ.get("BUTLERS_HOST")
+    if not host or host == "localhost":
+        return url
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() != "localhost":
+        return url
+
+    # Split netloc into [userinfo@]host[:port] while preserving raw encoding,
+    # mirroring prefer_ipv4_loopback_url's approach above.
+    userinfo, sep, host_port = parsed.netloc.rpartition("@")
+    _, port_sep, port = host_port.partition(":")
+    netloc = f"{userinfo}{sep}{host}{port_sep}{port}"
 
     return urlunparse(parsed._replace(netloc=netloc))
 

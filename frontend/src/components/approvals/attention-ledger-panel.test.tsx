@@ -71,6 +71,7 @@ describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
             coalesced: 0,
             deferred: 3,
             suppressed: 120,
+            failed: 0,
             total: 123,
             suppressed_never_delivered: true,
           },
@@ -102,6 +103,7 @@ describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
             coalesced: 1,
             deferred: 0,
             suppressed: 2,
+            failed: 0,
             total: 8,
             suppressed_never_delivered: false,
           },
@@ -129,6 +131,7 @@ describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
             coalesced: 0,
             deferred: 0,
             suppressed: 120,
+            failed: 0,
             total: 120,
             suppressed_never_delivered: true,
           },
@@ -138,6 +141,7 @@ describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
             coalesced: 0,
             deferred: 0,
             suppressed: 4,
+            failed: 0,
             total: 4,
             suppressed_never_delivered: true,
           },
@@ -155,6 +159,73 @@ describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
     expect(banner.textContent).toContain("2 sources");
     expect(banner.textContent).toContain("secrets_lifecycle");
     expect(banner.textContent).toContain("home");
+  });
+});
+
+describe("AttentionLedgerPanel -- failed outcome column (bu-hmdqz.3)", () => {
+  it("renders the Failed column, red-toned when non-zero", async () => {
+    vi.mocked(getAttentionLedgerSummary).mockResolvedValue(
+      summaryResponse({
+        by_source: [
+          {
+            origin_butler: "secrets_lifecycle",
+            delivered: 0,
+            coalesced: 0,
+            deferred: 0,
+            suppressed: 0,
+            failed: 21,
+            total: 21,
+            suppressed_never_delivered: false,
+          },
+        ],
+        flagged_sources: [],
+      }),
+    );
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("attention-source-row")).toBeTruthy();
+    });
+    const row = screen.getByTestId("attention-source-row");
+    expect(row.textContent).toContain("21");
+    const failedCell = Array.from(row.querySelectorAll("span")).find(
+      (el) => el.textContent === "21",
+    );
+    expect(failedCell).toBeTruthy();
+    expect(failedCell?.className).toContain("text-[var(--red-text)]");
+  });
+
+  it("does not red-tone the Failed column when it is zero", async () => {
+    vi.mocked(getAttentionLedgerSummary).mockResolvedValue(
+      summaryResponse({
+        by_source: [
+          {
+            origin_butler: "finance",
+            delivered: 5,
+            coalesced: 0,
+            deferred: 0,
+            suppressed: 0,
+            failed: 0,
+            total: 5,
+            suppressed_never_delivered: false,
+          },
+        ],
+        flagged_sources: [],
+      }),
+    );
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("attention-source-row")).toBeTruthy();
+    });
+    const row = screen.getByTestId("attention-source-row");
+    const zeroCells = Array.from(row.querySelectorAll("span")).filter(
+      (el) => el.textContent === "0",
+    );
+    // The Failed cell (rendering "0") must not carry the red-text token.
+    expect(zeroCells.some((el) => el.className.includes("text-[var(--red-text)]"))).toBe(false);
   });
 });
 

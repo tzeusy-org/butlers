@@ -36,7 +36,10 @@ Design
   and the Switchboard ``deliver()`` dispatch path used by the insight
   delivery cycle in ``butlers.scheduled_jobs``), and every outcome is
   recorded via ``record_attention_event`` so it shows up honestly as
-  delivered/suppressed/deferred in the attention ledger. Priority is
+  delivered/suppressed/failed in the attention ledger (bu-hmdqz.3: a genuine
+  delivery failure — no recipient, a transport error, an unexpected
+  exception — is recorded as ``outcome="failed"``, never ``"deferred"``,
+  which is reserved for a benign hold that resolves on its own). Priority is
   "medium" — important, but not the priority>=90 tier that bypasses quiet
   hours — so quiet hours genuinely defer it, per the bead's guidance.
 - Why this doesn't call the ``notify()`` MCP tool directly (bu-qvnce.8
@@ -65,6 +68,20 @@ Design
   preferences row, and this job has no single natural butler identity to
   key it on. Tracked as a follow-up rather than blocking this change (see
   PR #2951 discussion).
+- Cross-container transport (bu-hmdqz.3): ``deliver()``'s underlying
+  ``switchboard.route()`` connects directly to the target butler's MCP
+  endpoint, resolved from ``switchboard.butler_registry`` — every daemon
+  self-registers that endpoint as ``http://localhost:<port>`` from
+  butlers-up's own point of view. That "localhost" is wrong from THIS
+  process (dashboard-api, a separate container), so every delivery attempt
+  from here used to fail to connect regardless of gating/dispatch logic
+  being otherwise identical to ``notify()``'s — see
+  ``butlers.core.mcp_urls.resolve_cross_container_mcp_url``, which
+  ``route()`` now applies via the ``BUTLERS_HOST`` env var Docker Compose
+  already sets on this container. A transport failure that slips through
+  anyway is queued for retry via ``_enqueue_delivery_retry`` (switchboard's
+  own ``deferred_notifications`` table, flushed by switchboard's in-container
+  scheduler tick — never subject to this same cross-container problem).
 - Natural future home: bu-a63hn (background verification loop) once it
   exists. This job does not block on it; it is a standalone scheduled check.
 """
@@ -75,7 +92,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -95,6 +112,7 @@ from butlers.core.approvals_policy import (
 )
 from butlers.core.attention_ledger import get_suppressing_context_signal, record_attention_event
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.core.temporal.delivery_db import insert_deferred_notification
 from butlers.credential_store import resolve_owner_telegram_recipient
 
 logger = logging.getLogger(__name__)
@@ -114,6 +132,15 @@ _STATE_DESCRIPTIONS: dict[str, str] = {
 }
 
 _DASHBOARD_PORT_DEFAULT = "41200"
+
+# bu-hmdqz.3 slice 2: how long to wait before retrying a transport-failed
+# delivery via the deferred_notifications flusher. The retry envelope is
+# flushed by switchboard's OWN scheduler tick (running inside butlers-up,
+# same container as every other butler daemon) -- so unlike this job's own
+# first attempt (dashboard-api, a separate container, see
+# resolve_cross_container_mcp_url()), the retry is never subject to the
+# cross-container transport bug in the first place.
+_RETRY_BACKOFF = timedelta(minutes=30)
 
 
 def _dashboard_url() -> str:
@@ -295,6 +322,77 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     return "\n".join(lines)
 
 
+async def _enqueue_delivery_retry(
+    db: DatabaseManager,
+    *,
+    channel: str,
+    message: str,
+    recipient: str,
+) -> str | None:
+    """Enqueue a retry envelope for a transport-failed delivery, best-effort.
+
+    bu-hmdqz.3 slice 2: a ``delivery_error`` here does not mean the message
+    itself is undeliverable — it means THIS process (dashboard-api) could not
+    reach a butler MCP endpoint. Rather than depending on the next 30-minute
+    scan tick (which would re-run through the exact same cross-container
+    transport, and — before slice 3's ``resolve_cross_container_mcp_url`` fix
+    — always failed the same way), this writes a ``notify.v1`` envelope
+    directly into ``switchboard.deferred_notifications``. Switchboard's own
+    scheduler tick (``butlers.core.scheduler._tick_deferred_notification_pass``)
+    runs inside butlers-up — the SAME container every butler daemon lives in
+    — and flushes it in-process via ``switchboard.notification.deliver.deliver``
+    (see ``butlers.background``'s ``_scheduler_notify_fn``), so the retry is
+    never subject to this job's own cross-container transport problem.
+
+    ``origin_butler`` in the envelope must be ``"switchboard"`` to satisfy
+    ``deliver()``'s ``notify_request.origin_butler == source_butler`` check
+    for the flusher's in-process switchboard-self-delivery path.
+
+    Best-effort: a failure to enqueue is logged and swallowed (mirrors
+    ``record_attention_event``'s own degraded-honesty contract) — the
+    original delivery attempt has already failed and been recorded regardless
+    of whether the retry envelope could be queued. Returns the deferred
+    notification's id (for the ledger row's ``notification_ref``) or ``None``
+    if enqueuing was skipped/failed.
+    """
+    try:
+        switchboard_pool = db.pool("switchboard")
+    except KeyError:
+        logger.warning(
+            "secrets_lifecycle_check: switchboard pool unavailable; "
+            "cannot enqueue delivery retry for recipient=%s",
+            recipient,
+        )
+        return None
+
+    envelope = {
+        "schema_version": "notify.v1",
+        "origin_butler": "switchboard",
+        "delivery": {
+            "intent": "send",
+            "channel": channel,
+            "message": message,
+            "recipient": recipient,
+        },
+    }
+    try:
+        return await insert_deferred_notification(
+            switchboard_pool,
+            butler_name="switchboard",
+            channel=channel,
+            message=message,
+            priority="medium",
+            envelope=envelope,
+            deliver_at=datetime.now(UTC) + _RETRY_BACKOFF,
+        )
+    except Exception:
+        logger.warning(
+            "secrets_lifecycle_check: failed to enqueue delivery retry envelope",
+            exc_info=True,
+        )
+        return None
+
+
 async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     """Scan every credential and push a debounced owner notification for
     each NEW transition into an attention state.
@@ -348,12 +446,14 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 )
                 # A genuine terminal failure — must be recorded, not silent,
                 # or an unresolvable recipient reads identically to quiet-hours
-                # discipline in the ledger.
+                # discipline in the ledger. Not retried via the deferred queue:
+                # unlike a transport failure, retrying without a configured
+                # recipient can never succeed.
                 await record_attention_event(
                     shared_pool,
                     origin_butler=_LIFECYCLE_ACTOR,
                     source="notify",
-                    outcome="deferred",
+                    outcome="failed",
                     channel="telegram",
                     intent="send",
                     priority="medium",
@@ -382,16 +482,29 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
 
             if deliver_result.get("status") == "failed":
                 errors += 1
+                # Retryable: recipient + message are already resolved above,
+                # so (unlike no_recipient_configured) a later retry can
+                # genuinely succeed — e.g. once the transport itself recovers
+                # (resolve_cross_container_mcp_url) or Messenger comes back.
+                # Enqueue a retry envelope on switchboard's OWN
+                # deferred_notifications table so switchboard's next
+                # scheduler tick (running inside butlers-up, not this
+                # dashboard-api process) actually redelivers it — see
+                # _enqueue_delivery_retry's docstring.
+                retry_ref = await _enqueue_delivery_retry(
+                    db, channel="telegram", message=message, recipient=recipient
+                )
                 await record_attention_event(
                     shared_pool,
                     origin_butler=_LIFECYCLE_ACTOR,
                     source="notify",
-                    outcome="deferred",
+                    outcome="failed",
                     channel="telegram",
                     intent="send",
                     priority="medium",
                     reason=f"delivery_error:{deliver_result.get('error', 'unknown')}",
                     dedup_key=snapshot.key,
+                    notification_ref=retry_ref,
                 )
                 continue
 
@@ -425,12 +538,16 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
             )
             # A genuine terminal failure — must be recorded, not silent, or an
             # exception deep in the dispatch path (e.g. a DB error) reads
-            # identically to quiet-hours discipline in the ledger.
+            # identically to quiet-hours discipline in the ledger. Not
+            # retried via the deferred queue: unlike delivery_error, message
+            # and recipient are not reliably resolved at every raise point in
+            # this try block (e.g. an exception inside _check_suppression),
+            # so there is nothing safe to enqueue.
             await record_attention_event(
                 shared_pool,
                 origin_butler=_LIFECYCLE_ACTOR,
                 source="notify",
-                outcome="deferred",
+                outcome="failed",
                 channel="telegram",
                 intent="send",
                 priority="medium",

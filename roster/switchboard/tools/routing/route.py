@@ -12,7 +12,7 @@ import asyncpg
 from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
-from butlers.core.mcp_urls import canonical_runtime_mcp_url
+from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
 from butlers.core.model_routing import Complexity
 from butlers.core.telemetry import inject_trace_context
 from butlers.tools.switchboard.registry.registry import (
@@ -285,7 +285,15 @@ async def route(
                 )
                 return {"error": error_msg}
 
-            endpoint_url = canonical_runtime_mcp_url(target_row["endpoint_url"])
+            # Registry endpoints are self-registered as http://localhost:<port>
+            # from butlers-up's own point of view (see runtime_mcp_url()).
+            # resolve_cross_container_mcp_url() rewrites the host via
+            # BUTLERS_HOST for callers running in a separate container (e.g.
+            # secrets_lifecycle inside dashboard-api, bu-hmdqz.3) -- a no-op
+            # for in-butlers-up callers, where BUTLERS_HOST is unset.
+            endpoint_url = resolve_cross_container_mcp_url(
+                canonical_runtime_mcp_url(target_row["endpoint_url"])
+            )
 
             # Inject trace context into args
             trace_context = inject_trace_context()

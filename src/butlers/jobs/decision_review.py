@@ -426,9 +426,11 @@ async def _deliver(
     """Send one owner-facing message via the notify boundary.
 
     Records a terminal attention_ledger row on every branch (suppressed /
-    deferred / delivered) so an owner-decision push is never silently
+    failed / delivered) so an owner-decision push is never silently
     dropped -- mirrors ``secrets_lifecycle.run_secrets_lifecycle_check``.
-    Returns the outcome string.
+    "failed" (not "deferred") for no_recipient_configured/delivery_error --
+    bu-hmdqz.3: those are genuine terminal failures, not a benign hold that
+    resolves on its own. Returns the outcome string.
     """
     suppress_reason = await _check_suppression(pool)
     if suppress_reason is not None:
@@ -451,14 +453,14 @@ async def _deliver(
             pool,
             origin_butler=_ACTOR,
             source="notify",
-            outcome="deferred",
+            outcome="failed",
             channel="telegram",
             intent="send",
             priority=priority,
             reason="no_recipient_configured",
             dedup_key=dedup_key,
         )
-        return "deferred"
+        return "failed"
 
     # Local import: mirrors butlers.scheduled_jobs._build_switchboard_insight_notify_fn
     # and secrets_lifecycle.run_secrets_lifecycle_check -- roster/ modules
@@ -479,14 +481,14 @@ async def _deliver(
             pool,
             origin_butler=_ACTOR,
             source="notify",
-            outcome="deferred",
+            outcome="failed",
             channel="telegram",
             intent="send",
             priority=priority,
             reason=f"delivery_error:{result.get('error', 'unknown')}",
             dedup_key=dedup_key,
         )
-        return "deferred"
+        return "failed"
 
     await record_attention_event(
         pool,

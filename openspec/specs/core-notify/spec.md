@@ -97,7 +97,18 @@ reached).
   avoids a redundant DB round-trip on an already-decided path
 
 ### Requirement: Attention Ledger Recording at the notify() Boundary
-Every terminal decision the `notify()` owner-default quiet-hours gate makes SHALL be recorded to `public.attention_ledger` with a closed outcome vocabulary (`delivered`, `deferred`, `suppressed`) and a machine-readable `reason`. A ledger-write failure MUST NOT block or fail the notification it describes (best-effort, fail-open).
+Every terminal decision the `notify()` owner-default quiet-hours gate makes SHALL be recorded to `public.attention_ledger` with a closed outcome vocabulary (`delivered`, `coalesced`, `deferred`, `suppressed`, `failed`) and a machine-readable `reason`. A ledger-write failure MUST NOT block or fail the notification it describes (best-effort, fail-open).
+
+`deferred` and `failed` are distinct and MUST NOT be conflated: `deferred` is a benign, chosen hold that resolves on its own (a quiet-hours window ending, a coalescing flush tick) with no caller action required. `failed` is a genuine terminal failure at this attempt — no recipient configured, a transport/delivery error, an unexpected exception — that nothing automatically retries unless the caller explicitly enqueues a retry envelope (e.g. via `insert_deferred_notification`) and records the resulting row id as `notification_ref`. This distinction applies identically to every caller that composes the same gating/dispatch primitives `notify()` uses from outside a butler daemon's own MCP closure (e.g. `butlers.jobs.secrets_lifecycle`, `butlers.jobs.home._send_notify`, `butlers.jobs.decision_review._deliver`, `butlers.core.fleet_halt_attention`) — see those modules' docstrings for why each is a process-boundary-forced consumer rather than a direct `notify()` caller.
+
+#### Scenario: A genuine delivery failure is recorded as failed, not deferred
+- **WHEN** any notify-boundary caller (the `notify()` tool itself, or a process-boundary-forced consumer composing the same primitives) cannot resolve a recipient, or the underlying `deliver()` dispatch returns `status="failed"`, or an unexpected exception occurs mid-dispatch
+- **THEN** a `public.attention_ledger` row is written with `outcome="failed"` and a `reason` identifying the failure class (e.g. `"no_recipient_configured"`, `"delivery_error:<detail>"`, `"unexpected_error:<ExceptionType>"`)
+- **AND** this row is NEVER written with `outcome="deferred"` — that value is reserved for a benign hold the system will retry on its own
+
+#### Scenario: A retried failed delivery records its retry envelope
+- **WHEN** a caller enqueues a retry envelope for a transport-failed delivery (e.g. via `insert_deferred_notification` on a `deferred_notifications` table that a scheduler tick will flush)
+- **THEN** the corresponding `outcome="failed"` ledger row's `notification_ref` is set to the enqueued row's id, so the failure is traceable to its retry attempt rather than a dead end
 
 #### Scenario: Quiet-hours suppression is recorded
 - **WHEN** `notify()`'s owner-default path is suppressed by `public.approvals_policy` quiet hours
@@ -170,7 +181,9 @@ When the deferred-notification flush pass (`_tick_deferred_notification_pass`) f
 ### Requirement: Attention Ledger Reader
 The dashboard API SHALL expose a windowed, filterable reader over `public.attention_ledger` and a per-source delivery-vs-suppression summary, so that a source silently failing at either choke point (`notify()` or `delivery_cycle()`) is observable instead of requiring direct DB access.
 
-`GET /api/attention/ledger` SHALL return a paginated, newest-first list of ledger rows, filterable by `intent`, `source` (the ledger's own `notify`/`insight` choke-point column), `outcome`, and `origin_butler`, and windowed by `since`/`until` (`occurred_at` bounds). `GET /api/attention/ledger/summary` SHALL return, for a `since`/`until` window (defaulting to the last 7 days when `since` is omitted), one row per distinct `origin_butler` with `delivered`/`coalesced`/`deferred`/`suppressed`/`total` counts and a `suppressed_never_delivered` boolean: `true` when that `origin_butler` has `suppressed > 0` and `delivered == 0` in the window. Both endpoints MUST follow the repo's degraded-envelope convention (`butlers/CLAUDE.md` API Conventions): a genuinely unreachable ledger pool renders `source_available=false` on an otherwise-empty/zero payload, never a truthful "no suppression" or "no rows".
+`GET /api/attention/ledger` SHALL return a paginated, newest-first list of ledger rows, filterable by `intent`, `source` (the ledger's own `notify`/`insight` choke-point column), `outcome`, and `origin_butler`, and windowed by `since`/`until` (`occurred_at` bounds). `GET /api/attention/ledger/summary` SHALL return, for a `since`/`until` window (defaulting to the last 7 days when `since` is omitted), one row per distinct `origin_butler` with `delivered`/`coalesced`/`deferred`/`suppressed`/`failed`/`total` counts and a `suppressed_never_delivered` boolean: `true` when that `origin_butler` has `suppressed > 0` and `delivered == 0` in the window. Both endpoints MUST follow the repo's degraded-envelope convention (`butlers/CLAUDE.md` API Conventions): a genuinely unreachable ledger pool renders `source_available=false` on an otherwise-empty/zero payload, never a truthful "no suppression" or "no rows".
+
+The Trust Console panel that renders this summary (`AttentionLedgerPanel`) MUST render a non-zero `failed` count in a visually distinct, red/alerting tone — never the same neutral tone as `coalesced`/`deferred`/`total` — since a `failed` count represents genuine, un-retried delivery breakage in the exact surface built to prove silence is chosen.
 
 Naming note: the summary's "per source" grouping is `origin_butler` (which butler/job attempted the egress — e.g. `secrets_lifecycle`, `home`), a distinct dimension from the ledger's own `source` column (the `notify`/`insight` choke-point literal). Both are independently exposed: `origin_butler` as the summary's grouping key and an optional list-endpoint filter, `source` as a list/summary filter on the choke-point column.
 
@@ -182,6 +195,10 @@ Naming note: the summary's "per source" grouping is `origin_butler` (which butle
 #### Scenario: A healthy source is not flagged
 - **WHEN** an `origin_butler` has both `delivered > 0` and `suppressed > 0` rows in the window
 - **THEN** its `suppressed_never_delivered` is `false`
+
+#### Scenario: Failed deliveries are counted separately from deferred
+- **WHEN** `GET /api/attention/ledger/summary` is called for a window in which `origin_butler="secrets_lifecycle"` has 21 rows with `outcome="failed"` and 0 rows with `outcome="deferred"`
+- **THEN** the response's `by_source` entry for `secrets_lifecycle` has `failed=21` and `deferred=0` — the two counts are never merged into one bucket
 
 #### Scenario: List endpoint is windowed and filterable
 - **WHEN** `GET /api/attention/ledger?since=<t1>&until=<t2>&outcome=suppressed&origin_butler=secrets_lifecycle` is called

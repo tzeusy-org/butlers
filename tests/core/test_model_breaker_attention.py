@@ -262,7 +262,7 @@ async def test_non_high_priority_is_suppressed_by_quiet_hours():
     audit_append.assert_not_called()
 
 
-async def test_no_recipient_defers_without_debounce_marker():
+async def test_no_recipient_fails_without_debounce_marker():
     pool = object()
     with (
         patch(
@@ -288,12 +288,12 @@ async def test_no_recipient_defers_without_debounce_marker():
         )
 
     ledger_mock.assert_awaited_once()
-    assert ledger_mock.await_args.kwargs["outcome"] == "deferred"
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
     assert ledger_mock.await_args.kwargs["reason"] == "no_recipient_configured"
     audit_append.assert_not_called()
 
 
-async def test_delivery_failure_defers_without_debounce_marker():
+async def test_delivery_failure_fails_without_debounce_marker():
     pool = object()
     with (
         patch(
@@ -323,7 +323,7 @@ async def test_delivery_failure_defers_without_debounce_marker():
         )
 
     ledger_mock.assert_awaited_once()
-    assert ledger_mock.await_args.kwargs["outcome"] == "deferred"
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
     assert ledger_mock.await_args.kwargs["reason"] == "delivery_error:boom"
     audit_append.assert_not_called()
 

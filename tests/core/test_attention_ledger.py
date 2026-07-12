@@ -148,6 +148,21 @@ class TestRecordAttentionEvent:
         assert params[1] == "insight"
         assert params[7] == "coalesced"
 
+    async def test_failed_outcome_accepted(self):
+        """bu-hmdqz.3: 'failed' is a valid outcome, distinct from 'deferred'."""
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="row-id-456")
+
+        result = await record_attention_event(
+            pool,
+            origin_butler="secrets_lifecycle_check",
+            source="notify",
+            outcome="failed",
+            reason="delivery_error:connection refused",
+        )
+        assert result == "row-id-456"
+        pool.fetchval.assert_awaited_once()
+
     async def test_db_error_swallowed_and_logged(self):
         pool = AsyncMock()
         pool.fetchval = AsyncMock(side_effect=Exception("relation does not exist"))
@@ -168,6 +183,7 @@ class TestCountAttentionEventsSince:
             "coalesced": 0,
             "delivered": 0,
             "deferred": 0,
+            "failed": 0,
             "suppressed": 0,
         }
 
@@ -184,6 +200,7 @@ class TestCountAttentionEventsSince:
             "coalesced": 0,
             "delivered": 3,
             "deferred": 0,
+            "failed": 0,
             "suppressed": 1,
         }
 
@@ -195,6 +212,7 @@ class TestCountAttentionEventsSince:
             "coalesced": 0,
             "delivered": 0,
             "deferred": 0,
+            "failed": 0,
             "suppressed": 0,
         }
 

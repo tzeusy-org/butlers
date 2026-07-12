@@ -49,6 +49,7 @@ def _row(**overrides: object) -> dict:
         "coalesced": 0,
         "deferred": 3,
         "suppressed": 120,
+        "failed": 0,
         "total": 123,
     }
     base.update(overrides)
@@ -268,6 +269,34 @@ async def test_summary_source_with_no_suppression_is_not_flagged():
 
     assert result.by_source[0].suppressed_never_delivered is False
     assert result.flagged_sources == []
+
+
+async def test_summary_counts_failed_outcome_separately_from_deferred(app):
+    """bu-hmdqz.3: 'failed' is its own counted column, distinct from 'deferred'."""
+    from datetime import datetime
+
+    from butlers.api.routers.attention_ledger import _query_ledger_summary
+
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            _row(origin_butler="secrets_lifecycle", delivered=0, deferred=0, failed=21, total=21),
+        ]
+    )
+
+    result = await _query_ledger_summary(
+        pool,
+        since=datetime(2026, 7, 1, tzinfo=UTC),
+        until=None,
+        intent=None,
+        source=None,
+        origin_butler=None,
+    )
+
+    assert result.by_source[0].failed == 21
+    assert result.by_source[0].deferred == 0
+    fetch_sql = pool.fetch.call_args_list[0].args[0]
+    assert "outcome = 'failed'" in fetch_sql
 
 
 async def test_summary_endpoint_end_to_end_surfaces_flagged_source(app):

@@ -275,7 +275,7 @@ async def test_send_notify_suppressed_by_quiet_hours():
 
 
 async def test_send_notify_no_recipient_configured():
-    """No telegram recipient configured: skip delivery, record a deferred ledger row."""
+    """No telegram recipient configured: skip delivery, record a failed ledger row."""
     pool = _make_pool()
     p1, p2 = _patch_no_suppression()
 
@@ -293,12 +293,12 @@ async def test_send_notify_no_recipient_configured():
         await _send_notify(pool, "Weekly digest")
 
     mock_client.assert_not_called()
-    assert mock_ledger.await_args.kwargs["outcome"] == "deferred"
+    assert mock_ledger.await_args.kwargs["outcome"] == "failed"
     assert mock_ledger.await_args.kwargs["reason"] == "no_recipient_configured"
 
 
 async def test_send_notify_no_switchboard_client():
-    """Switchboard client unavailable: skip delivery, record a deferred ledger row."""
+    """Switchboard client unavailable: skip delivery, record a failed ledger row."""
     pool = _make_pool()
     p1, p2 = _patch_no_suppression()
 
@@ -315,7 +315,7 @@ async def test_send_notify_no_switchboard_client():
     ):
         await _send_notify(pool, "Weekly digest")
 
-    assert mock_ledger.await_args.kwargs["outcome"] == "deferred"
+    assert mock_ledger.await_args.kwargs["outcome"] == "failed"
     assert mock_ledger.await_args.kwargs["reason"] == "switchboard_client_unavailable"
 
 
@@ -360,8 +360,8 @@ async def test_send_notify_delivers_via_deliver_mcp_tool():
     assert mock_ledger.await_args.kwargs["notification_ref"] == "abc-123"
 
 
-async def test_send_notify_deliver_failure_recorded_as_deferred():
-    """deliver() reporting status=failed is recorded as a deferred ledger row, not raised."""
+async def test_send_notify_deliver_failure_recorded_as_failed():
+    """deliver() reporting status=failed is recorded as a failed ledger row, not raised."""
     pool = _make_pool()
     p1, p2 = _patch_no_suppression()
 
@@ -384,5 +384,5 @@ async def test_send_notify_deliver_failure_recorded_as_deferred():
     ):
         await _send_notify(pool, "Weekly digest")
 
-    assert mock_ledger.await_args.kwargs["outcome"] == "deferred"
+    assert mock_ledger.await_args.kwargs["outcome"] == "failed"
     assert "Messenger unreachable" in mock_ledger.await_args.kwargs["reason"]

@@ -69,10 +69,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 Source = Literal["notify", "insight"]
-Outcome = Literal["delivered", "coalesced", "deferred", "suppressed"]
+# "deferred" means a benign, chosen hold that resolves on its own (quiet
+# hours, a coalescing window) -- the notification WILL be attempted again.
+# "failed" (bu-hmdqz.3) means a genuine terminal failure at this attempt (no
+# recipient configured, a transport/delivery error, an unexpected exception)
+# -- distinct from "deferred" precisely because nothing automatically retries
+# it unless the caller explicitly enqueues a retry envelope (see
+# ``butlers.core.temporal.delivery_db.insert_deferred_notification``).
+# Conflating the two lets an outage impersonate quiet-hours discipline in the
+# ledger -- the exact failure mode bu-hmdqz.3 fixed for secrets_lifecycle.
+Outcome = Literal["delivered", "coalesced", "deferred", "suppressed", "failed"]
 
 VALID_SOURCES = frozenset({"notify", "insight"})
-VALID_OUTCOMES = frozenset({"delivered", "coalesced", "deferred", "suppressed"})
+VALID_OUTCOMES = frozenset({"delivered", "coalesced", "deferred", "suppressed", "failed"})
 
 # Priority range shared with RFC 0011's Priority Scoring Convention (1-100
 # scale): 90-100 is "time-critical — action needed within 24-48 hours". The

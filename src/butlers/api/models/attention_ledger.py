@@ -66,6 +66,12 @@ class AttentionSourceSummary(BaseModel):
     coalesced: int
     deferred: int
     suppressed: int
+    # Genuine terminal failures (no recipient, transport/delivery error, an
+    # unexpected exception) -- bu-hmdqz.3. Distinct from ``deferred``, which
+    # is reserved for a benign hold (quiet hours, coalescing) that resolves
+    # on its own; a "failed" row is only retried if the caller explicitly
+    # enqueued a retry envelope.
+    failed: int
     total: int
     # The marquee signal this endpoint exists for: a source with
     # suppressed > 0 and delivered == 0 over the window is silently failing

@@ -27,6 +27,7 @@ from butlers.jobs.decision_review import (
     _check_suppression,
     _compose_escalation_message,
     _compose_weekly_digest_message,
+    _deliver,
     _is_decision_bead,
     _is_deploy_bead,
     compute_decision_digest,
@@ -511,6 +512,56 @@ async def test_check_suppression_none_when_clear():
         ),
     ):
         assert await _check_suppression(pool) is None
+
+
+# ---------------------------------------------------------------------------
+# _deliver -- bu-hmdqz.3: genuine terminal failures record outcome='failed',
+# not 'deferred' (reserved for a benign hold that resolves on its own).
+# ---------------------------------------------------------------------------
+
+
+async def test_deliver_no_recipient_records_failed_outcome():
+    pool = object()
+    with (
+        patch("butlers.jobs.decision_review._check_suppression", new=AsyncMock(return_value=None)),
+        patch(
+            "butlers.jobs.decision_review.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.jobs.decision_review.record_attention_event", new=AsyncMock()
+        ) as ledger_mock,
+    ):
+        outcome = await _deliver(pool, message="hi", dedup_key="k1", priority="medium")
+
+    assert outcome == "failed"
+    ledger_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
+    assert ledger_mock.await_args.kwargs["reason"] == "no_recipient_configured"
+
+
+async def test_deliver_transport_failure_records_failed_outcome():
+    pool = object()
+    with (
+        patch("butlers.jobs.decision_review._check_suppression", new=AsyncMock(return_value=None)),
+        patch(
+            "butlers.jobs.decision_review.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value="12345"),
+        ),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            new=AsyncMock(return_value={"status": "failed", "error": "boom"}),
+        ),
+        patch(
+            "butlers.jobs.decision_review.record_attention_event", new=AsyncMock()
+        ) as ledger_mock,
+    ):
+        outcome = await _deliver(pool, message="hi", dedup_key="k1", priority="medium")
+
+    assert outcome == "failed"
+    ledger_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
+    assert ledger_mock.await_args.kwargs["reason"] == "delivery_error:boom"
 
 
 # ---------------------------------------------------------------------------

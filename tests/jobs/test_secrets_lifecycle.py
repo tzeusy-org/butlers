@@ -393,9 +393,72 @@ async def test_run_secrets_lifecycle_check_no_recipient_counts_as_error_no_marke
         summary = await run_secrets_lifecycle_check(db)
 
     ledger_mock.assert_awaited_once()
-    assert ledger_mock.await_args.kwargs["outcome"] == "deferred"
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
     assert ledger_mock.await_args.kwargs["reason"] == "no_recipient_configured"
     assert ledger_mock.await_args.kwargs["dedup_key"] == "s:SOME_KEY"
+    audit_append.assert_not_called()
+    assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 0, "errors": 1}
+
+
+async def test_run_secrets_lifecycle_check_delivery_error_records_failed_and_enqueues_retry():
+    """bu-hmdqz.3: a transport-failed delivery is recorded as 'failed' (not
+    'deferred' -- that's reserved for a benign hold) and a retry envelope is
+    enqueued on switchboard's own deferred_notifications table so it actually
+    gets redelivered instead of silently expiring."""
+    shared_pool = object()
+    switchboard_pool = object()
+    db = _FakeDatabaseManager(
+        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
+    )
+    snapshot = CredentialSnapshot(
+        key="s:SPOTIFY_ACCESS_TOKEN", family="system", label="SPOTIFY_ACCESS_TOKEN", state="failing"
+    )
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._check_suppression", new=AsyncMock(return_value=None)
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value="12345"),
+        ),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            new=AsyncMock(
+                return_value={"status": "failed", "error": "connection refused: localhost:41104"}
+            ),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.insert_deferred_notification",
+            new=AsyncMock(return_value="deferred-notif-1"),
+        ) as insert_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ) as ledger_mock,
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    insert_mock.assert_awaited_once()
+    insert_kwargs = insert_mock.await_args.kwargs
+    assert insert_kwargs["butler_name"] == "switchboard"
+    assert insert_kwargs["channel"] == "telegram"
+    assert insert_kwargs["envelope"]["origin_butler"] == "switchboard"
+    assert insert_kwargs["envelope"]["delivery"]["recipient"] == "12345"
+
+    ledger_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
+    assert ledger_mock.await_args.kwargs["reason"].startswith("delivery_error:")
+    assert ledger_mock.await_args.kwargs["notification_ref"] == "deferred-notif-1"
     audit_append.assert_not_called()
     assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 0, "errors": 1}
 
@@ -432,7 +495,7 @@ async def test_run_secrets_lifecycle_check_unexpected_error_writes_ledger_row():
         summary = await run_secrets_lifecycle_check(db)
 
     ledger_mock.assert_awaited_once()
-    assert ledger_mock.await_args.kwargs["outcome"] == "deferred"
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
     assert ledger_mock.await_args.kwargs["reason"] == "unexpected_error:RuntimeError"
     assert ledger_mock.await_args.kwargs["dedup_key"] == "s:SOME_KEY"
     audit_append.assert_not_called()

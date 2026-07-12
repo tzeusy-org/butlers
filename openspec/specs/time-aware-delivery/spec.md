@@ -59,6 +59,8 @@ The `notify()` tool SHALL accept an optional `priority` parameter (enum: `high`,
 ### Requirement: Deferred Notification Storage
 Deferred notifications are stored in a `deferred_notifications` table with fields: `id` (UUID), `butler_name`, `channel`, `message`, `priority`, `envelope` (JSONB -- full notify.v1 envelope), `deferred_at` (timestamp), `deliver_at` (timestamp -- computed from `batch_delivery_time` in user timezone), `status` (enum: `pending`, `delivered`, `expired`, `cancelled`), `delivered_at` (timestamp, nullable).
 
+This table's storage-and-flush mechanism is also reused (bu-hmdqz.3) to retry a genuinely *failed* delivery attempt, not just to batch a quiet-hours defer: a caller running outside every butler daemon's own container (e.g. `butlers.jobs.secrets_lifecycle`, scheduled inside `dashboard-api`) that hits a transport error MAY insert a retry envelope directly into a target butler's `deferred_notifications` table (via `insert_deferred_notification`) so that butler's OWN scheduler tick flushes and redelivers it in-process. This is an ordinary `deliver_at`-scheduled row like any other -- no schema or flush-pass distinction from a quiet-hours defer -- but the attention-ledger row describing the original attempt is recorded with `outcome="failed"` (see the Notify Contract spec's Attention Ledger requirement), not `outcome="deferred"`, since the retry is an explicit caller action rather than the standard quiet-hours hold.
+
 #### Scenario: Deferred notification persisted
 - **WHEN** a medium-priority notification is deferred during quiet hours
 - **THEN** a row is inserted into `deferred_notifications` with `status='pending'` and `deliver_at` computed as the next occurrence of `batch_delivery_time` in the user's timezone

@@ -77,6 +77,21 @@ The Switchboard SHALL expose a `correct_route` MCP tool that accepts a misroute 
 - **WHEN** a misroute correction is successfully re-dispatched
 - **THEN** the Switchboard's lifecycle record for the original request SHALL be updated to reflect the correction: original routing marked as `corrected`, new routing recorded alongside
 
+### Requirement: Cross-Container MCP Endpoint Resolution
+
+`route()` (and everything built on it, including `switchboard.notification.deliver.deliver()`) SHALL resolve a target butler's registered MCP endpoint to a host reachable from the CALLER's own container, not only from `butlers-up` (the container every butler daemon self-registers itself into via `http://localhost:<port>`). When the `BUTLERS_HOST` environment variable is set to a value other than `localhost` (Docker Compose sets this on the `dashboard-api` / `dashboard-api-hotreload` containers, which host processes — e.g. `butlers.jobs.secrets_lifecycle` — that are NOT part of `butlers-up`), an exact `localhost` host in the resolved endpoint SHALL be rewritten to that value before the MCP connection is attempted. When `BUTLERS_HOST` is unset or equals `localhost` (the case inside `butlers-up` itself), resolution SHALL be unchanged (a no-op).
+
+#### Scenario: In-container caller reaches the registered endpoint unchanged
+- **WHEN** a butler daemon running inside `butlers-up` calls `route()` to reach a sibling butler
+- **AND** `BUTLERS_HOST` is unset
+- **THEN** the MCP connection targets the sibling's self-registered `http://localhost:<port>/mcp` endpoint unchanged
+
+#### Scenario: Cross-container caller is rewritten to the container-DNS host
+- **WHEN** a process running in the `dashboard-api` container (e.g. `secrets_lifecycle`'s scheduled scan) calls `route()` to reach a butler
+- **AND** `BUTLERS_HOST=butlers-up` is set (as Docker Compose configures on this container)
+- **THEN** the MCP connection targets `http://butlers-up:<port>/mcp`, not `http://localhost:<port>/mcp`
+- **AND** the delivery SHALL succeed rather than failing to connect
+
 ### Requirement: Wellness Source Channel and Google Health Provider Registration
 
 The Switchboard SHALL accept `wellness/google_health` as a valid ingestion source.

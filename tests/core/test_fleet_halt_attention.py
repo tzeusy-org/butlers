@@ -341,7 +341,7 @@ async def test_no_recipient_defers_without_debounce_marker():
         await maybe_push_fleet_halt_attention(pool)
 
     ledger_mock.assert_awaited_once()
-    assert ledger_mock.await_args.kwargs["outcome"] == "deferred"
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
     assert ledger_mock.await_args.kwargs["reason"] == "no_recipient_configured"
     audit_append.assert_not_called()
 
@@ -374,7 +374,7 @@ async def test_delivery_failure_defers_without_debounce_marker():
         await maybe_push_fleet_halt_attention(pool)
 
     ledger_mock.assert_awaited_once()
-    assert ledger_mock.await_args.kwargs["outcome"] == "deferred"
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
     assert ledger_mock.await_args.kwargs["reason"] == "delivery_error:boom"
     audit_append.assert_not_called()
 

@@ -215,11 +215,14 @@ async def maybe_push_breaker_open_attention(
 
         recipient = await resolve_owner_telegram_recipient(pool)
         if not recipient:
+            # Genuine terminal failure, not a benign hold -- bu-hmdqz.3
+            # widened the Outcome vocabulary precisely so this reads
+            # honestly instead of impersonating quiet-hours discipline.
             await record_attention_event(
                 pool,
                 origin_butler=_ACTOR,
                 source="notify",
-                outcome="deferred",
+                outcome="failed",
                 channel="telegram",
                 intent="send",
                 priority=priority,
@@ -246,11 +249,14 @@ async def maybe_push_breaker_open_attention(
         )
 
         if deliver_result.get("status") == "failed":
+            # Genuine terminal failure, not a benign hold -- see the
+            # no_recipient_configured branch above for why this is "failed"
+            # (bu-hmdqz.3), not "deferred".
             await record_attention_event(
                 pool,
                 origin_butler=_ACTOR,
                 source="notify",
-                outcome="deferred",
+                outcome="failed",
                 channel="telegram",
                 intent="send",
                 priority=priority,
