@@ -36,7 +36,7 @@ The endpoint SHALL populate `state.attention_items` from five sources before cla
 - **THEN** that row is added to `state.attention_items` as a single attention item
 - **AND** `"offline"` and `"quarantined"` carry `severity = "high"`; `"overdue"` carries `severity = "medium"`
 - **AND** `source` is `"board"`
-- **WHEN** a row's activity is `"unknown"` (that butler's own heartbeat/schema is unreachable) and the board's registry query itself did not fail
+- **WHEN** a row's activity is `"unknown"` (that butler's own heartbeat/schema is unreachable, or its registry `last_seen_at` is clock-skewed more than 5 minutes into the future) and the board's registry query itself did not fail
 - **THEN** that row is likewise added with `severity = "medium"`
 - **WHEN** the board's registry query itself failed, uniformly degrading every row's activity to `"unknown"`
 - **THEN** no attention item is fabricated per butler from that systemic outage

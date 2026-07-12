@@ -310,6 +310,63 @@ async def test_board_quarantined_row_surfaces_reason_and_red_tone():
     assert resp.json()["data"]["aggregates"]["quarantined"] == 1
 
 
+async def test_board_future_last_seen_at_beyond_tolerance_degrades_to_unknown():
+    """A last_seen_at more than 5 min in the future (clock skew) must not
+    read as healthy/idle/running -- mirrors the deleted bespoke
+    butler_registry CASE's `last_seen_at > NOW() + INTERVAL '5 minutes'`
+    guard (bu-y1am9)."""
+    now = _now()
+    configs = [ButlerConnectionInfo(name="finance", port=41105)]
+    db = _FakeDb(
+        switchboard=_FakeSwitchboardPool(
+            rows=[_registry_row("finance", last_seen_at=now + timedelta(minutes=10))]
+        ),
+        butlers={
+            "finance": _FakeButlerPool(
+                crons=["*/15 * * * *"],
+                active_count=2,
+                max_concurrent=3,
+            )
+        },
+    )
+    resp = await _get_board(_build_app(configs, db))
+    assert resp.status_code == 200
+    row = resp.json()["data"]["rows"][0]
+
+    assert row["activity"] == "unknown"
+    assert row["cell_tone"] == "neutral"
+    # The registry heartbeat itself is present (not a source outage) -- only
+    # the liveness verdict is downgraded; heartbeat_unavailable stays False
+    # and heartbeat_age_seconds is negative, the diagnostic tell for skew.
+    assert row["heartbeat_unavailable"] is False
+    assert row["heartbeat_age_seconds"] < 0
+
+
+async def test_board_small_future_last_seen_at_within_tolerance_unaffected():
+    """A last_seen_at only slightly ahead (sub-5-min clock drift) is tolerated
+    and does not trip the skew guard."""
+    now = _now()
+    configs = [ButlerConnectionInfo(name="finance", port=41105)]
+    db = _FakeDb(
+        switchboard=_FakeSwitchboardPool(
+            rows=[_registry_row("finance", last_seen_at=now + timedelta(minutes=1))]
+        ),
+        butlers={
+            "finance": _FakeButlerPool(
+                crons=["*/15 * * * *"],
+                active_count=2,
+                max_concurrent=3,
+            )
+        },
+    )
+    resp = await _get_board(_build_app(configs, db))
+    assert resp.status_code == 200
+    row = resp.json()["data"]["rows"][0]
+
+    assert row["activity"] == "running"
+    assert row["cell_tone"] == "green"
+
+
 async def test_board_registry_failure_degrades_to_unknown_not_fake_health():
     """Registry outage must never render a butler as confidently healthy."""
     configs = [ButlerConnectionInfo(name="finance", port=41105)]

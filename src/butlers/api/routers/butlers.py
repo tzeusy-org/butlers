@@ -289,7 +289,11 @@ def _build_process_facts(
 #
 #   1. status == "down"                        -> "offline"     / red
 #   2. eligibility == "quarantined"             -> "quarantined" / red
-#   3. heartbeat data unavailable for this row  -> "unknown"     / neutral
+#   3. heartbeat data unavailable for this row, OR the registry's
+#      last_seen_at is clock-skewed more than 5 min into the future
+#      (untrustworthy heartbeat, not a confidently healthy one -- mirrors
+#      the bespoke butler_registry CASE this endpoint replaced)
+#                                                -> "unknown"     / neutral
 #   4. active_session_count > 0                 -> "running"     / green
 #   5. cadence_status == "overdue" (silent longer than the butler's own
 #      cron expectation, or > 5 min when no cadence is known)
@@ -350,6 +354,12 @@ _CADENCE_OVERDUE_FACTOR = 2.0
 # Fallback staleness threshold when a butler has no enabled cron schedule at
 # all (matches the pre-existing ButlerHeartbeatTile threshold).
 _DEFAULT_STALE_SECONDS = 5 * 60
+# Tolerance for a registry last_seen_at reported in the future (clock skew
+# between a butler host and the DB server). Beyond this, the heartbeat is
+# untrustworthy rather than confidently recent -- matches the 5-minute
+# tolerance the deleted bespoke butler_registry CASE used
+# (`last_seen_at > NOW() + INTERVAL '5 minutes' THEN 'degraded'`).
+_CLOCK_SKEW_TOLERANCE_SECONDS = 5 * 60
 
 
 class BoardRow(BaseModel):
@@ -582,6 +592,7 @@ def _derive_board_activity(
     status: str,
     eligibility: str,
     heartbeat_unavailable: bool,
+    clock_skewed: bool,
     active_session_count: int,
     cadence_status: str,
 ) -> tuple[str, str]:
@@ -590,7 +601,7 @@ def _derive_board_activity(
         return "offline", "red"
     if eligibility == "quarantined":
         return "quarantined", "red"
-    if heartbeat_unavailable:
+    if heartbeat_unavailable or clock_skewed:
         return "unknown", "neutral"
     if active_session_count > 0:
         return "running", "green"
@@ -633,6 +644,9 @@ async def _fetch_board_row(
     last_heartbeat_dt = _board_as_utc(reg["last_seen_at"]) if reg else None
     last_heartbeat_at = last_heartbeat_dt.isoformat() if last_heartbeat_dt else None
     heartbeat_age = (now - last_heartbeat_dt).total_seconds() if last_heartbeat_dt else None
+    # last_seen_at reported further in the future than our skew tolerance --
+    # the heartbeat is untrustworthy, not confidently recent (bu-y1am9).
+    clock_skewed = heartbeat_age is not None and heartbeat_age < -_CLOCK_SKEW_TOLERANCE_SECONDS
 
     schema_unreachable = False
     last_session_at: str | None = None
@@ -709,6 +723,7 @@ async def _fetch_board_row(
         status=summary.status,
         eligibility=eligibility,
         heartbeat_unavailable=heartbeat_unavailable,
+        clock_skewed=clock_skewed,
         active_session_count=active_effective,
         cadence_status=cadence_status,
     )
