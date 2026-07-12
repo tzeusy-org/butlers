@@ -187,11 +187,14 @@ async def run_consolidation(
     if cc_spawner is not None:
         for (tenant_id, butler_name), episodes in groups.items():
             try:
-                # 1. Fetch existing facts and rules for dedup context
+                # 1. Fetch existing facts and rules for dedup context.
+                # Includes 'fading' facts (bu-5ud8p.1): they are still live,
+                # and consolidation should recognize an episode that reconfirms
+                # a fading fact as an update to it, not create a duplicate.
                 facts_rows = await pool.fetch(
                     "SELECT id, subject, predicate, content, permanence, entity_id "
                     "FROM facts "
-                    "WHERE validity = 'active' AND source_butler = $1 "
+                    "WHERE validity IN ('active', 'fading') AND source_butler = $1 "
                     "  AND tenant_id = $2 "
                     "ORDER BY created_at DESC "
                     "LIMIT 100",

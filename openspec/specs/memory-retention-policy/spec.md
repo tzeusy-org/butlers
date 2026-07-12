@@ -88,6 +88,32 @@ The decay sweep SHALL consult `memory_policies` to determine per-class threshold
 - **THEN** the decay sweep MUST use the hardcoded defaults (fading at 0.2, expiry at 0.05)
 - **AND** a warning MUST be logged
 
+#### Scenario: Fading is recorded on the validity column, not only metadata
+
+- **WHEN** a fact's effective confidence falls between the expiry and fading thresholds
+- **THEN** the fact's `validity` column MUST be set to `'fading'` (not merely a `metadata.status` key), since every reader of the fading count — the dashboard API (`GET /api/memory/stats`, `GET /api/memory/facts?validity=fading`) and the `memory_stats` MCP tool — queries the `validity` column directly
+- **AND** rules (which have no `validity` column, only `maturity`) continue to record fading via `metadata.status = 'fading'`
+
+#### Scenario: Fading facts remain live for retrieval, supersession, and uniqueness
+
+- **WHEN** a fact has `validity = 'fading'`
+- **THEN** it MUST still be returned by recall/search (`memory_search`, `memory_recall`, `memory_context`), entity-scoped reads (`memory_entity_neighbors`, entity fact counts, profile/preference facts), and the discovery catalog backfill — effective confidence is a scoring weight (see the Retrieval composite-score formula), not a hard retrieval cutoff
+- **AND** it MUST still be found by `store_fact`'s supersession lookup, so a fresh write for the same predicate supersedes the fading fact instead of leaving it orphaned alongside a new active row
+- **AND** it MUST still be repointed (entity merge) or retracted (entity forget, `memory_forget`) alongside `'active'` facts, so it is never silently stranded
+
+#### Scenario: A previously-fading fact recovers or expires on the next sweep
+
+- **WHEN** the decay sweep runs
+- **THEN** its source query MUST include facts with `validity IN ('active', 'fading')` (not `'active'` only), so an already-fading fact is re-evaluated every run
+- **AND** if its recomputed effective confidence has since risen back to or above the fading threshold (e.g. after `memory_confirm` resets the decay clock), its `validity` MUST be set back to `'active'`
+- **AND** if its recomputed effective confidence has fallen below the expiry threshold, it MUST progress to `'expired'` per the existing expiry scenarios above
+
+#### Scenario: One-time backfill for facts marked fading before this contract existed
+
+- **WHEN** a fact has `validity = 'active'` and `metadata->>'status' = 'fading'` (written by a decay sweep that predates this contract)
+- **THEN** a migration MUST correct it to `validity = 'fading'` with the stale `metadata.status` key removed
+- **AND** the migration MUST NOT touch facts whose `validity` is already `'fading'`, or any non-`'active'` validity (e.g. `'retracted'`, `'superseded'`, `'expired'`), even if a stale `metadata.status` key happens to be present
+
 ---
 
 ### Requirement: Retention class on memory store operations

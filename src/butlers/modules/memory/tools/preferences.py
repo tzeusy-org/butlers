@@ -190,7 +190,7 @@ async def get_preferences(
     """Retrieve active user preferences for the owner entity.
 
     Queries facts where ``predicate LIKE 'preferences:%'`` and
-    ``validity = 'active'`` for the owner entity, returning a simplified
+    ``validity IN ('active', 'fading')`` for the owner entity, returning a simplified
     list optimised for LLM consumption.
 
     Args:
@@ -213,7 +213,7 @@ async def get_preferences(
 
     conditions = [
         "f.entity_id = $1",
-        "f.validity = 'active'",
+        "f.validity IN ('active', 'fading')",
         "f.predicate LIKE $2",
     ]
     params: list[Any] = [owner_entity_id, effective_predicate_pattern]

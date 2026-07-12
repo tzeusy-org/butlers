@@ -16,10 +16,18 @@ docs/redesigns/2026-07-04-jarvis-pursuit.md #3):
       idempotency across repeated calls, and the "TOML overrides cadence, not
       existence" reclaim handshake with ``sync_schedules``.
   (e) Integration (real Postgres) — ``run_decay_sweep`` actually fades/expires
-      facts and rules per ``memory_policies`` thresholds.
+      facts and rules per ``memory_policies`` thresholds, writing the
+      ``validity`` column (bu-5ud8p.1) rather than only ``metadata.status``.
   (f) Integration (real Postgres) — the ``memory_consolidation`` job_args
       batch_size override bounds how many pending episodes are claimed in one
       run, and dead_letter episodes are never reclaimed.
+  (g) Integration (real Postgres) — the ``memory_stats`` MCP tool (a reader
+      named in bu-5ud8p.1) surfaces the sweep's fading count via
+      ``validity = 'fading'``, and a re-swept fact recovers to 'active'.
+  (h) Integration (real Postgres) — ``store_fact`` supersession still finds
+      and supersedes a fading fact for the same predicate (bu-5ud8p.1: the
+      sweep must not fight the write path by making fading facts invisible
+      to supersession lookups).
 """
 
 from __future__ import annotations
@@ -547,15 +555,21 @@ async def test_run_decay_sweep_fades_and_expires_facts_and_rules(core_memory_db_
         assert stats["rules_fading"] == 1
         assert stats["rules_expired"] == 1
 
-        healthy_status = await pool.fetchval(
-            "SELECT metadata->>'status' FROM facts WHERE content = 'coffee'"
+        healthy_row = await pool.fetchrow(
+            "SELECT validity, metadata->>'status' AS status FROM facts WHERE content = 'coffee'"
         )
-        assert healthy_status is None
+        assert healthy_row["validity"] == "active"
+        assert healthy_row["status"] is None
 
-        fading_status = await pool.fetchval(
-            "SELECT metadata->>'status' FROM facts WHERE content = 'tea'"
+        # bu-5ud8p.1: the fading signal is the validity COLUMN, not
+        # metadata.status — every reader (dashboard API, memory_stats MCP
+        # tool) queries `validity = 'fading'`. The legacy metadata.status key
+        # must also be gone (superseded by the column, not dual-written).
+        fading_row = await pool.fetchrow(
+            "SELECT validity, metadata->>'status' AS status FROM facts WHERE content = 'tea'"
         )
-        assert fading_status == "fading"
+        assert fading_row["validity"] == "fading"
+        assert fading_row["status"] is None
 
         expired_validity = await pool.fetchval(
             "SELECT validity FROM facts WHERE id = $1", expired_id
@@ -579,6 +593,150 @@ async def test_run_decay_sweep_fades_and_expires_facts_and_rules(core_memory_db_
             forgotten_rule_id,
         )
         assert forgotten is True
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.integration
+async def test_run_decay_sweep_recovers_fading_fact_to_active(core_memory_db_url: str) -> None:
+    """A fading fact whose confidence clock is reset (memory_confirm) recovers
+    to validity='active' on the next sweep, and the stale metadata.status key
+    (if any) is cleared — proving the sweep re-selects 'fading' rows instead
+    of only ever selecting 'active' ones (which would strand them forever).
+    """
+    from butlers.modules.memory.storage import run_decay_sweep
+
+    pool = await _pool_for(core_memory_db_url)
+    try:
+        fact_id = await pool.fetchval(
+            "INSERT INTO facts (subject, predicate, content, confidence, decay_rate, "
+            "last_confirmed_at, retention_class) "
+            "VALUES ('owner', 'prefers', 'oolong', 0.3, 0.5, now() - interval '1 day', "
+            "'operational') RETURNING id"
+        )
+
+        # NOTE: this file's core_memory_db_url fixture is module-scoped and
+        # shared across every test in this file, so facts_fading is a running
+        # total (earlier tests' fading facts persist) — assert this fact's
+        # own row rather than an exact aggregate count.
+        first = await run_decay_sweep(pool)
+        assert first["facts_fading"] >= 1
+        row = await pool.fetchrow("SELECT validity, metadata FROM facts WHERE id = $1", fact_id)
+        assert row["validity"] == "fading"
+
+        # memory_confirm(...) resets the decay clock — simulate directly.
+        await pool.execute("UPDATE facts SET last_confirmed_at = now() WHERE id = $1", fact_id)
+
+        second = await run_decay_sweep(pool)
+        # The now-healthy fact must be re-checked (not skipped because it was
+        # 'fading' rather than 'active') and recover.
+        assert second["facts_checked"] >= 1
+        recovered = await pool.fetchrow(
+            "SELECT validity, metadata FROM facts WHERE id = $1", fact_id
+        )
+        assert recovered["validity"] == "active"
+        assert not recovered["metadata"].get("status")
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.integration
+async def test_memory_stats_reader_surfaces_swept_fading_count(core_memory_db_url: str) -> None:
+    """The memory_stats MCP tool — a reader named explicitly in bu-5ud8p.1 —
+    must count a sweep-produced fading fact via validity='fading', matching
+    the dashboard API's own query (src/butlers/api/routers/memory.py).
+    """
+    from butlers.modules.memory.storage import run_decay_sweep
+    from butlers.modules.memory.tools.management import memory_stats
+
+    pool = await _pool_for(core_memory_db_url)
+    try:
+        before = await memory_stats(pool)
+        base_active = before["facts"]["active"]
+        base_fading = before["facts"]["fading"]
+
+        # Distinct (scope, subject, predicate) from other tests in this shared
+        # module-scoped DB — the partial unique index on active property
+        # facts would otherwise collide with an earlier test's row.
+        await pool.execute(
+            "INSERT INTO facts (subject, predicate, content, confidence, decay_rate, "
+            "last_confirmed_at, retention_class) "
+            "VALUES ('owner', 'favors_drink', 'chamomile', 0.3, 0.5, "
+            "now() - interval '1 day', 'operational')"
+        )
+
+        # NOTE: same shared-fixture caveat as above — assert the delta, not
+        # an exact absolute count.
+        stats = await run_decay_sweep(pool)
+        assert stats["facts_fading"] >= 1
+
+        after = await memory_stats(pool)
+        assert after["facts"]["fading"] == base_fading + 1
+        assert after["facts"]["active"] == base_active
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.integration
+async def test_store_fact_supersedes_a_fading_fact(core_memory_db_url: str) -> None:
+    """store_fact's supersession lookup must still find a fading fact for the
+    same (entity/subject, scope, predicate) — otherwise a fresh write leaves
+    an orphaned fading row alongside a brand-new active one instead of
+    superseding it (the sweep would be "fighting" the write path).
+    """
+    from unittest.mock import MagicMock
+
+    from butlers.modules.memory.storage import run_decay_sweep, store_fact
+
+    def _fake_embedding_engine() -> MagicMock:
+        engine = MagicMock()
+        engine.embed.return_value = [0.0] * 384
+        engine.model_name = "test-model"
+        return engine
+
+    pool = await _pool_for(core_memory_db_url)
+    try:
+        engine = _fake_embedding_engine()
+
+        # store_fact doesn't accept confidence/decay_rate overrides — insert
+        # the "old" fact directly (same subject/predicate/tenant key that
+        # store_fact's own no-entity supersession lookup uses) with a
+        # confidence/decay_rate pair that the sweep will push into the
+        # fading band: eff = 0.3 * exp(-0.5*1) ~= 0.182, in [0.05, 0.2).
+        old_id = await pool.fetchval(
+            "INSERT INTO facts (subject, predicate, content, confidence, decay_rate, "
+            "last_confirmed_at, scope, tenant_id, retention_class) "
+            "VALUES ('dave', 'favorite_drink', 'oolong', 0.3, 0.5, "
+            "now() - interval '1 day', 'global', 'shared', 'operational') "
+            "RETURNING id"
+        )
+
+        stats = await run_decay_sweep(pool)
+        assert stats["facts_fading"] >= 1
+        faded = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", old_id)
+        assert faded == "fading"
+
+        new = await store_fact(
+            pool,
+            subject="dave",
+            predicate="favorite_drink",
+            content="green tea",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+        )
+        assert new["supersedes_id"] == old_id
+
+        old_validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", old_id)
+        assert old_validity == "superseded"
+        new_validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", new["id"])
+        assert new_validity == "active"
     finally:
         await pool.close()
 

@@ -1182,7 +1182,7 @@ async def list_entities(
         async def _count_facts(_: str, fpool: object) -> dict[str, int]:
             fc_rows = await fpool.fetch(
                 "SELECT entity_id, count(*) AS cnt FROM facts"
-                " WHERE entity_id = ANY($1) AND validity = 'active'"
+                " WHERE entity_id = ANY($1) AND validity IN ('active', 'fading')"
                 " GROUP BY entity_id",
                 entity_ids,
             )
@@ -1274,7 +1274,7 @@ async def get_entity(
             await fpool.fetchval(
                 "SELECT count(*) FROM facts"
                 " WHERE (entity_id = $1 OR object_entity_id = $1)"
-                " AND validity = 'active'",
+                " AND validity IN ('active', 'fading')",
                 eid,
             )
             or 0
@@ -1289,7 +1289,7 @@ async def get_entity(
             " FROM facts f"
             " LEFT JOIN episodes ep ON ep.id = f.source_episode_id"
             " WHERE (f.entity_id = $1 OR f.object_entity_id = $1)"
-            " AND f.validity = 'active'"
+            " AND f.validity IN ('active', 'fading')"
             " ORDER BY f.created_at DESC"
             " OFFSET $2 LIMIT $3",
             eid,
@@ -1501,7 +1501,7 @@ async def set_linked_contact(
             "UPDATE facts SET entity_id = $1"
             " WHERE (subject = $2 OR subject = $3)"
             " AND entity_id IS NULL"
-            " AND validity = 'active'",
+            " AND validity IN ('active', 'fading')",
             eid,
             prefixed_subject,
             cid_str,
@@ -1542,9 +1542,9 @@ async def delete_entity(
 ) -> None:
     """Soft-delete an entity by setting metadata.deleted_at.
 
-    Owner entities cannot be deleted (returns 403).  When active facts exist,
-    returns 409 with the count unless ``retire_facts=true`` is passed, in which
-    case all active facts are retired (validity → 'retracted') first.
+    Owner entities cannot be deleted (returns 403).  When active or fading facts
+    exist, returns 409 with the count unless ``retire_facts=true`` is passed, in
+    which case all active/fading facts are retired (validity → 'retracted') first.
     """
     import uuid as _uuid
     from datetime import datetime
@@ -1563,11 +1563,15 @@ async def delete_entity(
     if "owner" in roles:
         raise HTTPException(status_code=403, detail="Cannot delete owner entity")
 
-    # Check active facts referencing this entity across all memory pools.
+    # Check active/fading facts referencing this entity across all memory pools.
+    # 'fading' facts are still live (not yet superseded/expired/retracted) and
+    # must block/retire the same as 'active' ones, or deleting an entity that
+    # only has fading facts would silently orphan them.
     async def _count_active_facts(_: str, fpool: object) -> int:
         return (
             await fpool.fetchval(
-                "SELECT count(*) FROM facts WHERE entity_id = $1 AND validity = 'active'",
+                "SELECT count(*) FROM facts"
+                " WHERE entity_id = $1 AND validity IN ('active', 'fading')",
                 eid,
             )
             or 0
@@ -1593,7 +1597,7 @@ async def delete_entity(
         async def _retire_facts(_: str, fpool: object) -> int:
             await fpool.execute(
                 "UPDATE facts SET validity = 'retracted'"
-                " WHERE entity_id = $1 AND validity = 'active'",
+                " WHERE entity_id = $1 AND validity IN ('active', 'fading')",
                 eid,
             )
             return 0

@@ -126,6 +126,16 @@ A scheduled sweep computes effective confidence for facts and rules:
 - Below retrieval threshold but above expiry threshold: `fading`.
 - Below expiry threshold: `expired` or `retracted`.
 
+For facts, `fading` is recorded on the `validity` column itself (not merely a
+`metadata.status` key) — every reader of the fading count (the dashboard API,
+the `memory_stats` MCP tool) queries `validity = 'fading'` directly. Fading
+facts are still live: recall/search, entity-scoped reads, the catalog
+backfill, and `store_fact`'s supersession lookup all continue to include
+them, and the sweep re-evaluates `validity IN ('active', 'fading')` on every
+run so a fading fact can recover to `active` (e.g. after `memory_confirm`) or
+progress to `expired`. Rules have no `validity` column and keep using
+`metadata.status = 'fading'`.
+
 Anti-pattern detection: rules with repeated harmful, low-effectiveness outcomes transition to `anti_pattern` status and are surfaced as warnings rather than guidance.
 
 Episode cleanup removes expired rows and enforces capacity limits starting with the oldest consolidated rows.

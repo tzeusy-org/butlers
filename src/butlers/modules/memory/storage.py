@@ -420,7 +420,7 @@ async def _backfill_facts_to_catalog(
                    f.confidence, f.importance, f.retention_class, f.sensitivity,
                    f.source_butler, f.tenant_id
             FROM facts f
-            WHERE f.validity = 'active'
+            WHERE f.validity IN ('active', 'fading')
               AND NOT EXISTS (
                   SELECT 1 FROM public.memory_catalog mc
                   WHERE mc.source_schema = $1
@@ -1327,13 +1327,17 @@ async def store_fact(
                 # Check for an existing *property* active fact using the appropriate key.
                 # Only consider rows with valid_at IS NULL (property facts).
                 # Supersession is always scoped to the same tenant_id.
+                # 'fading' facts are still the live/current value for a predicate
+                # (low confidence, not yet retired) — they must be found here so a
+                # fresh write supersedes them instead of leaving an orphaned fading
+                # row alongside a brand-new active one for the same predicate.
                 if object_entity_id is not None:
                     # Edge-fact: keyed on (tenant_id, entity_id, object_entity_id, scope, predicate)
                     existing = await conn.fetchrow(
                         "SELECT id FROM facts "
                         "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id = $3 "
                         "AND scope = $4 AND predicate = $5 "
-                        "AND validity = 'active' AND valid_at IS NULL",
+                        "AND validity IN ('active', 'fading') AND valid_at IS NULL",
                         tenant_id,
                         entity_id,
                         object_entity_id,
@@ -1346,7 +1350,7 @@ async def store_fact(
                         "SELECT id FROM facts "
                         "WHERE tenant_id = $1 AND entity_id = $2 AND object_entity_id IS NULL "
                         "AND scope = $3 AND predicate = $4 "
-                        "AND validity = 'active' AND valid_at IS NULL",
+                        "AND validity IN ('active', 'fading') AND valid_at IS NULL",
                         tenant_id,
                         entity_id,
                         scope,
@@ -1357,7 +1361,7 @@ async def store_fact(
                         "SELECT id FROM facts "
                         "WHERE tenant_id = $1 AND entity_id IS NULL "
                         "AND subject = $2 AND predicate = $3 "
-                        "AND validity = 'active' AND valid_at IS NULL",
+                        "AND validity IN ('active', 'fading') AND valid_at IS NULL",
                         tenant_id,
                         subject,
                         predicate,
@@ -1464,7 +1468,7 @@ async def store_fact(
                                 " WHERE tenant_id = $1"
                                 " AND entity_id = $2 AND object_entity_id = $3"
                                 " AND scope = $4 AND predicate = $5"
-                                " AND validity = 'active' AND valid_at IS NULL",
+                                " AND validity IN ('active', 'fading') AND valid_at IS NULL",
                                 tenant_id,
                                 object_entity_id,
                                 entity_id,
@@ -2506,9 +2510,9 @@ async def invert_to_anti_pattern(
 
 
 async def run_decay_sweep(pool: Pool) -> dict:
-    """Run a confidence decay sweep across all active facts and rules.
+    """Run a confidence decay sweep across all active (and previously-fading) facts
+    and rules (excluding permanent ones with decay_rate=0.0).
 
-    For each active fact and rule (excluding permanent ones with decay_rate=0.0):
     1. Compute effective_confidence = confidence * exp(-decay_rate * days_elapsed)
        where days_elapsed = (now - last_confirmed_at).total_seconds() / 86400
     2. Thresholds are read per-class from memory_policies:
@@ -2521,8 +2525,19 @@ async def run_decay_sweep(pool: Pool) -> dict:
            If archival fails, skip expiry (fail-closed).
          - Otherwise: set validity='expired' (facts) or metadata.forgotten=true (rules)
     4. If expiry_threshold <= effective_confidence < fading_threshold:
-         set metadata.status='fading'
-    5. Otherwise: clear metadata.status if it was 'fading'
+         - Facts: set validity='fading' (the column readers query — see
+           src/butlers/api/routers/memory.py and memory_stats). Facts have no
+           maturity-style status column, so the column IS the fading signal.
+         - Rules: rules have no ``validity`` column (only ``maturity``), so they
+           keep the existing metadata.status='fading' convention.
+    5. Otherwise (effective_confidence >= fading_threshold): a fact/rule that was
+       previously fading recovers — facts move back to validity='active'; rules
+       clear metadata.status.
+
+    Because a fading fact's validity is no longer 'active', the source SELECT
+    below scans ``validity IN ('active', 'fading')`` so already-fading facts
+    keep getting re-evaluated on every run (otherwise they could never recover
+    to 'active' or progress to 'expired').
 
     Returns:
         dict with keys: facts_checked, rules_checked, facts_fading, rules_fading,
@@ -2572,10 +2587,13 @@ async def run_decay_sweep(pool: Pool) -> dict:
             return _DEFAULT_FADING_THRESHOLD, _DEFAULT_EXPIRY_THRESHOLD, False
 
         # ----- Process facts -----
+        # validity IN ('active', 'fading') so already-fading facts are
+        # re-evaluated each run (able to recover to 'active' or progress to
+        # 'expired') instead of getting stuck the moment they first fade.
         facts = await conn.fetch(
             "SELECT id, confidence, decay_rate, last_confirmed_at, created_at, "
-            "metadata, retention_class "
-            "FROM facts WHERE validity = 'active' AND decay_rate > 0.0"
+            "metadata, retention_class, validity "
+            "FROM facts WHERE validity IN ('active', 'fading') AND decay_rate > 0.0"
         )
 
         for fact in facts:
@@ -2593,6 +2611,9 @@ async def run_decay_sweep(pool: Pool) -> dict:
             )
 
             if eff < expiry_thresh:
+                # Legacy metadata.status bookkeeping is superseded by the
+                # validity column — drop the stale key as part of the transition.
+                metadata.pop("status", None)
                 if archive_first:
                     try:
                         metadata["archived_at"] = now.isoformat()
@@ -2611,23 +2632,25 @@ async def run_decay_sweep(pool: Pool) -> dict:
                         continue
                 else:
                     await conn.execute(
-                        "UPDATE facts SET validity = 'expired' WHERE id = $1",
+                        "UPDATE facts SET validity = 'expired', metadata = $1 WHERE id = $2",
+                        metadata,
                         fact["id"],
                     )
                 stats["facts_expired"] += 1
             elif eff < fading_thresh:
-                metadata["status"] = "fading"
-                await conn.execute(
-                    "UPDATE facts SET metadata = $1 WHERE id = $2",
-                    metadata,
-                    fact["id"],
-                )
+                had_stale_status = metadata.pop("status", None) is not None
+                if fact["validity"] != "fading" or had_stale_status:
+                    await conn.execute(
+                        "UPDATE facts SET validity = 'fading', metadata = $1 WHERE id = $2",
+                        metadata,
+                        fact["id"],
+                    )
                 stats["facts_fading"] += 1
             else:
-                if metadata.get("status") == "fading":
-                    del metadata["status"]
+                had_stale_status = metadata.pop("status", None) is not None
+                if fact["validity"] != "active" or had_stale_status:
                     await conn.execute(
-                        "UPDATE facts SET metadata = $1 WHERE id = $2",
+                        "UPDATE facts SET validity = 'active', metadata = $1 WHERE id = $2",
                         metadata,
                         fact["id"],
                     )

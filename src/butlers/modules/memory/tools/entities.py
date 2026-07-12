@@ -401,7 +401,7 @@ async def entity_resolve(
             SELECT COUNT(*) AS cnt
             FROM facts f
             WHERE (f.entity_id = d.id OR f.object_entity_id = d.id)
-              AND f.validity = 'active'
+              AND f.validity IN ('active', 'fading')
               AND f.invalid_at IS NULL
         ) fc ON true
     """
@@ -457,7 +457,7 @@ async def entity_resolve(
             SELECT e_id, COUNT(f.id) AS cnt
             FROM UNNEST($1::uuid[]) AS e_id
             LEFT JOIN facts f ON (f.entity_id = e_id OR f.object_entity_id = e_id)
-                AND f.validity = 'active' AND f.invalid_at IS NULL
+                AND f.validity IN ('active', 'fading') AND f.invalid_at IS NULL
             GROUP BY e_id
             """,
             [uuid.UUID(eid) for eid in fuzzy_ids],
@@ -620,7 +620,7 @@ async def _apply_graph_neighborhood_scores(
         SELECT entity_id, predicate, content
         FROM facts
         WHERE entity_id = ANY($1)
-          AND validity = 'active'
+          AND validity IN ('active', 'fading')
         LIMIT 500
         """,
         uuid_ids,
@@ -702,6 +702,8 @@ async def entity_neighbors(
         params.append(predicate_filter)
         pred_clause = f"\n          AND f.predicate = ANY(${len(params)})"
 
+    # 'fading' edges are still real graph relationships (low confidence, not
+    # yet retired) — excluded only once superseded/expired/retracted.
     if direction == "outgoing":
         base_sql = f"""
         SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
@@ -709,7 +711,7 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
         FROM facts f
         WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
-          AND f.validity = 'active'{pred_clause}"""
+          AND f.validity IN ('active', 'fading'){pred_clause}"""
         rec_sql = f"""
         SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'outgoing'::text AS dir,
@@ -717,7 +719,7 @@ async def entity_neighbors(
         FROM neighbors n
         JOIN facts f ON f.entity_id = n.neighbor_id
         WHERE f.object_entity_id IS NOT NULL
-          AND f.validity = 'active'
+          AND f.validity IN ('active', 'fading')
           AND f.object_entity_id != ALL(n.path)
           AND n.depth < $2{pred_clause}"""
     elif direction == "incoming":
@@ -727,14 +729,14 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
         FROM facts f
         WHERE f.object_entity_id = $1
-          AND f.validity = 'active'{pred_clause}"""
+          AND f.validity IN ('active', 'fading'){pred_clause}"""
         rec_sql = f"""
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'incoming'::text AS dir,
                n.depth + 1, n.path || f.entity_id
         FROM neighbors n
         JOIN facts f ON f.object_entity_id = n.neighbor_id
-        WHERE f.validity = 'active'
+        WHERE f.validity IN ('active', 'fading')
           AND f.entity_id != ALL(n.path)
           AND n.depth < $2{pred_clause}"""
     else:  # both
@@ -744,14 +746,14 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
         FROM facts f
         WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
-          AND f.validity = 'active'{pred_clause}
+          AND f.validity IN ('active', 'fading'){pred_clause}
         UNION ALL
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'incoming'::text AS dir,
                1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
         FROM facts f
         WHERE f.object_entity_id = $1
-          AND f.validity = 'active'{pred_clause}"""
+          AND f.validity IN ('active', 'fading'){pred_clause}"""
         rec_sql = f"""
         SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'outgoing'::text AS dir,
@@ -759,7 +761,7 @@ async def entity_neighbors(
         FROM neighbors n
         JOIN facts f ON f.entity_id = n.neighbor_id
         WHERE f.object_entity_id IS NOT NULL
-          AND f.validity = 'active'
+          AND f.validity IN ('active', 'fading')
           AND f.object_entity_id != ALL(n.path)
           AND n.depth < $2{pred_clause}
         UNION ALL
@@ -768,7 +770,7 @@ async def entity_neighbors(
                n.depth + 1, n.path || f.entity_id
         FROM neighbors n
         JOIN facts f ON f.object_entity_id = n.neighbor_id
-        WHERE f.validity = 'active'
+        WHERE f.validity IN ('active', 'fading')
           AND f.entity_id != ALL(n.path)
           AND n.depth < $2{pred_clause}"""
 
@@ -857,10 +859,12 @@ async def _repoint_facts_on_conn(
     edge_facts_repointed = 0
     edge_facts_superseded = 0
 
-    # Subject-side facts
+    # Subject-side facts. Includes 'fading' facts: they are still live (just
+    # low-confidence) and must be repointed/conflict-resolved onto the target
+    # entity too, or they would be silently stranded on the merged-away source.
     src_facts = await conn.fetch(
         "SELECT id, scope, predicate, confidence, valid_at FROM facts "
-        "WHERE entity_id = $1 AND validity = 'active'",
+        "WHERE entity_id = $1 AND validity IN ('active', 'fading')",
         src_uuid,
     )
 
@@ -877,7 +881,7 @@ async def _repoint_facts_on_conn(
             conflict = await conn.fetchrow(
                 "SELECT id, confidence FROM facts "
                 "WHERE entity_id = $1 AND scope = $2 AND predicate = $3 "
-                "AND validity = 'active' AND valid_at IS NULL",
+                "AND validity IN ('active', 'fading') AND valid_at IS NULL",
                 tgt_uuid,
                 src_fact["scope"],
                 src_fact["predicate"],
@@ -913,10 +917,10 @@ async def _repoint_facts_on_conn(
                 )
             facts_superseded += 1
 
-    # Edge facts (object_entity_id)
+    # Edge facts (object_entity_id) — same 'fading' inclusion as subject-side above.
     obj_facts = await conn.fetch(
         "SELECT id, entity_id, scope, predicate, confidence, valid_at FROM facts "
-        "WHERE object_entity_id = $1 AND validity = 'active'",
+        "WHERE object_entity_id = $1 AND validity IN ('active', 'fading')",
         src_uuid,
     )
 
@@ -931,7 +935,7 @@ async def _repoint_facts_on_conn(
                 "SELECT id, confidence FROM facts "
                 "WHERE entity_id = $1 AND object_entity_id = $2 "
                 "AND scope = $3 AND predicate = $4 "
-                "AND validity = 'active' AND valid_at IS NULL",
+                "AND validity IN ('active', 'fading') AND valid_at IS NULL",
                 obj_fact["entity_id"],
                 tgt_uuid,
                 obj_fact["scope"],
@@ -996,15 +1000,19 @@ async def _retract_facts_on_conn(
     Returns a dict with ``facts_retracted`` and ``edge_facts_retracted`` counts.
     """
     # Subject-side facts (entity_id) — gifts/loans/interactions/notes/life-events.
+    # Includes 'fading' facts: they are still live (not yet superseded/expired/
+    # retracted) and must be retracted along with 'active' ones, or they would
+    # be left dangling on the now-tombstoned entity.
     subject_result = await conn.execute(
-        "UPDATE facts SET validity = 'retracted' WHERE entity_id = $1 AND validity = 'active'",
+        "UPDATE facts SET validity = 'retracted' "
+        "WHERE entity_id = $1 AND validity IN ('active', 'fading')",
         entity_uuid,
     )
 
     # Edge facts (object_entity_id) — e.g. works_at/friend_of pointing AT the entity.
     object_result = await conn.execute(
         "UPDATE facts SET validity = 'retracted' "
-        "WHERE object_entity_id = $1 AND validity = 'active'",
+        "WHERE object_entity_id = $1 AND validity IN ('active', 'fading')",
         entity_uuid,
     )
 

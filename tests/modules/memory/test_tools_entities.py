@@ -1042,9 +1042,12 @@ class TestRetractFactsOnConn:
         assert "validity = 'retracted'" in object_sql
         assert "object_entity_id = $1" in object_sql
 
-        # Only active rows are retracted (idempotent on re-forget).
-        assert "validity = 'active'" in subject_sql
-        assert "validity = 'active'" in object_sql
+        # Only active/fading rows are retracted (idempotent on re-forget;
+        # already-superseded/expired/retracted rows are left alone). Fading
+        # rows must be included too (bu-5ud8p.1) or they'd be silently
+        # stranded on the tombstoned entity.
+        assert "validity IN ('active', 'fading')" in subject_sql
+        assert "validity IN ('active', 'fading')" in object_sql
 
         # Both UPDATEs are bound to the entity being forgotten.
         assert conn.execute.await_args_list[0].args[1] == ENTITY_UUID

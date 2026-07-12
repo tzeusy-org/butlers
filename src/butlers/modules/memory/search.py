@@ -105,9 +105,11 @@ async def semantic_search(
         params.append(scope)
         param_idx += 1
 
-    # Facts: only return active rows.
+    # Facts: return live rows — 'active' and 'fading' (fading facts are still
+    # valid, lower-confidence content; effective_confidence is a scoring
+    # weight, not a hard retrieval cutoff, so they must remain searchable).
     if table == "facts":
-        conditions.append("validity = 'active'")
+        conditions.append("validity IN ('active', 'fading')")
 
     # Rules: exclude forgotten (metadata->>'forgotten' IS NOT TRUE).
     if table == "rules":
@@ -189,8 +191,9 @@ async def keyword_search(
         params.append(scope)
         param_idx += 1
 
+    # See semantic_search above: fading facts remain searchable.
     if table == "facts":
-        conditions.append("validity = 'active'")
+        conditions.append("validity IN ('active', 'fading')")
 
     if table == "rules":
         conditions.append("(metadata->>'forgotten')::boolean IS NOT TRUE")

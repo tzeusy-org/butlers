@@ -1715,7 +1715,7 @@ class MemoryModule(Module):
             """Retrieve all active user preferences for the owner.
 
             Queries facts where ``predicate LIKE 'preferences:%'`` and
-            ``validity = 'active'`` for the owner entity.
+            ``validity IN ('active', 'fading')`` for the owner entity.
 
             Optional filters:
             - ``scope``: restrict to a domain (e.g. ``"travel"``, ``"health"``, ``"global"``)

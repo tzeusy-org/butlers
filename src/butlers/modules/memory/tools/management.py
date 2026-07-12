@@ -90,15 +90,15 @@ async def memory_stats(
         scope_filter_facts = " AND scope IN ('global', $1)"
         scope_params = [scope]
 
+    # validity is the authoritative fading signal (set by run_decay_sweep) — the
+    # legacy metadata->>'status' check is dropped so this no longer diverges
+    # from the dashboard/API's own `validity = 'fading'` reads.
     facts_active = await pool.fetchval(
-        "SELECT COUNT(*) FROM facts WHERE validity = 'active'"
-        " AND (metadata->>'status' IS NULL OR metadata->>'status' != 'fading')"
-        + scope_filter_facts,
+        "SELECT COUNT(*) FROM facts WHERE validity = 'active'" + scope_filter_facts,
         *scope_params,
     )
     facts_fading = await pool.fetchval(
-        "SELECT COUNT(*) FROM facts WHERE validity = 'active'"
-        " AND metadata->>'status' = 'fading'" + scope_filter_facts,
+        "SELECT COUNT(*) FROM facts WHERE validity = 'fading'" + scope_filter_facts,
         *scope_params,
     )
     facts_superseded = await pool.fetchval(

@@ -58,7 +58,7 @@ async def _fetch_profile_facts(
         FROM facts f
         JOIN public.entities e ON f.entity_id = e.id
         WHERE f.tenant_id = $1
-          AND f.validity = 'active'
+          AND f.validity IN ('active', 'fading')
           AND 'owner' = ANY(e.roles)
         ORDER BY f.importance DESC, f.created_at DESC, f.id ASC
         LIMIT $2
