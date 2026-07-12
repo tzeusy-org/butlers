@@ -109,6 +109,78 @@ When a fact or rule is stored or updated, the storage layer SHALL write a corres
 
 ---
 
+### Requirement: Atomic catalog disownment on forget, expiry, and purge
+
+The storage layer SHALL mark a disowned fact's or rule's `public.memory_catalog` row stale (`confidence = 0`, `invalid_at` set) in the SAME database transaction as the canonical state change, for every path that permanently disowns a memory — `memory_forget` (plain or correction-driven), the decay sweep's terminal expiry transition, and `purge_superseded_facts`. Unlike the best-effort, eventually-consistent write-behind used for new catalog entries and the supersession cascade, this disownment cascade MUST NOT swallow its own failures — a catalog-write error here rolls back the whole transaction so the canonical disownment and the catalog can never diverge, even across a crash between the two writes.
+
+#### Scenario: Forgetting a fact marks its catalog entry stale
+
+- **WHEN** `memory_forget` (or the `POST /api/memory/facts/{id}/retract`
+  endpoint, which shares the same `forget_memory` code path) retracts a fact
+  that has a `public.memory_catalog` row
+- **THEN** the fact's `validity` MUST be set to `'retracted'`
+- **AND** the fact's catalog row MUST be marked stale in the same transaction
+- **AND** cross-butler catalog search MUST NOT surface the retracted fact
+  afterward
+
+#### Scenario: Forgetting a rule marks its catalog entry stale
+
+- **WHEN** `memory_forget` marks a rule's `metadata.forgotten = true`
+- **THEN** the rule's catalog row (if any) MUST be marked stale in the same
+  transaction
+
+#### Scenario: Correction-driven forget also cascades
+
+- **WHEN** `memory_forget` is called with a `correction_id` (correction-driven
+  retraction)
+- **THEN** the catalog disownment cascade MUST run in the same transaction as
+  the retraction and the `memory_events` audit insert — not only the plain
+  forget path
+
+#### Scenario: Decay-sweep expiry marks the catalog entry stale
+
+- **WHEN** the decay sweep transitions a fact to `validity = 'expired'` or a
+  rule to `metadata.forgotten = true`
+- **THEN** the corresponding catalog row MUST be marked stale in the same
+  transaction as the expiry write
+- **AND** a fact/rule that merely transitions to `'fading'` MUST NOT trigger
+  this cascade — fading facts remain live for retrieval per the
+  memory-retention-policy spec
+
+#### Scenario: Purge marks catalog entries stale, not deleted
+
+- **WHEN** `purge_superseded_facts` deletes a superseded or `ha_state` fact
+- **THEN** the fact's catalog row (if any) MUST be marked stale in the same
+  transaction as the `DELETE`
+- **AND** the catalog row itself MUST NOT be deleted — butler roles hold no
+  `DELETE` grant on `public.memory_catalog` (catalog GC is centralised)
+
+#### Scenario: Owning schema is resolved from the connection, not threaded per call
+
+- **WHEN** the disownment cascade runs for any of the paths above
+- **THEN** the `source_schema` used to locate the catalog row MUST be resolved
+  via the connection's own `current_schema()` (butler pools connect with
+  `search_path = <schema>, public`) rather than requiring every caller to
+  thread `source_schema` through
+- **AND** if no catalog row matches (write-behind was disabled, or the row
+  predates it), the cascade MUST be a no-op rather than an error
+
+---
+
+### Requirement: Consolidation propagates catalog configuration
+
+`execute_consolidation` and `run_consolidation` SHALL accept `enable_shared_catalog` and `source_schema` parameters and forward them to every `store_fact`/`store_rule` call they make, so consolidation-derived facts and rules are cataloged exactly like directly-stored ones.
+
+#### Scenario: A consolidation-derived fact is cataloged
+
+- **WHEN** `execute_consolidation` is invoked with `enable_shared_catalog=True`
+  and a `source_schema`
+- **THEN** every new fact and rule it stores via `store_fact`/`store_rule`
+  MUST receive a `public.memory_catalog` row, matching what a direct
+  `memory_store_fact`/`memory_store_rule` MCP call would produce
+
+---
+
 ### Requirement: Cross-butler search via catalog
 
 A search function SHALL query `public.memory_catalog` to discover memory items across all butlers. Results include provenance information for full retrieval from the owning butler's schema.

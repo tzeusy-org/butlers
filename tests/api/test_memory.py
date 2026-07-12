@@ -1065,6 +1065,34 @@ async def test_confirm_fact_503_when_no_pools_available(app):
 # ---------------------------------------------------------------------------
 
 
+class _NullTransaction:
+    """No-op async-context-manager mimicking asyncpg's ``conn.transaction()``."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
+class _AcquireCtx:
+    """Async-context-manager mimicking asyncpg's ``pool.acquire()``.
+
+    Yields the pool itself as the "connection" — ``_RetractPool`` already
+    implements the same ``execute``/``fetchval``/``transaction`` surface a
+    real ``Connection`` does, so no separate fake connection class is needed.
+    """
+
+    def __init__(self, conn: object) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> object:
+        return self._conn
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
 class _RetractPool:
     """Fake pool for the retract endpoint.
 
@@ -1074,6 +1102,13 @@ class _RetractPool:
     ``'retracted'`` and reports ``UPDATE 1``/``UPDATE 0`` exactly like asyncpg +
     storage.forget_memory.  Entity-name resolution (public.entities) returns no
     rows.
+
+    ``storage.forget_memory`` (bu-5ud8p.3) now runs the retraction UPDATE and
+    the ``public.memory_catalog`` disownment cascade in one transaction via
+    ``pool.acquire()`` / ``conn.transaction()``; ``acquire``/``transaction``/
+    ``fetchval`` below make this fake shaped like a real asyncpg Pool so the
+    retract tests exercise that real transactional path instead of silently
+    no-op'ing through ``retract_fact``'s broad except-and-skip.
     """
 
     def __init__(self, *, fact: dict | None) -> None:
@@ -1093,12 +1128,25 @@ class _RetractPool:
         # _resolve_entity_names queries public.entities — no linked entities here.
         return []
 
+    async def fetchval(self, query: str, *args: object):
+        # storage._cascade_catalog_disownment resolves the owning schema via
+        # current_schema() before marking the catalog row stale.
+        if "current_schema()" in query:
+            return "atlas"
+        return None
+
     async def execute(self, query: str, *args: object) -> str:
         self.execute_calls.append((query, args))
         if self._fact is not None and args[0] == self._fact["id"]:
             self._fact["validity"] = "retracted"
             return "UPDATE 1"
         return "UPDATE 0"
+
+    def acquire(self) -> _AcquireCtx:
+        return _AcquireCtx(self)
+
+    def transaction(self) -> _NullTransaction:
+        return _NullTransaction()
 
 
 async def test_retract_fact_invalidates_and_returns_updated_fact(app):
@@ -1118,9 +1166,13 @@ async def test_retract_fact_invalidates_and_returns_updated_fact(app):
     assert data["id"] == str(fact_id)
     # validity was previously 'active' and is now 'retracted'.
     assert data["validity"] == "retracted"
-    # The retracting UPDATE ran exactly once, on the pool that holds the fact.
-    assert len(holding.execute_calls) == 1
+    # The retracting UPDATE ran, followed by the catalog disownment cascade
+    # (bu-5ud8p.3) — both against the pool that holds the fact.
+    assert len(holding.execute_calls) == 2
     assert "validity = 'retracted'" in holding.execute_calls[0][0]
+    assert "memory_catalog" in holding.execute_calls[1][0]
+    # source_schema resolved via current_schema() (see _RetractPool.fetchval).
+    assert holding.execute_calls[1][1][0] == "atlas"
 
 
 async def test_retract_fact_404_when_not_found(app):

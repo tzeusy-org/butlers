@@ -160,6 +160,18 @@ Anti-pattern detection: rules with repeated harmful, low-effectiveness outcomes 
 
 Episode cleanup removes expired rows and enforces capacity limits starting with the oldest consolidated rows.
 
+## Shared Discovery Catalog
+
+When `enable_shared_catalog = true` (the module default), `store_fact`/`store_rule` write a searchable summary row to `public.memory_catalog` — a cross-butler discovery index (see `openspec/specs/memory-discovery-catalog/spec.md`). The catalog is a discovery index, not a canonical store: full retrieval always routes back to the owning butler's schema via the row's `(source_schema, source_table, source_id)` provenance pointer.
+
+**Atomic disownment.** Every path that disowns a canonical memory — `memory_forget` (plain and correction-driven), the decay sweep's terminal expiry transition (facts -> `expired`, rules -> `metadata.forgotten`), and `purge_superseded_facts` — cascades a matching catalog-row disownment (`confidence = 0`, `invalid_at` set) in the **same transaction** as the state change, so a crash between the two can never leave the catalog serving a memory the canonical store has already retracted. `store_fact`'s own supersession cascade remains a separate, best-effort, eventually-consistent write-behind (outside the write transaction) — that path predates and is unrelated to the disownment guarantee above. Fading transitions never cascade: fading facts stay live for retrieval per the memory-retention-policy spec.
+
+The owning `source_schema` for a disownment cascade is resolved from the connection's own `current_schema()` rather than threaded through every caller — butler pools connect with `search_path = <schema>, public`, so this reliably matches whatever schema the row was originally cataloged under.
+
+**Purge semantics.** A purged fact's catalog row is marked stale, not deleted — butler roles hold no `DELETE` grant on `public.memory_catalog` (catalog GC is centralised), so a purge-triggered delete isn't even possible from a butler's own role.
+
+**Consolidation.** `execute_consolidation`/`run_consolidation` accept `enable_shared_catalog`/`source_schema` and forward them to every `store_fact`/`store_rule` call, so consolidation-derived facts/rules are cataloged exactly like directly-stored ones.
+
 ## Entity Resolution
 
 The `memory_entity_resolve` tool maps ambiguous name strings to stable entity identities using a 4-tier waterfall: role match -> exact (canonical or alias) -> prefix/substring -> fuzzy (edit distance <= 2). Context boosting from graph neighborhood and caller-provided `context_hints` refines scoring.

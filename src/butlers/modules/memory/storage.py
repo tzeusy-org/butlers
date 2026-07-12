@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from asyncpg import Pool
+    from asyncpg import Connection, Pool
 
 from butlers.core.tool_call_capture import (
     get_current_runtime_butler_name,
@@ -360,7 +360,7 @@ async def _upsert_catalog(
 
 
 async def _mark_catalog_stale(
-    pool: Pool,
+    pool_or_conn: Pool | Connection,
     *,
     source_schema: str,
     source_table: str,
@@ -369,20 +369,28 @@ async def _mark_catalog_stale(
 ) -> None:
     """Mark ``public.memory_catalog`` rows stale so they stop surfacing in search.
 
-    Used when canonical memories are superseded (or otherwise invalidated): the
-    catalog is a discovery index, so stale summaries must not keep appearing in
-    cross-butler search results.  Sets ``confidence = 0`` and records
-    ``invalid_at`` (the search queries exclude rows with ``invalid_at`` set).
+    Used when canonical memories are superseded, forgotten, expired, or purged:
+    the catalog is a discovery index, so stale summaries must not keep
+    appearing in cross-butler search results.  Sets ``confidence = 0`` and
+    records ``invalid_at`` (the search queries exclude rows with ``invalid_at``
+    set).
 
     Updates all matching rows in a single statement via ``ANY`` to avoid an
-    N+1 query pattern.  Best-effort, like ``_upsert_catalog``: callers wrap
-    this so a catalog failure never blocks the canonical write.  IDs without a
-    catalog row (e.g. superseded facts predating catalog write-behind) are a
-    no-op, and an empty ``source_ids`` short-circuits before touching the DB.
+    N+1 query pattern.  IDs without a catalog row (e.g. catalog write-behind
+    was disabled, or the row predates it) are a no-op, and an empty
+    ``source_ids`` short-circuits before touching the DB.
+
+    Accepts either a ``Pool`` or an active ``Connection`` — both expose the
+    same ``.execute()`` signature.  Callers that need this cascade to commit
+    atomically with the state change that triggered it (forget, decay-sweep
+    expiry, purge) MUST pass the same ``Connection`` already inside their
+    transaction; callers doing best-effort, eventually-consistent write-behind
+    (e.g. ``store_fact``'s supersession cascade) may pass the bare ``Pool``
+    and let this run on its own connection outside the caller's transaction.
     """
     if not source_ids:
         return
-    await pool.execute(
+    await pool_or_conn.execute(
         """
         UPDATE public.memory_catalog
         SET confidence = 0,
@@ -396,6 +404,46 @@ async def _mark_catalog_stale(
         source_table,
         source_ids,
         invalid_at,
+    )
+
+
+async def _cascade_catalog_disownment(
+    conn: Connection,
+    source_table: str,
+    source_ids: list[uuid.UUID],
+    *,
+    invalid_at: datetime | None = None,
+) -> None:
+    """Mark ``public.memory_catalog`` rows stale, atomically, for disowned memories.
+
+    Used by ``forget_memory``, ``run_decay_sweep`` (expiry transitions), and
+    ``purge_superseded_facts`` — paths where a memory is being permanently
+    disowned and the catalog MUST NOT keep serving it, even across a crash.
+    Callers MUST invoke this with a ``Connection`` already inside the same
+    transaction as the state change that disowns the memory (unlike
+    ``store_fact``'s best-effort supersession cascade, this intentionally does
+    NOT swallow exceptions — a catalog-write failure here rolls back the whole
+    transaction so the canonical disownment and the catalog never diverge).
+
+    The owning ``source_schema`` is resolved from the connection's own
+    ``current_schema()`` rather than threaded through every caller: butler
+    pools are opened with ``search_path = <schema>, public`` (see
+    ``butlers.db.schema_search_path``), so ``current_schema()`` reliably
+    returns the same schema ``store_fact``/``store_rule`` would have used to
+    catalog the row in the first place (see the identical idiom in
+    ``core/scheduler.py::_has_table`` and
+    ``scheduled_jobs.py::_infer_current_schema``). If no catalog row matches
+    (write-behind was off, or the row predates it), this is a harmless no-op.
+    """
+    if not source_ids:
+        return
+    source_schema = await conn.fetchval("SELECT current_schema()")
+    await _mark_catalog_stale(
+        conn,
+        source_schema=source_schema,
+        source_table=source_table,
+        source_ids=source_ids,
+        invalid_at=invalid_at or datetime.now(UTC),
     )
 
 
@@ -2089,23 +2137,36 @@ async def _forget_plain(
     memory_type: str,
     memory_id: uuid.UUID,
 ) -> bool:
-    """Execute the original forget logic without correction provenance."""
-    if memory_type == "fact":
-        result = await pool.execute(
-            "UPDATE facts SET validity = 'retracted' WHERE id = $1",
-            memory_id,
-        )
-    elif memory_type == "episode":
-        result = await pool.execute(
-            "UPDATE episodes SET expires_at = now() WHERE id = $1",
-            memory_id,
-        )
-    else:  # rule
-        result = await pool.execute(
-            "UPDATE rules SET metadata = metadata || '{\"forgotten\": true}'::jsonb WHERE id = $1",
-            memory_id,
-        )
-    return result.endswith("1")
+    """Execute the original forget logic without correction provenance.
+
+    The soft-delete and the ``public.memory_catalog`` disownment cascade (for
+    facts/rules — episodes are never cataloged, see the memory-discovery-
+    catalog spec) run in a single transaction: a crash between the two can
+    never leave the catalog serving a memory the canonical store has already
+    retracted/forgotten.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if memory_type == "fact":
+                result = await conn.execute(
+                    "UPDATE facts SET validity = 'retracted' WHERE id = $1",
+                    memory_id,
+                )
+            elif memory_type == "episode":
+                result = await conn.execute(
+                    "UPDATE episodes SET expires_at = now() WHERE id = $1",
+                    memory_id,
+                )
+            else:  # rule
+                result = await conn.execute(
+                    "UPDATE rules SET metadata = metadata || "
+                    "'{\"forgotten\": true}'::jsonb WHERE id = $1",
+                    memory_id,
+                )
+            found = result.endswith("1")
+            if found and memory_type in ("fact", "rule"):
+                await _cascade_catalog_disownment(conn, _TYPE_TABLE[memory_type], [memory_id])
+    return found
 
 
 async def _forget_with_correction_provenance(
@@ -2182,6 +2243,9 @@ async def _forget_with_correction_provenance(
                     memory_id,
                     event_payload,
                 )
+
+                if memory_type in ("fact", "rule"):
+                    await _cascade_catalog_disownment(conn, _TYPE_TABLE[memory_type], [memory_id])
 
     return found
 
@@ -2539,6 +2603,13 @@ async def run_decay_sweep(pool: Pool) -> dict:
     keep getting re-evaluated on every run (otherwise they could never recover
     to 'active' or progress to 'expired').
 
+    Every expiry transition (facts -> 'expired', rules -> metadata.forgotten)
+    also cascades a ``public.memory_catalog`` disownment (see
+    ``_cascade_catalog_disownment``) in the same transaction as the state
+    change, so an expired memory can never keep surfacing via cross-butler
+    catalog search. Fading transitions do NOT cascade — fading facts remain
+    live for retrieval per the memory-retention-policy spec.
+
     Returns:
         dict with keys: facts_checked, rules_checked, facts_fading, rules_fading,
         facts_expired, rules_expired
@@ -2618,24 +2689,47 @@ async def run_decay_sweep(pool: Pool) -> dict:
                     try:
                         metadata["archived_at"] = now.isoformat()
                         metadata["archived_content"] = True
-                        await conn.execute(
-                            "UPDATE facts SET validity = 'expired', metadata = $1 WHERE id = $2",
-                            metadata,
-                            fact["id"],
-                        )
+                        async with conn.transaction():
+                            await conn.execute(
+                                "UPDATE facts SET validity = 'expired', metadata = $1 "
+                                "WHERE id = $2",
+                                metadata,
+                                fact["id"],
+                            )
+                            # Same transaction as the expiry write — a crash here
+                            # must never leave the catalog serving an expired fact.
+                            await _cascade_catalog_disownment(
+                                conn, "facts", [fact["id"]], invalid_at=now
+                            )
                     except Exception:
                         logger.error(
-                            "run_decay_sweep: archival failed for fact %s; skipping expiry "
+                            "run_decay_sweep: archival (or its catalog disownment "
+                            "cascade) failed for fact %s; skipping expiry "
                             "(fail-closed for archive_before_delete class)",
                             fact["id"],
                         )
                         continue
                 else:
-                    await conn.execute(
-                        "UPDATE facts SET validity = 'expired', metadata = $1 WHERE id = $2",
-                        metadata,
-                        fact["id"],
-                    )
+                    try:
+                        async with conn.transaction():
+                            await conn.execute(
+                                "UPDATE facts SET validity = 'expired', metadata = $1 "
+                                "WHERE id = $2",
+                                metadata,
+                                fact["id"],
+                            )
+                            await _cascade_catalog_disownment(
+                                conn, "facts", [fact["id"]], invalid_at=now
+                            )
+                    except Exception:
+                        logger.error(
+                            "run_decay_sweep: expiry (or its catalog disownment "
+                            "cascade) failed for fact %s; skipping this fact so "
+                            "the rest of the sweep still runs",
+                            fact["id"],
+                            exc_info=True,
+                        )
+                        continue
                 stats["facts_expired"] += 1
             elif eff < fading_thresh:
                 had_stale_status = metadata.pop("status", None) is not None
@@ -2679,11 +2773,27 @@ async def run_decay_sweep(pool: Pool) -> dict:
 
             if eff < expiry_thresh:
                 metadata["forgotten"] = True
-                await conn.execute(
-                    "UPDATE rules SET metadata = $1 WHERE id = $2",
-                    metadata,
-                    rule["id"],
-                )
+                try:
+                    async with conn.transaction():
+                        await conn.execute(
+                            "UPDATE rules SET metadata = $1 WHERE id = $2",
+                            metadata,
+                            rule["id"],
+                        )
+                        # Same transaction as the forgotten-flag write — see the
+                        # matching fact-expiry cascade above.
+                        await _cascade_catalog_disownment(
+                            conn, "rules", [rule["id"]], invalid_at=now
+                        )
+                except Exception:
+                    logger.error(
+                        "run_decay_sweep: expiry (or its catalog disownment "
+                        "cascade) failed for rule %s; skipping this rule so "
+                        "the rest of the sweep still runs",
+                        rule["id"],
+                        exc_info=True,
+                    )
+                    continue
                 stats["rules_expired"] += 1
             elif eff < fading_thresh:
                 metadata["status"] = "fading"
@@ -2726,20 +2836,65 @@ async def purge_superseded_facts(pool: Pool, *, older_than_days: int = 7) -> dic
     Returns:
         dict with keys ``deleted`` (superseded rows removed) and
         ``deleted_ha_state`` (ha_state rows removed).
-    """
-    result = await pool.execute(
-        "DELETE FROM facts "
-        "WHERE validity = 'superseded' "
-        "AND created_at < now() - make_interval(days => $1)",
-        older_than_days,
-    )
-    deleted = int(result.split()[-1]) if result else 0
 
-    # Purge orphaned ha_state facts — machine-generated snapshots that should
-    # not persist now that the snapshot loop is disabled.
-    ha_result = await pool.execute(
-        "DELETE FROM facts WHERE predicate = 'ha_state'",
-    )
-    deleted_ha = int(ha_result.split()[-1]) if ha_result else 0
+    [decision] A purged fact's ``public.memory_catalog`` row is marked stale
+    (``confidence = 0``, ``invalid_at`` set) in the same transaction as the
+    ``DELETE``, not deleted outright: butler roles hold no ``DELETE`` grant on
+    ``public.memory_catalog`` (core_009 — "DELETE withheld -- GC is
+    centralised"), so a catalog-row delete isn't even possible from a
+    butler's own role, and "mark stale" is exactly what the
+    memory-discovery-catalog spec's supersession scenario already does for
+    the analogous case. Superseded facts are normally already marked stale by
+    ``store_fact``'s own supersession cascade at write time (this re-assert
+    is then a harmless no-op); the cascade is what actually disowns catalog
+    rows for the unconditional ``ha_state`` purge below, which never goes
+    through supersession.
+    """
+    async with pool.acquire() as conn:
+        # Independent transaction from the ha_state purge below: a failure in
+        # one MUST NOT prevent the other from proceeding, so this block is its
+        # own try/except rather than letting an exception here propagate past
+        # the ha_state block entirely (that would silently violate the
+        # independence this comment — and the one below — promises).
+        deleted = 0
+        try:
+            async with conn.transaction():
+                deleted_rows = await conn.fetch(
+                    "DELETE FROM facts "
+                    "WHERE validity = 'superseded' "
+                    "AND created_at < now() - make_interval(days => $1) "
+                    "RETURNING id",
+                    older_than_days,
+                )
+                deleted_ids = [row["id"] for row in deleted_rows]
+                await _cascade_catalog_disownment(conn, "facts", deleted_ids)
+            deleted = len(deleted_ids)
+        except Exception:
+            logger.error(
+                "purge_superseded_facts: superseded purge (or its catalog "
+                "disownment cascade) failed; skipping, ha_state purge below "
+                "still runs",
+                exc_info=True,
+            )
+
+        # Purge orphaned ha_state facts — machine-generated snapshots that should
+        # not persist now that the snapshot loop is disabled. Independent
+        # transaction from the supersession purge above: a failure in one MUST
+        # NOT prevent the other from proceeding (matches the original
+        # two-independent-DELETEs behavior).
+        deleted_ha = 0
+        try:
+            async with conn.transaction():
+                ha_deleted_rows = await conn.fetch(
+                    "DELETE FROM facts WHERE predicate = 'ha_state' RETURNING id",
+                )
+                ha_ids = [row["id"] for row in ha_deleted_rows]
+                await _cascade_catalog_disownment(conn, "facts", ha_ids)
+            deleted_ha = len(ha_ids)
+        except Exception:
+            logger.error(
+                "purge_superseded_facts: ha_state purge (or its catalog disownment cascade) failed",
+                exc_info=True,
+            )
 
     return {"deleted": deleted, "deleted_ha_state": deleted_ha}

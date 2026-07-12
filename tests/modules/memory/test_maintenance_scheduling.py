@@ -169,8 +169,18 @@ class TestJobArgsValidation:
     async def test_consolidation_batch_size_override_is_validated(self, monkeypatch) -> None:
         captured: dict[str, Any] = {}
 
-        async def _fake_run_consolidation(*, pool, embedding_engine, cc_spawner, batch_size):
+        async def _fake_run_consolidation(
+            *,
+            pool,
+            embedding_engine,
+            cc_spawner,
+            batch_size,
+            enable_shared_catalog,
+            source_schema=None,
+        ):
             captured["batch_size"] = batch_size
+            captured["enable_shared_catalog"] = enable_shared_catalog
+            captured["source_schema"] = source_schema
             return {"episodes_processed": 0}
 
         monkeypatch.setattr(
@@ -182,6 +192,11 @@ class TestJobArgsValidation:
 
         await _run_memory_consolidation_job(pool=object(), job_args=None)
         assert captured["batch_size"] == DEFAULT_BATCH_SIZE
+        # bu-5ud8p.3: enable_shared_catalog must always be threaded through so
+        # consolidation-derived facts/rules aren't silently invisible to the
+        # catalog once a real Spawner is wired into this deterministic path.
+        assert captured["enable_shared_catalog"] is True
+        assert captured["source_schema"] is None
 
         # Valid override.
         await _run_memory_consolidation_job(pool=object(), job_args={"batch_size": 500})
@@ -737,6 +752,100 @@ async def test_store_fact_supersedes_a_fading_fact(core_memory_db_url: str) -> N
         assert old_validity == "superseded"
         new_validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", new["id"])
         assert new_validity == "active"
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.integration
+async def test_run_decay_sweep_expiry_marks_catalog_entry_stale(core_memory_db_url: str) -> None:
+    """Fact/rule expiry transitions cascade catalog disownment (bu-5ud8p.3).
+
+    Without this cascade the just-enabled fleet catalog keeps serving an
+    expired fact / forgotten rule to every butler indefinitely — fading
+    transitions deliberately do NOT cascade (fading facts stay live per the
+    memory-retention-policy spec), only the terminal expiry transition does.
+    """
+    from unittest.mock import MagicMock
+
+    from butlers.modules.memory.storage import run_decay_sweep, store_fact, store_rule
+
+    def _fake_embedding_engine() -> MagicMock:
+        engine = MagicMock()
+        engine.embed.return_value = [0.0] * 384
+        engine.model_name = "test-model"
+        return engine
+
+    pool = await _pool_for(core_memory_db_url)
+    try:
+        engine = _fake_embedding_engine()
+
+        fact = await store_fact(
+            pool,
+            subject="owner",
+            predicate="used_to_expire",
+            content="soon-to-expire-fact",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+        fact_id = fact["id"]
+
+        rule_id = await store_rule(
+            pool,
+            content="soon-to-expire heuristic",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+
+        # Push both into the expiry band directly — store_fact/store_rule
+        # don't accept confidence/decay_rate overrides — using the same
+        # eff ~= 0.0055 (< 0.05 expiry threshold) math as the other
+        # decay-sweep integration tests in this file.
+        await pool.execute(
+            "UPDATE facts SET confidence = 0.3, decay_rate = 2.0,"
+            " last_confirmed_at = now() - interval '2 days' WHERE id = $1",
+            fact_id,
+        )
+        await pool.execute(
+            "UPDATE rules SET confidence = 0.3, decay_rate = 2.0,"
+            " last_confirmed_at = now() - interval '2 days' WHERE id = $1",
+            rule_id,
+        )
+
+        await run_decay_sweep(pool)
+
+        fact_validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", fact_id)
+        assert fact_validity == "expired"
+        rule_forgotten = await pool.fetchval(
+            "SELECT (metadata->>'forgotten')::boolean FROM rules WHERE id = $1", rule_id
+        )
+        assert rule_forgotten is True
+
+        fact_catalog_row = await pool.fetchrow(
+            "SELECT confidence, invalid_at FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact_id,
+        )
+        rule_catalog_row = await pool.fetchrow(
+            "SELECT confidence, invalid_at FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1",
+            rule_id,
+        )
+        assert fact_catalog_row is not None
+        assert fact_catalog_row["confidence"] == 0
+        assert fact_catalog_row["invalid_at"] is not None
+        assert rule_catalog_row is not None
+        assert rule_catalog_row["confidence"] == 0
+        assert rule_catalog_row["invalid_at"] is not None
     finally:
         await pool.close()
 

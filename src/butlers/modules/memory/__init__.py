@@ -1332,6 +1332,8 @@ class MemoryModule(Module):
             return await _consolidation.run_consolidation(
                 module._get_pool(),
                 module._get_embedding_engine(),
+                enable_shared_catalog=module._config.enable_shared_catalog,
+                source_schema=effective_catalog_source_schema,
             )
 
         @_tool("admin")

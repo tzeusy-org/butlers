@@ -308,6 +308,15 @@ async def _run_memory_consolidation_job(
     (``episodes_processed``, ``groups``); ``episodes_consolidated``,
     ``facts_created``, etc. stay at 0 until a real ``Spawner`` is wired into
     this deterministic path (tracked as a separate follow-up).
+
+    ``enable_shared_catalog=True`` is passed through regardless — it matches
+    the memory module's own default (see the memory-discovery-catalog spec's
+    "Catalog write-behind defaults to enabled" requirement; no butler.toml
+    currently overrides it) and keeps the ``store_fact``/``store_rule``
+    catalog pass-through correct for whenever a real ``Spawner`` lands here.
+    ``source_schema`` is intentionally left unresolved — this handler has no
+    access to a butler's toml config, so ``execute_consolidation`` falls back
+    to the pool's own ``current_schema()`` (see its docstring).
     """
     from butlers.modules.memory.consolidation import DEFAULT_BATCH_SIZE, run_consolidation
 
@@ -332,7 +341,11 @@ async def _run_memory_consolidation_job(
             batch_size = raw_batch_size
 
     return await run_consolidation(
-        pool=pool, embedding_engine=None, cc_spawner=None, batch_size=batch_size
+        pool=pool,
+        embedding_engine=None,
+        cc_spawner=None,
+        batch_size=batch_size,
+        enable_shared_catalog=True,
     )
 
 

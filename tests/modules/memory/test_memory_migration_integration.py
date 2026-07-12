@@ -379,6 +379,294 @@ def test_fact_supersession_marks_catalog_entry_stale(memory_migrated_db: str) ->
     assert new_id in result["after_ids"]
 
 
+async def _forget_fact_and_rule_and_check_catalog(db_url: str) -> dict:
+    """Store a fact and a rule WITH catalog write-behind, forget both via the
+    plain (non-correction) ``forget_memory`` path, and read back their
+    ``public.memory_catalog`` rows.
+
+    Regression coverage for bu-5ud8p.3: forget_memory previously never
+    cascaded to the catalog (``_mark_catalog_stale`` had exactly one caller —
+    ``store_fact``'s own supersession cascade), so a retracted fact or
+    forgotten rule kept surfacing in cross-butler catalog search indefinitely.
+    """
+    from butlers.modules.memory.storage import forget_memory, store_fact, store_rule
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+
+        fact = await store_fact(
+            pool,
+            subject="erin",
+            predicate="favorite_color",
+            content="teal",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+        fact_id = fact["id"]
+
+        rule_id = await store_rule(
+            pool,
+            content="Always double-check delivery addresses",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+
+        fact_forgotten = await forget_memory(pool, "fact", fact_id)
+        rule_forgotten = await forget_memory(pool, "rule", rule_id)
+
+        fact_catalog_row = await pool.fetchrow(
+            "SELECT confidence, invalid_at FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact_id,
+        )
+        rule_catalog_row = await pool.fetchrow(
+            "SELECT confidence, invalid_at FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'rules' AND source_id = $1",
+            rule_id,
+        )
+
+        return {
+            "fact_forgotten": fact_forgotten,
+            "rule_forgotten": rule_forgotten,
+            "fact_catalog_row": dict(fact_catalog_row) if fact_catalog_row else None,
+            "rule_catalog_row": dict(rule_catalog_row) if rule_catalog_row else None,
+        }
+    finally:
+        await pool.close()
+
+
+def test_forget_memory_marks_catalog_entries_stale(memory_migrated_db: str) -> None:
+    """forget_memory cascades disownment to public.memory_catalog for facts and rules.
+
+    Without this cascade the just-enabled fleet catalog would keep serving a
+    retracted fact / forgotten rule to every butler indefinitely (bu-5ud8p.3).
+    """
+    result = asyncio.run(_forget_fact_and_rule_and_check_catalog(memory_migrated_db))
+
+    assert result["fact_forgotten"] is True
+    assert result["rule_forgotten"] is True
+
+    fact_row = result["fact_catalog_row"]
+    assert fact_row is not None, "expected a catalog row for the forgotten fact"
+    assert fact_row["confidence"] == 0
+    assert fact_row["invalid_at"] is not None
+
+    rule_row = result["rule_catalog_row"]
+    assert rule_row is not None, "expected a catalog row for the forgotten rule"
+    assert rule_row["confidence"] == 0
+    assert rule_row["invalid_at"] is not None
+
+
+async def _forget_fact_via_correction_and_check_catalog(db_url: str) -> dict:
+    """Correction-driven forget_memory must ALSO cascade catalog disownment —
+    not just the plain path — in the same transaction as the retraction and
+    the memory_events audit insert.
+    """
+    import uuid
+
+    from butlers.modules.memory.storage import forget_memory, store_fact
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+
+        result = await store_fact(
+            pool,
+            subject="frank",
+            predicate="favorite_color",
+            content="maroon",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+            source_butler="health",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+        fact_id = result["id"]
+
+        await forget_memory(
+            pool,
+            "fact",
+            fact_id,
+            correction_id=str(uuid.uuid4()),
+            correction_reason="wrong color",
+        )
+
+        catalog_row = await pool.fetchrow(
+            "SELECT confidence, invalid_at FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact_id,
+        )
+        return {"catalog_row": dict(catalog_row) if catalog_row else None}
+    finally:
+        await pool.close()
+
+
+def test_correction_driven_forget_also_marks_catalog_stale(memory_migrated_db: str) -> None:
+    """The correction-provenance forget path cascades catalog disownment too (bu-5ud8p.3)."""
+    out = asyncio.run(_forget_fact_via_correction_and_check_catalog(memory_migrated_db))
+    row = out["catalog_row"]
+    assert row is not None
+    assert row["confidence"] == 0
+    assert row["invalid_at"] is not None
+
+
+async def _purge_ha_state_fact_and_check_catalog(db_url: str) -> dict:
+    """purge_superseded_facts' unconditional ha_state purge must mark the
+    corresponding catalog row stale. Unlike the superseded-facts purge path,
+    ha_state facts never go through supersession, so store_fact's own
+    write-time cascade never touches their catalog row — this exercises
+    purge's OWN disownment cascade in isolation (bu-5ud8p.3).
+    """
+    from butlers.modules.memory.storage import purge_superseded_facts
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        fact_id = await pool.fetchval(
+            "INSERT INTO facts (subject, predicate, content, scope, tenant_id,"
+            " source_butler, retention_class)"
+            " VALUES ('sensor.kitchen', 'ha_state', 'on', 'global', 'shared',"
+            " 'home', 'operational') RETURNING id"
+        )
+
+        # Simulate a catalog row written before the HA snapshot loop was
+        # disabled (store_fact's write-behind, not exercised directly here).
+        await pool.execute(
+            "INSERT INTO public.memory_catalog"
+            " (source_schema, source_table, source_id, source_butler, tenant_id,"
+            "  summary, memory_type, confidence)"
+            " VALUES ('public', 'facts', $1, 'home', 'shared',"
+            "  'sensor.kitchen ha_state: on', 'fact', 1.0)",
+            fact_id,
+        )
+
+        result = await purge_superseded_facts(pool)
+
+        fact_row = await pool.fetchrow("SELECT id FROM facts WHERE id = $1", fact_id)
+        catalog_row = await pool.fetchrow(
+            "SELECT confidence, invalid_at FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts' AND source_id = $1",
+            fact_id,
+        )
+        return {
+            "result": result,
+            "fact_row": dict(fact_row) if fact_row else None,
+            "catalog_row": dict(catalog_row) if catalog_row else None,
+        }
+    finally:
+        await pool.close()
+
+
+def test_purge_ha_state_facts_marks_catalog_entry_stale(memory_migrated_db: str) -> None:
+    """purge_superseded_facts leaves zero LIVE catalog rows for a purged ha_state fact.
+
+    The catalog row itself is retained (butler roles hold no DELETE grant on
+    public.memory_catalog — see core_009) but marked stale, matching the
+    supersession scenario's "mark stale" semantics (bu-5ud8p.3 [decision]).
+    """
+    out = asyncio.run(_purge_ha_state_fact_and_check_catalog(memory_migrated_db))
+
+    assert out["result"]["deleted_ha_state"] >= 1
+    assert out["fact_row"] is None, "the ha_state fact row must be deleted"
+
+    catalog_row = out["catalog_row"]
+    assert catalog_row is not None, "catalog row is retained (no DELETE grant) but must be stale"
+    assert catalog_row["confidence"] == 0
+    assert catalog_row["invalid_at"] is not None
+
+
+async def _consolidate_new_fact_with_catalog(db_url: str) -> dict:
+    """execute_consolidation must forward enable_shared_catalog/source_schema
+    to store_fact so consolidation-derived facts get a catalog row too.
+
+    Regression coverage for bu-5ud8p.3: consolidation_executor.py previously
+    dropped this pass-through entirely, so every store_fact/store_rule call it
+    made used the default enable_shared_catalog=False regardless of the
+    module's own configuration — consolidation output was silently invisible
+    to cross-butler catalog search.
+    """
+    from butlers.modules.memory.consolidation_executor import execute_consolidation
+    from butlers.modules.memory.consolidation_parser import ConsolidationResult, NewFact
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+
+        parsed = ConsolidationResult(
+            new_facts=[
+                NewFact(subject="gina", predicate="favorite_color", content="gold"),
+            ]
+        )
+
+        # source_episode_ids=[] deliberately sidesteps an unrelated pre-existing
+        # bug in execute_consolidation's derived_from-link loop (store_fact
+        # returns a dict, but the loop passes it straight to create_link's
+        # UUID-typed source_id parameter) — out of scope for this cascade fix,
+        # reported as a discovered follow-up. facts_created increments outside
+        # that loop, so it is unaffected.
+        exec_result = await execute_consolidation(
+            pool,
+            engine,
+            parsed,
+            source_episode_ids=[],
+            butler_name="health",
+            tenant_id="shared",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+
+        catalog_row = await pool.fetchrow(
+            "SELECT source_id FROM public.memory_catalog"
+            " WHERE source_schema = 'public' AND source_table = 'facts'"
+            " AND title = 'gina favorite_color'"
+        )
+        return {
+            "facts_created": exec_result["facts_created"],
+            "errors": exec_result["errors"],
+            "catalog_row_found": catalog_row is not None,
+        }
+    finally:
+        await pool.close()
+
+
+def test_execute_consolidation_propagates_enable_shared_catalog(memory_migrated_db: str) -> None:
+    """A consolidation-derived fact gets a public.memory_catalog row when
+    enable_shared_catalog/source_schema are threaded through (bu-5ud8p.3)."""
+    out = asyncio.run(_consolidate_new_fact_with_catalog(memory_migrated_db))
+    assert out["errors"] == []
+    assert out["facts_created"] == 1
+    assert out["catalog_row_found"] is True
+
+
 async def _backfill_and_search_catalog(db_url: str) -> dict:
     """Store a fact/rule/retracted-fact/forgotten-rule WITHOUT catalog write-behind,
     then verify ``run_memory_catalog_backfill`` is the only path that catalogs them.

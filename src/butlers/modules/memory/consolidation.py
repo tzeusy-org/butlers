@@ -87,6 +87,8 @@ async def run_consolidation(
     cc_spawner: Spawner | None = None,
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    enable_shared_catalog: bool = False,
+    source_schema: str | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full consolidation pipeline for unconsolidated episodes.
 
@@ -109,6 +111,13 @@ async def run_consolidation(
         cc_spawner: Optional Spawner instance for invoking the LLM CLI. If None,
             only episode grouping is performed (no actual consolidation).
         batch_size: Maximum number of episodes to claim per run.
+        enable_shared_catalog: Forwarded to ``execute_consolidation`` (and from
+            there to every ``store_fact``/``store_rule`` call) so
+            consolidation-derived facts/rules get a ``public.memory_catalog``
+            row like directly-stored ones. Defaults to False.
+        source_schema: The butler schema name written to catalog rows when
+            ``enable_shared_catalog=True``. When omitted, ``execute_consolidation``
+            resolves it from the pool's own ``current_schema()``.
 
     Returns:
         A stats dict with keys:
@@ -270,6 +279,8 @@ async def run_consolidation(
                     butler_name=butler_name,
                     tenant_id=tenant_id,
                     request_id=group_request_id,
+                    enable_shared_catalog=enable_shared_catalog,
+                    source_schema=source_schema,
                 )
 
                 # Aggregate stats

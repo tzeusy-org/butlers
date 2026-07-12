@@ -58,6 +58,8 @@ async def execute_consolidation(
     retention_class: str = "transient",
     tenant_id: str = "shared",
     request_id: str | None = None,
+    enable_shared_catalog: bool = False,
+    source_schema: str | None = None,
 ) -> dict[str, Any]:
     """Apply parsed consolidation results to the database.
 
@@ -81,6 +83,16 @@ async def execute_consolidation(
             (default 'shared').  Must match the tenant of the source episodes.
         request_id: Optional request trace ID threaded through store calls
             for correlation.
+        enable_shared_catalog: When True, forwarded to every ``store_fact``/
+            ``store_rule`` call so consolidation-derived facts/rules get a
+            ``public.memory_catalog`` row exactly like directly-stored ones
+            (previously dropped here — consolidation output was silently
+            invisible to cross-butler catalog search even when the module's
+            ``enable_shared_catalog`` config was on). Defaults to False,
+            matching ``store_fact``/``store_rule``'s own conservative default.
+        source_schema: The butler schema name written to catalog rows.
+            Required (by ``store_fact``/``store_rule``'s own gate) when
+            ``enable_shared_catalog=True``; ignored otherwise.
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
@@ -92,6 +104,15 @@ async def execute_consolidation(
     facts_updated = 0
     rules_created = 0
     confirmations_made = 0
+
+    # When the caller wants catalog write-behind but didn't resolve a schema
+    # itself (e.g. the deterministic scheduled-job path, which has no access
+    # to the module's toml config), fall back to the pool's own
+    # current_schema() — the same idiom used by
+    # scheduled_jobs.py::_infer_current_schema and core/scheduler.py — rather
+    # than silently dropping catalog writes for the whole run.
+    if enable_shared_catalog and not source_schema:
+        source_schema = await pool.fetchval("SELECT current_schema()")
 
     # Resolve episode TTL from memory_policies for the given retention_class.
     episode_ttl_days = await _lookup_episode_ttl_days(pool, retention_class)
@@ -121,6 +142,8 @@ async def execute_consolidation(
                 entity_id=fact_entity_id,
                 tenant_id=tenant_id,
                 request_id=request_id,
+                enable_shared_catalog=enable_shared_catalog,
+                source_schema=source_schema,
             )
             for episode_id in source_episode_ids:
                 await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
@@ -159,6 +182,8 @@ async def execute_consolidation(
                 entity_id=fact_entity_id,
                 tenant_id=tenant_id,
                 request_id=request_id,
+                enable_shared_catalog=enable_shared_catalog,
+                source_schema=source_schema,
             )
             for episode_id in source_episode_ids:
                 await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
@@ -181,6 +206,8 @@ async def execute_consolidation(
                 source_butler=butler_name,
                 tenant_id=tenant_id,
                 request_id=request_id,
+                enable_shared_catalog=enable_shared_catalog,
+                source_schema=source_schema,
             )
             for episode_id in source_episode_ids:
                 await create_link(pool, "rule", new_rule_id, "episode", episode_id, "derived_from")
