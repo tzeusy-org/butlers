@@ -28,6 +28,7 @@ import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { cn } from "@/lib/utils";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
@@ -66,7 +67,14 @@ interface ConsoleData {
 // Minimal types for per-panel summaries (pulled from their own endpoints)
 
 interface SpendSummary {
-  total_cost_usd: number;
+  // Sourced from GET /api/spend/forecast, priced from public.token_usage_ledger
+  // via the shared price_mtd_from_ledger helper (bu-7o89u.1/.2) -- the same
+  // figure the spawn-deny gate enforces, not a rolling-30d fan-out mislabeled
+  // "MTD".
+  mtd_usd: number;
+  // True when the ledger/ceiling query failed or no DB pool was wired --
+  // mtd_usd is then a fabricated 0, never a genuine "$0 this month" reading.
+  ceiling_source_error?: boolean;
 }
 
 interface ModelStats {
@@ -88,7 +96,11 @@ function fetchConsole(): Promise<{ data: ConsoleData }> {
 }
 
 function fetchSpendSummary(): Promise<{ data: SpendSummary }> {
-  return apiFetch<{ data: SpendSummary }>("/spend?period=30d");
+  // GET /api/spend/forecast, not GET /spend?period=30d: the forecast endpoint
+  // prices mtd_usd from the ledger (bu-7o89u.1) so this panel's "MTD" label
+  // matches the number the spawn-deny gate enforces, instead of a rolling-30d
+  // fan-out mislabeled as MTD (bu-7o89u.2).
+  return apiFetch<{ data: SpendSummary }>("/spend/forecast");
 }
 
 function fetchModelStats(): Promise<ModelStats> {
@@ -396,10 +408,25 @@ function SpendPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
             Retry →
           </button>
         </p>
+      ) : data?.data.ceiling_source_error ? (
+        // Ledger/gate source degraded (bu-7o89u.1): mtd_usd is a fabricated
+        // 0, not a genuine "$0 this month" reading -- never render it.
+        // Stop propagation so the Retry button doesn't bubble into
+        // PanelShell's onClick and navigate to /spend instead of retrying.
+        // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- not itself interactive; onClick only swallows bubbling so clicking Retry doesn't trigger the ancestor PanelShell's click-to-navigate.
+        <div onClick={(e) => e.stopPropagation()}>
+          <SourceDegradedNote
+            label="Spend MTD"
+            detail="ledger unavailable"
+            onRetry={() => {
+              void refetch();
+            }}
+          />
+        </div>
       ) : (
         <div className="flex items-baseline gap-2">
           <span className="text-[22px] font-medium tabular-nums leading-none">
-            ${(data?.data?.total_cost_usd ?? 0).toFixed(2)}
+            ${(data?.data.mtd_usd ?? 0).toFixed(2)}
           </span>
           <span className="text-xs text-muted-foreground">MTD</span>
         </div>

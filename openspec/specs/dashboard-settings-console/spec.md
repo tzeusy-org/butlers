@@ -33,12 +33,20 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
 #### Scenario: Console aggregator response
 - **WHEN** `GET /api/settings/console` is called
 - **THEN** the response is `ApiResponse[SettingsConsole]` where `SettingsConsole` contains:
-  - `header_counts: {active_butlers: int, spend_mtd_usd: float, open_approvals: int, models_verified: int, models_total: int}`
+  - `header_counts: {active_butlers: int | null, spend_mtd_usd: float | null, open_approvals: int | null, models_verified: int | null, models_total: int | null}` — a field is `null`, never a confident `0`, when its subsystem aggregation failed (the failure is always also surfaced as an amber `attention` item, but a header-only consumer must not have to cross-reference that list to tell "genuinely zero" from "unknown")
   - `attention: AttentionItem[]` where `AttentionItem = {tone: "red"|"amber", kind: str, text: str, action_route: str}`
   - `attention_truncated_count: int` — items beyond the cap (0 if `attention.length <= 5`)
 - **AND** the server caps `attention[]` at 5 items; items beyond 5 are surfaced via `attention_truncated_count` so the UI can render a `"...N more →"` indicator linking to `/audit-log`.
 - **AND** the response is cached server-side for 10 seconds (revalidated on cache miss). The cache is in-memory keyed by `actor` identity; in single-owner deployments the cache is effectively global.
 - **AND** the response uses tabular-nums-friendly types (integers and floats; never formatted strings).
+
+#### Scenario: Spend MTD is priced from the ledger, not a rolling-30d fan-out
+- **WHEN** the aggregator computes `header_counts.spend_mtd_usd`
+- **THEN** it is priced from `public.token_usage_ledger` via the shared `butlers.core.model_routing.price_mtd_from_ledger` helper — the exact helper `check_monthly_ceiling` (the spawn-deny gate) and `GET /api/spend/forecast` price MTD from (bu-7o89u.1/.2) — so this figure can never diverge from the number that halts the fleet
+- **AND** it is NOT summed from a rolling-30d per-butler `sessions_summary` fan-out (the pre-bu-7o89u.2 behavior, which both mislabeled the window as "MTD" and could drive the near-ceiling attention item off a figure the gate was not actually enforcing)
+- **AND** a ledger failure, or no `DatabaseManager` wired (there is no MCP fallback for ledger rows), sets `header_counts.spend_mtd_usd = null` plus an amber `subsystem_error` attention item — never a fabricated `$0`
+- **AND** the "spend near ceiling" attention item (below) compares this same ledger-priced figure against the same `public.spend_ceiling` singleton row `check_monthly_ceiling` reads, so the alarm can never fire independently of what the gate is actually enforcing
+- **AND** the Settings Console page's own "Spend" summary panel (which fetches its per-panel summary independently of the header aggregator) sources its "MTD" figure from `GET /api/spend/forecast`'s ledger-priced `mtd_usd`, and renders a degraded indicator (not a fabricated `$0.00`) when that response's `ceiling_source_error` is `true`
 
 #### Scenario: Sub-system aggregation failure is reported, not propagated
 - **WHEN** one sub-system aggregation fails (e.g., spend backend unavailable) while `GET /api/settings/console` is responding

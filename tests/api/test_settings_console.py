@@ -31,6 +31,7 @@ from butlers.api.deps import (
     get_pricing,
 )
 from butlers.api.pricing import ModelPricing, PricingConfig
+from butlers.core.model_routing import check_monthly_ceiling
 
 pytestmark = pytest.mark.unit
 
@@ -90,6 +91,35 @@ def _mock_db_none() -> None:
     return None
 
 
+def _mock_ledger_pool(usage_rows: list[dict], ceiling_row: dict | None):
+    """Mock a ``switchboard`` pool serving ``price_mtd_from_ledger``'s
+    ``pool.fetch`` (usage-by-model) and ``pool.fetchrow`` (ceiling row) calls.
+
+    Mirrors ``tests/api/test_spend.py::_mock_forecast_ledger_pool``.
+    """
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=usage_rows)
+    pool.fetchrow = AsyncMock(return_value=ceiling_row)
+    return pool
+
+
+def _mock_db(pools: dict[str, MagicMock]):
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.side_effect = lambda name: pools[name]
+    return db
+
+
+_LEDGER_USAGE_ROWS = [
+    {
+        "model_id": "claude-haiku",
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        "cached_input_tokens": 0,
+        "cache_creation_tokens": 0,
+    }
+]
+
+
 # ---------------------------------------------------------------------------
 # Helper to reset module-level cache between tests
 # ---------------------------------------------------------------------------
@@ -111,6 +141,144 @@ def reset_console_cache():
     _reset_cache()
     yield
     _reset_cache()
+
+
+# ---------------------------------------------------------------------------
+# _get_spend_mtd: ledger-first MTD, no rolling-30d fan-out mislabel [bu-7o89u.2]
+#
+# Previously this summed a rolling-30d per-butler sessions_summary fan-out
+# under an "MTD" label and could fire the near-ceiling alarm off that
+# mismatched figure. It must now price from public.token_usage_ledger via the
+# exact same butlers.core.model_routing.price_mtd_from_ledger helper
+# check_monthly_ceiling (the spawn-deny gate) uses, so the console can never
+# show a different MTD than the number that halts the fleet.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_spend_mtd_prices_from_ledger_not_fan_out():
+    """_get_spend_mtd(db) returns the ledger-priced MTD and matching ceiling,
+    without any MCP/butler-config fan-out involved."""
+    pool = _mock_ledger_pool(_LEDGER_USAGE_ROWS, {"monthly_usd": 100.0})
+    db = _mock_db({"switchboard": pool})
+
+    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+        mtd, ceiling, err = await console_mod._get_spend_mtd(db)
+
+    assert mtd == pytest.approx(42.0)
+    assert ceiling == pytest.approx(100.0)
+    assert err is None
+
+
+@pytest.mark.asyncio
+async def test_get_spend_mtd_matches_check_monthly_ceiling_same_fixture():
+    """The console and the spawn-deny gate must agree on MTD from the same
+    ledger fixture -- the exact divergence bu-7o89u.2 closes for the console
+    (mirrors bu-7o89u.1's forecast-endpoint agreement test)."""
+    pool = _mock_ledger_pool(_LEDGER_USAGE_ROWS, {"monthly_usd": 100.0})
+    db = _mock_db({"switchboard": pool})
+
+    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+        gate_status = await check_monthly_ceiling(pool)
+        mtd, ceiling, err = await console_mod._get_spend_mtd(db)
+
+    assert err is None
+    assert gate_status.mtd_usd == pytest.approx(42.0)
+    assert mtd == pytest.approx(gate_status.mtd_usd)
+    assert ceiling == pytest.approx(gate_status.ceiling_usd)
+
+
+@pytest.mark.asyncio
+async def test_get_spend_mtd_no_db_returns_null_not_fabricated_zero():
+    """No DatabaseManager wired -- there is no MCP fallback for ledger rows --
+    must report (None, None, amber-item), never a fabricated $0."""
+    mtd, ceiling, err = await console_mod._get_spend_mtd(None)
+
+    assert mtd is None
+    assert ceiling is None
+    assert err is not None
+    assert err.tone == "amber"
+    assert err.kind == "subsystem_error"
+
+
+@pytest.mark.asyncio
+async def test_get_spend_mtd_ledger_failure_returns_null_not_fabricated_zero():
+    """A ledger query failure must surface as (None, None, amber-item), never
+    a truthful-looking $0 MTD (butlers/CLAUDE.md degraded-envelope convention)."""
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("connection reset"))
+    pool.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
+    db = _mock_db({"switchboard": pool})
+
+    mtd, ceiling, err = await console_mod._get_spend_mtd(db)
+
+    assert mtd is None
+    assert ceiling is None
+    assert err is not None
+    assert err.tone == "amber"
+
+
+@pytest.mark.asyncio
+async def test_console_endpoint_spend_mtd_uses_ledger_helper_end_to_end():
+    """GET /api/settings/console's spend_mtd_usd matches price_mtd_from_ledger
+    on a real (mocked-pool) ledger fixture, exercised through the full
+    aggregator -- not a mocked _get_spend_mtd -- so a wiring regression that
+    reintroduces the fan-out sum would be caught here."""
+    pool = _mock_ledger_pool(_LEDGER_USAGE_ROWS, {"monthly_usd": 100.0})
+    db = _mock_db({"switchboard": pool})
+    app = _make_app(db=db)
+
+    with (
+        patch("butlers.api.pricing.estimate_session_cost", return_value=42.0),
+        patch.object(console_mod, "_count_active_butlers", new=AsyncMock(return_value=(1, None))),
+        patch.object(console_mod, "_count_open_approvals", new=AsyncMock(return_value=(0, None))),
+        patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(1, 1, None))),
+        patch.object(console_mod, "_check_cli_auth", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_model_errors", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_failed_webhooks", new=AsyncMock(return_value=[])),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/settings/console")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["data"]
+    assert body["header_counts"]["spend_mtd_usd"] == pytest.approx(42.0)
+    # 42 / 100 = 42% -- well under the 90% near-ceiling threshold, so no false
+    # alarm from this true MTD.
+    ceiling_items = [a for a in body["attention"] if a["kind"] == "spend_ceiling"]
+    assert ceiling_items == []
+
+
+@pytest.mark.asyncio
+async def test_console_endpoint_ceiling_alarm_fires_only_on_true_mtd_breach():
+    """The near-ceiling alarm compares the ledger-priced true MTD against the
+    same public.spend_ceiling row check_monthly_ceiling reads -- it fires when
+    that ratio crosses 90%, not off any other figure."""
+    pool = _mock_ledger_pool(_LEDGER_USAGE_ROWS, {"monthly_usd": 100.0})
+    db = _mock_db({"switchboard": pool})
+    app = _make_app(db=db)
+
+    with (
+        patch("butlers.api.pricing.estimate_session_cost", return_value=95.0),
+        patch(
+            "butlers.api.routers.spend.projection_confidence_for",
+            new=lambda days_elapsed: "normal",
+        ),
+        patch.object(console_mod, "_count_active_butlers", new=AsyncMock(return_value=(1, None))),
+        patch.object(console_mod, "_count_open_approvals", new=AsyncMock(return_value=(0, None))),
+        patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(1, 1, None))),
+        patch.object(console_mod, "_check_cli_auth", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_model_errors", new=AsyncMock(return_value=[])),
+        patch.object(console_mod, "_check_failed_webhooks", new=AsyncMock(return_value=[])),
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/settings/console")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["data"]
+    assert body["header_counts"]["spend_mtd_usd"] == pytest.approx(95.0)
+    ceiling_items = [a for a in body["attention"] if a["kind"] == "spend_ceiling"]
+    assert len(ceiling_items) == 1, f"Expected the true-MTD breach to fire, got {ceiling_items}"
 
 
 @pytest.mark.asyncio

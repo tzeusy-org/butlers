@@ -47,6 +47,7 @@ from butlers.api.deps import (
 from butlers.api.models import ApiResponse
 from butlers.api.pricing import PricingConfig
 from butlers.api.routers.events import emit_event
+from butlers.core.model_routing import price_mtd_from_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -155,65 +156,55 @@ async def _count_active_butlers(
 
 
 async def _get_spend_mtd(
-    configs: list[ButlerConnectionInfo],
-    mgr: MCPClientManager,
-    pricing: PricingConfig,
     db: DatabaseManager | None,
-) -> tuple[float, float | None, AttentionItem | None]:
+) -> tuple[float | None, float | None, AttentionItem | None]:
     """Return (spend_mtd_usd, ceiling_usd, optional_attention_item).
 
-    Ceiling is needed to generate the "near ceiling" attention item.
-    Never raises.
+    Prices month-to-date spend from ``public.token_usage_ledger`` via
+    :func:`butlers.core.model_routing.price_mtd_from_ledger` -- the exact
+    helper ``check_monthly_ceiling`` (the spawn-deny gate) and
+    ``GET /api/spend/forecast`` price MTD from (bu-7o89u.1) -- so this figure
+    can never diverge from the number that halts the fleet. Previously this
+    summed a rolling-30d per-butler ``sessions_summary`` fan-out under an
+    "MTD" label, which both mislabeled the window and could fire ceiling
+    alarms the gate itself was not enforcing.
+
+    Ceiling is read from the same singleton ``public.spend_ceiling`` row
+    ``check_monthly_ceiling`` reads, so the "near ceiling" attention item
+    below compares true MTD against the exact ceiling the gate enforces.
+
+    Never raises; a ledger failure -- or no ``DatabaseManager`` wired (there
+    is no MCP fallback for ledger rows, mirroring the forecast endpoint) --
+    returns ``(None, None, amber-attention-item)`` so ``HeaderCounts`` renders
+    "unavailable" rather than a fabricated ``$0``.
     """
-    try:
-        from butlers.api.routers.spend import (
-            _get_butler_session_stats,
-            _get_butler_session_stats_from_db,
+    if db is None:
+        return (
+            None,
+            None,
+            AttentionItem(
+                tone="amber",
+                kind="subsystem_error",
+                text="Could not fetch spend data — totals may be unavailable.",
+                action_route="/settings/spend",
+            ),
         )
+    try:
+        pool = db.pool("switchboard")
+        mtd_usd = await price_mtd_from_ledger(pool)
 
-        tasks = [
-            (
-                _get_butler_session_stats_from_db(db, info, pricing, "30d")
-                if db is not None
-                else _get_butler_session_stats(mgr, info, pricing, "30d")
-            )
-            for info in configs
-        ]
-        raw = await asyncio.gather(*tasks)
-
-        # DB path may return None for pools without data; fallback per butler
-        if db is not None:
-            fallback_tasks = [
-                _get_butler_session_stats(mgr, info, pricing, "30d")
-                for info, result in zip(configs, raw, strict=False)
-                if result is None
-            ]
-            fallback_results = await asyncio.gather(*fallback_tasks)
-            fi = iter(fallback_results)
-            results = [r if r is not None else next(fi) for r in raw]
-        else:
-            results = raw
-
-        mtd = sum(r[1] for r in results if r is not None)
-
-        # Read ceiling from DB
         ceiling_usd: float | None = None
-        if db is not None:
-            try:
-                pool = db.pool("switchboard")
-                row = await pool.fetchrow(
-                    "SELECT monthly_usd FROM public.spend_ceiling WHERE id = 1"
-                )
-                if row:
-                    ceiling_usd = float(row["monthly_usd"])
-            except Exception:
-                pass
+        ceiling_row = await pool.fetchrow(
+            "SELECT monthly_usd FROM public.spend_ceiling WHERE id = 1"
+        )
+        if ceiling_row:
+            ceiling_usd = float(ceiling_row["monthly_usd"])
 
-        return round(mtd, 2), ceiling_usd, None
+        return round(mtd_usd, 2), ceiling_usd, None
     except Exception as exc:
         logger.warning("console: spend-mtd aggregation failed: %s", exc)
         return (
-            0.0,
+            None,
             None,
             AttentionItem(
                 tone="amber",
@@ -421,7 +412,7 @@ async def _build_console_payload(
         failed_webhook_items,
     ) = await asyncio.gather(
         _count_active_butlers(configs, mgr),
-        _get_spend_mtd(configs, mgr, pricing, db),
+        _get_spend_mtd(db),
         _count_open_approvals(db),
         _count_models(db),
         _check_cli_auth(db),
@@ -464,7 +455,15 @@ async def _build_console_payload(
 
     days_elapsed = date.today().day  # 1-based, inclusive of today
     projection_confidence = projection_confidence_for(days_elapsed)
-    if ceiling is not None and ceiling > 0 and projection_confidence != "low":
+    # _get_spend_mtd sets ceiling and spend_mtd together (both real or both
+    # None on failure), so ceiling is not None here implies spend_mtd is a
+    # real, ledger-priced float -- never a fabricated placeholder.
+    if (
+        ceiling is not None
+        and spend_mtd is not None
+        and ceiling > 0
+        and projection_confidence != "low"
+    ):
         ratio = spend_mtd / ceiling
         if ratio >= 0.90:
             pct = int(ratio * 100)
