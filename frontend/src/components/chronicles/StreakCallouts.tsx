@@ -22,6 +22,7 @@ import { findLongestStreaks } from "./streak-utils"
 // ---------------------------------------------------------------------------
 
 /** Format a duration in seconds as hh:mm. */
+// eslint-disable-next-line no-restricted-syntax -- HH:MM clock format (bu-sd0l7.3), a different output shape than every lib/format-duration.ts formatter.
 function formatDuration(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600)
   const m = Math.floor((totalSeconds % 3600) / 60)

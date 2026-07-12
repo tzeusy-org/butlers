@@ -7,6 +7,7 @@ import { ComplexityBadge } from "@/components/general/ComplexityBadge";
 import { cn } from "@/lib/utils";
 import type { SessionDetail } from "@/api/types.ts";
 import { CollapsibleJson, ToolCallTimeline } from "./ToolCallTimeline";
+import { formatDurationMs } from "@/lib/format-duration";
 
 // ---------------------------------------------------------------------------
 // SessionDossier — the ONE session dossier on the trace spine
@@ -37,19 +38,6 @@ export interface SessionDossierProps {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatDuration(ms: number | null): string {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  const totalSeconds = Math.floor(ms / 1000);
-  const frac = ms / 1000;
-  if (totalSeconds < 60) {
-    return frac % 1 === 0 ? `${totalSeconds}s` : `${frac.toFixed(1)}s`;
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
-}
 
 function formatTokens(n: number | null): string {
   if (n == null) return "—";
@@ -93,7 +81,7 @@ function useElapsedLabel(startedAt: string, isRunning: boolean): string | null {
   void tick; // consumed only to trigger a re-render each second; value unused
   const elapsedMs = computeElapsedMs(startedAt);
   if (elapsedMs == null) return null;
-  return formatDuration(elapsedMs);
+  return formatDurationMs(elapsedMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +210,7 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
               </span>
             </MetadataRow>
           ) : (
-            <MetadataRow label="Duration">{formatDuration(session.duration_ms)}</MetadataRow>
+            <MetadataRow label="Duration">{formatDurationMs(session.duration_ms)}</MetadataRow>
           )}
           <MetadataRow label="Model">
             <span className="font-mono">{session.model ?? "—"}</span>

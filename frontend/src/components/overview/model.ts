@@ -677,6 +677,7 @@ function issueRecencyDetail(issue: Issue, now: Date): string | null {
   return `${prefix} ${formatDuration(diffSeconds)} ago`;
 }
 
+// eslint-disable-next-line no-restricted-syntax -- day-scale contract with no sub-minute tier (bu-sd0l7.3), distinct from every lib/format-duration.ts shape.
 function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;

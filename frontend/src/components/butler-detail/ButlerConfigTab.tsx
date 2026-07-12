@@ -38,6 +38,7 @@ import type { ModuleStatus, ProcessFacts } from "@/api/types";
 // ---------------------------------------------------------------------------
 
 /** Format seconds into a human-readable duration (e.g. "3d 4h", "12m", "45s"). */
+// eslint-disable-next-line no-restricted-syntax -- day-scale contract (bu-sd0l7.3), distinct from every lib/format-duration.ts shape.
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
   const minutes = Math.floor(seconds / 60);

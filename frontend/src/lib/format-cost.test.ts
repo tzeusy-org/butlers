@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatCostUsd } from "./format-cost";
+import { formatCostUsd, formatCostUsdPrecise } from "./format-cost";
 
 // ---------------------------------------------------------------------------
 // bu-dm6kh (PR #2871 review follow-up): formatCostUsd previously clamped any
@@ -37,5 +37,24 @@ describe("formatCostUsd", () => {
   it("treats non-finite input the same as zero", () => {
     expect(formatCostUsd(Number.NaN)).toBe("$0.00");
     expect(formatCostUsd(Number.POSITIVE_INFINITY)).toBe("$0.00");
+  });
+});
+
+describe("formatCostUsdPrecise", () => {
+  it("renders null/undefined as an em dash", () => {
+    expect(formatCostUsdPrecise(null)).toBe("—");
+    expect(formatCostUsdPrecise(undefined)).toBe("—");
+  });
+
+  it("renders exactly zero as $0.00", () => {
+    expect(formatCostUsdPrecise(0)).toBe("$0.00");
+  });
+
+  it("renders a nonzero magnitude below $0.001 as <$0.001", () => {
+    expect(formatCostUsdPrecise(0.0004)).toBe("<$0.001");
+  });
+
+  it("renders ordinary amounts to 4 decimal places", () => {
+    expect(formatCostUsdPrecise(0.0125)).toBe("$0.0125");
   });
 });

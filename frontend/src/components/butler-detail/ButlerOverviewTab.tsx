@@ -30,16 +30,18 @@ import { useButler } from "@/hooks/use-butlers"
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import { useSpendSummary } from "@/hooks/use-spend"
+import { formatCostUsd } from "@/lib/format-cost"
 import type { ActivityEventType, ApprovalAction, ButlerActivityEvent } from "@/api/types"
 
 interface ButlerOverviewTabProps {
   butlerName: string
 }
 
+// Delegates to the shared formatter [bu-sd0l7.3] — this used to clamp any
+// nonzero sub-cent spend to "$0.00" (the exact bug documented at the top of
+// lib/format-cost.ts), before formatCostUsd existed.
 function formatCurrency(amount: number | null | undefined): string {
-  if (amount == null) return "--"
-  if (amount < 0.01) return "$0.00"
-  return `$${amount.toFixed(2)}`
+  return amount == null ? "--" : formatCostUsd(amount)
 }
 
 function statusTone(status: string | undefined): "green" | "amber" | "red" | "dim" {

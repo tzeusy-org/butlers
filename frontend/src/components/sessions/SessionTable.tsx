@@ -6,6 +6,7 @@ import { ComplexityBadge } from "@/components/general/ComplexityBadge";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { formatCostUsd } from "@/lib/format-cost";
+import { formatDurationMs } from "@/lib/format-duration";
 import { truncate } from "@/lib/truncate";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -42,20 +43,6 @@ export interface SessionTableProps {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Format duration_ms to a human-friendly string (e.g. "1.2s", "45s", "2m 15s"). */
-function formatDuration(ms: number | null): string {
-  if (ms == null) return "\u2014";
-  if (ms < 1000) return `${ms}ms`;
-  const totalSeconds = Math.floor(ms / 1000);
-  const frac = ms / 1000;
-  if (totalSeconds < 60) {
-    return frac % 1 === 0 ? `${totalSeconds}s` : `${frac.toFixed(1)}s`;
-  }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
-}
 
 /** Truncate a UUID to show only the first 8 characters. */
 function truncateUuid(uuid: string): string {
@@ -246,7 +233,7 @@ export function SessionTable({
                   )}
                 </TableCell>
                 <TableCell className="tabular-nums text-xs text-muted-foreground">
-                  {formatDuration(session.duration_ms)}
+                  {formatDurationMs(session.duration_ms)}
                 </TableCell>
                 <TableCell><StatusBadge success={session.success} /></TableCell>
                 <TableCell className="text-right tabular-nums text-xs text-muted-foreground">

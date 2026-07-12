@@ -42,6 +42,8 @@ import { ApiError } from '@/api/index.ts'
 import { Tip } from '@/components/ui/tip'
 import { StatusBadge } from '../StatusBadge'
 import type { IngestionEventSummary, IngestionEventStatus } from '@/api/index.ts'
+import { formatDurationTicks } from '@/lib/format-duration'
+import { formatCostUsdPrecise } from '@/lib/format-cost'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -93,24 +95,15 @@ function emptySessionsReason(
   return 'This event was ingested but no butler session has been recorded for it.'
 }
 
-function formatDuration(startedAt: string | null, completedAt: string | null): string {
+function formatSessionSpan(startedAt: string | null, completedAt: string | null): string {
   if (!startedAt || !completedAt) return '—'
   try {
     const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime()
     if (ms < 0) return '—'
-    if (ms < 1000) return `${ms}ms`
-    if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-    return `${(ms / 60_000).toFixed(1)}m`
+    return formatDurationTicks(ms)
   } catch {
     return '—'
   }
-}
-
-function formatCost(usd: number | undefined | null): string {
-  if (usd === undefined || usd === null) return '—'
-  if (usd === 0) return '$0.00'
-  if (usd < 0.001) return '<$0.001'
-  return `$${usd.toFixed(4)}`
 }
 
 function fmtNum(n: number | null | undefined): string {
@@ -269,7 +262,7 @@ function DrawerSessionsTab({
                       : maxTime
                     const left = ((sStart - minTime) / span) * 100
                     const width = Math.max(((sEnd - sStart) / span) * 100, 1)
-                    const dur = s.completed_at ? formatDuration(s.started_at, s.completed_at) : '--'
+                    const dur = s.completed_at ? formatSessionSpan(s.started_at, s.completed_at) : '--'
                     return (
                       <Tip key={s.id} content={`${s.butler_name}: ${dur}`}>
                         <Link
@@ -311,7 +304,7 @@ function DrawerSessionsTab({
               <span className="font-mono text-[11px] text-muted-foreground">{s.model}</span>
             )}
             <span className="font-mono text-[11px] text-muted-foreground">
-              {formatDuration(s.started_at, s.completed_at)}
+              {formatSessionSpan(s.started_at, s.completed_at)}
             </span>
             <Link
               to={`/sessions/${s.id}?butler=${encodeURIComponent(s.butler_name)}`}
@@ -334,8 +327,8 @@ function DrawerSessionsTab({
             </span>
             <span className="tabular-nums text-foreground">in {fmtNum(s.input_tokens)}</span>
             <span className="tabular-nums text-foreground">out {fmtNum(s.output_tokens)}</span>
-            <span className="tabular-nums text-foreground">cost {formatCost(s.cost_usd)}</span>
-            <span className="tabular-nums text-foreground">dur {formatDuration(s.started_at, s.completed_at)}</span>
+            <span className="tabular-nums text-foreground">cost {formatCostUsdPrecise(s.cost_usd)}</span>
+            <span className="tabular-nums text-foreground">dur {formatSessionSpan(s.started_at, s.completed_at)}</span>
           </div>
         </div>
       ))}
@@ -527,7 +520,7 @@ function DrawerReplaysTab({ requestId, enabled }: { requestId: string; enabled: 
             </div>
             <div className="truncate">{e.actor}</div>
             <div className="text-right">{e.result ?? '—'}</div>
-            <div className="text-right tabular-nums">{formatCost(e.cost)}</div>
+            <div className="text-right tabular-nums">{formatCostUsdPrecise(e.cost)}</div>
           </div>
         ))}
       </div>

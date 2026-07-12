@@ -42,6 +42,7 @@ function asBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+// eslint-disable-next-line no-restricted-syntax -- no minutes tier by design (bu-sd0l7.3): unlike formatDurationTicks this never rolls seconds into "X.Ym", so consolidating would silently change rendered output for durations >= 60s.
 function formatDuration(ms: number | undefined): string {
   if (ms === undefined || ms === null) return "—";
   if (ms < 1000) return `${ms}ms`;

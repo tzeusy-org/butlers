@@ -65,16 +65,13 @@ import {
 import { useChroniclesTimezone } from "./use-chronicles-timezone"
 import { formatDateTimeInTz } from "./tz-format"
 import { extractRoutineProvenance } from "./episode-routine-evidence"
+import { formatDurationCompact } from "@/lib/format-duration"
 
-function formatDuration(startIso: string, endIso: string | null | undefined): string {
+function formatEpisodeDuration(startIso: string, endIso: string | null | undefined): string {
   if (!endIso) return "ongoing"
   const ms = new Date(endIso).getTime() - new Date(startIso).getTime()
   if (ms < 0) return "—"
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
-  const h = Math.floor(ms / 3_600_000)
-  const m = Math.round((ms % 3_600_000) / 60_000)
-  return m === 0 ? `${h}h` : `${h}h ${m}m`
+  return formatDurationCompact(ms)
 }
 
 function privacyBadgeVariant(
@@ -341,7 +338,7 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
 
   if (!ep) return null
 
-  const duration = formatDuration(ep.canonical_start_at, ep.canonical_end_at)
+  const duration = formatEpisodeDuration(ep.canonical_start_at, ep.canonical_end_at)
   // Which routine produced this inferred episode (bu-whhll.11). Present only on
   // occupation_block episodes the routine adapter stamped; null otherwise.
   // Masked for sensitive episodes alongside the rest of the payload.

@@ -45,6 +45,7 @@ import { parseLatLng } from "./location-utils"
 import { useMapPanTo } from "@/components/workspace/map-pan-store"
 import { useChroniclesTimezone } from "./use-chronicles-timezone"
 import { formatTimeInTz, formatGanttTickLabel } from "./tz-format"
+import { formatDurationCompact } from "@/lib/format-duration"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -122,15 +123,6 @@ function categoryFor(episode: ChroniclerEpisode): Category {
 function parseMs(iso: string | null | undefined): number {
   if (!iso) return NaN
   return new Date(iso).getTime()
-}
-
-/** Format a duration in ms as a human-readable string. */
-function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
-  const h = Math.floor(ms / 3_600_000)
-  const m = Math.round((ms % 3_600_000) / 60_000)
-  return m === 0 ? `${h}h` : `${h}h ${m}m`
 }
 
 /**
@@ -295,7 +287,7 @@ function EpisodeBar({ positioned, laneY, svgWidth, colour, patternId, windowEndM
   const rawEndMs = parseMs(episode.canonical_end_at)
   const endMs = isOpen ? windowEndMs : rawEndMs
   const durationMs = isNaN(startMs) || isNaN(endMs) ? null : endMs - startMs
-  const durationLabel = durationMs !== null ? formatDuration(durationMs) : "?"
+  const durationLabel = durationMs !== null ? formatDurationCompact(durationMs) : "?"
   const startLabel = isNaN(startMs) ? "?" : formatTimeInTz(startMs, tz)
   const endLabel = isOpen
     ? "ongoing"

@@ -26,3 +26,32 @@ export function formatCostUsd(amount: number): string {
   if (magnitude < 0.01) return `${sign}<$0.01`;
   return `${sign}$${magnitude.toFixed(2)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Precise (4-decimal) variant [bu-sd0l7.3]
+//
+// Fine-grained per-tick/per-event cost cells (ingestion timeline) need more
+// than 2 decimal places — a per-session cost is frequently a fraction of a
+// cent, and 2dp would clamp most of them to "$0.00" the same way
+// formatCostUsd's header above documents. This was a 3x-duplicated local
+// `formatCost` in components/ingestion/timeline/{DispatchTicksCell,
+// EventDrawer}.tsx and components/ingestion/TimelineTab.tsx before
+// consolidation; kept as its own export (not a formatCostUsd parameter)
+// because its null-vs-zero handling also differs ("—" for missing vs
+// "$0.00" for exactly zero).
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a USD amount for fine-grained (4dp) display.
+ *
+ * - `null`/`undefined` renders as "—".
+ * - Exactly zero renders as "$0.00".
+ * - A nonzero magnitude below $0.001 renders as "<$0.001".
+ * - Everything else renders to 4 decimal places.
+ */
+export function formatCostUsdPrecise(usd: number | undefined | null): string {
+  if (usd === undefined || usd === null) return "—";
+  if (usd === 0) return "$0.00";
+  if (usd < 0.001) return "<$0.001";
+  return `$${usd.toFixed(4)}`;
+}

@@ -96,17 +96,11 @@ import { HourFlameStrip } from "./timeline/HourFlameStrip";
 import { DispatchTicksCell } from "./timeline/DispatchTicksCell";
 import { EventDrawer } from "./timeline/EventDrawer";
 import { useEventDrawerState } from "./timeline/useEventDrawerState";
+import { formatCostUsdPrecise } from "@/lib/format-cost";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatCost(usd: number | undefined | null): string {
-  if (usd === undefined || usd === null) return "—";
-  if (usd === 0) return "$0.00";
-  if (usd < 0.001) return "<$0.001";
-  return `$${usd.toFixed(4)}`;
-}
 
 function isReplayable(status: IngestionEventStatus): boolean {
   return (
@@ -1044,7 +1038,7 @@ function LedgerRow({
 
       {/* Cost */}
       <span className="text-right tabular-nums font-mono text-[11px]">
-        {formatCost(event.cost_usd)}
+        {formatCostUsdPrecise(event.cost_usd)}
       </span>
 
       {/* Replay / chevron — chevron on every row now */}
@@ -1339,7 +1333,7 @@ function FooterRollupBand({ events, sessions, cost, isLoading }: FooterRollupBan
       {cell("sessions", sessions !== undefined ? sessions.toLocaleString() : "—")}
       <div className="w-px h-4 bg-border/60" aria-hidden />
       {/* cost is populated live from /rollup when pricing is available; render em dash when null */}
-      {cell("cost", cost !== null && cost !== undefined ? formatCost(cost) : "—")}
+      {cell("cost", cost !== null && cost !== undefined ? formatCostUsdPrecise(cost) : "—")}
     </div>
   );
 }

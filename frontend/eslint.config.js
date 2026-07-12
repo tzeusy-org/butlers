@@ -242,6 +242,51 @@ const POLL_POLICY_SELECTORS = [
   },
 ]
 
+// bu-sd0l7.3: ban local re-declarations of `formatDuration`/`formatCost`.
+// A 2026-07-10 audit found 12 formatDuration/formatDurationMs clones and 3
+// formatCost clones (plus 2 formatCurrency clones reproducing the exact
+// "$0.00" sub-cent bug lib/format-cost.ts's header documents) across
+// components/ and pages/ despite src/lib/format-cost.ts and
+// src/lib/format-duration.ts already existing (or, for duration, being
+// added in the same change) as the canonical home. True duplicates were
+// consolidated onto lib/format-duration.ts (formatDurationMs /
+// formatDurationCompact / formatDurationTicks — three genuinely distinct
+// rendering contracts, each independently duplicated at 2+ sites) and
+// lib/format-cost.ts (formatCostUsd / formatCostUsdPrecise). A handful of
+// remaining local `formatDuration` declarations are genuinely different
+// contracts (relative "X ago" suffix, HH:MM clock, day-scale durations) and
+// are exempted with a line-level eslint-disable-next-line + comment rather
+// than forced onto one of the lib shapes (which would have silently changed
+// their rendered output) -- see lib/format-duration.ts's own header for the
+// full rationale. Local wrapper functions that changed shape/signature and
+// delegate to a lib helper (e.g. formatSessionSpan, formatEpisodeDuration)
+// are intentionally NOT named formatDuration/formatCost, so they don't need
+// an exemption.
+const FORMAT_CLONE_SELECTORS = [
+  {
+    selector: 'FunctionDeclaration[id.name=/^(?:formatDuration|formatCost)$/]',
+    message:
+      'Do not locally redeclare formatDuration/formatCost (bu-sd0l7.3 consolidated 15 clones ' +
+      'onto lib/). Import formatDurationMs/formatDurationCompact/formatDurationTicks from ' +
+      '"@/lib/format-duration", or formatCostUsd/formatCostUsdPrecise from ' +
+      '"@/lib/format-cost". If this local formatter is a genuinely different rendering ' +
+      'contract (see lib/format-duration.ts header), add a line-level ' +
+      'eslint-disable-next-line with a one-line reason instead of matching one of the lib ' +
+      'shapes and silently changing rendered output.',
+  },
+  {
+    selector: 'VariableDeclarator[id.name=/^(?:formatDuration|formatCost)$/]',
+    message:
+      'Do not locally redeclare formatDuration/formatCost (bu-sd0l7.3 consolidated 15 clones ' +
+      'onto lib/). Import formatDurationMs/formatDurationCompact/formatDurationTicks from ' +
+      '"@/lib/format-duration", or formatCostUsd/formatCostUsdPrecise from ' +
+      '"@/lib/format-cost". If this local formatter is a genuinely different rendering ' +
+      'contract (see lib/format-duration.ts header), add a line-level ' +
+      'eslint-disable-next-line with a one-line reason instead of matching one of the lib ' +
+      'shapes and silently changing rendered output.',
+  },
+]
+
 export default defineConfig([
   globalIgnores(['dist']),
   {
@@ -341,6 +386,7 @@ export default defineConfig([
         ...HSL_VAR_SELECTORS,
         ...STATUS_COLOR_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
       ],
     },
   },
@@ -358,6 +404,7 @@ export default defineConfig([
         ...PRIMITIVE_REDECLARATION_SELECTORS,
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
       ],
     },
   },
@@ -373,6 +420,7 @@ export default defineConfig([
         ...STATUS_COLOR_SELECTORS,
         ...HEX_COLOR_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
       ],
     },
   },
@@ -392,6 +440,7 @@ export default defineConfig([
         ...STATUS_COLOR_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
       ],
     },
   },
@@ -412,6 +461,7 @@ export default defineConfig([
         ...HANDROLLED_OVERLAY_SELECTORS,
         ...POLL_POLICY_SELECTORS,
         ...ANIMATE_PULSE_SELECTORS,
+        ...FORMAT_CLONE_SELECTORS,
       ],
     },
   },

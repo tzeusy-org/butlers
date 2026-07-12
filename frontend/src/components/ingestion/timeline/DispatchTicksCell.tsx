@@ -32,6 +32,8 @@
  */
 
 import type { IngestionEventListSessionSummary } from "@/api/index.ts";
+import { formatDurationTicks } from "@/lib/format-duration";
+import { formatCostUsdPrecise } from "@/lib/format-cost";
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -48,20 +50,6 @@ const MAX_RENDERED_TICKS = 8;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatDurationMs(ms: number | null | undefined): string {
-  if (ms === null || ms === undefined || ms < 0) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60_000).toFixed(1)}m`;
-}
-
-function formatCost(usd: number | undefined | null): string {
-  if (usd === undefined || usd === null) return "—";
-  if (usd === 0) return "$0.00";
-  if (usd < 0.001) return "<$0.001";
-  return `$${usd.toFixed(4)}`;
-}
 
 /**
  * Per-tick width, proportional to duration among this row's own sessions,
@@ -84,7 +72,7 @@ export function computeTickWidths(sessions: IngestionEventListSessionSummary[]):
 }
 
 function tickTitle(s: IngestionEventListSessionSummary): string {
-  const parts = [s.butler_name, formatDurationMs(s.duration_ms), formatCost(s.cost_usd)];
+  const parts = [s.butler_name, formatDurationTicks(s.duration_ms), formatCostUsdPrecise(s.cost_usd)];
   if (s.success === false) parts.push("failed");
   return parts.join(" · ");
 }

@@ -163,6 +163,7 @@ function formatDateTime(iso: string): string {
   }).format(parsed);
 }
 
+// eslint-disable-next-line no-restricted-syntax -- relative "X ago" suffix (bu-sd0l7.3), a different contract than lib/format-duration.ts's plain-span shapes.
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s ago`;
   const minutes = Math.round(seconds / 60);

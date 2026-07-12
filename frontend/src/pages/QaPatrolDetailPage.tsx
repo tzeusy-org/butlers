@@ -10,6 +10,7 @@ import type { QaFindingRecord } from "@/api/index.ts";
 // Helpers
 // ---------------------------------------------------------------------------
 
+// eslint-disable-next-line no-restricted-syntax -- "running"/"--" QA-patrol semantics (bu-sd0l7.3), a different contract than lib/format-duration.ts's shapes.
 function formatDuration(start: string, end: string | null | undefined): string {
   if (!end) return "running";
   const ms = new Date(end).getTime() - new Date(start).getTime();
