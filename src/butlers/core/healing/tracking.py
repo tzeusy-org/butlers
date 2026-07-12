@@ -537,11 +537,14 @@ async def get_recent_terminal_statuses(
 ) -> list[str]:
     """Return the status values of the N most recent terminal attempts that launched a session.
 
-    Only attempts with ``healing_session_id IS NOT NULL`` are included —
-    gate rejections (which never launch a session) are excluded from the
-    circuit-breaker signal.  Ordered by ``closed_at DESC``.  ``unfixable``
-    entries are included — the caller decides whether to count them as
-    failures for circuit-breaker purposes.
+    Only attempts with ``healing_session_id IS NOT NULL`` that closed *after*
+    the latest recorded manual reset (``public.breaker_resets`` for
+    ``breaker = 'healing'``) are included — gate rejections (which never
+    launch a session) are excluded from the circuit-breaker signal, and a
+    dashboard reset clears every prior failure from the window without
+    fabricating a synthetic success row.  Ordered by ``closed_at DESC``.
+    ``unfixable`` entries are included — the caller decides whether to count
+    them as failures for circuit-breaker purposes.
 
     Parameters
     ----------
@@ -561,6 +564,10 @@ async def get_recent_terminal_statuses(
         FROM public.healing_attempts
         WHERE status = ANY($1::text[])
           AND healing_session_id IS NOT NULL
+          AND closed_at > COALESCE(
+                (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'healing'),
+                '-infinity'::timestamptz
+              )
         ORDER BY closed_at DESC
         LIMIT $2
         """,

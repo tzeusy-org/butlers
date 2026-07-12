@@ -666,39 +666,28 @@ async def reset_circuit_breaker(
     ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CircuitBreakerStatus:
-    """Reset the circuit breaker by inserting a synthetic success sentinel row.
+    """Reset the circuit breaker by recording an auditable reset marker.
 
-    The circuit breaker is purely derived from recent terminal attempt statuses.
-    There is no persistent "tripped" flag. Resetting works by inserting a
-    ``pr_merged`` sentinel row with a synthetic fingerprint, which breaks the
-    consecutive-failure streak so subsequent status queries return tripped=False.
+    Writes one ``public.breaker_resets`` row (``breaker='healing'``,
+    who/when/why). ``get_recent_terminal_statuses`` — consulted by both the
+    dispatch-admission gate and this dashboard's breaker state — only counts
+    launched attempts that closed *after* the latest reset, so this clears
+    the consecutive-failure streak and re-admits dispatches WITHOUT
+    fabricating a synthetic ``pr_merged`` attempt row. The real failure
+    history (attempts, dispatch events) therefore stays visible and truthful.
 
     Returns the circuit breaker state after the reset.
     """
     pool = _shared_pool(db)
 
-    # Insert a synthetic pr_merged row to break the failure streak.
-    # This is the least-invasive mechanism: no schema changes needed.
-    # The sentinel fingerprint is prefixed to make it identifiable in dashboards.
-    # A synthetic healing_session_id is required so the row is visible to
-    # get_recent_terminal_statuses (which filters by healing_session_id IS NOT NULL).
-    sentinel_fingerprint = f"reset-sentinel-{uuid.uuid4().hex}"
-    sentinel_session_id = uuid.uuid4()
     try:
         await pool.execute(
             """
-            INSERT INTO public.healing_attempts (
-                fingerprint, butler_name, status, severity,
-                exception_type, call_site, session_ids, closed_at,
-                healing_session_id
-            )
-            VALUES ($1, 'dashboard', 'pr_merged', 4, 'CircuitBreakerReset', 'dashboard:reset',
-                    '{}', now(), $2::uuid)
-            """,
-            sentinel_fingerprint,
-            str(sentinel_session_id),
+            INSERT INTO public.breaker_resets (breaker, reset_by, reason)
+            VALUES ('healing', 'dashboard', 'Manual reset via healing dashboard')
+            """
         )
-        logger.info("Circuit breaker reset via dashboard (sentinel=%s)", sentinel_fingerprint[:24])
+        logger.info("Healing circuit breaker reset via dashboard (breaker_resets recorded)")
     except Exception as exc:
         logger.error("Failed to reset circuit breaker: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to reset circuit breaker")

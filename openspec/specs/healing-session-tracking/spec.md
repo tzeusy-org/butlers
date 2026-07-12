@@ -196,7 +196,7 @@ The system SHALL expose query functions for dispatch gate checks and dashboard d
 
 #### Scenario: Recent failures for circuit breaker
 - **WHEN** `get_recent_terminal_statuses(pool, limit)` is called
-- **THEN** it returns the `status` values of the N most recent terminal attempts that launched at least one healing runtime session, ordered by `closed_at DESC`
+- **THEN** it returns the `status` values of the N most recent terminal attempts that launched at least one healing runtime session and closed **after** the latest recorded reset (`public.breaker_resets` where `breaker = 'healing'`), ordered by `closed_at DESC`
 - **AND** `unfixable` statuses are included in the result set (the caller decides whether to count them as failures)
 
 #### Scenario: List attempts for dashboard
@@ -234,7 +234,8 @@ The system SHALL expose API endpoints for healing attempt visibility.
 
 #### Scenario: Reset circuit breaker
 - **WHEN** `POST /api/healing/circuit-breaker/reset` is called
-- **THEN** the circuit breaker state is cleared and dispatch resumes
+- **THEN** it records one auditable row in `public.breaker_resets` (`breaker='healing'`, `reset_by`, `reset_at`, `reason`) — it does NOT fabricate a `healing_attempts` row
+- **AND** the dispatch-admission gate and the dashboard breaker state (both consult `get_recent_terminal_statuses`) count only attempts that closed after the latest reset, so the breaker admits new dispatches while the real attempt history stays visible and un-fabricated
 
 #### Scenario: Circuit breaker status
 - **WHEN** `GET /api/healing/circuit-breaker` is called

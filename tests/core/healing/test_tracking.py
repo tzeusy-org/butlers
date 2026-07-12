@@ -507,6 +507,24 @@ async def test_get_recent_terminal_statuses_filters_by_session_id() -> None:
 
 
 @pytest.mark.unit
+async def test_get_recent_terminal_statuses_consults_healing_breaker_resets() -> None:
+    """get_recent_terminal_statuses filters by the latest breaker='healing' reset
+
+    (bu-dz7ac) instead of a fabricated pr_merged sentinel row — mirrors the QA
+    breaker's breaker_resets ledger consultation (bu-533qx.1).
+    """
+    from butlers.core.healing.tracking import get_recent_terminal_statuses
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    await get_recent_terminal_statuses(pool, limit=5)
+    called_sql: str = pool.fetch.call_args[0][0]
+    assert "public.breaker_resets" in called_sql
+    assert "breaker = 'healing'" in called_sql
+    assert "closed_at >" in called_sql
+
+
+@pytest.mark.unit
 async def test_create_dispatch_event_unit() -> None:
     """create_dispatch_event inserts a row and returns a UUID."""
     from butlers.core.healing.tracking import create_dispatch_event
