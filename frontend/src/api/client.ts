@@ -6,9 +6,7 @@
 
 import type {
   ApprovalAction,
-  ApprovalActionApproveRequest,
   ApprovalActionParams,
-  ApprovalActionRejectRequest,
   ApprovalApproveRequest,
   ApprovalDeferRequest,
   ApprovalDenyRequest,
@@ -16,15 +14,12 @@ import type {
   ApprovalMetrics,
   ApprovalRule,
   ApprovalRuleCreateRequest,
-  ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
   ApprovalsListResponse,
   ApprovalsPolicy,
   AutonomySuggestion,
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
-  ExpireStaleActionsResponse,
-  RuleConstraintSuggestion,
   ApiResponse,
   AuditLogEntry,
   AuditLogParams,
@@ -182,12 +177,6 @@ import type {
   PatchContactInfoRequest,
   OwnerSetupStatus,
   OwnerEntityInfoResponse,
-  UnlinkedContactsResponse,
-  EntityLinkSuggestion,
-  LinkEntityRequest,
-  LinkEntityResponse,
-  CreateAndLinkEntityRequest,
-  CreateAndLinkEntityResponse,
   IngestionEventSummary,
   IngestionEventSession,
   IngestionEventRollup,
@@ -1827,11 +1816,6 @@ export function getContact(contactId: string): Promise<ContactDetail> {
   );
 }
 
-/** Fetch pending (temp) contacts awaiting identity resolution. */
-export function getPendingContacts(): Promise<ContactDetail[]> {
-  return apiFetch<ContactDetail[]>("/relationship/contacts/pending");
-}
-
 /** Update a contact's fields (full_name, nickname, company, job_title, roles). */
 export function patchContact(
   contactId: string,
@@ -1843,66 +1827,9 @@ export function patchContact(
   );
 }
 
-/** Confirm a pending disambiguation contact as a new known contact. */
-export function confirmContact(contactId: string): Promise<ContactDetail> {
-  return apiFetch<ContactDetail>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/confirm`,
-    { method: "POST" },
-  );
-}
-
 /** Get owner identity setup status. */
 export function getOwnerSetupStatus(): Promise<OwnerSetupStatus> {
   return apiFetch<OwnerSetupStatus>("/relationship/owner/setup-status");
-}
-
-/** Fetch paginated unlinked contacts with entity suggestions. */
-export function getUnlinkedContacts(params?: {
-  offset?: number;
-  limit?: number;
-  q?: string;
-}): Promise<UnlinkedContactsResponse> {
-  const qs = new URLSearchParams();
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.q) qs.set("q", params.q);
-  const suffix = qs.toString() ? `?${qs}` : "";
-  return apiFetch<UnlinkedContactsResponse>(
-    `/relationship/contacts/unlinked${suffix}`,
-  );
-}
-
-/** Fetch on-demand entity suggestions for a specific contact. */
-export function getEntitySuggestions(
-  contactId: string,
-  q?: string,
-): Promise<EntityLinkSuggestion[]> {
-  const qs = q ? `?q=${encodeURIComponent(q)}` : "";
-  return apiFetch<EntityLinkSuggestion[]>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/entity-suggestions${qs}`,
-  );
-}
-
-/** Link an existing memory entity to a contact. */
-export function linkEntity(
-  contactId: string,
-  request: LinkEntityRequest,
-): Promise<LinkEntityResponse> {
-  return apiFetch<LinkEntityResponse>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/link-entity`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
-}
-
-/** Create a new memory entity from contact data and link it. */
-export function createAndLinkEntity(
-  contactId: string,
-  request: CreateAndLinkEntityRequest,
-): Promise<CreateAndLinkEntityResponse> {
-  return apiFetch<CreateAndLinkEntityResponse>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/create-entity`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
 }
 
 /** Add a contact_info entry (email, telegram, etc.) to a contact. */
@@ -3515,84 +3442,12 @@ export function getApprovalActions(
   );
 }
 
-export function getApprovalAction(actionId: string): Promise<ApiResponse<ApprovalAction>> {
-  return apiFetch<ApiResponse<ApprovalAction>>(
-    `/approvals/actions/${encodeURIComponent(actionId)}`,
-  );
-}
-
-export function getExecutedActions(
-  params?: ApprovalActionParams,
-): Promise<PaginatedResponse<ApprovalAction>> {
-  const qs = approvalActionSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<ApprovalAction>>(
-    qs ? `/approvals/actions/executed?${qs}` : "/approvals/actions/executed",
-  );
-}
-
-export function approveAction(
-  actionId: string,
-  request: ApprovalActionApproveRequest,
-): Promise<ApiResponse<ApprovalAction>> {
-  return apiFetch<ApiResponse<ApprovalAction>>(
-    `/approvals/actions/${encodeURIComponent(actionId)}/approve`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    },
-  );
-}
-
-export function rejectAction(
-  actionId: string,
-  request: ApprovalActionRejectRequest,
-): Promise<ApiResponse<ApprovalAction>> {
-  return apiFetch<ApiResponse<ApprovalAction>>(
-    `/approvals/actions/${encodeURIComponent(actionId)}/reject`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    },
-  );
-}
-
-export function retryAction(
-  actionId: string,
-): Promise<ApiResponse<ApprovalAction>> {
-  return apiFetch<ApiResponse<ApprovalAction>>(
-    `/approvals/actions/${encodeURIComponent(actionId)}/retry`,
-    { method: "POST" },
-  );
-}
-
-export function expireStaleActions(
-  butler?: string,
-  hours?: number,
-): Promise<ApiResponse<ExpireStaleActionsResponse>> {
-  const params = new URLSearchParams();
-  if (butler) params.set("butler", butler);
-  if (hours != null) params.set("hours", hours.toString());
-  const qs = params.toString();
-  return apiFetch<ApiResponse<ExpireStaleActionsResponse>>(
-    qs ? `/approvals/actions/expire-stale?${qs}` : "/approvals/actions/expire-stale",
-    { method: "POST" },
-  );
-}
-
 export function getApprovalRules(
   params?: ApprovalRuleParams,
 ): Promise<PaginatedResponse<ApprovalRule>> {
   const qs = approvalRuleSearchParams(params).toString();
   return apiFetch<PaginatedResponse<ApprovalRule>>(
     qs ? `/approvals/rules?${qs}` : "/approvals/rules",
-  );
-}
-
-export function getApprovalRule(ruleId: string): Promise<ApiResponse<ApprovalRule>> {
-  return apiFetch<ApiResponse<ApprovalRule>>(
-    `/approvals/rules/${encodeURIComponent(ruleId)}`,
   );
 }
 
@@ -3606,28 +3461,10 @@ export function createApprovalRule(
   });
 }
 
-export function createRuleFromAction(
-  request: ApprovalRuleFromActionRequest,
-): Promise<ApiResponse<ApprovalRule>> {
-  return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules/from-action", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
-  });
-}
-
 export function revokeApprovalRule(ruleId: string): Promise<ApiResponse<ApprovalRule>> {
   return apiFetch<ApiResponse<ApprovalRule>>(
     `/approvals/rules/${encodeURIComponent(ruleId)}/revoke`,
     { method: "POST" },
-  );
-}
-
-export function getRuleSuggestions(
-  actionId: string,
-): Promise<ApiResponse<RuleConstraintSuggestion>> {
-  return apiFetch<ApiResponse<RuleConstraintSuggestion>>(
-    `/approvals/rules/suggestions/${encodeURIComponent(actionId)}`,
   );
 }
 

@@ -2051,64 +2051,6 @@ export interface ContactListResponse {
   total: number;
 }
 
-// ---------------------------------------------------------------------------
-// Unlinked contacts / entity disambiguation
-// ---------------------------------------------------------------------------
-
-/** A candidate entity that might match an unlinked contact. */
-export interface EntityLinkSuggestion {
-  entity_id: string;
-  canonical_name: string;
-  entity_type: string;
-  score: number;
-  name_match: string;
-  aliases: string[];
-}
-
-/** Compact view of a contact that has no entity_id linked. */
-export interface UnlinkedContactSummary {
-  id: string;
-  full_name: string;
-  first_name: string | null;
-  last_name: string | null;
-  email: string | null;
-  phone: string | null;
-  company: string | null;
-  suggestions: EntityLinkSuggestion[];
-}
-
-/** Paginated list of unlinked contacts with pre-computed suggestions. */
-export interface UnlinkedContactsResponse {
-  contacts: UnlinkedContactSummary[];
-  total: number;
-}
-
-/** Request body for POST /contacts/{id}/link-entity. */
-export interface LinkEntityRequest {
-  entity_id: string;
-}
-
-/** Response for POST /contacts/{id}/link-entity. */
-export interface LinkEntityResponse {
-  contact_id: string;
-  entity_id: string;
-}
-
-/** Request body for POST /contacts/{id}/create-entity. */
-export interface CreateAndLinkEntityRequest {
-  canonical_name?: string;
-  entity_type?: string;
-  aliases?: string[];
-  metadata?: Record<string, unknown>;
-}
-
-/** Response for POST /contacts/{id}/create-entity. */
-export interface CreateAndLinkEntityResponse {
-  contact_id: string;
-  entity_id: string;
-  canonical_name: string;
-}
-
 /** Paginated group list response. */
 export interface GroupListResponse {
   groups: Group[];
@@ -3149,13 +3091,6 @@ export interface ApprovalRule {
   active: boolean;
 }
 
-export interface RuleConstraintSuggestion {
-  action_id: string;
-  tool_name: string;
-  tool_args: Record<string, unknown>;
-  suggested_constraints: Record<string, unknown>;
-}
-
 export interface ApprovalMetrics {
   total_pending: number;
   total_approved_today: number;
@@ -3185,30 +3120,12 @@ export interface ApprovalRuleParams {
   limit?: number;
 }
 
-export interface ApprovalActionApproveRequest {
-  create_rule?: boolean;
-}
-
-export interface ApprovalActionRejectRequest {
-  reason?: string | null;
-}
-
 export interface ApprovalRuleCreateRequest {
   tool_name: string;
   arg_constraints: Record<string, unknown>;
   description: string;
   expires_at?: string | null;
   max_uses?: number | null;
-}
-
-export interface ApprovalRuleFromActionRequest {
-  action_id: string;
-  constraint_overrides?: Record<string, unknown> | null;
-}
-
-export interface ExpireStaleActionsResponse {
-  expired_count: number;
-  expired_ids: string[];
 }
 
 export interface AutonomySuggestionVelocity {

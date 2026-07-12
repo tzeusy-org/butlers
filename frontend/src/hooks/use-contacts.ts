@@ -8,15 +8,12 @@ import { toast } from "sonner";
 import {
   archiveContact,
   unarchiveContact,
-  confirmContact,
-  createAndLinkEntity,
   createContactInfo,
   deleteContact,
   deleteContactInfo,
   getContact,
   getContacts,
   getContactInteractions,
-  getEntitySuggestions,
   getGroupMembers,
   getGroups,
   getLabels,
@@ -24,23 +21,17 @@ import {
   assignGroupLabel,
   removeGroupLabel,
   getOverdueContacts,
-  getPendingContacts,
-  getUnlinkedContacts,
-  linkEntity,
   patchContact,
   patchContactInfo,
   getUpcomingDates,
 } from "@/api/index.ts";
 import type {
   ApiResponse,
-  ContactDetail,
   ContactPatchRequest,
   ContactSummary,
-  CreateAndLinkEntityRequest,
   CreateContactInfoRequest,
   Group,
   Label,
-  LinkEntityRequest,
   PatchContactInfoRequest,
   ContactParams,
   GroupParams,
@@ -169,15 +160,6 @@ export function useUpcomingDates(days?: number) {
   });
 }
 
-/** Fetch pending contacts awaiting identity resolution. */
-export function usePendingContacts() {
-  return useQuery({
-    queryKey: ["pending-contacts"],
-    queryFn: () => getPendingContacts(),
-  });
-}
-
-
 /** Patch a contact's fields. */
 export function usePatchContact() {
   const queryClient = useQueryClient();
@@ -188,23 +170,6 @@ export function usePatchContact() {
       void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
     },
-  });
-}
-
-/**
- * Confirm a pending contact as a new known contact (ack — OPTIMISTIC: drops
- * it from the pending queue immediately; the promoted contact itself still
- * comes from the `["contacts"]` invalidate-driven refetch since we don't
- * have its full record client-side to insert directly).
- */
-export function useConfirmContact() {
-  return useOptimisticListMutation<unknown, string, ContactDetail>({
-    mutationFn: (contactId: string) => confirmContact(contactId),
-    listKeyPrefix: ["pending-contacts"],
-    updateItems: (pending, contactId) => pending.filter((c) => c.id !== contactId),
-    invalidateQueryKeys: [["pending-contacts"], ["contacts"]],
-    onSuccess: () => toast.success("Contact confirmed"),
-    onError: (err) => toast.error(`Confirm failed: ${err.message}`),
   });
 }
 
@@ -248,7 +213,7 @@ export function useArchiveContact() {
     mutationFn: (contactId: string) => archiveContact(contactId),
     listKeyPrefix: ["contacts"],
     updateItems: (contacts, contactId) => contacts.filter((c) => c.id !== contactId),
-    invalidateQueryKeys: [["contacts"], ["unlinked-contacts"], ["pending-contacts"]],
+    invalidateQueryKeys: [["contacts"]],
   });
 }
 
@@ -290,67 +255,6 @@ export function usePatchContactInfo() {
     onSuccess: (_, { contactId }) => {
       void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-    },
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Unlinked contacts / entity disambiguation
-// ---------------------------------------------------------------------------
-
-/** Fetch paginated unlinked contacts with entity suggestions. */
-export function useUnlinkedContacts(params?: { offset?: number; limit?: number; q?: string }) {
-  return useQuery({
-    queryKey: ["unlinked-contacts", params],
-    queryFn: () => getUnlinkedContacts(params),
-    placeholderData: (prev) => prev,
-  });
-}
-
-/** Fetch on-demand entity suggestions for a contact. */
-export function useEntitySuggestions(contactId: string | undefined, q?: string) {
-  return useQuery({
-    queryKey: ["entity-suggestions", contactId, q],
-    queryFn: () => getEntitySuggestions(contactId!, q),
-    enabled: !!contactId,
-  });
-}
-
-/** Link an existing entity to a contact. */
-export function useLinkEntity() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ contactId, request }: { contactId: string; request: LinkEntityRequest }) =>
-      linkEntity(contactId, request),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-      toast.success("Entity linked successfully");
-    },
-    onError: (err) => {
-      toast.error(`Link failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-    },
-  });
-}
-
-/** Create a new entity from contact data and link it. */
-export function useCreateAndLinkEntity() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      contactId,
-      request,
-    }: {
-      contactId: string;
-      request: CreateAndLinkEntityRequest;
-    }) => createAndLinkEntity(contactId, request),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-      toast.success("Entity created and linked");
-    },
-    onError: (err) => {
-      toast.error(`Create failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     },
   });
 }

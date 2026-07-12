@@ -188,8 +188,8 @@ describe("useOptimisticListMutation", () => {
     });
     // Non-list-shaped cache entries (no array `data`) pass through untouched.
     expect(updater("not-a-list")).toBe("not-a-list");
-    // A bare array (e.g. getPendingContacts, which isn't envelope-wrapped)
-    // is updated directly rather than being treated as "not a list".
+    // A bare array (e.g. getLabels, which isn't envelope-wrapped) is
+    // updated directly rather than being treated as "not a list".
     expect(updater([{ id: "1", label: "one" }])).toEqual([]);
 
     expect(context).toEqual({ snapshot });

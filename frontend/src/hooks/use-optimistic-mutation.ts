@@ -148,8 +148,8 @@ function applyListUpdate<TItem>(
 ): void {
   queryClient.setQueriesData({ queryKey: keyPrefix }, (old: unknown) => {
     // Most list endpoints cache an envelope (`{ data: T[], meta }`), but a
-    // few (e.g. getPendingContacts) cache the bare array directly — support
-    // both rather than silently no-op'ing on the bare-array shape.
+    // few (e.g. getLabels) cache the bare array directly — support both
+    // rather than silently no-op'ing on the bare-array shape.
     if (Array.isArray(old)) return updateItems(old as TItem[]);
     if (!isListEnvelope<TItem>(old)) return old;
     return { ...old, data: updateItems(old.data) };
