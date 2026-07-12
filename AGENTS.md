@@ -844,11 +844,10 @@ reads live via `bd` (or an offline `--issues-json-file` snapshot for
 tests/CI), so it is a manual/local check, not part of `make check` or CI —
 GitHub Actions cannot reach the local Dolt server backing `bd`.
 
-**Known consumer, not yet updated:** `src/butlers/jobs/decision_review.py`
-(the weekly decision-review digest + P1/deploy escalation cron) still detects
-decision beads via the legacy title-marker regex, because it predates this
-convention. Switching it to `labels`/`metadata.decision` is tracked
-separately (bu-97qrw) — not done as part of defining the convention itself.
+**Known consumer:** `src/butlers/jobs/decision_review.py` (the weekly
+decision-review digest + P1/deploy escalation cron) detects decision beads
+by checking the `decision` label first (bu-97qrw), falling back to the
+legacy title-marker regex only for beads that predate this convention.
 
 ### Relationship `important_dates` column contract
 - Relationship schema stores date kind in `important_dates.label` (not `important_dates.date_type`).

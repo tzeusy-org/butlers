@@ -27,6 +27,8 @@ from butlers.jobs.decision_review import (
     _check_suppression,
     _compose_escalation_message,
     _compose_weekly_digest_message,
+    _is_decision_bead,
+    _is_deploy_bead,
     compute_decision_digest,
     run_decision_escalation_check,
     run_decision_review_digest,
@@ -211,6 +213,106 @@ def test_digest_detects_decision_beads_by_title_marker(tmp_path):
     ids = {d.id for d in digest.open_decisions}
     assert ids == {"bu-v4ipc", "bu-zhfd0"}
     assert "bu-ordinary" not in ids, "non-decision-marked titles must not match"
+
+
+def test_digest_detects_decision_beads_by_convention_label(tmp_path):
+    """bu-ckkpz.1's `decision` label is the primary marker -- a convention-
+    following bead needs no title-marker text at all to be detected."""
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(
+        export,
+        [
+            _decision(
+                "bu-labeled",
+                title="Re-enable the api-haiku lane?",
+                labels=["decision"],
+                created_days_ago=3,
+            ),
+            {
+                "id": "bu-other-label",
+                "title": "Some unrelated task",
+                "status": "open",
+                "priority": 2,
+                "issue_type": "task",
+                "created_at": _iso(_NOW - timedelta(days=1)),
+                "dependencies": [],
+                "labels": ["backend"],
+            },
+        ],
+    )
+
+    digest = compute_decision_digest(export, now=_NOW)
+    ids = {d.id for d in digest.open_decisions}
+    assert ids == {"bu-labeled"}
+
+
+def test_is_decision_bead_label_takes_precedence_over_missing_title_marker():
+    assert _is_decision_bead(
+        {
+            "status": "open",
+            "issue_type": "task",
+            "title": "Plain title, no marker text",
+            "labels": ["decision"],
+        }
+    )
+
+
+def test_is_decision_bead_widened_title_markers_match_legacy_fallback():
+    """bu-a9p6y's widened fallback shapes, incorporated directly here:
+    'ARCHITECTURAL DECISION' and 'OWNER:' title prefixes must still be
+    detected via the legacy regex fallback (no `decision` label present)."""
+    assert _is_decision_bead(
+        {
+            "status": "open",
+            "issue_type": "task",
+            "title": "ARCHITECTURAL DECISION (owner): pick a queue backend",
+        }
+    )
+    assert _is_decision_bead(
+        {
+            "status": "open",
+            "issue_type": "task",
+            "title": "OWNER: decide on the retention window",
+        }
+    )
+
+
+def test_is_decision_bead_excludes_epics_even_with_label_or_title_marker():
+    """An epic is a container for a body of work, not a single decision --
+    exclude it regardless of whether it carries the `decision` label or a
+    title-marker match (e.g. bu-ckkpz's own title)."""
+    assert not _is_decision_bead(
+        {
+            "status": "open",
+            "issue_type": "epic",
+            "title": "Owner Decision Desk: decision beads become first-class attention citizens",
+            "labels": ["decision"],
+        }
+    )
+    assert not _is_decision_bead(
+        {
+            "status": "open",
+            "issue_type": "epic",
+            "title": "DECISION REQUIRED (owner): epic-level rollup",
+        }
+    )
+
+
+def test_is_deploy_bead_excludes_epics():
+    assert not _is_deploy_bead(
+        {
+            "status": "open",
+            "issue_type": "epic",
+            "title": "Deploy readiness epic",
+        }
+    )
+    assert _is_deploy_bead(
+        {
+            "status": "open",
+            "issue_type": "task",
+            "title": "Deploy readiness epic",
+        }
+    )
 
 
 def test_digest_orders_open_decisions_oldest_first(tmp_path):
