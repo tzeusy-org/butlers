@@ -1430,8 +1430,13 @@ export default function SpendPage() {
   // reconciliation-sweep safety net.
 
   // Over-ceiling attention condition — the only state-color-on-background use.
+  // Never fires from a degraded ledger source (bu-7o89u.1): ceiling_source_error
+  // means projected_eom_usd/ceiling_usd are fabricated zeros/null, not a real
+  // reading -- an "over ceiling" banner built from those would be a false alarm.
   const overCeiling =
-    liveForecast?.ceiling_usd != null && liveForecast.projected_eom_usd > liveForecast.ceiling_usd
+    !liveForecast?.ceiling_source_error &&
+    liveForecast?.ceiling_usd != null &&
+    liveForecast.projected_eom_usd > liveForecast.ceiling_usd
 
   // What changed — explore window (daily stacked chart + movers). Defaults
   // to the last 7 days via useTimeWindow's "today" preset fallback logic —
@@ -1546,6 +1551,16 @@ export default function SpendPage() {
               </div>
             ))}
           </div>
+        ) : liveForecast && liveForecast.ceiling_source_error ? (
+          // Ledger/gate source degraded (bu-7o89u.1): mtd_usd/projected_eom_usd
+          // /ceiling_usd are fabricated zeros/null, not a real "$0 MTD" reading.
+          // Never render KpiStrip from them -- that would be the exact truth-
+          // amnesty bug this bead exists to close.
+          <SourceDegradedNote
+            label="Spend forecast"
+            detail="ceiling source unavailable"
+            onRetry={() => void refetchForecast()}
+          />
         ) : liveForecast ? (
           <KpiStrip forecast={liveForecast} />
         ) : forecastError ? (
@@ -1574,6 +1589,16 @@ export default function SpendPage() {
           <div className="p-4">
             {forecastLoading && !liveForecast ? (
               <Skeleton className="h-48 w-full" />
+            ) : liveForecast && liveForecast.ceiling_source_error ? (
+              // The dashed projection is derived from the degraded ledger MTD
+              // (would render as a flat $0 line) -- show only the real solid
+              // actuals and drop the ceiling hairline (ceiling_usd is null here
+              // anyway). KpiStrip's SourceDegradedNote above already names the
+              // outage; don't repeat it inline over the chart.
+              <ForecastChart
+                days={liveForecast.days.filter((d) => !d.projected)}
+                ceiling_usd={null}
+              />
             ) : liveForecast ? (
               <ForecastChart days={liveForecast.days} ceiling_usd={liveForecast.ceiling_usd} />
             ) : forecastError ? (
@@ -1586,6 +1611,17 @@ export default function SpendPage() {
               <p className="font-serif italic text-muted-foreground text-sm">
                 No forecast data is available yet.
               </p>
+            )}
+            {liveForecast && (liveForecast.unavailable_butlers?.length ?? 0) > 0 && (
+              // Butlers dropped from the per-day fan-out powering the solid
+              // actuals above (independent of ceiling_source_error) -- the
+              // chart's actuals undercount, so name the gap (bu-jad4j.3 style).
+              <SourceDegradedNote
+                className="mt-3"
+                label="Forecast actuals"
+                detail={`excluded, cost source unavailable: ${liveForecast.unavailable_butlers!.join(", ")}`}
+                testId="forecast-unavailable-butlers"
+              />
             )}
           </div>
         </section>

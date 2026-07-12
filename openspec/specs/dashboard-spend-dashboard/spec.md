@@ -39,8 +39,11 @@ The dashboard SHALL expose the spend endpoints.
 
 #### Scenario: Spend forecast (naive estimator v1)
 - **WHEN** `GET /api/spend/forecast` is called
-- **THEN** the response is `{days: {date, cost_usd, projected}[], projected_eom_usd: float, days_in_month: int, days_elapsed: int, mtd_usd: float, ceiling_usd: float | null, projection_confidence: "low" | "normal"}` (the field is `days` not `daily`, and per-day cost is `cost_usd` not `usd`)
-- **AND** `projected_eom_usd = mtd_total_usd / max(days_elapsed, 1) × days_in_month`
+- **THEN** the response is `{days: {date, cost_usd, projected}[], projected_eom_usd: float, days_in_month: int, days_elapsed: int, mtd_usd: float, ceiling_usd: float | null, projection_confidence: "low" | "normal", ceiling_source_error: bool, unavailable_butlers: str[]}` (the field is `days` not `daily`, and per-day cost is `cost_usd` not `usd`)
+- **AND** `mtd_usd` (and the `ceiling_usd` fetch alongside it) is priced from `public.token_usage_ledger` via the shared `butlers.core.model_routing.price_mtd_from_ledger` helper — the exact helper `check_monthly_ceiling` uses to gate spawns (bu-7o89u.1) — so this figure can never diverge from the number that halts the fleet; it is NOT summed from the per-butler daily-actuals fan-out
+- **AND** `projected_eom_usd = mtd_usd / max(days_elapsed, 1) × days_in_month`, using that same ledger-priced `mtd_usd`
+- **AND** `ceiling_source_error: true` when the ledger/ceiling query fails or no DB pool is wired (no MCP fallback exists for the ledger) — `mtd_usd`, `projected_eom_usd`, and `ceiling_usd` are then `0`/`0`/`null`, not a genuine "$0 MTD" reading, and the frontend renders a `SourceDegradedNote` in place of the KPI strip and suppresses the projected (dashed) chart segment instead of reading the zeros as truthful
+- **AND** the per-day `days` breakdown (needed only for the chart's solid-actuals series, since the ledger's MTD query has no per-day granularity) still comes from the per-butler daily-actuals fan-out; butlers dropped from that fan-out are named in `unavailable_butlers`, independently of `ceiling_source_error`
 - **AND** `projection_confidence = "low"` when `days_elapsed < 3`, else `"normal"`. This signals to the Console aggregator NOT to fire a "spend near ceiling" attention item from a low-confidence projection.
 - **AND** a code-level TODO marks the location of the smarter estimator for a future change.
 

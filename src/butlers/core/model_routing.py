@@ -18,6 +18,10 @@ Provides:
   catalog entry IDs.  Used by the spawner failover loop to iterate within the same tier.
 - ``QuotaStatus`` dataclass — result of a pre-spawn token quota check.
 - ``check_token_quota(pool, catalog_entry_id)`` — CTE-based single-query quota check.
+- ``price_mtd_from_ledger(pool)`` — prices month-to-date spend from
+  ``public.token_usage_ledger``; the single source of truth shared by
+  ``check_monthly_ceiling`` (spawn gate) and the dashboard's
+  ``GET /api/spend/forecast`` (bu-7o89u.1) so the two can never diverge.
 - ``check_monthly_ceiling(pool)`` — pre-spawn monthly USD spend-ceiling check.
 - ``record_token_usage(pool, ...)`` — best-effort ledger INSERT.
 
@@ -1075,17 +1079,67 @@ async def check_token_quota(
         return _unlimited
 
 
+async def price_mtd_from_ledger(pool: asyncpg.Pool) -> float:
+    """Price month-to-date spend directly from ``public.token_usage_ledger``.
+
+    Aggregates the current-month ledger rows by ``model_id`` (joined to
+    ``public.model_catalog``) and prices each bucket via
+    ``butlers.api.pricing.estimate_session_cost`` — the same pathway the
+    spawner uses when emitting per-call spend events — through a lazy import
+    to avoid a core→api import cycle.
+
+    This is the single source of truth for "how much has been spent this
+    month", shared by :func:`check_monthly_ceiling` (the spawn-deny gate) and
+    the dashboard's ``GET /api/spend/forecast`` MTD/projected-EOM figures
+    (bu-7o89u.1) — before this, the dashboard priced MTD from a per-butler
+    sessions fan-out while the gate priced the ledger, so the dashboard could
+    show e.g. 92% of ceiling while spawns were already being denied.
+
+    Unlike ``check_monthly_ceiling``, this raises on any DB or pricing
+    failure instead of failing open — each caller applies its own semantics
+    on top (the spawn gate fails open so a ledger outage never wedges spawns;
+    the dashboard reports a degraded envelope so a ledger outage never
+    renders as a fabricated $0 MTD).
+
+    Parameters
+    ----------
+    pool:
+        asyncpg connection pool with visibility into ``public.token_usage_ledger``
+        and ``public.model_catalog`` (the "switchboard" pool in the dashboard API).
+
+    Returns
+    -------
+    float
+        Estimated month-to-date spend in USD.
+    """
+    usage_rows = await pool.fetch(_MTD_USAGE_BY_MODEL_SQL)
+
+    # Lazy import to avoid a core→api import cycle (mirrors spawner's
+    # per-call spend-event emission).
+    from butlers.api.pricing import estimate_session_cost, load_pricing
+
+    pricing = load_pricing()
+    mtd_usd = 0.0
+    for row in usage_rows:
+        mtd_usd += estimate_session_cost(
+            pricing,
+            row["model_id"] or "unknown",
+            int(row["input_tokens"]),
+            int(row["output_tokens"]),
+            cached_input_tokens=int(row["cached_input_tokens"]),
+            cache_creation_tokens=int(row["cache_creation_tokens"]),
+        )
+    return mtd_usd
+
+
 async def check_monthly_ceiling(
     pool: asyncpg.Pool,
 ) -> CeilingStatus:
     """Check whether month-to-date spend is within the configured monthly ceiling.
 
-    Reads the singleton ceiling from ``public.spend_ceiling`` (id=1) and estimates
-    month-to-date spend by pricing the current-month ``public.token_usage_ledger``
-    rows (joined to ``public.model_catalog`` for the priced ``model_id``).  Pricing
-    reuses ``butlers.api.pricing.estimate_session_cost`` — the same pathway the
-    spawner uses when emitting per-call spend events — via a lazy import to avoid a
-    core→api import cycle.
+    Reads the singleton ceiling from ``public.spend_ceiling`` (id=1) and prices
+    month-to-date spend via :func:`price_mtd_from_ledger` — the same helper the
+    dashboard's ``GET /api/spend/forecast`` uses, so the two can never diverge.
 
     Fast path: when no ceiling row exists (or it is non-positive), the spawn is
     unconditionally allowed and the ledger is not queried.
@@ -1115,23 +1169,7 @@ async def check_monthly_ceiling(
             # Non-positive ceiling is treated as "no ceiling configured".
             return _unlimited
 
-        usage_rows = await pool.fetch(_MTD_USAGE_BY_MODEL_SQL)
-
-        # Lazy import to avoid a core→api import cycle (mirrors spawner's
-        # per-call spend-event emission).
-        from butlers.api.pricing import estimate_session_cost, load_pricing
-
-        pricing = load_pricing()
-        mtd_usd = 0.0
-        for row in usage_rows:
-            mtd_usd += estimate_session_cost(
-                pricing,
-                row["model_id"] or "unknown",
-                int(row["input_tokens"]),
-                int(row["output_tokens"]),
-                cached_input_tokens=int(row["cached_input_tokens"]),
-                cache_creation_tokens=int(row["cache_creation_tokens"]),
-            )
+        mtd_usd = await price_mtd_from_ledger(pool)
 
         return CeilingStatus(
             allowed=mtd_usd < ceiling_usd,

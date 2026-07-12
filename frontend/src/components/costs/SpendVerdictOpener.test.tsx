@@ -137,4 +137,25 @@ describe("SpendVerdictOpener -- isError-suppression contract", () => {
     expect(html).toContain("spend comparison unavailable");
     expect(html).not.toContain("pace");
   });
+
+  it("treats a settled forecast with ceiling_source_error as an errored source (bu-7o89u.1)", () => {
+    // mtd_usd=0/ceiling_source_error=true is what a degraded ledger source
+    // reports (per the backend's degraded-envelope convention) -- pace math
+    // on the fabricated $0 must never render as a calm "$0.00/day pace" line.
+    const html = render(
+      <SpendVerdictOpener
+        forecast={{ ...FORECAST, mtd_usd: 0, projected_eom_usd: 0, ceiling_source_error: true }}
+        forecastLoading={false}
+        forecastError={false}
+        currentByButler={{}}
+        priorByButler={{}}
+        unavailableButlers={new Set()}
+        moversLoading={false}
+        moversError={false}
+      />,
+    );
+    expect(html).toContain('data-testid="spend-verdict-clauses"');
+    expect(html).toContain("spend forecast unavailable");
+    expect(html).not.toContain("$0.00/day pace");
+  });
 });

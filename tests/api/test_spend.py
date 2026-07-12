@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -33,6 +33,7 @@ from butlers.api.pricing import (
     load_pricing,
 )
 from butlers.api.routers.spend import _get_db_manager as _costs_get_db
+from butlers.core.model_routing import check_monthly_ceiling
 
 pytestmark = pytest.mark.unit
 
@@ -1610,6 +1611,148 @@ async def test_forecast_endpoint_exposes_projection_confidence(app):
     expected = projection_confidence_for(date.today().day)
     assert data["projection_confidence"] == expected
     assert data["projection_confidence"] in ("low", "normal")
+
+
+# ---------------------------------------------------------------------------
+# Ledger-first forecast MTD + degraded envelope [bu-7o89u.1]
+#
+# The forecast MTD/EOM figures must come from the exact same
+# butlers.core.model_routing.price_mtd_from_ledger helper check_monthly_ceiling
+# uses to gate spawns -- never from the per-butler daily-actuals fan-out (kept
+# only for the chart's solid-actuals `days` series). See spend.py's
+# get_spend_forecast docstring and model_routing.py's price_mtd_from_ledger.
+# ---------------------------------------------------------------------------
+
+
+def _mock_forecast_ledger_pool(usage_rows: list[dict], ceiling_row: dict | None):
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=usage_rows)
+    pool.fetchrow = AsyncMock(return_value=ceiling_row)
+    return pool
+
+
+_LEDGER_USAGE_ROWS = [
+    {
+        "model_id": "claude-haiku",
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        "cached_input_tokens": 0,
+        "cache_creation_tokens": 0,
+    }
+]
+
+
+async def test_forecast_mtd_priced_from_ledger_not_fan_out(app):
+    """mtd_usd/projected_eom_usd come from the ledger helper, never the fan-out.
+
+    configs=[] means the daily-actuals fan-out contributes nothing -- if
+    mtd_usd were still (accidentally) derived from that fan-out sum, it would
+    be 0 regardless of the ledger fixture below.
+    """
+    db = _mock_db(
+        {"switchboard": _mock_forecast_ledger_pool(_LEDGER_USAGE_ROWS, {"monthly_usd": 100.0})}
+    )
+    _wire_db(app, db)
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+
+    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/spend/forecast")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["mtd_usd"] == pytest.approx(42.0)
+    assert data["ceiling_usd"] == pytest.approx(100.0)
+    assert data["ceiling_source_error"] is False
+    expected_eom = 42.0 / max(data["days_elapsed"], 1) * data["days_in_month"]
+    assert data["projected_eom_usd"] == pytest.approx(expected_eom, rel=1e-6)
+
+
+async def test_forecast_mtd_matches_check_monthly_ceiling_same_fixture(app):
+    """The forecast endpoint and the spawn-deny gate must agree on MTD from the
+    same ledger fixture -- the exact divergence bu-7o89u.1 closes.
+    """
+    pool = _mock_forecast_ledger_pool(_LEDGER_USAGE_ROWS, {"monthly_usd": 100.0})
+    db = _mock_db({"switchboard": pool})
+    _wire_db(app, db)
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+
+    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+        gate_status = await check_monthly_ceiling(pool)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/spend/forecast")
+
+    data = resp.json()["data"]
+    assert gate_status.mtd_usd == pytest.approx(42.0)
+    assert data["mtd_usd"] == pytest.approx(gate_status.mtd_usd)
+
+
+async def test_forecast_no_db_reports_ceiling_source_error(app):
+    """No DatabaseManager wired -- no MCP fallback exists for the ledger, so this
+    must report ceiling_source_error rather than a fabricated $0 MTD (mirrors
+    _get_spend_breakdown_by_purpose's no-db handling).
+    """
+    app.dependency_overrides.pop(_costs_get_db, None)
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/forecast")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["ceiling_source_error"] is True
+    assert data["mtd_usd"] == 0.0
+    assert data["ceiling_usd"] is None
+    assert data["projected_eom_usd"] == 0.0
+
+
+async def test_forecast_ledger_query_failure_reports_ceiling_source_error(app):
+    """A ledger query failure must surface as ceiling_source_error, never a
+    truthful-looking $0 MTD (butlers/CLAUDE.md degraded-mode envelope convention).
+    """
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("connection reset"))
+    db = _mock_db({"switchboard": pool})
+    _wire_db(app, db)
+    _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/forecast")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["ceiling_source_error"] is True
+    assert data["mtd_usd"] == 0.0
+    assert data["ceiling_usd"] is None
+
+
+async def test_forecast_unavailable_butlers_independent_of_ceiling_source_error(app):
+    """unavailable_butlers (chart actuals fan-out) and ceiling_source_error
+    (ledger MTD) are tracked independently -- one degrading must not mask or
+    imply the other.
+    """
+    configs = [ButlerConnectionInfo(name="broken", port=41100)]
+    mgr = _mock_mgr({"broken": ButlerUnreachableError("broken")})
+    app.dependency_overrides.pop(_costs_get_db, None)  # no db → also ceiling_source_error
+    _wire(app, mgr, configs, _flat_pricing())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/forecast")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["ceiling_source_error"] is True
+    assert data["unavailable_butlers"] == ["broken"]
 
 
 # ---------------------------------------------------------------------------

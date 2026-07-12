@@ -26,6 +26,7 @@ from butlers.core.model_routing import (
     QuotaStatus,
     check_monthly_ceiling,
     check_token_quota,
+    price_mtd_from_ledger,
     record_token_usage,
 )
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -86,6 +87,49 @@ async def test_check_monthly_ceiling_unit_behaviors() -> None:
         err = await check_monthly_ceiling(pool_err)
     assert err.allowed is True and err.ceiling_usd is None
     mock_logger.warning.assert_called_once()
+
+
+@pytest.mark.unit
+async def test_price_mtd_from_ledger_is_check_monthly_ceilings_pricing_source() -> None:
+    """price_mtd_from_ledger is the single helper both check_monthly_ceiling
+    (spawn-deny gate) and GET /api/spend/forecast (dashboard) price MTD from —
+    pin that a direct call against a pool produces the exact mtd_usd
+    check_monthly_ceiling reports for that same pool (bu-7o89u.1: before this,
+    the dashboard priced MTD from a different source and could show e.g. 92%
+    of ceiling while spawns were already being denied).
+    """
+    usage_rows = [
+        {
+            "model_id": "claude-haiku",
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cached_input_tokens": 0,
+            "cache_creation_tokens": 0,
+        }
+    ]
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=usage_rows)
+    pool.fetchrow = AsyncMock(return_value={"monthly_usd": 100.0})
+
+    with patch("butlers.api.pricing.estimate_session_cost", return_value=42.0):
+        direct_mtd = await price_mtd_from_ledger(pool)
+        ceiling = await check_monthly_ceiling(pool)
+
+    assert direct_mtd == 42.0
+    assert ceiling.mtd_usd == direct_mtd
+
+
+@pytest.mark.unit
+async def test_price_mtd_from_ledger_raises_rather_than_fails_open() -> None:
+    """Unlike check_monthly_ceiling, price_mtd_from_ledger does not swallow
+    failures -- each caller applies its own semantics on top (the spawn gate
+    fails open so a ledger outage never wedges spawns; the dashboard reports a
+    degraded envelope so an outage never renders as a fabricated $0 MTD).
+    """
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("connection reset"))
+    with pytest.raises(RuntimeError, match="connection reset"):
+        await price_mtd_from_ledger(pool)
 
 
 # ---------------------------------------------------------------------------

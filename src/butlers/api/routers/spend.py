@@ -64,6 +64,7 @@ from butlers.api.models import (
 )
 from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.routers.audit import append as audit_append
+from butlers.core.model_routing import price_mtd_from_ledger
 from butlers.core.sessions import sessions_daily, sessions_summary
 
 logger = logging.getLogger(__name__)
@@ -1077,6 +1078,16 @@ class ForecastResponse(BaseModel):
     mtd_usd: float
     ceiling_usd: float | None
     projection_confidence: Literal["low", "normal"]
+    # True when pricing MTD from public.token_usage_ledger (the same source
+    # check_monthly_ceiling gates spawns on) failed or no DatabaseManager is
+    # wired -- mtd_usd/projected_eom_usd/ceiling_usd are then fabricated
+    # zeros/None, not a genuine "$0 month" (bu-7o89u.1 degraded envelope).
+    ceiling_source_error: bool = False
+    # Butlers dropped from the per-day fan-out that powers the chart's solid
+    # actuals series (`days`). Independent of ceiling_source_error: this
+    # series is NOT priced from the ledger (the ledger's MTD query has no
+    # per-day granularity), so its own source failures are tracked here.
+    unavailable_butlers: list[str] = Field(default_factory=list)
 
 
 @router.get("/forecast", response_model=ApiResponse[ForecastResponse])
@@ -1092,6 +1103,20 @@ async def get_spend_forecast(
     Returns a daily series (solid = actual, dashed = projected from today) plus
     a projected end-of-month total.
 
+    MTD (``mtd_usd``) and the derived ``projected_eom_usd``/``ceiling_usd`` are
+    priced from ``public.token_usage_ledger`` via
+    ``butlers.core.model_routing.price_mtd_from_ledger`` — the exact helper
+    ``check_monthly_ceiling`` uses to gate spawns (bu-7o89u.1) — so this
+    dashboard figure can never diverge from the number that halts the fleet.
+    A ledger failure (or no ``DatabaseManager`` wired) sets
+    ``ceiling_source_error=True`` and reports ``mtd_usd=0``/``ceiling_usd=None``
+    rather than falling back to a different, potentially-divergent source.
+
+    The per-day ``days`` breakdown (needed only for the chart's solid-actuals
+    series — the ledger's MTD query is month-total only, not per-day) still
+    comes from the per-butler daily-stats fan-out; a fan-out failure there is
+    tracked separately in ``unavailable_butlers`` and never affects ``mtd_usd``.
+
     TODO: replace the naive daily-rate extrapolation with a smarter estimator
     (per-butler decay weighting, weekend vs weekday adjustment, etc.)
     """
@@ -1100,7 +1125,10 @@ async def get_spend_forecast(
     days_in_month = calendar.monthrange(today.year, today.month)[1]
     days_elapsed = (today - month_start).days + 1  # inclusive of today
 
-    # Fetch daily actuals for the month so far
+    # Fetch daily actuals for the chart's solid-actuals series only (per-day
+    # breakdown). MTD/EOM totals are priced from the ledger below, not this
+    # fan-out -- see the module-level docstring above.
+    tracker = DegradedSources(logger)
     tasks = [
         _get_butler_daily_stats_from_db(
             db,
@@ -1110,13 +1138,17 @@ async def get_spend_forecast(
             today.isoformat(),
         )
         if db is not None
-        else _get_butler_daily_stats(mgr, info, pricing, month_start.isoformat(), today.isoformat())
+        else _get_butler_daily_stats(
+            mgr, info, pricing, month_start.isoformat(), today.isoformat(), tracker=tracker
+        )
         for info in configs
     ]
     raw_results = await asyncio.gather(*tasks)
     if db is not None:
         fallback_tasks = [
-            _get_butler_daily_stats(mgr, info, pricing, month_start.isoformat(), today.isoformat())
+            _get_butler_daily_stats(
+                mgr, info, pricing, month_start.isoformat(), today.isoformat(), tracker=tracker
+            )
             for info, result in zip(configs, raw_results, strict=False)
             if result is None
         ]
@@ -1126,18 +1158,53 @@ async def get_spend_forecast(
     else:
         all_results = raw_results
 
-    # Merge daily actuals across butlers
+    # Merge daily actuals across butlers (solid-actuals series only).
     merged: dict[str, float] = {}
     for butler_days in all_results:
         for day_entry in butler_days:
             d = day_entry["date"]
             merged[d] = merged.get(d, 0.0) + day_entry["cost_usd"]
 
-    mtd_usd = sum(merged.values())
+    # Price MTD from the shared ledger helper -- the same source
+    # check_monthly_ceiling gates spawns on (bu-7o89u.1). Deliberately never
+    # falls back to sum(merged.values()): a ledger failure must render as a
+    # degraded envelope, not a silently-substituted (and possibly divergent)
+    # fan-out total.
+    ceiling_source_error = False
+    mtd_usd = 0.0
+    ceiling_usd: float | None = None
+    if db is None:
+        # No MCP fallback exists for the ledger (no per-butler tool exposes
+        # token_usage_ledger rows) -- mirrors _get_spend_breakdown_by_purpose.
+        ceiling_source_error = True
+    else:
+        try:
+            pool = db.pool("switchboard")
+            mtd_usd = await price_mtd_from_ledger(pool)
+            ceiling_row = await pool.fetchrow(
+                "SELECT monthly_usd FROM public.spend_ceiling WHERE id = 1"
+            )
+            if ceiling_row:
+                ceiling_usd = float(ceiling_row["monthly_usd"])
+        except Exception:
+            logger.warning(
+                "Failed to price MTD from ledger for /spend/forecast; "
+                "reporting ceiling_source_error instead of a fabricated total",
+                exc_info=True,
+            )
+            ceiling_source_error = True
+            mtd_usd = 0.0
+            ceiling_usd = None
+
     daily_rate = mtd_usd / max(days_elapsed, 1)
     projected_eom_usd = daily_rate * days_in_month
 
-    # Build solid actuals + dashed projection series
+    # Build solid actuals + dashed projection series. Solid actuals reflect
+    # the real per-day fan-out; the dashed projection uses the ledger-priced
+    # daily_rate above so the series stays internally consistent with
+    # mtd_usd/projected_eom_usd (when ceiling_source_error, daily_rate is 0 --
+    # the frontend must gate rendering of the projected segment on that flag
+    # rather than read the zeros as a genuine flat projection).
     forecast_days: list[ForecastDay] = []
     current = month_start
     month_end = month_start.replace(day=days_in_month)
@@ -1153,17 +1220,6 @@ async def get_spend_forecast(
             )
         current += timedelta(days=1)
 
-    # Fetch monthly ceiling (silently ignore DB errors)
-    ceiling_usd: float | None = None
-    if db is not None:
-        try:
-            pool = db.pool("switchboard")
-            row = await pool.fetchrow("SELECT monthly_usd FROM public.spend_ceiling WHERE id = 1")
-            if row:
-                ceiling_usd = float(row["monthly_usd"])
-        except Exception:
-            pass
-
     return ApiResponse[ForecastResponse](
         data=ForecastResponse(
             days=forecast_days,
@@ -1173,6 +1229,8 @@ async def get_spend_forecast(
             mtd_usd=round(mtd_usd, 6),
             ceiling_usd=ceiling_usd,
             projection_confidence=projection_confidence_for(days_elapsed),
+            ceiling_source_error=ceiling_source_error,
+            unavailable_butlers=sorted(tracker.names),
         )
     )
 

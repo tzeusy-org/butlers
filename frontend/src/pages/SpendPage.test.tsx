@@ -995,6 +995,68 @@ describe("SpendPage — degraded states (bu-mkd5r)", () => {
     expect(screen.queryByText("No forecast data is available yet.")).toBeNull()
   })
 
+  it("forecast ceiling_source_error: KPI strip shows a degraded note, not a fabricated $0 MTD (bu-7o89u.1)", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/forecast") {
+        return Promise.resolve({
+          data: { ...MOCK_FORECAST.data, mtd_usd: 0, projected_eom_usd: 0, ceiling_source_error: true },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+    await act(async () => {
+      renderPage()
+    })
+    await waitFor(() => {
+      const alerts = screen.getAllByRole("alert").map((el) => el.textContent ?? "")
+      expect(alerts.some((t) => t.includes("Spend forecast") && t.includes("ceiling source"))).toBe(true)
+    })
+    // A degraded ledger source must never render the KPI strip's numbers --
+    // those would be the fabricated $0 this bead exists to stop.
+    expect(screen.queryByTestId("kpi-strip")).toBeNull()
+  })
+
+  it("forecast ceiling_source_error: chart drops the (fabricated $0) projected segment but keeps real solid actuals", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/forecast") {
+        return Promise.resolve({
+          data: { ...MOCK_FORECAST.data, mtd_usd: 0, projected_eom_usd: 0, ceiling_source_error: true },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+    await act(async () => {
+      renderPage()
+    })
+    await waitFor(() => {
+      expect(screen.getByLabelText("Spend forecast chart")).toBeTruthy()
+    })
+    // The genuinely-empty forecast copy must not appear either -- there IS
+    // real (solid-actuals) chart content, just no projection.
+    expect(screen.queryByText("No forecast data is available yet.")).toBeNull()
+  })
+
+  it("forecast unavailable_butlers: footnotes excluded butlers under the chart, independent of ceiling_source_error", async () => {
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/spend/forecast") {
+        return Promise.resolve({
+          data: { ...MOCK_FORECAST.data, unavailable_butlers: ["broken"] },
+          meta: {},
+        })
+      }
+      return defaultApiFetch(path)
+    })
+    await act(async () => {
+      renderPage()
+    })
+    const note = await screen.findByTestId("forecast-unavailable-butlers")
+    expect(note.textContent ?? "").toContain("broken")
+    // The KPI strip still renders -- ceiling_source_error is false here.
+    expect(screen.getByTestId("kpi-strip")).toBeTruthy()
+  })
+
   it("breakdown outage: renders a degraded note, not 'No spend has been recorded yet.'", async () => {
     apiFetchMock.mockImplementation((path: string) => {
       if (path.startsWith("/spend/breakdown")) return Promise.reject(new Error("boom"))

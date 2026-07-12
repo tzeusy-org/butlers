@@ -87,13 +87,18 @@ export function SpendVerdictOpener({
   moversError,
 }: SpendVerdictOpenerProps) {
   const clauses = buildClauses(unavailableButlers);
+  // A settled forecast with ceiling_source_error=true (bu-7o89u.1: ledger MTD
+  // pricing failed or no DB pool wired) carries fabricated mtd_usd=0 --
+  // treat it as an errored source too so DispatchVerdict never computes a
+  // "$0.00/day pace" calm line from it.
+  const forecastDegraded = forecastError || forecast?.ceiling_source_error === true;
 
   return (
     <DispatchVerdict
       testId="spend"
       landmarkLabel="Spend verdict"
       sources={[
-        { label: "spend forecast", isLoading: forecastLoading, isError: forecastError },
+        { label: "spend forecast", isLoading: forecastLoading, isError: forecastDegraded },
         { label: "spend comparison", isLoading: moversLoading, isError: moversError },
       ]}
       clauses={clauses}
