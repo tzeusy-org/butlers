@@ -101,6 +101,9 @@ function makeModel(overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntr
     last_verified_at: null,
     last_verified_latency_ms: null,
     last_verified_ok: null,
+    last_verified_error: null,
+    breaker_open: false,
+    breaker_consecutive_failures: 0,
     ...overrides,
   };
 }

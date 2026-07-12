@@ -11,9 +11,10 @@ The system SHALL maintain a `public.model_catalog` table as the canonical regist
 
 #### Scenario: Catalog entry structure
 - **WHEN** a model catalog entry is created
-- **THEN** it contains: `id` (UUID PK), `alias` (text, UNIQUE), `runtime_type` (text, NOT NULL), `model_id` (text, NOT NULL), `extra_args` (JSONB, default `[]`), `complexity_tier` (text, NOT NULL), `enabled` (boolean, default true), `priority` (int, default 0), `session_timeout_s` (int, NOT NULL, default 1800), `last_verified_at` (timestamptz, nullable), `last_verified_latency_ms` (int, nullable), `last_verified_ok` (bool, nullable), `created_at` (timestamptz), `updated_at` (timestamptz)
+- **THEN** it contains: `id` (UUID PK), `alias` (text, UNIQUE), `runtime_type` (text, NOT NULL), `model_id` (text, NOT NULL), `extra_args` (JSONB, default `[]`), `complexity_tier` (text, NOT NULL), `enabled` (boolean, default true), `priority` (int, default 0), `session_timeout_s` (int, NOT NULL, default 1800), `last_verified_at` (timestamptz, nullable), `last_verified_latency_ms` (int, nullable), `last_verified_ok` (bool, nullable), `last_verified_error` (text, nullable), `created_at` (timestamptz), `updated_at` (timestamptz)
 - **AND** `session_timeout_s` was added by migration `core_073` when the per-session timeout moved off `runtime_config` onto the catalog
-- **AND** the `last_verified_*` columns were added by migration `core_093` and back the verification filter used during resolution (see Model Resolution); `last_verified_ok` is a single nullable boolean (NULL = never verified, `true` = last probe passed, `false` = last probe failed), not a multi-valued connection-state column
+- **AND** the `last_verified_at` / `last_verified_latency_ms` / `last_verified_ok` columns were added by migration `core_093` and back the verification filter used during resolution (see Model Resolution); `last_verified_ok` is a single nullable boolean (NULL = never verified, `true` = last probe passed, `false` = last probe failed), not a multi-valued connection-state column
+- **AND** `last_verified_error` was added by migration `core_167` and stores the truncated exception text from the most recent failed verification (NULL when never verified or the last verification succeeded); it is display-only and does not participate in resolution eligibility
 
 #### Scenario: Alias uniqueness
 - **WHEN** a catalog entry is created with an alias that already exists
@@ -109,8 +110,8 @@ The system SHALL provide model resolution functions that select catalog entries 
 - **WHEN** the resolver evaluates candidate rows
 - **THEN** rows with `last_verified_ok = false` are excluded (`mc.last_verified_ok IS DISTINCT FROM false`); rows never verified (`NULL`) or verified-ok (`true`) qualify
 - **AND** `last_verified_ok` is a single nullable boolean recording the outcome of the most recent verification probe: `NULL` = never verified, `true` = last probe passed, `false` = last probe failed. There is no multi-valued connection-state column.
-- **AND** the boolean is set by the model-settings verification endpoint (see `dashboard-model-settings`, which persists `last_verified_at`, `last_verified_latency_ms`, and `last_verified_ok`), not by the resolver; the resolver only reads it.
-- **AND** the `enabled` flag is independent of verification: resolution requires BOTH effective `enabled = true` AND `last_verified_ok IS DISTINCT FROM false`, so an operator may disable a verified-ok model (excluded) or keep a never-verified model enabled (qualifies).
+- **AND** the boolean is set by the model-settings verification endpoint (see `dashboard-model-settings`, which persists `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error`), not by the resolver; the resolver only reads it.
+- **AND** the `enabled` flag is independent of verification: resolution requires effective `enabled = true` AND `last_verified_ok IS DISTINCT FROM false` AND the dispatch-outcome circuit breaker not open (see Dispatch-Outcome Circuit Breaker), so an operator may disable a verified-ok model (excluded) or keep a never-verified model enabled (qualifies).
 
 #### Scenario: Return type includes catalog_entry_id and session_timeout_s
 - **WHEN** `resolve_model()` returns a match
@@ -136,12 +137,63 @@ The system SHALL provide model resolution functions that select catalog entries 
 
 #### Scenario: Verification filter applies to failover candidates
 - **WHEN** a next-candidate query evaluates model catalog rows
-- **THEN** disabled rows (effective `enabled = false`) and rows that failed their last verification
-  (`last_verified_ok = false`) SHALL NOT be returned as failover candidates
-- **AND** the eligibility test is exactly the same boolean-plus-`enabled` contract used by the
-  primary resolver: effective `enabled = true` AND `last_verified_ok IS DISTINCT FROM false`. There
-  is no separate connection-state machine (no distinct error / offline / deprecated / rate-limited /
-  anomaly states); `last_verified_ok` plus `enabled` is the canonical and only eligibility signal.
+- **THEN** disabled rows (effective `enabled = false`), rows that failed their last verification
+  (`last_verified_ok = false`), and rows whose dispatch-outcome circuit breaker is open SHALL NOT
+  be returned as failover candidates
+- **AND** the eligibility test is exactly the same contract used by the primary resolver: effective
+  `enabled = true` AND `last_verified_ok IS DISTINCT FROM false` AND breaker not open. There is no
+  separate connection-state machine (no distinct error / offline / deprecated / rate-limited /
+  anomaly states); `last_verified_ok`, `enabled`, and breaker state are the canonical and only
+  eligibility signals.
+
+### Requirement: Dispatch-Outcome Circuit Breaker
+The system SHALL exclude a catalog entry from resolution (initial resolve, effective-tier
+resolve, and same-tier failover) when its recent dispatch outcomes show it is systemically
+failing, without requiring a new schema column or migration — breaker state is derived
+entirely from `public.model_dispatch_attempts` at query time
+(`butlers.core.model_routing._BREAKER_OPEN_CTE`, `get_breaker_state`, `get_breaker_states`).
+
+#### Scenario: Breaker opens after consecutive systemic failures
+- **WHEN** a catalog entry's most recent `_BREAKER_FAILURE_THRESHOLD` (5) dispatch
+  attempts with outcome `runtime_failure` or `success` are ALL `runtime_failure`
+- **AND** the most recent such attempt occurred within
+  `_BREAKER_HALF_OPEN_COOLDOWN_MINUTES` (15) minutes
+- **THEN** the entry SHALL be excluded from resolution (initial resolve,
+  `resolve_model_with_effective_tier`, and `next_same_tier_candidate`) regardless of
+  its `enabled` or `last_verified_ok` values
+- **AND** outcomes other than `runtime_failure`/`success` (`quota_skip`, `suppressed`,
+  `exhausted`) SHALL NOT count toward or reset the consecutive-failure window — they are
+  not systemic-failure signals about the model itself
+
+#### Scenario: Half-open probe restores eligibility
+- **WHEN** a breaker-open entry's most recent qualifying attempt is older than the
+  half-open cooldown
+- **THEN** the entry SHALL become eligible for resolution again — the next resolution
+  that selects it IS the probe, with no separate probe-token state
+- **AND** if that probe attempt succeeds, the trailing window's `bool_and(outcome =
+  'runtime_failure')` becomes false and the breaker closes
+- **AND** if that probe attempt fails, a fresh `runtime_failure` row extends the window
+  and the breaker re-opens for another cooldown period
+
+#### Scenario: Breaker-open attention push
+- **WHEN** a `runtime_failure` provenance write causes a catalog entry's breaker to
+  become open
+- **THEN** the spawner SHALL call `maybe_push_breaker_open_attention`, which pages the
+  owner via the attention ledger (Telegram, `priority="high"` by default) identifying the
+  model and its consecutive-failure count
+- **AND** the push SHALL be debounced per catalog entry via a `public.audit_log` marker
+  (`action="model_breaker_open_notified"`) so re-notification happens at most once per
+  `_RENOTIFY_COOLDOWN_MINUTES` window, not on every attempt while the entry remains
+  excluded (excluded entries are not re-attempted, so this is a defense-in-depth backstop,
+  not the primary rate limit)
+- **AND** a failure anywhere in the push (debounce lookup, delivery, ledger write) SHALL
+  be caught and logged, never disrupting the failover loop that triggered it
+
+#### Scenario: Breaker state is exposed for operator visibility
+- **WHEN** `GET /api/settings/models` is called (see `dashboard-model-settings`)
+- **THEN** each entry includes `breaker_open` (bool) and `breaker_consecutive_failures`
+  (int), computed via `get_breaker_states` in one batched query alongside the row list —
+  not N+1 per-entry queries
 
 #### Scenario: Deterministic fallback ordering
 - **WHEN** multiple non-attempted candidates remain in the effective tier

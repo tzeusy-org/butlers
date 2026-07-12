@@ -20,6 +20,8 @@ import asyncpg
 import pytest
 
 from butlers.core.model_routing import (
+    _BREAKER_FAILURE_THRESHOLD,
+    _BREAKER_HALF_OPEN_COOLDOWN_MINUTES,
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     _check_deprecated_tier,
@@ -27,6 +29,8 @@ from butlers.core.model_routing import (
     _rule_condition_matches,
     apply_spend_routing_rules,
     coerce_complexity_tier,
+    get_breaker_state,
+    get_breaker_states,
     next_same_tier_candidate,
     resolve_model,
     resolve_model_with_effective_tier,
@@ -1625,3 +1629,214 @@ async def test_spend_rule_purpose_condition_at_dispatch(pool: asyncpg.Pool) -> N
     )
     assert routed_discretion.resolved[1] == "cheap-model"
     assert str(routed_discretion.resolved[3]) == cheap_id
+
+
+# ---------------------------------------------------------------------------
+# Dispatch-outcome circuit breaker (bu-hmdqz.2)
+# ---------------------------------------------------------------------------
+
+
+async def _insert_dispatch_attempt(
+    pool: asyncpg.Pool,
+    *,
+    catalog_entry_id: str,
+    outcome: str,
+    butler: str = "general",
+) -> None:
+    """Insert one public.model_dispatch_attempts row for breaker tests."""
+    await pool.execute(
+        """
+        INSERT INTO public.model_dispatch_attempts
+            (catalog_entry_id, butler, outcome, attempt_index)
+        VALUES ($1, $2, $3, 0)
+        """,
+        uuid.UUID(catalog_entry_id),
+        butler,
+        outcome,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_closed_with_no_dispatch_history(pool: asyncpg.Pool) -> None:
+    """A brand-new catalog entry with no dispatch_attempts rows has a closed breaker."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="fresh", model_id="fresh-model", complexity_tier="workhorse"
+    )
+    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    assert state.open is False
+    assert state.consecutive_failures == 0
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_opens_after_threshold_consecutive_failures(pool: asyncpg.Pool) -> None:
+    """N consecutive runtime_failure rows trip the breaker open."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="flaky", model_id="flaky-model", complexity_tier="workhorse"
+    )
+    for _ in range(_BREAKER_FAILURE_THRESHOLD):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+
+    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    assert state.open is True
+    assert state.consecutive_failures == _BREAKER_FAILURE_THRESHOLD
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_stays_closed_below_threshold(pool: asyncpg.Pool) -> None:
+    """Fewer than the threshold consecutive failures leaves the breaker closed."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="mostly-ok", model_id="mostly-ok-model", complexity_tier="workhorse"
+    )
+    for _ in range(_BREAKER_FAILURE_THRESHOLD - 1):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+
+    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    assert state.open is False
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_closes_after_a_success_breaks_the_streak(pool: asyncpg.Pool) -> None:
+    """A success row inside the trailing window closes the breaker (half-open probe succeeded)."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="recovered", model_id="recovered-model", complexity_tier="workhorse"
+    )
+    for _ in range(_BREAKER_FAILURE_THRESHOLD):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    assert state.open is True
+
+    await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="success")
+    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    assert state.open is False
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_ignores_suppressed_and_quota_skip_outcomes(pool: asyncpg.Pool) -> None:
+    """'suppressed' and 'quota_skip' rows are not systemic-failure signals about
+    the model itself and must not contribute to the consecutive-failure count."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="quota-limited", model_id="quota-limited-model", complexity_tier="workhorse"
+    )
+    for _ in range(10):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="quota_skip")
+    for _ in range(10):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="suppressed")
+
+    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    assert state.open is False
+    assert state.consecutive_failures == 0
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_open_excludes_entry_from_resolve_model(pool: asyncpg.Pool) -> None:
+    """resolve_model must skip a breaker-open entry, falling through as if it
+    did not exist — the same behavior as last_verified_ok = false."""
+    tripped_id = await _insert_catalog_entry(
+        pool, alias="tripped", model_id="tripped-model", complexity_tier="workhorse", priority=100
+    )
+    healthy_id = await _insert_catalog_entry(
+        pool, alias="healthy", model_id="healthy-model", complexity_tier="workhorse", priority=10
+    )
+    for _ in range(_BREAKER_FAILURE_THRESHOLD):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
+
+    result = await resolve_model(
+        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    assert result is not None
+    assert str(result[3]) == healthy_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_open_excludes_entry_from_next_same_tier_candidate(
+    pool: asyncpg.Pool,
+) -> None:
+    """next_same_tier_candidate must also skip a breaker-open entry."""
+    tripped_id = await _insert_catalog_entry(
+        pool, alias="tripped2", model_id="tripped2-model", complexity_tier="workhorse", priority=100
+    )
+    healthy_id = await _insert_catalog_entry(
+        pool, alias="healthy2", model_id="healthy2-model", complexity_tier="workhorse", priority=10
+    )
+    for _ in range(_BREAKER_FAILURE_THRESHOLD):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
+
+    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    assert result is not None
+    assert str(result[3]) == healthy_id
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_half_open_probe_after_cooldown(pool: asyncpg.Pool) -> None:
+    """After the cooldown window elapses since the last failure, the breaker
+    stops excluding the entry (the next resolution IS the half-open probe)."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="cooled-down", model_id="cooled-down-model", complexity_tier="workhorse"
+    )
+    for _ in range(_BREAKER_FAILURE_THRESHOLD):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    assert state.open is True
+
+    # Backdate every attempt row past the cooldown window.
+    await pool.execute(
+        f"""
+        UPDATE public.model_dispatch_attempts
+           SET ts = now() - interval '{_BREAKER_HALF_OPEN_COOLDOWN_MINUTES + 1} minutes'
+         WHERE catalog_entry_id = $1
+        """,
+        uuid.UUID(entry_id),
+    )
+
+    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    assert state.open is False
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_breaker_states_batches_across_catalog(pool: asyncpg.Pool) -> None:
+    """get_breaker_states returns per-entry state for the whole catalog in one call."""
+    tripped_id = await _insert_catalog_entry(
+        pool, alias="batch-tripped", model_id="batch-tripped-model", complexity_tier="workhorse"
+    )
+    healthy_id = await _insert_catalog_entry(
+        pool, alias="batch-healthy", model_id="batch-healthy-model", complexity_tier="workhorse"
+    )
+    for _ in range(_BREAKER_FAILURE_THRESHOLD):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
+    await _insert_dispatch_attempt(pool, catalog_entry_id=healthy_id, outcome="success")
+
+    states = await get_breaker_states(pool, [uuid.UUID(tripped_id), uuid.UUID(healthy_id)])
+    assert states[uuid.UUID(tripped_id)].open is True
+    assert states[uuid.UUID(healthy_id)].open is False
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_breaker_states_defaults_missing_ids_to_closed(pool: asyncpg.Pool) -> None:
+    """An entry with zero dispatch history returns a default closed BreakerState
+    rather than being omitted from the result dict."""
+    entry_id = await _insert_catalog_entry(
+        pool, alias="never-dispatched", model_id="never-dispatched-model", complexity_tier="cheap"
+    )
+    states = await get_breaker_states(pool, [uuid.UUID(entry_id)])
+    assert states[uuid.UUID(entry_id)].open is False
+    assert states[uuid.UUID(entry_id)].consecutive_failures == 0

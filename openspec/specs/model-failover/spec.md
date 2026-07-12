@@ -112,6 +112,35 @@ together. Operators read it via `GET /api/dispatch/attempts` and
 - **AND** this mode SHALL power the `/spend` fleet-halt state (dashboard-spend-dashboard
   spec) rather than requiring a new dedicated endpoint
 
+### Requirement: Failover Classification Marker Vocabulary
+The classifier (`butlers.core.failover_classifier.classify_failover_eligibility`) SHALL
+recognize provider/auth, provider-availability, and rate-limit failures via a lowercased
+substring match against the exception message, organized into disjoint marker buckets
+(`_PROVIDER_AUTH_MARKERS`, `_PROVIDER_AVAILABILITY_MARKERS`, `_RATE_LIMIT_MARKERS`, plus
+config/MCP/empty-response buckets). No marker may appear in more than one bucket.
+
+#### Scenario: OAuth refresh-token revocation is a recognized provider/auth failure
+- **WHEN** a runtime invocation fails with a message matching `"refresh token"`,
+  `"token could not be refreshed"`, or `"log out and sign in"` (e.g. Codex CLI's
+  `"Your access token could not be refreshed because your refresh token was revoked.
+  Please log out and sign in again."`)
+- **THEN** the classifier SHALL return `eligible=True` with a reason prefixed
+  `provider_auth_error`
+- **AND** same-tier failover SHALL proceed to the next eligible candidate exactly as for
+  any other genuine provider/auth failure
+
+#### Scenario: Bounded opt-in stderr gate for pre-tool-call failures
+- **WHEN** the exception message itself matches no marker bucket
+- **AND** the runtime adapter's `process_info` reports `is_pre_tool_call=True`
+- **AND** `process_info["error_detail"]` (preferred) or `process_info["stderr"]` matches a
+  provider-auth, provider-availability, or rate-limit marker
+- **THEN** the classifier SHALL return `eligible=True` with the same reason-prefix
+  taxonomy the exception-message path would have used
+- **AND** when `is_pre_tool_call` is absent or `False`, or no marker matches, the
+  classifier SHALL fall through to its normal default-closed return — this gate never
+  overrides Gate 1 (captured tool calls) and never widens eligibility beyond the marker
+  vocabulary already defined for the exception-message path
+
 ## Source References
 - Non-Negotiable Rule 4 (The daemon is deterministic infrastructure; intelligence is in ephemeral LLM CLI instances — failover orchestration is deterministic daemon behavior wrapping the ephemeral runtime invocation)
 - RFC 0001 (Daemon Lifecycle and Triggers; the spawner orchestrates ephemeral runtime invocations for a logical session)

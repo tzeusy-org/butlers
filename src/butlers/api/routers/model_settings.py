@@ -31,7 +31,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
-from butlers.core.model_routing import resolve_model
+from butlers.core.model_routing import get_breaker_states, resolve_model
 from butlers.core.runtimes.base import get_adapter
 from butlers.core.spawner import resolve_provider_config
 
@@ -82,6 +82,16 @@ class ModelCatalogEntry(BaseModel):
     last_verified_at: datetime | None = None
     last_verified_latency_ms: int | None = None
     last_verified_ok: bool | None = None
+    # Stored verification error text (core_167); None when never verified or
+    # the last verification succeeded.
+    last_verified_error: str | None = None
+    # Dispatch-outcome circuit breaker state (bu-hmdqz.2), fully derived from
+    # public.model_dispatch_attempts — see model_routing.get_breaker_states.
+    # breaker_open=True is the routing consequence the Models tab surfaces:
+    # this entry is currently excluded from resolution regardless of
+    # last_verified_ok / enabled.
+    breaker_open: bool = False
+    breaker_consecutive_failures: int = 0
 
 
 class ModelPriorityDelta(BaseModel):
@@ -324,6 +334,9 @@ def _row_to_catalog_entry(row: Any) -> ModelCatalogEntry:
         last_verified_at=_row_value(row, "last_verified_at", None),
         last_verified_latency_ms=int(raw_latency) if raw_latency is not None else None,
         last_verified_ok=_row_value(row, "last_verified_ok", None),
+        last_verified_error=_row_value(row, "last_verified_error", None),
+        breaker_open=bool(_row_value(row, "breaker_open", False)),
+        breaker_consecutive_failures=int(_row_value(row, "breaker_consecutive_failures", 0) or 0),
     )
 
 
@@ -393,6 +406,7 @@ async def list_catalog_entries(
             mc.id, mc.alias, mc.runtime_type, mc.model_id, mc.extra_args,
             mc.complexity_tier, mc.enabled, mc.priority, mc.session_timeout_s,
             mc.last_verified_at, mc.last_verified_latency_ms, mc.last_verified_ok,
+            mc.last_verified_error,
             COALESCE(ua.usage_24h, 0) AS usage_24h,
             COALESCE(ua.usage_30d, 0) AS usage_30d,
             tl.limit_24h,
@@ -415,7 +429,19 @@ async def list_catalog_entries(
             mc.alias ASC
         """
     )
-    entries = [_row_to_catalog_entry(row) for row in rows]
+    # Breaker state (bu-hmdqz.2) is fully derived from
+    # public.model_dispatch_attempts, not a model_catalog column, so it is
+    # batch-fetched separately and merged in Python — one extra round trip
+    # for the whole list, not N+1.
+    breaker_states = await get_breaker_states(pool, [row["id"] for row in rows])
+    entries = []
+    for row in rows:
+        entry = _row_to_catalog_entry(row)
+        state = breaker_states.get(row["id"])
+        if state is not None:
+            entry.breaker_open = state.open
+            entry.breaker_consecutive_failures = state.consecutive_failures
+        entries.append(entry)
     return ApiResponse[list[ModelCatalogEntry]](data=entries)
 
 
@@ -511,7 +537,8 @@ async def update_catalog_entry(
         f"UPDATE public.model_catalog SET {', '.join(set_parts)} "
         f"WHERE id = ${idx} "
         "RETURNING id, alias, runtime_type, model_id, extra_args, "
-        "complexity_tier, enabled, priority, session_timeout_s"
+        "complexity_tier, enabled, priority, session_timeout_s, "
+        "last_verified_at, last_verified_latency_ms, last_verified_ok, last_verified_error"
     )
 
     try:
@@ -590,7 +617,8 @@ async def update_model_priority(
          WHERE id = $2
         RETURNING id, alias, runtime_type, model_id, extra_args,
                   complexity_tier, enabled, priority, session_timeout_s,
-                  last_verified_at, last_verified_latency_ms, last_verified_ok
+                  last_verified_at, last_verified_latency_ms, last_verified_ok,
+                  last_verified_error
         """,
         body.delta,
         entry_id,
@@ -610,35 +638,36 @@ async def update_model_priority(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/settings/models/verify-all — parallel 1-token verification
+# Shared verify-all core (bu-hmdqz.2) — used by both the manual POST endpoint
+# and the hourly automated sweep (butlers.jobs.model_verify), so the two can
+# never drift in what "verified" means or how the result is persisted.
 # ---------------------------------------------------------------------------
 
+# Truncate stored error text the same way error_message is truncated on
+# public.model_dispatch_attempts rows (_write_dispatch_attempt in spawner.py)
+# — long tracebacks/CLI dumps should not bloat the catalog row indefinitely.
+_VERIFY_ERROR_TRUNCATE_LEN = 4096
 
-@catalog_router.post("/verify-all", response_model=ApiResponse[VerifyAllResult])
-async def verify_all_models(
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[VerifyAllResult]:
+
+async def run_verify_all_models(
+    pool: asyncpg.Pool,
+    *,
+    audit_actor: str = "owner",
+) -> VerifyAllResult:
     """Issue a 1-token completion against every enabled model in parallel.
 
-    Bounded concurrency = 8.  Rate-limited to once per minute system-wide:
-    subsequent calls within the window return HTTP 429.
+    Bounded concurrency = ``_VERIFY_ALL_CONCURRENCY``. Writes
+    ``last_verified_at``, ``last_verified_latency_ms``, ``last_verified_ok``,
+    and ``last_verified_error`` (cleared to ``NULL`` on success, populated
+    with the truncated exception text on failure) for each model. Calls
+    ``audit.append("models.verify_all", actor=audit_actor)`` once per run so
+    the audit trail distinguishes an owner-initiated verification from the
+    hourly automated sweep.
 
-    Writes ``last_verified_at``, ``last_verified_latency_ms``, and
-    ``last_verified_ok`` for each model.  Calls
-    ``audit.append("models.verify_all")`` once per accepted run.
+    Does NOT enforce the manual endpoint's once-per-minute rate limit — that
+    is a caller concern specific to the HTTP surface (``verify_all_models``
+    below); the hourly job calls this directly on its own cadence.
     """
-    global _verify_all_last_run  # noqa: PLW0603
-
-    now = time.monotonic()
-    if now - _verify_all_last_run < _VERIFY_ALL_MIN_INTERVAL_S:
-        raise HTTPException(
-            status_code=429,
-            detail="verify-all was called recently — wait at least 60 seconds between runs",
-        )
-    _verify_all_last_run = now
-
-    pool = _shared_pool(db)
-
     rows = await pool.fetch(
         """
         SELECT id, runtime_type, model_id, extra_args
@@ -648,10 +677,8 @@ async def verify_all_models(
     )
 
     if not rows:
-        await audit.append(pool, "owner", "models.verify_all")
-        return ApiResponse[VerifyAllResult](
-            data=VerifyAllResult(accepted=True, total=0, ok=0, failed=0)
-        )
+        await audit.append(pool, audit_actor, "models.verify_all")
+        return VerifyAllResult(accepted=True, total=0, ok=0, failed=0)
 
     sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
 
@@ -664,6 +691,7 @@ async def verify_all_models(
         async with sem:
             t0 = time.monotonic()
             ok = False
+            error_text: str | None = None
             try:
                 adapter_cls = get_adapter(runtime_type)
                 provider_config = await resolve_provider_config(pool, model_id)
@@ -683,9 +711,12 @@ async def verify_all_models(
                     timeout=30,
                 )
                 ok = bool(result_text and result_text.strip())
+                if not ok:
+                    error_text = "verification returned an empty response"
             except Exception as exc:
                 logger.warning("verify-all: model %s/%s failed: %s", runtime_type, model_id, exc)
                 ok = False
+                error_text = f"{type(exc).__name__}: {exc}"[:_VERIFY_ERROR_TRUNCATE_LEN]
 
             latency_ms = int((time.monotonic() - t0) * 1000)
             ts = datetime.now(UTC)
@@ -697,12 +728,14 @@ async def verify_all_models(
                        SET last_verified_at        = $1,
                            last_verified_latency_ms = $2,
                            last_verified_ok         = $3,
+                           last_verified_error      = $4,
                            updated_at               = now()
-                     WHERE id = $4
+                     WHERE id = $5
                     """,
                     ts,
                     latency_ms,
                     ok,
+                    error_text,
                     entry_id,
                 )
             except Exception as exc:
@@ -715,16 +748,44 @@ async def verify_all_models(
     ok_count = sum(1 for r in results if r is True)
     failed_count = len(results) - ok_count
 
-    await audit.append(pool, "owner", "models.verify_all")
+    await audit.append(pool, audit_actor, "models.verify_all")
 
-    return ApiResponse[VerifyAllResult](
-        data=VerifyAllResult(
-            accepted=True,
-            total=len(results),
-            ok=ok_count,
-            failed=failed_count,
-        )
+    return VerifyAllResult(
+        accepted=True,
+        total=len(results),
+        ok=ok_count,
+        failed=failed_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/settings/models/verify-all — parallel 1-token verification
+# ---------------------------------------------------------------------------
+
+
+@catalog_router.post("/verify-all", response_model=ApiResponse[VerifyAllResult])
+async def verify_all_models(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[VerifyAllResult]:
+    """Issue a 1-token completion against every enabled model in parallel.
+
+    Rate-limited to once per minute system-wide: subsequent calls within the
+    window return HTTP 429. Delegates the actual verification work to
+    ``run_verify_all_models`` (shared with the hourly automated sweep).
+    """
+    global _verify_all_last_run  # noqa: PLW0603
+
+    now = time.monotonic()
+    if now - _verify_all_last_run < _VERIFY_ALL_MIN_INTERVAL_S:
+        raise HTTPException(
+            status_code=429,
+            detail="verify-all was called recently — wait at least 60 seconds between runs",
+        )
+    _verify_all_last_run = now
+
+    pool = _shared_pool(db)
+    result = await run_verify_all_models(pool, audit_actor="owner")
+    return ApiResponse[VerifyAllResult](data=result)
 
 
 # ---------------------------------------------------------------------------

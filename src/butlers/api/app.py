@@ -141,6 +141,10 @@ from butlers.jobs.external_deadman import (
     EXTERNAL_DEADMAN_URL_ENV,
     run_external_deadman_loop,
 )
+from butlers.jobs.model_verify import (
+    DEFAULT_MODEL_VERIFY_INTERVAL_S,
+    run_model_verify_loop,
+)
 from butlers.jobs.secrets_lifecycle import (
     DEFAULT_SCAN_INTERVAL_S,
     run_secrets_lifecycle_loop,
@@ -154,6 +158,7 @@ from butlers.jobs.secrets_staleness import (
 logger = logging.getLogger(__name__)
 
 _SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV = "SECRETS_LIFECYCLE_SCAN_INTERVAL_S"
+_MODEL_VERIFY_INTERVAL_ENV = "MODEL_VERIFY_INTERVAL_S"
 _SECRETS_STALENESS_SCAN_INTERVAL_ENV = "SECRETS_STALENESS_SCAN_INTERVAL_S"
 _SECRETS_STALENESS_WINDOW_ENV = "SECRETS_STALENESS_WINDOW_S"
 _MIGRATION_DRIFT_CHECK_INTERVAL_ENV = "MIGRATION_DRIFT_CHECK_INTERVAL_S"
@@ -234,6 +239,7 @@ async def lifespan(app: FastAPI):
     external_deadman_task: asyncio.Task | None = None
     fleet_events_bridge_task: asyncio.Task | None = None
     restore_drill_task: asyncio.Task | None = None
+    model_verify_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
         # Wire DB dependencies for both static and dynamic routers
@@ -271,6 +277,21 @@ async def lifespan(app: FastAPI):
         )
         _BACKGROUND_TASKS.add(secrets_lifecycle_task)
         secrets_lifecycle_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+        # Hourly automated model-catalog verification sweep (bu-hmdqz.2):
+        # closes the loop left open by the manual-only "Verify all" button —
+        # last_verified_ok/last_verified_at were found 23 days stale for
+        # every catalog entry. Sleeps before its first sweep (see
+        # run_model_verify_loop) so it never fires real LLM-CLI verification
+        # calls mid-test.
+        model_verify_interval_s = _resolve_positive_float_env(
+            _MODEL_VERIFY_INTERVAL_ENV, DEFAULT_MODEL_VERIFY_INTERVAL_S
+        )
+        model_verify_task = asyncio.create_task(
+            run_model_verify_loop(get_db_manager(), interval_s=model_verify_interval_s)
+        )
+        _BACKGROUND_TASKS.add(model_verify_task)
+        model_verify_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
         # Fleet-events NOTIFY bridge (bu-01r64.1): daemon processes publish
         # session/spend/notification/approval events via Postgres NOTIFY
@@ -430,6 +451,10 @@ async def lifespan(app: FastAPI):
         secrets_lifecycle_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await secrets_lifecycle_task
+    if model_verify_task is not None:
+        model_verify_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await model_verify_task
     if fleet_events_bridge_task is not None:
         fleet_events_bridge_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

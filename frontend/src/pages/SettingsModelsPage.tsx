@@ -25,6 +25,7 @@ import { ApiError } from "@/api/index.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import type { ComplexityTier, ModelCatalogEntry } from "@/api/types.ts";
 import { Switch } from "@/components/ui/switch";
+import { Time } from "@/components/ui/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1405,8 +1406,38 @@ function ModelRow({ model }: { model: ModelCatalogEntry }) {
             </span>
           )}
           {verificationStatus === "error" && (
-            <span className="font-mono text-[9px] uppercase tracking-widest text-destructive shrink-0">
+            <span
+              className="font-mono text-[9px] uppercase tracking-widest text-destructive shrink-0"
+              title={model.last_verified_error ?? "verification failed"}
+            >
               ✗
+            </span>
+          )}
+          {/* Verification age (bu-hmdqz.2): last_verified_at governs routing
+              eligibility (mc.last_verified_ok IS DISTINCT FROM false), so a
+              stale badge is misleading confidence — show the age inline. */}
+          {model.last_verified_at ? (
+            <Time
+              value={model.last_verified_at}
+              mode="relative-compact"
+              className="font-mono text-[9px] text-muted-foreground shrink-0"
+            />
+          ) : (
+            <span className="font-mono text-[9px] text-muted-foreground shrink-0">
+              never verified
+            </span>
+          )}
+          {/* Routing consequence (bu-hmdqz.2): the dispatch-outcome circuit
+              breaker excludes this entry from resolution independent of
+              enabled/last_verified_ok — surface that fact, not just the
+              stale verification signal it can silently outrun. */}
+          {model.breaker_open && (
+            <span
+              className="font-mono text-[9px] uppercase tracking-widest text-destructive shrink-0
+                border border-destructive/50 rounded px-1"
+              title={`Excluded by breaker after ${model.breaker_consecutive_failures} consecutive dispatch failures`}
+            >
+              breaker
             </span>
           )}
         </div>

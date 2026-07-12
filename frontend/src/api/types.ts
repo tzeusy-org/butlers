@@ -4606,6 +4606,17 @@ export interface ModelCatalogEntry {
   last_verified_latency_ms: number | null;
   /** Whether the last verification succeeded; null = never verified. */
   last_verified_ok: boolean | null;
+  /** Stored verification error text; null when never verified or the last
+   *  verification succeeded. */
+  last_verified_error: string | null;
+  /** Dispatch-outcome circuit breaker state (bu-hmdqz.2), fully derived from
+   *  model_dispatch_attempts. True = this entry is currently excluded from
+   *  routing regardless of enabled/last_verified_ok — the routing
+   *  consequence to surface alongside verification staleness. */
+  breaker_open: boolean;
+  /** Count of trailing consecutive runtime_failure dispatch attempts feeding
+   *  the breaker (capped at the breaker's own threshold). */
+  breaker_consecutive_failures: number;
 }
 
 /** Request body for PUT /api/settings/models/{id}/priority. */

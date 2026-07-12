@@ -53,6 +53,7 @@ import enum
 import json
 import logging
 import uuid
+from datetime import datetime
 
 import asyncpg
 
@@ -261,6 +262,193 @@ class CeilingStatus:
     ceiling_usd: float | None
 
 
+# ---------------------------------------------------------------------------
+# Dispatch-outcome circuit breaker (bu-hmdqz.2)
+# ---------------------------------------------------------------------------
+#
+# Fully derived from public.model_dispatch_attempts — no new columns, no new
+# table, no migration. A catalog entry's breaker is "open" (excluded from
+# resolution) when its most recent _BREAKER_FAILURE_THRESHOLD attempts that
+# reached an outcome of 'runtime_failure' or 'success' are ALL
+# 'runtime_failure', AND the most recent such attempt is within
+# _BREAKER_HALF_OPEN_COOLDOWN_MINUTES. 'suppressed'/'quota_skip'/'exhausted'
+# rows are ignored for this count — they are not systemic pre-invocation
+# failure signals about the *model*, so they neither trip nor reset the
+# breaker.
+#
+# Half-open probe: once the cooldown elapses since the last failure, the CTE
+# below stops excluding the entry — the very next resolution is a live probe.
+# If that probe fails, a fresh 'runtime_failure' row extends the window and
+# the breaker re-opens for another cooldown period. If it succeeds, the
+# trailing-window bool_and() flips to false and the breaker closes. No
+# explicit "probe token"/state column is needed: the resolver's own selection
+# frequency IS the probe cadence, since an open breaker means the entry is
+# never selected (and thus never re-attempted) until the cooldown passes.
+_BREAKER_FAILURE_THRESHOLD = 5
+_BREAKER_HALF_OPEN_COOLDOWN_MINUTES = 15
+
+# Inlined as a CTE into every resolver query that picks a live dispatch
+# candidate from public.model_catalog. References only fixed module
+# constants (not caller input), so it is safe to inline as a literal.
+_BREAKER_OPEN_CTE = f"""
+breaker_recent AS (
+    SELECT
+        catalog_entry_id,
+        outcome,
+        ts,
+        ROW_NUMBER() OVER (PARTITION BY catalog_entry_id ORDER BY ts DESC) AS rn
+    FROM public.model_dispatch_attempts
+    WHERE outcome IN ('runtime_failure', 'success')
+),
+breaker_open AS (
+    SELECT catalog_entry_id
+    FROM breaker_recent
+    WHERE rn <= {_BREAKER_FAILURE_THRESHOLD}
+    GROUP BY catalog_entry_id
+    HAVING
+        COUNT(*) >= {_BREAKER_FAILURE_THRESHOLD}
+        AND bool_and(outcome = 'runtime_failure')
+        AND now() - MAX(ts) < interval '{_BREAKER_HALF_OPEN_COOLDOWN_MINUTES} minutes'
+)
+"""
+
+
+def _breaker_recent_cte(*, filter_by_ids: bool) -> str:
+    """Build the ``breaker_recent``/``breaker_open`` CTE pair.
+
+    ``filter_by_ids`` pushes a ``catalog_entry_id`` predicate into
+    ``breaker_recent`` itself so Postgres can use the
+    ``idx_model_dispatch_attempts_catalog_ts (catalog_entry_id, ts DESC)``
+    index instead of windowing the entire ``model_dispatch_attempts`` table
+    on every call. Only safe when the caller supplies concrete entry ids
+    (single-entry and batch-with-ids callers); the resolver's own
+    ``_BREAKER_OPEN_CTE`` genuinely needs every entry, so it stays unfiltered.
+    """
+    id_filter = "AND catalog_entry_id = ANY($1)" if filter_by_ids else ""
+    return f"""
+    breaker_recent AS (
+        SELECT
+            catalog_entry_id,
+            outcome,
+            ts,
+            ROW_NUMBER() OVER (PARTITION BY catalog_entry_id ORDER BY ts DESC) AS rn
+        FROM public.model_dispatch_attempts
+        WHERE outcome IN ('runtime_failure', 'success')
+        {id_filter}
+    ),
+    breaker_open AS (
+        SELECT catalog_entry_id
+        FROM breaker_recent
+        WHERE rn <= {_BREAKER_FAILURE_THRESHOLD}
+        GROUP BY catalog_entry_id
+        HAVING
+            COUNT(*) >= {_BREAKER_FAILURE_THRESHOLD}
+            AND bool_and(outcome = 'runtime_failure')
+            AND now() - MAX(ts) < interval '{_BREAKER_HALF_OPEN_COOLDOWN_MINUTES} minutes'
+    )
+    """
+
+
+async def get_breaker_state(pool: asyncpg.Pool, catalog_entry_id: uuid.UUID) -> BreakerState:
+    """Return the live derived breaker state for one catalog entry.
+
+    Used by the attention-ledger push (``maybe_push_breaker_open_attention``)
+    and by the Models tab list endpoint to surface the routing consequence
+    ("excluded by breaker") without duplicating the threshold/cooldown logic
+    baked into ``_BREAKER_OPEN_CTE``. Filters ``breaker_recent`` to this one
+    entry so the query stays index-bound
+    (``idx_model_dispatch_attempts_catalog_ts``) regardless of dispatch
+    history size.
+    """
+    cte = _breaker_recent_cte(filter_by_ids=True)
+    row = await pool.fetchrow(
+        f"""
+        WITH {cte}
+        SELECT
+            (SELECT COUNT(*) FROM breaker_recent
+             WHERE rn <= {_BREAKER_FAILURE_THRESHOLD}
+               AND outcome = 'runtime_failure') AS consecutive_failures,
+            (SELECT MAX(ts) FROM breaker_recent) AS last_attempt_at,
+            EXISTS (SELECT 1 FROM breaker_open) AS is_open
+        """,
+        [catalog_entry_id],
+    )
+    if row is None:
+        return BreakerState(open=False, consecutive_failures=0, last_attempt_at=None)
+    return BreakerState(
+        open=bool(row["is_open"]),
+        consecutive_failures=int(row["consecutive_failures"] or 0),
+        last_attempt_at=row["last_attempt_at"],
+    )
+
+
+async def get_breaker_states(
+    pool: asyncpg.Pool, catalog_entry_ids: list[uuid.UUID] | None = None
+) -> dict[uuid.UUID, BreakerState]:
+    """Batch variant of ``get_breaker_state`` — one round trip for the whole catalog.
+
+    Used by ``GET /api/settings/models`` to annotate every row without an
+    N+1 query. When ``catalog_entry_ids`` is ``None``, returns state for every
+    entry that has any recent (runtime_failure|success) dispatch history
+    (unfiltered scan — no concrete id set to push down). When
+    ``catalog_entry_ids`` is provided, filters ``breaker_recent`` to those ids
+    so Postgres can use ``idx_model_dispatch_attempts_catalog_ts`` instead of
+    windowing the whole table on every Models tab page load.
+    """
+    cte = _breaker_recent_cte(filter_by_ids=catalog_entry_ids is not None)
+    query = f"""
+        WITH {cte}
+        SELECT
+            br.catalog_entry_id,
+            COUNT(*) FILTER (WHERE br.outcome = 'runtime_failure') AS consecutive_failures,
+            MAX(br.ts) AS last_attempt_at,
+            bo.catalog_entry_id IS NOT NULL AS is_open
+        FROM breaker_recent br
+        LEFT JOIN breaker_open bo ON bo.catalog_entry_id = br.catalog_entry_id
+        WHERE br.rn <= {_BREAKER_FAILURE_THRESHOLD}
+        GROUP BY br.catalog_entry_id, bo.catalog_entry_id
+        """
+    rows = (
+        await pool.fetch(query, catalog_entry_ids)
+        if catalog_entry_ids is not None
+        else await pool.fetch(query)
+    )
+    states = {
+        row["catalog_entry_id"]: BreakerState(
+            open=bool(row["is_open"]),
+            consecutive_failures=int(row["consecutive_failures"] or 0),
+            last_attempt_at=row["last_attempt_at"],
+        )
+        for row in rows
+    }
+    if catalog_entry_ids is not None:
+        return {cid: states.get(cid, BreakerState(False, 0, None)) for cid in catalog_entry_ids}
+    return states
+
+
+@dataclasses.dataclass(frozen=True)
+class BreakerState:
+    """Derived dispatch-outcome circuit-breaker state for one catalog entry.
+
+    Attributes
+    ----------
+    open:
+        True when the entry is currently excluded from resolution (the last
+        ``_BREAKER_FAILURE_THRESHOLD`` runtime_failure/success attempts were
+        all failures, most recently within the half-open cooldown window).
+    consecutive_failures:
+        Count of trailing-window attempts that were 'runtime_failure' (capped
+        at ``_BREAKER_FAILURE_THRESHOLD`` by construction).
+    last_attempt_at:
+        Timestamp of the most recent runtime_failure/success attempt, or
+        ``None`` when the entry has no such history.
+    """
+
+    open: bool
+    consecutive_failures: int
+    last_attempt_at: datetime | None
+
+
 # SQL that resolves the best model across an ordered tier list in a single round-trip.
 #
 # Accepts:
@@ -271,6 +459,8 @@ class CeilingStatus:
 # 1. tier_order:    Enumerate provided tiers with their fallthrough position (ord).
 # 2. all_candidates: Join catalog + overrides for all qualifying models across every
 #                   provided tier, carrying effective_tier, effective_priority, and ord.
+#                   Also excludes any catalog entry whose dispatch-outcome circuit
+#                   breaker is open (see ``_BREAKER_OPEN_CTE``, bu-hmdqz.2).
 # 3. winning:       Find the first tier (lowest ord) that has at least one qualifying
 #                   model; also record its max priority so step 4 can filter to
 #                   top-priority entries only.
@@ -283,8 +473,9 @@ class CeilingStatus:
 #
 # Returns: (runtime_type, model_id, extra_args, id, session_timeout_s, effective_tier)
 # Returns no rows when no qualifying model exists in any provided tier.
-_RESOLVE_SQL = """
+_RESOLVE_SQL = f"""
 WITH
+{_BREAKER_OPEN_CTE},
 tier_order AS (
     SELECT t.tier, t.ord
     FROM unnest($2::text[]) WITH ORDINALITY AS t(tier, ord)
@@ -307,6 +498,7 @@ all_candidates AS (
         ON COALESCE(bmo.complexity_tier, mc.complexity_tier) = t.tier
     WHERE COALESCE(bmo.enabled, mc.enabled) = true
       AND mc.last_verified_ok IS DISTINCT FROM false
+      AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
 ),
 winning AS (
     SELECT effective_tier, tier_ord, MAX(effective_priority) AS max_priority
@@ -364,9 +556,14 @@ WHERE c.rn = (nc.counter % c.total)
 # 4. Return the first row.
 #
 # Returns: (runtime_type, model_id, extra_args, id, session_timeout_s)
-# Returns no rows when no qualifying candidate remains.
-_NEXT_SAME_TIER_SQL = """
+# Returns no rows when no qualifying candidate remains. Also excludes any
+# catalog entry whose dispatch-outcome circuit breaker is open (see
+# ``_BREAKER_OPEN_CTE``, bu-hmdqz.2) — the exact reason failover needs this:
+# a same-tier candidate that has itself been failing repeatedly should not be
+# re-offered as the "next" candidate mid-loop.
+_NEXT_SAME_TIER_SQL = f"""
 WITH
+{_BREAKER_OPEN_CTE},
 all_candidates AS (
     SELECT
         mc.runtime_type,
@@ -384,6 +581,7 @@ all_candidates AS (
       AND mc.last_verified_ok IS DISTINCT FROM false
       AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = $2
       AND mc.id != ALL($3::uuid[])
+      AND mc.id NOT IN (SELECT catalog_entry_id FROM breaker_open)
 )
 SELECT
     runtime_type,

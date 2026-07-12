@@ -25,6 +25,12 @@ Eligible (pre-tool-call systemic failures):
 - Timeout before any tool call or side-effect-capable output (``TimeoutError``
   when ``tool_calls`` is empty)
 - Runtime config errors (``RuntimeError`` with config/unregistered message patterns)
+- Bounded opt-in stderr gate (bu-hmdqz.2): when the exception message itself
+  matches nothing above but the adapter explicitly reported
+  ``process_info["is_pre_tool_call"] is True`` and its ``error_detail``/
+  ``stderr`` text matches an auth/availability/rate-limit marker, the failure
+  is still eligible — reused vocabulary, corroborating adapter signal
+  required, default-closed on any missing piece. See ``_classify_stderr_gate``.
 
 Suppressed (default-closed, any of the following):
 - Any captured MCP tool call  — world may have been touched
@@ -113,6 +119,18 @@ _PROVIDER_AUTH_MARKERS: tuple[str, ...] = (
     # rejection, not availability. Audited zero real-world provider-side WAF
     # "403 Forbidden by security policy" hits (bu-0n2wk); see bucket comment.
     "forbidden",
+    # OAuth refresh-token revocation (bu-hmdqz.2, live-confirmed session
+    # b03d3af4): a revoked Codex ChatGPT OAuth token surfaces as "RuntimeError:
+    # Codex CLI exited with code 1: Your access token could not be refreshed
+    # because your refresh token was revoked. Please log out and sign in
+    # again." — none of the markers above matched, so the failure default-
+    # closed and silently killed the workhorse/reasoning/specialty tiers for
+    # hours behind a green Models tab. These three markers are OAuth-specific
+    # phrasing (not generic English words), so the false-positive risk against
+    # business/validation error text is low.
+    "refresh token",
+    "token could not be refreshed",
+    "log out and sign in",
 )
 
 # Substrings matched (lowercased) against the exception message to detect
@@ -457,6 +475,20 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
                 "detected in RuntimeError message",
             )
 
+        # GATE 6b: bounded opt-in stderr-matching gate (bu-hmdqz.2). The
+        # exception message itself matched nothing above, but the adapter's
+        # own stderr/error_detail may carry an unambiguous systemic-failure
+        # marker the CLI's stdout summary line dropped (live-confirmed:
+        # process_info stderr contained "401 Unauthorized" for a revoked-
+        # token failure whose RuntimeError message did not). See
+        # ``_classify_stderr_gate`` for the opt-in contract.
+        stderr_decision = _classify_stderr_gate(ctx.process_info)
+        if stderr_decision is not None:
+            logger.debug(
+                "Failover eligible: RuntimeError — stderr gate matched (exc=%s)", exc_class
+            )
+            return stderr_decision
+
         # Unmatched RuntimeError — default closed
         logger.debug(
             "Failover suppressed: RuntimeError with unrecognized message pattern (exc=%s)",
@@ -492,8 +524,15 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
         )
 
     # ------------------------------------------------------------------
-    # DEFAULT: Unknown exception class — default-closed.
+    # DEFAULT: Unknown exception class — try the stderr gate before closing.
     # ------------------------------------------------------------------
+    stderr_decision = _classify_stderr_gate(ctx.process_info)
+    if stderr_decision is not None:
+        logger.debug(
+            "Failover eligible: unknown exception class %s — stderr gate matched", exc_class
+        )
+        return stderr_decision
+
     logger.debug("Failover suppressed: unknown exception class %s (default-closed)", exc_class)
     return FailoverDecision(
         eligible=False,
@@ -510,6 +549,80 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
 def _matches_any(text: str, markers: tuple[str, ...]) -> bool:
     """Return True when any marker substring appears in text (already lowercased)."""
     return any(marker in text for marker in markers)
+
+
+# ---------------------------------------------------------------------------
+# Bounded opt-in stderr-matching gate (bu-hmdqz.2)
+# ---------------------------------------------------------------------------
+#
+# Reuses the exact same marker buckets consulted against the exception
+# message — no new vocabulary, no new eligibility class — so a stderr match
+# carries the identical reason-prefix taxonomy (``provider_auth_error`` /
+# ``provider_unavailable`` / ``rate_limit_before_work``) that discretion's
+# auth-health surface and the ``auth_failure_default`` ignore-kind already key
+# off of. Only the *source* of the matched text differs (adapter stderr /
+# error_detail instead of ``str(exc)``).
+#
+# Default-closed contract preserved: this gate requires BOTH of:
+#   1. ``process_info.get("is_pre_tool_call") is True`` — an explicit,
+#      adapter-supplied signal (not inferred from the absence of markers)
+#      that the failure happened before any tool call could have run. Gate 1
+#      (captured tool calls) already ran by the time any caller reaches this
+#      helper, so this is corroborating, not substituting, evidence.
+#   2. A marker match against ``error_detail`` (preferred) or ``stderr``.
+# Either condition failing falls through to the caller's own default-closed
+# return — this helper never turns "no signal" into "eligible".
+_STDERR_GATE_BUCKETS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("provider_auth_error", _PROVIDER_AUTH_MARKERS, "provider or authentication failure"),
+    (
+        "provider_unavailable",
+        _PROVIDER_AVAILABILITY_MARKERS,
+        "provider or backend availability failure",
+    ),
+    (
+        "rate_limit_before_work",
+        _RATE_LIMIT_MARKERS,
+        "provider rate-limit, quota, or billing rejection",
+    ),
+)
+
+
+def _stderr_gate_text(process_info: dict[str, Any]) -> str:
+    """Return the lowercased text to match, preferring ``error_detail`` over ``stderr``.
+
+    ``error_detail`` is the adapter's own structured extraction (see
+    ``RuntimeAdapter.last_process_info`` docstring: "preferred over raw
+    stderr for classifier matching"); raw ``stderr`` is the fallback for
+    adapters that do not populate ``error_detail``.
+    """
+    for key in ("error_detail", "stderr"):
+        value = process_info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.lower()
+    return ""
+
+
+def _classify_stderr_gate(process_info: dict[str, Any] | None) -> FailoverDecision | None:
+    """Bounded opt-in stderr-matching gate for pre-tool-call systemic failures.
+
+    Returns ``None`` (defer to the caller's own default-closed return) unless
+    the adapter explicitly marked the failure ``is_pre_tool_call=True`` AND
+    the stderr/error_detail text matches one of the systemic-failure marker
+    buckets. See the module-level comment above for the full contract.
+    """
+    if not isinstance(process_info, dict) or process_info.get("is_pre_tool_call") is not True:
+        return None
+    text = _stderr_gate_text(process_info)
+    if not text:
+        return None
+    for reason_prefix, markers, description in _STDERR_GATE_BUCKETS:
+        if _matches_any(text, markers):
+            return FailoverDecision(
+                eligible=True,
+                reason=f"{reason_prefix}: {description} detected in adapter stderr "
+                "(opt-in pre-tool-call stderr gate; process_info.is_pre_tool_call=True)",
+            )
+    return None
 
 
 def _is_opencode_pre_tool_call_api_error(ctx: FailoverContext, exc_msg: str) -> bool:

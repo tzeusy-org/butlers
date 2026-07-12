@@ -52,12 +52,14 @@ from butlers.core.mcp_urls import (
     runtime_mcp_url,
 )
 from butlers.core.metrics import ButlerMetrics
+from butlers.core.model_breaker_attention import maybe_push_breaker_open_attention
 from butlers.core.model_routing import (
     CEILING_DENIAL_REASON_PREFIX,
     Complexity,
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
+    get_breaker_state,
     next_same_tier_candidate,
     record_token_usage,
     resolve_model_with_effective_tier,
@@ -1648,6 +1650,33 @@ class Spawner:
                         tool_call_count=len(_attempt_tool_calls),
                         logical_session_id=effective_request_id,
                     )
+                    # Circuit breaker (bu-hmdqz.2): check whether this write just
+                    # tripped (or re-tripped, after a failed half-open probe) the
+                    # entry's dispatch-outcome breaker, and page the owner once
+                    # per cooldown. Best-effort — never allowed to disrupt the
+                    # failover loop.
+                    try:
+                        _breaker_state = await get_breaker_state(
+                            self._pool, _failed_catalog_entry_id
+                        )
+                        if _breaker_state.open:
+                            _alias_row = await self._pool.fetchrow(
+                                "SELECT alias FROM public.model_catalog WHERE id = $1",
+                                _failed_catalog_entry_id,
+                            )
+                            await maybe_push_breaker_open_attention(
+                                self._pool,
+                                catalog_entry_id=_failed_catalog_entry_id,
+                                alias=_alias_row["alias"] if _alias_row else model,
+                                model_id=model,
+                                consecutive_failures=_breaker_state.consecutive_failures,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Breaker-open attention check failed for catalog_entry_id=%s",
+                            _failed_catalog_entry_id,
+                            exc_info=True,
+                        )
 
                 # Attempt next same-tier candidate.
                 if catalog_entry_id is not None:

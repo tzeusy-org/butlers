@@ -375,6 +375,190 @@ class TestProviderAuthErrorsEligible:
         assert "default-closed" in dec.reason
 
 
+class TestRevokedRefreshTokenEligible:
+    """bu-hmdqz.2: regression test built from the exact live error string
+    (session b03d3af4-02b4-40f4-a524-9ed71809da72, health butler, 2026-07-12).
+
+    A revoked Codex ChatGPT OAuth refresh token silently disabled the
+    workhorse/reasoning/specialty tiers for hours: the RuntimeError message
+    matched none of the pre-existing auth markers, so
+    ``classify_failover_eligibility`` returned ``unknown_runtime_error`` and
+    suppressed same-tier failover to a verified alternate sitting one
+    priority slot away.
+    """
+
+    LIVE_ERROR_MESSAGE = (
+        "Codex CLI exited with code 1: Your access token could not be refreshed "
+        "because your refresh token was revoked. Please log out and sign in again."
+    )
+
+    def test_live_error_string_is_eligible(self) -> None:
+        """The exact live message must now classify as failover-eligible."""
+        dec = classify_failover_eligibility(_ctx(RuntimeError(self.LIVE_ERROR_MESSAGE)))
+        assert _eligible(dec), f"Expected eligible, got: {dec.reason}"
+
+    def test_live_error_string_carries_provider_auth_error_reason(self) -> None:
+        """Must land in the auth bucket (feeds discretion's auth-health surface)."""
+        dec = classify_failover_eligibility(_ctx(RuntimeError(self.LIVE_ERROR_MESSAGE)))
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "RuntimeError: refresh token is invalid",
+            "Your access token could not be refreshed because it expired",
+            "Please log out and sign in again to continue",
+        ],
+    )
+    def test_oauth_revocation_phrasing_variants_are_eligible(self, msg: str) -> None:
+        """Each of the three new markers independently makes an OAuth
+        revocation-style message eligible, not just the exact live string."""
+        dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
+        assert _eligible(dec), f"Expected eligible for msg={msg!r}, got: {dec.reason}"
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
+
+    def test_live_error_string_with_tool_calls_is_suppressed(self) -> None:
+        """Gate 1 (captured tool calls) still takes precedence over the new markers."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self.LIVE_ERROR_MESSAGE), tool_calls=[{"name": "some_tool"}])
+        )
+        assert _suppressed(dec)
+        assert "captured_tool_calls" in dec.reason
+
+
+class TestStderrGateOptIn:
+    """bu-hmdqz.2: bounded opt-in stderr-matching gate for pre-tool-call
+    failures. Covers the second half of the live incident's root cause: the
+    adapter's own stderr/error_detail (which frequently carries an
+    unambiguous marker like "401 Unauthorized") was never consulted when the
+    exception message itself was generic or adapter-mangled.
+    """
+
+    def test_stderr_gate_fires_on_auth_marker_when_pre_tool_call(self) -> None:
+        """An unmatched exception message + pre-tool-call stderr auth marker
+        is still eligible, carrying the same provider_auth_error prefix."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("Codex CLI exited with code 1"),
+                process_info={
+                    "error_detail": "401 Unauthorized: token_expired",
+                    "is_pre_tool_call": True,
+                },
+            )
+        )
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
+        assert "stderr" in dec.reason
+
+    def test_stderr_gate_falls_back_to_stderr_key_when_no_error_detail(self) -> None:
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("Codex CLI exited with code 1"),
+                process_info={"stderr": "connection refused", "is_pre_tool_call": True},
+            )
+        )
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_unavailable"), dec.reason
+
+    def test_stderr_gate_prefers_error_detail_over_stderr(self) -> None:
+        """error_detail is consulted first even when both keys are present
+        and would classify into different buckets."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("Codex CLI exited with code 1"),
+                process_info={
+                    "error_detail": "rate limit exceeded",
+                    "stderr": "unrelated noise with no markers",
+                    "is_pre_tool_call": True,
+                },
+            )
+        )
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("rate_limit_before_work"), dec.reason
+
+    def test_stderr_gate_requires_is_pre_tool_call_true(self) -> None:
+        """Default-closed contract: a matching stderr marker without the
+        explicit is_pre_tool_call=True signal must NOT open the gate."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("unrecognized failure"),
+                process_info={"error_detail": "401 unauthorized"},
+            )
+        )
+        assert _suppressed(dec)
+        assert "default-closed" in dec.reason
+
+    def test_stderr_gate_requires_is_pre_tool_call_not_false(self) -> None:
+        """is_pre_tool_call=False (adapter explicitly says tool work started)
+        must also keep the gate closed."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("unrecognized failure"),
+                process_info={"error_detail": "401 unauthorized", "is_pre_tool_call": False},
+            )
+        )
+        assert _suppressed(dec)
+
+    def test_stderr_gate_requires_marker_match(self) -> None:
+        """is_pre_tool_call=True alone, with no marker match, stays closed."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("unrecognized failure"),
+                process_info={"error_detail": "totally unrelated text", "is_pre_tool_call": True},
+            )
+        )
+        assert _suppressed(dec)
+        assert "default-closed" in dec.reason
+
+    def test_stderr_gate_does_not_override_captured_tool_calls(self) -> None:
+        """Gate 1 still wins even when stderr carries a marker and
+        is_pre_tool_call=True (an adapter self-report should never override
+        the daemon-side tool-call capture that is the authoritative
+        side-effect signal)."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("unrecognized failure"),
+                tool_calls=[{"name": "some_tool"}],
+                process_info={"error_detail": "401 unauthorized", "is_pre_tool_call": True},
+            )
+        )
+        assert _suppressed(dec)
+        assert "captured_tool_calls" in dec.reason
+
+    def test_stderr_gate_does_not_fire_for_business_validation_errors(self) -> None:
+        """Scope boundary: the stderr gate is only reachable for RuntimeError
+        and truly unknown exception classes, never for ValueError's
+        business/validation branch (which returns before reaching the gate)."""
+        dec = classify_failover_eligibility(
+            _ctx(
+                ValueError("invalid butler configuration"),
+                process_info={"error_detail": "401 unauthorized", "is_pre_tool_call": True},
+            )
+        )
+        assert _suppressed(dec)
+        assert "business_validation_error" in dec.reason
+
+    def test_stderr_gate_reachable_for_unknown_exception_classes(self) -> None:
+        """The gate also guards the bottom-of-function default-closed path
+        for exception classes with no dedicated gate (e.g. a bare custom
+        exception an adapter might raise)."""
+
+        class _CustomAdapterError(Exception):
+            pass
+
+        dec = classify_failover_eligibility(
+            _ctx(
+                _CustomAdapterError("opaque failure"),
+                process_info={
+                    "error_detail": "service unavailable",
+                    "is_pre_tool_call": True,
+                },
+            )
+        )
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("provider_unavailable"), dec.reason
+
+
 class TestForbiddenMarkerAuditGuard:
     """bu-0n2wk: pin the ``forbidden`` auth marker's behavior after the WAF/CDN
     false-positive audit.

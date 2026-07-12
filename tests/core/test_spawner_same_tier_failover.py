@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1022,3 +1023,191 @@ class TestFailoverMetricsEmission:
         mock_exhausted.assert_called_once()
         call_kwargs = mock_exhausted.call_args[1]
         assert call_kwargs["tier"] == "workhorse"
+
+
+class TestBreakerOpenAttentionWiring:
+    """bu-hmdqz.2: the spawner checks the dispatch-outcome circuit breaker right
+    after writing a runtime_failure provenance row, and pages the owner via
+    maybe_push_breaker_open_attention exactly when the breaker is now open.
+    """
+
+    async def test_breaker_open_triggers_attention_push(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        def _fetchrow_side_effect(query: str, *args: Any, **kwargs: Any) -> Any:
+            # Only the breaker-attention alias lookup needs a concrete row;
+            # every other fetchrow call in this loop (e.g. check_permission)
+            # is satisfied by AsyncMock's default permissive MagicMock.
+            if "SELECT alias FROM public.model_catalog" in query:
+                return {"alias": "primary-alias"}
+            return MagicMock()
+
+        mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow_side_effect)
+
+        adapter = _FailThenSuccessAdapter(
+            fail_count=1,
+            error=RuntimeError("connection refused: provider unavailable"),
+            result_text="fallback-succeeded",
+        )
+
+        breaker_state = SimpleNamespace(open=True, consecutive_failures=5)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "fallback-model",
+                    [],
+                    _FALLBACK_CATALOG_ID,
+                    1800,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.get_breaker_state",
+                new_callable=AsyncMock,
+                return_value=breaker_state,
+            ) as mock_get_breaker_state,
+            patch(
+                "butlers.core.spawner.maybe_push_breaker_open_attention",
+                new_callable=AsyncMock,
+            ) as mock_push,
+        ):
+            mock_create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        mock_get_breaker_state.assert_awaited_once_with(mock_pool, _PRIMARY_CATALOG_ID)
+        mock_push.assert_awaited_once()
+        push_kwargs = mock_push.await_args.kwargs
+        assert push_kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID
+        assert push_kwargs["alias"] == "primary-alias"
+        assert push_kwargs["model_id"] == "primary-model"
+        assert push_kwargs["consecutive_failures"] == 5
+
+    async def test_breaker_closed_does_not_trigger_attention_push(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        adapter = _FailThenSuccessAdapter(
+            fail_count=1,
+            error=RuntimeError("connection refused: provider unavailable"),
+            result_text="fallback-succeeded",
+        )
+
+        breaker_state = SimpleNamespace(open=False, consecutive_failures=1)
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "fallback-model",
+                    [],
+                    _FALLBACK_CATALOG_ID,
+                    1800,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.get_breaker_state",
+                new_callable=AsyncMock,
+                return_value=breaker_state,
+            ),
+            patch(
+                "butlers.core.spawner.maybe_push_breaker_open_attention",
+                new_callable=AsyncMock,
+            ) as mock_push,
+        ):
+            mock_create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        mock_push.assert_not_called()
+
+    async def test_breaker_check_failure_does_not_break_failover(self, tmp_path: Path) -> None:
+        """A raising breaker check must not interrupt the failover loop or the
+        eventual success — it is best-effort, mirroring the other provenance
+        writes in this loop."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        adapter = _FailThenSuccessAdapter(
+            fail_count=1,
+            error=RuntimeError("connection refused: provider unavailable"),
+            result_text="fallback-succeeded",
+        )
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "fallback-model",
+                    [],
+                    _FALLBACK_CATALOG_ID,
+                    1800,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner.get_breaker_state",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("breaker check boom"),
+            ),
+        ):
+            mock_create.return_value = _SESSION_ID
+            result = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick")
+
+        assert result.success is True
+        assert result.output == "fallback-succeeded"

@@ -12,7 +12,8 @@ The dashboard SHALL expose REST endpoints for full CRUD management of the global
 #### Scenario: List catalog entries (server-sorted)
 - **WHEN** `GET /api/settings/models` is called
 - **THEN** all model catalog entries are returned in the canonical sort order `(complexity_tier ASC under tier order [reasoning, workhorse, cheap, specialty, local, legacy], priority DESC, enabled DESC, alias ASC)`
-- **AND** each entry includes `id`, `alias`, `runtime_type`, `model_id`, `extra_args`, `complexity_tier`, `enabled`, `priority`, `session_timeout_s`, `usage_24h`, `usage_30d`, `limit_24h`, `limit_30d`, `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`
+- **AND** each entry includes `id`, `alias`, `runtime_type`, `model_id`, `extra_args`, `complexity_tier`, `enabled`, `priority`, `session_timeout_s`, `usage_24h`, `usage_30d`, `limit_24h`, `limit_30d`, `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, `last_verified_error`, `breaker_open`, `breaker_consecutive_failures`
+- **AND** `breaker_open` and `breaker_consecutive_failures` are computed via `model_routing.get_breaker_states` (see `model-catalog` — Dispatch-Outcome Circuit Breaker), batched across the whole list in one additional query, not N+1
 - **AND** the frontend MUST NOT re-sort the response; it MAY only filter.
 
 #### Scenario: Create catalog entry
@@ -131,14 +132,41 @@ The dashboard SHALL expose `PUT /api/settings/models/{id}/priority {delta: int}`
 - **THEN** the priority is clamped to 0 (no error).
 
 ### Requirement: Catalog Verify-All API
-The dashboard SHALL expose `POST /api/settings/models/verify-all` to re-verify every enabled model in parallel.
+The dashboard SHALL expose `POST /api/settings/models/verify-all` to re-verify every enabled model in parallel. The verification core is shared (`butlers.api.routers.model_settings.run_verify_all_models`) between this manual endpoint and the hourly automated sweep (see Hourly Automated Verification Sweep) so the two can never disagree about what "verified" means or how the result is persisted.
 
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is called
 - **THEN** the system issues a 1-token completion against each enabled model concurrently with a bounded concurrency of 8
-- **AND** for each model, `last_verified_at`, `last_verified_latency_ms`, and `last_verified_ok` are persisted
+- **AND** for each model, `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error` are persisted
+- **AND** `last_verified_error` is set to the truncated exception text on failure (or `"verification returned an empty response"` when the probe completed with no usable output) and cleared to `NULL` on success
 - **AND** the call is rate-limited to once per minute system-wide; subsequent calls within the minute return `429 Too Many Requests`
-- **AND** `audit.append("models.verify_all")` is invoked once per accepted run.
+- **AND** `audit.append("models.verify_all", actor="owner")` is invoked once per accepted run.
+
+### Requirement: Hourly Automated Verification Sweep
+The dashboard-api process SHALL run an hourly background sweep
+(`butlers.jobs.model_verify.run_model_verify_loop`, started from the FastAPI lifespan
+alongside the other periodic jobs) that calls the same verification core as the manual
+endpoint, so `last_verified_ok`/`last_verified_at` are never more than roughly one
+interval stale even when no operator visits the Models tab.
+
+#### Scenario: Hourly sweep runs independently of the manual rate limit
+- **WHEN** the sweep's interval (default `DEFAULT_MODEL_VERIFY_INTERVAL_S = 3600`,
+  overridable via `MODEL_VERIFY_INTERVAL_S`) elapses
+- **THEN** the sweep calls `run_verify_all_models(pool, audit_actor="model_verify_sweep")`
+  directly, bypassing the manual endpoint's once-per-minute HTTP rate limit (that limit is
+  an HTTP-surface concern specific to the operator-facing route)
+- **AND** `audit.append("models.verify_all", actor="model_verify_sweep")` is invoked,
+  distinguishing an automated run from an owner-initiated one in `public.audit_log`
+
+#### Scenario: Sweep sleeps first and tolerates a bad tick
+- **WHEN** the dashboard-api process starts
+- **THEN** the sweep loop sleeps for one interval before its first run (mirrors
+  `run_secrets_lifecycle_loop`), so it never fires real LLM-CLI verification calls during
+  a process boot or a test that exercises the full API lifespan
+- **AND** a single sweep's failure is logged and swallowed; the loop continues on its
+  next interval rather than dying
+- **AND** when no shared credential pool is configured, the sweep is a no-op tick (logged
+  at WARNING) rather than raising
 
 ### Requirement: Catalog Failures Tail API
 The dashboard SHALL expose `GET /api/settings/models/{id}/failures?since=24h` returning recent failure entries.
@@ -179,6 +207,19 @@ The `/settings/models` page SHALL render the catalog in the Dispatch design lang
 - **WHEN** a tier section has no models
 - **THEN** the section renders a single serif-italic line "Nothing in this tier." and no rows
 - **AND** the section header remains visible (do not hide the eyebrow).
+
+#### Scenario: Verification age, stored error, and routing consequence pixels
+- **WHEN** a model row renders its verification badge
+- **THEN** the row shows the verification age next to the ✓/✗ mark — a relative-compact
+  timestamp (`<Time mode="relative-compact">`) when `last_verified_at` is set, or the
+  literal text "never verified" when it is `null` — so staleness is never silently implied
+  by an ageless checkmark
+- **AND** when `last_verified_ok = false`, the ✗ mark's tooltip (`title` attribute) shows
+  the stored `last_verified_error` text (or a generic fallback when absent)
+- **AND** when `breaker_open = true`, the row shows a "breaker" badge whose tooltip states
+  the routing consequence and the `breaker_consecutive_failures` count — this is a
+  distinct signal from verification staleness (a breaker-open entry may still show
+  `last_verified_ok = true` if it was last manually verified before the failures began)
 
 #### Scenario: Priority stepper round-trip
 - **WHEN** a user clicks the up or down stepper on a model row
