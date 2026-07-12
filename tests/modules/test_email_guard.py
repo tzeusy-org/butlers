@@ -98,10 +98,12 @@ class TestCheckEmailRecipient:
         assert decision.action_id is not None
         # contact_desc reflects owner is still recognised as a known contact
         assert decision.contact_desc == "known non-owner contact"
-        # pending_action INSERT must have been called
-        pool.execute.assert_awaited_once()
-        insert_call = pool.execute.call_args
-        assert "pending_actions" in insert_call.args[0]
+        # pending_action INSERT must have been called (alongside the
+        # additive publish_fleet_event() NOTIFY bu-01r64.1 added to the same
+        # pool for the "created" approval bus event).
+        insert_calls = [c for c in pool.execute.call_args_list if "pending_actions" in c.args[0]]
+        assert len(insert_calls) == 1
+        assert "pending_actions" in insert_calls[0].args[0]
 
     async def test_non_owner_with_rule_approves(self) -> None:
         pool = AsyncMock()
@@ -146,10 +148,11 @@ class TestCheckEmailRecipient:
         assert decision.reason == "parked"
         assert decision.action_id is not None
         assert decision.contact_desc == "known non-owner contact"
-        # pending_action INSERT
-        pool.execute.assert_awaited_once()
-        insert_call = pool.execute.call_args
-        assert "pending_actions" in insert_call.args[0]
+        # pending_action INSERT (alongside the additive publish_fleet_event()
+        # NOTIFY bu-01r64.1 added to the same pool for the "created" event).
+        insert_calls = [c for c in pool.execute.call_args_list if "pending_actions" in c.args[0]]
+        assert len(insert_calls) == 1
+        insert_call = insert_calls[0]
         assert insert_call.args[5] == session_id
 
     async def test_invalid_session_id_is_not_written_to_pending_action(self) -> None:
@@ -168,8 +171,11 @@ class TestCheckEmailRecipient:
 
         assert decision.allowed is False
         assert decision.reason == "parked"
-        insert_call = pool.execute.call_args
-        assert "pending_actions" in insert_call.args[0]
+        # (alongside the additive publish_fleet_event() NOTIFY bu-01r64.1
+        # added to the same pool for the "created" approval bus event).
+        insert_calls = [c for c in pool.execute.call_args_list if "pending_actions" in c.args[0]]
+        assert len(insert_calls) == 1
+        insert_call = insert_calls[0]
         assert insert_call.args[5] is None
 
     async def test_unknown_contact_without_rule_parks(self) -> None:

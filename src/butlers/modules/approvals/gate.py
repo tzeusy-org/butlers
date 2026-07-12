@@ -424,8 +424,17 @@ def _make_gate_wrapper(
     _EVIDENCE_MAX_ITEMS = 50
     _EVIDENCE_ITEM_MAX_CHARS = 500
 
-    def _emit_created(action_id: uuid.UUID, status: str) -> None:
-        """Publish a 'created' approval WS event; silently ignored if broker is unavailable."""
+    async def _emit_created(action_id: uuid.UUID, status: str) -> None:
+        """Publish a 'created' approval WS event; silently ignored if broker is unavailable.
+
+        emit_approvals_event() only reaches WS subscribers when this code
+        runs inside the dashboard-api process; from the daemon process (the
+        normal case for a tool-call gate) it is a no-op (bu-01r64). The
+        publish_fleet_event() call below is the real cross-process path
+        (RFC 0022, bu-01r64.1) — additive so bu-01r64.2 can delete the
+        emit_approvals_event() call once the NOTIFY-based path has proven
+        itself.
+        """
         try:
             from butlers.api.routers.approvals import emit_approvals_event
 
@@ -438,6 +447,23 @@ def _make_gate_wrapper(
             )
         except Exception:  # noqa: BLE001
             logger.debug("gate: emit_approvals_event('created') failed; ignoring", exc_info=True)
+
+        try:
+            from butlers.fleet_events import publish_fleet_event
+
+            await publish_fleet_event(
+                pool,
+                "approval",
+                {
+                    "kind": "created",
+                    "approval_id": str(action_id),
+                    "butler": butler_name,
+                    "tool_name": tool_name,
+                    "status": status,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("gate: publish_fleet_event('approval') failed; ignoring", exc_info=True)
 
     async def gate_wrapper(**kwargs: Any) -> dict[str, Any]:
         tool_args = dict(kwargs)
@@ -569,7 +595,7 @@ def _make_gate_wrapper(
                 why,
                 evidence,
             )
-            _emit_created(action_id, ActionStatus.APPROVED.value)
+            await _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(
                 pool,
                 ApprovalEventType.ACTION_QUEUED,
@@ -662,7 +688,7 @@ def _make_gate_wrapper(
                 why,
                 evidence,
             )
-            _emit_created(action_id, ActionStatus.APPROVED.value)
+            await _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(
                 pool,
                 ApprovalEventType.ACTION_QUEUED,
@@ -732,7 +758,7 @@ def _make_gate_wrapper(
             why,
             evidence,
         )
-        _emit_created(action_id, ActionStatus.PENDING.value)
+        await _emit_created(action_id, ActionStatus.PENDING.value)
         await record_approval_event(
             pool,
             ApprovalEventType.ACTION_QUEUED,

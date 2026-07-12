@@ -139,8 +139,11 @@ class TestCheckEmailRecipientContextMismatch:
         assert decision.allowed is False
         assert decision.reason == "parked"
         assert decision.action_id is not None
-        # pending_action INSERT was called for context mismatch
-        pool.execute.assert_awaited_once()
+        # pending_action INSERT was called for context mismatch (alongside
+        # the additive publish_fleet_event() NOTIFY bu-01r64.1 added to the
+        # same pool for the "created" approval bus event).
+        insert_calls = [c for c in pool.execute.call_args_list if "pending_actions" in c.args[0]]
+        assert len(insert_calls) == 1
 
     async def test_context_mismatch_parks_unknown_contact(self) -> None:
         """Personal message to a work-tagged address from unknown contact → parked."""

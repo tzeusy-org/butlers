@@ -2232,7 +2232,16 @@ class Spawner:
             # Emit per-call cost event to the live WS spend stream.
             # Uses the same token counts as the DB ledger (best-effort early capture).
             # Lazy import avoids a circular dependency: core → api.
+            #
+            # emit_spend_event() (and the emit_event("spend", ...) it fans onto
+            # internally) only reaches WS subscribers when this code runs inside
+            # the dashboard-api process; from the daemon process (the normal
+            # case) it is a no-op (bu-01r64). The publish_fleet_event() call
+            # below is the real cross-process path (RFC 0022, bu-01r64.1) —
+            # additive so bu-01r64.2 can delete the emit_spend_event() call once
+            # the NOTIFY-based path has proven itself.
             if _ledger_input_tokens is not None:
+                _spend_event: dict[str, Any] | None = None
                 try:
                     from butlers.api.pricing import estimate_session_cost, load_pricing
                     from butlers.api.routers.spend import emit_spend_event
@@ -2251,21 +2260,20 @@ class Spawner:
                         cached_input_tokens=_ledger_cached_input_tokens,
                         cache_creation_tokens=_ledger_cache_creation_tokens,
                     )
-                    emit_spend_event(
-                        {
-                            "kind": "call",
-                            "ts": time.time(),
-                            "butler": self._config.name,
-                            "model": model or "unknown",
-                            "tokens_in": _ledger_input_tokens,
-                            "tokens_out": _ledger_output_tokens or 0,
-                            "tokens_cached": _ledger_cached_input_tokens,
-                            "tokens_cache_write": _ledger_cache_creation_tokens,
-                            "cost_usd": _cost_usd,
-                            "session_id": str(session_id) if session_id else "",
-                            "extra": {},
-                        }
-                    )
+                    _spend_event = {
+                        "kind": "call",
+                        "ts": time.time(),
+                        "butler": self._config.name,
+                        "model": model or "unknown",
+                        "tokens_in": _ledger_input_tokens,
+                        "tokens_out": _ledger_output_tokens or 0,
+                        "tokens_cached": _ledger_cached_input_tokens,
+                        "tokens_cache_write": _ledger_cache_creation_tokens,
+                        "cost_usd": _cost_usd,
+                        "session_id": str(session_id) if session_id else "",
+                        "extra": {},
+                    }
+                    emit_spend_event(_spend_event)
                 except Exception:
                     logger.debug(
                         "emit_spend_event failed for session=%s butler=%s (non-fatal)",
@@ -2273,6 +2281,20 @@ class Spawner:
                         self._config.name,
                         exc_info=True,
                     )
+
+                if _spend_event is not None and self._pool is not None:
+                    try:
+                        from butlers.fleet_events import publish_fleet_event
+
+                        await publish_fleet_event(self._pool, "spend", _spend_event)
+                    except Exception:
+                        logger.debug(
+                            "publish_fleet_event('spend') failed for session=%s butler=%s "
+                            "(non-fatal)",
+                            session_id,
+                            self._config.name,
+                            exc_info=True,
+                        )
             # Clear session context before ending span so tool handlers
             # arriving after this point don't attach to a finished span.
             clear_active_session_context()

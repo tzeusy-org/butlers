@@ -157,8 +157,17 @@ async def check_email_recipient(
         ``.allowed=True`` if delivery may proceed, ``False`` if parked.
     """
 
-    def _emit_created(action_id: uuid.UUID, status: str) -> None:
-        """Publish a 'created' approval WS event; silently ignored if broker is unavailable."""
+    async def _emit_created(action_id: uuid.UUID, status: str) -> None:
+        """Publish a 'created' approval WS event; silently ignored if broker is unavailable.
+
+        emit_approvals_event() only reaches WS subscribers when this code
+        runs inside the dashboard-api process; from the daemon process (the
+        normal case for notify()/route.execute) it is a no-op (bu-01r64).
+        publish_fleet_event() below is the real cross-process path (RFC 0022,
+        bu-01r64.1) — additive so bu-01r64.2 can delete the
+        emit_approvals_event() call once the NOTIFY-based path has proven
+        itself.
+        """
         try:
             from butlers.api.routers.approvals import emit_approvals_event
 
@@ -172,6 +181,25 @@ async def check_email_recipient(
         except Exception:  # noqa: BLE001
             logger.debug(
                 "email guard: emit_approvals_event('created') failed; ignoring", exc_info=True
+            )
+
+        try:
+            from butlers.fleet_events import publish_fleet_event
+
+            await publish_fleet_event(
+                pool,
+                "approval",
+                {
+                    "kind": "created",
+                    "approval_id": str(action_id),
+                    "butler": butler_name,
+                    "tool_name": park_tool_name,
+                    "status": status,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "email guard: publish_fleet_event('approval') failed; ignoring", exc_info=True
             )
 
     from butlers.identity import resolve_contact_by_channel
@@ -231,7 +259,7 @@ async def check_email_recipient(
                     now,
                     expires_at,
                 )
-                _emit_created(action_id, ActionStatus.PENDING.value)
+                await _emit_created(action_id, ActionStatus.PENDING.value)
                 logger.warning(
                     "email guard: context mismatch — blocked delivery to %s %r "
                     "(msg_context=%r, address_context=%r) — parked as pending_action %s",
@@ -312,7 +340,7 @@ async def check_email_recipient(
             now,
             expires_at,
         )
-        _emit_created(action_id, ActionStatus.PENDING.value)
+        await _emit_created(action_id, ActionStatus.PENDING.value)
         logger.warning(
             "email guard: blocked delivery to %s %r — parked as pending_action %s",
             contact_desc,
@@ -397,8 +425,17 @@ async def check_recipient(
 
     contact_desc = "known non-owner contact" if contact is not None else "unknown contact"
 
-    def _emit_created(action_id: uuid.UUID, status: str) -> None:
-        """Publish a 'created' approval WS event; silently ignored if broker is unavailable."""
+    async def _emit_created(action_id: uuid.UUID, status: str) -> None:
+        """Publish a 'created' approval WS event; silently ignored if broker is unavailable.
+
+        emit_approvals_event() only reaches WS subscribers when this code
+        runs inside the dashboard-api process; from the daemon process (the
+        normal case for notify()/route.execute) it is a no-op (bu-01r64).
+        publish_fleet_event() below is the real cross-process path (RFC 0022,
+        bu-01r64.1) — additive so bu-01r64.2 can delete the
+        emit_approvals_event() call once the NOTIFY-based path has proven
+        itself.
+        """
         try:
             from butlers.api.routers.approvals import emit_approvals_event
 
@@ -412,6 +449,26 @@ async def check_recipient(
         except Exception:  # noqa: BLE001
             logger.debug(
                 "recipient guard: emit_approvals_event('created') failed; ignoring",
+                exc_info=True,
+            )
+
+        try:
+            from butlers.fleet_events import publish_fleet_event
+
+            await publish_fleet_event(
+                pool,
+                "approval",
+                {
+                    "kind": "created",
+                    "approval_id": str(action_id),
+                    "butler": butler_name,
+                    "tool_name": park_tool_name,
+                    "status": status,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "recipient guard: publish_fleet_event('approval') failed; ignoring",
                 exc_info=True,
             )
 
@@ -470,7 +527,7 @@ async def check_recipient(
             now,
             expires_at,
         )
-        _emit_created(action_id, ActionStatus.PENDING.value)
+        await _emit_created(action_id, ActionStatus.PENDING.value)
         logger.warning(
             "recipient guard: blocked %s send to %s %r — parked as pending_action %s",
             channel,

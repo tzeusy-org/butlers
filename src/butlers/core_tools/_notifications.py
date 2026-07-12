@@ -965,23 +965,44 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 "notify_request": notify_request,
             }
 
-            def _emit_notification_event() -> None:
+            async def _emit_notification_event() -> None:
                 """Fan a "notification" event onto the multiplexed fleet event
                 bus (bu-86c4c.8, move 5) for a successfully-delivered notify()
-                call. Best-effort: never lets a bus hiccup fail delivery."""
+                call. Best-effort: never lets a bus hiccup fail delivery.
+
+                The direct emit_event() call only reaches WS subscribers when
+                this code happens to run inside the dashboard-api process;
+                from the daemon process (the normal case for notify()) it is
+                a no-op (bu-01r64). publish_fleet_event() is the real
+                cross-process path (RFC 0022, bu-01r64.1) — additive so
+                bu-01r64.2 can delete the emit_event() call once the
+                NOTIFY-based path has proven itself.
+                """
+                notification_event_data = {
+                    "butler": butler_name,
+                    "channel": channel,
+                    "intent": intent,
+                }
                 try:
                     from butlers.api.routers.events import emit_event
 
-                    emit_event(
-                        "notification",
-                        {
-                            "butler": butler_name,
-                            "channel": channel,
-                            "intent": intent,
-                        },
-                    )
+                    emit_event("notification", notification_event_data)
                 except Exception:
                     logger.debug("emit_event('notification') failed (non-fatal)", exc_info=True)
+
+                notify_pool = daemon.db.pool if daemon.db is not None else None
+                if notify_pool is not None:
+                    try:
+                        from butlers.fleet_events import publish_fleet_event
+
+                        await publish_fleet_event(
+                            notify_pool, "notification", notification_event_data
+                        )
+                    except Exception:
+                        logger.debug(
+                            "publish_fleet_event('notification') failed (non-fatal)",
+                            exc_info=True,
+                        )
 
             # Switchboard self-delivery: call deliver() directly instead of
             # proxying through switchboard_client (which is None on switchboard).
@@ -1008,7 +1029,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             "status": "error",
                             "error": result.get("error", "Delivery failed"),
                         }
-                    _emit_notification_event()
+                    await _emit_notification_event()
                     await record_attention_event(
                         pool,
                         origin_butler=butler_name,
@@ -1052,7 +1073,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         "retryable": data.get("retryable", False),
                         "notification_id": data.get("notification_id"),
                     }
-                _emit_notification_event()
+                await _emit_notification_event()
                 await record_attention_event(
                     daemon.db.pool if daemon.db is not None else None,
                     origin_butler=butler_name,

@@ -214,21 +214,33 @@ async def session_create(
     # (bu-86c4c.8, move 5). Lazy import avoids a circular dependency: core →
     # api (mirrors spawner.py's lazy import of emit_spend_event). Best-effort:
     # never let this block or fail session creation.
+    #
+    # This in-process emit_event() call only reaches WS subscribers when this
+    # code runs inside the dashboard-api process; from the daemon process
+    # (the normal case) it is a no-op (bu-01r64). The publish_fleet_event()
+    # call just below is the real cross-process delivery path (RFC 0022) and
+    # is additive by design so bu-01r64.2 can delete the block above once the
+    # NOTIFY-based path has proven itself.
+    session_event_data = {
+        "phase": "started",
+        "session_id": str(session_id),
+        "butler": butler_name,
+        "trigger_source": trigger_source,
+        "model": model,
+    }
     try:
         from butlers.api.routers.events import emit_event
 
-        emit_event(
-            "session",
-            {
-                "phase": "started",
-                "session_id": str(session_id),
-                "butler": butler_name,
-                "trigger_source": trigger_source,
-                "model": model,
-            },
-        )
+        emit_event("session", session_event_data)
     except Exception:
         logger.debug("emit_event('session') failed (non-fatal)", exc_info=True)
+
+    try:
+        from butlers.fleet_events import publish_fleet_event
+
+        await publish_fleet_event(pool, "session", session_event_data)
+    except Exception:
+        logger.debug("publish_fleet_event('session') failed (non-fatal)", exc_info=True)
 
     return session_id
 
@@ -326,21 +338,31 @@ async def session_complete(
     # (bu-86c4c.8, move 5). Lazy import avoids a circular dependency: core →
     # api (mirrors spawner.py's lazy import of emit_spend_event). Best-effort:
     # never let this block or fail session completion.
+    #
+    # See the "session started" block above: this in-process emit_event()
+    # call is only observed when running inside the dashboard-api process.
+    # publish_fleet_event() below is the real cross-process path (RFC 0022,
+    # bu-01r64.1); additive so bu-01r64.2 can delete the dead block above.
+    session_event_data = {
+        "phase": "ended",
+        "session_id": str(session_id),
+        "butler": butler_name,
+        "duration_ms": duration_ms,
+        "success": success,
+    }
     try:
         from butlers.api.routers.events import emit_event
 
-        emit_event(
-            "session",
-            {
-                "phase": "ended",
-                "session_id": str(session_id),
-                "butler": butler_name,
-                "duration_ms": duration_ms,
-                "success": success,
-            },
-        )
+        emit_event("session", session_event_data)
     except Exception:
         logger.debug("emit_event('session') failed (non-fatal)", exc_info=True)
+
+    try:
+        from butlers.fleet_events import publish_fleet_event
+
+        await publish_fleet_event(pool, "session", session_event_data)
+    except Exception:
+        logger.debug("publish_fleet_event('session') failed (non-fatal)", exc_info=True)
 
 
 async def recover_orphaned_sessions(pool: asyncpg.Pool) -> int:

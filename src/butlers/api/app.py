@@ -232,6 +232,7 @@ async def lifespan(app: FastAPI):
     secrets_staleness_task: asyncio.Task | None = None
     migration_drift_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
+    fleet_events_bridge_task: asyncio.Task | None = None
     restore_drill_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
@@ -270,6 +271,28 @@ async def lifespan(app: FastAPI):
         )
         _BACKGROUND_TASKS.add(secrets_lifecycle_task)
         secrets_lifecycle_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+        # Fleet-events NOTIFY bridge (bu-01r64.1): daemon processes publish
+        # session/spend/notification/approval events via Postgres NOTIFY
+        # (butlers.fleet_events.publish_fleet_event) because they run in a
+        # separate container from this process and the in-process event bus
+        # below is otherwise invisible to them (see RFC 0022). This bridges
+        # those NOTIFYs back into the real emit_event() bus. Guarded in its
+        # own try/except so a bridge failure never takes down DatabaseManager
+        # init — daemon-originated live events degrade to "missing" rather
+        # than the whole dashboard-api failing to start.
+        try:
+            from butlers.api.fleet_events_bridge import run_fleet_events_listener
+
+            fleet_events_bridge_task = asyncio.create_task(run_fleet_events_listener())
+            _BACKGROUND_TASKS.add(fleet_events_bridge_task)
+            fleet_events_bridge_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        except Exception:
+            logger.warning(
+                "Failed to start fleet-events NOTIFY bridge; daemon-originated live events "
+                "(session/spend/notification/approval) will not reach WS /api/events/stream",
+                exc_info=True,
+            )
 
         # Settings Console live updates (bu-3quv8): fans header_delta /
         # attention_add / attention_remove onto the unified fleet event bus
@@ -408,6 +431,10 @@ async def lifespan(app: FastAPI):
         secrets_lifecycle_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await secrets_lifecycle_task
+    if fleet_events_bridge_task is not None:
+        fleet_events_bridge_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await fleet_events_bridge_task
     if settings_console_delta_task is not None:
         settings_console_delta_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
