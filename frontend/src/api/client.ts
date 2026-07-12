@@ -1304,12 +1304,18 @@ export function getAuditLog(
 /**
  * Fetch the raw audit_log rows behind one "Seen Nx" issue group (JARVIS audit
  * move 6). `issueKey` is the group's stable `Issue.issue_key`.
+ *
+ * `window` (bu-hmdqz.4) MUST match the window the feed was viewed under --
+ * the endpoint re-derives the group with the same time bound and row cap as
+ * `GET /api/issues`, so the reported total never disagrees with what the
+ * feed showed.
  */
 export function getIssueOccurrences(
   issueKey: string,
-  params?: { offset?: number; limit?: number },
+  params?: { window?: string; offset?: number; limit?: number },
 ): Promise<PaginatedResponse<AuditLogEntry>> {
   const sp = new URLSearchParams();
+  if (params?.window) sp.set("window", params.window);
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   const qs = sp.toString();

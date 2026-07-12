@@ -254,17 +254,25 @@ class HealthResponse(BaseModel):
 def compute_issue_key(issue_type: str, butler: str) -> str:
     """Return a deterministic, persistence-safe key identifying an issue group.
 
-    The key is stable across requests so a server-side dismissal (ack) can be
-    keyed against it:
+    Used for the **reachability** lane (``type == "unreachable"``): the
+    ``butler`` component disambiguates one unreachable butler from another,
+    and neither component is derived from a windowed aggregate, so the
+    composite key is stable across requests.
 
-    - Audit-derived issues already carry a deterministic ``type`` slug that
-      encodes the normalized error message (see ``audit_grouping``), so the
-      ``type`` component alone identifies the group.
-    - Reachability issues all share ``type == "unreachable"``; the ``butler``
-      component disambiguates one unreachable butler from another.
-
-    Multi-butler audit groups use ``butler == "multiple"``, which is itself
-    stable for a given error type, so the composite key stays consistent.
+    Audit-derived issues (``audit_error_group:*`` / ``scheduled_task_failure:*``)
+    do NOT use this composition -- see ``Issue.group_key`` /
+    ``audit_grouping.audit_group_key`` (bu-hmdqz.4). They used to (an
+    80-char-truncated slug of the error message plus a ``butler`` component
+    derived from ``ARRAY_AGG(DISTINCT butler)`` over whatever window
+    happened to run), but that had two live bugs: two distinct long error
+    messages sharing the same first-80-character slug collided onto one key
+    (acking one silently acked both), and the butler-set aggregate is
+    window-dependent -- the same group could compute ``butler="switchboard"``
+    in a 7-day feed query and ``butler="multiple"`` in an all-time drill-down
+    query, so the drill-down's re-derived key never matched the feed's and
+    404'd. Both are structural properties of composing the key from
+    aggregates *over* the group rather than the group's own identity (the
+    normalized ``error_summary`` it is ``GROUP BY``'d on).
     """
     return f"{issue_type}::{butler}"
 
@@ -283,11 +291,20 @@ class Issue(BaseModel):
     last_seen_at: datetime | None = None
     butlers: list[str] = Field(default_factory=list)
     dismissed: bool = False
+    #: Internal override for audit-derived groups (bu-hmdqz.4). When set,
+    #: ``issue_key`` returns this value directly instead of composing
+    #: ``compute_issue_key(type, butler)`` -- see that function's docstring
+    #: for why the composite form is unsafe for this lane. Excluded from the
+    #: JSON response: it's plumbing that produces ``issue_key``, not a
+    #: separate fact about the issue worth exposing twice.
+    group_key: str | None = Field(default=None, exclude=True, repr=False)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def issue_key(self) -> str:
         """Stable identifier used by the dismissal (ack) store and the UI."""
+        if self.group_key is not None:
+            return self.group_key
         return compute_issue_key(self.type, self.butler)
 
 

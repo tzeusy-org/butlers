@@ -99,11 +99,23 @@ export function useUndismissIssue() {
  * (JARVIS audit move 6). Only enabled while `issueKey` is provided and the
  * caller has actually expanded the row — no point fetching occurrences for
  * every collapsed issue on the page.
+ *
+ * `window` (bu-hmdqz.4) MUST be the same window the feed itself is showing
+ * (IssuesPage's `activeWindow`) so the group re-derived here can never
+ * disagree with the group the user is looking at. `limit` supports the
+ * panel's "Load more" control (default 50, grows toward the backend's
+ * 500-row cap); the query key includes it so a limit bump refetches instead
+ * of serving a stale, smaller cached page.
  */
-export function useIssueOccurrences(issueKey: string | null, enabled: boolean) {
+export function useIssueOccurrences(
+  issueKey: string | null,
+  enabled: boolean,
+  window?: string,
+  limit?: number,
+) {
   return useQuery({
-    queryKey: ["issues", "occurrences", issueKey],
-    queryFn: () => getIssueOccurrences(issueKey as string),
+    queryKey: ["issues", "occurrences", issueKey, { window, limit }],
+    queryFn: () => getIssueOccurrences(issueKey as string, { window, limit }),
     enabled: enabled && !!issueKey,
   });
 }

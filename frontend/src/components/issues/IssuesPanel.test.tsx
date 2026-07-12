@@ -315,6 +315,42 @@ describe("IssuesPanel", () => {
       expect(screen.queryByText("No occurrences found for this group.")).toBeNull();
     });
 
+    it("renders a 'Showing X of N' count and a Load more control when more occurrences exist (bu-hmdqz.4)", () => {
+      const issue = makeIssue();
+      const onLoadMoreOccurrences = vi.fn();
+      renderPanel({
+        issues: [issue],
+        onToggleOccurrences: vi.fn(),
+        expandedIssueKey: issue.issue_key,
+        occurrences: [makeOccurrence()],
+        occurrencesTotal: 5,
+        onLoadMoreOccurrences,
+      });
+
+      expect(screen.getByTestId("occurrences-showing-count").textContent).toBe(
+        "Showing 1 of 5",
+      );
+      const loadMore = screen.getByTestId("occurrences-load-more");
+      fireEvent.click(loadMore);
+      expect(onLoadMoreOccurrences).toHaveBeenCalledTimes(1);
+    });
+
+    it("hides the Load more control once every occurrence has been loaded", () => {
+      const issue = makeIssue();
+      renderPanel({
+        issues: [issue],
+        onToggleOccurrences: vi.fn(),
+        expandedIssueKey: issue.issue_key,
+        occurrences: [makeOccurrence({ id: 1 }), makeOccurrence({ id: 2 })],
+        occurrencesTotal: 2,
+      });
+
+      expect(screen.getByTestId("occurrences-showing-count").textContent).toBe(
+        "Showing 2 of 2",
+      );
+      expect(screen.queryByTestId("occurrences-load-more")).toBeNull();
+    });
+
     it("clicking a nested action control (Acknowledge) does not also toggle the disclosure row", () => {
       const onToggleOccurrences = vi.fn();
       const onDismiss = vi.fn();

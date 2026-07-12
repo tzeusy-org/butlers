@@ -86,6 +86,15 @@ interface IssuesPanelProps {
   /** True if the occurrences fetch for the expanded issue failed. */
   occurrencesError?: boolean
   /**
+   * The expanded group's TRUE occurrence count within the feed's current
+   * window (bu-hmdqz.4's `PaginationMeta.total`) -- may exceed
+   * `occurrences.length` when more rows exist than the current page limit.
+   * Undefined while the query hasn't settled yet.
+   */
+  occurrencesTotal?: number
+  /** Called when the user asks to load more of the expanded group's occurrences. */
+  onLoadMoreOccurrences?: () => void
+  /**
    * `issue_key` of the row currently selected by j/k list-triage
    * (bu-qvnce.11 slice 4, `useListTriage` on IssuesPage). Highlights that
    * row and gives it the `issue-row` testid + `data-issue-key` so IssuesPage
@@ -103,10 +112,15 @@ function OccurrencesPanel({
   occurrences,
   isLoading,
   isError,
+  total,
+  onLoadMore,
 }: {
   occurrences: AuditLogEntry[]
   isLoading?: boolean
   isError?: boolean
+  /** The group's true occurrence count within the current window (undefined until settled). */
+  total?: number
+  onLoadMore?: () => void
 }) {
   if (isLoading) {
     return (
@@ -134,27 +148,52 @@ function OccurrencesPanel({
     )
   }
 
+  // "Showing X of N" (bu-hmdqz.4): total may exceed the currently-loaded page
+  // (the endpoint applies the feed's own window + row cap, so a group's true
+  // occurrence total can be much larger than what's rendered by default).
+  const hasMore = total != null && occurrences.length < total
+
   return (
-    <ul className="space-y-1.5 border-t px-3 py-2">
-      {occurrences.map((entry) => (
-        <li key={entry.id} className="flex items-center gap-2 text-xs">
-          <Time value={entry.ts} mode="relative" />
-          <ButlerMark name={entry.actor} size={14} />
-          <span className="text-muted-foreground">{entry.actor}</span>
-          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-            {entry.action}
-          </code>
-          {entry.request_id && (
-            <Link
-              to={`/sessions?request=${encodeURIComponent(entry.request_id)}`}
-              className="ml-auto shrink-0 text-muted-foreground hover:text-foreground hover:underline"
+    <div className="border-t px-3 py-2">
+      <ul className="space-y-1.5">
+        {occurrences.map((entry) => (
+          <li key={entry.id} className="flex items-center gap-2 text-xs">
+            <Time value={entry.ts} mode="relative" />
+            <ButlerMark name={entry.actor} size={14} />
+            <span className="text-muted-foreground">{entry.actor}</span>
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+              {entry.action}
+            </code>
+            {entry.request_id && (
+              <Link
+                to={`/sessions?request=${encodeURIComponent(entry.request_id)}`}
+                className="ml-auto shrink-0 text-muted-foreground hover:text-foreground hover:underline"
+              >
+                Session →
+              </Link>
+            )}
+          </li>
+        ))}
+      </ul>
+      {total != null && (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground" data-testid="occurrences-showing-count">
+            Showing {occurrences.length} of {total}
+          </span>
+          {hasMore && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onLoadMore}
+              disabled={!onLoadMore}
+              data-testid="occurrences-load-more"
             >
-              Session →
-            </Link>
+              Load more
+            </Button>
           )}
-        </li>
-      ))}
-    </ul>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -177,6 +216,8 @@ export default function IssuesPanel({
   occurrences = [],
   occurrencesLoading,
   occurrencesError,
+  occurrencesTotal,
+  onLoadMoreOccurrences,
   selectedIssueKey = null,
 }: IssuesPanelProps) {
   if (isLoading) {
@@ -397,6 +438,8 @@ export default function IssuesPanel({
                     occurrences={occurrences}
                     isLoading={occurrencesLoading}
                     isError={occurrencesError}
+                    total={occurrencesTotal}
+                    onLoadMore={onLoadMoreOccurrences}
                   />
                 </div>
               )}

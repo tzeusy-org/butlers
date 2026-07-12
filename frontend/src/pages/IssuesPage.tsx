@@ -174,10 +174,25 @@ export default function IssuesPage() {
   // presentational component with no data-fetching of its own, consistent
   // with how dismiss/ping/run-now are already wired through props.
   const [expandedIssueKey, setExpandedIssueKey] = useState<string | null>(null);
-  const occurrencesQuery = useIssueOccurrences(expandedIssueKey, expandedIssueKey !== null);
+  // "Load more" state for the expanded group's occurrences (bu-hmdqz.4):
+  // starts at the backend's own default (50) and grows by 50 up to its
+  // 500-row cap. Reset whenever a (possibly different) row is expanded so a
+  // previous row's "loaded more" state doesn't leak into the next one.
+  const [occurrencesLimit, setOccurrencesLimit] = useState(50);
+  const occurrencesQuery = useIssueOccurrences(
+    expandedIssueKey,
+    expandedIssueKey !== null,
+    activeWindow,
+    occurrencesLimit,
+  );
 
   function handleToggleOccurrences(issueKey: string) {
     setExpandedIssueKey((prev) => (prev === issueKey ? null : issueKey));
+    setOccurrencesLimit(50);
+  }
+
+  function handleLoadMoreOccurrences() {
+    setOccurrencesLimit((prev) => Math.min(500, prev + 50));
   }
 
   function handleDismiss(issue: Issue) {
@@ -414,6 +429,8 @@ export default function IssuesPage() {
         occurrences={occurrencesQuery.data?.data ?? []}
         occurrencesLoading={occurrencesQuery.isLoading}
         occurrencesError={occurrencesQuery.isError}
+        occurrencesTotal={occurrencesQuery.data?.meta.total}
+        onLoadMoreOccurrences={handleLoadMoreOccurrences}
         selectedIssueKey={selectedIssueKey}
       />
       {/* Shared footer hint strip (bu-qvnce.11 slice 4) -- advertises the

@@ -44,10 +44,17 @@ The dashboard SHALL expose paginated read access to the audit log.
 - **THEN** the response is `ApiResponse[AuditLogEntry]` if the row exists, else `404`.
 
 #### Scenario: Drill into an audit-derived issue group's occurrences
-- **WHEN** `GET /api/issues/{issue_key}/occurrences?offset=&limit=` is called for an active `audit_error_group:*` or `scheduled_task_failure:*` issue group
-- **THEN** the response is `PaginatedResponse[AuditLogEntry]` containing the individual `public.audit_log` rows behind that group's occurrence count, newest first
-- **AND** the group is re-derived from the same grouping CTE used to build the Issues feed, so the occurrences can never disagree with the group's own definition
-- **AND** an `issue_key` that does not match any currently-active group returns `404`.
+- **WHEN** `GET /api/issues/{issue_key}/occurrences?window=&offset=&limit=` is called for an active `audit_error_group:*` or `scheduled_task_failure:*` issue group
+- **THEN** the response is `PaginatedResponse[AuditLogEntry]` containing the individual `public.audit_log` rows behind that group's occurrence count, newest first, with `meta.total` reflecting the group's true occurrence count within `window`
+- **AND** the group is re-derived from the same grouping CTE used to build the Issues feed, applying the same `window` time bound (`<N>h`, `<N>d`, default `7d`, or `all`) and the same row cap as `GET /api/issues` (bu-hmdqz.4), so the occurrences and their total can never disagree with what the feed showed under that window
+- **AND** `limit` defaults to 50 and is clamped to `≤ 500`; the frontend renders "Showing X of N" and a "Load more" control while more rows remain
+- **AND** an `issue_key` that does not match any currently-active group within `window` returns `404`.
+
+#### Scenario: Tolerant metadata deserialization for poisoned rows
+- **WHEN** `AuditLogEntry.from_record` projects the `metadata` column and `jsonb_typeof(metadata) = 'string'` (a since-fixed write path double-JSON-encoded the value for a contiguous 2026-06-14 -> 07-05 band, bu-hmdqz.4)
+- **THEN** the string is decoded as JSON; if it decodes to an object, that object is used
+- **AND** if it does not decode to an object (invalid JSON, or valid JSON that isn't an object), the raw string is wrapped losslessly as `{"_raw": <string>}` instead of raising
+- **AND** this MUST NOT 500 the response — a poisoned `metadata` value on any row must never take down a list or detail read of the surrounding table.
 
 ### Requirement: Audit Log Retention
 The audit log SHALL be retained indefinitely. No retention job, no expiry, no deletes.
@@ -56,6 +63,12 @@ The audit log SHALL be retained indefinitely. No retention job, no expiry, no de
 - **WHEN** the system runs the daily maintenance job
 - **THEN** no rows are removed from `audit_log`
 - **AND** no row is updated in place (the table is append-only).
+
+#### Scenario: One-shot structural metadata repair is not a retention violation
+- **WHEN** a write-path defect causes a contiguous band of `audit_log` rows to store `metadata` as JSON-encoded text instead of an object (`jsonb_typeof(metadata) = 'string'`, bu-hmdqz.4)
+- **THEN** a one-shot, batched, idempotent migration MAY normalize just the `metadata` column of the affected rows back to the correct object shape, preserving the original content losslessly (decoding valid JSON back to an object, or wrapping non-object content under `_raw`)
+- **AND** this is a data-integrity repair of a poisoned write path, not an ordinary update — it MUST NOT touch `ts`, `actor`, `action`, `target`, `result`, or `error`, and MUST NOT be used as precedent for any other kind of edit
+- **AND** the retention/append-only guarantee otherwise stands: no row is ever deleted, and no column other than a proven-poisoned `metadata` is ever rewritten.
 
 ## Source References
 - PLAN.md §6 Phase 1 Foundations: audit log primitive.

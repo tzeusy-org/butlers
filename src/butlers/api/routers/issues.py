@@ -480,6 +480,16 @@ async def undismiss_issue(
 )
 async def list_issue_occurrences(
     issue_key: str,
+    window: str = Query(
+        _DEFAULT_ISSUES_WINDOW,
+        description=(
+            "Time window used to re-derive the group, e.g. '24h', '7d' "
+            "(default), '30d', or 'all'. MUST match the window the feed was "
+            f"viewed under (bu-hmdqz.4): the same row cap ({_MAX_AUDIT_GROUP_ROWS}) "
+            "and time bound as GET /api/issues apply here too, so a group's "
+            "occurrence total never disagrees with what the feed just showed."
+        ),
+    ),
     offset: int = Query(0, ge=0, description="Number of occurrences to skip"),
     limit: int = Query(
         50, ge=1, le=500, description="Max occurrences to return (default 50, max 500)"
@@ -500,22 +510,44 @@ async def list_issue_occurrences(
     the group's aggregated ``has_schedule`` flag, which a group can straddle
     (see that function's docstring).
 
+    ``window`` (bu-hmdqz.4): re-derivation now applies the exact same time
+    bound and row cap as ``GET /api/issues``. Previously this endpoint always
+    re-derived groups over *all* audit history with no cap, which (a) could
+    silently change a group's reported ``occurrences`` total relative to what
+    the feed showed under its own (possibly narrower) window, and (b) — before
+    the group's identity key stopped depending on the aggregated butler set —
+    could disagree on that butler set entirely and 404 a group the feed had
+    just displayed.
+
     Only audit-derived groups (``audit_error_group:*`` /
     ``scheduled_task_failure:*``) have occurrences to drill into — live
     reachability issues (``unreachable``) always report exactly one
     synthetic occurrence and are not stored rows, so their key 404s here.
 
-    Raises HTTP 404 when no active group matches ``issue_key`` (it may have
-    been resolved/expired since the feed was last fetched).
+    Raises HTTP 404 when no active group matches ``issue_key`` within
+    ``window`` (it may have been resolved/expired since the feed was last
+    fetched, or may only exist outside the requested window).
     """
     key = (issue_key or "").strip()
     if not key:
         raise HTTPException(status_code=422, detail="issue_key is required")
 
+    window_delta = _parse_issues_window(window)
+    since = datetime.now(UTC) - window_delta if window_delta is not None else None
+
     pool = _require_pool(db)
 
     try:
-        group_rows = await pool.fetch(build_audit_group_query())
+        if since is not None:
+            group_rows = await pool.fetch(
+                build_audit_group_query(
+                    where_extra="\n                  AND created_at >= $1",
+                    limit=_MAX_AUDIT_GROUP_ROWS,
+                ),
+                since,
+            )
+        else:
+            group_rows = await pool.fetch(build_audit_group_query(limit=_MAX_AUDIT_GROUP_ROWS))
     except Exception as exc:
         logger.warning("Failed to query audit groups for occurrences", exc_info=True)
         raise HTTPException(status_code=503, detail="Database unavailable") from exc

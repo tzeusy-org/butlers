@@ -94,7 +94,7 @@ export default function AuditLogPage() {
     ...(showAllNoise ? {} : { kind: "privileged" }),
   };
 
-  const { data: auditResponse, isLoading, isFetching, isError } = useAuditLog(params);
+  const { data: auditResponse, isLoading, isFetching, isError, error } = useAuditLog(params);
   const entries = auditResponse?.data ?? [];
   const meta = auditResponse?.meta;
   const total = meta?.total ?? 0;
@@ -288,7 +288,7 @@ export default function AuditLogPage() {
       <Card>
         <CardContent>
           <FetchingDim isFetching={isFetching && !isLoading}>
-            <AuditLogTable entries={entries} isLoading={isLoading} isError={isError} />
+            <AuditLogTable entries={entries} isLoading={isLoading} isError={isError} error={error} />
           </FetchingDim>
         </CardContent>
       </Card>

@@ -144,6 +144,50 @@ def test_audit_log_entry_from_record_projects_core_122_fields():
     assert entry.error == "boom"
 
 
+class TestFromRecordMetadataJsonbTypeofCases:
+    """bu-hmdqz.4: ``from_record`` must tolerate all three ``jsonb_typeof``
+    cases actually observed on ``public.audit_log.metadata`` -- object (the
+    contractual shape), string (a since-fixed write path double-JSON-encoded
+    ~349k rows this way, 2026-06-14 -> 07-05), and null. Before this fix, a
+    string-typed row raised a pydantic ``ValidationError`` that surfaced as an
+    HTTP 500 and took down the entire audit page for any query that happened
+    to touch a poisoned row (e.g. ``GET /api/audit-log?actor=memory``).
+    """
+
+    def test_object_typed_metadata_passes_through_unchanged(self) -> None:
+        row = _make_row(metadata={"path": "/api/x"})
+        entry = AuditLogEntry.from_record(row)
+        assert entry.metadata == {"path": "/api/x"}
+
+    def test_null_typed_metadata_stays_none(self) -> None:
+        row = _make_row(metadata=None)
+        entry = AuditLogEntry.from_record(row)
+        assert entry.metadata is None
+
+    def test_string_typed_metadata_double_encoding_a_dict_is_decoded(self) -> None:
+        """The poisoned shape: metadata column holds the JSON *text* of an
+        object (i.e. the original writer effectively called
+        ``json.dumps(json.dumps(data))``). asyncpg hands this back as a
+        Python ``str``; from_record must decode it back to the dict."""
+        row = _make_row(metadata='{"path": "/api/x", "n": 1}')
+        entry = AuditLogEntry.from_record(row)
+        assert entry.metadata == {"path": "/api/x", "n": 1}
+
+    def test_string_typed_metadata_that_is_not_json_is_wrapped_not_raised(self) -> None:
+        """A string that isn't itself valid JSON (some poisoned rows genuinely
+        aren't double-encoded) must not raise -- wrap it losslessly instead."""
+        row = _make_row(metadata="actor started session")
+        entry = AuditLogEntry.from_record(row)
+        assert entry.metadata == {"_raw": "actor started session"}
+
+    def test_string_typed_metadata_decoding_to_a_non_dict_is_wrapped(self) -> None:
+        """A string that IS valid JSON but decodes to a scalar/array (not an
+        object) still can't satisfy `dict[str, Any]` -- wrap it too."""
+        row = _make_row(metadata='"just a string"')
+        entry = AuditLogEntry.from_record(row)
+        assert entry.metadata == {"_raw": '"just a string"'}
+
+
 def test_audit_log_entry_from_record_missing_core_122_columns_defaults_none():
     """A row whose query never selected metadata/result/error (e.g. a caller
     using the old three-column-shorter SELECT) still deserialises to None for

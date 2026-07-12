@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from butlers.api.app import create_app
+from butlers.api.audit_grouping import audit_group_key
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_butler_configs, get_mcp_manager
 from butlers.api.models import compute_issue_key
@@ -143,7 +144,7 @@ class TestListFiltersDismissed:
         async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
             if "dismissed_issues" in query:
                 # Dismiss the audit_error_group key for this error.
-                key = compute_issue_key("audit_error_group:boom", "general")
+                key = audit_group_key("boom")
                 return [{"issue_key": key, "last_seen_at": None}]
             return [audit_row]
 
@@ -174,7 +175,7 @@ class TestListIncludeDismissed:
             "has_schedule": False,
             "schedule_names": [],
         }
-        dismissed_key = compute_issue_key("audit_error_group:boom", "general")
+        dismissed_key = audit_group_key("boom")
 
         async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
             if "dismissed_issues" in query:
@@ -252,7 +253,7 @@ class TestAcknowledgeUntilRecurrence:
 
     async def test_recurred_issue_reappears_in_active_feed(self) -> None:
         """last_seen_at newer than the ack watermark => back in the active feed."""
-        key = compute_issue_key("audit_error_group:boom", "general")
+        key = audit_group_key("boom")
 
         async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
             if "dismissed_issues" in query:
@@ -291,7 +292,7 @@ class TestAcknowledgeUntilRecurrence:
 
     async def test_not_recurred_issue_stays_acked(self) -> None:
         """last_seen_at unchanged (or older) since ack => still hidden from the active feed."""
-        key = compute_issue_key("audit_error_group:boom", "general")
+        key = audit_group_key("boom")
 
         async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
             if "dismissed_issues" in query:
@@ -328,7 +329,7 @@ class TestAcknowledgeUntilRecurrence:
 
     async def test_legacy_ack_with_no_watermark_stays_dismissed_forever(self) -> None:
         """A NULL watermark (legacy ack) preserves the old dismiss-forever behavior."""
-        key = compute_issue_key("audit_error_group:boom", "general")
+        key = audit_group_key("boom")
 
         async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
             if "dismissed_issues" in query:
@@ -391,7 +392,7 @@ class TestListIssueOccurrences:
         }
 
     async def test_found_group_returns_its_occurrences(self) -> None:
-        key = compute_issue_key("audit_error_group:oauth-token-expired", "calendar")
+        key = audit_group_key("OAuth token expired")
         occurrence = self._occurrence_row()
 
         async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
@@ -447,7 +448,7 @@ class TestListIssueOccurrences:
         assert resp.status_code == 404
 
     async def test_multi_butler_group_restricts_to_its_butlers(self) -> None:
-        key = compute_issue_key("audit_error_group:oauth-token-expired", "multiple")
+        key = audit_group_key("OAuth token expired")
 
         async def fetch_side_effect(query: str, *args: Any) -> list[Any]:
             if "grouped_errors" in query:

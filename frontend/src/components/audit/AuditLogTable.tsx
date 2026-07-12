@@ -1,3 +1,4 @@
+import { ApiError } from "@/api/client";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Fragment, useState } from "react";
@@ -116,6 +117,18 @@ interface AuditLogTableProps {
   entries: AuditLogEntry[];
   isLoading?: boolean;
   isError?: boolean;
+  /**
+   * The query's raw error (e.g. TanStack Query's `error`), used to
+   * distinguish a deterministic 4xx (a bad/unsupported filter combination --
+   * honest, actionable, and will happen again on retry) from a genuine 5xx/
+   * network/timeout failure (transient, "try again shortly" is the right
+   * copy) -- bu-hmdqz.4. Before the metadata tolerance fix, a poisoned row
+   * made this endpoint 500 with `VALIDATION_ERROR` and this table rendered
+   * the deterministic failure as "may be temporarily unavailable", which is
+   * false: retrying changes nothing until the underlying data or filter
+   * changes.
+   */
+  error?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +155,7 @@ function LoadingSkeleton() {
 // AuditLogTable
 // ---------------------------------------------------------------------------
 
-export default function AuditLogTable({ entries, isLoading, isError }: AuditLogTableProps) {
+export default function AuditLogTable({ entries, isLoading, isError, error }: AuditLogTableProps) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   function toggleExpanded(id: number) {
@@ -152,10 +165,21 @@ export default function AuditLogTable({ entries, isLoading, isError }: AuditLogT
   // Surface fetch failures (e.g. a 503 from an un-migrated audit table) as an
   // explicit error state rather than an honest-looking "no entries" empty state.
   if (!isLoading && isError) {
+    // Deterministic 4xx (e.g. an invalid filter combination the backend
+    // rejected) is not "temporarily unavailable" -- retrying without
+    // changing the request will fail again every time. Only a genuine 5xx/
+    // network/timeout failure is transient (bu-hmdqz.4).
+    const isDeterministic =
+      error instanceof ApiError && error.status >= 400 && error.status < 500;
     return (
       <ErrorState
-        title="Audit log unavailable."
-        description="Failed to load audit log entries. The audit log may be temporarily unavailable. Try again shortly."
+        title={isDeterministic ? "Could not load this audit log query." : "Audit log unavailable."}
+        description={
+          isDeterministic
+            ? (error instanceof ApiError && error.message) ||
+              "The request was rejected — check the filters above."
+            : "Failed to load audit log entries. The audit log may be temporarily unavailable. Try again shortly."
+        }
       />
     );
   }

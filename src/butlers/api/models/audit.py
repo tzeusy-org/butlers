@@ -10,6 +10,7 @@ introduced in core_092.  This is the model returned by the
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -80,7 +81,50 @@ class AuditLogEntry(BaseModel):
             note=row["note"],  # type: ignore[index]
             ip=ip_str,
             request_id=row["request_id"],  # type: ignore[index]
-            metadata=_optional("metadata"),
+            metadata=_coerce_metadata(_optional("metadata")),
             result=_optional("result"),
             error=_optional("error"),
         )
+
+
+def _coerce_metadata(value: Any) -> dict[str, Any] | None:
+    """Tolerantly coerce the raw ``metadata`` column value into a ``dict``.
+
+    ``public.audit_log.metadata`` is JSONB and is contractually an object, but
+    a since-fixed write path (2026-06-14 -> 07-05, bu-hmdqz.4) double-JSON-
+    encoded the value for ~349k rows -- ``jsonb_typeof(metadata) = 'string'``
+    for that whole band. asyncpg decodes a JSONB *string* scalar as a Python
+    ``str`` (not a ``dict``), so the strict ``dict[str, Any] | None`` field
+    below rejected every one of those rows with a pydantic ``ValidationError``
+    -- surfaced to callers as an HTTP 500 that took the entire audit page down
+    with it (e.g. ``GET /api/audit-log?actor=memory``).
+
+    Handles exactly the three ``jsonb_typeof`` cases actually observed:
+      - ``object``  -> already a dict, pass through unchanged.
+      - ``string``  -> the poisoned case. The string is itself JSON text (the
+        original writer effectively called ``json.dumps(json.dumps(data))``);
+        decode it. If that inner text happens to decode to a dict, use it. If
+        it decodes to something else (or isn't valid JSON at all -- some
+        strings genuinely are not double-encoded), wrap it losslessly under
+        ``_raw`` rather than raising, so the row still renders.
+      - ``null``    -> already ``None``, pass through unchanged.
+
+    A batched repair migration (core_169) normalizes the *stored* rows using
+    this exact same fallback shape, so a row's rendered metadata is identical
+    whether or not the migration has run yet against that particular row.
+    """
+    if value is None or isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return {"_raw": value}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"_raw": value}
+    # Any other shape (list/int/float/bool) is outside the three known
+    # jsonb_typeof cases this repair covers -- let pydantic's normal
+    # validation reject it loudly rather than silently reshaping an
+    # unanticipated type.
+    return value

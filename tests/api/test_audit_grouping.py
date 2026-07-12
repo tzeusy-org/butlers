@@ -21,6 +21,7 @@ import pytest
 
 from butlers.api.audit_grouping import (
     attention_item_from_audit_group_row,
+    audit_group_key,
     build_audit_group_occurrences_query,
     build_audit_group_query,
     issue_from_audit_group_row,
@@ -192,6 +193,37 @@ class TestTmpPathNormalization:
 
 
 # ---------------------------------------------------------------------------
+# audit_group_key (bu-hmdqz.4 re-key)
+# ---------------------------------------------------------------------------
+
+
+class TestAuditGroupKey:
+    def test_deterministic_for_the_same_error_summary(self):
+        assert audit_group_key("OAuth token expired") == audit_group_key("OAuth token expired")
+
+    def test_different_error_summaries_produce_different_keys(self):
+        assert audit_group_key("OAuth token expired") != audit_group_key("DB timeout")
+
+    def test_long_messages_sharing_an_80_char_prefix_do_not_collide(self):
+        """The bug this replaced: the old key embedded an 80-char-truncated
+        slug of the error message, so two distinct long errors sharing the
+        same first 80 characters collided onto one key (observed live: two
+        unrelated RuntimeError groups with 166 vs 2,860 occurrences shared a
+        key, so acking one silently acked the other). Hashing the FULL
+        message must not reproduce that collision."""
+        base = "RuntimeError: Codex CLI exited nonzero while processing request batch number "
+        prefix = base.ljust(80, "#")  # pad out to exactly 80 shared characters
+        assert len(prefix) == 80
+        error_a = prefix + "12345 for butler alpha"
+        error_b = prefix + "67890 for butler beta, additional detail that differs"
+        assert error_a[:80] == error_b[:80]  # confirms the old slug would have collided
+        assert audit_group_key(error_a) != audit_group_key(error_b)
+
+    def test_key_carries_the_audit_error_group_prefix(self):
+        assert audit_group_key("boom").startswith("audit_error_group:")
+
+
+# ---------------------------------------------------------------------------
 # issue_from_audit_group_row
 # ---------------------------------------------------------------------------
 
@@ -348,6 +380,57 @@ class TestIssueFromAuditGroupRow:
         issue = issue_from_audit_group_row(row)
         assert issue.butler == "unknown"
         assert issue.butlers == ["unknown"]
+
+    def test_issue_key_uses_audit_group_key_not_type_and_butler(self):
+        """bu-hmdqz.4: the group's issue_key comes from audit_group_key(error_summary),
+        not compute_issue_key(type, butler) -- so it must equal the former and
+        must NOT equal the latter (which is what the old, buggy composition
+        would have produced)."""
+        row = _make_row(
+            {
+                "error_summary": "Connection refused",
+                "butlers": ["general"],
+                "schedule_names": [],
+                "has_schedule": False,
+                "occurrences": 1,
+                "first_seen_at": None,
+                "last_seen_at": None,
+            }
+        )
+        issue = issue_from_audit_group_row(row)
+        assert issue.issue_key == audit_group_key("Connection refused")
+
+    def test_issue_key_is_independent_of_the_aggregated_butler_set(self):
+        """The historical '::switchboard' vs '::multiple' drift: the same
+        error_summary must produce the SAME issue_key whether the query
+        aggregated it as single-butler or multi-butler, since that aggregate
+        is window-dependent and is not part of the group's identity."""
+        single_butler_row = _make_row(
+            {
+                "error_summary": "Connection refused",
+                "butlers": ["switchboard"],
+                "schedule_names": [],
+                "has_schedule": False,
+                "occurrences": 1,
+                "first_seen_at": None,
+                "last_seen_at": None,
+            }
+        )
+        multi_butler_row = _make_row(
+            {
+                "error_summary": "Connection refused",
+                "butlers": ["switchboard", "general"],
+                "schedule_names": [],
+                "has_schedule": False,
+                "occurrences": 5,
+                "first_seen_at": None,
+                "last_seen_at": None,
+            }
+        )
+        assert (
+            issue_from_audit_group_row(single_butler_row).issue_key
+            == issue_from_audit_group_row(multi_butler_row).issue_key
+        )
 
     def test_occurrences_and_timestamps_passed_through(self):
         first = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)

@@ -198,6 +198,70 @@ describe("IssuesPage — occurrences drill-down wiring", () => {
     act(() => root.unmount());
     container.remove();
   });
+
+  it("threads the active window and a 50-row default limit to useIssueOccurrences (bu-hmdqz.4)", () => {
+    setupDefaults([makeIssue()]);
+    const { root, container } = renderPage("/issues?window=24h");
+
+    const call = vi.mocked(useIssueOccurrences).mock.calls.at(-1);
+    expect(call?.[2]).toBe("24h");
+    expect(call?.[3]).toBe(50);
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("resets the occurrences limit to 50 when a row is toggled (bu-hmdqz.4)", () => {
+    setupDefaults([makeIssue()]);
+    const { root, container } = renderPage("/issues");
+
+    const trigger = container.querySelector(
+      '[data-testid="issue-row"] [role="button"]',
+    ) as HTMLElement;
+    act(() => trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    const call = vi.mocked(useIssueOccurrences).mock.calls.at(-1);
+    expect(call?.[0]).toBe("audit_error_group:oauth-token-expired::calendar");
+    expect(call?.[1]).toBe(true);
+    expect(call?.[3]).toBe(50);
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("passes the occurrences total through to IssuesPanel for the 'Showing X of N' count", () => {
+    setupDefaults([makeIssue()]);
+    vi.mocked(useIssueOccurrences).mockReturnValue({
+      data: {
+        data: [
+          {
+            id: 1,
+            ts: "2026-06-14T10:30:00.000Z",
+            actor: "calendar",
+            action: "oauth_refresh",
+            target: null,
+            note: null,
+            ip: null,
+            request_id: null,
+          },
+        ],
+        meta: { total: 7, offset: 0, limit: 50, has_more: true },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useIssueOccurrences>);
+    const { root, container } = renderPage("/issues");
+
+    const trigger = container.querySelector(
+      '[data-testid="issue-row"] [role="button"]',
+    ) as HTMLElement;
+    act(() => trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(container.textContent).toContain("Showing 1 of 7");
+
+    act(() => root.unmount());
+    container.remove();
+  });
 });
 
 // ---------------------------------------------------------------------------

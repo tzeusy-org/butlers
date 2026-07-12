@@ -1025,6 +1025,13 @@ pattern and MUST NOT breach per-butler schema isolation.
 - **AND** scheduled task failures are classified as critical severity
 - **AND** results are sorted by recency (newest `last_seen_at` first)
 
+#### Scenario: Audit-derived issue group identity is window-independent and collision-resistant
+- **WHEN** an audit-derived `Issue` (`audit_error_group:*` / `scheduled_task_failure:*`) is built from a grouped audit-log row
+- **THEN** its `issue_key` is a hash of the group's full, untruncated normalized `error_summary` alone (`audit_grouping.audit_group_key`) — NOT a composite of a truncated display slug and the query's aggregated butler set
+- **AND** two distinct error messages that happen to share the same leading substring MUST NOT produce the same `issue_key` (bu-hmdqz.4 fixed a live collision: two unrelated `RuntimeError` groups with 166 vs 2,860 occurrences shared one key under the old 80-char-truncated-slug scheme, so acknowledging one silently acknowledged both)
+- **AND** the same `error_summary` MUST produce the same `issue_key` regardless of the set of butlers or schedule names the query happened to aggregate over it (that aggregate is window-dependent — e.g. single-butler in a 7-day feed query vs multi-butler in an all-time drill-down re-derivation — and is not part of the group's identity), so a group's key never disagrees between the feed and its own occurrences drill-down
+- **AND** the reachability lane (`type == "unreachable"`) is unaffected and keeps composing `issue_key` as `type::butler` (`compute_issue_key`), since neither component there is a windowed aggregate
+
 #### Scenario: Issues degraded sources are named, not rendered as an all-clear
 - **WHEN** `GET /api/issues` runs its two DB-backed sources (grouped audit
   errors and the acknowledgement watermarks) and one or more fail their query

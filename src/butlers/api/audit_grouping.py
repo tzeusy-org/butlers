@@ -23,6 +23,7 @@ Callers apply their own window/LIMIT constraints after the CTE.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from urllib.parse import urlencode
 
@@ -219,11 +220,49 @@ _ISSUE_TYPE_MAX_LEN = 80
 
 
 def _slug(value: str) -> str:
-    """Build a short, deterministic slug suitable for issue type keys."""
+    """Build a short, deterministic slug suitable for the *display* ``type`` field.
+
+    NOT used for the group's identity key -- see :func:`audit_group_key`. The
+    80-char truncation here is purely cosmetic (keeps ``Issue.type`` short and
+    readable); two different error messages that happen to share the same
+    first 80 characters after slugifying are a fine collision for a label,
+    but were an active bug when this slug was *also* the group's key (bu-hmdqz.4).
+    """
     normalized = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     if not normalized:
         return "unknown"
     return normalized[:_ISSUE_TYPE_MAX_LEN]
+
+
+def audit_group_key(error_summary: str) -> str:
+    """Return the stable, collision-resistant identity key for an audit-error group.
+
+    bu-hmdqz.4 re-key: a group's true identity is the full, untruncated,
+    normalized ``error_summary`` alone -- that's the exact (and only) column
+    ``grouped_errors`` is ``GROUP BY``'d on (see the module docstring). This
+    hashes that full string, so:
+
+    - Two distinct long error messages that happen to share an identical
+      first-80-character slug (previously collapsed onto the same
+      ``issue_key`` via :func:`_slug`'s truncation -- observed live: two
+      unrelated ``RuntimeError`` groups with 166 vs 2,860 occurrences sharing
+      one key, so acking one silently acked the other) now always produce
+      different keys.
+    - The key excludes the butler-set (``ARRAY_AGG(DISTINCT butler)``) and
+      schedule-name aggregates entirely. Both are aggregates *over* the
+      error_summary group, not part of its identity, and both are
+      window-dependent: the same group can be single-butler in a narrow
+      window and multi-butler in a wider one (observed live: a feed query
+      computing ``butler="switchboard"`` while the occurrences drill-down's
+      all-time re-derivation computed ``butler="multiple"`` for the *same*
+      group -- the keys disagreed and the drill-down 404'd on a group the
+      feed had just shown).
+
+    Stable across windows, aggregation runs, and query re-derivations, since
+    it depends on nothing but the group's own normalized error text.
+    """
+    digest = hashlib.sha256(error_summary.encode("utf-8")).hexdigest()[:16]
+    return f"audit_error_group:{digest}"
 
 
 def issue_from_audit_group_row(row: object) -> Issue:
@@ -301,6 +340,11 @@ def issue_from_audit_group_row(row: object) -> Issue:
         first_seen_at=row["first_seen_at"],  # type: ignore[index]
         last_seen_at=row["last_seen_at"],  # type: ignore[index]
         butlers=butlers,
+        # bu-hmdqz.4: the group's identity key is the hash of the full
+        # error_summary alone -- NOT compute_issue_key(type, butler), which
+        # would re-introduce the 80-char slug truncation collision and the
+        # window-dependent butler-set drift. See audit_group_key's docstring.
+        group_key=audit_group_key(error_message),
     )
 
 
