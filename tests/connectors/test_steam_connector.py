@@ -230,6 +230,24 @@ def test_status_change_schema_version() -> None:
     assert env["source"]["provider"] == "steam"
 
 
+def test_status_change_is_metadata_tier_to_bypass_routing() -> None:
+    """Presence/status deltas are logged as metadata, not routed to a butler session."""
+    env = build_status_change_envelope(
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        persona_state=1,
+        game_extra_info=None,
+        prev_persona_state=0,
+        prev_game_extra_info=None,
+        poll_ts=_POLL_TS,
+    )
+
+    assert env["payload"]["normalized_text"] == "Came online"
+    assert env["payload"]["raw"] is None
+    assert env["control"]["ingestion_tier"] == "metadata"
+    parse_ingest_envelope(_to_wire_envelope(env))
+
+
 # ---------------------------------------------------------------------------
 # Wire-envelope contract validation (bu-a38da regression guard)
 #

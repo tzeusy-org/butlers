@@ -642,20 +642,13 @@ def build_status_change_envelope(
             "identity": f"steam:{steam_id}",
         },
         "payload": {
-            "raw": {
-                "steam_id": steam_id,
-                "persona_state": persona_state,
-                "persona_state_label": state_label,
-                "game_extra_info": game_extra_info,
-                "prev_persona_state": prev_persona_state,
-                "prev_game_extra_info": prev_game_extra_info,
-            },
+            "raw": None,
             "normalized_text": normalized_text,
         },
         "control": {
             "idempotency_key": external_event_id,
             "policy_tier": "default",
-            "ingestion_tier": "full",
+            "ingestion_tier": "metadata",
         },
     }
 

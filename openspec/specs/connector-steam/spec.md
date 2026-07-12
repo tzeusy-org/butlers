@@ -8,7 +8,7 @@ The Steam connector is a long-running background process that polls connected St
 
 ### Requirement: Steam Connector Identity and Authentication
 
-The Steam connector runs as a single process that discovers and manages all connected Steam accounts. It authenticates each account via API key resolved from the account's companion entity.
+The Steam connector SHALL run as a single process that discovers and manages all connected Steam accounts, derives per-account endpoint identity from each active account, and authenticates via API key resolved from the account's companion entity.
 
 #### Scenario: Multi-account discovery at startup
 
@@ -41,7 +41,7 @@ The Steam connector runs as a single process that discovers and manages all conn
 
 ### Requirement: Polling Modes and Intervals
 
-The connector polls multiple data types at independent intervals per account.
+The connector SHALL poll multiple data types at independent intervals per account, with independent per-data-type task and backoff state.
 
 #### Scenario: Default poll intervals
 
@@ -66,7 +66,7 @@ The connector polls multiple data types at independent intervals per account.
 
 ### Requirement: Delta Detection via State Diffing
 
-Steam's API returns current state only (no history/change feed). The connector detects changes by comparing current responses against cached previous state.
+Because Steam's API returns current state only (no history/change feed), the connector SHALL detect changes by comparing current responses against the last persisted cursor snapshot and emit events only for detected deltas.
 
 #### Scenario: Recently played game detection
 
@@ -117,7 +117,7 @@ Steam's API returns current state only (no history/change feed). The connector d
 
 ### Requirement: Cursor Persistence
 
-Per-account, per-data-type cursors enable crash-safe resume.
+The connector SHALL persist per-account, per-data-type cursors after successful poll cycles so restarts resume from the last known Steam state.
 
 #### Scenario: Cursor storage
 
@@ -143,6 +143,8 @@ Per-account, per-data-type cursors enable crash-safe resume.
 - **AND** cursors older than 30 days for revoked accounts SHALL be purged by a periodic cleanup task
 
 ### Requirement: ingest.v1 Field Mapping
+
+The connector SHALL map each detected Steam delta to an `ingest.v1` envelope with Steam-specific source identity, event identity, payload summary, and tier controls.
 
 #### Scenario: Play session event mapping
 
@@ -174,7 +176,9 @@ Per-account, per-data-type cursors enable crash-safe resume.
   - `event.type = "status_change"`
   - `event.external_event_id = "steam:status:<steam_id>:<poll_timestamp>"`
   - `payload.normalized_text` = human-readable summary (e.g., "Now playing Dota 2" or "Went offline")
-  - `payload.raw` = persona_state, gameextrainfo, previous state
+  - `payload.raw` = `null`
+  - `control.ingestion_tier` = `"metadata"` so the Switchboard persists the presence delta as a metadata-only reference (`payload.raw = null`) — this controls *persistence shape only* and, on its own, does NOT bypass LLM classification or proactive routing
+  - The actual classification/routing bypass is a `scope='global'`, `rule_type='substring'` `ingestion_rules` row matching the `"steam:status:"` prefix of `external_event_id` (seeded by migration `025_switchboard_steam_status_skip.py`; see `ingestion-policy` spec's "Gaming (Steam) connector populates envelope" scenario), evaluated by `IngestionPolicyEvaluator(scope='global')` before any LLM session spawns
 
 #### Scenario: Game purchase event mapping
 
@@ -195,6 +199,8 @@ Per-account, per-data-type cursors enable crash-safe resume.
   - `payload.raw` = friend SteamID, relationship, direction (added/removed)
 
 ### Requirement: Rate Limiting and Error Handling
+
+The connector SHALL handle Steam API rate limits, transient failures, and privacy-empty responses without crashing unrelated account or data-type pollers.
 
 #### Scenario: Rate limit detection and backoff
 
@@ -218,6 +224,8 @@ Per-account, per-data-type cursors enable crash-safe resume.
 
 ### Requirement: Health Status Reporting
 
+The connector SHALL report aggregated and per-account health while redacting SteamIDs in externally visible status output.
+
 #### Scenario: Aggregated health endpoint
 
 - **WHEN** the health endpoint is queried
@@ -234,7 +242,7 @@ Per-account, per-data-type cursors enable crash-safe resume.
 
 ### Requirement: Source Channel and Provider Registration
 
-Steam introduces a channel/provider pair that is registered in the Switchboard's ingestion contract (RFC 0003 amended; see `roster/switchboard/tools/routing/contracts.py`).
+The connector SHALL submit all Steam envelopes with the registered `gaming`/`steam` source channel/provider pair and valid tier/idempotency controls (RFC 0003 amended; see `roster/switchboard/tools/routing/contracts.py`).
 
 #### Scenario: SourceChannel enum extension
 
@@ -247,7 +255,8 @@ Steam introduces a channel/provider pair that is registered in the Switchboard's
 
 - **WHEN** the connector constructs an ingest.v1 envelope
 - **THEN** `control.policy_tier` SHALL be `"default"` (user's own activity, no priority escalation)
-- **AND** `control.ingestion_tier` SHALL be `"full"` (Tier 1 — include complete `payload.raw`)
+- **AND** play session, achievement unlock, game purchase, and friend-change envelopes SHALL set `control.ingestion_tier = "full"` (Tier 1 — include complete `payload.raw`)
+- **AND** online status-change envelopes SHALL set `control.ingestion_tier = "metadata"` (Tier 2 — persist the presence summary; routing to a butler session is independently bypassed by the seeded global `ingestion_rules` row described in the "Online status change event mapping" scenario above, not by this tier alone)
 
 #### Scenario: Idempotency key format
 

@@ -154,6 +154,12 @@ Connectors populate only the fields relevant to their channel. The evaluator ext
 - **WHEN** the Telegram bot connector builds an IngestionEnvelope
 - **THEN** `sender_address` is empty, `source_channel = "telegram"`, `headers` is empty, `raw_key` contains the chat_id string
 
+#### Scenario: Gaming (Steam) connector populates envelope
+- **WHEN** an ingest.v1 envelope with `source_channel = "gaming"` is evaluated
+- **THEN** `raw_key` contains the envelope's `event.external_event_id` (e.g. `"steam:status:<steam_id>:<poll_ts>"`, `"steam:play:..."`)
+- **AND** because Steam's `external_event_id` is prefixed with a stable per-event-type marker, a `substring` rule can target one gaming event type (e.g. Steam presence `status_change`) without matching the channel's other event types (play_session, achievement_unlock, game_purchase, friend_change)
+- **NOTE**: the `ingest.v1` wire contract's `event` section is `extra="forbid"`, so connectors cannot submit a distinct event-type field directly; `external_event_id` is the only wire-safe per-event-type discriminator available today
+
 ### Requirement: PolicyDecision
 
 The evaluator SHALL return a `PolicyDecision` dataclass:

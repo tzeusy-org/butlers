@@ -195,6 +195,11 @@ git push                # Push to remote (bead mutations already in Dolt)
 
 ## Notes to self
 
+### Steam presence events are metadata-only AND routing-skipped
+- Steam `status_change` / `online_status` envelopes keep `payload.raw = null` and `control.ingestion_tier = "metadata"` (persistence shape only — a metadata-only ref row still lands in `message_inbox`/`public.ingestion_events`).
+- `ingestion_tier` alone does NOT bypass LLM classification or routing — that decision comes from the pre-resolved `triage_decision` sourced from a `scope='global'` `ingestion_rules` row, evaluated by `IngestionPolicyEvaluator` in `roster/switchboard/tools/ingestion/ingest.py::ingest_v1()` before `pipeline.process()` ever runs. Migration `025_switchboard_steam_status_skip.py` seeds a `rule_type='substring'` rule matching the `"steam:status:"` prefix of `external_event_id` (action=`metadata_only`) so status_change specifically skips LLM classification/routing/notify — a bare `source_channel='gaming'` rule would have over-scoped and silenced play/achievement/purchase/friend events too. `_make_ingestion_envelope()` in `ingest.py` surfaces `event.external_event_id` as `raw_key` for the `gaming` channel to make this substring match possible (the wire contract's `event` section is `extra="forbid"`, so there is no separate event-type field to match on directly).
+- Play, achievement, library, and friend deltas remain full-tier and fully routable.
+
 ### Contributor workflow: PRs only, never push directly to main
 All code changes must go through a pull request — never `git push origin main` or
 `git push --force origin main`. GitHub branch protection (Settings → Branches →
