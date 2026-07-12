@@ -1,7 +1,8 @@
 """Tests for the dashboard briefing endpoint and supporting modules.
 
 Coverage:
-    - classify: all five branches (urgent / busy / mild / degraded-quiet / quiet)
+    - classify: all six branches (urgent / busy / mild / degraded-quiet /
+      degraded / quiet), incl. priority ordering against degraded_sources
     - headline_for: singular and plural variants for each class
     - LLM happy path returns source: "llm"
     - LLM timeout, error, and empty response each return source: "fallback"
@@ -10,13 +11,18 @@ Coverage:
     - Cache TTL: hit preserves generated_at, miss regenerates
     - HTTP 403 path for non-owner access
     - HTTP 401 path for unauthenticated (API-key middleware)
-    - Classification exception falls through to the quiet paragraph
+    - Classification exception falls through to the degraded paragraph
+    - State sources (bu-gcz9e.1): board liveness, approvals, failed
+      notifications, and QA state feed the SAME composed attention model the
+      Overview dashboard page renders; a source fetch failure surfaces via
+      degraded_sources and can never compose "quiet"
 """
 
 from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -29,11 +35,19 @@ from butlers.api.briefing.fallback import elaborate_fallback
 from butlers.api.briefing.lint import voice_lint_passes
 from butlers.api.briefing.prompts import _build_user_message, elaborate_llm
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_butler_configs, get_mcp_manager, get_pricing
 from butlers.api.routers.dashboard_briefing import (
+    _fetch_approvals_state,
+    _fetch_audit_issues,
+    _fetch_board_state,
     _fetch_dashboard_state,
+    _fetch_notifications_state,
+    _fetch_qa_state,
     _get_db_manager,
+    _is_missing_relation_error,
+    _map_board_rows,
     _owner_local_now,
-    _row_get,
+    _qa_attention_item,
     get_cache,
 )
 from butlers.core.model_routing import Complexity
@@ -55,33 +69,52 @@ def _make_record(row: dict) -> MagicMock:
     return rec
 
 
-def _make_app(pool: AsyncMock, cache: BriefingCache | None = None) -> object:
-    """Build a FastAPI test app with the briefing DB and cache overridden."""
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
-    mock_db.credential_shared_pool.return_value = pool
+def _board_row(
+    name: str = "calendar",
+    *,
+    type: str = "butler",  # noqa: A002 -- mirrors BoardRow's field name
+    activity: str = "idle",
+    eligibility: str = "active",
+    last_heartbeat_at: str | None = "2026-05-13T15:59:00+00:00",
+    quarantine_reason: str | None = None,
+) -> SimpleNamespace:
+    """A minimal stand-in for a BoardRow -- only the fields _map_board_rows reads."""
+    return SimpleNamespace(
+        name=name,
+        type=type,
+        activity=activity,
+        eligibility=eligibility,
+        last_heartbeat_at=last_heartbeat_at,
+        quarantine_reason=quarantine_reason,
+    )
 
-    app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
-    if cache is not None:
-        app.dependency_overrides[get_cache] = lambda: cache
-    return app
+
+def _board_response(
+    rows: list[SimpleNamespace], *, registry_source_error: bool = False
+) -> SimpleNamespace:
+    """A minimal stand-in for ApiResponse[BoardResponse]."""
+    return SimpleNamespace(
+        data=SimpleNamespace(
+            rows=rows,
+            aggregates=SimpleNamespace(registry_source_error=registry_source_error),
+        )
+    )
 
 
 def _make_owner_pool(
     has_owner: bool = True,
     owner_fails: bool = False,
-    attention_items: list[dict] | None = None,
-    butler_statuses: list[dict] | None = None,
     audit_rows: list[dict] | None = None,
 ) -> AsyncMock:
     """Build a mock switchboard pool for the briefing endpoint.
 
     Routes pool.fetch calls by SQL keyword:
-        - "notifications"   -> attention_items (notification rows)
         - "audit_source"    -> audit_rows (grouped audit error rows; the canonical
                                public.audit_log grouping CTE alias, bu-j26e8)
-        - "butler_registry" -> butler_statuses
+    Notification-stats queries are answered generically (count/sum queries
+    return 0 via ``fetchval``'s AsyncMock default of ``None``, and ``fetch``
+    returns ``[]`` for anything else) so the switchboard pool used for
+    ``notification_stats`` never errors out by default.
     """
     pool = AsyncMock()
 
@@ -100,245 +133,64 @@ def _make_owner_pool(
             return rec
         return None
 
-    items = attention_items or []
-    statuses = butler_statuses or []
     audits = audit_rows or []
 
     async def _fetch(sql, *args):
-        if "notifications" in sql:
-            return [_make_record(r) for r in items]
         if "audit_source" in sql:
             return [_make_record(r) for r in audits]
-        if "butler_registry" in sql:
-            return [_make_record(r) for r in statuses]
         return []
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     pool.fetch = AsyncMock(side_effect=_fetch)
+    pool.fetchval = AsyncMock(return_value=0)
     return pool
 
 
-# ---------------------------------------------------------------------------
-# Dashboard state context
-# ---------------------------------------------------------------------------
+def _make_app(pool: AsyncMock, cache: BriefingCache | None = None) -> object:
+    """Build a FastAPI test app with the briefing DB and cache overridden.
+
+    Also overrides the butler-roster/MCP/pricing dependencies the board fetch
+    needs (cheap, real-ish stand-ins -- no network I/O happens until
+    ``get_butlers_board`` is actually called, and that call is patched to an
+    empty board by default via ``_default_board_patch`` in each test that
+    does not care about board specifics).
+    """
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    mock_db.credential_shared_pool.return_value = pool
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_butler_configs] = lambda: []
+    app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
+    app.dependency_overrides[get_pricing] = lambda: MagicMock()
+    if cache is not None:
+        app.dependency_overrides[get_cache] = lambda: cache
+    return app
 
 
-class TestDashboardStateContext:
-    async def test_fetch_dashboard_state_preserves_human_readable_context(self):
-        """The briefing state includes names, messages, timestamps, and health context."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            attention_items=[
-                {
-                    "id": "00000000-0000-0000-0000-000000000001",
-                    "severity": "high",
-                    "source_butler": "calendar",
-                    "channel": "telegram",
-                    "message": "Calendar sync failed for the owner account",
-                    "metadata": {"severity": "high", "kind": "oauth"},
-                    "status": "unread",
-                    "error": "Token has been expired or revoked",
-                    "session_id": None,
-                    "trace_id": "trace-123",
-                    "created_at": now,
-                }
-            ],
-            butler_statuses=[
-                {
-                    "name": "calendar",
-                    "status": "degraded",
-                    "agent_type": "butler",
-                    "eligibility_state": "stale",
-                    "last_seen_at": now,
-                    "description": "Calendar butler",
-                    "modules": ["calendar"],
-                    "capabilities": ["calendar.sync"],
-                    "quarantine_reason": None,
-                }
-            ],
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert state["attention_items"][0]["butler"] == "calendar"
-        assert state["attention_items"][0]["description"] == (
-            "Calendar sync failed for the owner account"
-        )
-        assert state["attention_items"][0]["last_seen_at"] == "2026-05-13T15:59:00+00:00"
-        assert state["notification_items"][0]["channel"] == "telegram"
-        assert state["notification_items"][0]["metadata"] == {
-            "severity": "high",
-            "kind": "oauth",
-        }
-        assert state["butler_statuses"][0]["status"] == "degraded"
-        assert state["butler_statuses"][0]["eligibility_state"] == "stale"
-        assert state["overview_totals"] == {
-            "attention_total": 1,
-            "attention_high": 1,
-            "attention_medium": 0,
-            "attention_low": 0,
-            "butlers_total": 1,
-            "butlers_unhealthy": 1,
-        }
+def _empty_board_patch():
+    """Patch get_butlers_board to return an empty, fully-healthy board."""
+    return patch(
+        "butlers.api.routers.butlers.get_butlers_board",
+        new=AsyncMock(return_value=_board_response([])),
+    )
 
 
 # ---------------------------------------------------------------------------
-# Briefing liveness clock-skew guard (bu-1hs86)
-#
-# Verifies:
-#   - The butler_registry SQL query contains the future-clock WHEN clause.
-#   - A future-dated last_seen_at (>5 min ahead) is surfaced as 'degraded'.
-#   - A stale last_seen_at (past, beyond TTL) is still 'degraded'.
-#   - A healthy last_seen_at (within TTL, not in the future) is 'healthy'.
-# ---------------------------------------------------------------------------
-
-
-class TestButlerLivenessClockSkew:
-    """SQL liveness check must flag future-dated last_seen_at as degraded."""
-
-    def test_butler_registry_sql_contains_future_clock_guard(self):
-        """The butler_registry query must include a WHEN clause for future timestamps."""
-        import inspect
-
-        import butlers.api.routers.dashboard_briefing as mod
-
-        source = inspect.getsource(mod)
-        assert "last_seen_at > NOW() + INTERVAL '5 minutes'" in source, (
-            "SQL liveness check must guard against future-dated last_seen_at "
-            "(clock-skew degraded guard is missing)"
-        )
-
-    async def test_future_dated_last_seen_at_is_degraded(self):
-        """A butler whose last_seen_at is >5 min in the future appears as 'degraded'."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        # Simulate what the DB CASE expression returns when last_seen_at is far in the future
-        pool = _make_owner_pool(
-            butler_statuses=[
-                {
-                    "name": "skewed-butler",
-                    "status": "degraded",  # what the SQL CASE yields for future ts
-                    "agent_type": "butler",
-                    "eligibility_state": "active",
-                    "last_seen_at": now,
-                    "description": "Butler with clock skew",
-                    "modules": [],
-                    "capabilities": [],
-                    "quarantine_reason": None,
-                }
-            ],
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert len(state["butler_statuses"]) == 1
-        assert state["butler_statuses"][0]["status"] == "degraded"
-        assert state["butler_statuses"][0]["name"] == "skewed-butler"
-
-    async def test_stale_last_seen_at_is_still_degraded(self):
-        """A butler whose last_seen_at is past the TTL remains 'degraded'."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            butler_statuses=[
-                {
-                    "name": "stale-butler",
-                    "status": "degraded",  # what the SQL CASE yields for stale ts
-                    "agent_type": "butler",
-                    "eligibility_state": "active",
-                    "last_seen_at": now,
-                    "description": "Butler with stale heartbeat",
-                    "modules": [],
-                    "capabilities": [],
-                    "quarantine_reason": None,
-                }
-            ],
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert state["butler_statuses"][0]["status"] == "degraded"
-
-    async def test_healthy_last_seen_at_is_healthy(self):
-        """A butler with a recent, non-future last_seen_at is 'healthy'."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            butler_statuses=[
-                {
-                    "name": "healthy-butler",
-                    "status": "healthy",  # what the SQL CASE yields for in-range ts
-                    "agent_type": "butler",
-                    "eligibility_state": "active",
-                    "last_seen_at": now,
-                    "description": "Healthy butler",
-                    "modules": [],
-                    "capabilities": [],
-                    "quarantine_reason": None,
-                }
-            ],
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert state["butler_statuses"][0]["status"] == "healthy"
-
-
-class TestPromptContext:
-    def test_build_user_message_summarizes_top_attention_and_health(self):
-        """The LLM prompt gets a bounded ecosystem snapshot, not raw thin rows."""
-        state = {
-            "now": datetime(2026, 5, 13, 23, 59, tzinfo=UTC),
-            "attention_items": [
-                {
-                    "severity": "high",
-                    "type": "notification",
-                    "butler": "calendar",
-                    "description": "Calendar sync failed for the owner account",
-                    "last_seen_at": "2026-05-13T15:59:00+00:00",
-                    "link": "/notifications",
-                    "source": "notification",
-                }
-            ],
-            "butler_statuses": [
-                {
-                    "name": "calendar",
-                    "status": "degraded",
-                    "type": "butler",
-                    "eligibility_state": "stale",
-                    "last_seen_at": "2026-05-13T15:59:00+00:00",
-                }
-            ],
-            "overview_totals": {
-                "attention_total": 1,
-                "attention_high": 1,
-                "attention_medium": 0,
-                "attention_low": 0,
-                "butlers_total": 1,
-                "butlers_unhealthy": 1,
-            },
-        }
-
-        message = _build_user_message(state, "urgent")
-
-        assert "attention_summary" in message
-        assert "top_attention_items" in message
-        assert "butler_health" in message
-        assert "Calendar sync failed for the owner account" in message
-        assert "2026-05-13T15:59:00+00:00" in message
-        assert "calendar" in message
-
-
-# ---------------------------------------------------------------------------
-# classify: all five branches
+# classify: all six branches
 # ---------------------------------------------------------------------------
 
 
 class TestClassify:
     @pytest.mark.parametrize(
-        "attention_items, butler_statuses, expected",
+        "attention_items, butler_statuses, degraded_sources, expected",
         [
             # urgent: any high-severity item
-            ([{"severity": "high"}], [], "urgent"),
+            ([{"severity": "high"}], [], [], "urgent"),
             (
                 [{"severity": "high"}, {"severity": "high"}, {"severity": "medium"}],
+                [],
                 [],
                 "urgent",
             ),
@@ -346,32 +198,51 @@ class TestClassify:
             (
                 [{"severity": "high"}, {"severity": "medium"}, {"severity": "low"}],
                 [],
+                [],
                 "urgent",
             ),
+            # urgent wins over degraded_sources too
+            ([{"severity": "high"}], [], ["board"], "urgent"),
             # busy: 3+ items, none high
-            ([{"severity": "medium"}, {"severity": "low"}, {"severity": "medium"}], [], "busy"),
+            ([{"severity": "medium"}, {"severity": "low"}, {"severity": "medium"}], [], [], "busy"),
             # mild: 1-2 items, none high
-            ([{"severity": "medium"}], [], "mild"),
-            ([{"severity": "low"}, {"severity": "medium"}], [], "mild"),
+            ([{"severity": "medium"}], [], [], "mild"),
+            ([{"severity": "low"}, {"severity": "medium"}], [], [], "mild"),
             # degraded-quiet: no items but a degraded/error butler
-            ([], [{"name": "health", "status": "degraded"}], "degraded-quiet"),
-            ([], [{"name": "atlas", "status": "error"}], "degraded-quiet"),
-            # quiet: no items, all butlers healthy (or none)
+            ([], [{"name": "health", "status": "degraded"}], [], "degraded-quiet"),
+            ([], [{"name": "atlas", "status": "error"}], [], "degraded-quiet"),
+            # degraded-quiet wins over degraded when both are true
+            ([], [{"name": "atlas", "status": "error"}], ["qa"], "degraded-quiet"),
+            # degraded: no items, no known-degraded butler, but a source failed
+            ([], [], ["board"], "degraded"),
+            ([], [{"name": "atlas", "status": "healthy"}], ["notifications", "qa"], "degraded"),
+            # quiet: no items, all butlers healthy (or none), every source answered
             (
                 [],
                 [
                     {"name": "health", "status": "healthy"},
                     {"name": "atlas", "status": "healthy"},
                 ],
+                [],
                 "quiet",
             ),
-            ([], [], "quiet"),
+            ([], [], [], "quiet"),
         ],
     )
-    def test_classify_state_machine(self, attention_items, butler_statuses, expected):
-        """classify() five-branch state machine incl. urgent-wins-over-busy."""
-        state = {"attention_items": attention_items, "butler_statuses": butler_statuses}
+    def test_classify_state_machine(
+        self, attention_items, butler_statuses, degraded_sources, expected
+    ):
+        """classify() six-branch state machine incl. priority ordering."""
+        state = {
+            "attention_items": attention_items,
+            "butler_statuses": butler_statuses,
+            "degraded_sources": degraded_sources,
+        }
         assert classify(state) == expected
+
+    def test_missing_degraded_sources_key_defaults_to_quiet(self):
+        """A state dict without a degraded_sources key behaves like an empty list."""
+        assert classify({"attention_items": [], "butler_statuses": []}) == "quiet"
 
 
 # ---------------------------------------------------------------------------
@@ -389,10 +260,12 @@ class TestHeadlineFor:
             ("mild", 2, "Things are quiet, with 2 exceptions."),
             ("degraded-quiet", 1, "Quiet, but 1 butler is degraded."),
             ("degraded-quiet", 3, "Quiet, but 3 butlers are degraded."),
+            ("degraded", 1, "One source could not be reached, so this may be incomplete."),
+            ("degraded", 2, "2 sources could not be reached, so this may be incomplete."),
         ],
     )
     def test_singular_plural_pluralization(self, state_class, count, expected):
-        """Headlines pluralize correctly across urgent/mild/degraded-quiet."""
+        """Headlines pluralize correctly across urgent/mild/degraded-quiet/degraded."""
         assert headline_for(state_class, count) == expected
 
     def test_busy_uses_total(self):
@@ -486,15 +359,17 @@ class TestVoiceLint:
 # elaborate_fallback
 # ---------------------------------------------------------------------------
 
+_ALL_STATE_CLASSES = ["urgent", "busy", "mild", "degraded-quiet", "degraded", "quiet"]
+
 
 class TestElaborateFallback:
-    @pytest.mark.parametrize("state_class", ["urgent", "busy", "mild", "degraded-quiet", "quiet"])
+    @pytest.mark.parametrize("state_class", _ALL_STATE_CLASSES)
     def test_returns_string_for_all_classes(self, state_class):
         result = elaborate_fallback({}, state_class)
         assert isinstance(result, str)
         assert len(result) > 0
 
-    @pytest.mark.parametrize("state_class", ["urgent", "busy", "mild", "degraded-quiet", "quiet"])
+    @pytest.mark.parametrize("state_class", _ALL_STATE_CLASSES)
     def test_fallbacks_pass_voice_lint(self, state_class):
         """Every fallback paragraph must comply with the voice rules."""
         result = elaborate_fallback({}, state_class)
@@ -506,6 +381,803 @@ class TestElaborateFallback:
         result = elaborate_fallback({}, "nonexistent-class")
         quiet_result = elaborate_fallback({}, "quiet")
         assert result == quiet_result
+
+
+# ---------------------------------------------------------------------------
+# _map_board_rows: board rows -> (attention_items, butler_statuses)
+# ---------------------------------------------------------------------------
+
+
+class TestMapBoardRows:
+    """_map_board_rows is the core of the board-verdict reuse (bu-gcz9e.1)."""
+
+    @pytest.mark.parametrize(
+        "activity, expected_severity, expected_status",
+        [
+            ("offline", "high", "down"),
+            ("quarantined", "high", "quarantined"),
+            ("overdue", "medium", "stale"),
+            ("unknown", "medium", "degraded"),
+        ],
+    )
+    def test_needs_attention_activities_produce_items(
+        self, activity, expected_severity, expected_status
+    ):
+        rows = [_board_row("calendar", activity=activity)]
+        attention_items, butler_statuses = _map_board_rows(rows, registry_source_error=False)
+
+        assert len(attention_items) == 1
+        item = attention_items[0]
+        assert item["severity"] == expected_severity
+        assert item["butler"] == "calendar"
+        assert item["source"] == "board"
+
+        assert butler_statuses == [
+            {
+                "name": "calendar",
+                "status": expected_status,
+                "type": "butler",
+                "eligibility_state": "active",
+                "last_seen_at": "2026-05-13T15:59:00+00:00",
+                "quarantine_reason": None,
+            }
+        ]
+
+    @pytest.mark.parametrize("activity", ["running", "idle"])
+    def test_healthy_activities_produce_no_attention_item(self, activity):
+        rows = [_board_row("calendar", activity=activity)]
+        attention_items, butler_statuses = _map_board_rows(rows, registry_source_error=False)
+
+        assert attention_items == []
+        assert butler_statuses[0]["status"] == "healthy"
+
+    def test_staffer_rows_are_excluded(self):
+        """Only type == 'butler' rows are considered (mirrors deriveOverviewTriageModel)."""
+        rows = [_board_row("qa", type="staffer", activity="offline")]
+        attention_items, butler_statuses = _map_board_rows(rows, registry_source_error=False)
+
+        assert attention_items == []
+        assert butler_statuses == []
+
+    def test_systemic_registry_failure_suppresses_fabricated_items(self):
+        """A total registry outage must not fabricate one attention item per butler.
+
+        Every row degrades to activity 'unknown' uniformly when the board's
+        registry query failed -- that is one systemic outage (surfaced via
+        the caller's "board" degraded source), not N independent butler
+        problems, so no attention item is fabricated and the row reads as
+        neutral ("healthy"), not "degraded".
+        """
+        rows = [
+            _board_row("calendar", activity="unknown"),
+            _board_row("health", activity="unknown"),
+        ]
+        attention_items, butler_statuses = _map_board_rows(rows, registry_source_error=True)
+
+        assert attention_items == []
+        assert all(status["status"] == "healthy" for status in butler_statuses)
+
+    def test_per_butler_unknown_without_registry_failure_still_flags(self):
+        """A single butler's own schema being unreachable IS a real, isolated signal."""
+        rows = [_board_row("calendar", activity="unknown")]
+        attention_items, _ = _map_board_rows(rows, registry_source_error=False)
+
+        assert len(attention_items) == 1
+        assert attention_items[0]["butler"] == "calendar"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_board_state: wraps GET /api/butlers/board
+# ---------------------------------------------------------------------------
+
+
+class TestFetchBoardState:
+    async def test_reuses_the_canonical_board_computation(self):
+        rows = [_board_row("calendar", activity="offline")]
+        board_fn = AsyncMock(return_value=_board_response(rows, registry_source_error=False))
+
+        with patch("butlers.api.routers.butlers.get_butlers_board", new=board_fn):
+            attention_items, butler_statuses, degraded = await _fetch_board_state(
+                configs=[], mgr=MagicMock(), db=MagicMock(), pricing=MagicMock()
+            )
+
+        assert board_fn.await_count == 1
+        assert len(attention_items) == 1
+        assert attention_items[0]["butler"] == "calendar"
+        assert butler_statuses[0]["status"] == "down"
+        assert degraded is False
+
+    async def test_registry_source_error_is_surfaced_as_degraded(self):
+        board_fn = AsyncMock(
+            return_value=_board_response(
+                [_board_row("calendar", activity="unknown")], registry_source_error=True
+            )
+        )
+
+        with patch("butlers.api.routers.butlers.get_butlers_board", new=board_fn):
+            attention_items, _, degraded = await _fetch_board_state(
+                configs=[], mgr=MagicMock(), db=MagicMock(), pricing=MagicMock()
+            )
+
+        assert degraded is True
+        assert attention_items == []
+
+    async def test_board_fetch_exception_is_caught_and_degraded(self):
+        board_fn = AsyncMock(side_effect=RuntimeError("board outage"))
+
+        with patch("butlers.api.routers.butlers.get_butlers_board", new=board_fn):
+            attention_items, butler_statuses, degraded = await _fetch_board_state(
+                configs=[], mgr=MagicMock(), db=MagicMock(), pricing=MagicMock()
+            )
+
+        assert attention_items == []
+        assert butler_statuses == []
+        assert degraded is True
+
+
+# ---------------------------------------------------------------------------
+# _fetch_approvals_state
+# ---------------------------------------------------------------------------
+
+
+class TestFetchApprovalsState:
+    async def test_sums_pending_across_pools(self):
+        pool_a = AsyncMock()
+        pool_a.fetchval = AsyncMock(return_value=2)
+        pool_b = AsyncMock()
+        pool_b.fetchval = AsyncMock(return_value=3)
+
+        with patch(
+            "butlers.api.routers.approvals._find_all_approvals_pools",
+            new=AsyncMock(return_value=[pool_a, pool_b]),
+        ):
+            pending, degraded = await _fetch_approvals_state(MagicMock())
+
+        assert pending == 5
+        assert degraded is False
+
+    async def test_pool_resolution_failure_is_degraded(self):
+        with patch(
+            "butlers.api.routers.approvals._find_all_approvals_pools",
+            new=AsyncMock(side_effect=RuntimeError("catalog query failed")),
+        ):
+            pending, degraded = await _fetch_approvals_state(MagicMock())
+
+        assert pending == 0
+        assert degraded is True
+
+    async def test_one_pool_failing_is_degraded_but_others_still_count(self):
+        good_pool = AsyncMock()
+        good_pool.fetchval = AsyncMock(return_value=4)
+        bad_pool = AsyncMock()
+        bad_pool.fetchval = AsyncMock(side_effect=RuntimeError("connection dropped"))
+
+        with patch(
+            "butlers.api.routers.approvals._find_all_approvals_pools",
+            new=AsyncMock(return_value=[good_pool, bad_pool]),
+        ):
+            pending, degraded = await _fetch_approvals_state(MagicMock())
+
+        assert pending == 4
+        assert degraded is True
+
+
+# ---------------------------------------------------------------------------
+# _fetch_notifications_state
+# ---------------------------------------------------------------------------
+
+
+class TestFetchNotificationsState:
+    async def test_returns_failed_count_from_notification_stats(self):
+        response = SimpleNamespace(data=SimpleNamespace(failed=7, source_available=True))
+
+        with patch(
+            "butlers.api.routers.notifications.notification_stats",
+            new=AsyncMock(return_value=response),
+        ):
+            failed, degraded = await _fetch_notifications_state(MagicMock())
+
+        assert failed == 7
+        assert degraded is False
+
+    async def test_source_unavailable_is_degraded(self):
+        response = SimpleNamespace(data=SimpleNamespace(failed=0, source_available=False))
+
+        with patch(
+            "butlers.api.routers.notifications.notification_stats",
+            new=AsyncMock(return_value=response),
+        ):
+            failed, degraded = await _fetch_notifications_state(MagicMock())
+
+        assert failed == 0
+        assert degraded is True
+
+    async def test_exception_is_degraded(self):
+        with patch(
+            "butlers.api.routers.notifications.notification_stats",
+            new=AsyncMock(side_effect=RuntimeError("db outage")),
+        ):
+            failed, degraded = await _fetch_notifications_state(MagicMock())
+
+        assert failed == 0
+        assert degraded is True
+
+
+# ---------------------------------------------------------------------------
+# _is_missing_relation_error
+# ---------------------------------------------------------------------------
+
+
+class TestIsMissingRelationError:
+    def test_undefined_table_error_class_name(self):
+        class UndefinedTableError(Exception):
+            pass
+
+        assert _is_missing_relation_error(UndefinedTableError("boom"), "qa_patrols") is True
+
+    def test_message_based_detection(self):
+        exc = RuntimeError('relation "qa_patrols" does not exist')
+        assert _is_missing_relation_error(exc, "qa_patrols") is True
+
+    def test_unrelated_error_is_not_missing_relation(self):
+        assert _is_missing_relation_error(RuntimeError("connection reset"), "qa_patrols") is False
+
+
+# ---------------------------------------------------------------------------
+# _fetch_qa_state
+# ---------------------------------------------------------------------------
+
+
+class TestFetchQaState:
+    async def test_no_shared_pool_is_legitimately_absent(self):
+        db = MagicMock()
+        db.credential_shared_pool.side_effect = KeyError("no shared pool")
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert qa_state is None
+        assert degraded is False
+
+    async def test_missing_table_is_legitimately_absent(self):
+        db = MagicMock()
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(side_effect=RuntimeError('relation "qa_patrols" does not exist'))
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert qa_state is None
+        assert degraded is False
+
+    async def test_generic_failure_is_degraded(self):
+        db = MagicMock()
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(side_effect=RuntimeError("connection dropped"))
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert qa_state is None
+        assert degraded is True
+
+    async def test_success_path_reads_last_patrol_and_24h_stats(self):
+        db = MagicMock()
+        pool = AsyncMock()
+
+        async def _fetchrow(sql, *args):
+            if "novel_count" in sql:
+                return _make_record({"novel_findings": 2, "dispatched_investigations": 1})
+            return _make_record({"status": "failed", "error_detail": "timeout"})
+
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert degraded is False
+        assert qa_state == {
+            "last_patrol_failed": True,
+            "novel_findings": 2,
+            "dispatched_investigations": 1,
+        }
+
+
+# ---------------------------------------------------------------------------
+# _qa_attention_item: mirrors model.ts::summarizeQaState's priority order
+# ---------------------------------------------------------------------------
+
+
+class TestQaAttentionItem:
+    def test_none_state_returns_none(self):
+        assert _qa_attention_item(None) is None
+
+    def test_all_quiet_returns_none(self):
+        state = {
+            "last_patrol_failed": False,
+            "novel_findings": 0,
+            "dispatched_investigations": 0,
+        }
+        assert _qa_attention_item(state) is None
+
+    def test_failed_patrol_wins_over_everything(self):
+        state = {
+            "last_patrol_failed": True,
+            "novel_findings": 5,
+            "dispatched_investigations": 5,
+        }
+        item = _qa_attention_item(state)
+        assert item["severity"] == "high"
+        assert item["description"] == "QA patrol failed"
+
+    def test_dispatched_investigations_wins_over_novel_findings(self):
+        state = {
+            "last_patrol_failed": False,
+            "novel_findings": 3,
+            "dispatched_investigations": 2,
+        }
+        item = _qa_attention_item(state)
+        assert item["severity"] == "medium"
+        assert "dispatched" in item["description"]
+        assert item["occurrences"] == 2
+
+    def test_novel_findings_only(self):
+        state = {
+            "last_patrol_failed": False,
+            "novel_findings": 1,
+            "dispatched_investigations": 0,
+        }
+        item = _qa_attention_item(state)
+        assert item["severity"] == "medium"
+        assert "novel QA finding" in item["description"]
+        assert item["occurrences"] == 1
+
+
+# ---------------------------------------------------------------------------
+# _fetch_audit_issues (unchanged shared CTE, now returns a degraded flag)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAuditIssues:
+    async def test_success_path(self):
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                _make_record(
+                    {
+                        "error_summary": "OAuth token expired",
+                        "first_seen_at": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
+                        "last_seen_at": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
+                        "occurrences": 3,
+                        "butlers": ["calendar"],
+                        "has_schedule": True,
+                        "schedule_names": ["daily-sync"],
+                    }
+                )
+            ]
+        )
+
+        audit_issues, attention_items, degraded = await _fetch_audit_issues(pool)
+
+        assert degraded is False
+        assert len(audit_issues) == 1
+        assert len(attention_items) == 1
+        assert attention_items[0]["severity"] == "high"
+
+    async def test_failure_is_degraded(self):
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=RuntimeError("db outage"))
+
+        audit_issues, attention_items, degraded = await _fetch_audit_issues(pool)
+
+        assert audit_issues == []
+        assert attention_items == []
+        assert degraded is True
+
+
+# ---------------------------------------------------------------------------
+# _fetch_dashboard_state: end-to-end composition of the five sources
+# ---------------------------------------------------------------------------
+
+
+def _patch_all_sources(
+    *,
+    board=([], [], False),
+    approvals=(0, False),
+    notifications=(0, False),
+    qa=(None, False),
+):
+    """Patch all four new-source fetchers at once; audit still hits the pool."""
+    return (
+        patch(
+            "butlers.api.routers.dashboard_briefing._fetch_board_state",
+            new=AsyncMock(return_value=board),
+        ),
+        patch(
+            "butlers.api.routers.dashboard_briefing._fetch_approvals_state",
+            new=AsyncMock(return_value=approvals),
+        ),
+        patch(
+            "butlers.api.routers.dashboard_briefing._fetch_notifications_state",
+            new=AsyncMock(return_value=notifications),
+        ),
+        patch(
+            "butlers.api.routers.dashboard_briefing._fetch_qa_state",
+            new=AsyncMock(return_value=qa),
+        ),
+    )
+
+
+class TestFetchDashboardState:
+    async def test_all_sources_quiet_produces_empty_state(self):
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool()
+
+        patches = _patch_all_sources()
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert state["attention_items"] == []
+        assert state["butler_statuses"] == []
+        assert state["degraded_sources"] == []
+        assert state["overview_totals"]["attention_total"] == 0
+
+    async def test_failed_notifications_produce_one_medium_item(self):
+        """Only FAILED notifications count -- replaces the old every-SENT-counts feed."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool()
+
+        patches = _patch_all_sources(notifications=(3, False))
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert len(state["attention_items"]) == 1
+        item = state["attention_items"][0]
+        assert item["severity"] == "medium"
+        assert item["type"] == "notification"
+        assert "3 failed notifications" in item["description"]
+
+    async def test_approvals_pending_produces_one_medium_item(self):
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool()
+
+        patches = _patch_all_sources(approvals=(2, False))
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert len(state["attention_items"]) == 1
+        assert state["attention_items"][0]["type"] == "approval"
+
+    async def test_qa_state_feeds_an_attention_item(self):
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool()
+        qa_state = {
+            "last_patrol_failed": True,
+            "novel_findings": 0,
+            "dispatched_investigations": 0,
+        }
+
+        patches = _patch_all_sources(qa=(qa_state, False))
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert len(state["attention_items"]) == 1
+        assert state["attention_items"][0]["type"] == "qa"
+        assert state["attention_items"][0]["severity"] == "high"
+
+    async def test_board_attention_and_statuses_are_threaded_through(self):
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool()
+        board_attention = [{"severity": "high", "type": "runtime", "butler": "calendar"}]
+        board_statuses = [{"name": "calendar", "status": "down"}]
+
+        patches = _patch_all_sources(board=(board_attention, board_statuses, False))
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert state["attention_items"] == board_attention
+        assert state["butler_statuses"] == board_statuses
+
+    @pytest.mark.parametrize(
+        "kwargs, expected_source",
+        [
+            ({"board": ([], [], True)}, "board"),
+            ({"approvals": (0, True)}, "approvals"),
+            ({"notifications": (0, True)}, "notifications"),
+            ({"qa": (None, True)}, "qa"),
+        ],
+    )
+    async def test_each_source_failure_is_named_in_degraded_sources(self, kwargs, expected_source):
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool()
+
+        patches = _patch_all_sources(**kwargs)
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert expected_source in state["degraded_sources"]
+
+    async def test_audit_failure_is_named_in_degraded_sources(self):
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=RuntimeError("audit outage"))
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        patches = _patch_all_sources()
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert "audit" in state["degraded_sources"]
+
+    async def test_a_failed_source_with_no_other_signal_classifies_as_degraded_not_quiet(self):
+        """The core acceptance criterion: 'All quiet.' must be unreachable
+        when any source failed."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool()
+
+        patches = _patch_all_sources(board=([], [], True))
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert classify(state) == "degraded"
+        assert classify(state) != "quiet"
+
+    async def test_all_five_fetches_run_concurrently(self):
+        """The five state fetches are dispatched via asyncio.gather, not serially."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        started: list[str] = []
+        all_started = asyncio.Event()
+
+        async def _gate(name, result):
+            started.append(name)
+            if len(started) >= 5:
+                all_started.set()
+            await asyncio.wait_for(all_started.wait(), timeout=1.0)
+            return result
+
+        pool = AsyncMock()
+
+        async def _pool_fetch(sql, *args):
+            return await _gate("audit", [])
+
+        pool.fetch = AsyncMock(side_effect=_pool_fetch)
+        pool.fetchrow = AsyncMock(return_value=None)
+
+        async def _board(*a, **k):
+            return await _gate("board", ([], [], False))
+
+        async def _approvals(*a, **k):
+            return await _gate("approvals", (0, False))
+
+        async def _notifications(*a, **k):
+            return await _gate("notifications", (0, False))
+
+        async def _qa(*a, **k):
+            return await _gate("qa", (None, False))
+
+        with (
+            patch(
+                "butlers.api.routers.dashboard_briefing._fetch_board_state",
+                new=AsyncMock(side_effect=_board),
+            ),
+            patch(
+                "butlers.api.routers.dashboard_briefing._fetch_approvals_state",
+                new=AsyncMock(side_effect=_approvals),
+            ),
+            patch(
+                "butlers.api.routers.dashboard_briefing._fetch_notifications_state",
+                new=AsyncMock(side_effect=_notifications),
+            ),
+            patch(
+                "butlers.api.routers.dashboard_briefing._fetch_qa_state",
+                new=AsyncMock(side_effect=_qa),
+            ),
+        ):
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert all_started.is_set(), "Not all five fetches started concurrently"
+        assert set(started) == {"audit", "board", "approvals", "notifications", "qa"}
+        assert state["attention_items"] == []
+
+
+# ---------------------------------------------------------------------------
+# Audit-derived attention items (bu-5y5ve spec coverage, unchanged behavior)
+# ---------------------------------------------------------------------------
+
+
+class TestAuditDerivedAttentionItems:
+    """Spec requirement: Attention Item Sources — audit-derived path (D7)."""
+
+    async def test_scheduled_audit_failure_becomes_high_severity(self):
+        """An audit error from a scheduled session gets severity='high'.
+
+        This means the item will drive state_class='urgent' even with no
+        other attention source pending (the core of the bu-5y5ve bug report).
+        """
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            audit_rows=[
+                {
+                    "error_summary": "OAuth token expired",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 3,
+                    "butlers": ["calendar"],
+                    "has_schedule": True,
+                    "schedule_names": ["daily-sync"],
+                }
+            ]
+        )
+
+        patches = _patch_all_sources()
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert len(state["attention_items"]) == 1
+        item = state["attention_items"][0]
+        assert item["severity"] == "high"
+        assert item["source"] == "audit_log"
+        assert item["type"] == "scheduled_task_failure"
+        assert item["butler"] == "calendar"
+
+    async def test_scheduled_audit_failure_forces_urgent_state_class(self):
+        """A single high-severity audit item causes the endpoint to return state_class='urgent'.
+
+        This verifies the end-to-end chain: audit query -> attention item ->
+        classify -> 'urgent'. No other source required.
+        """
+        pool = _make_owner_pool(
+            audit_rows=[
+                {
+                    "error_summary": "OAuth token expired",
+                    "first_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
+                    "last_seen_at": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
+                    "occurrences": 1,
+                    "butlers": ["calendar"],
+                    "has_schedule": True,
+                    "schedule_names": ["morning-sync"],
+                }
+            ]
+        )
+        cache = BriefingCache(ttl_seconds=300)
+        app = _make_app(pool, cache)
+
+        patches = _patch_all_sources()
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patch(
+                "butlers.api.routers.dashboard_briefing.elaborate_llm",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/dashboard/briefing")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["state_class"] == "urgent"
+
+    async def test_non_scheduled_audit_failure_becomes_medium_severity(self):
+        """An audit error not from a scheduled session gets severity='medium'.
+
+        A single medium-severity item drives state_class='mild', not 'urgent'.
+        """
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            audit_rows=[
+                {
+                    "error_summary": "Unexpected response from API",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 1,
+                    "butlers": ["health"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                }
+            ]
+        )
+
+        patches = _patch_all_sources()
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        assert len(state["attention_items"]) == 1
+        item = state["attention_items"][0]
+        assert item["severity"] == "medium"
+        assert item["source"] == "audit_log"
+        assert item["type"] == "audit_error_group"
+
+    async def test_audit_item_multi_butler_description(self):
+        """When multiple butlers share an error, the description includes the butler count."""
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            audit_rows=[
+                {
+                    "error_summary": "DB connection timeout",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 5,
+                    "butlers": ["health", "calendar"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                }
+            ]
+        )
+
+        patches = _patch_all_sources()
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        item = state["attention_items"][0]
+        assert item["butler"] == "multiple"
+        assert "2 butlers" in item["description"]
+
+
+# ---------------------------------------------------------------------------
+# _compute_overview_totals counts every attention source
+# ---------------------------------------------------------------------------
+
+
+class TestOverviewTotals:
+    async def test_totals_include_audit_board_approvals_notifications_qa(self):
+        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
+        pool = _make_owner_pool(
+            audit_rows=[
+                {
+                    "error_summary": "Rate limit exceeded",
+                    "first_seen_at": now,
+                    "last_seen_at": now,
+                    "occurrences": 3,
+                    "butlers": ["health"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                }
+            ],
+        )
+
+        patches = _patch_all_sources(
+            board=([{"severity": "high", "type": "runtime", "butler": "calendar"}], [], False),
+            approvals=(1, False),
+            notifications=(2, False),
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            state = await _fetch_dashboard_state(
+                pool, now, db=MagicMock(), configs=[], mgr=MagicMock(), pricing=MagicMock()
+            )
+
+        totals = state["overview_totals"]
+        # audit (medium) + board (high) + approvals (medium) + notifications (medium)
+        assert totals["attention_total"] == 4
+        assert totals["attention_high"] == 1
+        assert totals["attention_medium"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -544,9 +1216,12 @@ class TestLlmHappyPath:
         cache = BriefingCache(ttl_seconds=300)
         app = _make_app(pool, cache)
 
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(return_value="All butlers are healthy and the queue is empty."),
+        with (
+            _empty_board_patch(),
+            patch(
+                "butlers.api.routers.dashboard_briefing.elaborate_llm",
+                new=AsyncMock(return_value="All butlers are healthy and the queue is empty."),
+            ),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -571,9 +1246,12 @@ class TestLlmFailureFallback:
         cache = BriefingCache(ttl_seconds=300)
         app = _make_app(pool, cache)
 
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(return_value=None),
+        with (
+            _empty_board_patch(),
+            patch(
+                "butlers.api.routers.dashboard_briefing.elaborate_llm",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -590,9 +1268,12 @@ class TestLlmFailureFallback:
         cache = BriefingCache(ttl_seconds=300)
         app = _make_app(pool, cache)
 
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(side_effect=RuntimeError("network failure")),
+        with (
+            _empty_board_patch(),
+            patch(
+                "butlers.api.routers.dashboard_briefing.elaborate_llm",
+                new=AsyncMock(side_effect=RuntimeError("network failure")),
+            ),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -610,9 +1291,12 @@ class TestLlmFailureFallback:
         app = _make_app(pool, cache)
 
         # "We" is a first-person pronoun: should be rejected.
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(return_value="We checked all systems today!"),
+        with (
+            _empty_board_patch(),
+            patch(
+                "butlers.api.routers.dashboard_briefing.elaborate_llm",
+                new=AsyncMock(return_value="We checked all systems today!"),
+            ),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -622,6 +1306,30 @@ class TestLlmFailureFallback:
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["source"] == "fallback"
+
+    async def test_degraded_class_skips_llm_entirely(self):
+        """The degraded class never calls the LLM -- deterministic fallback only."""
+        pool = _make_owner_pool()
+        cache = BriefingCache(ttl_seconds=300)
+        app = _make_app(pool, cache)
+
+        llm_mock = AsyncMock(return_value="This should never be called.")
+        board_fn = AsyncMock(return_value=_board_response([], registry_source_error=True))
+
+        with (
+            patch("butlers.api.routers.butlers.get_butlers_board", new=board_fn),
+            patch("butlers.api.routers.dashboard_briefing.elaborate_llm", new=llm_mock),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/dashboard/briefing")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["state_class"] == "degraded"
+        assert data["source"] == "fallback"
+        llm_mock.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -643,7 +1351,10 @@ class TestCacheTTL:
             call_count += 1
             return "The system is running without issues."
 
-        with patch("butlers.api.routers.dashboard_briefing.elaborate_llm", new=_llm_stub):
+        with (
+            _empty_board_patch(),
+            patch("butlers.api.routers.dashboard_briefing.elaborate_llm", new=_llm_stub),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -673,7 +1384,10 @@ class TestCacheTTL:
             call_count += 1
             return "The system is running without issues."
 
-        with patch("butlers.api.routers.dashboard_briefing.elaborate_llm", new=_llm_stub):
+        with (
+            _empty_board_patch(),
+            patch("butlers.api.routers.dashboard_briefing.elaborate_llm", new=_llm_stub),
+        ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -749,19 +1463,25 @@ class TestUnauthenticated:
 
 
 # ---------------------------------------------------------------------------
-# Classification exception falls through to quiet paragraph
+# Classification exception falls through to the degraded paragraph
 # ---------------------------------------------------------------------------
 
 
 class TestClassificationExceptionFallback:
-    async def test_classification_exception_returns_quiet(self):
-        """When classify raises, the endpoint returns state_class=quiet
-        with the quiet templated paragraph and source=fallback."""
+    async def test_classification_exception_returns_degraded(self):
+        """When classify raises, the endpoint returns state_class=degraded
+        with the degraded templated paragraph and source=fallback.
+
+        A classifier bug is itself a swallowed failure -- it must not
+        compose "quiet" any more than a swallowed fetch failure may
+        (bu-gcz9e.1).
+        """
         pool = _make_owner_pool()
         cache = BriefingCache(ttl_seconds=300)
         app = _make_app(pool, cache)
 
         with (
+            _empty_board_patch(),
             patch(
                 "butlers.api.routers.dashboard_briefing.classify",
                 side_effect=RuntimeError("schema drift"),
@@ -778,10 +1498,9 @@ class TestClassificationExceptionFallback:
 
         assert resp.status_code == 200
         data = resp.json()["data"]
-        assert data["state_class"] == "quiet"
+        assert data["state_class"] == "degraded"
         assert data["source"] == "fallback"
-        # The quiet fallback paragraph must be non-empty.
-        assert data["elaboration"] == elaborate_fallback({}, "quiet")
+        assert data["elaboration"] == elaborate_fallback({}, "degraded")
 
 
 # ---------------------------------------------------------------------------
@@ -796,9 +1515,12 @@ class TestResponseShape:
         cache = BriefingCache(ttl_seconds=300)
         app = _make_app(pool, cache)
 
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(return_value=None),
+        with (
+            _empty_board_patch(),
+            patch(
+                "butlers.api.routers.dashboard_briefing.elaborate_llm",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -817,573 +1539,65 @@ class TestResponseShape:
             "Good evening.",
             "Good night.",
         }
-        assert data["state_class"] in {"urgent", "busy", "mild", "degraded-quiet", "quiet"}
+        assert data["state_class"] in {
+            "urgent",
+            "busy",
+            "mild",
+            "degraded-quiet",
+            "degraded",
+            "quiet",
+        }
         assert data["source"] in ("llm", "fallback")
 
 
 # ---------------------------------------------------------------------------
-# _row_get: only catches KeyError, not AttributeError
+# Prompt context: attention items feed the LLM prompt regardless of source
 # ---------------------------------------------------------------------------
 
 
-class TestRowGet:
-    def test_returns_value_when_key_exists(self):
-        """_row_get returns the value for a present key."""
-        rec = MagicMock()
-        rec.__getitem__ = MagicMock(return_value="calendar")
-        assert _row_get(rec, "name") == "calendar"
-
-    def test_returns_default_on_key_error(self):
-        """_row_get returns the default when the key is absent."""
-        rec = MagicMock()
-        rec.__getitem__ = MagicMock(side_effect=KeyError("missing"))
-        assert _row_get(rec, "missing_col") is None
-        assert _row_get(rec, "missing_col", "fallback") == "fallback"
-
-    def test_does_not_suppress_attribute_error(self):
-        """_row_get lets AttributeError propagate — it is not a missing-column error."""
-        rec = MagicMock()
-        rec.__getitem__ = MagicMock(side_effect=AttributeError("bad attribute"))
-        with pytest.raises(AttributeError):
-            _row_get(rec, "broken")
-
-
-# ---------------------------------------------------------------------------
-# Data-fetch failures log at WARNING
-# ---------------------------------------------------------------------------
-
-
-class TestDataFetchWarnings:
-    @pytest.mark.parametrize(
-        "failing_sql, warning_msg",
-        [
-            ("notifications", "Could not fetch attention items"),
-            ("audit_source", "Could not fetch audit-derived attention items"),
-            ("butler_registry", "Could not fetch butler statuses"),
-        ],
-    )
-    async def test_fetch_failure_logs_warning_and_isolates(self, caplog, failing_sql, warning_msg):
-        """A DB error in one of the three concurrent fetchers logs at WARNING.
-
-        The failing query degrades to empty while the other two still succeed.
-        """
-        import logging
-
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = AsyncMock()
-
-        async def _fetch_side_effect(sql, *args):
-            if failing_sql in sql:
-                raise RuntimeError("DB outage")
-            return []
-
-        pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
-
-        with caplog.at_level(logging.WARNING, logger="butlers.api.routers.dashboard_briefing"):
-            state = await _fetch_dashboard_state(pool, now)
-
-        # All buckets resolve (failing one empty, others still ran).
-        assert state["notification_items"] == []
-        assert state["audit_issues"] == []
-        assert state["butler_statuses"] == []
-        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any(warning_msg in r.message for r in warning_records)
-
-
-# ---------------------------------------------------------------------------
-# Concurrent dispatch (bu-pg3qa)
-#
-# Verifies that the three DB queries are dispatched concurrently via
-# asyncio.gather(), not serially, and that each can fail independently.
-# ---------------------------------------------------------------------------
-
-
-class TestConcurrentFetch:
-    """_fetch_dashboard_state dispatches all three queries concurrently."""
-
-    async def test_all_three_queries_dispatched_concurrently(self):
-        """asyncio.gather dispatches all three fetch coroutines at once.
-
-        By recording the order of SQL keywords seen in pool.fetch, we confirm
-        that all three queries are issued before any of them returns.  We
-        simulate this with a gate: each coroutine blocks until all three have
-        started, then unblocks together.
-        """
-        import asyncio as _asyncio
-
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        started: list[str] = []
-        all_started = _asyncio.Event()
-
-        async def _fetch_side_effect(sql, *args):
-            if "notifications" in sql:
-                key = "notifications"
-            elif "audit_source" in sql:
-                key = "audit"
-            elif "butler_registry" in sql:
-                key = "registry"
-            else:
-                key = "other"
-            started.append(key)
-            # Once all three have checked in, unblock them all.
-            if len(started) >= 3:
-                all_started.set()
-            # Wait for the gate (or fall through quickly if already set).
-            await _asyncio.wait_for(all_started.wait(), timeout=1.0)
-            return []
-
-        pool = AsyncMock()
-        pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        # All three must have started before any finished.
-        assert all_started.is_set(), "Not all three queries started concurrently"
-        assert set(started) == {"notifications", "audit", "registry"}
-        # State is fully assembled with empty results.
-        assert state["notification_items"] == []
-        assert state["audit_issues"] == []
-        assert state["butler_statuses"] == []
-
-    async def test_notifications_failure_does_not_prevent_registry_data(self):
-        """When notifications fails, butler_statuses is still populated."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            butler_statuses=[
+class TestPromptContext:
+    def test_build_user_message_summarizes_top_attention_and_health(self):
+        """The LLM prompt gets a bounded ecosystem snapshot, not raw thin rows."""
+        state = {
+            "now": datetime(2026, 5, 13, 23, 59, tzinfo=UTC),
+            "attention_items": [
                 {
-                    "name": "atlas",
-                    "status": "healthy",
-                    "agent_type": "butler",
-                    "eligibility_state": "active",
-                    "last_seen_at": now,
-                    "description": "Atlas butler",
-                    "modules": [],
-                    "capabilities": [],
-                    "quarantine_reason": None,
-                }
-            ]
-        )
-        # Override fetch so notifications always raises.
-        original_fetch = pool.fetch.side_effect
-
-        async def _patched_fetch(sql, *args):
-            if "notifications" in sql:
-                raise RuntimeError("notifications unavailable")
-            return await original_fetch(sql, *args)
-
-        pool.fetch = AsyncMock(side_effect=_patched_fetch)
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert state["notification_items"] == []
-        assert len(state["butler_statuses"]) == 1
-        assert state["butler_statuses"][0]["name"] == "atlas"
-
-    async def test_registry_failure_does_not_prevent_notification_data(self):
-        """When butler_registry fails, notification items are still populated."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            attention_items=[
-                {
-                    "id": "00000000-0000-0000-0000-000000000001",
                     "severity": "high",
-                    "source_butler": "calendar",
-                    "channel": "telegram",
-                    "message": "Calendar sync failed",
-                    "metadata": {"severity": "high"},
-                    "status": "unread",
-                    "error": None,
-                    "session_id": None,
-                    "trace_id": None,
-                    "created_at": now,
-                }
-            ]
-        )
-        original_fetch = pool.fetch.side_effect
-
-        async def _patched_fetch(sql, *args):
-            if "butler_registry" in sql:
-                raise RuntimeError("registry unavailable")
-            return await original_fetch(sql, *args)
-
-        pool.fetch = AsyncMock(side_effect=_patched_fetch)
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert state["butler_statuses"] == []
-        assert len(state["notification_items"]) == 1
-        assert state["notification_items"][0]["source_butler"] == "calendar"
-
-    async def test_audit_failure_does_not_prevent_notification_data(self):
-        """When audit query fails, notification items are still populated."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            attention_items=[
-                {
-                    "id": "00000000-0000-0000-0000-000000000002",
-                    "severity": "low",
-                    "source_butler": "health",
-                    "channel": "telegram",
-                    "message": "Health check complete",
-                    "metadata": {},
-                    "status": "sent",
-                    "error": None,
-                    "session_id": None,
-                    "trace_id": None,
-                    "created_at": now,
-                }
-            ]
-        )
-        original_fetch = pool.fetch.side_effect
-
-        async def _patched_fetch(sql, *args):
-            if "audit_source" in sql:
-                raise RuntimeError("audit unavailable")
-            return await original_fetch(sql, *args)
-
-        pool.fetch = AsyncMock(side_effect=_patched_fetch)
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert state["audit_issues"] == []
-        assert len(state["notification_items"]) == 1
-        assert state["notification_items"][0]["source_butler"] == "health"
-
-
-# ---------------------------------------------------------------------------
-# Audit-derived attention items (bu-5y5ve spec coverage)
-#
-# Validates: a scheduled-task failure in the audit log surfaces as a
-# severity="high" attention item which forces state_class="urgent", while
-# a non-scheduled audit error surfaces as severity="medium".
-# ---------------------------------------------------------------------------
-
-
-def _make_audit_pool(
-    audit_rows: list[dict] | None = None,
-    butler_statuses: list[dict] | None = None,
-) -> AsyncMock:
-    """Build a mock pool that returns the given audit rows for audit queries.
-
-    Notifications query returns [] so audit items are the sole attention source.
-    """
-    pool = AsyncMock()
-    owner_id = "owner-uuid-1234"
-
-    async def _fetchrow(sql, *args):
-        # Owner-assertion query now reads public.entities directly (bu-jnaa3).
-        if "public.entities" in sql and "ANY(roles)" in sql:
-            rec = MagicMock()
-            rec.__getitem__ = MagicMock(return_value=owner_id)
-            return rec
-        return None
-
-    rows = audit_rows or []
-    statuses = butler_statuses or []
-
-    async def _fetch(sql, *args):
-        if "notifications" in sql:
-            return []
-        if "audit_source" in sql:
-            return [_make_record(r) for r in rows]
-        if "butler_registry" in sql:
-            return [_make_record(r) for r in statuses]
-        return []
-
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
-    pool.fetch = AsyncMock(side_effect=_fetch)
-    return pool
-
-
-class TestAuditDerivedAttentionItems:
-    """Spec requirement: Attention Item Sources — audit-derived path (D7)."""
-
-    async def test_scheduled_audit_failure_becomes_high_severity(self):
-        """An audit error from a scheduled session gets severity='high'.
-
-        This means the item will drive state_class='urgent' even with no
-        owner notification pending (the core of the bu-5y5ve bug report).
-        """
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_audit_pool(
-            audit_rows=[
-                {
-                    "error_summary": "OAuth token expired",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "occurrences": 3,
-                    "butlers": ["calendar"],
-                    "has_schedule": True,
-                    "schedule_names": ["daily-sync"],
-                }
-            ]
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert len(state["attention_items"]) == 1
-        item = state["attention_items"][0]
-        assert item["severity"] == "high"
-        assert item["source"] == "audit_log"
-        assert item["type"] == "scheduled_task_failure"
-        assert item["butler"] == "calendar"
-
-    async def test_scheduled_audit_failure_forces_urgent_state_class(self):
-        """A single high-severity audit item causes the endpoint to return state_class='urgent'.
-
-        This verifies the end-to-end chain: audit query -> attention item ->
-        classify -> 'urgent'.  No notification required.
-        """
-        pool = _make_audit_pool(
-            audit_rows=[
-                {
-                    "error_summary": "OAuth token expired",
-                    "first_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
-                    "last_seen_at": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
-                    "occurrences": 1,
-                    "butlers": ["calendar"],
-                    "has_schedule": True,
-                    "schedule_names": ["morning-sync"],
-                }
-            ]
-        )
-        cache = BriefingCache(ttl_seconds=300)
-        app = _make_app(pool, cache)
-
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(return_value=None),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.get("/api/dashboard/briefing")
-
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["state_class"] == "urgent"
-
-    async def test_non_scheduled_audit_failure_becomes_medium_severity(self):
-        """An audit error not from a scheduled session gets severity='medium'.
-
-        A single medium-severity item drives state_class='mild', not 'urgent'.
-        """
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_audit_pool(
-            audit_rows=[
-                {
-                    "error_summary": "Unexpected response from API",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "occurrences": 1,
-                    "butlers": ["health"],
-                    "has_schedule": False,
-                    "schedule_names": [],
-                }
-            ]
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        assert len(state["attention_items"]) == 1
-        item = state["attention_items"][0]
-        assert item["severity"] == "medium"
-        assert item["source"] == "audit_log"
-        assert item["type"] == "audit_error_group"
-
-    async def test_non_scheduled_audit_failure_does_not_force_urgent(self):
-        """A non-scheduled audit error produces 'mild', not 'urgent'.
-
-        Validates the spec: ad-hoc errors stay below the urgent threshold.
-        """
-        pool = _make_audit_pool(
-            audit_rows=[
-                {
-                    "error_summary": "Unexpected response from API",
-                    "first_seen_at": datetime(2026, 5, 13, 15, 0, tzinfo=UTC),
-                    "last_seen_at": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
-                    "occurrences": 1,
-                    "butlers": ["health"],
-                    "has_schedule": False,
-                    "schedule_names": [],
-                }
-            ]
-        )
-        cache = BriefingCache(ttl_seconds=300)
-        app = _make_app(pool, cache)
-
-        with patch(
-            "butlers.api.routers.dashboard_briefing.elaborate_llm",
-            new=AsyncMock(return_value=None),
-        ):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                resp = await client.get("/api/dashboard/briefing")
-
-        assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert data["state_class"] == "mild"
-
-    async def test_audit_item_multi_butler_description(self):
-        """When multiple butlers share an error, the description includes the butler count."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_audit_pool(
-            audit_rows=[
-                {
-                    "error_summary": "DB connection timeout",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "occurrences": 5,
-                    "butlers": ["health", "calendar"],
-                    "has_schedule": False,
-                    "schedule_names": [],
-                }
-            ]
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        item = state["attention_items"][0]
-        assert item["butler"] == "multiple"
-        assert "2 butlers" in item["description"]
-
-
-# ---------------------------------------------------------------------------
-# _make_owner_pool dispatches the audit grouping query (bu-e00sx gap)
-#
-# Verifies that the general-purpose pool helper routes on "audit_source" (the
-# canonical public.audit_log grouping CTE alias, bu-j26e8) so tests that mix
-# notification and audit rows exercise the end-to-end audit path through
-# _fetch_dashboard_state.
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# _compute_overview_totals counts audit-derived items (bu-e00sx gap)
-#
-# Verifies that overview_totals.attention_high and attention_medium include
-# audit-derived items, not only notification-derived items.
-# ---------------------------------------------------------------------------
-
-
-class TestOverviewTotalsWithAuditItems:
-    """overview_totals counts must include audit-derived attention items."""
-
-    async def test_mixed_notification_and_audit_totals(self):
-        """attention_high and attention_medium include both notification and audit items."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            # One notification item with high severity
-            attention_items=[
-                {
-                    "id": "notif-001",
-                    "severity": "high",
-                    "source_butler": "calendar",
-                    "channel": "telegram",
-                    "message": "OAuth token expired",
-                    "metadata": {"severity": "high"},
-                    "status": "unread",
-                    "error": None,
-                    "session_id": None,
-                    "trace_id": None,
-                    "created_at": now,
+                    "type": "notification",
+                    "butler": "calendar",
+                    "description": "Calendar sync failed for the owner account",
+                    "last_seen_at": "2026-05-13T15:59:00+00:00",
+                    "link": "/notifications",
+                    "source": "notification",
                 }
             ],
-            # One audit item with medium severity (non-scheduled)
-            audit_rows=[
+            "butler_statuses": [
                 {
-                    "error_summary": "Rate limit exceeded",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "occurrences": 3,
-                    "butlers": ["health"],
-                    "has_schedule": False,
-                    "schedule_names": [],
+                    "name": "calendar",
+                    "status": "degraded",
+                    "type": "butler",
+                    "eligibility_state": "stale",
+                    "last_seen_at": "2026-05-13T15:59:00+00:00",
                 }
             ],
-        )
+            "overview_totals": {
+                "attention_total": 1,
+                "attention_high": 1,
+                "attention_medium": 0,
+                "attention_low": 0,
+                "butlers_total": 1,
+                "butlers_unhealthy": 1,
+            },
+        }
 
-        state = await _fetch_dashboard_state(pool, now)
+        message = _build_user_message(state, "urgent")
 
-        totals = state["overview_totals"]
-        # Both items (notification high + audit medium) must be counted
-        assert totals["attention_total"] == 2
-        assert totals["attention_high"] == 1
-        assert totals["attention_medium"] == 1
-        assert totals["attention_low"] == 0
-
-    async def test_audit_only_totals_without_notifications(self):
-        """When only audit rows are present, totals reflect only audit-derived items."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            # No notifications
-            audit_rows=[
-                {
-                    "error_summary": "Schedule task timeout",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "occurrences": 1,
-                    "butlers": ["calendar"],
-                    "has_schedule": True,
-                    "schedule_names": ["morning-sync"],
-                }
-            ],
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        totals = state["overview_totals"]
-        assert totals["attention_total"] == 1
-        assert totals["attention_high"] == 1
-        assert totals["attention_medium"] == 0
-
-    async def test_multiple_audit_rows_counted_individually(self):
-        """Each audit group row is its own attention item in the totals."""
-        now = datetime(2026, 5, 13, 15, 59, tzinfo=UTC)
-        pool = _make_owner_pool(
-            audit_rows=[
-                {
-                    "error_summary": "Scheduled task failure",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "occurrences": 2,
-                    "butlers": ["calendar"],
-                    "has_schedule": True,
-                    "schedule_names": ["daily-sync"],
-                },
-                {
-                    "error_summary": "API rate limit exceeded",
-                    "first_seen_at": now,
-                    "last_seen_at": now,
-                    "occurrences": 1,
-                    "butlers": ["health"],
-                    "has_schedule": False,
-                    "schedule_names": [],
-                },
-            ],
-        )
-
-        state = await _fetch_dashboard_state(pool, now)
-
-        totals = state["overview_totals"]
-        # One scheduled (high) + one non-scheduled (medium)
-        assert totals["attention_total"] == 2
-        assert totals["attention_high"] == 1
-        assert totals["attention_medium"] == 1
-
-
-# ---------------------------------------------------------------------------
-# Audit items appear in top_attention_items in the prompt (bu-e00sx gap)
-#
-# Verifies the end-to-end chain: audit rows -> state['attention_items'] ->
-# top_attention_items in the LLM prompt when audit items rank higher than
-# notification items by severity.
-# ---------------------------------------------------------------------------
-
-
-class TestPromptIncludesAuditItems:
-    """Audit-derived items must surface in the LLM prompt when they rank high."""
+        assert "attention_summary" in message
+        assert "top_attention_items" in message
+        assert "butler_health" in message
+        assert "Calendar sync failed for the owner account" in message
+        assert "2026-05-13T15:59:00+00:00" in message
+        assert "calendar" in message
 
     def test_high_severity_audit_item_appears_in_top_attention_items(self):
         """A high-severity audit item must appear in top_attention_items in the prompt."""

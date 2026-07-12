@@ -4,7 +4,9 @@
 
 The dashboard briefing is the editorial opening of the dashboard home page: a templated greeting, a deterministic headline classifying the state of the system, and an LLM-elaborated paragraph that names what is true right now in butler voice. The briefing is composed server-side and returned as a single object the frontend renders verbatim.
 
-This spec defines the wire contract (`GET /api/dashboard/briefing`), the `Briefing` response schema, the five-class state classification taxonomy, the headline table, the LLM elaboration prompt and parameters, the deterministic fallback, the per-owner 5-minute caching contract, and the post-generation voice lint.
+This spec defines the wire contract (`GET /api/dashboard/briefing`), the `Briefing` response schema, the six-class state classification taxonomy, the headline table, the LLM elaboration prompt and parameters, the deterministic fallback, the per-owner 5-minute caching contract, and the post-generation voice lint.
+
+The headline is classified from the SAME composed attention model the Overview dashboard page renders (bu-gcz9e.1, "one attention model on the dashboard"), not a second, independently-maintained one: butler liveness comes from `GET /api/butlers/board`'s canonical verdict, audit-derived issues from the shared audit-group CTE also used by the Issues page, pending approvals from the same all-pools fan-out the Settings Console uses, failed notifications from `GET /api/notifications/stats`, and QA state from the same last-patrol-failed / dispatched / novel-findings priority the Overview page's QA summarization uses.
 ## Requirements
 ### Requirement: Briefing Response Schema
 
@@ -18,19 +20,24 @@ The endpoint `GET /api/dashboard/briefing` SHALL return a JSON object with exact
 - **AND** `greet` matches `"Good {time_of_day}."` for one of the five time_of_day values
 - **AND** `headline` is the templated body for the computed `state_class`
 - **AND** `source` is one of `"llm"` or `"fallback"`
-- **AND** `state_class` is one of `"urgent"`, `"busy"`, `"mild"`, `"degraded-quiet"`, `"quiet"`
+- **AND** `state_class` is one of `"urgent"`, `"busy"`, `"mild"`, `"degraded-quiet"`, `"degraded"`, `"quiet"`
 - **AND** `generated_at` is an ISO 8601 timestamp recording the wall-clock time at which the Briefing object was finalized, set once per composition regardless of whether `source` is `"llm"` or `"fallback"` and regardless of how long the underlying LLM call took
 
 ### Requirement: Attention Item Sources
 
-The endpoint SHALL populate `state.attention_items` from two sources before classification: the owner's unread or open notification records, and grouped error entries from the `dashboard_audit_log` table.
+The endpoint SHALL populate `state.attention_items` from five sources before classification: butler liveness, grouped error entries from the `dashboard_audit_log` table, pending approvals, failed notifications, and QA state. Each source is fetched independently and concurrently; a failure in one source MUST NOT prevent the others from contributing.
 
-#### Scenario: Notification-derived attention items
+#### Scenario: Board-derived attention items (butler liveness)
 
-- **WHEN** the owner has unread or open notifications in the last 24 hours
-- **THEN** each notification is added to `state.attention_items` as a single attention item
-- **AND** the item carries the notification's own severity level (`high`, `medium`, or `low`)
-- **AND** `source` is `"notification"`
+- **WHEN** `GET /api/butlers/board`'s canonical per-row `activity` verdict for a `"butler"`-type row is one of `"offline"`, `"quarantined"`, or `"overdue"`
+- **THEN** that row is added to `state.attention_items` as a single attention item
+- **AND** `"offline"` and `"quarantined"` carry `severity = "high"`; `"overdue"` carries `severity = "medium"`
+- **AND** `source` is `"board"`
+- **WHEN** a row's activity is `"unknown"` (that butler's own heartbeat/schema is unreachable) and the board's registry query itself did not fail
+- **THEN** that row is likewise added with `severity = "medium"`
+- **WHEN** the board's registry query itself failed, uniformly degrading every row's activity to `"unknown"`
+- **THEN** no attention item is fabricated per butler from that systemic outage
+- **AND** the failure is instead tracked as the `"board"` degraded source (see the degraded-sources scenario below)
 
 #### Scenario: Audit-derived attention items
 
@@ -40,18 +47,46 @@ The endpoint SHALL populate `state.attention_items` from two sources before clas
 - **AND** a grouped entry receives `severity = "medium"` when none of the rows in the group were schedule-triggered
 - **AND** `source` is `"audit_log"`
 
-This means a recurring scheduled-task failure raises `state_class` to `"urgent"` even if the owner has not yet received a notification; this is intentional. Ad-hoc errors that do not originate from a schedule are surfaced as `"medium"` so they contribute to `"busy"` or `"mild"` without forcing `"urgent"`.
+This means a recurring scheduled-task failure raises `state_class` to `"urgent"` even if no other source is reporting anything; this is intentional. Ad-hoc errors that do not originate from a schedule are surfaced as `"medium"` so they contribute to `"busy"` or `"mild"` without forcing `"urgent"`.
+
+#### Scenario: Approvals-derived attention item
+
+- **WHEN** one or more pending approvals exist across any butler's `pending_actions` table
+- **THEN** a single attention item is added with `severity = "medium"` naming the total pending count
+- **AND** `source` is `"approval"`
+
+#### Scenario: Notification-derived attention item
+
+- **WHEN** `GET /api/notifications/stats`'s all-time `failed` count is greater than zero
+- **THEN** a single attention item is added with `severity = "medium"` naming the failed count
+- **AND** `source` is `"notification"`
+
+This replaces every SENT notification counting individually toward attention; only failed deliveries are a genuine attention-worthy signal, matching the Overview page's `useNotificationStats()`-derived attention row.
+
+#### Scenario: QA-derived attention item
+
+- **WHEN** the most recent non-running QA patrol has `status = "failed"` or a non-null `error_detail`
+- **THEN** a single attention item is added with `severity = "high"` and `source = "qa"`, and no further QA checks are considered
+- **WHEN** the last patrol did not fail, and one or more QA investigations were dispatched in the last 24 hours
+- **THEN** a single attention item is added with `severity = "medium"` and `source = "qa"` naming the dispatched count
+- **WHEN** neither of the above is true, and one or more novel QA findings occurred in the last 24 hours
+- **THEN** a single attention item is added with `severity = "medium"` and `source = "qa"` naming the novel-finding count
+- **WHEN** the QA tables are not provisioned on this deployment (undefined relation)
+- **THEN** QA is treated as legitimately absent, contributing no attention item and no degraded source
 
 #### Scenario: Attention item source fetch failure
 
-- **WHEN** either source query fails with an exception
+- **WHEN** any of the five source fetches (board, audit, approvals, notifications, QA) fails with an exception, or a source explicitly reports itself unreachable (e.g. `NotificationStats.source_available = false`)
 - **THEN** that source's items are omitted from `state.attention_items`
-- **AND** the endpoint logs a WARNING and continues with the remaining items
-- **AND** `state_class` is computed from whatever items were successfully retrieved
+- **AND** the endpoint logs a WARNING and continues with the remaining sources
+- **AND** the source's name is recorded in `state.degraded_sources`
+- **AND** `state_class` is computed from whatever items were successfully retrieved, per the Degraded class scenario below
+
+A source that is legitimately absent (an un-migrated table on a deployment that has not provisioned that module) is NOT recorded as degraded -- only a genuine failure (dropped connection, timeout, permission error) is.
 
 ### Requirement: State Classification
 
-The endpoint SHALL classify the current dashboard state into one of five `state_class` values using a deterministic function over the attention list and butler health.
+The endpoint SHALL classify the current dashboard state into one of six `state_class` values using a deterministic function over the attention list, butler health, and the set of sources that failed to answer (`state.degraded_sources`).
 
 #### Scenario: Urgent class
 
@@ -80,10 +115,24 @@ The endpoint SHALL classify the current dashboard state into one of five `state_
 - **THEN** `state_class` is `"degraded-quiet"`
 - **AND** `headline` is `"Quiet, but {n} butler is degraded."` for n == 1, or `"Quiet, but {n} butlers are degraded."` for n > 1
 
+This holds even when `state.degraded_sources` is also non-empty: a known, real signal (a specific butler reporting degraded/error) is more actionable than a vague "some data is missing" notice, so `"degraded-quiet"` outranks `"degraded"`.
+
+#### Scenario: Degraded class
+
+- **WHEN** there are zero attention items
+- **AND** no butler is known `degraded` or `error`
+- **AND** `state.degraded_sources` is non-empty (one or more of board/audit/approvals/notifications/QA failed to answer)
+- **THEN** `state_class` is `"degraded"`
+- **AND** `headline` is `"One source could not be reached, so this may be incomplete."` for exactly one degraded source, or `"{n} sources could not be reached, so this may be incomplete."` for n > 1
+- **AND** the LLM elaboration step is skipped entirely; `elaboration` is always the templated fallback and `source` is always `"fallback"` (the true state is unknown by definition, so only the deterministic paragraph is safe to return)
+
+`"degraded"` always outranks `"quiet"`: a source that failed to answer must never be indistinguishable from a truthful all-clear.
+
 #### Scenario: Quiet class
 
 - **WHEN** there are zero attention items
 - **AND** all butlers report `healthy`
+- **AND** `state.degraded_sources` is empty (every source answered)
 - **THEN** `state_class` is `"quiet"`
 - **AND** `headline` is `"Everything is in hand."`
 
@@ -198,13 +247,15 @@ The endpoint SHALL never raise to the caller. Failures internal to the briefing 
 - **WHEN** the LLM transport is unreachable (DNS failure, TLS failure, upstream 5xx)
 - **THEN** the response is HTTP 200
 - **AND** `source` is `"fallback"`
-- **AND** the fallback paragraph is one of the five templated paragraphs
+- **AND** the fallback paragraph is one of the six templated paragraphs
 
 #### Scenario: Classification exception
 
 - **WHEN** the classification function raises (a malformed state row, missing column, schema drift)
 - **THEN** the endpoint logs the error
-- **AND** returns `state_class = "quiet"` with the quiet templated paragraph
+- **AND** returns `state_class = "degraded"` with the degraded templated paragraph
 - **AND** `source` is `"fallback"`
 - **AND** an internal error metric is emitted
+
+A classifier exception is itself a swallowed failure and must not compose `"quiet"` any more than a swallowed source-fetch failure may.
 

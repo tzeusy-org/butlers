@@ -8,7 +8,7 @@
  * - RuntimeSummaryKpi cells (total / healthy / sessions_24h / pending approvals)
  * - ButlerIndex rows
  * - OperationsNowList (pending approvals, QA state, notifications, recent activity)
- * - Five state_class values render without crashing
+ * - Six state_class values render without crashing
  *
  * Prior test contracts (Vertical-D hero/secondary regions) are replaced by
  * the editorial layout.
@@ -357,7 +357,7 @@ describe("DashboardPage -- composing state", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Five state_class values render without errors
+// Six state_class values render without errors
 // ---------------------------------------------------------------------------
 
 describe("DashboardPage -- state_class variants", () => {
@@ -366,6 +366,10 @@ describe("DashboardPage -- state_class variants", () => {
     { stateClass: "mild", headline: "Things are quiet, with 1 exception." },
     { stateClass: "busy", headline: "Things are busy with 5 items waiting." },
     { stateClass: "degraded-quiet", headline: "Quiet, but 1 butler is degraded." },
+    {
+      stateClass: "degraded",
+      headline: "One source could not be reached, so this may be incomplete.",
+    },
     { stateClass: "urgent", headline: "One thing needs you now." },
   ];
 

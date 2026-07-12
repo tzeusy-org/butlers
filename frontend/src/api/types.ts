@@ -6899,12 +6899,22 @@ export interface DriftFacts {
 // and about/heart-and-soul/design-language.md (Editorial archetype).
 // ---------------------------------------------------------------------------
 
-/** Five state classes the briefing classifier produces. */
+/**
+ * Six state classes the briefing classifier produces (bu-gcz9e.1 added
+ * "degraded" -- headline classified from the composed board/attention model,
+ * see GET /api/dashboard/briefing).
+ *
+ * "degraded" is distinct from "degraded-quiet": degraded-quiet means a real
+ * butler is known to be unhealthy; degraded means one or more state sources
+ * (board/notifications/approvals/qa/audit) could not be read at all, so a
+ * swallowed fetch failure can never compose "quiet".
+ */
 export type BriefingStateClass =
   | "urgent"
   | "busy"
   | "mild"
   | "degraded-quiet"
+  | "degraded"
   | "quiet";
 
 /** Whether the elaboration paragraph came from the LLM or the templated fallback. */

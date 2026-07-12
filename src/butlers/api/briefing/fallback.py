@@ -18,7 +18,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Fallback paragraph table
 #
-# Keys are the five state_class values. Values are the canned paragraphs
+# Keys are the six state_class values. Values are the canned paragraphs
 # served when the LLM is unavailable, timed out, returned empty, or failed
 # the voice lint. Each paragraph is written in butler voice per the
 # dashboard design-language voice rules.
@@ -51,6 +51,11 @@ _FALLBACK_TABLE: dict[str, str] = {
         "The system continues to operate, but the affected butler may not be processing "
         "its full workload."
     ),
+    "degraded": (
+        "One or more data sources did not answer while this summary was composed, "
+        "so the picture above may be incomplete. "
+        "The affected pages carry the direct, current state until the source recovers."
+    ),
     "quiet": (
         "All butlers are healthy and the attention list is empty. "
         "The system ran its most recent cycles without flagging anything for review."
@@ -67,7 +72,7 @@ def elaborate_fallback(state: dict, state_class: str) -> str:
     Args:
         state: The current dashboard state dict (not used in v1 canned
                paragraphs, kept in the signature for API stability).
-        state_class: One of the five state class values.
+        state_class: One of the six state class values.
 
     Returns:
         A one-to-two sentence elaboration paragraph in butler voice.

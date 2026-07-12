@@ -1,8 +1,13 @@
 """Tests for derive_liveness clock-skew guard (bu-1hs86).
 
 Verifies that derive_liveness treats future-dated heartbeats (>5 min ahead of
-server clock) as 'offline' rather than 'online', matching the SQL guard added
-to the butler_registry liveness check in dashboard_briefing.py.
+server clock) as 'offline' rather than 'online'. This guard originally
+mirrored an equivalent SQL guard in dashboard_briefing.py's bespoke
+butler_registry liveness CASE; that CASE was removed in bu-gcz9e.1 in favor
+of reusing GET /api/butlers/board's canonical liveness verdict, which does
+not currently carry an equivalent clock-skew guard (see bu-gcz9e.1's
+follow-up: a future-dated last_seen_at on GET /api/butlers/board reads as
+healthy/idle instead of degraded).
 """
 
 from __future__ import annotations
