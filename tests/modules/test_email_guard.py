@@ -243,11 +243,12 @@ class TestEmailGuardEmitsCreatedEvent:
     """email_guard.py must emit 'created' approval WS events when parking actions."""
 
     async def test_no_rule_park_emits_created(self) -> None:
-        """No standing rule: check_email_recipient emits kind='created' with status='pending'."""
-        from unittest.mock import MagicMock
-
+        """No standing rule: check_email_recipient publishes kind='created' with
+        status='pending' onto the fleet event bus (publish_fleet_event, RFC 0022;
+        the daemon-side upward emit_approvals_event import was deleted in
+        bu-01r64.2)."""
         pool = AsyncMock()
-        mock_emit = MagicMock()
+        mock_publish = AsyncMock()
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
@@ -258,27 +259,27 @@ class TestEmailGuardEmitsCreatedEvent:
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "butlers.api.routers.approvals.emit_approvals_event",
-                new=mock_emit,
+                "butlers.fleet_events.publish_fleet_event",
+                new=mock_publish,
             ),
         ):
             decision = await check_email_recipient(pool, butler_name="home", **_COMMON_KWARGS)
 
         assert decision.allowed is False
         assert decision.reason == "parked"
-        mock_emit.assert_called_once()
-        call_kwargs = mock_emit.call_args
-        assert call_kwargs.args[0] == "created"
-        assert call_kwargs.kwargs.get("butler") == "home"
-        assert call_kwargs.kwargs.get("tool_name") == "notify"
-        assert call_kwargs.kwargs.get("status") == "pending"
+        mock_publish.assert_called_once()
+        call_args = mock_publish.call_args
+        assert call_args.args[1] == "approval"
+        event = call_args.args[2]
+        assert event["kind"] == "created"
+        assert event["butler"] == "home"
+        assert event["tool_name"] == "notify"
+        assert event["status"] == "pending"
 
     async def test_context_mismatch_park_emits_created(self) -> None:
-        """Context mismatch park: check_email_recipient emits kind='created'."""
-        from unittest.mock import MagicMock
-
+        """Context mismatch park: check_email_recipient publishes kind='created'."""
         pool = AsyncMock()
-        mock_emit = MagicMock()
+        mock_publish = AsyncMock()
         with (
             patch(
                 "butlers.identity.resolve_contact_by_channel",
@@ -289,8 +290,8 @@ class TestEmailGuardEmitsCreatedEvent:
                 new=AsyncMock(return_value="work"),
             ),
             patch(
-                "butlers.api.routers.approvals.emit_approvals_event",
-                new=mock_emit,
+                "butlers.fleet_events.publish_fleet_event",
+                new=mock_publish,
             ),
         ):
             decision = await check_email_recipient(
@@ -302,14 +303,16 @@ class TestEmailGuardEmitsCreatedEvent:
 
         assert decision.allowed is False
         assert decision.reason == "parked"
-        mock_emit.assert_called_once()
-        call_kwargs = mock_emit.call_args
-        assert call_kwargs.args[0] == "created"
-        assert call_kwargs.kwargs.get("butler") == "home"
-        assert call_kwargs.kwargs.get("status") == "pending"
+        mock_publish.assert_called_once()
+        call_args = mock_publish.call_args
+        assert call_args.args[1] == "approval"
+        event = call_args.args[2]
+        assert event["kind"] == "created"
+        assert event["butler"] == "home"
+        assert event["status"] == "pending"
 
     async def test_emit_created_survives_broker_failure(self) -> None:
-        """emit_approvals_event raising must not prevent email guard from parking the action."""
+        """publish_fleet_event raising must not prevent email guard from parking the action."""
         pool = AsyncMock()
         with (
             patch(
@@ -321,13 +324,13 @@ class TestEmailGuardEmitsCreatedEvent:
                 new=AsyncMock(return_value=None),
             ),
             patch(
-                "butlers.api.routers.approvals.emit_approvals_event",
-                side_effect=RuntimeError("broker down"),
+                "butlers.fleet_events.publish_fleet_event",
+                new=AsyncMock(side_effect=RuntimeError("broker down")),
             ),
         ):
             decision = await check_email_recipient(pool, butler_name="home", **_COMMON_KWARGS)
 
-        # Guard must still park the action even when emit raises
+        # Guard must still park the action even when publish raises
         assert decision.allowed is False
         assert decision.reason == "parked"
         assert decision.action_id is not None

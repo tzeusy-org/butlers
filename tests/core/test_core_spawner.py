@@ -2507,15 +2507,20 @@ class TestIngestionEventIdPropagation:
 
 
 # ---------------------------------------------------------------------------
-# emit_spend_event wiring — bu-eu38w
+# Per-call spend event wiring onto the fleet event bus — bu-eu38w, bu-01r64.2
+#
+# The daemon-side upward import of emit_spend_event was deleted in
+# bu-01r64.2 (replaced by the NOTIFY-based publish_fleet_event path added
+# additively in bu-01r64.1); these tests now verify publish_fleet_event
+# wiring instead.
 # ---------------------------------------------------------------------------
 
 
-class TestEmitSpendEventWiring:
-    """Verify that spawner calls emit_spend_event with the right payload."""
+class TestSpendEventBusWiring:
+    """Verify that spawner publishes per-call spend events with the right payload."""
 
-    async def test_emit_spend_event_called_with_correct_payload(self, tmp_path: Path):
-        """After session closes, emit_spend_event receives kind/butler/model/tokens/session_id."""
+    async def test_spend_event_published_with_correct_payload(self, tmp_path: Path):
+        """After session closes, publish_fleet_event receives kind/butler/model/tokens/session_id."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config(name="my-butler")
@@ -2527,10 +2532,7 @@ class TestEmitSpendEventWiring:
             usage={"input_tokens": 1000, "output_tokens": 500},
         )
 
-        captured_events: list[dict] = []
-
-        def _fake_emit(event: dict) -> None:
-            captured_events.append(event)
+        mock_publish = AsyncMock()
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
@@ -2560,8 +2562,8 @@ class TestEmitSpendEventWiring:
             ),
             patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
             patch(
-                "butlers.api.routers.spend.emit_spend_event",
-                side_effect=_fake_emit,
+                "butlers.fleet_events.publish_fleet_event",
+                new=mock_publish,
             ),
         ):
             mock_create.return_value = session_uuid
@@ -2573,8 +2575,11 @@ class TestEmitSpendEventWiring:
             ).trigger("hello", "tick")
 
         assert result.success is True
-        assert len(captured_events) == 1, "emit_spend_event must be called exactly once"
-        ev = captured_events[0]
+        mock_publish.assert_called_once()
+        call_args = mock_publish.call_args
+        assert call_args.args[0] is mock_pool
+        assert call_args.args[1] == "spend"
+        ev = call_args.args[2]
         assert ev["kind"] == "call"
         assert ev["butler"] == "my-butler"
         assert ev["model"] == "claude-sonnet-4-20250514"
@@ -2584,8 +2589,8 @@ class TestEmitSpendEventWiring:
         assert isinstance(ev["cost_usd"], float)
         assert "ts" in ev
 
-    async def test_emit_spend_event_not_called_when_no_token_usage(self, tmp_path: Path):
-        """When adapter reports no usage, emit_spend_event is not called."""
+    async def test_spend_event_not_published_when_no_token_usage(self, tmp_path: Path):
+        """When adapter reports no usage, publish_fleet_event is not called."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config(name="my-butler")
@@ -2593,10 +2598,7 @@ class TestEmitSpendEventWiring:
         # No usage dict → _ledger_input_tokens remains None
         adapter = MockAdapter(result_text="ok", usage=None)
 
-        captured_events: list[dict] = []
-
-        def _fake_emit(event: dict) -> None:
-            captured_events.append(event)
+        mock_publish = AsyncMock()
 
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock),
@@ -2607,8 +2609,8 @@ class TestEmitSpendEventWiring:
                 return_value=None,  # static fallback — no catalog_entry_id
             ),
             patch(
-                "butlers.api.routers.spend.emit_spend_event",
-                side_effect=_fake_emit,
+                "butlers.fleet_events.publish_fleet_event",
+                new=mock_publish,
             ),
         ):
             result = await Spawner(
@@ -2618,10 +2620,10 @@ class TestEmitSpendEventWiring:
             ).trigger("hello", "tick")
 
         assert result.success is True
-        assert captured_events == [], "emit_spend_event must not be called when no token usage"
+        mock_publish.assert_not_called()
 
-    async def test_emit_spend_event_broker_failure_does_not_break_session(self, tmp_path: Path):
-        """A broker error in emit_spend_event must never propagate to the session result."""
+    async def test_spend_event_publish_failure_does_not_break_session(self, tmp_path: Path):
+        """A publish_fleet_event error must never propagate to the session result."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config(name="my-butler")
@@ -2661,8 +2663,8 @@ class TestEmitSpendEventWiring:
             ),
             patch("butlers.core.spawner.record_token_usage", new_callable=AsyncMock),
             patch(
-                "butlers.api.routers.spend.emit_spend_event",
-                side_effect=RuntimeError("broker exploded"),
+                "butlers.fleet_events.publish_fleet_event",
+                new=AsyncMock(side_effect=RuntimeError("broker exploded")),
             ),
         ):
             mock_create.return_value = session_uuid

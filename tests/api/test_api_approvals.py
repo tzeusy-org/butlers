@@ -1153,100 +1153,21 @@ async def test_why_and_evidence_returned_on_actions_list(app):
 
 
 # ---------------------------------------------------------------------------
-# §8.3 — WebSocket /api/approvals/stream
+# emit_approvals_event — fans approval lifecycle events onto the unified
+# fleet event bus (WS /api/events/stream). The earlier dedicated
+# WS /api/approvals/stream route was retired in bu-01r64.2; see
+# tests/api/test_events.py::test_approvals_event_fans_onto_bus for bus-fan
+# coverage.
 # ---------------------------------------------------------------------------
 
 
-async def test_approvals_stream_auth_gate_rejects_bad_key(app):
-    """WS /api/approvals/stream closes when api_key is wrong."""
-    import os
+async def test_emit_approvals_event_includes_expected_fields(app):
+    """emit_approvals_event builds the expected event shape (kind/ts/approval_id/...)."""
     from unittest.mock import patch
 
-    from starlette.testclient import TestClient
-    from starlette.websockets import WebSocketDisconnect
+    from butlers.api.routers.approvals import emit_approvals_event
 
-    with patch.dict(os.environ, {"DASHBOARD_API_KEY": "secret123"}):
-        client = TestClient(app)
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect("/api/approvals/stream?api_key=wrongkey"):
-                pass
-
-
-async def test_approvals_stream_auth_gate_allows_correct_key(app):
-    """WS /api/approvals/stream accepts the correct api_key."""
-    import os
-    from unittest.mock import patch
-
-    from starlette.testclient import TestClient
-
-    from butlers.api.routers.approvals import _approvals_ring
-
-    _approvals_ring.clear()
-
-    with patch.dict(os.environ, {"DASHBOARD_API_KEY": "secret123"}):
-        client = TestClient(app)
-        with client.websocket_connect("/api/approvals/stream?api_key=secret123"):
-            # With empty ring buffer, next message is a keepalive — but
-            # we just confirm the connection was accepted (no close code 4401).
-            pass  # connected and disconnected cleanly
-
-
-async def test_approvals_stream_no_auth_when_key_not_configured(app):
-    """WS /api/approvals/stream accepts connections when DASHBOARD_API_KEY is not set."""
-    import os
-    from unittest.mock import patch
-
-    from starlette.testclient import TestClient
-
-    from butlers.api.routers.approvals import _approvals_ring
-
-    _approvals_ring.clear()
-
-    with patch.dict(os.environ, {}, clear=True):
-        os.environ.pop("DASHBOARD_API_KEY", None)
-        client = TestClient(app)
-        with client.websocket_connect("/api/approvals/stream"):
-            pass  # connected cleanly
-
-
-async def test_approvals_stream_snapshot_on_connect(app):
-    """Connecting client receives ring-buffered events as snapshot messages."""
-    from starlette.testclient import TestClient
-
-    from butlers.api.routers.approvals import _approvals_ring, emit_approvals_event
-
-    _approvals_ring.clear()
-    # Pre-populate ring buffer
-    emit_approvals_event("approved", "aaa-111", butler="home", tool_name="send_email")
-    emit_approvals_event("rejected", "bbb-222", butler="home", tool_name="send_email")
-
-    client = TestClient(app)
-    received = []
-    with client.websocket_connect("/api/approvals/stream") as ws:
-        for _ in range(2):
-            msg = ws.receive_json()
-            received.append(msg)
-
-    _approvals_ring.clear()
-
-    assert len(received) == 2
-    assert all(m["snapshot"] is True for m in received)
-    kinds = {m["kind"] for m in received}
-    assert kinds == {"approved", "rejected"}
-
-
-async def test_emit_approvals_event_publishes_to_subscribers(app):
-    """emit_approvals_event delivers events to subscriber queues."""
-    import asyncio
-
-    from butlers.api.routers.approvals import (
-        _approvals_subscribers,
-        emit_approvals_event,
-    )
-
-    q: asyncio.Queue = asyncio.Queue(maxsize=10)
-    _approvals_subscribers.append(q)
-    try:
+    with patch("butlers.api.routers.events.emit_event") as mock_emit:
         emit_approvals_event(
             "executed",
             "ccc-333",
@@ -1254,16 +1175,15 @@ async def test_emit_approvals_event_publishes_to_subscribers(app):
             tool_name="notify",
             status="executed",
         )
-        assert not q.empty()
-        event = q.get_nowait()
-        assert event["kind"] == "executed"
-        assert event["approval_id"] == "ccc-333"
-        assert event["butler"] == "general"
-    finally:
-        try:
-            _approvals_subscribers.remove(q)
-        except ValueError:
-            pass
+
+    mock_emit.assert_called_once()
+    event_type, event = mock_emit.call_args[0]
+    assert event_type == "approval"
+    assert event["kind"] == "executed"
+    assert event["approval_id"] == "ccc-333"
+    assert event["butler"] == "general"
+    assert event["tool_name"] == "notify"
+    assert event["status"] == "executed"
 
 
 # ---------------------------------------------------------------------------

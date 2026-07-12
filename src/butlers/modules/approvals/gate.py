@@ -425,29 +425,10 @@ def _make_gate_wrapper(
     _EVIDENCE_ITEM_MAX_CHARS = 500
 
     async def _emit_created(action_id: uuid.UUID, status: str) -> None:
-        """Publish a 'created' approval WS event; silently ignored if broker is unavailable.
-
-        emit_approvals_event() only reaches WS subscribers when this code
-        runs inside the dashboard-api process; from the daemon process (the
-        normal case for a tool-call gate) it is a no-op (bu-01r64). The
-        publish_fleet_event() call below is the real cross-process path
-        (RFC 0022, bu-01r64.1) — additive so bu-01r64.2 can delete the
-        emit_approvals_event() call once the NOTIFY-based path has proven
-        itself.
+        """Publish a 'created' approval event onto the multiplexed fleet event
+        bus via Postgres LISTEN/NOTIFY (RFC 0022, bu-01r64.1); silently
+        ignored if the bus is unavailable.
         """
-        try:
-            from butlers.api.routers.approvals import emit_approvals_event
-
-            emit_approvals_event(
-                "created",
-                str(action_id),
-                butler=butler_name,
-                tool_name=tool_name,
-                status=status,
-            )
-        except Exception:  # noqa: BLE001
-            logger.debug("gate: emit_approvals_event('created') failed; ignoring", exc_info=True)
-
         try:
             from butlers.fleet_events import publish_fleet_event
 

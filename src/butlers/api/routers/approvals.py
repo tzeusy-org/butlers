@@ -6,24 +6,23 @@ Provides REST API access to the approvals subsystem for dashboard integration:
 - Standing approval rules CRUD
 - Approvals policy (quiet hours)
 - Metrics for monitoring approval workflows
-- WebSocket /api/approvals/stream for live events (§8.3)
+- Live approval lifecycle events fanned onto the unified fleet event bus
+  (`WS /api/events/stream`; the earlier dedicated `WS /api/approvals/stream`
+  route was retired in bu-01r64.2)
 """
 
 from __future__ import annotations
 
 import asyncio
-import collections
-import hmac
 import json
 import logging
-import os
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -70,18 +69,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
 
 # ---------------------------------------------------------------------------
-# §8.3 — Approvals WebSocket event broker
+# Approval lifecycle events — fanned onto the unified fleet event bus
 # ---------------------------------------------------------------------------
-
-# Ring buffer of the last N events (snapshot-on-connect)
-_APPROVALS_RING_BUFFER_SIZE = 50
-_approvals_ring: collections.deque[dict] = collections.deque(maxlen=_APPROVALS_RING_BUFFER_SIZE)
-
-# Per-subscriber asyncio.Queue; filled by emit_approvals_event(), drained by WS handler
-_approvals_subscribers: list[asyncio.Queue] = []
-
-_APPROVALS_WS_KEEPALIVE_S = 30.0
-_APPROVALS_QUEUE_MAXSIZE = 256
 
 
 def emit_approvals_event(
@@ -93,11 +82,7 @@ def emit_approvals_event(
     status: str | None = None,
     **extra,
 ) -> None:
-    """Publish an approvals event to all connected WS subscribers.
-
-    Adds the event to the ring buffer (snapshot-on-connect) and broadcasts
-    to all active subscriber queues.  Drops slow subscribers whose queues
-    are full rather than blocking.
+    """Publish an approvals event onto the unified fleet event bus.
 
     ``kind`` is one of: ``created``, ``approved``, ``rejected``, ``deferred``,
     ``executed``, ``expired``.
@@ -115,23 +100,6 @@ def emit_approvals_event(
         event["status"] = status
     event.update(extra)
 
-    _approvals_ring.append(event)
-
-    dead: list[asyncio.Queue] = []
-    for q in _approvals_subscribers:
-        try:
-            q.put_nowait(event)
-        except asyncio.QueueFull:
-            dead.append(q)
-    for q in dead:
-        try:
-            _approvals_subscribers.remove(q)
-        except ValueError:
-            pass
-
-    # Fan out onto the multiplexed fleet event bus (bu-86c4c.8, move 5) in
-    # addition to this dedicated stream — /api/approvals/stream keeps working
-    # unchanged for any existing consumer.
     try:
         from butlers.api.routers.events import emit_event
 
@@ -2357,72 +2325,3 @@ async def retry_approval(
         status=action_resp.status,
     )
     return ApiResponse(data=action_resp)
-
-
-# ---------------------------------------------------------------------------
-# §8.3 — WebSocket /api/approvals/stream
-# ---------------------------------------------------------------------------
-
-
-@router.websocket("/stream")
-async def approvals_stream(
-    websocket: WebSocket,
-    api_key: str | None = Query(default=None),
-) -> None:
-    """WebSocket endpoint — ws[s]://host/api/approvals/stream?api_key=<key>.
-
-    WS upgrades cannot set arbitrary headers so authentication is via query param
-    (same pattern as /api/spend/stream and /api/settings/stream).
-
-    On connect:
-    1. Validates the api_key against DASHBOARD_API_KEY (if configured).
-    2. Sends a snapshot of the most recent N events from the ring buffer.
-    3. Streams live events as they are emitted by approvals state transitions.
-    4. Sends a keepalive JSON ping every 30 s to prevent proxy timeouts.
-    """
-    # Auth gate — mirror ApiKeyMiddleware logic for WS connections
-    configured_key: str | None = os.environ.get("DASHBOARD_API_KEY") or None
-    if configured_key:
-        if not api_key or not hmac.compare_digest(api_key, configured_key):
-            await websocket.close(code=4401)
-            return
-
-    await websocket.accept()
-
-    # Subscribe first so no live events are missed while the snapshot is sent.
-    # Events emitted after subscription but before/during snapshot delivery will
-    # be queued and delivered immediately after the snapshot loop finishes.
-    queue: asyncio.Queue = asyncio.Queue(maxsize=_APPROVALS_QUEUE_MAXSIZE)
-    _approvals_subscribers.append(queue)
-
-    # Snapshot: send buffered recent events so new clients don't start empty
-    snapshot = list(_approvals_ring)
-    for event in snapshot:
-        try:
-            await websocket.send_json({"snapshot": True, **event})
-        except Exception:
-            try:
-                _approvals_subscribers.remove(queue)
-            except ValueError:
-                pass
-            return
-    try:
-        while True:
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=_APPROVALS_WS_KEEPALIVE_S)
-                await websocket.send_json(event)
-            except TimeoutError:
-                # Keepalive ping so proxies don't drop the connection
-                try:
-                    await websocket.send_json({"kind": "ping", "ts": time.time()})
-                except Exception:
-                    break
-            except WebSocketDisconnect:
-                break
-            except Exception:
-                break
-    finally:
-        try:
-            _approvals_subscribers.remove(queue)
-        except ValueError:
-            pass

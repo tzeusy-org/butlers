@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `/settings/spend` page is the operator's view into system cost: total spend, breakdowns by butler/model/feature/purpose, a hand-rolled SVG forecast chart projecting month-end land, store-and-evaluate routing rules with per-rule 7-day savings, a monthly ceiling, and a live per-call spend stream. It is part of the Console-direction redesign of `/settings` and is rendered in the Dispatch design language already shipped on `/overview`, `/butlers`, and `/qa`. It is backed by the spend endpoints (`/api/spend/*`) served by `spend.py` (the renamed `costs.py` router), including rules CRUD, the monthly ceiling, and the `WS /api/spend/stream` ticker. No charting library is loaded for this page.
+The `/settings/spend` page is the operator's view into system cost: total spend, breakdowns by butler/model/feature/purpose, a hand-rolled SVG forecast chart projecting month-end land, store-and-evaluate routing rules with per-rule 7-day savings, a monthly ceiling, and a live per-call spend stream. It is part of the Console-direction redesign of `/settings` and is rendered in the Dispatch design language already shipped on `/overview`, `/butlers`, and `/qa`. It is backed by the spend endpoints (`/api/spend/*`) served by `spend.py` (the renamed `costs.py` router), including rules CRUD and the monthly ceiling; the live per-call ticker is delivered over the unified fleet event bus (`WS /api/events/stream`), not a dedicated socket. No charting library is loaded for this page.
 
 ## Requirements
 
@@ -68,11 +68,11 @@ The dashboard SHALL expose the spend endpoints.
 - **AND** the call invokes `audit.append("spend.ceiling")`.
 
 ### Requirement: Spend Live Stream
-The dashboard SHALL emit per-call spend events over `WS /api/spend/stream`.
+The dashboard SHALL fan per-call spend events onto the unified fleet event bus (`WS /api/events/stream`) (the earlier dedicated `WS /api/spend/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
 
 #### Scenario: Stream event shape
 - **WHEN** the runtime records a completed LLM call
-- **THEN** an event `{kind: "call", ts, butler, model, tokens_in, tokens_out, tokens_cached, tokens_cache_write, cost_usd, session_id, extra}` is broadcast to `WS /api/spend/stream` subscribers (token fields are `tokens_in`/`tokens_out` for the uncached buckets plus `tokens_cached`/`tokens_cache_write` for prompt-cache reads/writes, and cost is `cost_usd` in dollars, not `cost_cents`)
+- **THEN** an event `{type: "spend", data: {kind: "call", ts, butler, model, tokens_in, tokens_out, tokens_cached, tokens_cache_write, cost_usd, session_id, extra}}` is broadcast on `WS /api/events/stream` (token fields are `tokens_in`/`tokens_out` for the uncached buckets plus `tokens_cached`/`tokens_cache_write` for prompt-cache reads/writes, and cost is `cost_usd` in dollars, not `cost_cents`)
 - **AND** the frontend appends events to the forecast chart series without re-fetching.
 
 ### Requirement: Spend Rules Savings Job

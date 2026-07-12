@@ -335,12 +335,15 @@ class TestGateOwnerOutboundAutoApprove:
 
 
 # ---------------------------------------------------------------------------
-# emit_approvals_event 'created' emission tests [bu-jg0kt]
+# 'created' approval event emission onto the fleet event bus (bu-01r64.1/.2)
 # ---------------------------------------------------------------------------
 
 
 class TestGateEmitsCreatedEvent:
-    """gate.py must emit 'created' approval WS events at every approval-creation site."""
+    """gate.py must publish 'created' approval events at every approval-creation
+    site onto the fleet event bus via Postgres LISTEN/NOTIFY
+    (``publish_fleet_event``, RFC 0022) — the daemon-side upward import of
+    ``emit_approvals_event`` was deleted in bu-01r64.2."""
 
     async def _call_gate_patched(
         self,
@@ -350,8 +353,8 @@ class TestGateEmitsCreatedEvent:
         pool: AsyncMock,
         butler_name: str | None = None,
         original_fn: AsyncMock | None = None,
-    ) -> tuple[dict, MagicMock]:
-        """Run the gate wrapper with emit_approvals_event patched; return (result, mock)."""
+    ) -> tuple[dict, AsyncMock]:
+        """Run the gate wrapper with publish_fleet_event patched; return (result, mock)."""
         if original_fn is None:
             original_fn = _make_original_fn()
 
@@ -367,7 +370,7 @@ class TestGateEmitsCreatedEvent:
             butler_name=butler_name,
         )
 
-        mock_emit = MagicMock()
+        mock_publish = AsyncMock()
         with (
             patch(
                 "butlers.modules.approvals.gate._resolve_target_contact",
@@ -384,20 +387,20 @@ class TestGateEmitsCreatedEvent:
                 ),
             ),
             patch(
-                "butlers.api.routers.approvals.emit_approvals_event",
-                new=mock_emit,
+                "butlers.fleet_events.publish_fleet_event",
+                new=mock_publish,
             ),
         ):
             result = await wrapper(**tool_args)
 
-        return result, mock_emit
+        return result, mock_publish
 
     async def test_owner_auto_approve_emits_created(self) -> None:
-        """Owner-targeted primary channel: gate emits kind='created' with status='approved'."""
+        """Owner-targeted primary channel: gate publishes kind='created' with status='approved'."""
         owner = _owner_contact()
         pool = _make_pool(fetchrow_return={"primary": True})
 
-        result, mock_emit = await self._call_gate_patched(
+        result, mock_publish = await self._call_gate_patched(
             {"chat_id": "12345", "message": "hello"},
             resolved_contact=owner,
             pool=pool,
@@ -405,15 +408,17 @@ class TestGateEmitsCreatedEvent:
         )
 
         assert result == {"status": "sent"}
-        mock_emit.assert_called_once()
-        call_kwargs = mock_emit.call_args
-        assert call_kwargs.args[0] == "created"
-        assert call_kwargs.kwargs.get("butler") == "home"
-        assert call_kwargs.kwargs.get("tool_name") == "telegram_send_message"
-        assert call_kwargs.kwargs.get("status") == "approved"
+        mock_publish.assert_called_once()
+        call_args = mock_publish.call_args
+        assert call_args.args[1] == "approval"
+        event = call_args.args[2]
+        assert event["kind"] == "created"
+        assert event["butler"] == "home"
+        assert event["tool_name"] == "telegram_send_message"
+        assert event["status"] == "approved"
 
     async def test_park_pending_emits_created(self) -> None:
-        """No-rule path: gate emits kind='created' with status='pending'.
+        """No-rule path: gate publishes kind='created' with status='pending'.
 
         A non-owner contact with no matching standing rule parks for approval.
         """
@@ -427,8 +432,8 @@ class TestGateEmitsCreatedEvent:
             ),
             patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
         ):
-            mock_emit = MagicMock()
-            with patch("butlers.api.routers.approvals.emit_approvals_event", new=mock_emit):
+            mock_publish = AsyncMock()
+            with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):
                 wrapper = _make_gate_wrapper(
                     tool_name="telegram_send_message",
                     original_fn=_make_original_fn(),
@@ -441,14 +446,16 @@ class TestGateEmitsCreatedEvent:
                 result = await wrapper(chat_id="99999", message="hi non-owner")
 
         assert result.get("status") == "pending_approval"
-        mock_emit.assert_called_once()
-        call_kwargs = mock_emit.call_args
-        assert call_kwargs.args[0] == "created"
-        assert call_kwargs.kwargs.get("status") == "pending"
-        assert call_kwargs.kwargs.get("butler") == "home"
+        mock_publish.assert_called_once()
+        call_args = mock_publish.call_args
+        assert call_args.args[1] == "approval"
+        event = call_args.args[2]
+        assert event["kind"] == "created"
+        assert event["status"] == "pending"
+        assert event["butler"] == "home"
 
     async def test_emit_created_survives_import_failure(self) -> None:
-        """If emit_approvals_event import fails, gate wrapper must not crash."""
+        """If publish_fleet_event raises, gate wrapper must not crash."""
         owner = _owner_contact()
         pool = _make_pool(fetchrow_return={"primary": True})
 
@@ -477,13 +484,13 @@ class TestGateEmitsCreatedEvent:
                 ),
             ),
             patch(
-                "butlers.api.routers.approvals.emit_approvals_event",
-                side_effect=RuntimeError("broker down"),
+                "butlers.fleet_events.publish_fleet_event",
+                new=AsyncMock(side_effect=RuntimeError("broker down")),
             ),
         ):
             result = await wrapper(chat_id="12345", message="hello")
 
-        # Must succeed even when emit raises
+        # Must succeed even when publish raises
         assert result == {"status": "sent"}
 
 

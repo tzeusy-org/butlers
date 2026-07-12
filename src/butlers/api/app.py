@@ -296,9 +296,8 @@ async def lifespan(app: FastAPI):
 
         # Settings Console live updates (bu-3quv8): fans header_delta /
         # attention_add / attention_remove onto the unified fleet event bus
-        # (WS /api/events/stream) independent of whether anything is
-        # connected to the legacy WS /api/settings/stream -- see
-        # run_settings_console_delta_loop's docstring. Guarded in its own
+        # (WS /api/events/stream) -- see run_settings_console_delta_loop's
+        # docstring. Guarded in its own
         # try/except (rather than folded into the DatabaseManager try above)
         # so a pricing-config load failure can't misleadingly log as a DB
         # init failure; GET /api/settings/console is unaffected either way.

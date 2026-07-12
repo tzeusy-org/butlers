@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`dashboard-settings-console` is the new top-level Settings console page: a Dispatch-language settings shell at `/settings`. It replaces the prior single-scroll preferences stack with a panel grid of summary cards (one per Settings sub-route) prefixed by an `AttentionStrip` of items demanding human attention, framing `/settings` as the operator control plane rather than a SaaS preferences screen. The capability owns the `/settings` Console grid, the attention strip, the breadcrumb-less editorial shell, the `GET /api/settings/console` aggregator, and the `WS /api/settings/stream` ticker.
+`dashboard-settings-console` is the new top-level Settings console page: a Dispatch-language settings shell at `/settings`. It replaces the prior single-scroll preferences stack with a panel grid of summary cards (one per Settings sub-route) prefixed by an `AttentionStrip` of items demanding human attention, framing `/settings` as the operator control plane rather than a SaaS preferences screen. The capability owns the `/settings` Console grid, the attention strip, the breadcrumb-less editorial shell, and the `GET /api/settings/console` aggregator; live updates are delivered over the unified fleet event bus (`WS /api/events/stream`), not a dedicated socket.
 
 ## Requirements
 
@@ -45,11 +45,6 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
 - **THEN** the endpoint still returns 200 with the partial header (fields that succeeded) and the partial `attention[]` array
 - **AND** the failed sub-system contributes one `attention` item `{tone: "amber", kind: "system", text: "<subsystem> aggregation failed: <error_id>", action_route: "<subsystem route>"}` so the operator notices.
 
-#### Scenario: WebSocket requires authentication at upgrade
-- **WHEN** a client requests `WS /api/settings/stream` without a valid `?api_key=<value>` query param matching the server's `DASHBOARD_API_KEY`
-- **THEN** the upgrade is refused with `401 Unauthorized` (or the WS-equivalent close code 4401 if upgrade has already happened).
-- **AND** the same auth requirement applies to `WS /api/spend/stream` and `WS /api/approvals/stream`.
-
 #### Scenario: Attention items composed from sub-systems
 - **WHEN** the aggregator runs
 - **THEN** it composes `attention[]` from:
@@ -60,31 +55,18 @@ The dashboard SHALL expose `GET /api/settings/console` returning aggregated head
   - Failed webhook deliveries in the last 24h (kind `webhook`, route `/settings/permissions`).
 - **AND** items are ordered with `tone="red"` first, then `tone="amber"`.
 
-### Requirement: Settings Console Live Stream
-The dashboard SHALL expose `WS /api/settings/stream` emitting incremental updates that mirror the fields returned by `GET /api/settings/console`.
-
-#### Scenario: Stream emits typed events
-- **WHEN** a client connects to `WS /api/settings/stream`
-- **THEN** the server emits JSON events of shape `{type: "header_delta"|"attention_add"|"attention_remove", payload: object}`.
-- **AND** the client may apply these events incrementally without re-fetching `GET /api/settings/console`.
-
-#### Scenario: Stream disconnect and reconnect
-- **WHEN** a client reconnects after a disconnect
-- **THEN** the first event delivered SHALL be a full `header_delta` containing the current snapshot
-- **AND** subsequent events resume incremental delivery.
-
 ### Requirement: Settings Console Deltas On The Unified Fleet Event Bus
-The dashboard SHALL also fan Settings Console `header_delta` / `attention_add` / `attention_remove` events onto the unified fleet event bus (`WS /api/events/stream`), independent of any `WS /api/settings/stream` connection, so a client can receive live console updates via the single shared bus connection instead of opening a second socket (bu-3quv8, completing the settings-console half of bu-qvnce.14's single-socket doctrine).
+The dashboard SHALL fan Settings Console `header_delta` / `attention_add` / `attention_remove` events onto the unified fleet event bus (`WS /api/events/stream`) so a client can receive live console updates via the single shared bus connection (bu-3quv8, completing the settings-console half of bu-qvnce.14's single-socket doctrine; the earlier dedicated `WS /api/settings/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
 
-#### Scenario: Deltas are emitted regardless of legacy WS connections
+#### Scenario: Deltas are emitted via the shared bus
 - **WHEN** the console payload changes (a header count or an attention item)
 - **THEN** the backend emits the corresponding `header_delta` / `attention_add` / `attention_remove` event via `emit_event` onto `WS /api/events/stream`
-- **AND** this happens via a standalone background aggregation loop, independent of whether any client is connected to the legacy `WS /api/settings/stream` route.
+- **AND** this happens via a standalone background aggregation loop, independent of whether any client is connected.
 
 #### Scenario: Dashboard client subscribes via the shared bus, not a second socket
 - **WHEN** the dashboard's Settings Console page needs live header/attention updates
 - **THEN** it subscribes to `"header_delta"` / `"attention_add"` / `"attention_remove"` on the shared `EventBusProvider` connection
-- **AND** it does not open its own `WS /api/settings/stream` connection.
+- **AND** it does not open a dedicated settings-console socket.
 
 #### Scenario: A missed or replayed delta converges rather than drifts
 - **WHEN** a bus event is replayed from the shared bus's ring-buffer snapshot (on initial connect or reconnect), or a delta is missed entirely while disconnected

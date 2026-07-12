@@ -1,4 +1,4 @@
-"""Settings Console aggregator — GET /api/settings/console + WS /api/settings/stream.
+"""Settings Console aggregator — GET /api/settings/console.
 
 Implements §7.1 of the settings-redesign OpenSpec change:
 
@@ -10,20 +10,14 @@ Implements §7.1 of the settings-redesign OpenSpec change:
            Capped at 5 visible items; remainder counted in attention_truncated_count.
            Cache: 10s in-memory (single-actor, single-owner deployments).
 
-  WS /api/settings/stream
-       Multiplexes header_delta / attention_add / attention_remove events.
-       Reconnect emits a full snapshot (event type "snapshot").
-       Auth: ?api_key=<DASHBOARD_API_KEY> at handshake time (opt-in; absent when not configured).
-       Kept for any legacy client; the dashboard no longer connects here (see below).
-
-Settings Console deltas are ALSO fanned onto the unified fleet event bus
+Settings Console deltas are fanned onto the unified fleet event bus
 (``WS /api/events/stream``, ``butlers.api.routers.events.emit_event``) as
 "header_delta" / "attention_add" / "attention_remove" events, via the
 standalone ``run_settings_console_delta_loop`` background task started once
-from the API lifespan (bu-3quv8) -- independent of whether anything is
-connected to the WS route above. The dashboard's ``use-settings-console-live.ts``
-subscribes there instead of opening a second socket (single-socket doctrine,
-bu-qvnce.14).
+from the API lifespan (bu-3quv8). The dashboard's
+``use-settings-console-live.ts`` subscribes there (single-socket doctrine,
+bu-qvnce.14). The earlier dedicated ``WS /api/settings/stream`` route was
+retired in bu-01r64.2 once the bus fully covered this traffic.
 
 Partial-failure mode: when a sub-system aggregation fails, the exception is
 caught per-subsystem and surfaces an amber attention item instead of erroring
@@ -36,12 +30,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import secrets
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
@@ -516,10 +508,8 @@ def _compute_console_deltas(
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     """Diff two console payloads into (header_delta, added_items, removed_kinds).
 
-    Pure, no I/O -- shared by the per-connection WS loop (``settings_stream``,
-    kept for any existing legacy client) and the standalone bus-emitting
-    background loop (``run_settings_console_delta_loop``) so the two
-    consumers can never disagree about what changed between two payloads.
+    Pure, no I/O -- used by the standalone bus-emitting background loop
+    (``run_settings_console_delta_loop``).
     """
     old_counts = prev_payload["header_counts"]
     new_counts = new_payload["header_counts"]
@@ -538,9 +528,7 @@ def _compute_console_deltas(
 # Standalone background loop -- fans deltas onto the unified fleet event bus
 # ---------------------------------------------------------------------------
 
-#: Cadence for both the standalone delta loop below and the legacy
-#: per-connection WS loop (settings_stream) -- kept as one constant so the
-#: two consumers never silently drift into different polling rates.
+#: Polling cadence for the standalone delta loop below.
 _CONSOLE_DELTA_INTERVAL_S = 5.0
 
 
@@ -647,90 +635,3 @@ async def get_settings_console(
         _cache_payload = payload
 
     return ApiResponse[ConsoleResponse](data=ConsoleResponse(**payload))
-
-
-# ---------------------------------------------------------------------------
-# WS /api/settings/stream
-# ---------------------------------------------------------------------------
-
-
-async def _auth_ws(websocket: WebSocket) -> bool:
-    """Validate the ?api_key= param at WebSocket upgrade time.
-
-    Returns True when auth passes (or no auth is configured).
-    Closes the socket with WS code 4401 on failure (spec
-    dashboard-settings-console; matches /api/approvals/stream and
-    /api/spend/stream).
-    """
-    configured_key: str | None = os.environ.get("DASHBOARD_API_KEY") or None
-    if configured_key is None:
-        # Auth not configured — open access
-        return True
-
-    provided = websocket.query_params.get("api_key", "")
-    if secrets.compare_digest(provided, configured_key):
-        return True
-
-    await websocket.close(code=4401)
-    return False
-
-
-@router.websocket("/stream")
-async def settings_stream(
-    websocket: WebSocket,
-    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    mgr: MCPClientManager = Depends(get_mcp_manager),
-    pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
-) -> None:
-    """WebSocket stream for the Settings Console.
-
-    Protocol:
-      - Authenticate via ?api_key=<DASHBOARD_API_KEY> at handshake time (no-op when not configured).
-      - On connect: emit a full "snapshot" event.
-      - Thereafter: emit "header_delta" when counts change, and
-        "attention_add" / "attention_remove" when attention items change.
-      - Reconnect always emits a fresh snapshot.
-
-    Event shape:
-      { "type": "snapshot", "data": <ConsoleResponse dict> }
-      { "type": "header_delta", "data": { ...changed fields... } }
-      { "type": "attention_add", "data": <AttentionItem dict> }
-      { "type": "attention_remove", "data": { "kind": "..." } }
-    """
-    # Auth gate runs BEFORE accept so an auth failure closes with 4401 at the
-    # upgrade (mirrors /api/approvals/stream and /api/spend/stream).
-    if not await _auth_ws(websocket):
-        return
-
-    await websocket.accept()
-
-    try:
-        # Emit full snapshot on connect
-        payload = await _build_console_payload(configs, mgr, pricing, db)
-        await websocket.send_json({"type": "snapshot", "data": payload})
-
-        prev_payload = payload
-
-        while True:
-            await asyncio.sleep(_CONSOLE_DELTA_INTERVAL_S)
-            new_payload = await _build_console_payload(configs, mgr, pricing, db)
-
-            header_delta, added, removed = _compute_console_deltas(prev_payload, new_payload)
-            if header_delta:
-                await websocket.send_json({"type": "header_delta", "data": header_delta})
-            for item in added:
-                await websocket.send_json({"type": "attention_add", "data": item})
-            for kind in removed:
-                await websocket.send_json({"type": "attention_remove", "data": {"kind": kind}})
-
-            prev_payload = new_payload
-
-    except WebSocketDisconnect:
-        logger.debug("Settings stream WebSocket disconnected")
-    except Exception as exc:
-        logger.warning("Settings stream error: %s", exc)
-        try:
-            await websocket.close(code=1011)
-        except Exception:
-            pass

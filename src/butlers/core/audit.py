@@ -64,7 +64,7 @@ async def write_audit_entry(
         return
 
     # Imported lazily: the daemon must not pull in the API router layer at
-    # import time (mirrors spawner.py's lazy import of emit_spend_event).
+    # import time.
     from butlers.api.routers.audit import AuditTableNotAvailableError, append
 
     # Coerce non-JSON-safe values (e.g. UUID, datetime) to strings before they

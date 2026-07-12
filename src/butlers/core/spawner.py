@@ -2229,22 +2229,14 @@ class Spawner:
                     cache_creation_tokens=_ledger_cache_creation_tokens,
                     purpose=trigger_source,
                 )
-            # Emit per-call cost event to the live WS spend stream.
-            # Uses the same token counts as the DB ledger (best-effort early capture).
-            # Lazy import avoids a circular dependency: core → api.
-            #
-            # emit_spend_event() (and the emit_event("spend", ...) it fans onto
-            # internally) only reaches WS subscribers when this code runs inside
-            # the dashboard-api process; from the daemon process (the normal
-            # case) it is a no-op (bu-01r64). The publish_fleet_event() call
-            # below is the real cross-process path (RFC 0022, bu-01r64.1) —
-            # additive so bu-01r64.2 can delete the emit_spend_event() call once
-            # the NOTIFY-based path has proven itself.
+            # Emit per-call cost event onto the multiplexed fleet event bus via
+            # Postgres LISTEN/NOTIFY (RFC 0022, bu-01r64.1). Uses the same
+            # token counts as the DB ledger (best-effort early capture). Lazy
+            # import avoids a circular dependency: core → api.
             if _ledger_input_tokens is not None:
                 _spend_event: dict[str, Any] | None = None
                 try:
                     from butlers.api.pricing import estimate_session_cost, load_pricing
-                    from butlers.api.routers.spend import emit_spend_event
 
                     # Cache pricing config at module level so pricing.toml is not
                     # read from disk on every session close (hot path).
@@ -2273,10 +2265,9 @@ class Spawner:
                         "session_id": str(session_id) if session_id else "",
                         "extra": {},
                     }
-                    emit_spend_event(_spend_event)
                 except Exception:
                     logger.debug(
-                        "emit_spend_event failed for session=%s butler=%s (non-fatal)",
+                        "spend event cost estimation failed for session=%s butler=%s (non-fatal)",
                         session_id,
                         self._config.name,
                         exc_info=True,

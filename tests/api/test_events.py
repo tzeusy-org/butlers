@@ -204,12 +204,12 @@ def test_emit_event_drops_slow_subscriber_queue():
 
 
 # ---------------------------------------------------------------------------
-# Existing channels fan onto the bus in addition to their own stream
+# API-initiated approval lifecycle events fan onto the bus
 # ---------------------------------------------------------------------------
 
 
 def test_approvals_event_fans_onto_bus():
-    """emit_approvals_event() also lands on the multiplexed bus as type=approval."""
+    """emit_approvals_event() lands on the multiplexed bus as type=approval."""
     from butlers.api.routers.approvals import emit_approvals_event
     from butlers.api.routers.events import _events_ring
 
@@ -221,30 +221,6 @@ def test_approvals_event_fans_onto_bus():
     assert bus_event["data"]["kind"] == "created"
     assert bus_event["data"]["approval_id"] == "action-1"
     assert bus_event["data"]["butler"] == "home"
-
-
-def test_spend_event_fans_onto_bus():
-    """emit_spend_event() also lands on the multiplexed bus as type=spend."""
-    from butlers.api.routers.events import _events_ring
-    from butlers.api.routers.spend import emit_spend_event
-
-    emit_spend_event(
-        {
-            "kind": "call",
-            "butler": "atlas",
-            "model": "claude-haiku-35-20241022",
-            "tokens_in": 10,
-            "tokens_out": 5,
-            "cost_usd": 0.0001,
-            "session_id": "sess-1",
-        }
-    )
-
-    assert len(_events_ring) == 1
-    bus_event = _events_ring[0]
-    assert bus_event["type"] == "spend"
-    assert bus_event["data"]["butler"] == "atlas"
-    assert bus_event["data"]["cost_usd"] == pytest.approx(0.0001)
 
 
 # ---------------------------------------------------------------------------
@@ -307,50 +283,66 @@ class _FakeSessionPool:
 
 
 async def test_session_create_emits_session_started_event():
-    from butlers.api.routers.events import _events_ring
+    """session_create publishes onto the cross-process fleet event bus via
+    publish_fleet_event (RFC 0022) — the daemon-side upward emit_event
+    import was deleted in bu-01r64.2."""
+    from unittest.mock import AsyncMock, patch
+
     from butlers.core.sessions import session_create
 
     expected_id = uuid.uuid4()
     pool = _FakeSessionPool(return_id=expected_id)
 
-    result = await session_create(
-        pool,
-        prompt="hello",
-        trigger_source="tick",
-        request_id=str(uuid.uuid4()),
-        butler_name="home",
-    )
+    mock_publish = AsyncMock()
+    with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):
+        result = await session_create(
+            pool,
+            prompt="hello",
+            trigger_source="tick",
+            request_id=str(uuid.uuid4()),
+            butler_name="home",
+        )
 
     assert result == expected_id
-    assert len(_events_ring) == 1
-    bus_event = _events_ring[0]
-    assert bus_event["type"] == "session"
-    assert bus_event["data"]["phase"] == "started"
-    assert bus_event["data"]["butler"] == "home"
-    assert bus_event["data"]["session_id"] == str(expected_id)
+    mock_publish.assert_called_once()
+    call_args = mock_publish.call_args
+    assert call_args.args[0] is pool
+    assert call_args.args[1] == "session"
+    data = call_args.args[2]
+    assert data["phase"] == "started"
+    assert data["butler"] == "home"
+    assert data["session_id"] == str(expected_id)
 
 
 async def test_session_complete_emits_session_ended_event():
-    from butlers.api.routers.events import _events_ring
+    """session_complete publishes onto the cross-process fleet event bus via
+    publish_fleet_event (RFC 0022) — the daemon-side upward emit_event
+    import was deleted in bu-01r64.2."""
+    from unittest.mock import AsyncMock, patch
+
     from butlers.core.sessions import session_complete
 
     session_id = uuid.uuid4()
     pool = _FakeSessionPool(return_id=session_id)
 
-    await session_complete(
-        pool,
-        session_id,
-        output="done",
-        tool_calls=[],
-        duration_ms=1234,
-        success=True,
-        butler_name="atlas",
-    )
+    mock_publish = AsyncMock()
+    with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):
+        await session_complete(
+            pool,
+            session_id,
+            output="done",
+            tool_calls=[],
+            duration_ms=1234,
+            success=True,
+            butler_name="atlas",
+        )
 
-    assert len(_events_ring) == 1
-    bus_event = _events_ring[0]
-    assert bus_event["type"] == "session"
-    assert bus_event["data"]["phase"] == "ended"
-    assert bus_event["data"]["butler"] == "atlas"
-    assert bus_event["data"]["success"] is True
-    assert bus_event["data"]["duration_ms"] == 1234
+    mock_publish.assert_called_once()
+    call_args = mock_publish.call_args
+    assert call_args.args[0] is pool
+    assert call_args.args[1] == "session"
+    data = call_args.args[2]
+    assert data["phase"] == "ended"
+    assert data["butler"] == "atlas"
+    assert data["success"] is True
+    assert data["duration_ms"] == 1234

@@ -1,10 +1,11 @@
 """Fleet event bus — multiplexed WebSocket at ``WS /api/events/stream``.
 
-Generalizes the WS→targeted-cache-invalidation pattern first built for
-``/api/approvals/stream`` (see ``use-approvals-stream.ts:146-152``), then
-copied for ``/api/spend/stream`` and ``/api/settings/stream``. Rather than
-building a fourth bespoke socket, every surface that wants live updates can
-subscribe once here and receive a typed envelope::
+Generalizes the WS→targeted-cache-invalidation pattern first built for the
+now-retired dedicated ``/api/approvals/stream`` socket (see
+``use-approvals-stream.ts:146-152``), then copied for the now-retired
+``/api/spend/stream`` and ``/api/settings/stream`` sockets. Rather than
+maintaining a bespoke socket per surface, every surface that wants live
+updates subscribes once here and receives a typed envelope::
 
     {"type": "approval" | "spend" | "session" | "notification" | "issue"
              | "ingestion" | "header_delta" | "attention_add"
@@ -13,20 +14,21 @@ subscribe once here and receive a typed envelope::
 On connect the server replays a snapshot of recent events (ring buffer) so a
 client is never blank while waiting for the next live event. When no event
 arrives within ``_HEARTBEAT_INTERVAL_S`` the server sends a synthetic
-``heartbeat`` event — this doubles as the keepalive ping used by the other
-three streams and gives clients a way to prove liveness even during a quiet
-period (the shell's Live indicator uses "have we heard from the socket
+``heartbeat`` event, giving clients a way to prove liveness even during a
+quiet period (the shell's Live indicator uses "have we heard from the socket
 recently" to render connected/reconnecting/down).
 
-This module does **not** replace ``/api/approvals/stream``,
-``/api/spend/stream``, or ``/api/settings/stream`` — those remain fully
-functional for any existing consumer. Instead, ``emit_approvals_event`` and
-``emit_spend_event`` additionally fan their events onto this bus (see the
-``emit_event(...)`` calls added at the bottom of ``approvals.py`` /
-``spend.py``), and a handful of additional choke points (session lifecycle,
-notify() delivery, audit-log errors, ingest_v1's ingestion_events insert)
-call ``emit_event`` directly. See ``docs/redesigns/2026-07-03-jarvis-audit.md``
-move 5.
+The three dedicated per-feature WS routes this bus generalized
+(``/api/approvals/stream``, ``/api/spend/stream``, ``/api/settings/stream``)
+had zero remaining consumers once every dashboard surface migrated onto this
+bus, and were deleted in bu-01r64.2. ``emit_approvals_event`` (in
+``approvals.py``) still fans approval events onto this bus for API-initiated
+lifecycle transitions; daemon-originated events reach this bus via the
+Postgres LISTEN/NOTIFY bridge (RFC 0022, ``butlers.fleet_events``) instead of
+an upward daemon→api import. A handful of additional choke points (session
+lifecycle, notify() delivery, audit-log errors, ingest_v1's ingestion_events
+insert) call ``emit_event`` directly. See
+``docs/redesigns/2026-07-03-jarvis-audit.md`` move 5.
 """
 
 from __future__ import annotations
@@ -59,8 +61,8 @@ EVENT_TYPES = frozenset(
         "notification",  # notify() delivery attempts
         "ingestion",  # new ingestion_events row (emitted from ingest_v1's insert transaction)
         "issue",  # a new audit-log error landed (issues feed may have changed)
-        "approval",  # mirrors /api/approvals/stream payloads
-        "spend",  # mirrors /api/spend/stream payloads
+        "approval",  # approval lifecycle transitions (created/approved/rejected/...)
+        "spend",  # per-call cost events
         "header_delta",  # Settings Console header_counts changed (bu-3quv8)
         "attention_add",  # Settings Console attention item appeared (bu-3quv8)
         "attention_remove",  # Settings Console attention item cleared (bu-3quv8)
@@ -147,8 +149,7 @@ async def events_stream(
 
     Authentication: pass the dashboard API key via ``?api_key=<key>`` at
     upgrade time (browsers cannot set ``X-API-Key`` headers on WS upgrades).
-    Closes with WS code 4401 on auth failure, matching the other three
-    streams.
+    Closes with WS code 4401 on auth failure.
 
     On connect the server sends a ``snapshot`` message containing the recent
     ring buffer (up to the last 200 events across all types) so a client is

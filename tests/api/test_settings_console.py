@@ -451,50 +451,6 @@ async def test_console_cache_expires_and_refetches():
 
 
 # ---------------------------------------------------------------------------
-# WS /api/settings/stream auth gate
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_settings_stream_auth_rejected_closes_4401(monkeypatch):
-    """WS /api/settings/stream closes with 4401 when api_key is wrong (spec)."""
-    from starlette.testclient import TestClient
-    from starlette.websockets import WebSocketDisconnect
-
-    monkeypatch.setenv("DASHBOARD_API_KEY", "secret-key")
-    app = _make_app(db=None)
-
-    with TestClient(app) as client:
-        with pytest.raises(WebSocketDisconnect) as exc_info:
-            with client.websocket_connect("/api/settings/stream?api_key=wrong-key"):
-                pass
-    assert exc_info.value.code == 4401
-
-
-@pytest.mark.asyncio
-async def test_settings_stream_auth_accepted_with_correct_key(monkeypatch):
-    """WS /api/settings/stream accepts the connection when api_key matches."""
-    from starlette.testclient import TestClient
-
-    monkeypatch.setenv("DASHBOARD_API_KEY", "correct-key")
-    app = _make_app(db=None)
-
-    with (
-        patch.object(console_mod, "_count_active_butlers", new=AsyncMock(return_value=(0, None))),
-        patch.object(console_mod, "_get_spend_mtd", new=AsyncMock(return_value=(0.0, None, None))),
-        patch.object(console_mod, "_count_open_approvals", new=AsyncMock(return_value=(0, None))),
-        patch.object(console_mod, "_count_models", new=AsyncMock(return_value=(0, 0, None))),
-        patch.object(console_mod, "_check_cli_auth", new=AsyncMock(return_value=[])),
-        patch.object(console_mod, "_check_model_errors", new=AsyncMock(return_value=[])),
-        patch.object(console_mod, "_check_failed_webhooks", new=AsyncMock(return_value=[])),
-        TestClient(app) as client,
-    ):
-        with client.websocket_connect("/api/settings/stream?api_key=correct-key") as ws:
-            msg = ws.receive_json()
-            assert msg["type"] == "snapshot"
-
-
-# ---------------------------------------------------------------------------
 # _check_failed_webhooks: queries last_delivery_ok (production deliveries)
 # ---------------------------------------------------------------------------
 

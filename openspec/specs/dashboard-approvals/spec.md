@@ -307,12 +307,12 @@ The dashboard SHALL expose `GET/PUT /api/approvals/policy` to manage notificatio
 
 ### Requirement: Approvals Live Stream
 
-The dashboard SHALL expose `WS /api/approvals/stream` emitting approval lifecycle events.
+The dashboard SHALL fan approval lifecycle events onto the unified fleet event bus (`WS /api/events/stream`) (the earlier dedicated `WS /api/approvals/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
 
 #### Scenario: Stream event shape
 
 - **WHEN** an approval transitions state
-- **THEN** an event `{type: "created"|"approved"|"rejected"|"deferred"|"executed"|"expired", action_id, ts}` is broadcast.
+- **THEN** an event `{type: "approval", data: {kind: "created"|"approved"|"rejected"|"deferred"|"executed"|"expired", approval_id, ...}}` is broadcast on `WS /api/events/stream`.
 
 ---
 

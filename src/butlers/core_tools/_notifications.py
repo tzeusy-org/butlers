@@ -967,29 +967,15 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
 
             async def _emit_notification_event() -> None:
                 """Fan a "notification" event onto the multiplexed fleet event
-                bus (bu-86c4c.8, move 5) for a successfully-delivered notify()
-                call. Best-effort: never lets a bus hiccup fail delivery.
-
-                The direct emit_event() call only reaches WS subscribers when
-                this code happens to run inside the dashboard-api process;
-                from the daemon process (the normal case for notify()) it is
-                a no-op (bu-01r64). publish_fleet_event() is the real
-                cross-process path (RFC 0022, bu-01r64.1) — additive so
-                bu-01r64.2 can delete the emit_event() call once the
-                NOTIFY-based path has proven itself.
+                bus (bu-86c4c.8, move 5) via Postgres LISTEN/NOTIFY (RFC 0022,
+                bu-01r64.1) for a successfully-delivered notify() call.
+                Best-effort: never lets a bus hiccup fail delivery.
                 """
                 notification_event_data = {
                     "butler": butler_name,
                     "channel": channel,
                     "intent": intent,
                 }
-                try:
-                    from butlers.api.routers.events import emit_event
-
-                    emit_event("notification", notification_event_data)
-                except Exception:
-                    logger.debug("emit_event('notification') failed (non-fatal)", exc_info=True)
-
                 notify_pool = daemon.db.pool if daemon.db is not None else None
                 if notify_pool is not None:
                     try:
