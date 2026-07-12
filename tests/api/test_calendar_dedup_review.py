@@ -20,11 +20,8 @@ import pytest
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.read_models import calendar_workspace_v1 as rm
-from butlers.api.routers.calendar_workspace import (
-    _cluster_key,
-    _dedup_workspace_rows,
-    _get_db_manager,
-)
+from butlers.api.read_models.calendar_workspace_v1 import _cluster_key, _dedup_workspace_rows
+from butlers.api.routers.calendar_workspace import _get_db_manager
 
 pytestmark = pytest.mark.unit
 

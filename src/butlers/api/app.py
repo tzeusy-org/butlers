@@ -132,6 +132,10 @@ from butlers.jobs.backup_health import (
     DEFAULT_RESTORE_DRILL_INTERVAL_S,
     run_restore_drill_loop,
 )
+from butlers.jobs.calendar_sync_deadman import (
+    DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
+    run_calendar_sync_deadman_loop,
+)
 from butlers.jobs.deploy_drift import (
     DEFAULT_DRIFT_CHECK_INTERVAL_S,
     run_migration_drift_loop,
@@ -163,6 +167,7 @@ _SECRETS_STALENESS_SCAN_INTERVAL_ENV = "SECRETS_STALENESS_SCAN_INTERVAL_S"
 _SECRETS_STALENESS_WINDOW_ENV = "SECRETS_STALENESS_WINDOW_S"
 _MIGRATION_DRIFT_CHECK_INTERVAL_ENV = "MIGRATION_DRIFT_CHECK_INTERVAL_S"
 _EXTERNAL_DEADMAN_CHECK_INTERVAL_ENV = "EXTERNAL_DEADMAN_CHECK_INTERVAL_S"
+_CALENDAR_SYNC_DEADMAN_CHECK_INTERVAL_ENV = "CALENDAR_SYNC_DEADMAN_CHECK_INTERVAL_S"
 _RESTORE_DRILL_INTERVAL_ENV = "RESTORE_DRILL_INTERVAL_S"
 
 
@@ -383,6 +388,28 @@ async def lifespan(app: FastAPI):
                 "is unaffected (it computes the comparison live per request)",
                 exc_info=True,
             )
+
+        # Calendar sync deadman (bu-hmdqz.10): periodic cross-schema check that
+        # every provider calendar source's sync cursor has stamped within 2x
+        # the poll interval, escalating to QA once staleness persists past a
+        # second tick. See butlers.jobs.calendar_sync_deadman for the full
+        # design rationale (why this process, not a butler daemon's own sync
+        # poller loop -- the loop dying silently is exactly the failure mode
+        # this check exists to catch).
+        try:
+            calendar_deadman_interval_s = _resolve_positive_float_env(
+                _CALENDAR_SYNC_DEADMAN_CHECK_INTERVAL_ENV,
+                DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
+            )
+            calendar_deadman_task = asyncio.create_task(
+                run_calendar_sync_deadman_loop(
+                    get_db_manager(), interval_s=calendar_deadman_interval_s
+                )
+            )
+            _BACKGROUND_TASKS.add(calendar_deadman_task)
+            calendar_deadman_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        except Exception:
+            logger.warning("Failed to start calendar-sync-deadman loop", exc_info=True)
 
         # External deadman (bu-9r3hd.4): periodic outbound ping to an
         # operator-configured URL, catching a silently broken host/egress

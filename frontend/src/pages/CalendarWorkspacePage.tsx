@@ -346,6 +346,88 @@ function formatStaleness(stalenessMs: number | null): string {
   return `${Math.floor(hours / 24)}d stale`;
 }
 
+/**
+ * Grid-level sync-freshness plaque (bu-hmdqz.10): the worst-case staleness
+ * across every enabled source, phrased for the masthead rather than the
+ * Sources rail's compact per-source dots. Only returns non-null when the
+ * data warrants a degraded clause -- callers must render nothing otherwise
+ * (quiet by default; a fresh calendar gets no pixel here).
+ */
+interface CalendarFreshnessPlaque {
+  detail: string;
+  /** Unknown/missing freshness data (never treated as fresh -- see caller). */
+  unknown: boolean;
+}
+
+function formatFreshnessPlaqueDetail(
+  lastSyncedAt: string | null,
+  stalenessMs: number | null,
+): string {
+  if (!lastSyncedAt || stalenessMs == null) {
+    return "Never synced";
+  }
+  const parsed = parseISO(lastSyncedAt);
+  if (!isValid(parsed)) {
+    return "Never synced";
+  }
+  const days = Math.floor(stalenessMs / 86_400_000);
+  if (days >= 1) {
+    return `Last synced ${format(parsed, "MMM d")} — ${days} day${days === 1 ? "" : "s"} ago`;
+  }
+  const hours = Math.floor(stalenessMs / 3_600_000);
+  if (hours >= 1) {
+    return `Last synced ${hours}h ago`;
+  }
+  const minutes = Math.max(1, Math.floor(stalenessMs / 60_000));
+  return `Last synced ${minutes}m ago`;
+}
+
+/**
+ * Compute the grid-level freshness plaque from the enabled connected
+ * sources. Mirrors the backend's own `sync_state` classification (the exact
+ * dots the Sources rail already renders) rather than a second staleness
+ * threshold that could silently disagree with it.
+ *
+ * Degraded-envelope contract: missing/unavailable freshness data renders as
+ * `unknown: true` (a degraded clause), never as an absence of a clause --
+ * silently rendering nothing here would read as "fresh" to the owner, which
+ * is exactly the failure this plaque exists to prevent (see the 96-day-stale
+ * live incident this bead is named for).
+ */
+function computeFreshnessPlaque(
+  sources: CalendarWorkspaceSourceFreshness[],
+  metaStatus: "pending" | "error" | "success",
+): CalendarFreshnessPlaque | null {
+  if (metaStatus === "error") {
+    return { detail: "Sync status unavailable", unknown: true };
+  }
+  if (metaStatus === "pending") {
+    return null; // still loading -- not yet an honest signal either way
+  }
+  const enabled = sources.filter((source) => source.sync_enabled);
+  if (enabled.length === 0) {
+    // No sources configured, or every source was deliberately disabled --
+    // a legitimate empty state (see backend `sync_enabled` semantics), but
+    // an empty *connected* list on a page the owner expects synced data on
+    // is itself unusual enough to name rather than silently show nothing.
+    return sources.length === 0
+      ? { detail: "Sync status unknown", unknown: true }
+      : null;
+  }
+  const worst = enabled.reduce((a, b) => {
+    const aMs = a.staleness_ms ?? Number.POSITIVE_INFINITY;
+    const bMs = b.staleness_ms ?? Number.POSITIVE_INFINITY;
+    return bMs > aMs ? b : a;
+  });
+  if (worst.sync_state === "fresh") {
+    return null;
+  }
+  return {
+    detail: formatFreshnessPlaqueDetail(worst.last_synced_at, worst.staleness_ms),
+    unknown: false,
+  };
+}
+
 function formatOptionalTimestamp(value: string | null): string | null {
   if (!value) return null;
   const parsed = parseISO(value);
@@ -2298,6 +2380,14 @@ export default function CalendarWorkspacePage() {
   const connectedSources = useMemo(
     () => metaQuery.data?.data.connected_sources ?? [],
     [metaQuery.data?.data.connected_sources],
+  );
+  const freshnessPlaque = useMemo(
+    () =>
+      computeFreshnessPlaque(
+        connectedSources,
+        metaQuery.isError ? "error" : metaQuery.isPending ? "pending" : "success",
+      ),
+    [connectedSources, metaQuery.isError, metaQuery.isPending],
   );
   const writableCalendars = useMemo(
     () => metaQuery.data?.data.writable_calendars ?? [],
@@ -4509,6 +4599,17 @@ export default function CalendarWorkspacePage() {
           )}
         </div>
       </header>
+
+      {freshnessPlaque ? (
+        <SourceDegradedNote
+          testId="calendar-freshness-plaque"
+          label="Calendar sync"
+          detail={freshnessPlaque.detail}
+          onRetry={handleSyncAll}
+          retryLabel={syncButtonLabel}
+          className="mb-4"
+        />
+      ) : null}
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-y border-[var(--border)] py-3">

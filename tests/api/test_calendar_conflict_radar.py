@@ -383,6 +383,61 @@ async def test_conflicts_endpoint_partial_failure_flags_degraded_even_when_clean
     assert data["issues_available"] is False
 
 
+async def test_conflicts_endpoint_dedupes_origin_ref_cluster_no_overlap(app):
+    """Regression (bu-hmdqz.10): a 3-member origin_ref duplicate cluster (the
+    same provider event synced into 3 butler schemas / cross-calendar copies)
+    must be collapsed to one row before conflict detection runs, yielding ZERO
+    overlap issues — not the combinatorial 3-choose-2 = 3 phantom overlaps
+    (plus a fabricated 'overloaded day' from the duplicate-hour sum) the
+    un-deduped radar emitted for a live 8-entry-id/4-visible-entry incident."""
+    shared_ref = "shared-origin-ref"
+    rows = [
+        _ws_row(entry_id=f"dup-{i}", title="Lou Shang — Last Day", start=_DAY) for i in range(3)
+    ]
+    for row in rows:
+        row["origin_ref"] = shared_ref
+    app, _ = _build_app(app, workspace_rows={"general": rows})
+
+    resp = await _get(app)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["issues_available"] is True
+    assert [i for i in data["issues"] if i["kind"] == "overlap"] == []
+    assert [i for i in data["issues"] if i["kind"] == "overloaded_day"] == []
+
+
+async def test_conflicts_endpoint_excludes_butler_projected_copy_from_overlap(app):
+    """A butler-authored shadow copy of the owner's own event (title prefixed
+    'BUTLER: ', per butlers.modules.calendar.BUTLER_EVENT_TITLE_PREFIX) must
+    not pair with the real event as a phantom overlap. The dedup title pass
+    alone doesn't catch this case — the titles genuinely differ by the prefix
+    — so it needs its own exclusion in query_calendar_conflicts."""
+    owner_event = _ws_row(entry_id="owner", title="Lunch with Sam", start=_DAY)
+    butler_copy = _ws_row(entry_id="butler-copy", title="BUTLER: Lunch with Sam", start=_DAY)
+    app, _ = _build_app(app, workspace_rows={"general": [owner_event, butler_copy]})
+
+    resp = await _get(app)
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["issues_available"] is True
+    assert [i for i in data["issues"] if i["kind"] == "overlap"] == []
+
+
+async def test_conflicts_endpoint_still_detects_overlap_between_two_distinct_butler_events(app):
+    """The butler-projected exclusion must not swallow a genuine overlap
+    between two DIFFERENT butler-authored events (neither shadows a
+    same-titled non-butler row, so both stay in the candidate set)."""
+    a = _ws_row(entry_id="a", title="BUTLER: Prep for review", start=_DAY)
+    b = _ws_row(entry_id="b", title="BUTLER: Draft follow-up", start=_DAY + timedelta(minutes=30))
+    app, _ = _build_app(app, workspace_rows={"general": [a, b]})
+
+    resp = await _get(app)
+    data = resp.json()["data"]
+    overlaps = [i for i in data["issues"] if i["kind"] == "overlap"]
+    assert len(overlaps) == 1
+    assert {e["entry_id"] for e in overlaps[0]["events"]} == {"a", "b"}
+
+
 async def test_conflicts_endpoint_rejects_inverted_window(app):
     app, _ = _build_app(app)
     resp = await _get(app, params={"start": "2026-07-02T00:00:00Z", "end": "2026-07-01T00:00:00Z"})

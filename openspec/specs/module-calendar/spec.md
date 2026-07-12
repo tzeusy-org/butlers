@@ -448,6 +448,23 @@ The module SHALL provide provider sync with incremental/full modes and a unified
 - **WHEN** the butler has scheduled tasks with cron expressions
 - **THEN** a periodic background task projects them as `SOURCE_KIND_INTERNAL_SCHEDULER` entries
 
+#### Scenario: Sync deadman escalates persistent staleness to QA
+
+- **GIVEN** an enabled provider source's `calendar_sync_cursors` has not
+  stamped `last_synced_at` within 2x the poll interval
+  (`DEFAULT_SYNC_INTERVAL_MINUTES`, absent a per-butler override)
+- **WHEN** the dashboard-api's independent sync-deadman check (external to
+  each butler's own sync-poller task, so a dead poller loop cannot silence
+  its own watchdog) observes the same stale-source composition across two
+  consecutive check ticks
+- **THEN** it escalates once — a `public.healing_attempts` case in terminal
+  `unfixable` status with a human-action `error_detail` — debounced via
+  `public.audit_log` first-detected/escalated markers so a single-tick blip
+  or an already-escalated composition never re-fires (no notification storm)
+- **AND** an operator-disabled source (`sync_enabled: false`) and an internal
+  (non-provider) source are never flagged — only genuine provider-sync death
+  counts
+
 #### Scenario: Projection authorship fields normalize missing provenance
 
 - **WHEN** `_upsert_projection_event` writes a projection row and `source_butler` is null, blank, or the sentinel `"unknown"`
@@ -502,6 +519,27 @@ The dashboard SHALL provide a page at `/butlers/calendar` with a view toggle bet
 
 - **WHEN** the projection is queried
 - **THEN** a staleness status is returned: `fresh`, `stale` (exceeds 2x sync interval), or `failed`
+
+#### Scenario: Grid-level sync-freshness plaque
+
+- **GIVEN** the worst (maximum-staleness) enabled source's `sync_state` is not
+  `fresh` (per the per-source status above)
+- **WHEN** the calendar workspace page renders
+- **THEN** a degraded clause appears above the grid — where the owner actually
+  looks, not only as a small dot in the Sources tab — naming the worst
+  source's staleness (e.g. "Last synced Apr 7 — 96 days ago") with a
+  "Sync now" action wired to the existing sync mutation
+- **AND** the clause is absent (quiet) when every enabled source is fresh
+
+#### Scenario: Freshness plaque never silently reads as fresh
+
+- **WHEN** the source-freshness data is unavailable (the meta fetch errored)
+  or empty despite sources genuinely existing
+- **THEN** the plaque renders a degraded clause ("Sync status unavailable" /
+  "Sync status unknown") rather than rendering nothing
+- **BECAUSE** rendering nothing is indistinguishable from "everything is
+  fresh" to the owner — the exact failure mode that let a 96-day-old sync
+  outage present as a healthy, fully-authoritative week
 
 ### Requirement: Calendar Event Full-Text Search Index
 

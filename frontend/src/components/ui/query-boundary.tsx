@@ -120,6 +120,14 @@ export interface SourceDegradedNoteProps {
   /** Short explanation, e.g. "unavailable" or "data source unreachable". */
   detail?: string;
   onRetry?: () => void;
+  /**
+   * Text on the `onRetry` action button. Defaults to "Retry" (the common
+   * case: a query failed, try it again). Override for a note whose action
+   * isn't a retry of the same read — e.g. "Sync now" for a freshness plaque
+   * whose data loaded fine but is stale, where the action triggers a sync
+   * mutation rather than re-running the failed query.
+   */
+  retryLabel?: string;
   className?: string;
   /** Optional test id so a page-level test can assert the degraded (not empty) state renders. */
   testId?: string;
@@ -129,6 +137,7 @@ export function SourceDegradedNote({
   label,
   detail = "unavailable",
   onRetry,
+  retryLabel = "Retry",
   className,
   testId,
 }: SourceDegradedNoteProps) {
@@ -155,7 +164,7 @@ export function SourceDegradedNote({
           className="ml-auto h-auto p-0 text-xs text-[var(--amber-text)]"
           onClick={onRetry}
         >
-          Retry
+          {retryLabel}
         </Button>
       )}
     </div>

@@ -26,6 +26,13 @@ The endpoint MUST reject windows where `end <= start` or `end - start > 90 days`
 with HTTP 400. It MUST be fail-open: any DB query failure SHALL return HTTP 200
 with `issues: []` and `issues_available: false`; HTTP 500 MUST NOT be returned.
 
+Before detection runs, the endpoint MUST collapse cross-source duplicate rows
+with the SAME dedup pass the workspace grid read applies (persisted match
+strategy, keep-separate pins honored) and MUST exclude butler-authored shadow
+copies of the owner's own events from pairing — see the dedup and
+butler-shadow-copy scenarios below. A dedup-store read failure degrades to the
+default strategy with no overrides (fail-open) rather than failing the scan.
+
 #### Scenario: Overlap detected in window
 
 - **WHEN** two confirmed or tentative events in the window share overlapping
@@ -81,6 +88,36 @@ with `issues: []` and `issues_available: false`; HTTP 500 MUST NOT be returned.
   non-empty `issues` list with `issues_available: false` therefore means "these
   are real, but the set is incomplete", and the FE hides the banner (silent
   degraded mode) exactly as for a total failure.
+
+#### Scenario: Cross-source duplicate cluster does not produce phantom overlaps
+
+- **GIVEN** the same real-world provider event is synced into the workspace as
+  N rows sharing one `origin_ref` (and start instant) — cross-butler-schema
+  copies of one Google Calendar event
+- **WHEN** `GET /api/calendar/workspace/conflicts` scans the window
+- **THEN** the scan collapses the cluster with the same cross-source dedup
+  pass the workspace grid read applies (persisted match strategy and
+  keep-separate pins honored) BEFORE running overlap/back-to-back/overloaded-
+  day detection
+- **AND** the collapsed cluster yields ZERO `overlap` issues and no
+  duplicate-hour double-counting in any `overloaded_day` issue
+- **BECAUSE** scanning the raw, un-collapsed fan-out pairs every member of an
+  N-row cluster combinatorially, fabricating N-choose-2 phantom overlaps for
+  a slot the grid renders as a single entry — the radar's word must match
+  exactly what the owner can see and act on
+
+#### Scenario: Butler-authored shadow copy excluded from overlap pairing
+
+- **GIVEN** a butler-authored event whose title carries the
+  `BUTLER: ` prefix and whose stripped title case-insensitively matches
+  another (non-butler-titled) row in the same window — a butler-projected
+  copy of the owner's own event, not caught by the dedup pass above because
+  its title and `origin_ref` genuinely differ from the row it shadows
+- **WHEN** the conflict scan builds its candidate set
+- **THEN** the butler-titled row is excluded from overlap/back-to-back/
+  overloaded-day pairing
+- **AND** a genuine overlap between two DIFFERENT butler-authored events
+  (neither shadows a same-titled non-butler row) is still detected normally
 
 ### Requirement: [TARGET-STATE] ConflictScanResponse Model
 

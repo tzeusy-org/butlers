@@ -32,8 +32,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from datetime import datetime
+import re
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -61,7 +63,7 @@ READ_MODEL_VERSION = "calendar_workspace_v1"
 # ---------------------------------------------------------------------------
 #
 # The workspace read-model collapses cross-source duplicate events via a
-# two-pass dedup in ``routers/calendar_workspace.py``.  These settings let the
+# two-pass dedup (:func:`_dedup_workspace_rows`, below).  These settings let the
 # user steer that collapse: the *match strategy* selects which passes run and how
 # aggressively titles are normalised, the *noisy threshold* governs which
 # clusters the review surface reports, and the *keep-separate overrides* pin
@@ -82,6 +84,211 @@ DEDUP_DEFAULT_NOISY_THRESHOLD = 2
 
 _DEDUP_RULES_TABLE = "public.calendar_dedup_rules"
 _DEDUP_OVERRIDES_TABLE = "public.calendar_dedup_overrides"
+
+# ---------------------------------------------------------------------------
+# Cross-source dedup collapse (bu-hmdqz.10)
+# ---------------------------------------------------------------------------
+#
+# Moved here from ``routers/calendar_workspace.py`` so the conflict-radar read
+# (:func:`query_calendar_conflicts`, below) can run the SAME collapse pass the
+# workspace grid read applies (via the router's ``_fetch_workspace_rows`` ->
+# ``_dedup_workspace_rows``) before detecting overlaps. The router re-exports
+# these names for its own duplicate-review surface (``GET .../duplicates``) and
+# the grid read, so both call sites share one implementation instead of two
+# that could silently drift apart.
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def _starts_epoch_ms(starts_at: datetime | None) -> int:
+    """Epoch-millisecond bucket for a start instant (0 when unknown).
+
+    Using epoch-ms instead of the serialized datetime makes the collapse keys
+    timezone-serialization agnostic across butler schemas / providers.
+    """
+    return int(starts_at.timestamp() * 1000) if starts_at else 0
+
+
+@dataclass
+class _DedupCluster:
+    """A group of >1 workspace rows the cross-source dedup would collapse.
+
+    ``members`` is keyset-ordered, so ``members[0]`` is the survivor the read
+    keeps and ``members[1:]`` are the collapsed-away duplicates.  ``keep_separate``
+    is true when the user pinned this cluster so it is NOT collapsed.
+    """
+
+    cluster_key: str
+    match_pass: str
+    members: list[dict[str, Any]]
+    keep_separate: bool = False
+
+
+def _cluster_key(row: Mapping[str, Any], match_pass: str, *, aggressive: bool) -> str:
+    """Serialise a row's dedup-cluster identity for the given pass.
+
+    ``origin_ref`` pass keys on (origin_ref, start); ``title`` pass keys on
+    (normalised title, start).  ``aggressive`` strips non-alphanumerics from the
+    title so punctuation/spacing variants collapse together.  The SOH (``\\x01``)
+    separator never appears in titles/refs, so the key round-trips unambiguously.
+    """
+    epoch = _starts_epoch_ms(_coerce_datetime(row.get("instance_starts_at")))
+    if match_pass == "origin_ref":
+        value = row.get("origin_ref") or ""
+    else:
+        value = (row.get("title") or "").strip().lower()
+        if aggressive:
+            value = re.sub(r"[^a-z0-9]+", "", value)
+    return f"{match_pass}\x01{value}\x01{epoch}"
+
+
+def _dedup_workspace_rows(
+    rows: list[dict[str, Any]],
+    *,
+    strategy: str | None = None,
+    keep_separate: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[_DedupCluster]]:
+    """Collapse cross-source duplicate rows; return (deduped_rows, clusters).
+
+    The same Google Calendar event is synced into every butler's projection
+    tables, and cross-calendar copies get fresh ``origin_ref`` values, so the read
+    must collapse them to one entry.  This runs up to two passes (governed by
+    ``strategy``) over the globally-sorted rows, keeping the lowest-keyset copy:
+
+    - **Pass 1** ``origin_ref`` — exact event identity ``(origin_ref, start)``.
+      ``calendar_id`` is deliberately excluded (Google aliases ``primary`` and the
+      explicit address for the same calendar).  Always runs.
+    - **Pass 2** ``title`` — cross-calendar copies ``(title, start)``.  Runs for
+      ``balanced`` (default) and ``aggressive``; skipped for ``exact``.
+
+    Any cluster whose key is in ``keep_separate`` is **not** collapsed — all its
+    members survive and its rows are protected from later passes — but it is still
+    reported in the returned clusters (flagged ``keep_separate``).  The returned
+    clusters are every group of >1 members the dedup *would* collapse (the data
+    the review surface exposes), regardless of whether they were kept separate.
+
+    Behaviour for the default ``balanced`` strategy with no overrides is identical
+    to the original two-pass dedup. Callers MUST pre-sort ``rows`` by the global
+    keyset order ``(instance_starts_at, instance_id)`` — this function keeps the
+    lowest-keyset copy per cluster, so an un-sorted input makes "which copy
+    survives" nondeterministic.
+    """
+    resolved_strategy = strategy if strategy in DEDUP_STRATEGIES else DEDUP_DEFAULT_STRATEGY
+    pinned = keep_separate or set()
+    passes = ["origin_ref"] if resolved_strategy == "exact" else ["origin_ref", "title"]
+    aggressive = resolved_strategy == "aggressive"
+
+    survivors = list(rows)
+    clusters: dict[str, _DedupCluster] = {}
+    # Instance ids of rows in a kept-separate cluster — protected from collapse in
+    # this and every later pass so a keep-separate decision always holds.
+    protected: set[Any] = set()
+
+    for match_pass in passes:
+        members_by_key: dict[str, list[dict[str, Any]]] = {}
+        order: list[str] = []
+        for row in survivors:
+            if row.get("instance_id") in protected:
+                continue
+            ck = _cluster_key(row, match_pass, aggressive=aggressive)
+            if ck not in members_by_key:
+                members_by_key[ck] = []
+                order.append(ck)
+            members_by_key[ck].append(row)
+
+        for ck in order:
+            members = members_by_key[ck]
+            if len(members) <= 1:
+                continue
+            is_pinned = ck in pinned
+            clusters[ck] = _DedupCluster(
+                cluster_key=ck,
+                match_pass=match_pass,
+                members=members,
+                keep_separate=is_pinned,
+            )
+            if is_pinned:
+                for member in members:
+                    protected.add(member.get("instance_id"))
+
+        new_survivors: list[dict[str, Any]] = []
+        for row in survivors:
+            if row.get("instance_id") in protected:
+                new_survivors.append(row)
+                continue
+            ck = _cluster_key(row, match_pass, aggressive=aggressive)
+            members = members_by_key.get(ck, [row])
+            if len(members) <= 1:
+                new_survivors.append(row)
+            elif members[0].get("instance_id") == row.get("instance_id"):
+                new_survivors.append(row)  # keep the lowest-keyset copy
+            # else: a collapsed-away duplicate — dropped
+        survivors = new_survivors
+
+    return survivors, list(clusters.values())
+
+
+#: Mirrors ``butlers.modules.calendar.BUTLER_EVENT_TITLE_PREFIX`` — duplicated
+#: rather than imported so this read-model module's dependency surface stays
+#: free of the (much heavier) module layer; a unit test asserts the two stay
+#: in lock-step.
+_BUTLER_EVENT_TITLE_PREFIX = "BUTLER:"
+
+
+def _strip_butler_prefix(title: str) -> str | None:
+    """Return the un-prefixed title when *title* is a butler-authored shadow event.
+
+    Every event a butler creates on its own Google subcalendar is titled with
+    the ``BUTLER: `` prefix (``butlers.modules.calendar._ensure_butler_title``).
+    Returns ``None`` when *title* does not carry the prefix.
+    """
+    normalized = (title or "").strip()
+    prefix_len = len(_BUTLER_EVENT_TITLE_PREFIX)
+    if normalized[:prefix_len].upper() != _BUTLER_EVENT_TITLE_PREFIX:
+        return None
+    return normalized[prefix_len:].strip()
+
+
+def _exclude_butler_projected_copies(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop butler-authored shadow copies of the owner's own events from radar pairing.
+
+    A butler-created reminder/task prepping for an existing event (e.g. "BUTLER:
+    Lunch with Sam" alongside the owner's own "Lunch with Sam") is a second,
+    deliberate row with its own ``origin_ref`` and a *different* title, so
+    :func:`_dedup_workspace_rows`'s collapse never touches it — but it still
+    shadows the same real-world slot, and the radar pairing the two as an
+    overlap is a phantom warning, not a real scheduling conflict. A butler-
+    titled row is dropped from the conflict *candidate* set (never from the
+    workspace grid — this only trims the radar's input) whenever its stripped
+    title case-insensitively matches another row's title.
+    """
+    plain_titles = {
+        (row.get("title") or "").strip().casefold()
+        for row in rows
+        if _strip_butler_prefix(row.get("title") or "") is None
+    }
+    return [
+        row
+        for row in rows
+        if (stripped := _strip_butler_prefix(row.get("title") or "")) is None
+        or stripped.casefold() not in plain_titles
+    ]
+
 
 # ---------------------------------------------------------------------------
 # Column projections (v1 schema contract)
@@ -984,17 +1191,35 @@ async def query_calendar_conflicts(
     """Scan the user-lane events in ``[start, end)`` for scheduling issues.
 
     Reads the synced ``calendar_event_instances`` / ``calendar_events`` tables
-    via the windowed fan-out (served by the GIST(tstzrange) index), runs the pure
-    :func:`~butlers.core.temporal.conflicts.detect_conflict_issues` detector, and
-    joins any ``pending`` ``calendar_event_proposals`` whose ``source_event_id``
-    equals an overlap issue's canonical pair id.
+    via the windowed fan-out (served by the GIST(tstzrange) index), collapses
+    cross-source duplicate rows the SAME way the workspace grid read does
+    (:func:`_dedup_workspace_rows`, honoring the persisted match strategy and
+    keep-separate pins) and excludes butler-authored shadow copies of the
+    owner's own events (:func:`_exclude_butler_projected_copies`), runs the
+    pure :func:`~butlers.core.temporal.conflicts.detect_conflict_issues`
+    detector over the collapsed set, and joins any ``pending``
+    ``calendar_event_proposals`` whose ``source_event_id`` equals an overlap
+    issue's canonical pair id.
+
+    **Dedup-aware radar (bu-hmdqz.10).** Before this pass, a duplicate cluster
+    of N synced copies of one real-world event (the same Google event synced
+    into N butler schemas / cross-calendar copies) was scanned raw and paired
+    combinatorially — an N=3 cluster alone produces 3 phantom overlap issues
+    for a slot the grid renders as a single entry, and duplicate-hour double-
+    counting fabricates "overloaded day" verdicts on a normal day. Running the
+    router's own collapse here keeps the radar's word matched to exactly what
+    the owner can see and act on.
 
     **Fail-open + honest-partial contract.** A *total* fan-out failure degrades
     to ``CalendarConflictScan(issues=[], available=False)`` rather than raising
     (the endpoint must never return HTTP 500). A *partial* per-butler failure —
     where some schemas answered and others errored — still returns the issues
     detected among the responders but sets ``available=False``, because the
-    missing schema's events could have hidden a real conflict.
+    missing schema's events could have hidden a real conflict. The dedup-rules
+    and keep-separate loads are themselves fail-open (see
+    :func:`load_dedup_rules` / :func:`load_keep_separate_keys`), so a dedup-
+    store outage degrades to the default strategy with no overrides rather than
+    failing the whole scan.
     """
     try:
         rows, failed = await query_calendar_workspace(
@@ -1008,17 +1233,31 @@ async def query_calendar_conflicts(
         logger.warning("query_calendar_conflicts workspace fan-out failed", exc_info=True)
         return CalendarConflictScan(issues=[], available=False)
 
+    # Flatten to dicts and sort by the global keyset order — _dedup_workspace_rows
+    # keeps the lowest-keyset copy of each cluster, so this must match the same
+    # order the workspace grid read collapses on (_fetch_flattened_workspace_rows)
+    # for the radar and the grid to agree on which copy survives.
+    flattened = [asdict(row) for row in rows]
+    flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
+
+    dedup_rules = await load_dedup_rules(db)
+    keep_separate = await load_keep_separate_keys(db)
+    deduped, _clusters = _dedup_workspace_rows(
+        flattened, strategy=dedup_rules.match_strategy, keep_separate=keep_separate
+    )
+    deduped = _exclude_butler_projected_copies(deduped)
+
     candidates = [
         ConflictCandidate(
-            entry_id=str(row.instance_id),
-            title=row.title or "Untitled",
-            start_at=row.instance_starts_at,
-            end_at=row.instance_ends_at,
-            timezone=row.instance_timezone or row.event_timezone or "UTC",
-            status=str(row.instance_status or row.event_status or "confirmed"),
-            all_day=bool(row.all_day),
+            entry_id=str(row["instance_id"]),
+            title=row.get("title") or "Untitled",
+            start_at=row["instance_starts_at"],
+            end_at=row["instance_ends_at"],
+            timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
+            status=str(row.get("instance_status") or row.get("event_status") or "confirmed"),
+            all_day=bool(row.get("all_day")),
         )
-        for row in rows
+        for row in deduped
     ]
 
     issues = detect_conflict_issues(

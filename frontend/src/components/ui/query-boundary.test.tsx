@@ -186,4 +186,31 @@ describe("SourceDegradedNote", () => {
     });
     container.remove();
   });
+
+  it("overrides the action label via retryLabel (e.g. 'Sync now' for a freshness plaque)", async () => {
+    const onRetry = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <SourceDegradedNote
+          label="Calendar sync"
+          detail="Last synced Apr 7 — 96 days ago"
+          onRetry={onRetry}
+          retryLabel="Sync now"
+        />,
+      );
+    });
+    const actionBtn = container.querySelector("button");
+    expect(actionBtn?.textContent).toBe("Sync now");
+    act(() => {
+      actionBtn!.click();
+    });
+    expect(onRetry).toHaveBeenCalledOnce();
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
 });
