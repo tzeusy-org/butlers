@@ -76,6 +76,20 @@ jobs:
     # failure here is visible via GitHub's built-in scheduled-workflow-failure
     # email notification -- no bespoke issue-tracking automation is added
     # (kept in scope with the epic's cost budget).
+    #
+    # bu-hmdqz.8: run 29140308642 (first scheduled run) proved the detector
+    # works -- it surfaced real +45d wall-clock time-bomb failures within ~20
+    # minutes -- then both matrix legs hung at 99% progress until GitHub's 6h
+    # job-level kill, which concludes the job 'cancelled' rather than
+    # 'failure'. That silently defeats the scheduled-workflow-failure email
+    # this job's alerting depends on, burns ~12h of runner time nightly, and
+    # destroys the pytest summary before it can name the hung/failing test.
+    # timeout-minutes below bounds the whole-job hang; the per-test
+    # --timeout in the run step (pytest-timeout) turns an individual stuck
+    # test into a named failure instead of a silent job-wide stall, so a
+    # repeat produces an actionable 'failure' conclusion well inside the
+    # 90-minute budget.
+    timeout-minutes: 90
     runs-on: ubuntu-latest
 
     strategy:
@@ -135,8 +149,16 @@ jobs:
         run: |
           LIBFAKETIME_SO=$(dpkg -L libfaketime | grep -m1 '/libfaketime\.so\.1$')
           echo "Using libfaketime shared library: ${LIBFAKETIME_SO}"
+          # bu-hmdqz.8: --timeout bounds each individual test (pytest-timeout,
+          # dev dep) so one wall-clock-confused hang can no longer silently
+          # eat the whole job -- it surfaces as a single NAMED failure and
+          # the run continues, letting the rest of the suite's time-bomb
+          # signal survive intact. Scoped to this leg only (CLI flag, not a
+          # pyproject.toml addopts change) so the required `check`/`nightly`
+          # jobs are unaffected.
           LD_PRELOAD="${LIBFAKETIME_SO}" FAKETIME="${{ matrix.offset }}" \
             uv run pytest tests/ roster/ -q --tb=short --ignore=tests/e2e \
-            -m "not bench and not perf and not nightly" -n auto --dist loadfile
+            -m "not bench and not perf and not nightly" -n auto --dist loadfile \
+            --timeout=300
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
