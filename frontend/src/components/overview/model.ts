@@ -218,6 +218,8 @@ export function deriveOverviewTriageModel(
       ]
     : [];
 
+  const butlersSourceErrorRows = butlersSourceErrorAttentionRows(input.butlersError ?? false);
+
   // Severity-first, stable across kinds (bu-gcz9e.3): an offline butler or a
   // tripped QA circuit breaker must never rank below a lower-severity issue
   // row just because "issue" happens to be concatenated earlier in this
@@ -228,6 +230,7 @@ export function deriveOverviewTriageModel(
   // is already expiry-sorted) instead of shuffling between renders.
   const attentionRows = [
     ...issuesSourceErrorRows,
+    ...butlersSourceErrorRows,
     ...currentHighIssueRows,
     ...runtimeRows,
     ...approvalRows,
@@ -545,6 +548,35 @@ function notificationSourceErrorRows(
       title: "Notifications feed unavailable",
       detail: "The notifications source was unreachable -- failed-delivery counts may be stale.",
       href: "/notifications",
+      isSourceError: true,
+    },
+  ];
+}
+
+/**
+ * Butlers/board source-error row (bu-gcz9e.2, fleet degraded-source
+ * convention -- mirrors `issuesSourceErrorRows` and
+ * `notificationSourceErrorRows` above). `input.butlersError` means
+ * `GET /api/butlers/board` failed to load -- the SAME fetch the briefing
+ * headline classifies from (`dashboard_briefing.py::_fetch_board_state`),
+ * which surfaces this exact failure as the `"degraded"` state_class
+ * ("One source could not be reached, so this may be incomplete."). Before
+ * this row existed, `butlersError` only reached the KPI strip and the `Now`
+ * list (`now:butlers:error`) -- never `attentionRows` -- so a board outage
+ * made the Needs-attention list render the calm "Nothing waiting." empty
+ * state directly beneath a headline saying the picture might be incomplete.
+ * The bu-gcz9e.2 cross-surface consistency test caught this gap.
+ */
+function butlersSourceErrorAttentionRows(butlersError: boolean): OverviewAttentionRow[] {
+  if (!butlersError) return [];
+  return [
+    {
+      id: "runtime:source-error",
+      kind: "runtime",
+      severity: "high",
+      title: "Butler status unavailable",
+      detail: "Could not load butler liveness -- retry from the butlers board.",
+      href: "/butlers",
       isSourceError: true,
     },
   ];

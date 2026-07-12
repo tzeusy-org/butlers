@@ -697,6 +697,35 @@ describe("deriveOverviewTriageModel", () => {
     expect(model.nowRows.some((row) => row.id === "now:butlers:error")).toBe(false);
   });
 
+  it("emits a named source-error attention row when butlersError is true (bu-gcz9e.2)", () => {
+    // Before this row existed, a failed board fetch only surfaced via
+    // butlersError in the KPI strip/Now list -- the Needs-attention list
+    // rendered "Nothing waiting." even though the SAME board fetch drives
+    // the briefing headline's "degraded" ("may be incomplete") state_class.
+    const model = deriveOverviewTriageModel({
+      boardRows: [],
+      butlersError: true,
+    });
+
+    const errorRow = model.attentionRows.find((row) => row.id === "runtime:source-error");
+    expect(errorRow).toBeDefined();
+    expect(errorRow).toMatchObject({
+      kind: "runtime",
+      severity: "high",
+      title: "Butler status unavailable",
+      href: "/butlers",
+      isSourceError: true,
+    });
+    // attentionRows must not be empty, so AttentionList cannot fall back to
+    // "Nothing waiting."
+    expect(model.attentionRows.length).toBeGreaterThan(0);
+  });
+
+  it("emits no butlers source-error attention row by default", () => {
+    const model = deriveOverviewTriageModel({ boardRows: [] });
+    expect(model.attentionRows.some((row) => row.id === "runtime:source-error")).toBe(false);
+  });
+
   it("emits a named source-error attention row and sets issuesError when issuesError is true (bu-86c4c.2)", () => {
     // This is the exact "Nothing waiting." truth-amnesty defect from the JARVIS
     // audit: a failed issues fetch must never look like a genuinely empty

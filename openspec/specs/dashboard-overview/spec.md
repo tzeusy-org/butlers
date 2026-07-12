@@ -138,6 +138,17 @@ a rule-separated attention surface, not a card grid or table.
 - **AND** this row does not also render alongside a normal "N failed
   notifications" row for the same fetch
 
+#### Scenario: An unreachable butler board source surfaces as a degraded row
+
+- **WHEN** `GET /api/butlers/board` fails to load (`butlersError` is `true`)
+- **THEN** the attention list renders a high-severity, source-error row
+  naming butler status as unavailable, linking to `/butlers`
+- **AND** this holds even when no other attention source has a signal, so
+  the list cannot silently render `Nothing waiting.` while the SAME board
+  fetch drives the dashboard briefing headline's `"degraded"` state_class
+  (`dashboard-briefing` spec's Degraded class scenario) -- bu-gcz9e.2's
+  cross-surface consistency test pins this bound from a shared fixture
+
 #### Scenario: Stale issues are summarized
 
 - **WHEN** an unresolved issue has `first_seen_at` older than 24 hours
