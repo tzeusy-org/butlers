@@ -17,6 +17,7 @@ No real database required -- pools are mocked.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -46,6 +47,18 @@ def _write_export(path: Path, records: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as fh:
         for record in records:
             fh.write(json.dumps(record) + "\n")
+    # Stamp the export's mtime to the tests' fixed reference clock (_NOW),
+    # which every compute_decision_digest(..., now=_NOW) call site in this
+    # file uses as `checked_at`. The staleness check compares checked_at
+    # against the file's kernel mtime, and faketime offsets this process's
+    # datetime.now() but not the kernel -- using the process clock here would
+    # make freshness depend on how far real/faked wall-clock time has drifted
+    # from the fixed _NOW anchor. Anchoring to _NOW directly keeps the export
+    # "just written" relative to the tests' own clock regardless of when or
+    # under what faketime offset the suite actually runs. Tests that want a
+    # stale file re-utime it afterward.
+    now_ts = _NOW.timestamp()
+    os.utime(path, (now_ts, now_ts))
 
 
 def _iso(dt: datetime) -> str:

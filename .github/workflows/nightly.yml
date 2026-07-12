@@ -156,9 +156,19 @@ jobs:
           # signal survive intact. Scoped to this leg only (CLI flag, not a
           # pyproject.toml addopts change) so the required `check`/`nightly`
           # jobs are unaffected.
+          # bu-sjf9q: recover named failures even when the leg hangs to a
+          # cancel. --timeout-method=thread catches more hangs than the default
+          # signal method, but a run on this branch (29208931855) still hung
+          # mid-suite despite it -- the stall is session/worker-level, not a
+          # single test pytest-timeout can bound. So -v is load-bearing, not
+          # noise: it prints each test name INLINE as it runs, so the failed
+          # names survive a mid-run cancel (a -rf/--tb summary only prints at
+          # session end and is lost on cancel -- the PR #3176 failure mode
+          # where no names were recoverable). -rf/--tb=short still give the
+          # clean summary + tracebacks on the runs that do finish.
           LD_PRELOAD="${LIBFAKETIME_SO}" FAKETIME="${{ matrix.offset }}" \
-            uv run pytest tests/ roster/ -q --tb=short --ignore=tests/e2e \
+            uv run pytest tests/ roster/ -v -rf --tb=short --ignore=tests/e2e \
             -m "not bench and not perf and not nightly" -n auto --dist loadfile \
-            --timeout=300
+            --timeout=300 --timeout-method=thread
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"

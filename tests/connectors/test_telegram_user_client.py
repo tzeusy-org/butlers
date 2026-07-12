@@ -11,6 +11,7 @@ Verifies:
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -200,7 +201,10 @@ async def test_small_group_interaction_eligible(
     """Groups at or below max_interaction_group_size must have interaction_eligible=True."""
     # Inject count directly into cache to bypass Telethon API call
     chat_id = "500"
-    connector._participant_count_cache[chat_id] = (15, 999999999.0)  # cached, won't expire
+    # Cache "just now" on the same monotonic clock the connector reads, so the
+    # entry stays fresh regardless of wall-clock offset (a fixed sentinel like
+    # 999999999.0 is below a faked monotonic clock and spuriously expires).
+    connector._participant_count_cache[chat_id] = (15, time.monotonic())
 
     chat_entity = MagicMock()
     chat_entity.__class__.__name__ = "Chat"
@@ -224,7 +228,7 @@ async def test_large_group_interaction_not_eligible(
     """Groups exceeding max_interaction_group_size must have interaction_eligible=False."""
     chat_id = "888"
     # Inject 25 participants into cache (exceeds default limit of 20)
-    connector._participant_count_cache[chat_id] = (25, 999999999.0)
+    connector._participant_count_cache[chat_id] = (25, time.monotonic())
 
     channel_entity = MagicMock()
     channel_entity.__class__.__name__ = "Channel"
@@ -254,7 +258,7 @@ async def test_large_group_envelope_passes_parse(
     from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
     chat_id = "777"
-    connector._participant_count_cache[chat_id] = (50, 999999999.0)
+    connector._participant_count_cache[chat_id] = (50, time.monotonic())
 
     channel_entity = MagicMock()
     channel_entity.__class__.__name__ = "Channel"
