@@ -171,7 +171,7 @@ frontend/
 │   │   ├── use-timeline.ts
 │   │   ├── use-traces.ts
 │   │   ├── use-audit-log.ts
-│   │   ├── use-auto-refresh.ts
+│   │   ├── use-bus-aware-poll-interval.ts
 │   │   └── useDarkMode.ts
 │   ├── layouts/          # Layout wrappers
 │   │   └── RootLayout.tsx

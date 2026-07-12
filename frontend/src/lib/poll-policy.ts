@@ -23,6 +23,26 @@
 export const POLL_BUS_RECONCILE_MS = 5 * 60_000;
 
 /**
+ * `POLL_BUS_DOWN_FALLBACK_MS` -- the fast fallback cadence
+ * `useBusAwarePollInterval` (use-bus-aware-poll-interval.ts) applies while
+ * the fleet event bus is NOT connected ("connecting" | "reconnecting" |
+ * "closed", see EventStreamStatus in use-event-stream.ts).
+ *
+ * A bus-covered surface's cache key is normally kept fresh by live
+ * invalidation (event-cache-registry.ts), with POLL_BUS_RECONCILE_MS above as
+ * a 5-minute safety net for the rare case the bus is briefly down. That
+ * safety net is only honest while the bus reconnects quickly -- a longer
+ * outage would otherwise leave the surface silently stale for up to 5
+ * minutes with no visible degradation (the exact gap use-notifications.ts
+ * had before bu-01r64.3, with NO refetchInterval at all -- infinite
+ * staleness on a dead socket). 30s matches the primary-path cadence already
+ * used for non-bus-covered surfaces elsewhere (e.g. BUTLERS_POLL_MS in
+ * use-butlers.ts), so a dropped socket degrades to honest polling, not
+ * silence.
+ */
+export const POLL_BUS_DOWN_FALLBACK_MS = 30_000;
+
+/**
  * `POLL_RUNNING_SESSION_MS` — the PRIMARY update path for a single running
  * session's dossier (bu-qvnce.5, pursuit move 5 slice 3).
  *

@@ -226,6 +226,9 @@ const POLL_POLICY_FILES = [
   'src/hooks/use-approvals.ts',
   'src/hooks/use-spend.ts',
   'src/hooks/use-issues.ts',
+  // bu-01r64.3: the 8th bus-covered hook -- previously had NO refetchInterval
+  // at all, now onto the same named-token pattern as the other seven.
+  'src/hooks/use-notifications.ts',
 ]
 
 const POLL_POLICY_SELECTORS = [

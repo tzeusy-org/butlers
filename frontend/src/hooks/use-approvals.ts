@@ -16,7 +16,7 @@ import type {
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
 } from "@/api/index.ts";
-import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 // Query keys
 export const approvalKeys = {
@@ -37,13 +37,16 @@ export function useApprovalActions(params?: ApprovalActionParams) {
 }
 
 export function useApprovalMetrics() {
+  // Live path: the fleet event bus (bu-86c4c.8) invalidates this key on
+  // every approval state-transition event. Polling is a 5-minute
+  // reconciliation sweep while the bus is connected, tightening to a fast
+  // fallback while it's down (bu-01r64.3) — never the primary update path
+  // either way.
+  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: approvalKeys.metrics(),
     queryFn: () => getApprovalMetrics(),
-    // Live path: the fleet event bus (bu-86c4c.8) invalidates this key on
-    // every approval state-transition event. Polling is now a 5-minute
-    // reconciliation sweep — a safety net, not the primary update path.
-    refetchInterval: POLL_BUS_RECONCILE_MS,
+    refetchInterval,
     staleTime: 30_000,
   });
 }

@@ -24,6 +24,14 @@ vi.mock("@/api/index.ts", () => ({
   getTimeline: (...args: unknown[]) => mockGetTimeline(...args),
 }));
 
+// useTimelineLedger's underlying useTimeline now calls useBusAwarePollInterval
+// (bu-01r64.3), which reads the shared EventBusProvider context -- stub it
+// rather than wrapping every renderHook call here in a real provider; these
+// tests only care about pagination/live-tail state, not bus-driven cadence.
+vi.mock("@/lib/event-bus", () => ({
+  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+}));
+
 import { useTimelineLedger } from "./use-timeline-ledger";
 
 function makeEvent(id: string, timestamp: string, overrides: Partial<TimelineEvent> = {}): TimelineEvent {

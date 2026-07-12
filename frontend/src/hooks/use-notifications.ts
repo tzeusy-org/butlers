@@ -17,15 +17,28 @@ import type {
   NotificationSummary,
 } from "@/api/index.ts";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 /** Both query-key namespaces a notification is cached under (the cross-butler feed and the per-butler feed). */
 const NOTIFICATION_LIST_PREFIXES = [["notifications"], ["butler-notifications"]] as const;
 
-/** Fetch a paginated list of notifications across all butlers. */
+/**
+ * Fetch a paginated list of notifications across all butlers.
+ *
+ * Bus-covered: event-cache-registry.ts's notificationPatch invalidates this
+ * key on every "notification" bus event (see event-cache-manifest.ts).
+ * Before bu-01r64.3 this had NO refetchInterval at all -- a dead socket meant
+ * infinite staleness, the exact gap the notifications surface was proven to
+ * have. useBusAwarePollInterval gives it a bus-aware reconciliation sweep
+ * (5 minutes while the bus is connected, a fast fallback while it's down)
+ * instead of nothing.
+ */
 export function useNotifications(params?: NotificationParams) {
+  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["notifications", params],
     queryFn: () => getNotifications(params),
+    refetchInterval,
     // Never-blank list (JARVIS audit move 10): keep the previous page/filter's
     // rows visible while the new combination fetches.
     placeholderData: (prev) => prev,
@@ -42,9 +55,13 @@ export function useNotifications(params?: NotificationParams) {
  * it caches independently of the all-time query.
  */
 export function useNotificationStats(params?: NotificationStatsParams) {
+  // Bus-covered (see useNotifications above) -- was missing a refetchInterval
+  // entirely before bu-01r64.3.
+  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["notification-stats", params],
     queryFn: () => getNotificationStats(params),
+    refetchInterval,
   });
 }
 
@@ -53,10 +70,14 @@ export function useButlerNotifications(
   name: string,
   params?: NotificationParams,
 ) {
+  // Bus-covered (see useNotifications above) -- was missing a refetchInterval
+  // entirely before bu-01r64.3.
+  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["butler-notifications", name, params],
     queryFn: () => getButlerNotifications(name, params),
     enabled: !!name,
+    refetchInterval,
     placeholderData: (prev) => prev,
   });
 }

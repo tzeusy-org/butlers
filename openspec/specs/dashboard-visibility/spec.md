@@ -195,10 +195,8 @@ The Timeline page (`/timeline`) merges events from all butlers into a single rev
 
 #### Scenario: Auto-refresh control
 - **WHEN** the Timeline page loads
-- **THEN** an `AutoRefreshToggle` is displayed in the page header
-- **AND** it defaults to enabled with a 10-second interval
-- **AND** the toggle shows a green "Live" badge when auto-refresh is active
-- **AND** the interval can be changed to 5s, 10s, 30s, or 60s via a dropdown
+- **THEN** its data polls automatically via `useBusAwarePollInterval` (bu-01r64.3): a 5-minute reconciliation sweep while the fleet event bus is connected, a 30-second fallback while it's down/reconnecting
+- **AND** there is no manual toggle or interval picker — the prior `AutoRefreshToggle`/`useAutoRefresh` mechanism retired
 
 ### Requirement: Notification Audit Trail
 The Notifications page (`/notifications`) provides a complete audit trail of every notification sent by any butler across all delivery channels. This surface is essential for verifying that user-facing communications were delivered successfully and diagnosing delivery failures.
@@ -366,25 +364,17 @@ The `DashboardPage` (`/`) is the operator's triage cockpit and the system's land
 - **AND** both surfaces draw from `useSpendSummary("today")` and `useTopSessions()` respectively
 
 ### Requirement: Real-Time Polling and Auto-Refresh
-All visibility surfaces use TanStack Query (React Query) for data fetching with configurable polling intervals to provide near-real-time updates without WebSocket infrastructure.
+All visibility surfaces use TanStack Query (React Query) for data fetching. Bus-covered surfaces poll at a bus-aware cadence (`useBusAwarePollInterval`); others poll at a fixed interval. Neither is user-configurable — the prior manual `AutoRefreshToggle` control retired (bu-01r64.3).
 
 #### Scenario: Default polling intervals per surface
 - **WHEN** the Sessions page is active
-- **THEN** sessions list data refetches every 10 seconds by default (overridable by auto-refresh control)
+- **THEN** sessions list data polls via `useBusAwarePollInterval` (bu-01r64.3): 5 minutes while the fleet event bus is connected (live session start/end events are the primary update path), 30 seconds while the bus is down/reconnecting
 - **WHEN** the Timeline page is active
-- **THEN** timeline data refetches at the user-selected interval (default 10 seconds)
+- **THEN** timeline data polls the same bus-aware cadence (session, notification, and ingestion events all invalidate its cache key)
 - **WHEN** the Audit Log is active
 - **THEN** audit entries refetch every 30 seconds
 - **WHEN** the Issues page is active
-- **THEN** issues refetch every 30 seconds
-
-#### Scenario: Auto-refresh toggle (Sessions, Timeline)
-- **WHEN** the operator uses the `AutoRefreshToggle` on the Sessions or Timeline page
-- **THEN** a "Live" badge (green) indicates active auto-refresh
-- **AND** the operator can select an interval from a dropdown (5s, 10s, 30s, 60s)
-- **AND** clicking "Pause" sets `refetchInterval` to `false`, stopping polling
-- **AND** clicking "Resume" restores polling at the selected interval
-- **AND** the enabled state and interval are persisted to `localStorage` across sessions
+- **THEN** issues poll the same bus-aware cadence as Sessions/Timeline above (issues are bus-covered — see `event-cache-manifest.ts`)
 
 #### Scenario: Dashboard overview refresh
 - **WHEN** the dashboard is active

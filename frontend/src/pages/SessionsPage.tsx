@@ -26,8 +26,6 @@ import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Page } from "@/components/ui/page";
 import { useButlers } from "@/hooks/use-butlers";
 import { useSessionAggregate, useSessions } from "@/hooks/use-sessions";
-import { useAutoRefresh } from "@/hooks/use-auto-refresh";
-import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 
 // ---------------------------------------------------------------------------
@@ -120,7 +118,6 @@ export default function SessionsPage() {
   // 4) — shareable/reloadable, and the j/k roving-focus shortcuts below can
   // move it without any local component state.
   const selectedSessionId = searchParams.get("selected");
-  const autoRefreshControl = useAutoRefresh(10_000);
 
   // Fetch butler names for the dropdown + chart hue ordering.
   const { data: butlersResponse } = useButlers();
@@ -151,7 +148,7 @@ export default function SessionsPage() {
     isError,
     error,
     refetch,
-  } = useSessions(params, { refetchInterval: autoRefreshControl.refetchInterval });
+  } = useSessions(params);
   const sessions = sessionsResponse?.data ?? [];
   const meta = sessionsResponse?.meta;
   const hasMore = meta?.has_more ?? false;
@@ -171,10 +168,11 @@ export default function SessionsPage() {
     data: failedAggregateResponse,
     isLoading: failedAggregateLoading,
     isError: failedAggregateError,
-  } = useSessionAggregate(
-    { status: "failed", since: verdictSinceIso, include_trigger_breakdown: true },
-    { refetchInterval: autoRefreshControl.refetchInterval },
-  );
+  } = useSessionAggregate({
+    status: "failed",
+    since: verdictSinceIso,
+    include_trigger_breakdown: true,
+  });
   // Widened from the verdict opener's original limit:1 ("nearest running")
   // to PINNED_RUNNING_LIMIT so the SAME query also feeds the pinned strip
   // below (bu-ptaub) -- one canonical running-sessions fetch, not a parallel
@@ -183,20 +181,18 @@ export default function SessionsPage() {
     data: runningSessionsResponse,
     isLoading: runningSessionsLoading,
     isError: runningSessionsError,
-  } = useSessions(
-    { status: "running", limit: PINNED_RUNNING_LIMIT },
-    { refetchInterval: autoRefreshControl.refetchInterval },
-  );
+  } = useSessions({ status: "running", limit: PINNED_RUNNING_LIMIT });
 
   // Recent-failures pin (bu-ptaub) -- same window as the verdict opener's
   // failure-clustering clause (verdictSinceIso), capped to the pinned strip's
   // small row budget. "Recent" thus means one consistent thing on this page:
   // the last SESSIONS_VERDICT_WINDOW_HOURS, newest-first, capped at
   // PINNED_FAILURES_LIMIT rows.
-  const { data: recentFailuresResponse, isError: recentFailuresError } = useSessions(
-    { status: "failed", since: verdictSinceIso, limit: PINNED_FAILURES_LIMIT },
-    { refetchInterval: autoRefreshControl.refetchInterval },
-  );
+  const { data: recentFailuresResponse, isError: recentFailuresError } = useSessions({
+    status: "failed",
+    since: verdictSinceIso,
+    limit: PINNED_FAILURES_LIMIT,
+  });
 
   // -- Filter handlers -------------------------------------------------------
 
@@ -353,14 +349,6 @@ export default function SessionsPage() {
       archetype="list"
       title="Sessions"
       description="Browse session history across all butlers."
-      actions={
-        <AutoRefreshToggle
-          enabled={autoRefreshControl.enabled}
-          interval={autoRefreshControl.interval}
-          onToggle={autoRefreshControl.setEnabled}
-          onIntervalChange={autoRefreshControl.setInterval}
-        />
-      }
       error={isError ? error : null}
       onRetry={() => refetch()}
       empty={null}

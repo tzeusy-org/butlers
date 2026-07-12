@@ -690,31 +690,16 @@ The dashboard SHALL use Sonner for toast notifications, providing feedback for m
 - **AND** custom icons are used: `CircleCheckIcon` for success, `InfoIcon` for info, `TriangleAlertIcon` for warning, `OctagonXIcon` for error, `Loader2Icon` (spinning) for loading
 - **AND** toast styling uses CSS variables mapped to the design token system (`--popover`, `--popover-foreground`, `--border`, `--radius`)
 
-### Requirement: Auto-Refresh Architecture
+### Requirement: Bus-Aware Poll Architecture
 
-Pages with live data SHALL provide a user-controllable auto-refresh mechanism with configurable intervals, pause/resume, and localStorage persistence.
+Pages whose data is invalidated by the fleet event bus (`event-cache-registry.ts`) SHALL poll automatically at a cadence that reacts to the bus's own connection health, with no user-facing manual toggle.
 
-#### Scenario: Auto-refresh default state
+#### Scenario: Bus-aware polling cadence
 
-- **WHEN** a page using `useAutoRefresh` mounts for the first time
-- **THEN** auto-refresh is enabled by default (reading from `localStorage` key `butlers:auto-refresh:enabled`, falling back to `true`)
-- **AND** the default interval is 10 seconds (reading from `localStorage` key `butlers:auto-refresh:interval`, falling back to 10,000ms)
-- **AND** the hook returns a `refetchInterval` value compatible with TanStack Query (the interval number when enabled, `false` when disabled)
-
-#### Scenario: Interval options
-
-- **WHEN** the user changes the refresh interval
-- **THEN** the available options are: 5s (5,000ms), 10s (10,000ms), 30s (30,000ms), 60s (60,000ms)
-- **AND** invalid interval values are silently rejected
-- **AND** the selected interval is persisted to `localStorage`
-
-#### Scenario: Auto-refresh toggle UI
-
-- **WHEN** the `AutoRefreshToggle` component renders
-- **THEN** it shows a "Live" badge (emerald green) when enabled
-- **AND** an interval selector dropdown is shown (disabled when auto-refresh is paused)
-- **AND** a Pause/Resume button toggles the enabled state
-- **AND** the component uses `Button` size `sm` at height `h-8` with `text-xs`
+- **WHEN** a query hook whose cache key is bus-covered (see `event-cache-manifest.ts`) calls `useBusAwarePollInterval`
+- **THEN** it polls at `POLL_BUS_RECONCILE_MS` (5 minutes) while the shared `EventBusProvider` connection status is `"open"` — a reconciliation safety net behind live bus invalidation, not the primary update path
+- **AND** it polls at `POLL_BUS_DOWN_FALLBACK_MS` (30 seconds) while the connection is `"connecting"`, `"reconnecting"`, or `"closed"` — a fast fallback so the surface degrades to honest polling instead of silently going stale for the full reconciliation window
+- **AND** no user-facing toggle exists to pause or override this cadence; it is fully automatic (the prior `AutoRefreshToggle`/`useAutoRefresh` mechanism retired — bu-01r64.3)
 
 ### Requirement: Settings Console Page
 

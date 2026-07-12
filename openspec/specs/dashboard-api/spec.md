@@ -533,9 +533,10 @@ The frontend SHALL use TanStack Query (`@tanstack/react-query`) via `frontend/sr
 - **WHEN** a hook receives a nullable identifier (e.g., `useButler(name)`)
 - **THEN** `enabled: !!identifier` prevents the query from executing until the identifier is available
 
-#### Scenario: User-controlled auto-refresh
-- **WHEN** the `useAutoRefresh` hook is used on Sessions or Timeline pages
-- **THEN** users can select intervals (5s, 10s, 30s, 60s), pause/resume, and the setting persists in localStorage
+#### Scenario: Bus-aware polling for bus-covered hooks
+- **WHEN** a bus-covered query hook (e.g. sessions, approvals, spend, issues, notifications, messenger, timeline, butlers board — see `event-cache-manifest.ts`) calls `useBusAwarePollInterval`
+- **THEN** it resolves `refetchInterval` from the shared fleet event bus's connection status: `POLL_BUS_RECONCILE_MS` (5 minutes) while connected, `POLL_BUS_DOWN_FALLBACK_MS` (30 seconds) while the bus is down/reconnecting
+- **AND** there is no user-facing control to change this cadence (the prior `useAutoRefresh`/`AutoRefreshToggle` mechanism retired — bu-01r64.3)
 
 ### Requirement: SSE Real-Time Streaming
 `src/butlers/api/routers/sse.py` SHALL provide a `GET /api/events` endpoint that streams Server-Sent Events to connected dashboard clients.

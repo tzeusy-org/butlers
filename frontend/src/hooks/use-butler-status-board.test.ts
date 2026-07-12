@@ -36,6 +36,14 @@ vi.mock("react", async (importOriginal) => {
   }
 })
 
+// useButlerStatusBoard (via useButlersBoard) now calls useBusAwarePollInterval
+// (bu-01r64.3), which reads the real EventBusProvider context via useContext
+// -- invalid outside a React render. These tests call the hook directly (no
+// renderHook), so mock the bus status as always "open".
+vi.mock("@/lib/event-bus", () => ({
+  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+}))
+
 import { useButlerStatusBoard } from "./use-butler-status-board"
 
 // ---------------------------------------------------------------------------

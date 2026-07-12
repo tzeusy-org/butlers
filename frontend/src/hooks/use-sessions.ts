@@ -4,7 +4,8 @@
 
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { ApiResponse, SessionDetail, SessionParams, SessionSummary } from "@/api/types.ts";
-import { POLL_BUS_RECONCILE_MS, POLL_RUNNING_SESSION_MS } from "@/lib/poll-policy";
+import { POLL_RUNNING_SESSION_MS } from "@/lib/poll-policy";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 import {
   getButlerSessions,
@@ -34,15 +35,16 @@ function sessionDetailRefetchInterval(query: {
 
 /** Fetch a keyset-paginated list of sessions across all butlers. */
 export function useSessions(params?: SessionParams, options?: SessionQueryOptions) {
+  // Live path: the fleet event bus (bu-86c4c.8) invalidates ["sessions"] on
+  // every session started/ended event. The default poll is a bus-aware
+  // reconciliation sweep (bu-01r64.3) — a safety net, not the primary update
+  // path. Callers that pass their own refetchInterval (e.g. an explicit
+  // override) are unaffected.
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["sessions", params],
     queryFn: () => getSessions(params),
-    // Live path: the fleet event bus (bu-86c4c.8) invalidates ["sessions"] on
-    // every session started/ended event. The default poll is now a 5-minute
-    // reconciliation sweep — a safety net, not the primary update path.
-    // Callers that pass their own refetchInterval (e.g. an explicit
-    // auto-refresh control) are unaffected.
-    refetchInterval: options?.refetchInterval ?? POLL_BUS_RECONCILE_MS,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     // Keep the previous page/filter's rows visible while the new cursor/filter
     // combination fetches, instead of blanking to a loading skeleton
     // (JARVIS audit move 10 — never-blank lists).
@@ -62,22 +64,24 @@ export function useSessionAggregate(params?: SessionParams, options?: SessionQue
   // Defensively drop pagination fields so paging never re-keys the aggregate.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- strip pagination; key only on filters
   const { cursor, offset, limit, ...filterParams } = params ?? {};
+  // See useSessions above: fleet-event-bus-driven, poll is a bus-aware safety net.
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["session-aggregate", filterParams],
     queryFn: () => getSessionAggregate(filterParams),
-    // See useSessions above: fleet-event-bus-driven, poll is now a safety net.
-    refetchInterval: options?.refetchInterval ?? POLL_BUS_RECONCILE_MS,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
   });
 }
 
 /** Fetch a paginated list of sessions for a single butler. */
 export function useButlerSessions(name: string, params?: SessionParams) {
+  // See useSessions above: fleet-event-bus-driven, poll is a bus-aware safety net.
+  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["butler-sessions", name, params],
     queryFn: () => getButlerSessions(name, params),
     enabled: !!name,
-    // See useSessions above: fleet-event-bus-driven, poll is now a safety net.
-    refetchInterval: POLL_BUS_RECONCILE_MS,
+    refetchInterval,
     placeholderData: (prev) => prev,
   });
 }

@@ -7,7 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getCostSummary, getDailyCosts, getTopSessions, getCostsBySchedule } from "@/api/index.ts";
 import { formatInTimeZone } from "date-fns-tz";
 import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
-import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 // ---------------------------------------------------------------------------
 // Format helper
@@ -42,14 +42,17 @@ export function formatCostDate(d: Date, tz: string = OWNER_TZ_DEFAULT): string {
 export function useSpendSummary(period?: string, from?: Date, to?: Date, butler?: string) {
   const fromStr = from ? formatCostDate(from) : undefined;
   const toStr = to ? formatCostDate(to) : undefined;
+  // Live path: /api/spend/stream + the fleet event bus (bu-86c4c.8) both
+  // invalidate ["cost-summary"] on every spend call event. Polling is a
+  // 5-minute reconciliation sweep while the bus is connected, tightening to a
+  // fast fallback while it's down (bu-01r64.3) — a safety net either way, not
+  // the primary path.
+  const refetchInterval = useBusAwarePollInterval();
 
   return useQuery({
     queryKey: ["cost-summary", period, fromStr, toStr, butler],
     queryFn: () => getCostSummary(period, fromStr, toStr, butler),
-    // Live path: /api/spend/stream + the fleet event bus (bu-86c4c.8) both
-    // invalidate ["cost-summary"] on every spend call event. Polling is now
-    // a 5-minute reconciliation sweep — a safety net, not the primary path.
-    refetchInterval: POLL_BUS_RECONCILE_MS,
+    refetchInterval,
   });
 }
 
@@ -72,11 +75,12 @@ export function useDailySpend(
   const fromStr = from ? formatCostDate(from) : undefined;
   const toStr = to ? formatCostDate(to) : undefined;
   const { refetchInterval, butler } = options ?? {};
+  const busAwareInterval = useBusAwarePollInterval();
 
   return useQuery({
     queryKey: ["daily-costs", fromStr, toStr, butler],
     queryFn: () => getDailyCosts(fromStr, toStr, butler),
-    refetchInterval: refetchInterval ?? POLL_BUS_RECONCILE_MS,
+    refetchInterval: refetchInterval ?? busAwareInterval,
   });
 }
 
@@ -89,12 +93,13 @@ export function useDailySpend(
 export function useTopSessions(limit?: number, from?: Date, to?: Date) {
   const fromStr = from ? formatCostDate(from) : undefined;
   const toStr = to ? formatCostDate(to) : undefined;
+  // See useSpendSummary above: fleet-event-bus-driven, poll is a bus-aware safety net.
+  const refetchInterval = useBusAwarePollInterval();
 
   return useQuery({
     queryKey: ["top-sessions", limit, fromStr, toStr],
     queryFn: () => getTopSessions(limit, fromStr, toStr),
-    // See useSpendSummary above: fleet-event-bus-driven, poll is now a safety net.
-    refetchInterval: POLL_BUS_RECONCILE_MS,
+    refetchInterval,
   });
 }
 
@@ -108,10 +113,11 @@ export function useTopSessions(limit?: number, from?: Date, to?: Date) {
 export function useCostsBySchedule(from?: Date, to?: Date) {
   const fromStr = from ? formatCostDate(from) : undefined;
   const toStr = to ? formatCostDate(to) : undefined;
+  const refetchInterval = useBusAwarePollInterval();
 
   return useQuery({
     queryKey: ["costs-by-schedule", fromStr, toStr],
     queryFn: () => getCostsBySchedule(fromStr, toStr),
-    refetchInterval: POLL_BUS_RECONCILE_MS,
+    refetchInterval,
   });
 }

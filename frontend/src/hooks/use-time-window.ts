@@ -5,8 +5,10 @@
 // (?from=YYYY-MM-DD&to=YYYY-MM-DD).  Defaults to today.
 //
 // pollingDisabled is true when the window ends >= 24 h before now.
-// Consumers should pass this flag to useAutoRefresh (bu-C5) when that
-// hook is wired up; no further refactoring is needed.
+// Consumers should gate their own refetchInterval to `false` on this flag for
+// historical (non-live) windows -- see SpendPage.tsx for the pattern. The
+// useAutoRefresh hook this comment used to reference retired with
+// AutoRefreshToggle (bu-01r64.3).
 // ---------------------------------------------------------------------------
 
 import { useCallback, useMemo } from "react"
@@ -30,7 +32,6 @@ export interface TimeWindow {
   /**
    * True when the window ends more than 24 hours before now.
    * Consumers should disable polling when this is true.
-   * Wired to useAutoRefresh by bu-C5 — this flag is the only hook-in needed.
    */
   pollingDisabled: boolean
   /** Which preset is active, or "custom" for a hand-typed range. */

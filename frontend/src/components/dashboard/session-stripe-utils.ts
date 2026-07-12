@@ -173,8 +173,9 @@ function resolveWindow(
  * (butler/trigger/status/request_id) are forwarded so the chart matches the
  * page's filter set.
  *
- * Pass `refetchInterval` from `useAutoRefresh()` so the user's auto-refresh
- * preference is honoured. Use `false` to disable polling entirely.
+ * `refetchInterval` is passed through from the caller (SessionStripeChart
+ * uses a fixed 60s cadence -- this key is not bus-covered, see
+ * SessionStripeChart.tsx). Pass `false` to disable polling entirely.
  */
 async function fetchAllSessionsForWindow(
   windowHours: number,

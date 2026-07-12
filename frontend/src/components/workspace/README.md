@@ -23,12 +23,6 @@ function MyPage() {
 }
 ```
 
-### `AutoRefreshToggle` (primitive — `@/components/ui/auto-refresh-toggle`)
-
-A controlled toggle that shows a **Live** badge when enabled, a refresh-interval `<Select>`, and a Pause/Resume button. Lives in `components/ui/` as a generic UI primitive with no domain knowledge.
-
-Props: `enabled`, `interval`, `onToggle`, `onIntervalChange`.
-
 ### `ManualRefreshButton` (chronicles — `@/components/chronicles/ManualRefreshButton`)
 
 A window-scoped cache-invalidation button for the Chronicles dashboard. Accepts
@@ -62,23 +56,20 @@ Key fields:
 
 ## Composition pattern — workspace page
 
-The standard composition for a workspace page with time-windowed data and
-auto-refresh:
+The standard composition for a workspace page with time-windowed, live-polling
+data:
 
 ```tsx
 import { useTimeWindow } from "@/hooks/use-time-window"
-import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import { TimeWindowPicker } from "@/components/workspace/TimeWindowPicker"
-import { AutoRefreshToggle } from "@/components/ui/auto-refresh-toggle"
+
+const LIVE_POLL_MS = 30_000
 
 export default function MyWorkspacePage() {
   const timeWindow = useTimeWindow(ownerTz)
-  const autoRefresh = useAutoRefresh(30_000)
 
-  // Gate polling: no auto-refresh for historical windows.
-  const refetchInterval = timeWindow.pollingDisabled
-    ? false
-    : autoRefresh.refetchInterval
+  // Gate polling: no polling for historical windows.
+  const refetchInterval = timeWindow.pollingDisabled ? false : LIVE_POLL_MS
 
   const { data } = useMyData({ from: timeWindow.from, to: timeWindow.to, refetchInterval })
 
@@ -87,14 +78,6 @@ export default function MyWorkspacePage() {
       {/* Toolbar */}
       <div className="flex items-center gap-3">
         <TimeWindowPicker window={timeWindow} />
-        {!timeWindow.pollingDisabled && (
-          <AutoRefreshToggle
-            enabled={autoRefresh.enabled}
-            interval={autoRefresh.interval}
-            onToggle={autoRefresh.setEnabled}
-            onIntervalChange={autoRefresh.setInterval}
-          />
-        )}
       </div>
 
       {/* Page body */}
@@ -108,7 +91,17 @@ The pattern has three steps:
 
 1. **Resolve the window** — `useTimeWindow` reads URL params and owns state.
 2. **Gate polling** — `pollingDisabled` short-circuits `refetchInterval` to
-   `false` for historical windows, keeping `AutoRefreshToggle` hidden (or
-   disabled) for those views.
+   `false` for historical windows.
 3. **Pass the window to data hooks** — every data hook receives `from` and `to`
    so the query key changes when the user selects a different range.
+
+If the underlying data is bus-covered (its cache key is invalidated by the
+fleet event bus — see `event-cache-registry.ts` and
+`event-cache-manifest.ts`), prefer `useBusAwarePollInterval`
+(`@/hooks/use-bus-aware-poll-interval`) over a fixed `LIVE_POLL_MS` literal:
+it polls at the slow reconciliation cadence while the bus is connected and
+tightens to a fast fallback while it's down, instead of a flat interval that
+can't tell the difference (bu-01r64.3 — see `use-notifications.ts` for an
+adopter). The manual `AutoRefreshToggle` primitive this section used to
+document retired alongside that change: bus-covered surfaces now poll
+automatically with no user-facing toggle.

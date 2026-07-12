@@ -11,8 +11,10 @@
  * Dead-letters refreshes every 30s (archive, not bus-covered).
  * Delivery-stats and queue-depth are bus-covered (bu-qvnce.14 slice 3):
  * event-cache-registry.ts's notificationPatch invalidates both keys on every
- * "notification" bus event, so their refetchInterval is now a 5-minute
- * reconciliation sweep (POLL_BUS_RECONCILE_MS), not the primary update path.
+ * "notification" bus event, so their refetchInterval is a bus-aware
+ * reconciliation sweep (useBusAwarePollInterval, bu-01r64.3) -- a 5-minute
+ * sweep while the bus is connected, a fast fallback while it's down -- never
+ * the primary update path.
  *
  * bead: bu-iuol4.34
  */
@@ -29,7 +31,7 @@ import type {
   MessengerDeadLettersParams,
   MessengerDeliveryStatsParams,
 } from "@/api/index.ts";
-import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 const STALE_TIME_AGGREGATE = 30_000; // 30s — dead letters (not bus-covered)
 const STALE_TIME_LIVE = 15_000; // 15s — circuit status (not bus-covered)
@@ -43,11 +45,12 @@ const STALE_TIME_LIVE = 15_000; // 15s — circuit status (not bus-covered)
  * Defaults to the last 24 hours.
  */
 export function useMessengerDeliveryStats(params?: MessengerDeliveryStatsParams) {
+  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["messenger-delivery-stats", params],
     queryFn: () => getMessengerDeliveryStats(params),
     staleTime: STALE_TIME_AGGREGATE,
-    refetchInterval: POLL_BUS_RECONCILE_MS,
+    refetchInterval,
   });
 }
 
@@ -81,11 +84,12 @@ export function useMessengerCircuitStatus() {
  * Bus-covered (bu-qvnce.14 slice 3) -- see the file-header comment.
  */
 export function useMessengerQueueDepth() {
+  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["messenger-queue-depth"],
     queryFn: () => getMessengerQueueDepth(),
     staleTime: STALE_TIME_LIVE,
-    refetchInterval: POLL_BUS_RECONCILE_MS,
+    refetchInterval,
   });
 }
 

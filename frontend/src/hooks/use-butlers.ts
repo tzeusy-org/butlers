@@ -16,7 +16,7 @@ import {
   patchRuntimeConfig,
 } from "@/api/index.ts";
 import type { RuntimeConfigPatch } from "@/api/index.ts";
-import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 // Not bus-covered (bu-qvnce.14 slice 3): no fleet-bus event maps to the bare
 // butlers list or a single butler's per-module health -- unlike
@@ -48,14 +48,15 @@ export function useButlers() {
  * live-refreshes both consumers together.
  */
 export function useButlersBoard() {
+  // Bus-covered (bu-qvnce.14 slice 3): event-cache-registry.ts's
+  // sessionPatch invalidates this exact key on every session started/ended
+  // event -- this interval is a bus-aware reconciliation sweep (bu-01r64.3),
+  // not the primary update path.
+  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["butlers", "board"],
     queryFn: () => getButlersBoard(),
-    // Bus-covered (bu-qvnce.14 slice 3): event-cache-registry.ts's
-    // sessionPatch invalidates this exact key on every session started/ended
-    // event -- this interval is now a reconciliation sweep, not the primary
-    // update path.
-    refetchInterval: POLL_BUS_RECONCILE_MS,
+    refetchInterval,
   });
 }
 

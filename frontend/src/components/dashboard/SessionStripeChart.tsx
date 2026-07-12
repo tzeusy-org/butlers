@@ -21,7 +21,6 @@ import {
 import { ChartSkeleton } from "@/components/skeletons"
 import type { ButlerSummary } from "@/api/types"
 import { butlerHueVar } from "@/components/ui/ButlerMark"
-import { useAutoRefresh } from "@/hooks/use-auto-refresh"
 import {
   bucketUnit,
   currentWindow,
@@ -105,12 +104,13 @@ export function SessionStripeChart({
   butlers,
   filterParams,
 }: SessionStripeChartProps) {
-  const { refetchInterval } = useAutoRefresh(60_000)
-  const { data, isLoading, isError } = useSessionStripeData(
-    windowHours,
-    refetchInterval,
-    filterParams,
-  )
+  // Not bus-covered (["session-stripe", ...] has no fleet-event-bus
+  // invalidation -- see event-cache-registry.ts), so this stays a fixed
+  // primary-path poll rather than a useBusAwarePollInterval reconciliation
+  // sweep. The manual auto-refresh toggle that used to gate this (bu-u4s65)
+  // retired with AutoRefreshToggle (bu-01r64.3); a fixed 60s cadence matches
+  // its prior default.
+  const { data, isLoading, isError } = useSessionStripeData(windowHours, 60_000, filterParams)
 
   const sessions = useMemo(() => data?.data ?? [], [data])
 

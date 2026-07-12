@@ -11,42 +11,11 @@
 //   - Loading state renders skeleton
 //   - Error state renders error element
 //   - Recharts BarChart renders when data is present
-//   - useAutoRefresh integration [bu-u4s65]:
-//     - when auto-refresh is disabled, refetchInterval passed to useQuery is false
-//     - when auto-refresh is enabled, refetchInterval passed to useQuery is the interval
 // ---------------------------------------------------------------------------
 
 import * as React from "react"
 import { describe, expect, it, vi, beforeEach } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
-
-// ---------------------------------------------------------------------------
-// Control variable for useAutoRefresh mock (overridden per-test as needed)
-// ---------------------------------------------------------------------------
-
-let _autoRefreshEnabled = true
-let _autoRefreshInterval = 60_000
-
-// ---------------------------------------------------------------------------
-// Mock useAutoRefresh — must be registered before SessionStripeChart import.
-// useAutoRefresh is wrapped in vi.fn() so call arguments (defaultInterval) are
-// captured and can be asserted in integration tests.
-// ---------------------------------------------------------------------------
-
-const mockUseAutoRefresh = vi.fn()
-
-vi.mock("@/hooks/use-auto-refresh", () => ({
-  useAutoRefresh: (...args: Parameters<typeof mockUseAutoRefresh>) => {
-    mockUseAutoRefresh(...args)
-    return {
-      enabled: _autoRefreshEnabled,
-      interval: _autoRefreshInterval,
-      refetchInterval: _autoRefreshEnabled ? _autoRefreshInterval : (false as const),
-      setEnabled: vi.fn(),
-      setInterval: vi.fn(),
-    }
-  },
-}))
 
 // ---------------------------------------------------------------------------
 // Mock TanStack Query — tests exercise pivot logic directly; network calls
@@ -117,9 +86,6 @@ function renderChart(props: Parameters<typeof SessionStripeChart>[0]): string {
 
 beforeEach(() => {
   vi.resetAllMocks()
-  mockUseAutoRefresh.mockClear()
-  _autoRefreshEnabled = true
-  _autoRefreshInterval = 60_000
 })
 
 // ---------------------------------------------------------------------------
@@ -364,14 +330,13 @@ describe("pivotSessionsIntoRows — time-bucket boundary", () => {
 })
 
 // ---------------------------------------------------------------------------
-// useAutoRefresh integration [bu-u4s65]
+// Fixed refetchInterval [bu-01r64.3 -- replaces the retired useAutoRefresh
+// integration test above; the manual toggle is gone, the chart now always
+// polls at a fixed 60s cadence (not bus-covered, see SessionStripeChart.tsx)]
 // ---------------------------------------------------------------------------
 
-describe("SessionStripeChart — useAutoRefresh integration", () => {
-  it("passes refetchInterval=false to useQuery when auto-refresh is disabled", () => {
-    _autoRefreshEnabled = false
-    _autoRefreshInterval = 60_000
-
+describe("SessionStripeChart — fixed poll cadence", () => {
+  it("passes a fixed refetchInterval=60_000 to useQuery", () => {
     mockUseQuery.mockReturnValue({
       data: undefined,
       isLoading: true,
@@ -380,27 +345,6 @@ describe("SessionStripeChart — useAutoRefresh integration", () => {
 
     renderChart({ butlers: [] })
 
-    // Verify the component passes the correct defaultInterval to the hook
-    expect(mockUseAutoRefresh).toHaveBeenCalledWith(60_000)
-    expect(mockUseQuery).toHaveBeenCalledWith(
-      expect.objectContaining({ refetchInterval: false }),
-    )
-  })
-
-  it("passes the configured interval to useQuery when auto-refresh is enabled", () => {
-    _autoRefreshEnabled = true
-    _autoRefreshInterval = 60_000
-
-    mockUseQuery.mockReturnValue({
-      data: undefined,
-      isLoading: true,
-      isError: false,
-    } as ReturnType<typeof useQuery>)
-
-    renderChart({ butlers: [] })
-
-    // Verify the component passes the correct defaultInterval to the hook
-    expect(mockUseAutoRefresh).toHaveBeenCalledWith(60_000)
     expect(mockUseQuery).toHaveBeenCalledWith(
       expect.objectContaining({ refetchInterval: 60_000 }),
     )

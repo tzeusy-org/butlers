@@ -389,13 +389,6 @@ The Settings page (`/settings`) SHALL manage local browser-scoped preferences. T
 - **AND** the active resolved theme is displayed below the selector
 - **AND** theme changes take effect immediately and persist in localStorage
 
-#### Scenario: Live refresh default configuration
-
-- **WHEN** the operator configures live refresh defaults
-- **THEN** the auto-refresh toggle controls whether pages with live data (Sessions, Timeline) poll for updates
-- **AND** the refresh interval is configurable (default 10 seconds)
-- **AND** settings are persisted in localStorage and read by the `useAutoRefresh` hook
-
 #### Scenario: Command palette history management
 
 - **WHEN** the operator views the command palette section

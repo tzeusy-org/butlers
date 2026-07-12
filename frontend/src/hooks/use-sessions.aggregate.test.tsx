@@ -19,6 +19,15 @@ vi.mock("@/api/index.ts", () => ({
   getButlerSessions: vi.fn(),
 }));
 
+// useSessionAggregate (and its sibling hooks in this module) now call
+// useBusAwarePollInterval (bu-01r64.3), which reads the shared
+// EventBusProvider context -- stub it rather than wrapping every renderHook
+// call here in a real provider; these tests only care about query-key/fetch
+// wiring, not bus-driven polling cadence.
+vi.mock("@/lib/event-bus", () => ({
+  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+}));
+
 import { useSessionAggregate } from "./use-sessions";
 
 function makeWrapper() {

@@ -321,7 +321,6 @@ with `ui/` for shadcn primitives and `layout/` for the shell.
 | Component | File |
 |---|---|
 | AlertDialog | `alert-dialog.tsx` |
-| AutoRefreshToggle | `auto-refresh-toggle.tsx` |
 | Badge | `badge.tsx` |
 | Breadcrumbs | `breadcrumbs.tsx` |
 | Button | `button.tsx` |
