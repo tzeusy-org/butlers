@@ -44,6 +44,7 @@ from opentelemetry.context import Context
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
+from butlers.core.fleet_halt_attention import maybe_push_fleet_halt_attention
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import (
     canonical_runtime_mcp_url,
@@ -52,6 +53,7 @@ from butlers.core.mcp_urls import (
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
+    CEILING_DENIAL_REASON_PREFIX,
     Complexity,
     apply_spend_routing_rules,
     check_monthly_ceiling,
@@ -1180,7 +1182,7 @@ class Spawner:
             ceiling = await check_monthly_ceiling(self._pool)
             if not ceiling.allowed:
                 ceiling_msg = (
-                    "Monthly spend ceiling reached: "
+                    f"{CEILING_DENIAL_REASON_PREFIX}: "
                     f"month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
                     f"${ceiling.ceiling_usd:.2f}"
                 )
@@ -1199,6 +1201,21 @@ class Spawner:
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
                 )
+                # Attention-ledger owner push (bu-7o89u.4): best-effort, debounced
+                # to once per calendar-month halt window inside the helper itself.
+                # Every dispatch denied while the fleet stays halted reaches this
+                # line (possibly dozens/day) -- this call must never raise, block,
+                # or meaningfully delay the deny path it augments, so it is
+                # wrapped here in addition to the helper's own internal
+                # try/except (belt and suspenders on the hottest deny path in
+                # the codebase).
+                try:
+                    await maybe_push_fleet_halt_attention(self._pool)
+                except Exception:
+                    logger.warning(
+                        "fleet_halt_attention: push hook raised; deny path continues",
+                        exc_info=True,
+                    )
                 return SpawnerResult(success=False, error=ceiling_msg, model=model)
 
         # ---------------------------------------------------------------------------

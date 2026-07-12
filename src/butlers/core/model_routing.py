@@ -230,6 +230,16 @@ class SpendRoutingResult:
     max_cost_per_call: float | None = None
 
 
+# Shared with the ceiling-deny message the spawner builds below AND with
+# butlers.core.fleet_halt_attention (bu-7o89u.4), which reads this exact
+# prefix back out of public.model_dispatch_attempts.failure_reason to detect
+# a breach and to count denials for the current calendar month. Also mirrored
+# (as a plain string literal, cross-language) by the frontend's
+# CEILING_DENIAL_REASON_PREFIX in frontend/src/hooks/use-fleet-halt.ts — keep
+# both in sync if this text ever changes.
+CEILING_DENIAL_REASON_PREFIX = "Monthly spend ceiling reached"
+
+
 @dataclasses.dataclass
 class CeilingStatus:
     """Result of a pre-spawn monthly spend-ceiling check.

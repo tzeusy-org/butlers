@@ -149,6 +149,60 @@ class TestSpawnerCeilingEnforcement:
                 new_callable=AsyncMock,
                 return_value=_ceiling_over(),
             ),
+            patch(
+                "butlers.core.spawner.maybe_push_fleet_halt_attention",
+                new_callable=AsyncMock,
+            ) as fleet_halt_mock,
+        ):
+            result = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "ceiling" in result.error.lower()
+        assert adapter.invoke_calls == 0
+        # bu-7o89u.4: the ceiling-deny branch pushes a fleet-halt attention-ledger
+        # push on every breach (debounce to once-per-window lives inside the hook
+        # itself, not the call site).
+        fleet_halt_mock.assert_awaited_once_with(mock_pool)
+
+    async def test_ceiling_deny_result_survives_fleet_halt_hook_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """bu-7o89u.4: a raising fleet-halt push must never break the deny path.
+
+        The spawner wraps the hook call in its own try/except in addition to
+        the hook's internal one -- this pins that outer belt-and-suspenders
+        layer directly, independent of the hook's own implementation.
+        """
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        adapter = _MockAdapter(result_text="should not run")
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_resolution(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_quota_allowed(),
+            ),
+            patch(
+                "butlers.core.spawner.check_monthly_ceiling",
+                new_callable=AsyncMock,
+                return_value=_ceiling_over(),
+            ),
+            patch(
+                "butlers.core.spawner.maybe_push_fleet_halt_attention",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("boom"),
+            ),
         ):
             result = await Spawner(
                 config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter

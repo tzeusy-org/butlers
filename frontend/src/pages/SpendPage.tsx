@@ -35,7 +35,7 @@
 // ---------------------------------------------------------------------------
 
 import { useState, useMemo, useRef } from "react"
-import { Link } from "react-router"
+import { Link, useSearchParams } from "react-router"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { differenceInCalendarDays, subDays } from "date-fns"
 
@@ -1387,7 +1387,14 @@ function formatAttemptTimestamp(iso: string): string {
 }
 
 function FleetHaltBanner() {
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  // Door target for the attention-ledger owner push (bu-7o89u.4): a
+  // ?openDrawer=fleet-halt link lands here with the attempts drawer already
+  // expanded, instead of just landing on the page and requiring another
+  // click to find the evidence the push is about.
+  const [searchParams] = useSearchParams()
+  const [drawerOpen, setDrawerOpen] = useState(
+    () => searchParams.get("openDrawer") === "fleet-halt",
+  )
   const halt = useFleetHaltStatus()
 
   // A failed dispatch-attempts fetch must never render as "the fleet is not

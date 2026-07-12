@@ -272,11 +272,11 @@ function setHooks({
   })
 }
 
-function renderPage() {
+function renderPage(initialEntries: string[] = ["/"]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={initialEntries}>
         <SpendPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -1224,5 +1224,57 @@ describe("SpendPage — fleet-halt banner (bu-7o89u.3)", () => {
     const sessionLink = screen.getByRole("link", { name: "View session" })
     expect(sessionLink.getAttribute("href")).toBe("/sessions/sess-halt-1")
     expect(screen.getAllByRole("link", { name: "View session" })).toHaveLength(1)
+  })
+
+  it("bu-7o89u.4: a ?openDrawer=fleet-halt door lands with the drawer already expanded", async () => {
+    mockUseFleetHaltStatus.mockReturnValue({
+      active: true,
+      deniedToday: 1,
+      deniedTotal: 1,
+      since: "2026-07-12T09:00:00.000Z",
+      recentAttempts: [
+        {
+          ts: "2026-07-12T09:00:00.000Z",
+          butler: "finance",
+          outcome: "quota_skip",
+          attempt_index: 0,
+          failure_reason: "Monthly spend ceiling reached: month-to-date $50.00 >= ceiling $50.00",
+          error_code: null,
+          error_message: null,
+          tool_call_count: 0,
+          session_id: null,
+          logical_session_id: "req-halt-1",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    })
+
+    await act(async () => {
+      renderPage(["/spend?openDrawer=fleet-halt"])
+    })
+
+    await screen.findByTestId("fleet-halt-banner")
+    // No click needed -- the owner-push door opens the drawer directly.
+    expect(await screen.findByTestId("fleet-halt-drawer")).toBeTruthy()
+  })
+
+  it("a plain visit to /spend (no openDrawer param) keeps the drawer collapsed", async () => {
+    mockUseFleetHaltStatus.mockReturnValue({
+      active: true,
+      deniedToday: 1,
+      deniedTotal: 1,
+      since: "2026-07-12T09:00:00.000Z",
+      recentAttempts: [],
+      isLoading: false,
+      isError: false,
+    })
+
+    await act(async () => {
+      renderPage(["/spend"])
+    })
+
+    await screen.findByTestId("fleet-halt-banner")
+    expect(screen.queryByTestId("fleet-halt-drawer")).toBeNull()
   })
 })

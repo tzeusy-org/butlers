@@ -99,6 +99,35 @@ Attempt Provenance).
 - **AND** rows with no `session_id` (pre-session ceiling denials) render without
   a session door instead of a dead or broken link
 
+#### Scenario: An attention-ledger push notifies the owner once per breach window
+- **WHEN** the monthly ceiling transitions from not-breached to breached — the
+  first `quota_skip` dispatch denial with `failure_reason` prefix `"Monthly
+  spend ceiling reached"` in the current calendar month, detected inline in the
+  spawner's ceiling-deny branch (`spawner.py`, `maybe_push_fleet_halt_attention`
+  in `butlers.core.fleet_halt_attention`)
+- **THEN** exactly one `public.attention_ledger` row is written with
+  `source="notify"`, `outcome="delivered"`, `priority_label="high"` (the
+  same lever `notify()` itself uses to always bypass quiet-hours/context-bus
+  suppression — a fleet halt is expressed via the ledger's own severity dial,
+  not a bespoke bypass), a `dedup_key` identifying the calendar-month halt
+  window (e.g. `ceiling_halt:2026-07`), and `metadata` carrying the current
+  denied-dispatch count for the month plus a door URL into the Spend page's
+  attempts drawer (`/spend?openDrawer=fleet-halt`, which auto-expands the
+  drawer from Scenario "An attempts drawer lists recent denials with session
+  doors" above)
+- **AND** the owner is paged through the same notify-boundary gating/dispatch
+  primitives `notify()` uses (quiet hours via `public.approvals_policy`,
+  context-bus dnd/sleeping, Switchboard `deliver()`)
+- **AND** every subsequent ceiling denial in the same calendar month writes
+  NEITHER another `attention_ledger` row NOR another page — debounced by a
+  durable per-window marker in `public.audit_log`
+  (`action="ceiling_halt_notified"`, `note=<the window>`), mirroring the same
+  debounce mechanism `butlers.jobs.secrets_lifecycle` already uses for its own
+  once-per-state-transition owner pushes
+- **AND** the entire push is best-effort and failure-isolated: any failure
+  (ledger write, debounce lookup, delivery) is logged and swallowed, and never
+  blocks or delays the spawner's deny decision
+
 #### Scenario: Degraded attempts source never renders as "no denials"
 - **WHEN** `GET /api/dispatch/attempts` fails (network error, non-2xx)
 - **THEN** the Spend page SHALL render a degraded-source note for the fleet-halt
