@@ -291,6 +291,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Import graph (knip)
+        run: npm run knip
+
       - name: Build
         run: npm run build
 

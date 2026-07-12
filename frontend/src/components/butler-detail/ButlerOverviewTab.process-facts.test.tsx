@@ -67,10 +67,6 @@ vi.mock("@/components/notifications/notification-feed", () => ({
   NotificationFeed: () => <div data-testid="notification-feed" />,
 }));
 
-vi.mock("@/components/butler-detail/EligibilityTimeline", () => ({
-  default: () => <div data-testid="eligibility-timeline" />,
-}));
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

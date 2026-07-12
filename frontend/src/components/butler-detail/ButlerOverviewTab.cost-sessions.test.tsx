@@ -75,10 +75,6 @@ vi.mock("@/components/notifications/notification-feed", () => ({
   NotificationFeed: () => <div data-testid="notification-feed" />,
 }));
 
-vi.mock("@/components/butler-detail/EligibilityTimeline", () => ({
-  default: () => <div data-testid="eligibility-timeline" />,
-}));
-
 // Time renders the raw ISO string as the datetime attribute; stub it to keep
 // SSR output deterministic without timezone context.
 vi.mock("@/components/ui/time", () => ({
