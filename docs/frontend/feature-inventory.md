@@ -215,9 +215,22 @@ This inventory describes what is implemented today in `frontend/src/**`.
   - Loans
   - Activity
 
-## Groups (`/groups`)
+## Circles (`/entities/circles`)
 
-- Paginated group table (description, member count, labels, created date).
+- Client-filtered, alphabetically-sorted list of contact groups ("circles") —
+  a lens on the relationship surface rather than a standalone page; `/groups`
+  redirects here.
+- Fetches up to 200 groups in one page (the backend's `GET
+  /api/relationship/groups` page-size ceiling) and filters/sorts client-side;
+  a personal-scale household is expected to stay well under that. If the
+  count ever exceeds it, a "Showing the first 200 of N circles" footnote
+  says so honestly instead of silently truncating — search does not reach
+  circles past that first page (bu-hmdqz.5).
+- Each row expands into a fresh single-group detail (member roster,
+  description, timestamps) rather than trusting the list cache.
+- Label management (create/assign/remove) is the only write affordance;
+  groups themselves are read-only here (created via the relationship
+  butler's `group_create`/`group_add_member` tools).
 
 ## Health Routes
 

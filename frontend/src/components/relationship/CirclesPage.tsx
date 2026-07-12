@@ -58,7 +58,12 @@ import {
 
 // Personal-scale dataset (a household's contact groups) — fetch the whole
 // thing in one page and filter/sort client-side rather than paginating.
-const FETCH_LIMIT = 500;
+// Capped at the backend's page-size ceiling (GET /relationship/groups
+// `limit` has `le=200`, roster/relationship/api/router.py:555); bu-hmdqz.5
+// — a higher client limit 422s on every load. If a household ever exceeds
+// this, the honest fix is a real backend page size bump, not a silent
+// client cap (see the truncation footnote below for the interim signal).
+const FETCH_LIMIT = 200;
 // bu-86c4c.6: "white" keyword, not a hex literal — matches the ButlerMark
 // tone="fill" precedent (`color: "white"`) for text on a solid category fill.
 const BADGE_TEXT = "white";
@@ -408,6 +413,7 @@ export default function CirclesPage() {
   }, [data?.groups, search]);
 
   const total = data?.total ?? 0;
+  const truncated = total > FETCH_LIMIT;
 
   return (
     <Page
@@ -452,16 +458,24 @@ export default function CirclesPage() {
           No circles match "{search}".
         </p>
       ) : (
-        <div className="rounded-md border border-border">
-          {groups.map((group) => (
-            <CircleRow
-              key={group.id}
-              group={group}
-              expanded={expandedId === group.id}
-              onToggle={() => setExpandedId((cur) => (cur === group.id ? null : group.id))}
-            />
-          ))}
-        </div>
+        <>
+          <div className="rounded-md border border-border">
+            {groups.map((group) => (
+              <CircleRow
+                key={group.id}
+                group={group}
+                expanded={expandedId === group.id}
+                onToggle={() => setExpandedId((cur) => (cur === group.id ? null : group.id))}
+              />
+            ))}
+          </div>
+          {truncated && (
+            <p className="mt-2 text-xs italic text-muted-foreground">
+              Showing the first {FETCH_LIMIT} of {total} circles — search doesn't reach circles
+              beyond this page yet.
+            </p>
+          )}
+        </>
       )}
     </Page>
   );
