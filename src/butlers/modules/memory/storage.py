@@ -555,13 +555,106 @@ async def _backfill_rules_to_catalog(
     return int(count or 0)
 
 
+async def _reconcile_facts_catalog_disownment(
+    pool: Pool,
+    *,
+    source_schema: str,
+    limit: int,
+) -> int:
+    """Mark stale up to *limit* catalog rows whose source fact is gone/terminal.
+
+    Reverse of ``_backfill_facts_to_catalog``: the backfill only ever
+    inserts, and the live write path (``_cascade_catalog_disownment``, see
+    ``forget_memory``/``run_decay_sweep``/``purge_superseded_facts``) marks a
+    catalog row stale atomically at disownment time — but that cascade only
+    covers writes made *through* those functions. This closes the gap for
+    rows cataloged before the cascade existed, or disowned by any path that
+    predates/bypasses it: a catalog row is "drifted" when its source fact is
+    either hard-deleted (``purge_superseded_facts``) or has moved to a
+    terminal ``validity`` (anything other than ``'active'``/``'fading'`` —
+    i.e. ``retracted``, ``superseded``, ``expired``).
+
+    Idempotent and safe to re-run: already-stale rows (``invalid_at IS NOT
+    NULL``) are excluded from the candidate set, so a re-run only picks up
+    newly-drifted rows. Never deletes — mirrors ``_mark_catalog_stale``'s
+    stale-not-delete contract (butler roles hold no ``DELETE`` grant on
+    ``public.memory_catalog``, core_009).
+
+    Bounded via ``limit`` (single statement, no long-held locks), matching
+    the backfill's batching contract.
+    """
+    sql = """
+        WITH candidates AS (
+            SELECT mc.source_id
+            FROM public.memory_catalog mc
+            LEFT JOIN facts f ON f.id = mc.source_id
+            WHERE mc.source_schema = $1
+              AND mc.source_table = 'facts'
+              AND mc.invalid_at IS NULL
+              AND (f.id IS NULL OR f.validity NOT IN ('active', 'fading'))
+            LIMIT $2
+        )
+        UPDATE public.memory_catalog mc
+        SET confidence = 0,
+            invalid_at = now(),
+            updated_at = now()
+        FROM candidates c
+        WHERE mc.source_schema = $1
+          AND mc.source_table = 'facts'
+          AND mc.source_id = c.source_id
+        RETURNING 1
+    """
+    rows = await pool.fetch(sql, source_schema, limit)
+    return len(rows)
+
+
+async def _reconcile_rules_catalog_disownment(
+    pool: Pool,
+    *,
+    source_schema: str,
+    limit: int,
+) -> int:
+    """Mark stale up to *limit* catalog rows whose source rule is gone/forgotten.
+
+    Reverse of ``_backfill_rules_to_catalog`` — see
+    ``_reconcile_facts_catalog_disownment`` for the full rationale. A rule
+    catalog row is "drifted" when the rule is hard-deleted or its
+    ``metadata->>'forgotten'`` flag is ``true`` (rules have no ``validity``
+    column; ``forgotten`` is the sole soft-delete signal, matching
+    ``forget_memory``/``run_decay_sweep``). Idempotent, never deletes.
+    """
+    sql = """
+        WITH candidates AS (
+            SELECT mc.source_id
+            FROM public.memory_catalog mc
+            LEFT JOIN rules r ON r.id = mc.source_id
+            WHERE mc.source_schema = $1
+              AND mc.source_table = 'rules'
+              AND mc.invalid_at IS NULL
+              AND (r.id IS NULL OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true')
+            LIMIT $2
+        )
+        UPDATE public.memory_catalog mc
+        SET confidence = 0,
+            invalid_at = now(),
+            updated_at = now()
+        FROM candidates c
+        WHERE mc.source_schema = $1
+          AND mc.source_table = 'rules'
+          AND mc.source_id = c.source_id
+        RETURNING 1
+    """
+    rows = await pool.fetch(sql, source_schema, limit)
+    return len(rows)
+
+
 async def run_memory_catalog_backfill(
     pool: Pool,
     *,
     source_schema: str,
     batch_size: int = 200,
 ) -> dict[str, Any]:
-    """Idempotently backfill this butler's existing facts/rules into public.memory_catalog.
+    """Idempotently backfill + reverse-reconcile this butler's public.memory_catalog rows.
 
     ``enable_shared_catalog`` defaulted to ``False`` for most of the catalog's
     life (see docs/redesigns/2026-07-04-jarvis-pursuit.md #15), so facts and
@@ -571,9 +664,16 @@ async def run_memory_catalog_backfill(
     via ``NOT EXISTS`` against the ``UNIQUE(source_schema, source_table,
     source_id)`` key, so each call only picks up the still-missing tail.
 
+    Also runs reverse reconciliation in the same call (see
+    ``_reconcile_facts_catalog_disownment`` / ``_reconcile_rules_catalog_disownment``):
+    catalog rows whose source fact/rule has since gone away, been forgotten,
+    or reached a terminal state are marked stale — a defense-in-depth sweep
+    for drift that predates or bypasses the atomic disownment cascade
+    (``_cascade_catalog_disownment``).
+
     Deliberately does NOT open one giant transaction across the full backlog —
-    each table's batch is a single bounded ``INSERT ... SELECT ... LIMIT``
-    statement, so a run never holds locks across thousands of rows.
+    each phase's batch is a single bounded statement, so a run never holds
+    locks across thousands of rows.
 
     Args:
         pool: asyncpg connection pool scoped (via search_path) to the owning
@@ -582,11 +682,12 @@ async def run_memory_catalog_backfill(
             catalog's ``source_schema`` provenance column. Must match the
             value the live write-behind path uses for this butler (see
             ``MemoryModule.register_tools``'s ``effective_catalog_source_schema``).
-        batch_size: Max rows to backfill per table per call (default 200).
+        batch_size: Max rows to backfill/reconcile per table per call
+            (default 200).
 
     Returns:
-        Dict with ``facts_backfilled``, ``rules_backfilled``, and
-        ``source_schema``.
+        Dict with ``facts_backfilled``, ``rules_backfilled``,
+        ``facts_reconciled``, ``rules_reconciled``, and ``source_schema``.
     """
     facts_backfilled = await _backfill_facts_to_catalog(
         pool, source_schema=source_schema, limit=batch_size
@@ -594,10 +695,78 @@ async def run_memory_catalog_backfill(
     rules_backfilled = await _backfill_rules_to_catalog(
         pool, source_schema=source_schema, limit=batch_size
     )
+    facts_reconciled = await _reconcile_facts_catalog_disownment(
+        pool, source_schema=source_schema, limit=batch_size
+    )
+    rules_reconciled = await _reconcile_rules_catalog_disownment(
+        pool, source_schema=source_schema, limit=batch_size
+    )
     return {
         "source_schema": source_schema,
         "facts_backfilled": facts_backfilled,
         "rules_backfilled": rules_backfilled,
+        "facts_reconciled": facts_reconciled,
+        "rules_reconciled": rules_reconciled,
+    }
+
+
+async def get_catalog_drift_counts(
+    pool: Pool,
+    *,
+    source_schema: str,
+) -> dict[str, int]:
+    """Return catalog health counts for one butler's ``source_schema`` rows.
+
+    Powers the ``/api/memory/stats`` catalog-drift gauge (bu-5ud8p.4). Unlike
+    ``_reconcile_facts_catalog_disownment``/``_reconcile_rules_catalog_disownment``,
+    this is read-only and unbounded (a full count, not a bounded reconciliation
+    batch) so the gauge reports true current health rather than a
+    per-batch-window sample.
+
+    Returns:
+        Dict with:
+        - ``live``: catalog rows still serving (``invalid_at IS NULL``).
+        - ``stale``: catalog rows already marked stale (``invalid_at IS NOT
+          NULL``) — disowned via the atomic cascade, a backfill/reconcile
+          pass, or a prior sweep.
+        - ``drifted``: live rows (``invalid_at IS NULL``) whose source
+          fact/rule is gone, forgotten, or terminal — i.e. exactly what the
+          next reverse-reconciliation pass would mark stale. Non-zero means
+          the catalog is currently serving disowned memories; it should
+          trend toward zero as the backfill job's reconciliation phase runs.
+
+    This endpoint fans out across every butler pool (``GET
+    /api/memory/stats``), so a single combined query (via ``FILTER``) keeps
+    the round-trip count per pool at one instead of four.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT
+            count(*) FILTER (WHERE mc.invalid_at IS NULL) AS live,
+            count(*) FILTER (WHERE mc.invalid_at IS NOT NULL) AS stale,
+            count(*) FILTER (
+                WHERE mc.source_table = 'facts'
+                  AND mc.invalid_at IS NULL
+                  AND (f.id IS NULL OR f.validity NOT IN ('active', 'fading'))
+            ) AS facts_drifted,
+            count(*) FILTER (
+                WHERE mc.source_table = 'rules'
+                  AND mc.invalid_at IS NULL
+                  AND (r.id IS NULL OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true')
+            ) AS rules_drifted
+        FROM public.memory_catalog mc
+        LEFT JOIN facts f ON mc.source_table = 'facts' AND f.id = mc.source_id
+        LEFT JOIN rules r ON mc.source_table = 'rules' AND r.id = mc.source_id
+        WHERE mc.source_schema = $1
+        """,
+        source_schema,
+    )
+    if not row:
+        return {"live": 0, "stale": 0, "drifted": 0}
+    return {
+        "live": int(row["live"] or 0),
+        "stale": int(row["stale"] or 0),
+        "drifted": int(row["facts_drifted"] or 0) + int(row["rules_drifted"] or 0),
     }
 
 

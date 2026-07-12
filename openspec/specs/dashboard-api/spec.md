@@ -871,6 +871,17 @@ data source; no affordance on the redesigned page may ship without its wire here
   - `last_consolidation_facts_produced: int | null` — facts produced by that run.
   - `dead_letter_episodes: int` — count of dead-lettered episodes (default 0).
   These fields are additive; existing `/stats` consumers are not broken.
+- `GET /api/memory/stats` SHALL additionally return, in `meta` (not `data`), a
+  catalog-drift gauge summed across all butler pools: `catalog_live: int`
+  (live `public.memory_catalog` rows), `catalog_stale: int` (already marked
+  stale), and `catalog_drifted: int` (live rows whose source fact/rule has
+  gone, been forgotten, or reached a terminal state — exactly what the next
+  `memory_catalog_backfill` reconciliation pass would mark stale; see the
+  memory-discovery-catalog spec's "Catalog-drift gauge in memory stats"
+  requirement). A pool that fails computing this gauge is named in
+  `meta.catalog_pools_failed: string[]`, a tracker distinct from
+  `meta.pools_failed` so a catalog-only failure never suppresses that pool's
+  episode/fact/rule counts.
 - `GET /api/memory/episodes` SHALL accept a `status` filter over the
   `consolidation_status` enum `{pending, consolidated, failed, dead_letter}`.
   The legacy `consolidated: bool` parameter SHALL remain accepted; when both are
@@ -926,6 +937,18 @@ pools without memory tables are silently skipped.
   `last_consolidation_facts_produced`, and `dead_letter_episodes`
 - **AND** a client that ignores those fields observes the pre-change `/stats`
   shape unchanged
+
+#### Scenario: Stats carries the catalog-drift gauge in meta
+- **WHEN** `GET /api/memory/stats` is called
+- **THEN** `meta` includes `catalog_live`, `catalog_stale`, and
+  `catalog_drifted`, each summed across every butler pool with a resolvable
+  memory schema
+- **WHEN** a pool's catalog-drift query fails for a genuine reason (not a
+  missing memory schema)
+- **THEN** that pool is named in `meta.catalog_pools_failed` and its
+  contribution to the gauge is omitted (not zero-filled and passed off as healthy)
+- **AND** `meta.pools_failed` (the general stats fan-out tracker) is
+  unaffected by a catalog-only failure
 
 #### Scenario: Episodes status filter takes precedence over legacy bool
 - **WHEN** `GET /api/memory/episodes?status=dead_letter` is called

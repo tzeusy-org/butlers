@@ -422,7 +422,12 @@ class _StatsPool:
 
     *counts* maps a SQL substring → integer fetchval result (defaults 0).
     *last_run* maps butler name → fetchrow dict for public.consolidation_runs
-    (None when that butler has no run).
+    (None when that butler has no run). *schema* answers the catalog-drift
+    gauge's ``SELECT current_schema()`` probe (defaults ``None``, which the
+    gauge treats as "no schema resolved" — same as an omitted memory module).
+    *drift* answers the catalog-drift gauge's single combined
+    ``public.memory_catalog`` fetchrow with live/stale/facts_drifted/
+    rules_drifted (defaults all 0).
     """
 
     def __init__(
@@ -430,11 +435,17 @@ class _StatsPool:
         *,
         counts: dict[str, int] | None = None,
         last_runs: dict[str, dict | None] | None = None,
+        schema: str | None = None,
+        drift: dict[str, int] | None = None,
     ) -> None:
         self._counts = counts or {}
         self._last_runs = last_runs or {}
+        self._schema = schema
+        self._drift = drift or {}
 
     async def fetchval(self, query: str, *args: object) -> int:
+        if "current_schema()" in query:
+            return self._schema
         for needle, value in self._counts.items():
             if needle in query:
                 return value
@@ -444,6 +455,13 @@ class _StatsPool:
         if "consolidation_runs" in query:
             butler = args[0]
             return self._last_runs.get(butler)
+        if "memory_catalog" in query:
+            return {
+                "live": self._drift.get("live", 0),
+                "stale": self._drift.get("stale", 0),
+                "facts_drifted": self._drift.get("facts_drifted", 0),
+                "rules_drifted": self._drift.get("rules_drifted", 0),
+            }
         return None
 
 
@@ -617,6 +635,158 @@ async def test_stats_consolidation_fields_default_when_no_runs(app):
     # Existing fields remain present (backward-compatible).
     assert data["total_episodes"] == 0
     assert data["total_facts"] == 0
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/stats — catalog-drift gauge (bu-5ud8p.4)
+# ---------------------------------------------------------------------------
+
+
+class _CatalogQueryRaisingPool:
+    """Fake pool: healthy for the general /stats queries, but any
+    ``public.memory_catalog`` query (the catalog-drift gauge) raises *exc*.
+
+    Isolates a catalog-drift-only failure from the general episode/fact/rule
+    fan-out, so the two independent trackers (``tracker`` vs
+    ``catalog_tracker``) can be tested without conflating them.
+    """
+
+    def __init__(self, *, schema: str, exc: Exception) -> None:
+        self._schema = schema
+        self._exc = exc
+
+    async def fetchval(self, query: str, *args: object):
+        if "current_schema()" in query:
+            return self._schema
+        return 0
+
+    async def fetchrow(self, query: str, *args: object) -> dict | None:
+        if "memory_catalog" in query:
+            raise self._exc
+        return None
+
+
+async def test_stats_catalog_drift_gauge_aggregates_across_pools(app):
+    """meta.catalog_live/catalog_stale/catalog_drifted sum across butler pools."""
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(
+                schema="atlas",
+                drift={"live": 10, "stale": 2, "facts_drifted": 1, "rules_drifted": 1},
+            ),
+            "finance": _StatsPool(
+                schema="finance",
+                drift={"live": 5, "stale": 1, "facts_drifted": 0, "rules_drifted": 2},
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    meta = resp.json()["meta"]
+    assert meta["catalog_live"] == 15
+    assert meta["catalog_stale"] == 3
+    # facts_drifted + rules_drifted summed per pool: atlas (1+1=2), finance (0+2=2).
+    assert meta["catalog_drifted"] == 4
+    assert "catalog_pools_failed" not in meta
+
+
+async def test_stats_catalog_drift_omitted_when_schema_unresolved(app):
+    """A pool with no resolvable butler schema (e.g. memory module disabled,
+    or a test topology living directly in public) contributes zero to the
+    gauge and is NOT flagged as a degraded catalog source.
+    """
+    db = _StatsDB(
+        {
+            "switchboard": _StatsPool(schema=None),
+            "atlas": _StatsPool(
+                schema="atlas",
+                drift={"live": 3},
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    meta = resp.json()["meta"]
+    assert meta["catalog_live"] == 3
+    assert meta["catalog_stale"] == 0
+    assert meta["catalog_drifted"] == 0
+    assert "catalog_pools_failed" not in meta
+
+
+async def test_stats_catalog_drift_flags_genuine_failure(app):
+    """A pool whose catalog-drift query fails for a reason OTHER than a
+    missing memory schema must be named in meta.catalog_pools_failed --
+    never silently folded into a truthful zero-drift result.
+    """
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(
+                schema="atlas",
+                drift={"live": 3},
+            ),
+            "finance": _CatalogQueryRaisingPool(
+                schema="finance", exc=RuntimeError("connection reset by peer")
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # atlas's contribution still lands even though finance's catalog query failed.
+    assert body["meta"]["catalog_live"] == 3
+    assert body["meta"]["catalog_pools_failed"] == ["finance"]
+    # The general pools_failed tracker (episode/fact/rule counts) is untouched --
+    # finance's non-catalog stats fetchval calls never raised.
+    assert "pools_failed" not in body["meta"]
+
+
+async def test_stats_catalog_drift_not_flagged_for_missing_memory_schema(app):
+    """A pool that simply lacks facts/rules tables (UndefinedTableError) is
+    the expected case for a butler without the memory module enabled -- NOT
+    a degraded catalog source.
+    """
+    from asyncpg.exceptions import UndefinedTableError
+
+    db = _StatsDB(
+        {
+            "atlas": _StatsPool(
+                schema="atlas",
+                drift={"live": 3},
+            ),
+            "switchboard": _CatalogQueryRaisingPool(
+                schema="switchboard", exc=UndefinedTableError("relation does not exist")
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/stats")
+
+    assert resp.status_code == 200
+    meta = resp.json()["meta"]
+    assert meta["catalog_live"] == 3
+    assert "catalog_pools_failed" not in meta
 
 
 # ---------------------------------------------------------------------------

@@ -242,6 +242,8 @@ class TestCatalogBackfillJobArgsValidation:
         assert result == {
             "facts_backfilled": 0,
             "rules_backfilled": 0,
+            "facts_reconciled": 0,
+            "rules_reconciled": 0,
             "skipped": "source_schema_not_resolved",
         }
 

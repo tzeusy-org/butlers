@@ -557,12 +557,14 @@ async def _run_memory_catalog_backfill_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Backfill this butler's active facts/rules into public.memory_catalog.
+    """Backfill + reverse-reconcile this butler's public.memory_catalog rows.
 
     Bounded, idempotent catch-up pass draining the pre-flip backlog (see
     docs/redesigns/2026-07-04-jarvis-pursuit.md #15: ``enable_shared_catalog``
     now defaults True, but ~3,600 facts/rules written before the flip predate
-    write-behind and have no catalog row). Safe to re-run — see
+    write-behind and have no catalog row), plus a reverse-reconciliation pass
+    that marks stale any catalog row whose source fact/rule has since gone,
+    been forgotten, or reached a terminal state. Safe to re-run — see
     ``run_memory_catalog_backfill`` for the idempotency contract.
 
     ``job_args.batch_size`` overrides the default per-table batch size (200).
@@ -607,6 +609,8 @@ async def _run_memory_catalog_backfill_job(
             return {
                 "facts_backfilled": 0,
                 "rules_backfilled": 0,
+                "facts_reconciled": 0,
+                "rules_reconciled": 0,
                 "skipped": "source_schema_not_resolved",
             }
 

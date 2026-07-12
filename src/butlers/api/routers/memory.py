@@ -211,6 +211,58 @@ async def get_memory_stats(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[MemoryStats]:
     """Return aggregated counts across all memory tiers."""
+    from butlers.modules.memory import storage as _storage
+
+    catalog_tracker = DegradedSources(logger)
+
+    async def _catalog_drift_for_pool(butler_name: str, pool: object) -> dict[str, int]:
+        # public.memory_catalog tags rows with the owning butler's schema
+        # (source_schema), so scope the drift query to THIS pool's own
+        # schema — resolved the same way the backfill job infers it (see
+        # ``scheduled_jobs._infer_current_schema``) — to avoid every pool
+        # double-counting the whole shared catalog table.
+        try:
+            schema = await pool.fetchval("SELECT current_schema()")
+        except Exception as exc:
+            if _is_missing_memory_schema_error(exc):
+                logger.debug(
+                    "Skipping catalog-drift gauge for butler %s (no memory schema)",
+                    butler_name,
+                    exc_info=True,
+                )
+                return {"live": 0, "stale": 0, "drifted": 0}
+            logger.warning(
+                "Failed to resolve current_schema() for butler %s; omitting "
+                "catalog-drift gauge for this pool",
+                butler_name,
+                exc_info=True,
+            )
+            catalog_tracker.mark(butler_name, msg="catalog-drift current_schema() failed")
+            return {"live": 0, "stale": 0, "drifted": 0}
+        if not schema or schema == "public":
+            # No real butler schema resolved (e.g. memory tables living
+            # directly in public in a test topology) — legitimately absent,
+            # not a degraded source.
+            return {"live": 0, "stale": 0, "drifted": 0}
+        try:
+            return await _storage.get_catalog_drift_counts(pool, source_schema=schema)
+        except Exception as exc:
+            if _is_missing_memory_schema_error(exc):
+                # This butler has no facts/rules tables (memory module not
+                # enabled) — legitimately absent, not a degraded source.
+                logger.debug(
+                    "Skipping catalog-drift gauge for butler %s (no memory schema)",
+                    butler_name,
+                    exc_info=True,
+                )
+                return {"live": 0, "stale": 0, "drifted": 0}
+            logger.warning(
+                "Failed to compute catalog-drift counts for butler %s",
+                butler_name,
+                exc_info=True,
+            )
+            catalog_tracker.mark(butler_name, msg="catalog-drift query failed")
+            return {"live": 0, "stale": 0, "drifted": 0}
 
     async def _stats_for_pool(butler_name: str, pool: object) -> dict[str, object]:
         # Latest consolidation run for THIS pool's butler, read from the shared
@@ -288,6 +340,15 @@ async def get_memory_stats(
         query_fn=_stats_for_pool,
         tracker=tracker,
     )
+    # Catalog drift is a separate fan-out (its own tracker) so a pool that
+    # fails only the drift query doesn't drop that pool's episode/fact/rule
+    # counts from `totals` above — see _catalog_drift_for_pool.
+    catalog_per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="catalog_drift",
+        query_fn=_catalog_drift_for_pool,
+        tracker=catalog_tracker,
+    )
 
     totals = MemoryStats()
     # Track the globally-latest consolidation run across pools so the header band
@@ -314,7 +375,28 @@ async def get_memory_stats(
             totals.last_consolidation_at = str(run_at)
             totals.last_consolidation_facts_produced = row["last_consolidation_facts_produced"]
 
-    meta = ApiMeta(pools_failed=tracker.names) if tracker.failed else ApiMeta()
+    # Catalog-drift gauge (bu-5ud8p.4): aggregate live/stale/drifted counts
+    # across all butler schemas so the console can see catalog health at a
+    # glance. ``catalog_drifted`` is the leading indicator — non-zero means
+    # the shared discovery catalog is currently serving memories the owning
+    # butler has since disowned (source gone, forgotten, or terminal), and
+    # should trend toward zero as the backfill job's reconciliation phase
+    # (``run_memory_catalog_backfill``) runs.
+    catalog_live = sum(row["live"] for row in catalog_per_pool)
+    catalog_stale = sum(row["stale"] for row in catalog_per_pool)
+    catalog_drifted = sum(row["drifted"] for row in catalog_per_pool)
+
+    meta_fields: dict[str, object] = {
+        "catalog_live": catalog_live,
+        "catalog_stale": catalog_stale,
+        "catalog_drifted": catalog_drifted,
+    }
+    if tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
+    if catalog_tracker.failed:
+        meta_fields["catalog_pools_failed"] = catalog_tracker.names
+
+    meta = ApiMeta(**meta_fields)
     return ApiResponse[MemoryStats](data=totals, meta=meta)
 
 

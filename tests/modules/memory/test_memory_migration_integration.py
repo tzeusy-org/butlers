@@ -940,6 +940,189 @@ def test_correction_driven_forget_emits_memory_event(memory_migrated_db: str) ->
     assert payload.get("correction_reason") == out["correction_reason"]
 
 
+async def _reconcile_drifted_catalog_rows(db_url: str) -> dict:
+    """Exercise run_memory_catalog_backfill's reverse-reconciliation phase (bu-5ud8p.4).
+
+    Stores a healthy fact/rule plus a "drifted" fact/rule (moved to a terminal
+    state via raw SQL, bypassing forget_memory/run_decay_sweep's atomic
+    ``_cascade_catalog_disownment``) and a "gone" fact/rule (hard-deleted via
+    raw SQL). Reverse reconciliation exists precisely to catch drift that
+    bypasses the cascade — e.g. rows cataloged before the cascade existed, or
+    a state change made through a path that doesn't call it — so simulating
+    that bypass with raw SQL is the faithful way to exercise this code path
+    (going through ``forget_memory`` would just re-exercise the cascade
+    tested by bu-5ud8p.3, not the reconciliation gap this closes).
+
+    Uses a dedicated, freshly-migrated database (not the module-shared
+    ``memory_migrated_db`` fixture) so catalog-row counts are exact and not
+    order-dependent on other tests' backlog.
+    """
+    from butlers.modules.memory.storage import (
+        get_catalog_drift_counts,
+        run_memory_catalog_backfill,
+        store_fact,
+        store_rule,
+    )
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        engine = _fake_embedding_engine()
+
+        async def _store_fact(subject: str, content: str) -> object:
+            fact = await store_fact(
+                pool,
+                subject=subject,
+                predicate="favorite_color",
+                content=content,
+                embedding_engine=engine,
+                scope="global",
+                tenant_id="shared",
+                source_butler="health",
+                enable_shared_catalog=True,
+                source_schema="public",
+            )
+            return fact["id"]
+
+        async def _store_rule(content: str) -> object:
+            return await store_rule(
+                pool,
+                content=content,
+                embedding_engine=engine,
+                scope="global",
+                tenant_id="shared",
+                source_butler="health",
+                enable_shared_catalog=True,
+                source_schema="public",
+            )
+
+        healthy_fact_id = await _store_fact("reconcile_healthy", "teal")
+        drifted_fact_id = await _store_fact("reconcile_drifted", "maroon")
+        gone_fact_id = await _store_fact("reconcile_gone", "indigo")
+
+        healthy_rule_id = await _store_rule("Always double-check the calendar before booking")
+        drifted_rule_id = await _store_rule("Never book travel on a Sunday")
+        gone_rule_id = await _store_rule("Never mention the surprise party twice")
+
+        # Simulate drift that bypasses the atomic disownment cascade.
+        await pool.execute("UPDATE facts SET validity = 'retracted' WHERE id = $1", drifted_fact_id)
+        await pool.execute("DELETE FROM facts WHERE id = $1", gone_fact_id)
+        await pool.execute(
+            "UPDATE rules SET metadata = metadata || '{\"forgotten\": true}'::jsonb WHERE id = $1",
+            drifted_rule_id,
+        )
+        await pool.execute("DELETE FROM rules WHERE id = $1", gone_rule_id)
+
+        async def _invalid_at(table: str, source_id: object) -> object:
+            return await pool.fetchval(
+                "SELECT invalid_at FROM public.memory_catalog"
+                " WHERE source_schema = 'public' AND source_table = $1 AND source_id = $2",
+                table,
+                source_id,
+            )
+
+        before = {
+            "healthy_fact": await _invalid_at("facts", healthy_fact_id),
+            "drifted_fact": await _invalid_at("facts", drifted_fact_id),
+            "gone_fact": await _invalid_at("facts", gone_fact_id),
+            "healthy_rule": await _invalid_at("rules", healthy_rule_id),
+            "drifted_rule": await _invalid_at("rules", drifted_rule_id),
+            "gone_rule": await _invalid_at("rules", gone_rule_id),
+        }
+
+        drift_before = await get_catalog_drift_counts(pool, source_schema="public")
+
+        result = await run_memory_catalog_backfill(pool, source_schema="public", batch_size=500)
+        result_rerun = await run_memory_catalog_backfill(
+            pool, source_schema="public", batch_size=500
+        )
+
+        drift_after = await get_catalog_drift_counts(pool, source_schema="public")
+
+        after = {
+            "healthy_fact": await _invalid_at("facts", healthy_fact_id),
+            "drifted_fact": await _invalid_at("facts", drifted_fact_id),
+            "gone_fact": await _invalid_at("facts", gone_fact_id),
+            "healthy_rule": await _invalid_at("rules", healthy_rule_id),
+            "drifted_rule": await _invalid_at("rules", drifted_rule_id),
+            "gone_rule": await _invalid_at("rules", gone_rule_id),
+        }
+
+        return {
+            "before": before,
+            "after": after,
+            "result": result,
+            "result_rerun": result_rerun,
+            "drift_before": drift_before,
+            "drift_after": drift_after,
+        }
+    finally:
+        await pool.close()
+
+
+def test_backfill_reverse_reconciliation_marks_drifted_rows_stale(postgres_container) -> None:
+    """run_memory_catalog_backfill's reconciliation phase marks stale any
+    catalog row whose source fact/rule has gone, been forgotten, or reached
+    a terminal state outside the atomic disownment cascade -- and leaves
+    healthy rows and already-stale rows untouched (idempotent re-run).
+    """
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(run_migrations(db_url, chain="memory"))
+
+    out = asyncio.run(_reconcile_drifted_catalog_rows(db_url))
+
+    # Before reconciliation: every catalog row (including the drifted/gone
+    # ones) is still live -- the raw-SQL state changes never touched the
+    # catalog, by construction.
+    before = out["before"]
+    assert before["healthy_fact"] is None
+    assert before["drifted_fact"] is None
+    assert before["gone_fact"] is None
+    assert before["healthy_rule"] is None
+    assert before["drifted_rule"] is None
+    assert before["gone_rule"] is None
+
+    # First reconciliation pass catalogs the drift.
+    result = out["result"]
+    assert result["facts_reconciled"] == 2  # drifted_fact + gone_fact
+    assert result["rules_reconciled"] == 2  # drifted_rule + gone_rule
+
+    after = out["after"]
+    # Healthy rows are untouched.
+    assert after["healthy_fact"] is None
+    assert after["healthy_rule"] is None
+    # Drifted/gone rows are marked stale (invalid_at set), never deleted --
+    # the catalog row for the hard-deleted fact/rule still exists.
+    assert after["drifted_fact"] is not None
+    assert after["gone_fact"] is not None
+    assert after["drifted_rule"] is not None
+    assert after["gone_rule"] is not None
+
+    # Idempotent re-run: nothing new to reconcile the second time.
+    result_rerun = out["result_rerun"]
+    assert result_rerun["facts_reconciled"] == 0
+    assert result_rerun["rules_reconciled"] == 0
+
+    # get_catalog_drift_counts (the /api/memory/stats gauge's data source):
+    # this dedicated DB holds exactly the 6 catalog rows this test created,
+    # so exact counts are assertable.
+    drift_before = out["drift_before"]
+    assert drift_before["live"] == 6
+    assert drift_before["stale"] == 0
+    assert drift_before["drifted"] == 4  # drifted_fact, gone_fact, drifted_rule, gone_rule
+
+    drift_after = out["drift_after"]
+    assert drift_after["live"] == 2  # healthy_fact, healthy_rule
+    assert drift_after["stale"] == 4
+    assert drift_after["drifted"] == 0  # everything drifted has already been reconciled
+
+
 def test_migration_is_idempotent(postgres_container) -> None:
     """Running the memory migration chain twice on the same DB does not fail."""
     db_name = migration_db_name()

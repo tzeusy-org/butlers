@@ -306,3 +306,91 @@ requiring a copy-pasted `butler.toml` schedule block per butler.
 - **THEN** the backfill job MUST still be scheduled and dispatchable for that
   butler
 
+---
+
+### Requirement: Backfill reverse-reconciles drifted catalog rows
+
+The backfill mechanism SHALL also reverse-reconcile, in the same invocation as
+the forward backfill described above: it SHALL mark stale any
+`public.memory_catalog` row that is still live (`invalid_at IS NULL`) whose
+source fact or rule has since been hard-deleted, forgotten
+(`metadata.forgotten = true`, rules), or moved to a terminal `validity`
+(anything other than `'active'`/`'fading'`, facts). This is a defense-in-depth
+sweep for drift that predates or bypasses the atomic disownment cascade (see
+"Atomic catalog disownment on forget, expiry, and purge") — e.g. rows
+cataloged before that cascade existed, or a state change made through a path
+that does not call it. Reverse reconciliation MUST NOT delete catalog rows —
+it uses the same stale-not-delete mechanism as the atomic cascade — and MUST
+be bounded per invocation and safe to invoke repeatedly, mirroring the
+forward backfill's batching and idempotency contract.
+
+#### Scenario: A drifted fact's catalog row is marked stale
+
+- **WHEN** the backfill's reconciliation phase runs against a butler's schema
+  containing a live catalog row (`invalid_at IS NULL`) whose source fact has
+  been hard-deleted or has `validity` other than `'active'`/`'fading'`
+- **THEN** that catalog row MUST be marked stale (`confidence = 0`,
+  `invalid_at` set)
+- **AND** the catalog row itself MUST NOT be deleted
+
+#### Scenario: A forgotten or deleted rule's catalog row is marked stale
+
+- **WHEN** the backfill's reconciliation phase runs against a butler's schema
+  containing a live catalog row whose source rule has been hard-deleted or has
+  `metadata.forgotten = true`
+- **THEN** that catalog row MUST be marked stale
+- **AND** the catalog row itself MUST NOT be deleted
+
+#### Scenario: A healthy catalog row is left untouched
+
+- **WHEN** the backfill's reconciliation phase runs against a butler's schema
+  containing a live catalog row whose source fact or rule is still active
+  (or fading) and not forgotten
+- **THEN** that catalog row MUST remain unmodified (`invalid_at` stays `NULL`)
+
+#### Scenario: Reconciliation is idempotent across repeated runs
+
+- **WHEN** the reconciliation phase is invoked a second time after a prior
+  run already marked a drifted row stale
+- **THEN** the second run MUST NOT re-process, re-mark, or error on that
+  already-stale row
+
+---
+
+### Requirement: Catalog-drift gauge in memory stats
+
+`GET /api/memory/stats` SHALL expose catalog health in its response `meta`
+(the extensible metadata bag), scoped per butler schema and summed across all
+butler pools: a count of live catalog rows (`invalid_at IS NULL`), a count of
+stale catalog rows (`invalid_at IS NOT NULL`), and a count of drifted rows —
+live rows whose source has gone, been forgotten, or reached a terminal state
+(i.e. exactly what the next reconciliation pass would mark stale). A butler
+pool that fails while computing this gauge MUST be named in a dedicated
+degraded-source list in `meta`, distinct from the general stats fan-out's
+degraded-source list, so a catalog-specific failure never renders as a
+truthful zero-drift result and never suppresses that pool's other stats
+fields (episode/fact/rule counts).
+
+#### Scenario: Drift gauge aggregates across butler pools
+
+- **WHEN** `GET /api/memory/stats` is called and multiple butler pools each
+  hold `public.memory_catalog` rows
+- **THEN** `meta` MUST include the summed live, stale, and drifted counts
+  across all pools
+
+#### Scenario: A pool without a resolvable memory schema contributes zero, not a failure
+
+- **WHEN** a butler pool has no resolvable owning schema (e.g. the memory
+  module is not enabled for that butler)
+- **THEN** that pool MUST contribute zero to the drift gauge
+- **AND** it MUST NOT appear in the gauge's degraded-source list
+
+#### Scenario: A genuine catalog query failure is flagged, not silently zeroed
+
+- **WHEN** a butler pool's catalog-drift query fails for a reason other than
+  a missing memory schema (e.g. a dropped connection)
+- **THEN** that pool MUST be named in the gauge's degraded-source list in
+  `meta`
+- **AND** the other pools' contributions to the gauge, and that pool's own
+  episode/fact/rule counts in the response `data`, MUST still be returned
+
