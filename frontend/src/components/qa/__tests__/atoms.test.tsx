@@ -41,9 +41,11 @@ const kpisWithNullMttr: QaKpiBlock = {
   mttr_24h_seconds: null,
   self_resolved_7d_pct: 71,
   active_cases_now: 5,
+  failed_24h: 0,
   prs_landed_prior_24h: 0,
   mttr_prior_24h_seconds: null,
   self_resolved_prior_7d_pct: null,
+  failed_prior_24h: 0,
 };
 
 const kpisWithDeltas: QaKpiBlock = {
@@ -51,9 +53,11 @@ const kpisWithDeltas: QaKpiBlock = {
   mttr_24h_seconds: 720,
   self_resolved_7d_pct: 80,
   active_cases_now: 2,
+  failed_24h: 1,
   prs_landed_prior_24h: 3,
   mttr_prior_24h_seconds: 840,
   self_resolved_prior_7d_pct: 76,
+  failed_prior_24h: 2,
 };
 
 const activeBreakdown: QaActiveBreakdown = {
@@ -106,7 +110,7 @@ describe("QA dossier atoms", () => {
 
     expect(screen.getByText("mttr · 24h")).toBeTruthy();
     expect(screen.getByTestId("qa-kpi-mttr-value").textContent).toBe("—");
-    expect(screen.getByText("no terminal cases in 24h")).toBeTruthy();
+    expect(screen.getByText("no repairs merged in 24h")).toBeTruthy();
   });
 
   it("renders active breakdown with awaiting CI and escalated open cases", () => {
@@ -208,7 +212,7 @@ describe("QA dossier atoms", () => {
     expect(screen.getByText("+3 vs prior 24h")).toBeTruthy();
 
     // MTTR is null → "no terminal cases in 24h" sub-label (not a delta)
-    expect(screen.getByText("no terminal cases in 24h")).toBeTruthy();
+    expect(screen.getByText("no repairs merged in 24h")).toBeTruthy();
     // self_resolved_prior_7d_pct is null → fallback to "7d window"
     expect(screen.getByText("7d window")).toBeTruthy();
   });
@@ -222,7 +226,7 @@ describe("QA dossier atoms", () => {
     render(<QaKpiStrip kpis={kpisNullCurrentMttr} active={activeBreakdown} />);
 
     // Current MTTR null → cannot show delta; shows null-mttr sub-label
-    expect(screen.getByText("no terminal cases in 24h")).toBeTruthy();
+    expect(screen.getByText("no repairs merged in 24h")).toBeTruthy();
   });
 
   it("renders Dismiss pill when fingerprint present and no active dismissal in non-terminal state", () => {

@@ -68,8 +68,10 @@ from butlers.api.models import (
     PaginationMeta,
 )
 from butlers.config import ConfigError, load_config
+from butlers.core.failover_classifier import is_provider_auth_marker
 from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
+from butlers.core.model_routing import get_breaker_state
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes
@@ -117,12 +119,21 @@ _QA_CASE_HUMAN_ACTION_SQL = (
 )
 _QA_CASE_STATE_SQL: dict[str, str] = {
     "detect": (
-        "a.status NOT IN ('pr_merged', 'unfixable', 'pr_open', 'investigating') "
-        f"AND NOT (a.status = 'failed' AND ({_QA_CASE_HUMAN_ACTION_SQL}))"
+        "a.status NOT IN ('pr_merged', 'unfixable', 'pr_open', 'investigating', "
+        "'failed', 'timeout', 'anonymization_failed')"
     ),
     "diagnose": "a.status = 'investigating'",
     "pr": "a.status = 'pr_open'",
     "landed": "a.status = 'pr_merged'",
+    # 'timeout'/'anonymization_failed' never carry a human-action marker check
+    # (failed_with_human_action() only ever escalates 'unfixable'/'failed'), so
+    # they always land here alongside marker-less 'failed' rows. Mirrors
+    # ``butlers.core.healing.dispatch.CIRCUIT_BREAKER_FAILURE_STATUSES`` and the
+    # precedence baked into ``butlers.core.qa.severity.state_of_case`` (bu-hmdqz.9).
+    "failed": (
+        f"a.status IN ('timeout', 'anonymization_failed') "
+        f"OR (a.status = 'failed' AND NOT ({_QA_CASE_HUMAN_ACTION_SQL}))"
+    ),
     "escalated": (
         f"a.status = 'unfixable' OR (a.status = 'failed' AND ({_QA_CASE_HUMAN_ACTION_SQL}))"
     ),
@@ -426,9 +437,18 @@ class QaKpiBlock(BaseModel):
     """KPI strip metrics for the QA dossier dashboard."""
 
     prs_landed_24h: int
+    # Average closed_at - created_at, status='pr_merged' ONLY (a genuine repair
+    # that landed a fix). Terminal crashes (failed/timeout/anonymization_failed)
+    # are intentionally excluded: mixing them in previously made a day of 100%
+    # crashes and zero repairs read as a fast "MTTR" -- the number improved the
+    # faster the staffer crashed (bu-hmdqz.9). See failed_24h for the crash count.
     mttr_24h_seconds: float | None = None
     self_resolved_7d_pct: float
     active_cases_now: int
+    # Count of terminal crashes (failed/timeout/anonymization_failed) closed in
+    # the last 24h -- rendered beside MTTR with a destructive tint so a
+    # crash-heavy day cannot masquerade as a fast-repair day.
+    failed_24h: int = 0
     # Prior-period comparison values for delta sub-labels.
     # prs_landed_prior_24h: count in the 24h-48h window (prior 24h period).
     # mttr_prior_24h_seconds: average MTTR in the 24h-48h window; null when sample is empty.
@@ -436,6 +456,7 @@ class QaKpiBlock(BaseModel):
     prs_landed_prior_24h: int = 0
     mttr_prior_24h_seconds: float | None = None
     self_resolved_prior_7d_pct: float | None = None
+    failed_prior_24h: int = 0
 
 
 class QaActiveBreakdown(BaseModel):
@@ -455,7 +476,7 @@ class QaCaseSummary(BaseModel):
     headline: str | None = None
     detected: datetime
     age_seconds: int
-    state: Literal["detect", "diagnose", "pr", "landed", "escalated"]
+    state: Literal["detect", "diagnose", "pr", "landed", "escalated", "failed"]
     pr_state: Literal["drafted", "open", "merged", "closed"] | None = None
     pr_url: str | None = None
 
@@ -504,7 +525,7 @@ class QaCaseDossier(BaseModel):
     """Full case payload for the QA dossier renderer."""
 
     case: QaCaseSummary
-    state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated"]
+    state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated", "failed"]
     fingerprint: str | None = None
     dismissal: QaActiveDismissal | None = None
     investigation_notes: InvestigationNotes | None = None
@@ -519,6 +540,12 @@ class QaCaseDossier(BaseModel):
     # in either case rather than a broken link.
     healing_session_id: uuid.UUID | None = None
     session_ids: list[uuid.UUID] = Field(default_factory=list)
+    # The raw crash text (``healing_attempts.error_detail``) for a ``failed``
+    # case, so the dossier failure banner can quote the actual error instead
+    # of asserting a generic "something went wrong" (bu-hmdqz.9). Populated
+    # for every case (not just ``failed``) since the column is already on the
+    # joined row; the UI only renders the banner in the ``failed`` state.
+    error_detail: str | None = None
 
 
 class QaCircuitBreaker(BaseModel):
@@ -526,6 +553,10 @@ class QaCircuitBreaker(BaseModel):
 
     tripped: bool
     consecutive_failures: int
+    # Optional (default mirrors _CIRCUIT_BREAKER_THRESHOLD) so existing
+    # fixtures/tests that construct this without a threshold keep working;
+    # the real endpoint always sets it explicitly.
+    threshold: int = 5
 
 
 class QaCredentialsStatus(BaseModel):
@@ -593,6 +624,17 @@ class QaSummary(BaseModel):
     patrol_interval_minutes: int | None = Field(
         default=None,
         description="Patrol cadence in minutes from [modules.qa].patrol_interval_minutes.",
+    )
+    runtime_credential_alert: str | None = Field(
+        default=None,
+        description=(
+            "Non-null when the QA staffer's own workhorse-tier model has an open "
+            "dispatch-outcome circuit breaker (public.model_dispatch_attempts; see "
+            "butlers.core.model_routing.get_breaker_state) whose most recent "
+            "runtime_failure text looks credential/auth-related. Surfaces the "
+            "watcher's own broken runtime CLI instead of reporting "
+            "staffer_status='healthy' over a dead credential (bu-hmdqz.9)."
+        ),
     )
 
 
@@ -1283,6 +1325,78 @@ async def _fetch_model_from_catalog(pool: asyncpg.Pool) -> str | None:
         return None
 
 
+async def _fetch_qa_workhorse_catalog_ids(pool: asyncpg.Pool) -> list[uuid.UUID]:
+    """Return every ``model_catalog`` id QA would consider for workhorse-tier dispatch.
+
+    Same resolution predicate as ``_fetch_model_from_catalog`` (effective
+    ``enabled`` + ``complexity_tier='workhorse'`` after ``butler_model_overrides``
+    for ``butler_name='qa'``), but returns every eligible candidate id instead of
+    just the top-priority alias: ``_detect_runtime_credential_alert`` treats an
+    open breaker on ANY QA-eligible workhorse entry as worth surfacing, since
+    same-tier failover would otherwise mask a single candidate's credential
+    outage from the operator entirely. Returns an empty list on query failure
+    (debug-logged, non-fatal).
+    """
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT mc.id
+            FROM public.model_catalog mc
+            LEFT JOIN public.butler_model_overrides bmo
+                ON bmo.catalog_entry_id = mc.id
+                AND bmo.butler_name = $1
+            WHERE
+                COALESCE(bmo.enabled, mc.enabled) = TRUE
+                AND COALESCE(bmo.complexity_tier, mc.complexity_tier) = 'workhorse'
+            """,
+            _QA_BUTLER_NAME,
+        )
+        return [row["id"] for row in rows]
+    except Exception:
+        logger.debug("_fetch_qa_workhorse_catalog_ids: query failed (non-fatal)", exc_info=True)
+        return []
+
+
+async def _detect_runtime_credential_alert(pool: asyncpg.Pool) -> str | None:
+    """Return a credential-alert reason when the QA staffer's own runtime is dying.
+
+    Checks every workhorse-tier catalog entry QA is eligible to dispatch on
+    (see ``_fetch_qa_workhorse_catalog_ids``): when one has an open
+    dispatch-outcome circuit breaker (``butlers.core.model_routing.get_breaker_state``,
+    fully derived from ``public.model_dispatch_attempts`` -- no live CLI probe,
+    so this stays cheap on a frequently-polled endpoint) AND its most recent
+    ``runtime_failure`` text matches a provider auth/credential marker (the
+    same vocabulary the failover classifier uses, e.g. "refresh token was
+    revoked"), returns that failure text. Returns ``None`` when nothing is
+    wrong, no eligible entry exists, or on query failure (non-fatal --
+    this is a bonus verdict-clause signal, not a required field).
+    """
+    try:
+        for catalog_id in await _fetch_qa_workhorse_catalog_ids(pool):
+            breaker = await get_breaker_state(pool, catalog_id)
+            if not breaker.open:
+                continue
+            row = await pool.fetchrow(
+                """
+                SELECT error_message, failure_reason
+                FROM public.model_dispatch_attempts
+                WHERE catalog_entry_id = $1 AND outcome = 'runtime_failure'
+                ORDER BY ts DESC
+                LIMIT 1
+                """,
+                catalog_id,
+            )
+            if row is None:
+                continue
+            reason = row["failure_reason"] or row["error_message"]
+            if reason and is_provider_auth_marker(reason):
+                return str(reason)[:500]
+        return None
+    except Exception:
+        logger.debug("_detect_runtime_credential_alert: query failed (non-fatal)", exc_info=True)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # GET /api/qa/summary
 # ---------------------------------------------------------------------------
@@ -1363,9 +1477,13 @@ async def get_qa_summary(
                 WHERE status = 'pr_merged'
                   AND closed_at >= $1
             ) AS prs_landed_24h,
+            -- 'Time to repair' -- pr_merged ONLY. Terminal crashes (failed/
+            -- timeout/anonymization_failed) are deliberately excluded: a crash
+            -- is not a repair, and mixing them in previously let a 100%-crash
+            -- day read as a fast MTTR (bu-hmdqz.9). See failed_24h below.
             AVG(EXTRACT(EPOCH FROM (closed_at - created_at))) FILTER (
                 WHERE closed_at >= $1
-                  AND status IN ('pr_merged', 'failed', 'timeout', 'unfixable')
+                  AND status = 'pr_merged'
             ) AS mttr_24h_seconds,
             (
                 100.0 * COUNT(*) FILTER (
@@ -1382,6 +1500,13 @@ async def get_qa_summary(
             COUNT(*) FILTER (
                 WHERE status IN ('dispatch_pending', 'investigating', 'pr_open')
             ) AS active_cases_now,
+            -- Terminal crashes closed in the last 24h -- mirrors
+            -- CIRCUIT_BREAKER_FAILURE_STATUSES (failed/timeout/anonymization_failed).
+            -- 'unfixable' is excluded: it's a design decision, not a crash.
+            COUNT(*) FILTER (
+                WHERE status IN ('failed', 'timeout', 'anonymization_failed')
+                  AND closed_at >= $1
+            ) AS failed_24h,
             -- Prior-period KPIs (for delta sub-labels)
             COUNT(*) FILTER (
                 WHERE status = 'pr_merged'
@@ -1391,7 +1516,7 @@ async def get_qa_summary(
             AVG(EXTRACT(EPOCH FROM (closed_at - created_at))) FILTER (
                 WHERE closed_at >= $3
                   AND closed_at < $1
-                  AND status IN ('pr_merged', 'failed', 'timeout', 'unfixable')
+                  AND status = 'pr_merged'
             ) AS mttr_prior_24h_seconds,
             (
                 100.0 * COUNT(*) FILTER (
@@ -1406,7 +1531,12 @@ async def get_qa_summary(
                     ),
                     0
                 )
-            ) AS self_resolved_prior_7d_pct
+            ) AS self_resolved_prior_7d_pct,
+            COUNT(*) FILTER (
+                WHERE status IN ('failed', 'timeout', 'anonymization_failed')
+                  AND closed_at >= $3
+                  AND closed_at < $1
+            ) AS failed_prior_24h
         FROM public.healing_attempts
         WHERE qa_patrol_id IS NOT NULL
           AND (
@@ -1432,6 +1562,7 @@ async def get_qa_summary(
             else 0.0
         ),
         active_cases_now=int(kpis_row["active_cases_now"] or 0) if kpis_row else 0,
+        failed_24h=int(kpis_row["failed_24h"] or 0) if kpis_row else 0,
         prs_landed_prior_24h=int(kpis_row["prs_landed_prior_24h"] or 0) if kpis_row else 0,
         mttr_prior_24h_seconds=(
             float(kpis_row["mttr_prior_24h_seconds"])
@@ -1443,6 +1574,7 @@ async def get_qa_summary(
             if kpis_row and kpis_row["self_resolved_prior_7d_pct"] is not None
             else None
         ),
+        failed_prior_24h=int(kpis_row["failed_prior_24h"] or 0) if kpis_row else 0,
     )
 
     active_breakdown_row = await pool.fetchrow(
@@ -1522,6 +1654,7 @@ async def get_qa_summary(
     circuit_breaker = QaCircuitBreaker(
         tripped=cb_tripped,
         consecutive_failures=consecutive_failures,
+        threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
 
     # Active sources — derive from the most recent patrols (last 10)
@@ -1607,6 +1740,16 @@ async def get_qa_summary(
         staffer_port, staffer_patrol_interval = _read_staffer_info_from_toml()
         staffer_model = await _fetch_model_from_catalog(pool)
 
+    # Runtime-CLI credential health — the watcher-death signal (bu-hmdqz.9).
+    # staffer_status only ever looks at patrol-run status and the healing
+    # circuit breaker; it has no path to notice that the QA staffer's own
+    # model dispatch is dying on a revoked/expired credential. Fully derived
+    # from public.model_dispatch_attempts (butlers.core.model_routing's
+    # dispatch-outcome breaker, bu-hmdqz.2/PR #3170) — no live CLI probe, so
+    # this stays cheap on a frequently-polled endpoint. Deliberately the LAST
+    # DB call in this handler (best-effort, swallows its own failures).
+    runtime_credential_alert = await _detect_runtime_credential_alert(pool)
+
     summary = QaSummary(
         staffer_status=staffer_status,
         last_patrol_at=last_patrol_at,
@@ -1622,6 +1765,7 @@ async def get_qa_summary(
         port=staffer_port,
         model=staffer_model,
         patrol_interval_minutes=staffer_patrol_interval,
+        runtime_credential_alert=runtime_credential_alert,
     )
     return ApiResponse(data=summary)
 
@@ -1864,7 +2008,7 @@ async def list_cases(
         "all",
         description="Filter by mapped case severity",
     ),
-    state: Literal["detect", "diagnose", "pr", "landed", "escalated", "all"] = Query(
+    state: Literal["detect", "diagnose", "pr", "landed", "escalated", "failed", "all"] = Query(
         "all",
         description="Filter by mapped QA case state",
     ),
@@ -2086,6 +2230,7 @@ async def get_case(
         journal=[_row_to_journal_event(journal_row) for journal_row in journal_rows],
         healing_session_id=row.get("healing_session_id"),
         session_ids=list(row.get("session_ids") or []),
+        error_detail=row.get("error_detail"),
     )
     return ApiResponse(data=dossier)
 

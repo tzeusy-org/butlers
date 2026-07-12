@@ -99,9 +99,11 @@ function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
       mttr_24h_seconds: null,
       self_resolved_7d_pct: 0,
       active_cases_now: 0,
+      failed_24h: 0,
       prs_landed_prior_24h: 0,
       mttr_prior_24h_seconds: null,
       self_resolved_prior_7d_pct: null,
+      failed_prior_24h: 0,
     },
     active_breakdown: {
       awaiting_ci: 0,
@@ -111,6 +113,7 @@ function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
     circuit_breaker: {
       tripped: false,
       consecutive_failures: 0,
+      threshold: 5,
     },
     credentials_status: {
       gh_token_present: null,
@@ -121,6 +124,7 @@ function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
     port: null,
     model: null,
     patrol_interval_minutes: null,
+    runtime_credential_alert: null,
     ...overrides,
   };
 }

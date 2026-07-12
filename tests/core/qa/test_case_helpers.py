@@ -73,9 +73,12 @@ def test_short_id_stable() -> None:
         ("pr_open", "pr"),
         ("drafted", "detect"),
         ("unfixable", "escalated"),
-        ("failed", "detect"),
-        ("timeout", "detect"),
-        ("anonymization_failed", "detect"),
+        # A terminal crash without a human-action marker is 'failed', not the
+        # prior fallthrough 'detect' -- a dead investigation must not render
+        # identically to a brand-new one (bu-hmdqz.9).
+        ("failed", "failed"),
+        ("timeout", "failed"),
+        ("anonymization_failed", "failed"),
         ("investigating", "diagnose"),
         ("dispatch_pending", "detect"),
     ],

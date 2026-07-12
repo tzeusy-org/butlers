@@ -12,6 +12,8 @@ interface KpiCell {
   label: string;
   value: string;
   sub: string;
+  /** Extra classes for the value cell -- used for the failed-24h destructive tint. */
+  valueClassName?: string;
 }
 
 function formatMttr(seconds: number | null | undefined): string {
@@ -98,6 +100,9 @@ export function QaKpiStrip({ kpis, active, className }: QaKpiStripProps) {
       ? formatPctDelta(kpis.self_resolved_7d_pct, kpis.self_resolved_prior_7d_pct, "prior week")
       : null;
 
+  const failedDelta =
+    kpis != null ? formatCountDelta(kpis.failed_24h, kpis.failed_prior_24h, "24h") : null;
+
   const cells: KpiCell[] = [
     {
       id: "prs-landed",
@@ -109,10 +114,13 @@ export function QaKpiStrip({ kpis, active, className }: QaKpiStripProps) {
       id: "mttr",
       label: "mttr · 24h",
       value: formatMttr(kpis?.mttr_24h_seconds),
+      // 'time to repair' -- pr_merged closures only. A crash-only 24h reads
+      // "no repairs" here, never a fast MTTR (bu-hmdqz.9) -- failed-24h below
+      // carries the crash count instead.
       sub:
         kpis?.mttr_24h_seconds == null
-          ? "no terminal cases in 24h"
-          : (mttrDelta ?? "terminal cases in 24h"),
+          ? "no repairs merged in 24h"
+          : (mttrDelta ?? "repairs merged in 24h"),
     },
     {
       id: "self-resolved",
@@ -126,12 +134,21 @@ export function QaKpiStrip({ kpis, active, className }: QaKpiStripProps) {
       value: kpis ? String(kpis.active_cases_now) : "—",
       sub: formatActiveBreakdown(active),
     },
+    {
+      id: "failed",
+      label: "failed · 24h",
+      value: kpis ? String(kpis.failed_24h) : "—",
+      sub: failedDelta ?? "terminal crashes in 24h",
+      // Destructive tint only when there's something to be destructive about --
+      // a zero-crash day stays neutral, never manufacturing alarm.
+      valueClassName: kpis && kpis.failed_24h > 0 ? "text-destructive" : undefined,
+    },
   ];
 
   return (
     <div
       className={cn(
-        "grid grid-cols-1 divide-y divide-border/60 sm:grid-cols-4 sm:divide-x sm:divide-y-0",
+        "grid grid-cols-1 divide-y divide-border/60 sm:grid-cols-5 sm:divide-x sm:divide-y-0",
         className,
       )}
       role="group"
@@ -143,7 +160,10 @@ export function QaKpiStrip({ kpis, active, className }: QaKpiStripProps) {
             {cell.label}
           </p>
           <p
-            className="mb-1 font-sans text-[32px] font-medium leading-none tracking-[-0.03em] text-foreground tnum"
+            className={cn(
+              "mb-1 font-sans text-[32px] font-medium leading-none tracking-[-0.03em] text-foreground tnum",
+              cell.valueClassName,
+            )}
             data-testid={`qa-kpi-${cell.id}-value`}
           >
             {cell.value}

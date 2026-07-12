@@ -304,6 +304,40 @@ async def test_cases_state_filter_applies_before_pagination() -> None:
     assert pool.fetch.await_args.args[-2:] == (10, 5)
 
 
+async def test_cases_state_filter_failed_excludes_human_action_marker() -> None:
+    """'failed' is a real filterable state (bu-hmdqz.9): it must exclude the
+    human-action-marker subset of status='failed' (those stay 'escalated')
+    while including timeout/anonymization_failed unconditionally."""
+    app, pool = _build_app(
+        rows=[_make_case_row(status="failed")],
+        total=3,
+    )
+
+    body = (await _call(app, "/api/qa/cases", params={"state": "failed", "since": "all"})).json()
+
+    assert body["meta"]["total"] == 3
+    count_sql = pool.fetchval.await_args.args[0]
+    fetch_sql = pool.fetch.await_args.args[0]
+    for sql in (count_sql, fetch_sql):
+        assert "a.status IN ('timeout', 'anonymization_failed')" in sql
+        assert "a.status = 'failed' AND NOT (" in sql
+        assert "error_detail ILIKE '%human action%'" in sql
+
+
+async def test_cases_state_filter_detect_excludes_terminal_crashes() -> None:
+    """'detect' must no longer swallow terminal crashes -- the exact
+    fallthrough bug this move fixes (bu-hmdqz.9)."""
+    app, pool = _build_app(rows=[], total=0)
+
+    await _call(app, "/api/qa/cases", params={"state": "detect", "since": "all"})
+
+    fetch_sql = pool.fetch.await_args.args[0]
+    assert (
+        "a.status NOT IN ('pr_merged', 'unfixable', 'pr_open', 'investigating', "
+        "'failed', 'timeout', 'anonymization_failed')" in fetch_sql
+    )
+
+
 async def test_cases_butler_filter_applies_before_pagination() -> None:
     app, pool = _build_app(
         rows=[_make_case_row(butler_name="health", finding_source_butler="health")],
@@ -424,6 +458,45 @@ async def test_case_detail_full_notes() -> None:
         "journal event 1",
     ]
     assert "ORDER BY ts DESC" in pool.fetch.await_args.args[0]
+
+
+async def test_case_detail_failed_state_quotes_error_detail() -> None:
+    """A terminal crash without a human-action marker maps to state 'failed'
+    and the dossier carries the raw crash text so the FE failure banner can
+    quote it (bu-hmdqz.9)."""
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_897)
+    row = _make_case_row(
+        id=attempt_id,
+        status="failed",
+        error_detail="RuntimeError: Codex CLI exited with code 1: connection reset",
+    )
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["state_track_stage"] == "failed"
+    assert body["case"]["state"] == "failed"
+    assert body["error_detail"] == "RuntimeError: Codex CLI exited with code 1: connection reset"
+
+
+async def test_case_detail_escalated_state_still_wins_over_failed() -> None:
+    """A status='failed' row WITH a human-action marker still escalates --
+    the new 'failed' terminus must not swallow the existing escalation path."""
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_898)
+    row = _make_case_row(
+        id=attempt_id,
+        status="failed",
+        error_detail="Operator must rotate the revoked credential",
+    )
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["state_track_stage"] == "escalated"
 
 
 async def test_case_dossier_projects_session_doors() -> None:

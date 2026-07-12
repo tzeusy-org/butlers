@@ -62,6 +62,7 @@ const BASE_DOSSIER: QaCaseDossier = {
   journal: [],
   healing_session_id: null,
   session_ids: [],
+  error_detail: null,
 };
 
 function setCaseState(

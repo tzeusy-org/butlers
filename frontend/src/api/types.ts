@@ -5431,13 +5431,17 @@ export interface QaAllTimeStats {
 /** KPI strip metrics for the QA dossier dashboard — GET /api/qa/summary */
 export interface QaKpiBlock {
   prs_landed_24h: number;
+  /** pr_merged closures ONLY — 'time to repair', never a terminal crash. */
   mttr_24h_seconds: number | null;
   self_resolved_7d_pct: number;
   active_cases_now: number;
+  /** Terminal crashes (failed/timeout/anonymization_failed) closed in the last 24h. */
+  failed_24h: number;
   /** Prior-period comparison values for delta sub-labels. */
   prs_landed_prior_24h: number;
   mttr_prior_24h_seconds: number | null;
   self_resolved_prior_7d_pct: number | null;
+  failed_prior_24h: number;
 }
 
 /** Active-case status breakdown for the QA dossier dashboard — GET /api/qa/summary */
@@ -5460,6 +5464,9 @@ export interface QaSummary {
   circuit_breaker: {
     tripped: boolean;
     consecutive_failures: number;
+    /** Consecutive-failure threshold that trips the breaker. Optional for
+     * fixture back-compat; the real endpoint always sets it (default 5). */
+    threshold?: number;
   };
   credentials_status: {
     gh_token_present: boolean | null;
@@ -5470,6 +5477,9 @@ export interface QaSummary {
   port: number | null;
   model: string | null;
   patrol_interval_minutes: number | null;
+  /** Non-null when the QA staffer's own model dispatch has an open breaker
+   * whose latest failure looks credential/auth-related (bu-hmdqz.9). */
+  runtime_credential_alert: string | null;
 }
 
 /** Summary row for the QA Cases API — GET /api/qa/cases */
@@ -5481,7 +5491,7 @@ export interface QaCaseSummary {
   headline: string | null;
   detected: string;
   age_seconds: number;
-  state: "detect" | "diagnose" | "pr" | "landed" | "escalated";
+  state: "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
   pr_state: "drafted" | "open" | "merged" | "closed" | null;
   pr_url: string | null;
 }
@@ -5561,7 +5571,7 @@ export interface QaJournalEvent {
 /** Full case payload for the QA dossier renderer — GET /api/qa/cases/:id */
 export interface QaCaseDossier {
   case: QaCaseSummary;
-  state_track_stage: "detect" | "diagnose" | "pr" | "landed" | "escalated";
+  state_track_stage: "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
   /** Finding fingerprint for dismiss/undismiss actions. Null when no finding is linked yet. */
   fingerprint: string | null;
   dismissal: QaActiveDismissal | null;
@@ -5572,6 +5582,8 @@ export interface QaCaseDossier {
   healing_session_id: string | null;
   /** Failing sessions that seeded the finding. Empty when none were captured. Each links to /sessions/:id. */
   session_ids: string[];
+  /** Raw crash text (healing_attempts.error_detail) for the 'failed' failure banner. */
+  error_detail: string | null;
 }
 
 /** Params for listing QA cases */

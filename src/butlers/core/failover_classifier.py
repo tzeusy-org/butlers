@@ -546,6 +546,21 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
 # ---------------------------------------------------------------------------
 
 
+def is_provider_auth_marker(text: str | None) -> bool:
+    """Return whether *text* contains a provider auth/credential-failure marker.
+
+    Public wrapper around the same ``_PROVIDER_AUTH_MARKERS`` vocabulary the
+    classifier itself uses (case-insensitive substring match), so callers
+    outside the failover hot path — e.g. the QA dashboard's watcher-death
+    verdict clause (bu-hmdqz.9), which reads ``model_dispatch_attempts``
+    failure text after the fact — can recognize the same OAuth-revocation /
+    credential phrasing without duplicating or drifting from the marker list.
+    """
+    if not text:
+        return False
+    return _matches_any(text.lower(), _PROVIDER_AUTH_MARKERS)
+
+
 def _matches_any(text: str, markers: tuple[str, ...]) -> bool:
     """Return True when any marker substring appears in text (already lowercased)."""
     return any(marker in text for marker in markers)

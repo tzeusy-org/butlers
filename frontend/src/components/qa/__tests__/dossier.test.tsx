@@ -161,6 +161,7 @@ const fullCase: QaCaseDossier = {
     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     "99999999-8888-7777-6666-555555555555",
   ],
+  error_detail: null,
 };
 
 // CaseDossier renders react-router <Link> session doors, so every mount needs

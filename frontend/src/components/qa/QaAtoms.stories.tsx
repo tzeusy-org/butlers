@@ -11,9 +11,11 @@ const kpis: QaKpiBlock = {
   mttr_24h_seconds: 4380,
   self_resolved_7d_pct: 73,
   active_cases_now: 6,
+  failed_24h: 1,
   prs_landed_prior_24h: 2,
   mttr_prior_24h_seconds: 5200,
   self_resolved_prior_7d_pct: 68,
+  failed_prior_24h: 0,
 };
 
 const activeBreakdown: QaActiveBreakdown = {

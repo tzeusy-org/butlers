@@ -1,22 +1,30 @@
 import { cn } from "@/lib/utils";
 
-export type QaStateTrackStage = "detect" | "diagnose" | "pr" | "landed" | "escalated";
+export type QaStateTrackStage = "detect" | "diagnose" | "pr" | "landed" | "escalated" | "failed";
 
 interface StateTrackProps {
   stage: QaStateTrackStage;
   className?: string;
 }
 
-const TRACK_STAGES: Exclude<QaStateTrackStage, "escalated">[] = [
+const TRACK_STAGES: Exclude<QaStateTrackStage, "escalated" | "failed">[] = [
   "detect",
   "diagnose",
   "pr",
   "landed",
 ];
 
-function stageClass(stage: Exclude<QaStateTrackStage, "escalated">, activeStage: QaStateTrackStage) {
+function stageClass(
+  stage: Exclude<QaStateTrackStage, "escalated" | "failed">,
+  activeStage: QaStateTrackStage,
+) {
   if (activeStage === "escalated") {
     return stage === "pr" || stage === "landed" ? "text-[var(--amber-text)]" : "text-foreground";
+  }
+  // A terminal crash stops the track destructively -- distinct from the
+  // amber "handed to the user" escalated stop (bu-hmdqz.9).
+  if (activeStage === "failed") {
+    return stage === "pr" || stage === "landed" ? "text-destructive" : "text-foreground";
   }
 
   const currentIndex = TRACK_STAGES.indexOf(activeStage);
@@ -54,6 +62,11 @@ export function StateTrack({ stage, className }: StateTrackProps) {
           data-testid="qa-state-track-escalated-label"
         >
           · escalated
+        </span>
+      ) : null}
+      {stage === "failed" ? (
+        <span className="text-destructive" data-testid="qa-state-track-failed-label">
+          · failed
         </span>
       ) : null}
     </div>

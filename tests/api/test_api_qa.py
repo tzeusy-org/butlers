@@ -240,18 +240,22 @@ def _make_kpi_row(
     mttr_24h_seconds: float | None = None,
     self_resolved_7d_pct: float | None = None,
     active_cases_now: int = 0,
+    failed_24h: int = 0,
     prs_landed_prior_24h: int = 0,
     mttr_prior_24h_seconds: float | None = None,
     self_resolved_prior_7d_pct: float | None = None,
+    failed_prior_24h: int = 0,
 ) -> dict[str, Any]:
     return {
         "prs_landed_24h": prs_landed_24h,
         "mttr_24h_seconds": mttr_24h_seconds,
         "self_resolved_7d_pct": self_resolved_7d_pct,
         "active_cases_now": active_cases_now,
+        "failed_24h": failed_24h,
         "prs_landed_prior_24h": prs_landed_prior_24h,
         "mttr_prior_24h_seconds": mttr_prior_24h_seconds,
         "self_resolved_prior_7d_pct": self_resolved_prior_7d_pct,
+        "failed_prior_24h": failed_prior_24h,
     }
 
 
@@ -463,9 +467,11 @@ class TestGetQaSummary:
             "mttr_24h_seconds": None,
             "self_resolved_7d_pct": 0.0,
             "active_cases_now": 0,
+            "failed_24h": 0,
             "prs_landed_prior_24h": 0,
             "mttr_prior_24h_seconds": None,
             "self_resolved_prior_7d_pct": None,
+            "failed_prior_24h": 0,
         }
         assert body["data"]["active_breakdown"] == {
             "awaiting_ci": 0,
@@ -484,6 +490,7 @@ class TestGetQaSummary:
                 mttr_24h_seconds=312.75,
                 self_resolved_7d_pct=80.0,
                 active_cases_now=6,
+                failed_24h=2,
             ),
             active_breakdown=_make_active_breakdown_row(awaiting_ci=2, escalated_open_cases=1),
             pr_stats=_make_pr_stats_row(prs_merged=10, prs_failed=2, total_dispatched=20),
@@ -503,9 +510,11 @@ class TestGetQaSummary:
             "mttr_24h_seconds": 312.75,
             "self_resolved_7d_pct": 80.0,
             "active_cases_now": 6,
+            "failed_24h": 2,
             "prs_landed_prior_24h": 0,
             "mttr_prior_24h_seconds": None,
             "self_resolved_prior_7d_pct": None,
+            "failed_prior_24h": 0,
         }
         assert body2["active_breakdown"] == {"awaiting_ci": 2, "escalated_open_cases": 1}
         assert "log_scanner" in body2["active_sources"]
@@ -638,6 +647,28 @@ class TestGetQaSummary:
         assert body["kpis"]["mttr_prior_24h_seconds"] == 480.0
         assert body["kpis"]["self_resolved_prior_7d_pct"] == 60.0
 
+    async def test_summary_kpi_mttr_sql_is_pr_merged_only(self) -> None:
+        """MTTR ('time to repair') must average pr_merged closures ONLY.
+
+        Mixing terminal crashes (failed/timeout/unfixable) into the MTTR
+        average previously let a 100%-crash, zero-repair day read as a fast
+        MTTR -- the number improved the faster the staffer crashed
+        (bu-hmdqz.9). failed_24h/failed_prior_24h carry the crash counts
+        instead, with their own IN-list.
+        """
+        app, pool = _build_summary_app()
+
+        assert (await _call(app, "get", "/api/qa/summary")).status_code == 200
+
+        kpi_sql = _single_fetchrow_query_containing(pool, "active_cases_now")
+
+        assert "AS mttr_24h_seconds" in kpi_sql
+        assert "AS mttr_prior_24h_seconds" in kpi_sql
+        assert "status IN ('pr_merged', 'failed', 'timeout', 'unfixable')" not in kpi_sql
+        assert "status IN ('failed', 'timeout', 'anonymization_failed')" in kpi_sql
+        assert "AS failed_24h" in kpi_sql
+        assert "AS failed_prior_24h" in kpi_sql
+
     async def test_summary_exposes_port_model_patrol_interval_via_staffer_info_fn(self) -> None:
         """port, model, patrol_interval_minutes are populated from the injected callable."""
         app, _ = _build_summary_app(
@@ -679,6 +710,105 @@ class TestGetQaSummary:
         assert data["port"] is None
         assert data["model"] is None
         assert data["patrol_interval_minutes"] is None
+
+
+class TestDetectRuntimeCredentialAlert:
+    """Direct tests for ``_detect_runtime_credential_alert`` (bu-hmdqz.9).
+
+    Exercised directly against a hand-built pool + monkeypatched
+    ``get_breaker_state`` rather than through the full ``/api/qa/summary``
+    mock-pool call sequence, since it is deliberately the LAST DB-touching
+    step in that handler (see its call-site comment) and its own internals
+    (breaker-state-per-catalog-entry, conditional follow-up query) don't fit
+    the endpoint test's fixed-length ``side_effect`` list style.
+    """
+
+    async def test_returns_none_with_no_workhorse_candidates(self) -> None:
+        from butlers.api.routers.qa import _detect_runtime_credential_alert
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        assert await _detect_runtime_credential_alert(pool) is None
+
+    async def test_surfaces_auth_marker_text_when_breaker_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from butlers.api.routers import qa as qa_router
+        from butlers.core.model_routing import BreakerState
+
+        catalog_id = uuid.uuid4()
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[{"id": catalog_id}])
+        pool.fetchrow = AsyncMock(
+            return_value={
+                "error_message": (
+                    "Codex CLI exited with code 1: Your access token could not be "
+                    "refreshed because your refresh token was revoked. Please log "
+                    "out and sign in again."
+                ),
+                "failure_reason": None,
+            }
+        )
+
+        async def _fake_breaker_state(_pool: Any, _catalog_id: uuid.UUID) -> BreakerState:
+            return BreakerState(open=True, consecutive_failures=5, last_attempt_at=None)
+
+        monkeypatch.setattr(qa_router, "get_breaker_state", _fake_breaker_state)
+
+        alert = await qa_router._detect_runtime_credential_alert(pool)
+
+        assert alert is not None
+        assert "refresh token was revoked" in alert
+
+    async def test_returns_none_when_breaker_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from butlers.api.routers import qa as qa_router
+        from butlers.core.model_routing import BreakerState
+
+        catalog_id = uuid.uuid4()
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[{"id": catalog_id}])
+        pool.fetchrow = AsyncMock()
+
+        async def _fake_breaker_state(_pool: Any, _catalog_id: uuid.UUID) -> BreakerState:
+            return BreakerState(open=False, consecutive_failures=0, last_attempt_at=None)
+
+        monkeypatch.setattr(qa_router, "get_breaker_state", _fake_breaker_state)
+
+        assert await qa_router._detect_runtime_credential_alert(pool) is None
+        # A closed breaker must never trigger the follow-up failure-text query.
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_ignores_open_breaker_with_non_auth_failure_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An open breaker from a plain outage (not credential-shaped) must not
+        surface a misleading 'credential' alert -- only auth/credential-marker
+        text is worth paging the operator over here."""
+        from butlers.api.routers import qa as qa_router
+        from butlers.core.model_routing import BreakerState
+
+        catalog_id = uuid.uuid4()
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[{"id": catalog_id}])
+        pool.fetchrow = AsyncMock(
+            return_value={"error_message": "connection reset by peer", "failure_reason": None}
+        )
+
+        async def _fake_breaker_state(_pool: Any, _catalog_id: uuid.UUID) -> BreakerState:
+            return BreakerState(open=True, consecutive_failures=5, last_attempt_at=None)
+
+        monkeypatch.setattr(qa_router, "get_breaker_state", _fake_breaker_state)
+
+        assert await qa_router._detect_runtime_credential_alert(pool) is None
+
+    async def test_query_failure_is_non_fatal(self) -> None:
+        from butlers.api.routers.qa import _detect_runtime_credential_alert
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(side_effect=RuntimeError("boom"))
+
+        assert await _detect_runtime_credential_alert(pool) is None
 
 
 class TestFetchModelFromCatalog:

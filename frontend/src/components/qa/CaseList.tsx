@@ -81,6 +81,15 @@ export function CaseList({
                 </span>
                 <span className="mt-1 block font-mono text-[9.5px] leading-none text-muted-foreground tnum">
                   detected {formatQaDetectedTime(qaCase.detected)} · {formatAge(qaCase.age_seconds)}
+                  {qaCase.state === "failed" ? (
+                    <span
+                      className="text-destructive"
+                      data-testid={`qa-case-row-failed-badge-${qaCase.id}`}
+                    >
+                      {" "}
+                      · failed
+                    </span>
+                  ) : null}
                 </span>
               </span>
               <span

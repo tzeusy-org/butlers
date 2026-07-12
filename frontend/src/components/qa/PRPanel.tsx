@@ -13,10 +13,12 @@ interface PRPanelProps {
    */
   diffSnapshot?: DiffPreviewLine[] | null;
   /**
-   * Only the "escalated" stage means the case was actually handed to the
-   * user without a fix. Every other pr-less stage (detect/diagnose/pr/landed)
-   * just hasn't produced a PR yet -- rendering "Escalated to user" for those
-   * fabricates a decision that was never made.
+   * "escalated" means the case was handed to the user without a fix;
+   * "failed" means the investigation crashed before ever reaching a fix.
+   * Every other pr-less stage (detect/diagnose/pr/landed) just hasn't
+   * produced a PR yet -- rendering either of those calmer messages for a
+   * dead or escalated case fabricates progress that was never made
+   * (bu-qvnce.2 / bu-hmdqz.9).
    */
   stage: QaCaseDossier["state_track_stage"];
   className?: string;
@@ -33,9 +35,23 @@ const prStateClassName: Record<QaPrSummary["state"], string> = {
 
 export function PRPanel({ pr, whyThisFix, diffSnapshot, stage, className }: PRPanelProps) {
   if (!pr) {
+    if (stage === "escalated") {
+      return (
+        <p className={cn("font-serif text-sm italic text-muted-foreground", className)}>
+          No PR. Escalated to user.
+        </p>
+      );
+    }
+    if (stage === "failed") {
+      return (
+        <p className={cn("font-serif text-sm italic text-destructive", className)}>
+          No PR. Investigation failed.
+        </p>
+      );
+    }
     return (
       <p className={cn("font-serif text-sm italic text-muted-foreground", className)}>
-        {stage === "escalated" ? "No PR. Escalated to user." : "No PR yet."}
+        No PR yet.
       </p>
     );
   }

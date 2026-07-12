@@ -111,3 +111,23 @@ def test_state_of_case_unfixable_without_marker_escalates() -> None:
 
 def test_state_of_case_drafted_uses_default_detect_branch() -> None:
     assert state_of_case(_attempt("drafted")) == "detect"
+
+
+@pytest.mark.parametrize("status", ["failed", "timeout", "anonymization_failed"])
+def test_state_of_case_terminal_crash_without_marker_is_failed(status: str) -> None:
+    """A dead investigation must render as 'failed', never fall through to
+    'detect' (which reads as a brand-new, still-in-flight case) -- the exact
+    bug live-confirmed on cases #601/#995 (bu-hmdqz.9)."""
+    assert state_of_case(_attempt(status, "no matching context")) == "failed"
+
+
+def test_state_of_case_timeout_and_anonymization_failed_never_escalate() -> None:
+    """failed_with_human_action() only ever escalates 'unfixable'/'failed';
+    'timeout'/'anonymization_failed' always land on 'failed', even when the
+    error text carries a human-action marker -- the escalated state stays the
+    single canonical detector's own precedence, not a broader text match."""
+    assert state_of_case(_attempt("timeout", "operator must review credentials")) == "failed"
+    assert (
+        state_of_case(_attempt("anonymization_failed", "operator must review credentials"))
+        == "failed"
+    )

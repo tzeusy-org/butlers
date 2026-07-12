@@ -14,11 +14,12 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
 - **THEN** the page renders, in vertical order:
   - **Sticky top bar**: severity filter (all / high / medium / low) and theme toggle, shared with `/overview` and `/butlers`
   - **Page header**: title "What the staff caught and fixed", clock (mono, `HH:MM` 24h, tabular nums), and a mono eyebrow "QA Staffer · dossier" plus "port :<N> · model <M> · patrol every <P>m" caption, where `P` is `[modules.qa].patrol_interval_minutes`
-  - **KPI strip**: four hairline-divided cells in this exact order:
+  - **KPI strip**: five hairline-divided cells in this exact order:
     - `prs landed · 24h`
     - `mttr · 24h`
     - `self-resolved · 7d`
     - `active cases · now`
+    - `failed · 24h`
   - **Two-pane body** (320 px case-list rail on the left + dossier body on the right):
     - **Case list rail**: rule-separated rows; each row shows severity glyph (square, high/medium/low), short case id (e.g. `#218`), butler name, headline (one line), `detected` + `age` mono sub-line, and a PR-state dot on the right
     - **Dossier body** for the selected case (see Case Dossier Layout requirement)
@@ -39,10 +40,11 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
 #### Scenario: KPI strip values
 - **WHEN** the KPI strip renders
 - **THEN** each cell shows:
-  - A mono uppercase eyebrow label (`prs landed · 24h`, `mttr · 24h`, `self-resolved · 7d`, `active cases · now`)
+  - A mono uppercase eyebrow label (`prs landed · 24h`, `mttr · 24h`, `self-resolved · 7d`, `active cases · now`, `failed · 24h`)
   - A large sans-500 tabular-nums numeric value
   - A mono sub-label describing context (`+2 vs prior 24h`, `−12m vs 7d`, `+4pp vs prior week`, `N awaiting CI · M escalated`, where N = `active_breakdown.awaiting_ci` and M = `active_breakdown.escalated_open_cases`)
-- **AND** when MTTR is computed over an empty sample, the cell shows `—` and the sub-label reads `no terminal cases in 24h`
+- **AND** when MTTR is computed over an empty sample (no `pr_merged` closures in the window), the cell shows `—` and the sub-label reads `no repairs merged in 24h`
+- **AND** the `failed · 24h` cell renders `kpis.failed_24h` with a destructive (red) tint on the numeric value only when the count is greater than zero — a zero-crash 24h stays neutral, never manufacturing alarm
 
 #### Scenario: Force-patrol control surfaces the honest outcome
 - **WHEN** a user activates the "Force patrol" control in the sticky top bar and confirms the prompt
@@ -64,6 +66,13 @@ The dashboard SHALL have a top-level QA page at route `/qa` that presents the QA
 - **THEN** the dashboard opens a confirm dialog (not a bare browser prompt) that lists the failing attempts from `GET /api/qa/circuit-breaker` (`recent_attempts` — id, status, relative close time), the evidence the breaker tripped on, before any reset is issued
 - **AND** confirming issues `POST /api/qa/circuit-breaker/reset` and reports the outcome via toast; cancelling (or dismissing) issues no request
 - **AND** when the circuit-breaker source is unreachable, the dialog names the missing evidence inline rather than presenting an empty confirm as calm
+
+#### Scenario: Verdict opener names overdue patrols, pre-trip failure streaks, and watcher-death
+- **WHEN** the page opener (`QaVerdictOpener`, composed from `GET /api/qa/summary` via the shared `DispatchVerdict` primitive) renders
+- **THEN**, in addition to the existing breaker-tripped / last-patrol-failed / no-patrol-history / credential-presence clauses, it evaluates three more, all independent of each other and of the breaker-tripped state:
+  - **Pre-trip failure streak** — when `circuit_breaker.consecutive_failures > 0` AND the breaker is not yet tripped, a clause names the streak and the trip threshold (`"N consecutive failures — breaker opens at <threshold>"`), naming the problem before it becomes a full trip rather than only after
+  - **Overdue patrol** — when `last_patrol_at` is older than `2 × patrol_interval_minutes` (both already present on the summary response), a clause reads `"patrol overdue — last patrol <relative time>"`; entirely client-computable, no backend change
+  - **Runtime-credential alert** — when `runtime_credential_alert` is non-null, a clause reads `"runtime CLI credential may be unhealthy — <alert text>"` — the watcher-death signal: `staffer_status` can read `healthy` while the QA staffer's own model dispatch is dying on a revoked/expired credential, since `staffer_status` only ever inspects patrol-run status and the healing circuit breaker
 
 #### Scenario: Reset is a command-palette verb while tripped
 - **WHEN** the QA overview page is mounted and the breaker is tripped
@@ -221,14 +230,27 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 
 #### Scenario: Dossier header
 - **WHEN** the Case Dossier renders
-- **THEN** the header row shows: severity glyph, mono `#<short_id>`, mono `· <butler>`, mono `· detected <HH:MM>`, and a right-aligned state track ("detect — diagnose — pr — landed" with an `escalated` variant)
+- **THEN** the header row shows: severity glyph, mono `#<short_id>`, mono `· <butler>`, mono `· detected <HH:MM>`, and a right-aligned state track ("detect — diagnose — pr — landed" with an `escalated` variant and a `failed` variant)
+- **AND** the `escalated` variant renders an amber `· escalated` suffix with `pr`/`landed` shown in amber (handed to the user, no fix); the `failed` variant renders a destructive (red) `· failed` suffix with `pr`/`landed` shown in the destructive color (the investigation crashed before ever reaching a fix) — the two terminal stops are visually distinct so a dead investigation is never mistaken for a deliberate escalation
 - **AND** below the row, an H2 sans-500 22 px headline renders the case's `headline` (or `event_summary` as a fallback when `investigation_notes.headline` is null)
+- **AND** the case-list rail marks a `failed`-state row with a destructive `· failed` suffix on its detected/age sub-line, alongside the existing severity glyph and PR-state dot
 
 #### Scenario: Active dismissal display
 - **WHEN** the Case Dossier renders a case whose fingerprint has an active dismissal record (`qa_dismissals` row with `dismissed_until > now()`)
 - **THEN** the header renders a mono caption "dismissed until <dismissed_until>" beneath the sev/id/butler row
 - **AND** a "remove dismissal" pill action is rendered alongside the existing `Retry` / `Dismiss` pills
 - **AND** clicking "remove dismissal" calls `DELETE /api/qa/dismissals/{fingerprint}` and triggers a re-fetch of the case so the caption and pill disappear
+
+#### Scenario: Terminal states offer Retry, never Dismiss
+- **WHEN** the Case Dossier renders a case whose `state_track_stage` is `landed`, `escalated`, or `failed`
+- **THEN** a "Retry" pill is rendered (calling `POST /api/healing/attempts/{id}/retry`, which the backend already accepts for any terminal `healing_attempts.status` including `failed`/`timeout`/`anonymization_failed`) and the "Dismiss" pill is withheld — a terminal case, whether landed, escalated, or crashed, is not a candidate for false-positive dismissal
+- **AND** every other stage (`detect`, `diagnose`, `pr`) offers Dismiss (when a fingerprint is linked and no dismissal is active) and withholds Retry, since the investigation is still active
+
+#### Scenario: Failure banner quotes the crash
+- **WHEN** the Case Dossier renders a case whose `state_track_stage` is `failed`
+- **THEN** the diagnosis column opens with a destructive (red) serif-italic banner quoting the attempt's `error_detail` verbatim (`The investigation crashed: "<error_detail>"`), or a generic crash line when `error_detail` is null
+- **AND** the Diagnosis/Hypothesis/Evidence/Considered sections beneath it fall back to "No investigation notes were captured for this case." (the same fallback `pr`/`landed`/`escalated` use) rather than the in-flight "Diagnosing…" copy, since a `failed` case is terminal, not still working
+- **AND** the Proposed Fix column renders "No PR. Investigation failed." in the destructive color (not the calm "No PR yet." reserved for in-flight, pr-less stages, and not "No PR. Escalated to user.", which asserts a human hand-off that never happened for a crash)
 
 #### Scenario: Diagnosis column
 - **WHEN** the Case Dossier renders the left column
@@ -268,11 +290,12 @@ The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for t
 #### Scenario: GET /api/qa/cases
 - **WHEN** `GET /api/qa/cases` is called with optional `limit` (default 25), `sev` (`high|medium|low|all`), and `since` (`24h`, `7d`, `30d`, `all`; default `7d`)
 - **THEN** it returns a paginated list of cases ordered by most recent first
-- **AND** each case includes: `id` (UUID, the canonical attempt id), `short_id` (`#NNN` derived from id), `sev` (high/medium/low mapped from severity int), `butler`, `headline` (from `investigation_notes.headline` or fallback to the linked finding's `event_summary`), `detected` (earliest `qa_findings.first_seen`), `age_seconds`, `state` (one of: `detect`, `diagnose`, `pr`, `landed`, `escalated`), `pr_state` (drafted/open/merged/closed or null), `pr_url` (or null)
+- **AND** each case includes: `id` (UUID, the canonical attempt id), `short_id` (`#NNN` derived from id), `sev` (high/medium/low mapped from severity int), `butler`, `headline` (from `investigation_notes.headline` or fallback to the linked finding's `event_summary`), `detected` (earliest `qa_findings.first_seen`), `age_seconds`, `state` (one of: `detect`, `diagnose`, `pr`, `landed`, `escalated`, `failed`), `pr_state` (drafted/open/merged/closed or null), `pr_url` (or null)
+- **AND** `?state=failed` filters to terminal-crash attempts (`status IN ('timeout', 'anonymization_failed')`, or `status = 'failed'` without a human-action marker) — the same precedence `state_of_case()` uses, so the filter and the rendered badge never disagree
 
 #### Scenario: GET /api/qa/cases/:id
 - **WHEN** `GET /api/qa/cases/:id` is called with an attempt UUID
-- **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), and its `session_ids[]` (empty when none)
+- **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the raw `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
 - **AND** when the attempt id does not exist, it returns the standard 404 envelope from RFC 0007
 
 #### Scenario: GET /api/qa/cases/:id/journal
@@ -289,13 +312,20 @@ The `/api/qa/summary` endpoint SHALL include a `kpis` block computed from `heali
 
 #### Scenario: Summary KPI block
 - **WHEN** `GET /api/qa/summary` is called
-- **THEN** the response includes `kpis: { prs_landed_24h, mttr_24h_seconds, self_resolved_7d_pct, active_cases_now }`
+- **THEN** the response includes `kpis: { prs_landed_24h, mttr_24h_seconds, self_resolved_7d_pct, active_cases_now, failed_24h, prs_landed_prior_24h, mttr_prior_24h_seconds, self_resolved_prior_7d_pct, failed_prior_24h }`
 - **AND** `prs_landed_24h` is the count of `healing_attempts` rows with `status = 'pr_merged'` AND `closed_at >= now() - 24 hours`
-- **AND** `mttr_24h_seconds` is the average `closed_at - created_at` in seconds across `healing_attempts` rows with `closed_at >= now() - 24 hours` AND `status IN ('pr_merged','failed','timeout','unfixable')`; `null` when the sample is empty
+- **AND** `mttr_24h_seconds` ("time to repair") is the average `closed_at - created_at` in seconds across `healing_attempts` rows with `closed_at >= now() - 24 hours` AND `status = 'pr_merged'` ONLY; `null` when the sample is empty. Terminal crashes are deliberately excluded from this average — mixing them in previously let a day of 100% crashes and zero repairs read as a fast MTTR, the number improving the faster the staffer crashed
+- **AND** `failed_24h` is the count of `healing_attempts` rows with `status IN ('failed','timeout','anonymization_failed')` AND `closed_at >= now() - 24 hours` (mirrors `CIRCUIT_BREAKER_FAILURE_STATUSES`; `unfixable` is excluded — it is a design decision, not a crash), rendered beside MTTR with a destructive tint when greater than zero
 - **AND** `self_resolved_7d_pct` is the float percentage `pr_merged / (pr_merged + unfixable + failed)` over `closed_at >= now() - 7 days`
 - **AND** `active_cases_now` is the count of `healing_attempts` rows with `status IN ('dispatch_pending','investigating','pr_open')`
 - **AND** the summary response also exposes an `active_breakdown` field: `{ awaiting_ci: int, escalated_open_cases: int }`. `awaiting_ci` is the count of `active_cases_now` rows with `status='pr_open'`. `escalated_open_cases` is the count of `healing_attempts` rows with `status IN ('unfixable','failed') AND failed_with_human_action(attempt) AND (closed_at IS NULL OR closed_at >= now() - 7 days)` — it is NOT a subset of `active_cases_now`; it counts terminal-but-unresolved cases that still need operator action
 - **AND** the helper `failed_with_human_action(attempt) -> bool` is the single canonical detector of an "escalated" case (checks `attempt.status IN ('unfixable','failed')` plus a documented human-action substring on the TEXT `error_detail` column: any of `"human action"`, `"operator"`, `"escalat"` via case-insensitive match); both the KPI sub-label and the `state_of_case()` mapping use this helper
+- **AND** `state_of_case()` maps every terminal crash NOT caught by `failed_with_human_action()` (i.e. `status IN ('failed','timeout','anonymization_failed')` without a human-action marker) to the `failed` case state — never to `detect`, which would render a dead investigation identically to a brand-new, still-in-flight one
+
+#### Scenario: Circuit breaker threshold and runtime-credential-alert on the wire
+- **WHEN** `GET /api/qa/summary` is called
+- **THEN** `circuit_breaker` includes a `threshold` field (the consecutive-failure count that trips the breaker; defaults to 5, matching `_CIRCUIT_BREAKER_THRESHOLD`)
+- **AND** the response includes `runtime_credential_alert: string | null` — non-null when a workhorse-tier `model_catalog` entry the QA butler is eligible to dispatch on (per the same effective-`enabled`/`complexity_tier='workhorse'` resolution `_fetch_model_from_catalog` uses) has an open dispatch-outcome circuit breaker (`butlers.core.model_routing.get_breaker_state`, fully derived from `public.model_dispatch_attempts` — no live CLI probe) whose most recent `runtime_failure` text matches a provider auth/credential marker (the same vocabulary `butlers.core.failover_classifier.is_provider_auth_marker` uses); `null` otherwise, including on query failure (best-effort, non-fatal)
 
 ### Requirement: Investigations List Page
 The dashboard SHALL render the case index at `/qa/investigations` using the Dispatch case index pattern: a rule-separated list of `QaCaseSummary` rows. The page does not render a Kanban or a tabular dashboard.

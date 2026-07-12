@@ -50,13 +50,15 @@ const HEALTHY_SUMMARY: QaSummary = {
     mttr_24h_seconds: 60,
     self_resolved_7d_pct: 100,
     active_cases_now: 0,
+    failed_24h: 0,
     prs_landed_prior_24h: 0,
     mttr_prior_24h_seconds: null,
     self_resolved_prior_7d_pct: null,
+    failed_prior_24h: 0,
   },
   active_breakdown: { awaiting_ci: 0, escalated_open_cases: 0 },
   active_sources: [],
-  circuit_breaker: { tripped: false, consecutive_failures: 0 },
+  circuit_breaker: { tripped: false, consecutive_failures: 0, threshold: 5 },
   credentials_status: {
     gh_token_present: true,
     git_author_name_present: true,
@@ -66,6 +68,7 @@ const HEALTHY_SUMMARY: QaSummary = {
   port: 41110,
   model: "claude-sonnet-4-5",
   patrol_interval_minutes: 30,
+  runtime_credential_alert: null,
 };
 
 // (2026-07-05T05:04:00Z is "now" for the relative-time assertions below.)
@@ -156,6 +159,58 @@ describe("QaVerdictOpener -- clauses", () => {
     const summary: QaSummary = { ...HEALTHY_SUMMARY, staffer_status: "claude-sonnet-4-5" };
     const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
     expect(html).toContain('data-testid="qa-verdict-all-clear"');
+  });
+
+  it("names a pre-trip failure streak before the breaker actually opens", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      circuit_breaker: { tripped: false, consecutive_failures: 3, threshold: 5 },
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain('data-testid="qa-verdict-clauses"');
+    expect(html).toContain("3 consecutive failures — breaker opens at 5");
+  });
+
+  it("falls back to the known default threshold when the wire omits it", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      circuit_breaker: { tripped: false, consecutive_failures: 1 },
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("1 consecutive failure — breaker opens at 5");
+  });
+
+  it("names an overdue patrol from last_patrol_at + 2x the interval", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      // NOW is 2026-07-05T05:04:00Z; interval 30m means overdue past 1h --
+      // 2h stale clears that bar.
+      last_patrol_at: "2026-07-05T03:04:00Z",
+      patrol_interval_minutes: 30,
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain('data-testid="qa-verdict-clauses"');
+    expect(html).toContain("patrol overdue");
+  });
+
+  it("does not name an overdue patrol inside the 2x interval window", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      last_patrol_at: "2026-07-05T04:34:00Z", // 30m ago, interval 30m -> not yet 2x
+      patrol_interval_minutes: 30,
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain('data-testid="qa-verdict-all-clear"');
+  });
+
+  it("names the runtime credential alert as the watcher-death signal", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      runtime_credential_alert: "refresh token was revoked",
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain('data-testid="qa-verdict-clauses"');
+    expect(html).toContain("runtime CLI credential may be unhealthy — refresh token was revoked");
   });
 });
 

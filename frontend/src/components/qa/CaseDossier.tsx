@@ -20,6 +20,7 @@ const POST_DIAGNOSIS_STAGES = new Set<QaCaseDossier["state_track_stage"]>([
   "pr",
   "landed",
   "escalated",
+  "failed",
 ]);
 
 interface CaseDossierProps {
@@ -92,6 +93,16 @@ export function CaseDossier({
 
       <div className="grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <section className="space-y-6" aria-label="Diagnosis">
+          {dossier.state_track_stage === "failed" ? (
+            <div className="space-y-2" data-testid="qa-case-failure-banner">
+              <DossierEyebrow>Failure</DossierEyebrow>
+              <p className="font-serif text-[17px] italic leading-8 text-destructive">
+                {dossier.error_detail
+                  ? `The investigation crashed: "${dossier.error_detail}"`
+                  : "The investigation crashed before producing a fix."}
+              </p>
+            </div>
+          ) : null}
           {notes ? (
             <>
               <div className="space-y-2">

@@ -36,6 +36,17 @@ describe("QA dossier fix-column components", () => {
     expect(screen.getByText("No PR. Escalated to user.").className).toContain("font-serif");
   });
 
+  it("test_pr_panel_null_renders_destructive_failed_message_when_failed", () => {
+    render(<PRPanel pr={null} whyThisFix={null} stage="failed" />);
+
+    expect(screen.getByText("No PR. Investigation failed.")).toBeTruthy();
+    expect(screen.getByText("No PR. Investigation failed.").className).toContain(
+      "text-destructive",
+    );
+    expect(screen.queryByText("No PR yet.")).toBeNull();
+    expect(screen.queryByText("No PR. Escalated to user.")).toBeNull();
+  });
+
   // A case still being diagnosed (or any non-escalated stage) has not been
   // handed to the user -- it just hasn't produced a PR yet (bu-qvnce.2).
   it.each(["detect", "diagnose", "pr", "landed"] as const)(

@@ -6,11 +6,12 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Literal
 
+from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes
 
 SeverityLabel = Literal["high", "medium", "low"]
-CaseState = Literal["detect", "diagnose", "pr", "landed", "escalated"]
+CaseState = Literal["detect", "diagnose", "pr", "landed", "escalated", "failed"]
 
 _HUMAN_ACTION_MARKERS = ("human action", "operator", "escalat")
 _HUMAN_ACTION_TERMINAL_STATUSES = frozenset({"unfixable", "failed"})
@@ -42,7 +43,14 @@ def short_id_from_uuid(value: uuid.UUID) -> str:
 
 
 def state_of_case(attempt: Mapping[str, Any] | object) -> CaseState:
-    """Map a healing attempt row or object into the QA dossier state track."""
+    """Map a healing attempt row or object into the QA dossier state track.
+
+    A terminal crash (``status`` in ``CIRCUIT_BREAKER_FAILURE_STATUSES`` --
+    ``failed``/``timeout``/``anonymization_failed`` -- without a human-action
+    marker) maps to the ``failed`` terminus, not ``detect``. The prior
+    fallthrough rendered a dead investigation identically to a brand-new,
+    still-in-flight one (bu-hmdqz.9).
+    """
 
     status = _get_field(attempt, "status")
     if status == "pr_merged":
@@ -51,6 +59,8 @@ def state_of_case(attempt: Mapping[str, Any] | object) -> CaseState:
         return "escalated"
     if failed_with_human_action(attempt):
         return "escalated"
+    if status in CIRCUIT_BREAKER_FAILURE_STATUSES:
+        return "failed"
     if status == "pr_open":
         return "pr"
     if status == "investigating":

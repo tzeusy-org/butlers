@@ -81,6 +81,7 @@ const STATE_OPTIONS: Array<{ value: StateFilter; label: string }> = [
   { value: "diagnose", label: "Diagnose" },
   { value: "pr", label: "PR open" },
   { value: "landed", label: "Landed" },
+  { value: "failed", label: "Failed" },
   { value: "escalated", label: "Escalated" },
 ];
 

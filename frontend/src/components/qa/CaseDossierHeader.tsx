@@ -7,7 +7,11 @@ import { toast } from "sonner";
 import { StateTrack, type QaStateTrackStage } from "./StateTrack";
 import { formatQaDetectedTime, qaSeverityClassName } from "./utils";
 
-const TERMINAL_STAGES: QaStateTrackStage[] = ["landed", "escalated"];
+// 'failed' is terminal too: the retry gate the backend already accepted
+// (healing.py TERMINAL_STATUSES) is now offered at exactly this stage, and
+// dismiss (a false-positive-triage action) doesn't apply to a dead investigation
+// any more than it does to a landed or escalated one (bu-hmdqz.9).
+const TERMINAL_STAGES: QaStateTrackStage[] = ["landed", "escalated", "failed"];
 
 interface CaseDossierHeaderProps {
   case: QaCaseSummary;
