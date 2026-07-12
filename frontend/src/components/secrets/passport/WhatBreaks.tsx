@@ -36,7 +36,7 @@ import type { ApiResponse, BreakEntry } from "@/api/types"
 import { Mono } from "@/components/ui/Mono"
 import { cn } from "@/lib/utils"
 
-import { ProviderMark } from "./ProviderMark"
+import { ProviderMark } from "./atoms.tsx"
 import { SeverityPip } from "./SeverityPip"
 import type { Severity } from "./SeverityPip"
 import type { CapabilityStatus } from "./types"
@@ -145,7 +145,12 @@ export function WhatBreaksRow({ entry, capabilities }: WhatBreaksRowProps) {
       ) : (
         <SeverityPip severity={entry.severity as Severity} />
       )}
-      <ProviderMark provider={entry.butler} />
+      {/* bu-sd0l7.2: reunified onto the shipping atoms.tsx ProviderMark (used
+          by Spine.tsx/pages.tsx elsewhere on this same page). That atom takes
+          an explicit glyph rather than deriving one, so the slug's first
+          character is uppercased here — the same derivation the now-deleted
+          standalone ./ProviderMark.tsx used to do internally. */}
+      <ProviderMark glyph={entry.butler.charAt(0).toUpperCase()} label={entry.butler} />
       <Mono className="flex-1 min-w-0">{entry.feature}</Mono>
       <Mono muted className="shrink-0 text-[10px]">{entry.butler}</Mono>
     </div>

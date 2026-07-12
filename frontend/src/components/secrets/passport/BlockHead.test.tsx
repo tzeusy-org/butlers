@@ -1,64 +1,64 @@
 // @vitest-environment jsdom
 // ---------------------------------------------------------------------------
-// BlockHead tests — bu-qo3sf
+// BlockHead tests — bu-qo3sf, repointed bu-sd0l7.2
+//
+// bu-sd0l7.2: this used to test the orphan ./BlockHead.tsx (label/caption
+// props, never imported by any page) while the actual credential pages
+// (pages.tsx, GoogleAppCredentials.tsx) render the atoms.tsx BlockHead
+// (eyebrow/right props) — a green suite pinning dead code. Repointed onto
+// the shipping atoms.tsx export; prop names changed accordingly and the
+// ReactNode-caption case was dropped (atoms.tsx's `right` is string-only).
 //
 // Coverage:
-//   - Renders the label
-//   - Label is uppercase (CSS class, not string transform)
-//   - Optional caption is rendered when provided
-//   - No caption element when caption is omitted
+//   - Renders the eyebrow text
+//   - Eyebrow is uppercase (CSS class, not string transform)
+//   - Optional right caption is rendered when provided
+//   - No right caption element when omitted
 //   - className forwarding
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
-import { BlockHead } from "./BlockHead"
+import { BlockHead } from "./atoms.tsx"
 
-describe("BlockHead: label rendering", () => {
-  it("renders the label text", () => {
-    const html = renderToStaticMarkup(<BlockHead label="Audit" />)
+describe("BlockHead: eyebrow rendering", () => {
+  it("renders the eyebrow text", () => {
+    const html = renderToStaticMarkup(<BlockHead eyebrow="Audit" />)
     expect(html).toContain("Audit")
   })
 
-  it("applies uppercase class to the label", () => {
-    const html = renderToStaticMarkup(<BlockHead label="Scopes" />)
-    // Eyebrow applies uppercase CSS class
+  it("applies uppercase tracking to the eyebrow", () => {
+    // atoms.tsx BlockHead renders eyebrow via Mono(upper) — uppercase is a
+    // CSS textTransform, not a string transform.
+    const html = renderToStaticMarkup(<BlockHead eyebrow="Scopes" />)
     expect(html).toContain("uppercase")
   })
 
-  it("applies mono font to the label", () => {
-    const html = renderToStaticMarkup(<BlockHead label="WhatBreaks" />)
+  it("applies mono font to the eyebrow", () => {
+    const html = renderToStaticMarkup(<BlockHead eyebrow="WhatBreaks" />)
     expect(html).toContain("font-mono")
   })
 })
 
-describe("BlockHead: caption", () => {
-  it("renders the caption when provided", () => {
+describe("BlockHead: right caption", () => {
+  it("renders the right caption when provided", () => {
     const html = renderToStaticMarkup(
-      <BlockHead label="Audit" caption="last 10 entries" />,
+      <BlockHead eyebrow="Audit" right="last 10 entries" />,
     )
     expect(html).toContain("last 10 entries")
   })
 
-  it("does not render a caption element when omitted", () => {
-    const html = renderToStaticMarkup(<BlockHead label="Audit" />)
+  it("does not render a right caption element when omitted", () => {
+    const html = renderToStaticMarkup(<BlockHead eyebrow="Audit" />)
     expect(html).not.toContain("last 10 entries")
-  })
-
-  it("renders a ReactNode caption", () => {
-    const html = renderToStaticMarkup(
-      <BlockHead label="Scopes" caption={<span className="cap-node">5 of 7</span>} />,
-    )
-    expect(html).toContain("cap-node")
-    expect(html).toContain("5 of 7")
   })
 })
 
 describe("BlockHead: className forwarding", () => {
   it("merges additional className", () => {
     const html = renderToStaticMarkup(
-      <BlockHead label="Probe" className="bh-custom" />,
+      <BlockHead eyebrow="Probe" className="bh-custom" />,
     )
     expect(html).toContain("bh-custom")
   })

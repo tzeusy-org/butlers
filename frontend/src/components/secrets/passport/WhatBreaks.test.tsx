@@ -79,7 +79,7 @@ function renderWithQuery(ui: React.ReactElement) {
 // Import component after mocks are established
 // ---------------------------------------------------------------------------
 
-import { WhatBreaks } from "./WhatBreaks"
+import { WhatBreaks, WhatBreaksRow } from "./WhatBreaks"
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -232,5 +232,35 @@ describe("WhatBreaks: API call", () => {
     await waitFor(() => {
       expect(mockGetBreaksCatalogue).toHaveBeenCalledWith(undefined)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// bu-sd0l7.2: WhatBreaksRow's ProviderMark migration
+//
+// WhatBreaksRow used to import a second, divergent ProviderMark
+// implementation (./ProviderMark.tsx, deleted this bead) that derived its
+// letter-mark from a `provider` slug prop internally. Reunified onto the
+// shipping atoms.tsx ProviderMark (glyph/label props, no internal
+// derivation), computing `glyph={entry.butler.charAt(0).toUpperCase()}` at
+// the call site — the same derivation the deleted atom used to do. This
+// preserves the visible mark exactly while unifying on the atom
+// pages.tsx/Spine.tsx already render elsewhere on the same credential page.
+// ---------------------------------------------------------------------------
+
+describe("WhatBreaksRow: ProviderMark (bu-sd0l7.2 reunification)", () => {
+  it("derives the glyph from the butler slug's first character, uppercased", () => {
+    render(
+      <WhatBreaksRow entry={{ butler: "health", feature: "symptom sync", severity: "high", required_scopes: [] }} />,
+    )
+    const mark = screen.getByLabelText("health")
+    expect(mark.textContent).toBe("H")
+  })
+
+  it("carries the shipping atoms.tsx ProviderMark's data-provider-mark attribute", () => {
+    render(
+      <WhatBreaksRow entry={{ butler: "calendar", feature: "event sync", severity: "medium", required_scopes: [] }} />,
+    )
+    expect(screen.getByLabelText("calendar").getAttribute("data-provider-mark")).toBe("true")
   })
 })
