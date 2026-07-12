@@ -150,6 +150,22 @@ const DEFAULT_MAX_RECENT_ISSUE_ROWS = 5;
 const DEFAULT_MAX_TIMELINE_ROWS = 2;
 const DEFAULT_MAX_ATTENTION_APPROVAL_ROWS = 3;
 
+/**
+ * Global attention-row severity ranking (bu-gcz9e.3), used to stable-sort
+ * `attentionRows` across ALL kinds (issue, runtime, approval, notification,
+ * qa) rather than the previous fixed kind-concatenation order, which let a
+ * lower-severity row from an earlier-concatenated kind outrank a
+ * higher-severity row from a later one (e.g. a "stale" butler outranking a
+ * tripped QA circuit breaker purely by kind position).
+ */
+const OVERVIEW_SEVERITY_RANK: Record<OverviewSeverity, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+
 export function deriveOverviewTriageModel(
   input: OverviewDerivationInput,
   options: OverviewDerivationOptions = {},
@@ -174,6 +190,7 @@ export function deriveOverviewTriageModel(
     maxAttentionApprovalRows,
   );
   const notificationRows = notificationAttentionRows(input.notificationStats);
+  const notificationSourceRows = notificationSourceErrorRows(input.notificationStats);
   const qaRows = qaAttentionRows(input.qaSummary);
   const currentHighIssues = issueBuckets.currentHigh.slice(0, maxRecentIssueRows);
   const remainingIssueSlots = Math.max(maxRecentIssueRows - currentHighIssues.length, 0);
@@ -201,15 +218,24 @@ export function deriveOverviewTriageModel(
       ]
     : [];
 
+  // Severity-first, stable across kinds (bu-gcz9e.3): an offline butler or a
+  // tripped QA circuit breaker must never rank below a lower-severity issue
+  // row just because "issue" happens to be concatenated earlier in this
+  // list. Array.prototype.sort is spec-guaranteed stable (ES2019+), so
+  // building the pre-sort list in this order gives same-severity rows a
+  // deterministic tiebreak (kind, then each kind's own internal ordering --
+  // e.g. currentHighIssueRows is already severity+recency sorted, approvalRows
+  // is already expiry-sorted) instead of shuffling between renders.
   const attentionRows = [
     ...issuesSourceErrorRows,
     ...currentHighIssueRows,
     ...runtimeRows,
     ...approvalRows,
     ...notificationRows,
+    ...notificationSourceRows,
     ...qaRows,
     ...recentIssueRows,
-  ];
+  ].sort((a, b) => OVERVIEW_SEVERITY_RANK[a.severity] - OVERVIEW_SEVERITY_RANK[b.severity]);
 
   if (hiddenIssueGroups > 0) {
     const onlyOldGroups = hiddenCurrentIssueGroups === 0;
@@ -497,6 +523,33 @@ function notificationAttentionRows(
   ];
 }
 
+/**
+ * Notifications degraded-source row (bu-gcz9e.3, fleet degraded-source
+ * convention -- see butlers/CLAUDE.md API Conventions). `source_available
+ * === false` means the Switchboard notifications pool was unreachable and
+ * every count on `NotificationStats` is a fabricated zero, not a genuine
+ * "no failures" result -- silence here would compose a false all-clear, so
+ * this must render an explicit degraded row instead (mirrors the
+ * `isSourceError` idiom `issuesSourceErrorRows` above already established
+ * for the issues source).
+ */
+function notificationSourceErrorRows(
+  stats: NotificationStats | null | undefined,
+): OverviewAttentionRow[] {
+  if (stats?.source_available !== false) return [];
+  return [
+    {
+      id: "notifications:source-error",
+      kind: "notification",
+      severity: "high",
+      title: "Notifications feed unavailable",
+      detail: "The notifications source was unreachable -- failed-delivery counts may be stale.",
+      href: "/notifications",
+      isSourceError: true,
+    },
+  ];
+}
+
 function qaAttentionRows(summary: QaSummary | null | undefined): OverviewAttentionRow[] {
   if (!summary) return [];
   const qaState = summarizeQaState(summary);
@@ -615,6 +668,23 @@ function summarizeQaState(
   summary: QaSummary | null | undefined,
 ): { title: string; detail: string; severity: OverviewSeverity; count?: number } | null {
   if (!summary) return null;
+
+  // Circuit-breaker tripped takes precedence over every other QA state --
+  // mirrors QaVerdictOpener.tsx's buildClauses ordering (breaker checked
+  // first), which already proved this data exists on the response
+  // (bu-gcz9e.3: this function previously never read `circuit_breaker` at
+  // all). A tripped breaker means the QA staffer has stopped dispatching
+  // entirely after repeated consecutive failures -- more severe than a
+  // single failed patrol run, so it outranks the "last patrol failed" branch
+  // below.
+  if (summary.circuit_breaker.tripped) {
+    return {
+      title: "QA circuit breaker tripped",
+      detail: `${summary.circuit_breaker.consecutive_failures} consecutive failures -- QA staffer stopped dispatching.`,
+      severity: "critical",
+    };
+  }
+
   if (summary.last_patrol?.status === "failed" || summary.last_patrol?.error_detail) {
     return {
       title: "QA patrol failed",

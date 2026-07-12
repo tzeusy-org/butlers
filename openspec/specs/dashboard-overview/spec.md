@@ -85,19 +85,58 @@ consumes it.
 
 ### Requirement: Needs Attention List
 
-The home page SHALL render a `Needs attention` list from the existing
-`GET /api/issues` response. The list is a rule-separated attention surface, not
-a card grid or table.
+The home page SHALL render a `Needs attention` list composed from several
+sources: `GET /api/issues`, the canonical butler liveness verdict, pending
+approvals, notification delivery pressure, and QA staffer state. The list is
+a rule-separated attention surface, not a card grid or table.
 
 #### Scenario: Attention rows are derived from active issues
 
 - **WHEN** `GET /api/issues` returns one or more `Issue` objects
 - **THEN** each row shows severity mark, issue description, butler/source detail,
   optional error context, and a link when `link` is present
-- **AND** severity order is high/critical/error first, then
-  medium/warning/warn, then all other severities
 - **AND** within a severity tier, older unresolved issues sort before newer
   issues when `first_seen_at` exists
+
+#### Scenario: Attention rows are severity-first and stable across kinds
+
+- **WHEN** the attention list composes rows from more than one source kind
+  (issue, runtime/liveness, approval, notification, qa)
+- **THEN** the full list is ordered by severity first — critical, then
+  high/error, then medium/warning/warn, then low, then all other
+  severities — across ALL kinds, not grouped by kind first
+- **AND** a higher-severity row from one kind (e.g. a tripped QA circuit
+  breaker) SHALL rank above a lower-severity row from another kind (e.g. a
+  medium-severity issue), even if that other kind is normally rendered
+  earlier
+- **AND** rows tied on severity keep a stable, deterministic relative order
+  (their kind's own internal ordering, e.g. issues by recency, approvals by
+  soonest-expiry) so the list does not reshuffle between otherwise-identical
+  renders
+- **AND** the trailing "N more/older issue groups" rollup row and any
+  explicitly-included old-issue rows remain appended after the severity-sorted
+  set, since they summarize/de-prioritize rather than represent a current
+  signal
+
+#### Scenario: A tripped QA circuit breaker surfaces as an attention row
+
+- **WHEN** `GET /api/qa/summary`'s `circuit_breaker.tripped` is `true`
+- **THEN** the attention list renders a critical-severity row naming the
+  circuit breaker as tripped and the `consecutive_failures` count, linking to
+  `/qa`
+- **AND** this row takes precedence over a same-summary "last patrol failed"
+  row (a tripped breaker means the QA staffer has stopped dispatching
+  entirely, a more severe state than one failed patrol run)
+
+#### Scenario: An unreachable notifications source surfaces as a degraded row
+
+- **WHEN** `GET /api/notifications/stats` returns `source_available: false`
+- **THEN** the attention list renders a high-severity, source-error row
+  naming the notifications feed as unavailable, instead of silently showing
+  no notification-pressure row (the underlying `failed` count is a
+  fabricated zero in this case, not a genuine "no failures" result)
+- **AND** this row does not also render alongside a normal "N failed
+  notifications" row for the same fetch
 
 #### Scenario: Stale issues are summarized
 

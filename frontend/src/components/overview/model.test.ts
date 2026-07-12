@@ -873,3 +873,125 @@ describe("deriveOverviewTriageModel — per-item approval attention rows (bu-86c
     expect(rows[0].approvalId).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Severity-first stable ordering across kinds + QA circuit-breaker +
+// notifications source_available rows (bu-gcz9e.3).
+// ---------------------------------------------------------------------------
+
+describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e.3)", () => {
+  it("ranks a tripped QA circuit breaker (critical) above a lower-severity issue row, even though 'issue' is concatenated earlier than 'qa'", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [
+          issue({
+            severity: "high",
+            description: "High issue",
+            first_seen_at: "2026-05-14T10:00:00.000Z",
+            last_seen_at: "2026-05-14T11:00:00.000Z",
+          }),
+        ],
+        qaSummary: qaSummary({
+          circuit_breaker: { tripped: true, consecutive_failures: 4 },
+        }),
+      },
+      { now: NOW },
+    );
+
+    // Without a real cross-kind severity sort, "issue" rows are concatenated
+    // before "qa" rows and the high-severity issue would rank first despite
+    // the QA breaker being more severe (critical > high).
+    expect(model.attentionRows[0]).toMatchObject({ kind: "qa", severity: "critical" });
+    expect(model.attentionRows[1]).toMatchObject({ kind: "issue", severity: "high" });
+  });
+
+  it("keeps a stable, deterministic order for same-severity rows across kinds (no shuffling between calls)", () => {
+    const input = {
+      boardRows: [boardRow({ name: "general", activity: "overdue" })], // runtime, severity medium
+      approvalMetrics: approvalMetrics({ total_pending: 1 }), // approval, severity medium
+      notificationStats: notificationStats({ failed: 1 }), // notification, severity medium
+    };
+
+    const first = deriveOverviewTriageModel(input, { now: NOW });
+    const second = deriveOverviewTriageModel(input, { now: NOW });
+
+    const kindsFirst = first.attentionRows.map((row) => row.kind);
+    const kindsSecond = second.attentionRows.map((row) => row.kind);
+    expect(kindsFirst).toEqual(["runtime", "approval", "notification"]);
+    expect(kindsSecond).toEqual(kindsFirst);
+  });
+
+  it("surfaces a critical QA circuit-breaker-tripped attention row, taking precedence over a simultaneous failed patrol (mirrors QaVerdictOpener's clause precedence)", () => {
+    const model = deriveOverviewTriageModel({
+      qaSummary: qaSummary({
+        circuit_breaker: { tripped: true, consecutive_failures: 6 },
+        last_patrol: {
+          id: "patrol-1",
+          started_at: "2026-05-14T11:00:00.000Z",
+          completed_at: "2026-05-14T11:01:00.000Z",
+          status: "failed",
+          findings_count: 0,
+          novel_count: 0,
+          dispatched_count: 0,
+          log_lookback_minutes: 60,
+          sources_polled: ["sessions"],
+          error_detail: "log scanner failed",
+        },
+      }),
+    });
+
+    const qaRow = model.attentionRows.find((row) => row.kind === "qa");
+    expect(qaRow).toMatchObject({
+      severity: "critical",
+      title: "QA circuit breaker tripped",
+    });
+    expect(qaRow?.detail).toContain("6 consecutive failures");
+    // Same precedence applies to the Now list's QA item, since both derive
+    // from the same summarizeQaState.
+    const nowQaRow = model.nowRows.find((row) => row.kind === "qa");
+    expect(nowQaRow).toMatchObject({ label: "QA circuit breaker tripped" });
+  });
+
+  it("does not surface a QA breaker row when the breaker is not tripped", () => {
+    const model = deriveOverviewTriageModel({
+      qaSummary: qaSummary({ circuit_breaker: { tripped: false, consecutive_failures: 0 } }),
+    });
+
+    expect(model.attentionRows.some((row) => row.kind === "qa")).toBe(false);
+  });
+
+  it("surfaces a degraded attention row when notifications source_available is false", () => {
+    const model = deriveOverviewTriageModel({
+      notificationStats: notificationStats({ failed: 0, source_available: false }),
+    });
+
+    const row = model.attentionRows.find((r) => r.id === "notifications:source-error");
+    expect(row).toBeDefined();
+    expect(row).toMatchObject({
+      kind: "notification",
+      severity: "high",
+      title: "Notifications feed unavailable",
+      href: "/notifications",
+      isSourceError: true,
+    });
+    // A real "0 failed" count must not additionally render as a calm
+    // "0 failed notifications" row alongside the degraded row.
+    expect(model.attentionRows.some((r) => r.id === "notifications:failed")).toBe(false);
+  });
+
+  it("does not surface a notifications degraded row when source_available is true or absent", () => {
+    const availableModel = deriveOverviewTriageModel({
+      notificationStats: notificationStats({ failed: 0, source_available: true }),
+    });
+    expect(
+      availableModel.attentionRows.some((r) => r.id === "notifications:source-error"),
+    ).toBe(false);
+
+    const absentModel = deriveOverviewTriageModel({
+      notificationStats: notificationStats({ failed: 0 }),
+    });
+    expect(
+      absentModel.attentionRows.some((r) => r.id === "notifications:source-error"),
+    ).toBe(false);
+  });
+});
