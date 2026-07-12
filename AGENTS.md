@@ -848,6 +848,19 @@ directly with `python3 scripts/lint_decision_beads.py [issue-id...]`). It
 reads live via `bd` (or an offline `--issues-json-file` snapshot for
 tests/CI), so it is a manual/local check, not part of `make check` or CI —
 GitHub Actions cannot reach the local Dolt server backing `bd`.
+`--issues-json-file` accepts either a plain JSON array/object or
+newline-delimited JSON (the `bd export` format).
+
+**Non-vacuous mode (bu-hmdqz.6):** by default the linter only checks beads
+that already carry the `decision` label, so against a queue where nothing
+has adopted it yet, it discovers zero rows and reports a vacuous "clean"
+pass. `--check-unlabeled-markers` (`make lint-decision-beads-strict`) widens
+discovery to also flag open, non-epic beads whose titles match a legacy
+decision marker but lack the label — those then fail the existing "missing
+'decision' label" check. `src/butlers/jobs/decision_review.py`'s weekly
+digest job (`run_decision_review_digest`) runs this mode automatically
+against the mounted `issues.export.jsonl`, delivering a low-priority
+attention-ledger-recorded nudge when it finds unmigrated beads.
 
 **Known consumer:** `src/butlers/jobs/decision_review.py` (the weekly
 decision-review digest + P1/deploy escalation cron) detects decision beads

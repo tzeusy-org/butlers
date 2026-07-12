@@ -48,6 +48,42 @@ function formatAgeHours(ageHours: number): string {
   return `${Math.max(Math.floor(ageHours), 0)}h`;
 }
 
+/**
+ * bu-hmdqz.6: the export's own age, always shown when known -- a stale
+ * (but not yet 14-day-stale, which flips `decisions_available` to false)
+ * beads export must still be visible as stale, not rendered as calm current
+ * data (CLAUDE.md degraded-envelope convention: "stale export must be
+ * visible, not calm"). Same-day exports read "as of just now" rather than
+ * "as of 0h ago" to avoid implying false precision.
+ */
+function formatExportAsOf(exportAsOf: string | null | undefined): string | null {
+  if (!exportAsOf) return null;
+  const then = new Date(exportAsOf).getTime();
+  if (Number.isNaN(then)) return null;
+  const ageHours = (Date.now() - then) / (1000 * 60 * 60);
+  if (ageHours < 1) return "export as of just now";
+  return `export as of ${formatAgeHours(ageHours)} ago`;
+}
+
+/** Past this age the export plaque switches from muted to a warning tint --
+ * well before the 14-day `_STALE_EXPORT_AGE` cliff that flips availability
+ * off entirely, so a slowly-aging export gets a visible tell early. */
+const _EXPORT_AS_OF_WARN_HOURS = 48;
+
+/**
+ * Whether *exportAsOf* is old enough to warrant the warning tint. A
+ * standalone function (mirrors time.tsx's resolveSmartMode) so the
+ * react-hooks/purity rule doesn't flag a direct Date.now() call inside the
+ * component body.
+ */
+function resolveExportAsOfIsWarn(exportAsOf: string | null | undefined): boolean {
+  if (!exportAsOf) return false;
+  const then = new Date(exportAsOf).getTime();
+  if (Number.isNaN(then)) return false;
+  const ageHours = (Date.now() - then) / (1000 * 60 * 60);
+  return ageHours >= _EXPORT_AS_OF_WARN_HOURS;
+}
+
 function blockedKindLabel(kind: string | null | undefined): string {
   return kind === "deploy" ? "a deploy" : "a P1 bug";
 }
@@ -147,6 +183,9 @@ export default function DecisionsPage() {
   const { data, isLoading, isError, error, refetch } = useDecisions();
   const decisions = useMemo(() => data?.data ?? [], [data]);
   const decisionsAvailable = data?.meta.decisions_available;
+  const exportAsOf = data?.meta.export_as_of;
+  const exportAsOfLabel = formatExportAsOf(exportAsOf);
+  const exportAsOfIsWarn = resolveExportAsOfIsWarn(exportAsOf);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -207,6 +246,21 @@ export default function DecisionsPage() {
           isError={isError}
           decisionsAvailable={decisionsAvailable}
         />
+        {/* bu-hmdqz.6: as-of plaque -- the single-file export bind-mount
+            tolerates up to 14 days of staleness before decisionsAvailable
+            flips to false, so a slowly-aging-but-not-yet-unavailable export
+            still needs a visible tell (never render stale data as calm). */}
+        {exportAsOfLabel && (
+          <div
+            data-testid="decisions-export-as-of"
+            className={[
+              "mt-1 font-mono text-[10px] uppercase tracking-wider",
+              exportAsOfIsWarn ? "text-[var(--amber-text)]" : "text-muted-foreground",
+            ].join(" ")}
+          >
+            {exportAsOfLabel}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto min-h-0">

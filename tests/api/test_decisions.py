@@ -104,6 +104,8 @@ async def test_list_decisions_flags_unavailable_when_export_missing(app, tmp_pat
     assert body["data"] == []
     assert body["meta"]["decisions_available"] is False
     assert body["meta"]["unavailable_reason"] == "export_missing"
+    # bu-hmdqz.6: no file was ever stat'd, so there is no known age to report.
+    assert body["meta"].get("export_as_of") is None
 
 
 async def test_list_decisions_genuine_zero_is_available(app, tmp_path):
@@ -116,6 +118,9 @@ async def test_list_decisions_genuine_zero_is_available(app, tmp_path):
     body = resp.json()
     assert body["data"] == []
     assert body["meta"]["decisions_available"] is True
+    # bu-hmdqz.6: meta.export_as_of carries the export file's own mtime so
+    # the frontend can render an honest "as of" plaque.
+    assert body["meta"].get("export_as_of") is not None
 
 
 # ---------------------------------------------------------------------------

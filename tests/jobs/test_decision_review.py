@@ -26,10 +26,12 @@ import pytest
 from butlers.jobs.decision_review import (
     _check_suppression,
     _compose_escalation_message,
+    _compose_lint_violation_message,
     _compose_weekly_digest_message,
     _deliver,
     _is_decision_bead,
     _is_deploy_bead,
+    _run_unlabeled_marker_lint,
     compute_decision_digest,
     run_decision_escalation_check,
     run_decision_review_digest,
@@ -93,6 +95,7 @@ def test_digest_unavailable_when_export_missing(tmp_path):
     assert digest.unavailable_reason == "export_missing"
     assert digest.open_decisions == ()
     assert digest.escalations == ()
+    assert digest.export_as_of is None
 
 
 def test_digest_unavailable_when_export_stale(tmp_path):
@@ -106,6 +109,10 @@ def test_digest_unavailable_when_export_stale(tmp_path):
     digest = compute_decision_digest(export, now=_NOW)
     assert digest.available is False
     assert digest.unavailable_reason == "export_stale"
+    # bu-hmdqz.6: export_as_of is still populated on the stale branch -- a
+    # caller needs the true age precisely when the data is untrustworthy.
+    assert digest.export_as_of is not None
+    assert digest.export_as_of.timestamp() == pytest.approx(stale_mtime, abs=1)
 
 
 def test_digest_unavailable_on_unparseable_json(tmp_path):
@@ -126,6 +133,7 @@ def test_digest_genuine_zero_is_available_and_empty(tmp_path):
     assert digest.available is True
     assert digest.unavailable_reason is None
     assert digest.open_decisions == ()
+    assert digest.export_as_of is not None
 
 
 def test_digest_skips_non_dict_jsonl_lines_instead_of_crashing(tmp_path):
@@ -592,10 +600,18 @@ async def test_run_digest_genuine_zero_sends_nothing(tmp_path):
     _write_export(export, [{"id": "bu-x", "title": "Ordinary task", "status": "open"}])
     pool = AsyncMock()
 
-    with patch("butlers.jobs.decision_review._DEFAULT_EXPORT_PATH", export):
+    with (
+        patch("butlers.jobs.decision_review._DEFAULT_EXPORT_PATH", export),
+        patch("butlers.jobs.decision_review._run_unlabeled_marker_lint", return_value=[]),
+    ):
         result = await run_decision_review_digest(pool)
 
-    assert result == {"available": True, "open_decisions": 0, "outcome": "no_decisions"}
+    assert result == {
+        "available": True,
+        "open_decisions": 0,
+        "outcome": "no_decisions",
+        "lint_violations": 0,
+    }
 
 
 async def test_run_digest_delivers_when_decisions_open(tmp_path):
@@ -606,6 +622,7 @@ async def test_run_digest_delivers_when_decisions_open(tmp_path):
 
     with (
         patch("butlers.jobs.decision_review._DEFAULT_EXPORT_PATH", export),
+        patch("butlers.jobs.decision_review._run_unlabeled_marker_lint", return_value=[]),
         patch("butlers.jobs.decision_review._check_suppression", new=AsyncMock(return_value=None)),
         patch(
             "butlers.jobs.decision_review.resolve_owner_telegram_recipient",
@@ -619,9 +636,87 @@ async def test_run_digest_delivers_when_decisions_open(tmp_path):
     ):
         result = await run_decision_review_digest(pool)
 
-    assert result == {"available": True, "open_decisions": 1, "outcome": "delivered"}
+    assert result == {
+        "available": True,
+        "open_decisions": 1,
+        "outcome": "delivered",
+        "lint_violations": 0,
+    }
     deliver_mock.assert_awaited_once()
     assert "bu-v4ipc" in deliver_mock.await_args.kwargs["message"]
+
+
+async def test_run_digest_lint_violations_deliver_separate_low_priority_message(tmp_path):
+    """bu-hmdqz.6: a genuine zero for open_decisions must not suppress the
+    convention-lint nudge -- unlabeled, marker-matched beads still need a
+    migration reminder even in an otherwise-quiet week."""
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(export, [{"id": "bu-x", "title": "Ordinary task", "status": "open"}])
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+    fake_violations = [{"id": "bu-w6jca", "title": "ARCHITECTURAL DECISION (owner): ..."}]
+
+    with (
+        patch("butlers.jobs.decision_review._DEFAULT_EXPORT_PATH", export),
+        patch(
+            "butlers.jobs.decision_review._run_unlabeled_marker_lint",
+            return_value=fake_violations,
+        ),
+        patch("butlers.jobs.decision_review._check_suppression", new=AsyncMock(return_value=None)),
+        patch(
+            "butlers.jobs.decision_review.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value="12345"),
+        ),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            new=AsyncMock(return_value={"status": "sent"}),
+        ) as deliver_mock,
+        patch("butlers.jobs.decision_review.record_attention_event", new=AsyncMock()),
+    ):
+        result = await run_decision_review_digest(pool)
+
+    assert result == {
+        "available": True,
+        "open_decisions": 0,
+        "outcome": "no_decisions",
+        "lint_violations": 1,
+    }
+    deliver_mock.assert_awaited_once()
+    assert "bu-w6jca" in deliver_mock.await_args.kwargs["message"]
+
+
+def test_run_unlabeled_marker_lint_real_subprocess_wiring(tmp_path):
+    """Exercises the real subprocess call into scripts/lint_decision_beads.py
+    (no mocking) so the wiring itself -- script path resolution, --json
+    parsing -- is verified, not just the mocked call sites above."""
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(
+        export,
+        [
+            _decision("bu-w6jca", title="ARCHITECTURAL DECISION (owner): pick a schema"),
+            {"id": "bu-ordinary", "title": "fix a typo", "status": "open"},
+        ],
+    )
+
+    violations = _run_unlabeled_marker_lint(export)
+
+    assert [v["id"] for v in violations] == ["bu-w6jca"]
+    assert any("label" in v for v in violations[0]["violations"])
+
+
+def test_run_unlabeled_marker_lint_missing_script_returns_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "butlers.jobs.decision_review._LINT_SCRIPT_PATH", tmp_path / "does-not-exist.py"
+    )
+    assert _run_unlabeled_marker_lint(tmp_path / "export.jsonl") == []
+
+
+def test_compose_lint_violation_message_lists_ids_and_titles():
+    message = _compose_lint_violation_message(
+        [{"id": "bu-w6jca", "title": "ARCHITECTURAL DECISION (owner): pick a schema"}]
+    )
+    assert "bu-w6jca" in message
+    assert "1 bead" in message
 
 
 # ---------------------------------------------------------------------------

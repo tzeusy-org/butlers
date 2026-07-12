@@ -97,6 +97,8 @@ import json
 import logging
 import os
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -149,6 +151,13 @@ _DEFAULT_EXPORT_PATH = Path(
 # the mount target is an empty placeholder Docker created for a missing file.
 _STALE_EXPORT_AGE = timedelta(days=14)
 
+# scripts/lint_decision_beads.py, resolved relative to this file rather than
+# a hardcoded "/app" so it also works from a plain repo checkout in tests --
+# parents[3] from src/butlers/jobs/decision_review.py is the repo root,
+# where the Dockerfile COPYs scripts/ alongside src/ (see Dockerfile).
+_LINT_SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "lint_decision_beads.py"
+_LINT_SUBPROCESS_TIMEOUT_S = 30
+
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -181,13 +190,24 @@ class EscalationHit:
 
 @dataclass(frozen=True)
 class DecisionDigest:
-    """Result of one digest computation. Never represents a fabricated all-clear."""
+    """Result of one digest computation. Never represents a fabricated all-clear.
+
+    ``export_as_of`` (bu-hmdqz.6) is the export file's own mtime -- set
+    whenever the file could be stat'd, even on the ``export_stale``
+    unavailable branch (so a caller can report exactly how old the data is),
+    ``None`` only when the file is missing or was never reached. This is what
+    lets a consumer (``GET /api/decisions``'s ``meta.export_as_of``) render an
+    honest "as of" plaque instead of trusting hour-precision computed ages
+    against a single-file bind-mount that may silently freeze at
+    container-start inode if bd's auto-export replaces it by atomic rename.
+    """
 
     checked_at: datetime
     available: bool
     unavailable_reason: str | None
     open_decisions: tuple[DecisionBead, ...]
     escalations: tuple[EscalationHit, ...]
+    export_as_of: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -279,14 +299,14 @@ def compute_decision_digest(
 
     try:
         if not path.is_file():
-            return DecisionDigest(checked_at, False, "export_missing", (), ())
+            return DecisionDigest(checked_at, False, "export_missing", (), (), None)
         mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         if checked_at - mtime > _STALE_EXPORT_AGE:
-            return DecisionDigest(checked_at, False, "export_stale", (), ())
+            return DecisionDigest(checked_at, False, "export_stale", (), (), mtime)
         issues = _load_issues(path)
     except Exception as exc:  # noqa: BLE001 - degraded-mode contract: never raise
         logger.warning("decision_review: failed to read beads export: %s", exc, exc_info=True)
-        return DecisionDigest(checked_at, False, f"export_read_error:{exc}", (), ())
+        return DecisionDigest(checked_at, False, f"export_read_error:{exc}", (), (), None)
 
     decisions: dict[str, DecisionBead] = {}
     for issue_id, issue in issues.items():
@@ -343,7 +363,7 @@ def compute_decision_digest(
 
     ordered_decisions = tuple(sorted(decisions.values(), key=lambda d: d.created_at))
     ordered_escalations = tuple(sorted(escalations, key=lambda e: e.block_age, reverse=True))
-    return DecisionDigest(checked_at, True, None, ordered_decisions, ordered_escalations)
+    return DecisionDigest(checked_at, True, None, ordered_decisions, ordered_escalations, mtime)
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +402,83 @@ def _compose_escalation_message(hit: EscalationHit) -> str:
         f"Decision: {hit.decision_title}\n"
         f"Blocked: {hit.blocked_title}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Convention-lint integration (bu-hmdqz.6) -- makes lint_decision_beads.py's
+# --check-unlabeled-markers mode a live, automated door instead of a manual
+# `make lint-decision-beads` a human has to remember to run. Runs the script
+# as a subprocess (never imported) so this module's own import chain stays
+# untouched by the lint script's independence from the `butlers` package --
+# see that script's own docstring for the rationale in the other direction.
+# ---------------------------------------------------------------------------
+
+
+def _run_unlabeled_marker_lint(export_path: Path) -> list[dict[str, Any]]:
+    """Run ``scripts/lint_decision_beads.py --check-unlabeled-markers`` against
+    *export_path* and return the failing entries. Never raises.
+
+    Degraded-honesty contract mirrors the rest of this module: a lint
+    subprocess failure (missing script, unexpected crash, malformed output)
+    is logged and treated as "nothing to report" rather than sinking the
+    weekly digest job -- this check augments the digest, it does not gate
+    it. A real violation is only ever reported when the lint genuinely ran
+    and found one.
+    """
+    if not _LINT_SCRIPT_PATH.is_file():
+        logger.warning("decision_review: lint script not found at %s", _LINT_SCRIPT_PATH)
+        return []
+
+    cmd = [
+        sys.executable,
+        str(_LINT_SCRIPT_PATH),
+        "--issues-json-file",
+        str(export_path),
+        "--check-unlabeled-markers",
+        "--json",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=_LINT_SUBPROCESS_TIMEOUT_S
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("decision_review: lint subprocess failed (%s): %s", cmd, exc)
+        return []
+
+    # Exit codes: 0 = clean, 1 = violations found, 2 = could not obtain data
+    # -- both 0 and 1 carry valid --json output on stdout.
+    if proc.returncode not in (0, 1):
+        logger.warning(
+            "decision_review: lint subprocess exited %d: %s",
+            proc.returncode,
+            (proc.stderr or proc.stdout or "").strip()[-2000:],
+        )
+        return []
+
+    try:
+        results = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        logger.warning("decision_review: lint subprocess returned non-JSON stdout")
+        return []
+    if not isinstance(results, list):
+        return []
+    return [r for r in results if isinstance(r, dict) and not r.get("ok", True)]
+
+
+def _compose_lint_violation_message(violations: list[dict[str, Any]]) -> str:
+    count = len(violations)
+    header = (
+        f"\U0001f3f7️ Decision-bead convention: {count} bead"
+        f"{'s' if count != 1 else ''} need migration (title matches a decision "
+        "marker but missing the 'decision' label)"
+    )
+    lines = [header + "."]
+    for v in violations[:_DIGEST_MAX_LISTED]:
+        lines.append(f"- {v.get('id', '?')}: {v.get('title', '')}")
+    remaining = count - _DIGEST_MAX_LISTED
+    if remaining > 0:
+        lines.append(f"... and {remaining} more.")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +610,14 @@ async def run_decision_review_digest(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Weekly digest of open owner-decision beads. Never fabricates an all-clear."""
+    """Weekly digest of open owner-decision beads. Never fabricates an all-clear.
+
+    Also runs the convention lint's ``--check-unlabeled-markers`` mode
+    against the same export (bu-hmdqz.6) and delivers a separate low-priority
+    message when it finds beads that still need migrating to the `decision`
+    label -- independent of whether any decisions are *currently* open, so
+    label-migration nudges keep firing even during a genuine all-clear week.
+    """
     del job_args
     digest = compute_decision_digest()
 
@@ -536,14 +640,31 @@ async def run_decision_review_digest(
         )
         return {"available": False, "reason": digest.unavailable_reason}
 
+    lint_violations = _run_unlabeled_marker_lint(_DEFAULT_EXPORT_PATH)
+    if lint_violations:
+        lint_message = _compose_lint_violation_message(lint_violations)
+        await _deliver(
+            pool, message=lint_message, dedup_key="decision_lint_violations", priority="low"
+        )
+
     if not digest.open_decisions:
-        return {"available": True, "open_decisions": 0, "outcome": "no_decisions"}
+        return {
+            "available": True,
+            "open_decisions": 0,
+            "outcome": "no_decisions",
+            "lint_violations": len(lint_violations),
+        }
 
     message = _compose_weekly_digest_message(digest)
     outcome = await _deliver(
         pool, message=message, dedup_key="decision_review_digest", priority="medium"
     )
-    return {"available": True, "open_decisions": len(digest.open_decisions), "outcome": outcome}
+    return {
+        "available": True,
+        "open_decisions": len(digest.open_decisions),
+        "outcome": outcome,
+        "lint_violations": len(lint_violations),
+    }
 
 
 async def run_decision_escalation_check(

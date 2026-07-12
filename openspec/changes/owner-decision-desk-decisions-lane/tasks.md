@@ -18,3 +18,24 @@
 ## 3. Spec
 
 - [x] 3.1 This proposal + `dashboard-decisions` capability spec + `dashboard-api` delta
+
+## 4. Activation (bu-hmdqz.6 addendum)
+
+Move 6 of the 2026-07-12 JARVIS pursuit found this capability shipped but
+structurally inert in the containerized topology -- see
+`docs/redesigns/2026-07-12-jarvis-pursuit.md` §6. This addendum closes that
+gap; it does not change the scope above.
+
+- [x] 4.1 `docker-compose.yml`: mount `.beads/issues.export.jsonl:ro` into
+  `dashboard-api`/`dashboard-api-hotreload` (previously only `butlers-up`/
+  `butlers-up-hotreload` had it, so `GET /api/decisions` was permanently
+  `decisions_available=false` once deployed)
+- [x] 4.2 `butlers.core.deploy.materialize_beads_export`: refresh the export
+  on the deploy host before `recreate_services`, so a snapshot-worktree
+  deploy never binds a missing/stale file
+- [x] 4.3 `compute_decision_digest()` / `GET /api/decisions`: `export_as_of`
+  meta field (export mtime) + `/decisions` page as-of plaque
+- [x] 4.4 `scripts/lint_decision_beads.py --check-unlabeled-markers` +
+  weekly `decision_review` job wiring, so the convention lint is non-vacuous
+  against the live queue (documented in AGENTS.md, not a dashboard-facing
+  capability -- no spec delta)

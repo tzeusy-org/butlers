@@ -54,6 +54,9 @@ def _patch_pipeline(monkeypatch, *, git_sha: str, fail_at: str | None = None) ->
 
     monkeypatch.setattr("butlers.core.deploy.build_image", make("build"))
     monkeypatch.setattr("butlers.core.deploy.run_migrations", make("migrate"))
+    # Best-effort `bd export` refresh (bu-hmdqz.6) -- never touch the real
+    # `bd`/Dolt server from a test process; stub as a no-op success.
+    monkeypatch.setattr("butlers.core.deploy.materialize_beads_export", lambda config: True)
     monkeypatch.setattr("butlers.core.deploy.recreate_services", make("recreate"))
     monkeypatch.setattr("butlers.core.deploy.wait_for_health", _wait_ok)
     monkeypatch.setattr("butlers.core.deploy.resolve_git_sha", lambda repo_root: git_sha)

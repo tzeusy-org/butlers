@@ -21,6 +21,7 @@ from butlers.core.deploy import (
     _clean_compose_env,
     _compose_base_args,
     build_image,
+    materialize_beads_export,
     recreate_services,
     resolve_git_sha,
     run_deploy,
@@ -159,6 +160,90 @@ class TestRunMigrations:
         assert exc_info.value.phase == "migrate"
 
 
+class TestMaterializeBeadsExport:
+    """bu-hmdqz.6: best-effort `bd export` refresh before recreate_services.
+
+    Uses a real `tmp_path`-backed repo_root (not the module-level `_config()`
+    default of the nonexistent `/repo`) because this function now touches
+    the filesystem directly (mkdir/touch the placeholder export file) before
+    ever shelling out to `bd` -- see the docstring's "Docker bind-mount
+    trap" note.
+    """
+
+    def test_success_exports_to_repo_root_beads_dir(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, cwd, capture_output, text, timeout):
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        result = materialize_beads_export(_config(repo_root=tmp_path))
+        assert result is True
+        expected_path = str(tmp_path / ".beads" / "issues.export.jsonl")
+        assert captured["cmd"] == ["bd", "export", "-o", expected_path]
+        assert captured["cwd"] == tmp_path
+
+    def test_missing_bd_binary_returns_false_not_raises(self, tmp_path, monkeypatch):
+        def fake_run(cmd, cwd, capture_output, text, timeout):
+            raise FileNotFoundError("bd not found")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert materialize_beads_export(_config(repo_root=tmp_path)) is False
+
+    def test_timeout_returns_false_not_raises(self, tmp_path, monkeypatch):
+        def fake_run(cmd, cwd, capture_output, text, timeout):
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert materialize_beads_export(_config(repo_root=tmp_path)) is False
+
+    def test_nonzero_exit_returns_false_not_raises(self, tmp_path, monkeypatch):
+        def fake_run(cmd, cwd, capture_output, text, timeout):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="dolt: connection refused")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert materialize_beads_export(_config(repo_root=tmp_path)) is False
+
+    def test_creates_placeholder_file_before_shelling_out_to_bd(self, tmp_path, monkeypatch):
+        # Regression (PR #3174 review): the export file must exist as a
+        # regular file BEFORE `docker compose up` ever runs, regardless of
+        # whether `bd export` itself succeeds -- otherwise Docker creates a
+        # directory at the missing bind-mount host path, which then makes
+        # every future `bd export -o` fail permanently with
+        # IsADirectoryError. Simulate "bd export failed" and assert a
+        # regular (not missing) file is left behind anyway.
+        def fake_run(cmd, cwd, capture_output, text, timeout):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="dolt unreachable")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        export_path = tmp_path / ".beads" / "issues.export.jsonl"
+        assert not export_path.exists()
+
+        result = materialize_beads_export(_config(repo_root=tmp_path))
+
+        assert result is False
+        assert export_path.is_file()
+
+    def test_does_not_clobber_existing_export_before_running_bd(self, tmp_path, monkeypatch):
+        # The pre-flight placeholder guard must not truncate an existing,
+        # still-valid export before `bd export` gets a chance to refresh it.
+        export_path = tmp_path / ".beads" / "issues.export.jsonl"
+        export_path.parent.mkdir(parents=True)
+        export_path.write_text('{"id": "bu-1"}\n')
+
+        captured = {}
+
+        def fake_run(cmd, cwd, capture_output, text, timeout):
+            captured["pre_run_contents"] = export_path.read_text()
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        materialize_beads_export(_config(repo_root=tmp_path))
+        assert captured["pre_run_contents"] == '{"id": "bu-1"}\n'
+
+
 class TestRecreateServices:
     def test_up_dash_d_remove_orphans_no_profile(self, monkeypatch):
         captured = {}
@@ -249,6 +334,11 @@ class TestRunDeploy:
 
             return _fn
 
+        def _export_ok(config):
+            # Best-effort — never raises, so it is not a valid `fail_at` target.
+            calls.append("beads-export")
+            return True
+
         async def _wait_ok(config):
             calls.append("health-check")
             if fail_at == "health-check":
@@ -256,6 +346,7 @@ class TestRunDeploy:
 
         monkeypatch.setattr("butlers.core.deploy.build_image", make("build"))
         monkeypatch.setattr("butlers.core.deploy.run_migrations", make("migrate"))
+        monkeypatch.setattr("butlers.core.deploy.materialize_beads_export", _export_ok)
         monkeypatch.setattr("butlers.core.deploy.recreate_services", make("recreate"))
         monkeypatch.setattr("butlers.core.deploy.wait_for_health", _wait_ok)
         monkeypatch.setattr("butlers.core.deploy.resolve_git_sha", lambda repo_root: "deadbeef")
@@ -272,7 +363,7 @@ class TestRunDeploy:
 
         result = await run_deploy(_config(), pool=pool)
 
-        assert calls == ["build", "migrate", "recreate", "health-check"]
+        assert calls == ["build", "migrate", "beads-export", "recreate", "health-check"]
         assert result.result == "success"
         assert result.git_sha == "deadbeef"
         assert result.migration_head == "core_163"

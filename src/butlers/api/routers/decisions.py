@@ -21,6 +21,14 @@ Decision-bead detection is a heuristic today (title markers), not yet the
 structured options/default/deadline convention bu-ckkpz.1 is adding -- see
 ``decision_review.py``'s own "Decision-bead detection is a heuristic, not yet
 a convention" docstring section and the tracked follow-up bu-97qrw.
+
+``meta.export_as_of`` (bu-hmdqz.6) carries the beads export file's own
+mtime, whenever known, so the frontend can render an honest "as of" plaque
+instead of trusting hour-precision computed ages against a single-file
+bind-mount that tolerates up to 14 days of staleness before
+``decisions_available`` flips to ``False`` (``_STALE_EXPORT_AGE`` in
+``decision_review.py``) -- a stale-but-not-yet-14-days-stale export must
+still be visible as stale, not rendered as calm current data.
 """
 
 from __future__ import annotations
@@ -53,6 +61,7 @@ async def list_decisions() -> ApiResponse[list[DecisionBeadSummary]]:
             meta=ApiMeta(
                 decisions_available=False,
                 unavailable_reason=digest.unavailable_reason,
+                export_as_of=digest.export_as_of,
             ),
         )
 
@@ -76,4 +85,7 @@ async def list_decisions() -> ApiResponse[list[DecisionBeadSummary]]:
             )
         )
 
-    return ApiResponse(data=items, meta=ApiMeta(decisions_available=True))
+    return ApiResponse(
+        data=items,
+        meta=ApiMeta(decisions_available=True, export_as_of=digest.export_as_of),
+    )

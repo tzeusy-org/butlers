@@ -126,6 +126,52 @@ describe("DecisionsPage -- degraded envelope (never a fabricated all-clear)", ()
   });
 });
 
+describe("DecisionsPage -- export as-of plaque (bu-hmdqz.6)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("renders no plaque when export_as_of is absent", () => {
+    mockDecisions([], { decisions_available: true });
+    const html = renderPage();
+    expect(html).not.toContain('data-testid="decisions-export-as-of"');
+  });
+
+  it("renders a muted plaque for a recent export", () => {
+    mockDecisions([], {
+      decisions_available: true,
+      export_as_of: new Date(Date.now() - 60 * 60 * 1000).toISOString(), // 1h ago
+    });
+    const html = renderPage();
+    expect(html).toContain('data-testid="decisions-export-as-of"');
+    expect(html).toContain("export as of");
+    expect(html).not.toContain("--amber-text");
+  });
+
+  it("renders a warning-tinted plaque for a stale-but-available export", () => {
+    mockDecisions([], {
+      decisions_available: true,
+      export_as_of: new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString(), // 3d ago
+    });
+    const html = renderPage();
+    expect(html).toContain('data-testid="decisions-export-as-of"');
+    expect(html).toContain("amber-text");
+    expect(html).toContain("3d ago");
+  });
+
+  it("also renders alongside the degraded-unavailable note when export_as_of is known", () => {
+    // e.g. export_stale: unavailable, but the mtime is still known and worth showing.
+    mockDecisions([], {
+      decisions_available: false,
+      unavailable_reason: "export_stale",
+      export_as_of: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const html = renderPage();
+    expect(html).toContain('data-testid="decisions-degraded"');
+    expect(html).toContain('data-testid="decisions-export-as-of"');
+  });
+});
+
 describe("DecisionsPage -- j/k roving selection expands the door", () => {
   let container: HTMLDivElement | undefined;
   let root: Root | undefined;

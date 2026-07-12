@@ -224,6 +224,13 @@ services:
       - ./logs:/app/logs
       - wa_bridge_socket:/tmp/wa-bridge
       - butlers_backups:/backups:ro
+      # bu-hmdqz.6: same read-only single-file mount as butlers-up/
+      # butlers-up-hotreload below -- GET /api/decisions
+      # (src/butlers/api/routers/decisions.py) runs in THIS container and
+      # calls compute_decision_digest() in-process, so without this mount
+      # it is permanently decisions_available=False. Never mount the whole
+      # .beads/ dir (see butlers-up's own volumes block for why).
+      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       <<: *postgres-env
@@ -777,6 +784,8 @@ services:
       - uv_cache:/root/.cache/uv
       - wa_bridge_socket:/tmp/wa-bridge
       - butlers_backups:/backups:ro
+      # bu-hmdqz.6: see dashboard-api's own volumes block above for why.
+      - ./.beads/issues.export.jsonl:/app/.beads/issues.export.jsonl:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:41200/health || exit 1"]
       interval: 5s

@@ -391,6 +391,22 @@ if [[ " ${PROFILES[*]} " == *" audio "* ]]; then
   }
 fi
 
+# ── Ensure the beads export file exists before compose mounts it ──────
+# bu-hmdqz.6: docker-compose.yml bind-mounts ./.beads/issues.export.jsonl:ro
+# into dashboard-api(-hotreload)/butlers-up(-hotreload). If that host path
+# doesn't exist yet (fresh clone, or a worktree that's never run `bd
+# export`), Docker creates a *directory* there to satisfy the mount --
+# permanently breaking `bd export -o` afterwards with IsADirectoryError.
+# This dev flow doesn't go through `butlers deploy`
+# (src/butlers/core/deploy.py::materialize_beads_export is the prod-deploy
+# equivalent of this same guard), so it needs its own. Prefer a real export
+# when `bd` is available and reachable; fall back to an empty placeholder
+# file otherwise -- either way, a regular file exists before `compose up`.
+mkdir -p .beads
+if [ ! -f .beads/issues.export.jsonl ]; then
+  bd export -o .beads/issues.export.jsonl 2>/dev/null || touch .beads/issues.export.jsonl
+fi
+
 # ── Swap: stop old containers, start new ones ─────────────────────────
 # --remove-orphans clears containers from renamed/removed services.
 "${CMD[@]}" down --remove-orphans 2>/dev/null || true

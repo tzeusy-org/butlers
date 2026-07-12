@@ -36,6 +36,14 @@ currently open) SHALL report `decisions_available: true` with an empty list.
 (e.g. `"export_missing"`, `"export_stale"`) when `decisions_available` is
 false.
 
+`meta.export_as_of` SHALL carry the beads export file's own mtime (ISO 8601
+timestamp) whenever it was successfully stat'd -- including on the
+`export_stale` branch, where the export was readable but old enough to be
+distrusted. It SHALL be `null`/absent only when the export was never reached
+(e.g. `export_missing`). This lets a consumer render the true data age
+instead of trusting hour-precision `age_hours` values computed against a
+single-file bind-mount that may silently freeze at container-start inode.
+
 Open decisions SHALL be ordered oldest-first (ascending `created_at`),
 matching `compute_decision_digest()`'s own ordering.
 
@@ -58,3 +66,10 @@ matching `compute_decision_digest()`'s own ordering.
 - **THEN** that decision's `DecisionBeadSummary.escalated` is `true`
 - **AND** `escalated_blocked_id`/`escalated_blocked_title`/`escalated_blocked_kind`/`escalated_block_hours`
   describe the longest-blocked such edge
+
+#### Scenario: A stale-but-not-yet-unavailable export still reports its age
+
+- **WHEN** the beads export is readable but old enough to be flagged
+  `export_stale` (`decisions_available: false`)
+- **THEN** `meta.export_as_of` is still populated with the export's mtime
+  (not `null`), so a caller can report exactly how stale the data is

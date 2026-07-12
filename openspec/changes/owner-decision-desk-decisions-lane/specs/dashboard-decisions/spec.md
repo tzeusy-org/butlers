@@ -98,3 +98,34 @@ degraded note instead of the calm "No decisions waiting." empty state.
 
 - **WHEN** `meta.decisions_available` is `false`
 - **THEN** the row-list area renders a named "Decisions: <reason>" note instead of "No decisions waiting."
+
+### Requirement: Export As-Of Plaque
+
+When `GET /api/decisions`'s `meta.export_as_of` is known, the `/decisions`
+page SHALL render a plaque naming the beads export's age next to the verdict
+opener, regardless of whether `decisions_available` is `true` or `false` --
+the underlying single-file bind-mount tolerates up to 14 days of staleness
+before `decisions_available` flips off, so a slowly-aging-but-still-available
+export MUST NOT render as calm current data. Past a shorter warning
+threshold (well before the 14-day cliff), the plaque SHALL switch from a
+muted to a warning-tinted style so staleness gets a visible tell before the
+digest goes fully unavailable. The plaque SHALL be omitted (not rendered)
+only when `meta.export_as_of` itself is absent (the export was never
+reached, e.g. `export_missing`).
+
+#### Scenario: Recent export renders a muted plaque
+
+- **WHEN** `meta.export_as_of` is within the warning threshold of now
+- **THEN** the page renders an "export as of <age> ago" plaque in a muted style
+
+#### Scenario: Aging export renders a warning-tinted plaque
+
+- **WHEN** `meta.export_as_of` is older than the warning threshold but the
+  digest is still `decisions_available: true`
+- **THEN** the plaque renders in a warning tint, distinct from the muted style
+
+#### Scenario: Plaque persists alongside the degraded note
+
+- **WHEN** `decisions_available` is `false` (e.g. `export_stale`) but
+  `meta.export_as_of` is known
+- **THEN** the plaque still renders alongside the degraded-source note

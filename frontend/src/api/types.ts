@@ -9017,6 +9017,15 @@ export interface DecisionBeadSummary {
 export interface DecisionsListMeta extends ApiMeta {
   decisions_available: boolean;
   unavailable_reason?: string | null;
+  /**
+   * ISO timestamp of the beads export file's own mtime, whenever known
+   * (bu-hmdqz.6) -- lets the frontend render an honest "as of" plaque
+   * instead of trusting hour-precision computed ages against a single-file
+   * bind-mount that tolerates up to 14 days of staleness before
+   * `decisions_available` flips to `false`. `null`/absent only when the
+   * export was never reached (e.g. missing file).
+   */
+  export_as_of?: string | null;
 }
 
 /** GET /api/decisions response: open decision beads + digest-availability meta. */
