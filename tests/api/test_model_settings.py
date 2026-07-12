@@ -730,3 +730,136 @@ async def test_dispatch_attempts_by_logical_session_id(app):
     assert "WHERE logical_session_id = $1" in sql
     assert "session_id = $1::uuid" not in sql
     assert fetch_call.args[1] == logical_id
+
+
+# ---------------------------------------------------------------------------
+# GET /api/dispatch/attempts?outcome=... — fleet-wide mode (bu-7o89u.3)
+#
+# Powers the /spend fleet-halt state: "how many dispatches has the fleet
+# denied recently" without a session id in hand. quota_skip rows are written
+# both for the monthly-ceiling hard block (spawner.py:1179-1202) AND for
+# routine same-tier token-quota failovers (spawner.py:1082,1122) -- the
+# latter is normal operation, not a fleet halt -- so reason_prefix is what
+# isolates the ceiling-specific denials the dashboard cares about.
+# ---------------------------------------------------------------------------
+
+
+async def test_dispatch_attempts_outcome_mode_returns_rows_ordered_desc(app):
+    """?outcome=quota_skip with no session_id/logical_session_id lists fleet-wide rows."""
+    from datetime import UTC, datetime
+
+    older_ts = datetime(2026, 7, 10, 8, 0, 0, tzinfo=UTC)
+    newer_ts = datetime(2026, 7, 12, 9, 0, 0, tzinfo=UTC)
+    rows_data = [
+        {
+            "ts": newer_ts,
+            "butler": "finance",
+            "outcome": "quota_skip",
+            "attempt_index": 0,
+            "failure_reason": "Monthly spend ceiling reached: month-to-date $50.00 >= ceiling $50.00",
+            "error_code": None,
+            "error_message": None,
+            "tool_call_count": 0,
+            "session_id": None,
+            "logical_session_id": "req-ceiling-002",
+        },
+        {
+            "ts": older_ts,
+            "butler": "general",
+            "outcome": "quota_skip",
+            "attempt_index": 0,
+            "failure_reason": "Monthly spend ceiling reached: month-to-date $50.00 >= ceiling $50.00",
+            "error_code": None,
+            "error_message": None,
+            "tool_call_count": 0,
+            "session_id": None,
+            "logical_session_id": "req-ceiling-001",
+        },
+    ]
+
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in rows_data])
+    mock_pool.fetchval = AsyncMock(return_value=2)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/dispatch/attempts?outcome=quota_skip")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["meta"]["total"] == 2
+    assert len(body["data"]) == 2
+    assert body["data"][0]["butler"] == "finance"
+
+    fetch_call = mock_pool.fetch.call_args
+    sql = fetch_call.args[0]
+    assert "WHERE outcome = $1" in sql
+    assert "ORDER BY ts DESC" in sql
+    assert fetch_call.args[1] == "quota_skip"
+
+
+async def test_dispatch_attempts_outcome_mode_reason_prefix_and_since_filter(app):
+    """reason_prefix isolates ceiling denials; since bounds by timestamp; order=asc flips sort."""
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_pool.fetchval = AsyncMock(return_value=0)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/dispatch/attempts"
+            "?outcome=quota_skip"
+            "&reason_prefix=Monthly+spend+ceiling+reached"
+            "&since=2026-07-01T00:00:00Z"
+            "&order=asc"
+            "&limit=1"
+        )
+
+    assert resp.status_code == 200
+
+    fetch_call = mock_pool.fetch.call_args
+    sql = fetch_call.args[0]
+    assert "left(failure_reason, length($2)) = $2" in sql
+    assert "ts >= $3" in sql
+    assert "ORDER BY ts ASC" in sql
+    assert fetch_call.args[1] == "quota_skip"
+    assert fetch_call.args[2] == "Monthly spend ceiling reached"
+    # args[3] is the `since` datetime, args[4] is the limit
+    assert fetch_call.args[4] == 1
+
+    fetchval_call = mock_pool.fetchval.call_args
+    count_sql = fetchval_call.args[0]
+    assert "left(failure_reason, length($2)) = $2" in count_sql
+    assert "ts >= $3" in count_sql
+    # The count query binds outcome/reason_prefix/since but NOT limit.
+    assert len(fetchval_call.args) == 4
+
+
+async def test_dispatch_attempts_outcome_mode_empty_on_missing_table(app):
+    """Fleet-mode query also falls back to an empty page (not 503) pre-migration."""
+    import asyncpg.exceptions
+
+    _, mock_pool = _app_with_pool(app)
+    mock_pool.fetch = AsyncMock(
+        side_effect=asyncpg.exceptions.UndefinedTableError("model_dispatch_attempts")
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/dispatch/attempts?outcome=quota_skip")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+
+
+async def test_dispatch_attempts_invalid_order_returns_422(app):
+    """order must be 'asc' or 'desc'; anything else is a validation error."""
+    _, _mock_pool = _app_with_pool(app)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/dispatch/attempts?outcome=quota_skip&order=sideways")
+    assert resp.status_code == 422

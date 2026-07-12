@@ -70,6 +70,41 @@ The dashboard SHALL expose the spend endpoints.
 - **THEN** the singleton ceiling row is updated
 - **AND** the call invokes `audit.append("spend.ceiling")`.
 
+### Requirement: Fleet-Halt Visibility
+The dashboard SHALL surface the monthly spend ceiling's enforcement action —
+dispatches being denied fleet-wide — as a loud, explicit state on the Spend page,
+not silence. The ceiling is enforced by `check_monthly_ceiling` / the spawner
+(`spawner.py:1179-1202`), which writes an `outcome='quota_skip'` row to
+`public.model_dispatch_attempts` with `failure_reason` starting `"Monthly spend
+ceiling reached"` for every denied dispatch (see model-failover spec, Failover
+Attempt Provenance).
+
+#### Scenario: A red fleet-halt banner renders while the ceiling is breached
+- **WHEN** `GET /api/dispatch/attempts?outcome=quota_skip&reason_prefix=Monthly+spend+ceiling+reached`
+  (scoped to the current calendar month) returns one or more rows
+- **THEN** the Spend page renders a red state reading "Monthly ceiling reached —
+  N dispatches denied since `<timestamp>`", where N is the total matching count
+  for the current month and `<timestamp>` is the earliest matching row's `ts`
+- **AND** the banner additionally shows a denied-today count (rows since the
+  start of the current owner-tz day)
+- **AND** the banner does not render when no such rows exist for the current month
+
+#### Scenario: An attempts drawer lists recent denials with session doors
+- **WHEN** the fleet-halt banner is active
+- **THEN** an expandable drawer lists the most recent denied attempts (butler,
+  timestamp, failure reason)
+- **AND** each row whose `session_id` is non-null links to that session's detail
+  page (`/sessions/:id`), mirroring the session-door pattern the Top Sessions
+  table already uses
+- **AND** rows with no `session_id` (pre-session ceiling denials) render without
+  a session door instead of a dead or broken link
+
+#### Scenario: Degraded attempts source never renders as "no denials"
+- **WHEN** `GET /api/dispatch/attempts` fails (network error, non-2xx)
+- **THEN** the Spend page SHALL render a degraded-source note for the fleet-halt
+  state (per the fleet degraded-source convention) instead of silently omitting
+  the banner, which would read as a false "the fleet is not halted"
+
 ### Requirement: Spend Live Stream
 The dashboard SHALL fan per-call spend events onto the unified fleet event bus (`WS /api/events/stream`) (the earlier dedicated `WS /api/spend/stream` route was retired in bu-01r64.2 once the bus fully covered this traffic).
 

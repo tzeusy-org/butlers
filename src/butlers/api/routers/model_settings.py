@@ -1568,15 +1568,49 @@ async def get_dispatch_attempts(
             "cycle, even when multiple session rows exist."
         ),
     ),
+    outcome: str | None = Query(
+        None,
+        description=(
+            "Fleet-wide mode (bu-7o89u.3): filter by outcome (e.g. 'quota_skip') across ALL "
+            "sessions instead of one session/logical_session_id. Mutually exclusive with "
+            "session_id/logical_session_id. Powers the /spend fleet-halt state, which needs "
+            "'recent denied dispatches' without knowing a session id up front."
+        ),
+    ),
+    reason_prefix: str | None = Query(
+        None,
+        description=(
+            "Only valid with 'outcome'. Narrows to rows whose failure_reason starts with this "
+            "prefix, e.g. 'Monthly spend ceiling reached' to isolate ceiling hard-blocks from "
+            "routine same-tier quota_skip failovers (both share outcome='quota_skip')."
+        ),
+    ),
+    since: datetime | None = Query(
+        None,
+        description="Only valid with 'outcome'. Restricts to rows with ts >= this timestamp.",
+    ),
+    order: str = Query(
+        "desc",
+        pattern="^(asc|desc)$",
+        description="Only valid with 'outcome'. Sort direction for ts ('asc' or 'desc').",
+    ),
     limit: int = Query(100, ge=1, le=500, description="Max records to return"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[DispatchAttemptEntry]:
-    """Return failover attempt provenance rows for a session or logical session.
+    """Return failover attempt provenance rows.
 
-    Exactly one of ``session_id`` or ``logical_session_id`` must be provided.
+    Two mutually exclusive query modes:
 
-    Rows are ordered by ``attempt_index ASC`` so callers can reconstruct the
-    ordered sequence of candidates for a single logical dispatch cycle.
+    - **Session mode** (``session_id`` and/or ``logical_session_id``): rows for one
+      logical dispatch cycle, ordered by ``attempt_index ASC`` so callers can
+      reconstruct the ordered sequence of candidates.
+    - **Fleet mode** (``outcome``, optionally narrowed by ``reason_prefix``/``since``):
+      rows across ALL sessions matching the outcome, ordered by ``ts`` (``order``,
+      default ``desc``). Used by the dashboard to answer "how many dispatches has
+      the fleet denied recently" without a session id in hand (bu-7o89u.3).
+
+    Exactly one of ``session_id``, ``logical_session_id``, or ``outcome`` must be
+    provided.
 
     Each row answers one of these questions:
     - Which model was skipped before invocation (``quota_skip``)?
@@ -1587,16 +1621,51 @@ async def get_dispatch_attempts(
     When the table does not exist (migration not yet applied) returns an empty
     page rather than 503.
     """
-    if session_id is None and logical_session_id is None:
+    if session_id is None and logical_session_id is None and outcome is None:
         raise HTTPException(
             status_code=422,
-            detail=("At least one of 'session_id' or 'logical_session_id' must be provided."),
+            detail=(
+                "At least one of 'session_id', 'logical_session_id', or 'outcome' must be provided."
+            ),
         )
 
     pool = _shared_pool(db)
 
     try:
-        if session_id is not None and logical_session_id is not None:
+        if outcome is not None:
+            order_sql = "ASC" if order == "asc" else "DESC"
+            where_clauses = ["outcome = $1"]
+            params: list[Any] = [outcome]
+            if reason_prefix is not None:
+                params.append(reason_prefix)
+                # True prefix match, not a LIKE pattern -- reason_prefix is caller-supplied
+                # (query param), and `%`/`_` are LIKE wildcards. `left(...) = $n` avoids
+                # having to escape those characters and keeps the "prefix" contract exact.
+                n = len(params)
+                where_clauses.append(f"left(failure_reason, length(${n})) = ${n}")
+            if since is not None:
+                params.append(since)
+                where_clauses.append(f"ts >= ${len(params)}")
+            where_sql = " AND ".join(where_clauses)
+
+            rows = await pool.fetch(
+                f"""
+                SELECT ts, butler, outcome, attempt_index,
+                       failure_reason, error_code, error_message,
+                       tool_call_count, session_id, logical_session_id
+                FROM public.model_dispatch_attempts
+                WHERE {where_sql}
+                ORDER BY ts {order_sql}
+                LIMIT ${len(params) + 1}
+                """,
+                *params,
+                limit,
+            )
+            total = await pool.fetchval(
+                f"SELECT count(*) FROM public.model_dispatch_attempts WHERE {where_sql}",
+                *params,
+            )
+        elif session_id is not None and logical_session_id is not None:
             rows = await pool.fetch(
                 """
                 SELECT ts, butler, outcome, attempt_index,

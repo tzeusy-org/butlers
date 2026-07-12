@@ -91,6 +91,27 @@ together. Operators read it via `GET /api/dispatch/attempts` and
 - **AND** downstream readers SHALL be able to detect terminal exhaustion from the explicit
   `exhausted` row rather than inferring it from the last `runtime_failure` row
 
+#### Scenario: Fleet-wide attempt query (bu-7o89u.3)
+- **WHEN** a caller requests `GET /api/dispatch/attempts?outcome=<outcome>` without
+  `session_id` or `logical_session_id`
+- **THEN** the endpoint SHALL return attempt rows matching `outcome` across ALL
+  sessions, ordered by `ts` (`order` query param, `asc` or `desc`, default `desc`),
+  instead of requiring a session identifier up front
+- **AND** an optional `reason_prefix` query param SHALL further restrict rows to
+  those whose `failure_reason` starts with the given prefix — needed because
+  `outcome='quota_skip'` alone conflates the monthly spend-ceiling hard block
+  (`failure_reason` starting `"Monthly spend ceiling reached"`) with routine
+  same-tier token-quota failovers, which are normal operation and share the same
+  `outcome`
+- **AND** an optional `since` query param SHALL restrict rows to `ts >= since`
+- **AND** `meta.total` SHALL be the full count matching the filter (`outcome` +
+  `reason_prefix` + `since`), independent of `limit`, so a caller can read an
+  accurate count without fetching every row
+- **AND** exactly one of `session_id`, `logical_session_id`, or `outcome` SHALL be
+  required; a request with none of the three SHALL return `422`
+- **AND** this mode SHALL power the `/spend` fleet-halt state (dashboard-spend-dashboard
+  spec) rather than requiring a new dedicated endpoint
+
 ## Source References
 - Non-Negotiable Rule 4 (The daemon is deterministic infrastructure; intelligence is in ephemeral LLM CLI instances — failover orchestration is deterministic daemon behavior wrapping the ephemeral runtime invocation)
 - RFC 0001 (Daemon Lifecycle and Triggers; the spawner orchestrates ephemeral runtime invocations for a logical session)

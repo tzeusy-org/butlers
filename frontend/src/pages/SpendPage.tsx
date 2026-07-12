@@ -47,6 +47,7 @@ import { Eyebrow } from "@/components/ui/Eyebrow"
 import { toast } from "sonner"
 import { apiFetch } from "@/api/client"
 import { useSpendTicker } from "@/hooks/use-spend-ticker"
+import { useFleetHaltStatus } from "@/hooks/use-fleet-halt"
 import { useModelCatalog } from "@/hooks/use-model-catalog"
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval"
 import {
@@ -1362,6 +1363,132 @@ function SpendRulesSection() {
 }
 
 // ---------------------------------------------------------------------------
+// Fleet-halt banner + attempts drawer (bu-7o89u.3)
+//
+// The most consequential thing the spend system can do is halt the fleet: the
+// monthly ceiling denies EVERY dispatch, fleet-wide, once MTD reaches it
+// (spawner.py:1179-1202). That already happens silently -- quota_skip rows
+// land in public.model_dispatch_attempts and are already served by GET
+// /api/dispatch/attempts, but zero frontend surfaces read them. This section
+// makes an active halt loud (red, above the projected-overage row, which is
+// merely a forecast) and gives an evidence drawer with session doors into
+// each denied attempt.
+// ---------------------------------------------------------------------------
+
+function formatAttemptTimestamp(iso: string): string {
+  const parsed = new Date(iso)
+  if (Number.isNaN(parsed.getTime())) return "unknown"
+  return parsed.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
+
+function FleetHaltBanner() {
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const halt = useFleetHaltStatus()
+
+  // A failed dispatch-attempts fetch must never render as "the fleet is not
+  // halted" -- that would be a fabricated all-clear on the single most
+  // consequential spend signal (fleet degraded-source convention).
+  if (halt.isError) {
+    return (
+      <SourceDegradedNote
+        label="Fleet-halt status"
+        detail="dispatch denial feed unavailable -- cannot confirm whether the monthly ceiling is halting dispatches"
+        testId="fleet-halt-source-error"
+      />
+    )
+  }
+
+  if (halt.isLoading || !halt.active) return null
+
+  return (
+    <div className="border border-[var(--red)]/40" data-testid="fleet-halt-banner">
+      <div
+        className="attention-row flex items-center gap-3 px-4 py-3"
+        data-tone="red"
+        role="alert"
+      >
+        <span className="shrink-0 h-2 w-2 rounded-full bg-[var(--red)]" aria-hidden />
+        <p className="text-sm flex-1">
+          <span className="font-medium">Monthly ceiling reached</span> —{" "}
+          <span className="tabular-nums font-medium">{halt.deniedTotal}</span>{" "}
+          {halt.deniedTotal === 1 ? "dispatch" : "dispatches"} denied since{" "}
+          <span className="tabular-nums font-medium">
+            {halt.since ? formatAttemptTimestamp(halt.since) : "unknown"}
+          </span>
+          {" · "}
+          <span className="tabular-nums font-medium">{halt.deniedToday}</span> denied today.
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0 text-xs h-7"
+          data-testid="fleet-halt-drawer-toggle"
+          onClick={() => setDrawerOpen((open) => !open)}
+        >
+          {drawerOpen ? "Hide" : "View"} denied attempts
+        </Button>
+      </div>
+      {drawerOpen && (
+        <div className="p-4 border-t border-[var(--red)]/40" data-testid="fleet-halt-drawer">
+          {halt.recentAttempts.length === 0 ? (
+            <p className="font-serif italic text-muted-foreground text-sm">
+              No recent denied attempts loaded.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                    <th className="text-left py-2 px-2 font-normal">Butler</th>
+                    <th className="text-left py-2 px-2 font-normal">When</th>
+                    <th className="text-left py-2 px-2 font-normal">Reason</th>
+                    <th className="text-right py-2 px-2 font-normal">Session</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {halt.recentAttempts.map((a, i) => (
+                    <tr
+                      key={`${a.session_id ?? a.logical_session_id ?? "none"}-${a.ts}-${i}`}
+                      className="border-b border-border/60"
+                      data-testid="fleet-halt-attempt-row"
+                    >
+                      <td className="py-2 px-2">{a.butler}</td>
+                      <td className="py-2 px-2 text-xs text-muted-foreground">
+                        {formatAttemptTimestamp(a.ts)}
+                      </td>
+                      <td className="py-2 px-2 text-xs text-muted-foreground">
+                        {a.failure_reason ?? "—"}
+                      </td>
+                      <td className="py-2 px-2 text-right text-xs">
+                        {/* Session door (bu-7o89u.3): pre-session ceiling denials
+                            have no session_id yet -- render a plain dash instead
+                            of a dead link (mirrors TopSessionsSection's pattern). */}
+                        {a.session_id ? (
+                          <Link to={`/sessions/${a.session_id}`} className="hover:underline">
+                            View session
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -1520,6 +1647,10 @@ export default function SpendPage() {
           moversLoading={currentSummaryLoading || priorSummaryLoading}
           moversError={currentSummaryError || priorSummaryError}
         />
+
+        {/* Fleet-halt banner (bu-7o89u.3) — the ceiling IS denying dispatches
+            right now, above the merely-projected over-ceiling row below. */}
+        <FleetHaltBanner />
 
         {/* Over-ceiling attention row — projected EOM exceeds the ceiling */}
         {overCeiling && liveForecast && (

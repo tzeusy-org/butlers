@@ -58,6 +58,28 @@ export interface OverviewDerivationInput {
   qaSummaryError?: boolean;
   timeline?: TimelineEvent[];
   timelineError?: boolean;
+  /**
+   * Monthly spend-ceiling fleet-halt state, derived from GET
+   * /api/dispatch/attempts via useFleetHaltStatus (bu-7o89u.3). Absent/null
+   * means the caller hasn't wired the source (renders no row, same as every
+   * other optional source above).
+   */
+  fleetHalt?: OverviewFleetHaltStatus | null;
+}
+
+/**
+ * The subset of useFleetHaltStatus's return value the attention-row deriver
+ * needs. Kept as its own interface (rather than importing the hook's type
+ * directly) so model.ts stays a pure function of plain data, consistent with
+ * every other *Error-flag input above.
+ */
+export interface OverviewFleetHaltStatus {
+  active: boolean;
+  deniedToday: number;
+  deniedTotal: number;
+  since: string | null;
+  /** True when the underlying GET /api/dispatch/attempts fetch itself failed. */
+  isSourceError: boolean;
 }
 
 export interface OverviewRuntimeKpis {
@@ -192,6 +214,7 @@ export function deriveOverviewTriageModel(
   const notificationRows = notificationAttentionRows(input.notificationStats);
   const notificationSourceRows = notificationSourceErrorRows(input.notificationStats);
   const qaRows = qaAttentionRows(input.qaSummary);
+  const fleetHaltRows = fleetHaltAttentionRows(input.fleetHalt);
   const currentHighIssues = issueBuckets.currentHigh.slice(0, maxRecentIssueRows);
   const remainingIssueSlots = Math.max(maxRecentIssueRows - currentHighIssues.length, 0);
   const recentIssues = issueBuckets.recent.slice(0, remainingIssueSlots);
@@ -233,6 +256,7 @@ export function deriveOverviewTriageModel(
     ...butlersSourceErrorRows,
     ...currentHighIssueRows,
     ...runtimeRows,
+    ...fleetHaltRows,
     ...approvalRows,
     ...notificationRows,
     ...notificationSourceRows,
@@ -551,6 +575,65 @@ function notificationSourceErrorRows(
       isSourceError: true,
     },
   ];
+}
+
+/**
+ * Fleet-halt attention row (bu-7o89u.3): the monthly spend ceiling denying
+ * dispatches fleet-wide is the single most consequential thing the spend
+ * system can do -- it must be loud (critical severity), not silent. Mirrors
+ * the notifications degraded-source idiom (`isSourceError`) for the case
+ * where the underlying GET /api/dispatch/attempts fetch itself failed: a
+ * failed fetch must never read as "the fleet is fine" (fleet degraded-source
+ * convention).
+ */
+function fleetHaltAttentionRows(
+  status: OverviewFleetHaltStatus | null | undefined,
+): OverviewAttentionRow[] {
+  if (!status) return [];
+
+  if (status.isSourceError) {
+    return [
+      {
+        id: "fleet-halt:source-error",
+        kind: "runtime",
+        severity: "high",
+        title: "Dispatch denial feed unavailable",
+        detail:
+          "Could not confirm whether the monthly ceiling is halting dispatches -- retry from Spend.",
+        href: "/spend",
+        isSourceError: true,
+      },
+    ];
+  }
+
+  if (!status.active) return [];
+
+  return [
+    {
+      id: "fleet-halt:ceiling",
+      kind: "runtime",
+      severity: "critical",
+      title: "Monthly ceiling reached -- dispatches denied",
+      detail: `${status.deniedToday} denied today, ${status.deniedTotal} since ${
+        status.since ? formatSinceTimestamp(status.since) : "unknown"
+      }.`,
+      href: "/spend",
+      count: status.deniedToday,
+      lastSeenAt: status.since,
+    },
+  ];
+}
+
+/** Short human date+time for the fleet-halt row's "since <ts>" clause. */
+function formatSinceTimestamp(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "unknown";
+  return parsed.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 /**

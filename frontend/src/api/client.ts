@@ -73,6 +73,8 @@ import type {
   SpendSummary,
   DailySpendResponse,
   TopSessionsResponse,
+  DispatchAttemptEntry,
+  DispatchAttemptsParams,
   ErrorResponse,
   Group,
   GroupListResponse,
@@ -1037,6 +1039,30 @@ export function getCostsBySchedule(from?: string, to?: string): Promise<Schedule
   // table can footnote butlers dropped from the fan-out instead of letting
   // their schedules silently vanish (bu-h3ej9).
   return apiFetch<ScheduleCostsResponse>(`/spend/by-schedule${qs}`);
+}
+
+/**
+ * GET /api/dispatch/attempts — failover/quota-skip provenance rows
+ * (bu-7o89u.3). Exactly one of `session_id`/`logical_session_id`/`outcome`
+ * must be set (mirrors the backend's validation); the `outcome` mode is
+ * fleet-wide and powers the /spend fleet-halt state, which needs "recent
+ * denied dispatches" without a session id in hand.
+ */
+export function getDispatchAttempts(
+  params: DispatchAttemptsParams,
+): Promise<PaginatedResponse<DispatchAttemptEntry>> {
+  const query = new URLSearchParams();
+  if (params.session_id) query.set("session_id", params.session_id);
+  if (params.logical_session_id) query.set("logical_session_id", params.logical_session_id);
+  if (params.outcome) query.set("outcome", params.outcome);
+  if (params.reason_prefix) query.set("reason_prefix", params.reason_prefix);
+  if (params.since) query.set("since", params.since);
+  if (params.order) query.set("order", params.order);
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return apiFetch<PaginatedResponse<DispatchAttemptEntry>>(
+    `/dispatch/attempts${qs ? `?${qs}` : ""}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

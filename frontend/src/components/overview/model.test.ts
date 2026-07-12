@@ -1024,3 +1024,85 @@ describe("deriveOverviewTriageModel — severity-first stable ordering (bu-gcz9e
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fleet-halt attention row (bu-7o89u.3) -- monthly spend ceiling denying
+// dispatches fleet-wide, sourced from useFleetHaltStatus.
+// ---------------------------------------------------------------------------
+
+describe("deriveOverviewTriageModel — fleet-halt attention row (bu-7o89u.3)", () => {
+  it("surfaces a critical row naming the today/total counts and since-timestamp when active", () => {
+    const model = deriveOverviewTriageModel({
+      fleetHalt: {
+        active: true,
+        deniedToday: 4,
+        deniedTotal: 12,
+        since: "2026-05-10T08:00:00.000Z",
+        isSourceError: false,
+      },
+    });
+
+    const row = model.attentionRows.find((r) => r.id === "fleet-halt:ceiling");
+    expect(row).toBeDefined();
+    expect(row).toMatchObject({
+      kind: "runtime",
+      severity: "critical",
+      title: "Monthly ceiling reached -- dispatches denied",
+      href: "/spend",
+      count: 4,
+      lastSeenAt: "2026-05-10T08:00:00.000Z",
+    });
+    expect(row?.detail).toContain("4 denied today");
+    expect(row?.detail).toContain("12 since");
+  });
+
+  it("renders no row when the fleet halt is not active", () => {
+    const model = deriveOverviewTriageModel({
+      fleetHalt: { active: false, deniedToday: 0, deniedTotal: 0, since: null, isSourceError: false },
+    });
+    expect(model.attentionRows.some((r) => r.id === "fleet-halt:ceiling")).toBe(false);
+  });
+
+  it("renders no row when fleetHalt is absent", () => {
+    const model = deriveOverviewTriageModel({});
+    expect(model.attentionRows.some((r) => r.id.startsWith("fleet-halt:"))).toBe(false);
+  });
+
+  it("surfaces a degraded source-error row instead of silently reading as 'no halt' when the fetch fails", () => {
+    const model = deriveOverviewTriageModel({
+      fleetHalt: { active: false, deniedToday: 0, deniedTotal: 0, since: null, isSourceError: true },
+    });
+
+    const row = model.attentionRows.find((r) => r.id === "fleet-halt:source-error");
+    expect(row).toBeDefined();
+    expect(row).toMatchObject({
+      kind: "runtime",
+      severity: "high",
+      title: "Dispatch denial feed unavailable",
+      href: "/spend",
+      isSourceError: true,
+    });
+    expect(model.attentionRows.some((r) => r.id === "fleet-halt:ceiling")).toBe(false);
+  });
+
+  it("ranks the fleet-halt critical row above a same-batch high-severity issue row (severity-first ordering)", () => {
+    const model = deriveOverviewTriageModel(
+      {
+        issues: [issue({ severity: "high", description: "High issue" })],
+        fleetHalt: {
+          active: true,
+          deniedToday: 1,
+          deniedTotal: 1,
+          since: "2026-05-14T11:00:00.000Z",
+          isSourceError: false,
+        },
+      },
+      { now: NOW },
+    );
+
+    const ids = model.attentionRows.map((r) => r.id);
+    expect(ids.indexOf("fleet-halt:ceiling")).toBeLessThan(
+      ids.findIndex((id) => id.startsWith("issue:")),
+    );
+  });
+});

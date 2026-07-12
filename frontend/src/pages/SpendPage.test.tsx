@@ -37,6 +37,12 @@ vi.mock("@/hooks/use-spend-ticker", () => ({
   useSpendTicker: () => mockUseSpendTicker(),
 }))
 
+const mockUseFleetHaltStatus = vi.fn()
+
+vi.mock("@/hooks/use-fleet-halt", () => ({
+  useFleetHaltStatus: () => mockUseFleetHaltStatus(),
+}))
+
 // BreakdownSection/SpendRulesSection/the posture forecast query now call
 // useBusAwarePollInterval directly (bu-01r64.4), which reads the real
 // EventBusProvider context via useContext -- invalid without a provider in
@@ -191,6 +197,17 @@ function setHooks({
   priorError?: boolean
 } = {}) {
   mockUseSpendTicker.mockReturnValue({ streamedCostUsd: 0 })
+  // Fleet-halt inactive by default -- individual fleet-halt tests below
+  // override this per-case (bu-7o89u.3).
+  mockUseFleetHaltStatus.mockReturnValue({
+    active: false,
+    deniedToday: 0,
+    deniedTotal: 0,
+    since: null,
+    recentAttempts: [],
+    isLoading: false,
+    isError: false,
+  })
 
   // useSpendSummary is called twice per render: current window, prior window.
   let call = 0
@@ -1087,5 +1104,125 @@ describe("SpendPage — degraded states (bu-mkd5r)", () => {
     expect(
       screen.queryByText(/No routing rules are configured/),
     ).toBeNull()
+  })
+})
+
+describe("SpendPage — fleet-halt banner (bu-7o89u.3)", () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+    apiFetchMock.mockImplementation(defaultApiFetch)
+    setHooks()
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  it("renders nothing when the fleet halt is not active", async () => {
+    await act(async () => {
+      renderPage()
+    })
+    expect(screen.queryByTestId("fleet-halt-banner")).toBeNull()
+    expect(screen.queryByTestId("fleet-halt-source-error")).toBeNull()
+  })
+
+  it("renders a red banner naming the denied-today/total counts and since-timestamp when active", async () => {
+    mockUseFleetHaltStatus.mockReturnValue({
+      active: true,
+      deniedToday: 4,
+      deniedTotal: 12,
+      since: "2026-05-10T08:00:00.000Z",
+      recentAttempts: [],
+      isLoading: false,
+      isError: false,
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    const banner = await screen.findByTestId("fleet-halt-banner")
+    expect(banner.textContent ?? "").toContain("Monthly ceiling reached")
+    expect(banner.textContent ?? "").toContain("12")
+    expect(banner.textContent ?? "").toContain("4")
+    expect(screen.getByRole("alert")).toBeTruthy()
+  })
+
+  it("degraded: a failed attempts source renders a note, never a silent 'no halt'", async () => {
+    mockUseFleetHaltStatus.mockReturnValue({
+      active: false,
+      deniedToday: 0,
+      deniedTotal: 0,
+      since: null,
+      recentAttempts: [],
+      isLoading: false,
+      isError: true,
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    const note = await screen.findByTestId("fleet-halt-source-error")
+    expect(note.textContent ?? "").toContain("Fleet-halt status")
+    // The (potentially false) "no halt" banner must not also render.
+    expect(screen.queryByTestId("fleet-halt-banner")).toBeNull()
+  })
+
+  it("attempts drawer: expands to list recent denied attempts with session doors", async () => {
+    mockUseFleetHaltStatus.mockReturnValue({
+      active: true,
+      deniedToday: 2,
+      deniedTotal: 2,
+      since: "2026-05-10T08:00:00.000Z",
+      recentAttempts: [
+        {
+          ts: "2026-05-10T09:00:00.000Z",
+          butler: "finance",
+          outcome: "quota_skip",
+          attempt_index: 0,
+          failure_reason: "Monthly spend ceiling reached: month-to-date $50.00 >= ceiling $50.00",
+          error_code: null,
+          error_message: null,
+          tool_call_count: 0,
+          session_id: "sess-halt-1",
+          logical_session_id: "req-halt-1",
+        },
+        {
+          ts: "2026-05-10T08:00:00.000Z",
+          butler: "general",
+          outcome: "quota_skip",
+          attempt_index: 0,
+          failure_reason: "Monthly spend ceiling reached: month-to-date $50.00 >= ceiling $50.00",
+          error_code: null,
+          error_message: null,
+          tool_call_count: 0,
+          session_id: null,
+          logical_session_id: "req-halt-2",
+        },
+      ],
+      isLoading: false,
+      isError: false,
+    })
+
+    await act(async () => {
+      renderPage()
+    })
+
+    await screen.findByTestId("fleet-halt-banner")
+    expect(screen.queryByTestId("fleet-halt-drawer")).toBeNull()
+
+    fireEvent.click(screen.getByTestId("fleet-halt-drawer-toggle"))
+
+    const drawer = await screen.findByTestId("fleet-halt-drawer")
+    const rows = screen.getAllByTestId("fleet-halt-attempt-row")
+    expect(rows).toHaveLength(2)
+    expect(drawer.textContent ?? "").toContain("finance")
+    expect(drawer.textContent ?? "").toContain("general")
+
+    // The row with a session_id gets a session door; the pre-session row does not.
+    const sessionLink = screen.getByRole("link", { name: "View session" })
+    expect(sessionLink.getAttribute("href")).toBe("/sessions/sess-halt-1")
+    expect(screen.getAllByRole("link", { name: "View session" })).toHaveLength(1)
   })
 })

@@ -138,6 +138,20 @@ a rule-separated attention surface, not a card grid or table.
 - **AND** this row does not also render alongside a normal "N failed
   notifications" row for the same fetch
 
+#### Scenario: An active fleet-halt (monthly spend ceiling) surfaces as a critical row
+
+- **WHEN** the fleet-halt status derived from `GET /api/dispatch/attempts`
+  (see dashboard-spend-dashboard spec, Fleet-Halt Visibility) is active — i.e.
+  the monthly spend ceiling has denied one or more dispatches this month
+- **THEN** the attention list renders a critical-severity row reading "Monthly
+  ceiling reached — dispatches denied", naming the denied-today count and the
+  since-timestamp, linking to `/spend`
+- **AND** this row ranks by the same severity-first ordering as every other
+  attention row (critical sorts above high/medium/low)
+- **AND** when the fleet-halt data source itself fails to load, the attention
+  list renders a high-severity source-error row instead of silently omitting
+  the fleet-halt signal (never reads a failed fetch as "the fleet is fine")
+
 #### Scenario: An unreachable butler board source surfaces as a degraded row
 
 - **WHEN** `GET /api/butlers/board` fails to load (`butlersError` is `true`)

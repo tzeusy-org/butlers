@@ -46,6 +46,7 @@ vi.mock("@/hooks/use-approval-decisions.ts", () => ({
 vi.mock("@/hooks/use-notifications", () => ({ useNotificationStats: vi.fn() }));
 vi.mock("@/hooks/use-qa", () => ({ useQaSummary: vi.fn() }));
 vi.mock("@/hooks/use-timeline", () => ({ useTimeline: vi.fn() }));
+vi.mock("@/hooks/use-fleet-halt", () => ({ useFleetHaltStatus: vi.fn() }));
 
 // ---------------------------------------------------------------------------
 // Imports after mocks are registered
@@ -60,6 +61,7 @@ import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions.ts"
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
 import { useTimeline } from "@/hooks/use-timeline";
+import { useFleetHaltStatus } from "@/hooks/use-fleet-halt";
 import type { BoardRow } from "@/api/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -264,6 +266,15 @@ function setDefaultData(stateClass = "quiet", headline = "Everything is in hand.
     isLoading: false,
     isError: false,
     error: null,
+  } as AnyMock);
+  vi.mocked(useFleetHaltStatus).mockReturnValue({
+    active: false,
+    deniedToday: 0,
+    deniedTotal: 0,
+    since: null,
+    recentAttempts: [],
+    isLoading: false,
+    isError: false,
   } as AnyMock);
 }
 

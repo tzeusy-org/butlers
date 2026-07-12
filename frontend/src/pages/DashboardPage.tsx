@@ -63,6 +63,7 @@ import {
 import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
 import { useTimeline } from "@/hooks/use-timeline";
+import { useFleetHaltStatus } from "@/hooks/use-fleet-halt";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 
 import CostWidget from "@/components/costs/CostWidget";
@@ -119,6 +120,10 @@ export default function DashboardPage() {
   const notificationStatsQuery = useNotificationStats();
   const qaSummaryQuery = useQaSummary();
   const timelineQuery = useTimeline({ limit: 5 });
+  // Monthly spend-ceiling fleet-halt state (bu-7o89u.3): the drawer itself
+  // lives on /spend -- Overview only needs the summary shape for the
+  // critical attention row, so the default drawer-row limit is unused here.
+  const fleetHalt = useFleetHaltStatus();
   const topSessionsQuery = useTopSessions();
   // Real 7-day daily cost series for the CostWidget sparkline (bu-86c4c.1 —
   // the sparkline previously fabricated bar heights from a pseudo-random
@@ -139,6 +144,13 @@ export default function DashboardPage() {
     qaSummaryError: qaSummaryQuery.isError,
     timeline: timelineQuery.isError ? [] : (timelineQuery.data?.data ?? []),
     timelineError: timelineQuery.isError,
+    fleetHalt: {
+      active: fleetHalt.active,
+      deniedToday: fleetHalt.deniedToday,
+      deniedTotal: fleetHalt.deniedTotal,
+      since: fleetHalt.since,
+      isSourceError: fleetHalt.isError,
+    },
   });
 
   // Cost surface (spec: dashboard-domain-pages — CostWidget + TopSessionsTable).

@@ -732,6 +732,49 @@ export interface ScheduleCostsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Dispatch attempts (model-failover provenance) — GET /api/dispatch/attempts
+// ---------------------------------------------------------------------------
+
+/**
+ * A single failover/quota-skip provenance row. `outcome` is one of
+ * `quota_skip` (candidate skipped before invocation -- either a routine
+ * same-tier token-quota failover, or a monthly spend-ceiling hard block;
+ * distinguish via `failure_reason`), `runtime_failure`, `suppressed`,
+ * `exhausted`, or `success`.
+ */
+export interface DispatchAttemptEntry {
+  ts: string;
+  butler: string;
+  outcome: string;
+  attempt_index: number;
+  failure_reason: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  tool_call_count: number | null;
+  /** Null for pre-session denials (e.g. a ceiling quota_skip before any session row exists). */
+  session_id: string | null;
+  logical_session_id: string | null;
+}
+
+/**
+ * Params for GET /api/dispatch/attempts. Exactly one of `session_id`,
+ * `logical_session_id`, or `outcome` is required (mirrors the backend's
+ * validation, bu-7o89u.3). The `outcome` mode is fleet-wide (no session id
+ * needed) -- optionally narrowed by `reason_prefix`/`since` -- and powers the
+ * /spend fleet-halt state and its Overview attention row.
+ */
+export interface DispatchAttemptsParams {
+  session_id?: string;
+  logical_session_id?: string;
+  outcome?: string;
+  reason_prefix?: string;
+  /** ISO datetime; restricts to rows with ts >= since. Only valid with `outcome`. */
+  since?: string;
+  order?: "asc" | "desc";
+  limit?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Schedules
 // ---------------------------------------------------------------------------
 
