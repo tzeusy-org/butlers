@@ -28,10 +28,15 @@ where core_155..161 sat unrun in prod for six days):
   session would silently recreate prod under the bind-mounted hotreload
   services (verified empirically: ``COMPOSE_PROFILES=hotreload docker
   compose config --services`` includes profile-gated services with zero
-  ``--profile`` flags on the command line). :func:`_clean_compose_env`
-  strips it, and this module never passes ``--profile`` at all, so the
-  merged config is always exactly the baked-image, non-hotreload service
-  set — see the "PROD DEPLOYS" note atop ``docker-compose.yml``.
+  ``--profile`` flags on the command line). :func:`_clean_compose_env` strips
+  it unconditionally, so the *shell's* profile selection can never leak in.
+  ``DeployConfig.profiles`` (bu-hmdqz.1) lets a caller opt into a named
+  profile explicitly (e.g. ``("dev",)``, so a project whose frontend service
+  is profile-gated doesn't get torn down by ``--remove-orphans``) — but
+  ``"hotreload"`` itself can never be one of them (``DeployConfig.__post_init__``
+  raises), so this pipeline can never recreate services under the
+  bind-mounted, working-tree-sourced containers that motivated this bead in
+  the first place — see the "PROD DEPLOYS" note atop ``docker-compose.yml``.
 
 Testability: :func:`run_deploy` accepts an injected ``pool`` so unit tests
 can mock every subprocess/HTTP boundary while integration tests exercise the
@@ -79,16 +84,29 @@ class DeployError(RuntimeError):
         self.phase = phase
 
 
+#: Profiles this pipeline must never activate. ``hotreload`` bind-mounts
+#: source (``./src``, ``./roster``, ...) from the deploy host's working tree
+#: into the running containers instead of the baked image -- exactly the
+#: "serving from .worktrees/" failure mode bu-hmdqz.1 closes. Explicit
+#: opt-in profiles (below) are fine; inheriting this one, ever, is not.
+_FORBIDDEN_PROFILES = frozenset({"hotreload"})
+
+
 @dataclass(frozen=True)
 class DeployConfig:
     """Everything one ``butlers deploy`` invocation needs, explicitly.
 
-    Deliberately has no field that can select the hotreload or dev compose
-    profiles — see the module docstring. ``compose_files`` defaults to the
-    single base file; there is no separate "prod" overlay file because the
-    base file's default (profile-less) services already are the baked-image,
-    no-bind-mount prod set — the explicitness lives in never adding
-    ``--profile`` and always stripping ``COMPOSE_PROFILES``.
+    ``compose_files`` defaults to the single base file; there is no separate
+    "prod" overlay file because the base file's default (profile-less)
+    services already are the baked-image, no-bind-mount prod set.
+
+    ``profiles`` lets a caller opt into compose profiles the target project
+    actually needs (e.g. ``("dev",)`` for the ``butlers-dev`` project's
+    ``frontend-dev`` service) -- but can never contain ``"hotreload"`` (see
+    ``_FORBIDDEN_PROFILES``; enforced in ``__post_init__``). This is
+    deliberately different from ambient ``COMPOSE_PROFILES`` leakage, which
+    ``_clean_compose_env`` strips unconditionally: profiles here are always
+    explicit, passed via ``--profile``, never inherited from the shell.
     """
 
     repo_root: Path
@@ -99,6 +117,17 @@ class DeployConfig:
     health_url: str = DEFAULT_HEALTH_URL
     health_timeout_s: float = DEFAULT_HEALTH_TIMEOUT_S
     health_poll_interval_s: float = DEFAULT_HEALTH_POLL_INTERVAL_S
+    profiles: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        forbidden = _FORBIDDEN_PROFILES & set(self.profiles)
+        if forbidden:
+            raise ValueError(
+                f"DeployConfig.profiles must never include {sorted(forbidden)} -- "
+                "the hotreload profile bind-mounts source from the working tree "
+                "(possibly a stale .worktrees/ checkout) instead of the baked "
+                "image; see the module docstring."
+            )
 
 
 def resolve_git_sha(repo_root: Path) -> str:
@@ -124,6 +153,8 @@ def _compose_base_args(config: DeployConfig) -> list[str]:
     for compose_file in config.compose_files:
         args += ["-f", compose_file]
     args += ["-p", config.project_name, "--env-file", config.env_file]
+    for profile in config.profiles:
+        args += ["--profile", profile]
     return args
 
 

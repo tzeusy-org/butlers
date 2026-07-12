@@ -38,18 +38,53 @@ class TestResolveGitSha:
 
 
 class TestReadMigrationHead:
-    async def test_returns_head_value(self):
+    """bu-hmdqz.1: the schema's alembic_version table legitimately holds one
+    row per independent chain ever applied there (core, memory, ...), so
+    read_migration_head must isolate the core chain's row rather than
+    grabbing an arbitrary one (the observed bug: a stale 'mem_007' row
+    surfacing on /system instead of a core_NNN head)."""
+
+    async def test_returns_head_value_when_only_core_applied(self, monkeypatch):
+        monkeypatch.setattr(
+            "butlers.core.deployments.get_chain_revision_ids",
+            lambda chain: frozenset({"core_163"}) if chain == "core" else frozenset(),
+        )
         pool = AsyncMock()
-        pool.fetchval = AsyncMock(return_value="core_163")
+        pool.fetch = AsyncMock(return_value=[{"version_num": "core_163"}])
         result = await read_migration_head(pool, "switchboard")
         assert result == "core_163"
-        query = pool.fetchval.await_args.args[0]
+        query = pool.fetch.await_args.args[0]
         assert '"switchboard".alembic_version' in query
+        assert "LIMIT" not in query
+
+    async def test_filters_out_non_core_rows(self, monkeypatch):
+        """A schema carrying both a stale module row and the core row must
+        report only the core one -- not whichever Postgres returns first."""
+        monkeypatch.setattr(
+            "butlers.core.deployments.get_chain_revision_ids",
+            lambda chain: frozenset({"core_163"}) if chain == "core" else frozenset(),
+        )
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(
+            return_value=[{"version_num": "mem_007"}, {"version_num": "core_163"}]
+        )
+        result = await read_migration_head(pool, "public")
+        assert result == "core_163"
+
+    async def test_returns_none_when_core_chain_never_applied(self, monkeypatch):
+        monkeypatch.setattr(
+            "butlers.core.deployments.get_chain_revision_ids",
+            lambda chain: frozenset({"core_163"}) if chain == "core" else frozenset(),
+        )
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[{"version_num": "mem_007"}])
+        result = await read_migration_head(pool, "public")
+        assert result is None
 
     async def test_query_failure_returns_none_not_raise(self):
         """A missing/unreadable alembic_version table must not fail the boot."""
         pool = AsyncMock()
-        pool.fetchval = AsyncMock(side_effect=Exception("relation does not exist"))
+        pool.fetch = AsyncMock(side_effect=Exception("relation does not exist"))
         result = await read_migration_head(pool, "switchboard")
         assert result is None
 

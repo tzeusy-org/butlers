@@ -29,7 +29,9 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
+from butlers.api.routers import system as system_router
 from butlers.api.routers.system import (
+    _commits_behind_main,
     _get_db_manager,
     read_backup_facts_from_dir,
     system_egress_reads_total,
@@ -39,6 +41,53 @@ from butlers.api.routers.system import (
 pytestmark = pytest.mark.unit
 
 _NOW = datetime(2026, 5, 3, 10, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _clear_commits_behind_cache():
+    """The commits-behind cache (bu-hmdqz.1) is module-level and keyed by
+    git_sha -- clear it around every test so one test's mocked GitHub
+    response can never leak into another test reusing the same sha."""
+    system_router._commits_behind_cache.clear()
+    yield
+    system_router._commits_behind_cache.clear()
+
+
+class _FakeGithubResponse:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeGithubClient:
+    """Stand-in for httpx.AsyncClient used by _commits_behind_main's tests."""
+
+    calls: list[str] = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    async def __aenter__(self) -> _FakeGithubClient:
+        return self
+
+    async def __aexit__(self, *args) -> bool:
+        return False
+
+    async def get(self, url: str, **kwargs) -> _FakeGithubResponse:
+        _FakeGithubClient.calls.append(url)
+        return _FakeGithubClient._next_response
+
+
+def _install_fake_github(monkeypatch, *, status_code: int = 200, payload: dict | None = None):
+    _FakeGithubClient.calls = []
+    _FakeGithubClient._next_response = _FakeGithubResponse(
+        status_code, payload if payload is not None else {"ahead_by": 5}
+    )
+    monkeypatch.setattr(system_router.httpx, "AsyncClient", _FakeGithubClient)
+    return _FakeGithubClient
 
 
 def _make_app_with_db(mock_db):
@@ -162,7 +211,17 @@ def _make_deployments_mock(*, current_row=None, recent_rows=None, raise_on="none
     return mock_db
 
 
-async def test_deployments_happy_path():
+def _mock_commits_behind(monkeypatch, return_value: int | None):
+    """Patch _commits_behind_main directly rather than httpx.AsyncClient --
+    the latter is the SAME module object system.py imports, so patching
+    `system_router.httpx.AsyncClient` would also break the httpx.AsyncClient
+    the test's own ASGI transport client below relies on."""
+    mock = AsyncMock(return_value=return_value)
+    monkeypatch.setattr(system_router, "_commits_behind_main", mock)
+    return mock
+
+
+async def test_deployments_happy_path(monkeypatch):
     row = {
         "id": "11111111-1111-1111-1111-111111111111",
         "git_sha": "abc1234",
@@ -171,6 +230,7 @@ async def test_deployments_happy_path():
         "finished_at": _NOW,
         "result": "success",
     }
+    _mock_commits_behind(monkeypatch, 3)
     mock_db = _make_deployments_mock(current_row=row, recent_rows=[row])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
@@ -182,9 +242,12 @@ async def test_deployments_happy_path():
     assert data["current"]["migration_head"] == "core_163"
     assert data["current"]["result"] == "success"
     assert len(data["recent"]) == 1
+    assert data["commits_behind_main"] == 3
+    assert data["commits_behind_available"] is True
 
 
-async def test_deployments_empty_ledger_returns_null_current():
+async def test_deployments_empty_ledger_returns_null_current(monkeypatch):
+    commits_behind_mock = _mock_commits_behind(monkeypatch, 3)
     mock_db = _make_deployments_mock(current_row=None, recent_rows=[])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
@@ -194,6 +257,10 @@ async def test_deployments_empty_ledger_returns_null_current():
     data = resp.json()["data"]
     assert data["current"] is None
     assert data["recent"] == []
+    assert data["commits_behind_main"] is None
+    assert data["commits_behind_available"] is False
+    # No current deployment -> no reason to ever attempt the comparison.
+    commits_behind_mock.assert_not_awaited()
 
 
 async def test_deployments_503_on_query_failure():
@@ -205,7 +272,7 @@ async def test_deployments_503_on_query_failure():
     assert resp.status_code == 503
 
 
-async def test_deployments_allows_null_migration_head():
+async def test_deployments_allows_null_migration_head(monkeypatch):
     row = {
         "id": "11111111-1111-1111-1111-111111111111",
         "git_sha": "unknown",
@@ -214,6 +281,7 @@ async def test_deployments_allows_null_migration_head():
         "finished_at": _NOW,
         "result": "failed",
     }
+    _mock_commits_behind(monkeypatch, None)
     mock_db = _make_deployments_mock(current_row=row, recent_rows=[row])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
@@ -223,6 +291,87 @@ async def test_deployments_allows_null_migration_head():
     data = resp.json()["data"]
     assert data["current"]["migration_head"] is None
     assert data["current"]["result"] == "failed"
+    assert data["commits_behind_main"] is None
+    assert data["commits_behind_available"] is False
+
+
+async def test_deployments_degrades_when_github_unreachable(monkeypatch):
+    """A degraded GitHub comparison must never render as '0 behind' -- the
+    fleet-wide convention: source failed -> unavailable, not a fabricated
+    all-clear."""
+    row = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "git_sha": "abc1234",
+        "migration_head": "core_163",
+        "started_at": _NOW,
+        "finished_at": _NOW,
+        "result": "success",
+    }
+    _mock_commits_behind(monkeypatch, None)
+    mock_db = _make_deployments_mock(current_row=row, recent_rows=[row])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/deployments")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["commits_behind_main"] is None
+    assert data["commits_behind_available"] is False
+
+
+# ---------------------------------------------------------------------------
+# _commits_behind_main (bu-hmdqz.1)
+# ---------------------------------------------------------------------------
+
+
+class TestCommitsBehindMain:
+    async def test_returns_none_for_unknown_sha(self, monkeypatch):
+        github = _install_fake_github(monkeypatch)
+        assert await _commits_behind_main("unknown") is None
+        assert await _commits_behind_main("") is None
+        assert github.calls == []
+
+    async def test_returns_ahead_by_on_success(self, monkeypatch):
+        _install_fake_github(monkeypatch, payload={"ahead_by": 7})
+        assert await _commits_behind_main("deadbeef") == 7
+
+    async def test_returns_none_on_non_200(self, monkeypatch):
+        _install_fake_github(monkeypatch, status_code=404, payload={})
+        assert await _commits_behind_main("deadbeef") is None
+
+    async def test_returns_none_on_unexpected_payload_shape(self, monkeypatch):
+        _install_fake_github(monkeypatch, payload={"ahead_by": "not-a-number"})
+        assert await _commits_behind_main("deadbeef") is None
+
+    async def test_returns_none_when_client_raises(self, monkeypatch):
+        class _RaisingClient:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, **kwargs):
+                raise httpx.ConnectError("connection refused")
+
+        monkeypatch.setattr(system_router.httpx, "AsyncClient", _RaisingClient)
+        assert await _commits_behind_main("deadbeef") is None
+
+    async def test_caches_per_sha_within_ttl(self, monkeypatch):
+        github = _install_fake_github(monkeypatch, payload={"ahead_by": 2})
+        first = await _commits_behind_main("cafef00d")
+        second = await _commits_behind_main("cafef00d")
+        assert first == second == 2
+        assert len(github.calls) == 1  # second call served from cache, no new request
+
+    async def test_different_shas_are_not_conflated_by_the_cache(self, monkeypatch):
+        github = _install_fake_github(monkeypatch, payload={"ahead_by": 9})
+        await _commits_behind_main("sha-one")
+        await _commits_behind_main("sha-two")
+        assert len(github.calls) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -944,6 +944,7 @@ export {
   getButlerHeartbeats,
   getInsightDeliveryState,
   getDriftFacts,
+  getDeploymentFacts,
 } from "./client.ts";
 
 export type {
@@ -951,6 +952,8 @@ export type {
   BackupFacts,
   ButlerHeartbeat,
   DatabaseFacts,
+  DeploymentFacts,
+  DeploymentRecord,
   DriftEntry,
   DriftFacts,
   EgressActor,

@@ -248,22 +248,85 @@ def dashboard(host: str, port: int) -> None:
     show_default=True,
     help="Seconds to wait for /health before failing the deploy",
 )
-def deploy(repo_root: Path, health_timeout_s: float) -> None:
+@click.option(
+    "--project-name",
+    "project_name",
+    default=None,
+    help=(
+        "Docker Compose project name (default: butlers). Pass 'butlers-dev' "
+        "to target the dev/live stack instead of the .env.prod project."
+    ),
+)
+@click.option(
+    "--env-file",
+    "env_file",
+    default=None,
+    help="Env file for docker compose --env-file (default: .env.prod)",
+)
+@click.option(
+    "--health-url",
+    "health_url",
+    default=None,
+    help="Health-check URL to poll after recreate (default: http://localhost:41200/health)",
+)
+@click.option(
+    "--profile",
+    "profiles",
+    multiple=True,
+    help=(
+        "Compose profile to activate (repeatable), e.g. --profile dev for a "
+        "project whose frontend service is profile-gated. Never 'hotreload' "
+        "-- DeployConfig rejects it."
+    ),
+)
+def deploy(
+    repo_root: Path,
+    health_timeout_s: float,
+    project_name: str | None,
+    env_file: str | None,
+    health_url: str | None,
+    profiles: tuple[str, ...],
+) -> None:
     """Idempotent production deploy: build, migrate, recreate, verify, record.
 
     Replaces the artisanal deploy ceremony (build an image by hand, hope
     ``docker compose up -d`` reruns migrations, eyeball that things came back
     up) with one verb: builds the ``butlers-app`` image stamped with the
     current git SHA, force-reruns the one-shot migrations service (never
-    trusts a stale exited container — see bu-zhfd0), recreates services with
-    no compose profile ever selected (so a leftover dev-shell
-    ``COMPOSE_PROFILES=hotreload`` can't leak a bind-mounted hotreload
-    container into prod), polls ``/health``, and records the outcome to
+    trusts a stale exited container — see bu-zhfd0), recreates services under
+    only the explicitly-requested ``--profile`` flags (never an ambient
+    ``COMPOSE_PROFILES=hotreload`` leftover from a dev shell, and never
+    ``hotreload`` itself, which bind-mounts source instead of using the baked
+    image — see bu-hmdqz.1), polls ``/health``, and records the outcome to
     ``public.deployments`` whether it succeeds or fails.
+
+    ``--project-name``/``--env-file``/``--health-url`` default to the
+    ``.env.prod`` / ``butlers`` project; pass ``--project-name butlers-dev
+    --env-file .env.dev --health-url http://localhost:42200/health --profile
+    dev`` to redeploy the dev/live stack instead (its ``frontend-dev`` service
+    is gated behind the ``dev`` profile, so it must be requested explicitly or
+    ``--remove-orphans`` would tear it down).
     """
     from butlers.core.deploy import DeployConfig, DeployError, run_deploy
 
-    config = DeployConfig(repo_root=repo_root.resolve(), health_timeout_s=health_timeout_s)
+    config_kwargs: dict[str, object] = {
+        "repo_root": repo_root.resolve(),
+        "health_timeout_s": health_timeout_s,
+        "profiles": tuple(profiles),
+    }
+    if project_name is not None:
+        config_kwargs["project_name"] = project_name
+    if env_file is not None:
+        config_kwargs["env_file"] = env_file
+    if health_url is not None:
+        config_kwargs["health_url"] = health_url
+
+    try:
+        config = DeployConfig(**config_kwargs)
+    except ValueError as exc:
+        click.echo(f"Invalid deploy configuration: {exc}", err=True)
+        sys.exit(1)
+
     click.echo(f"Deploying {config.repo_root} (project={config.project_name})...")
     try:
         result = asyncio.run(run_deploy(config))

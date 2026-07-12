@@ -14,6 +14,7 @@ import SystemPage from "@/pages/SystemPage";
 import {
   useBackupFacts,
   useDatabaseFacts,
+  useDeploymentFacts,
   useDriftFacts,
   useEgressFacts,
   useHealthPosture,
@@ -62,6 +63,7 @@ vi.mock("@/hooks/use-system", () => ({
   useHealthPosture: vi.fn(),
   useInsightDeliveryState: vi.fn(),
   useDriftFacts: vi.fn(),
+  useDeploymentFacts: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -205,6 +207,13 @@ function setAllLoading() {
     isError: false,
     error: null,
   } as AnyMock);
+
+  vi.mocked(useDeploymentFacts).mockReturnValue({
+    data: undefined,
+    isPending: true,
+    isError: false,
+    error: null,
+  } as AnyMock);
 }
 
 function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS> = {}) {
@@ -276,6 +285,28 @@ function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS>
         first_detected_at: null,
         escalated: false,
         drift_check_available: true,
+      },
+      meta: {},
+    },
+    isPending: false,
+    isError: false,
+    error: null,
+  } as AnyMock);
+
+  vi.mocked(useDeploymentFacts).mockReturnValue({
+    data: {
+      data: {
+        current: {
+          id: "11111111-1111-1111-1111-111111111111",
+          git_sha: "abc1234",
+          migration_head: "core_163",
+          started_at: "2026-06-17T10:00:00Z",
+          finished_at: "2026-06-17T10:00:00Z",
+          result: "success",
+        },
+        recent: [],
+        commits_behind_main: 0,
+        commits_behind_available: true,
       },
       meta: {},
     },
@@ -378,6 +409,12 @@ describe("SystemPage -- tiles render with mock data", () => {
     const html = renderPage();
     expect(html).toContain("Butler Heartbeats");
     expect(html).toContain("general");
+  });
+
+  it("renders Deployment tile with the current deployment's git sha (bu-hmdqz.1)", () => {
+    const html = renderPage();
+    expect(html).toContain("Deployment");
+    expect(html).toContain("abc1234");
   });
 });
 
@@ -752,6 +789,107 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
 
     const html = renderPage();
     expect(html).toContain("insight delivery status unavailable");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces a failed deploy instead of a falsely confident all-clear (bu-hmdqz.1)", () => {
+    setAllSuccess();
+    vi.mocked(useDeploymentFacts).mockReturnValue({
+      data: {
+        data: {
+          current: {
+            id: "11111111-1111-1111-1111-111111111111",
+            git_sha: "deadbee",
+            migration_head: null,
+            started_at: "2026-06-17T10:00:00Z",
+            finished_at: "2026-06-17T10:00:00Z",
+            result: "failed",
+          },
+          recent: [],
+          commits_behind_main: null,
+          commits_behind_available: false,
+        },
+        meta: {},
+      },
+      isPending: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("last deploy failed");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces N commits behind origin/main as a problem (bu-hmdqz.1)", () => {
+    setAllSuccess();
+    vi.mocked(useDeploymentFacts).mockReturnValue({
+      data: {
+        data: {
+          current: {
+            id: "11111111-1111-1111-1111-111111111111",
+            git_sha: "abc1234",
+            migration_head: "core_163",
+            started_at: "2026-06-17T10:00:00Z",
+            finished_at: "2026-06-17T10:00:00Z",
+            result: "success",
+          },
+          recent: [],
+          commits_behind_main: 16,
+          commits_behind_available: true,
+        },
+        meta: {},
+      },
+      isPending: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("serving 16 commits behind origin/main");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces an unavailable commits-behind check instead of silence (bu-hmdqz.1)", () => {
+    setAllSuccess();
+    vi.mocked(useDeploymentFacts).mockReturnValue({
+      data: {
+        data: {
+          current: {
+            id: "11111111-1111-1111-1111-111111111111",
+            git_sha: "abc1234",
+            migration_head: "core_163",
+            started_at: "2026-06-17T10:00:00Z",
+            finished_at: "2026-06-17T10:00:00Z",
+            result: "success",
+          },
+          recent: [],
+          commits_behind_main: null,
+          commits_behind_available: false,
+        },
+        meta: {},
+      },
+      isPending: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("commits-behind-origin/main check unavailable");
+    expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
+  });
+
+  it("surfaces deployments.isError instead of a falsely confident all-clear (bu-hmdqz.1)", () => {
+    setAllSuccess();
+    vi.mocked(useDeploymentFacts).mockReturnValue({
+      data: undefined,
+      isPending: false,
+      isError: true,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain("deployment status unavailable");
     expect(html).not.toContain('data-testid="verdict-banner-all-clear"');
   });
 

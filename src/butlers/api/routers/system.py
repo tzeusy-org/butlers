@@ -19,6 +19,13 @@ All endpoints are read-only against existing tables, except /api/system/deployme
 which reads public.deployments (core_163) -- the one new table this module
 introduces. It is written elsewhere (butlers.cli._start_all records one row per
 process boot; see src/butlers/core/deployments.py), never by this router.
+/api/system/deployments also makes one outbound call per request (cached
+briefly per git_sha): an anonymous GitHub compare against the current
+deployment's git_sha to compute "N commits behind origin/main" for the
+Deployment card (bu-hmdqz.1) -- the baked image has no .git checkout, so this
+cannot be computed from local state. Never raises; a failed/unreachable
+comparison surfaces as commits_behind_available=False, never a fabricated
+"0 behind".
 /api/system/drift is also read-only from this router's perspective: it computes
 the comparison live on each request (butlers.jobs.deploy_drift.compute_drift_report)
 and reads (never writes) the first-detected/escalated debounce markers the
@@ -46,9 +53,11 @@ import gzip
 import importlib.metadata
 import logging
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from opentelemetry import trace
 from prometheus_client import Counter
@@ -148,10 +157,18 @@ class DeploymentRecord(BaseModel):
 
 
 class DeploymentFacts(BaseModel):
-    """Current (most recent) deployment plus recent deployment history."""
+    """Current (most recent) deployment plus recent deployment history.
+
+    ``commits_behind_available=False`` means the comparison itself could not
+    be made (no current deployment, unknown git_sha, or the GitHub compare
+    call failed) -- per the fleet-wide degraded-envelope convention, render
+    that as "unknown", never as "0 commits behind" / up to date.
+    """
 
     current: DeploymentRecord | None
     recent: list[DeploymentRecord]
+    commits_behind_main: int | None
+    commits_behind_available: bool
 
 
 class DriftEntry(BaseModel):
@@ -383,6 +400,61 @@ async def get_instance_facts() -> ApiResponse[InstanceFacts]:
 # GET /api/system/deployments
 # ---------------------------------------------------------------------------
 
+#: The butlers repo is public, so an anonymous GitHub compare call needs no
+#: token -- see bu-hmdqz.1. This is the ONLY way to compute "N commits behind
+#: origin/main" for the Deployment card: the baked ``butlers-app`` image
+#: never includes a ``.git`` checkout (see Dockerfile), so the running
+#: dashboard-api process cannot run `git` against its own history.
+_GITHUB_REPO = "Tzeusy/butlers"
+_GITHUB_COMPARE_TIMEOUT_S = 5.0
+
+#: Repeated /system page loads must not hammer GitHub's anonymous rate limit
+#: (60 req/hour/IP) -- cache the comparison per git_sha for a short TTL.
+_COMMITS_BEHIND_CACHE_TTL_S = 60.0
+_COMMITS_BEHIND_CACHE_MAX_ENTRIES = 64
+_commits_behind_cache: dict[str, tuple[float, int]] = {}
+
+
+async def _commits_behind_main(git_sha: str) -> int | None:
+    """Best-effort count of commits ``origin/main`` is ahead of *git_sha*.
+
+    Returns ``None`` (never a fabricated ``0``) on any failure: unknown/empty
+    sha, network error, non-200 response, or an unexpected payload shape.
+    """
+    if not git_sha or git_sha == "unknown":
+        return None
+
+    now = time.monotonic()
+    cached = _commits_behind_cache.get(git_sha)
+    if cached is not None and (now - cached[0]) < _COMMITS_BEHIND_CACHE_TTL_S:
+        return cached[1]
+
+    url = f"https://api.github.com/repos/{_GITHUB_REPO}/compare/{git_sha}...main"
+    try:
+        async with httpx.AsyncClient(timeout=_GITHUB_COMPARE_TIMEOUT_S) as client:
+            resp = await client.get(url, headers={"Accept": "application/vnd.github+json"})
+        if resp.status_code != 200:
+            logger.warning(
+                "commits_behind_main: GitHub compare returned HTTP %s for sha=%s",
+                resp.status_code,
+                git_sha,
+            )
+            return None
+        ahead_by = resp.json().get("ahead_by")
+        if not isinstance(ahead_by, int):
+            logger.warning("commits_behind_main: unexpected compare payload for sha=%s", git_sha)
+            return None
+    except Exception:
+        logger.warning("commits_behind_main: compare request failed", exc_info=True)
+        return None
+
+    _commits_behind_cache[git_sha] = (now, ahead_by)
+    if len(_commits_behind_cache) > _COMMITS_BEHIND_CACHE_MAX_ENTRIES:
+        oldest_sha = min(_commits_behind_cache, key=lambda k: _commits_behind_cache[k][0])
+        del _commits_behind_cache[oldest_sha]
+
+    return ahead_by
+
 
 def _deployment_row_to_record(row: dict) -> DeploymentRecord:
     return DeploymentRecord(
@@ -423,10 +495,16 @@ async def get_deployment_facts(
         logger.warning("Failed to query deployments ledger: %s", exc)
         raise HTTPException(status_code=503, detail="Deployments ledger query failed")
 
+    commits_behind_main: int | None = None
+    if current_row is not None:
+        commits_behind_main = await _commits_behind_main(current_row["git_sha"])
+
     return ApiResponse(
         data=DeploymentFacts(
             current=_deployment_row_to_record(current_row) if current_row else None,
             recent=[_deployment_row_to_record(r) for r in recent_rows],
+            commits_behind_main=commits_behind_main,
+            commits_behind_available=commits_behind_main is not None,
         )
     )
 

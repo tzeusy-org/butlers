@@ -68,10 +68,28 @@ class TestComposeArgsAndEnv:
             ".env.prod",
         ]
 
-    def test_no_profile_flag_ever_appears_in_compose_args(self):
-        """Structural guard: a prod deploy must never request a compose profile."""
+    def test_no_profile_flag_appears_by_default(self):
+        """Structural guard: a default (prod) deploy must never request a compose profile."""
         args = _compose_base_args(_config())
         assert "--profile" not in args
+
+    def test_explicit_profiles_are_threaded_into_compose_args(self):
+        """bu-hmdqz.1: an explicitly-requested profile (e.g. 'dev' for the
+        butlers-dev project's profile-gated frontend-dev service) must reach
+        the actual compose invocation."""
+        args = _compose_base_args(_config(profiles=("dev",)))
+        assert "--profile" in args
+        assert args[args.index("--profile") + 1] == "dev"
+
+    def test_hotreload_profile_is_rejected_at_config_construction(self):
+        """The hotreload profile bind-mounts source instead of the baked
+        image -- never allowed, regardless of caller intent."""
+        with pytest.raises(ValueError, match="hotreload"):
+            _config(profiles=("hotreload",))
+
+    def test_hotreload_profile_rejected_even_alongside_other_profiles(self):
+        with pytest.raises(ValueError, match="hotreload"):
+            _config(profiles=("dev", "hotreload"))
 
     def test_clean_compose_env_strips_compose_profiles(self, monkeypatch):
         monkeypatch.setenv("COMPOSE_PROFILES", "hotreload")

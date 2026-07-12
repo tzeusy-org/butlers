@@ -361,6 +361,7 @@ import type {
   HeartbeatFacts,
   InsightDeliveryState,
   DriftFacts,
+  DeploymentFacts,
   ModuleStatus,
   Briefing,
   ChroniclesBriefing,
@@ -6213,6 +6214,19 @@ export function getInsightDeliveryState(): Promise<ApiResponse<InsightDeliverySt
  */
 export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
   return apiFetch<ApiResponse<DriftFacts>>("/system/drift");
+}
+
+/**
+ * Fetch the current (most recent) deployment plus recent deployment history
+ * (bu-9r3hd.3/bu-hmdqz.1).
+ *
+ * Always returns HTTP 200 for a legitimately empty ledger; HTTP 503 is
+ * reserved for an actual query failure. `commits_behind_available: false`
+ * means the GitHub compare comparison failed -- treat as "unknown", not
+ * "up to date".
+ */
+export function getDeploymentFacts(): Promise<ApiResponse<DeploymentFacts>> {
+  return apiFetch<ApiResponse<DeploymentFacts>>("/system/deployments");
 }
 
 // ---------------------------------------------------------------------------

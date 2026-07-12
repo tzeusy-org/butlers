@@ -69,6 +69,7 @@ vi.mock("@/hooks/use-system", () => ({
   useHealthPosture: vi.fn(() => ({ data: undefined, isPending: false, isError: false, error: null })),
   useInsightDeliveryState: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useDriftFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
+  useDeploymentFacts: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
 }));
 
 vi.mock("@/hooks/use-ingestion", () => ({

@@ -18,6 +18,7 @@ import { Link } from "react-router";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import {
   useBackupFacts,
+  useDeploymentFacts,
   useDriftFacts,
   useHealthPosture,
   useInsightDeliveryState,
@@ -56,6 +57,7 @@ export function SystemVerdictBanner() {
   const insights = useInsightDeliveryState();
   const posture = useHealthPosture();
   const drift = useDriftFacts();
+  const deployments = useDeploymentFacts();
 
   // Never render a verdict (all-clear or otherwise) while a source that
   // feeds it is still loading -- a premature "all clear" is worse than a
@@ -66,7 +68,8 @@ export function SystemVerdictBanner() {
     backups.isLoading ||
     insights.isPending ||
     posture.isPending ||
-    drift.isPending;
+    drift.isPending ||
+    deployments.isPending;
 
   if (stillLoading) {
     return (
@@ -100,6 +103,9 @@ export function SystemVerdictBanner() {
   }
   if (drift.isError) {
     problems.push({ key: "drift-error", text: "migration drift status unavailable" });
+  }
+  if (deployments.isError) {
+    problems.push({ key: "deployments-error", text: "deployment status unavailable" });
   }
 
   if (board.offline > 0) {
@@ -183,6 +189,22 @@ export function SystemVerdictBanner() {
       text: driftData.escalated
         ? `${chainCount} migration chain${chainCount === 1 ? "" : "s"} drifted — escalated to QA`
         : `${chainCount} migration chain${chainCount === 1 ? "" : "s"} drifted`,
+    });
+  }
+
+  // bu-hmdqz.1: the live instance was silently frozen 16+ merges behind
+  // origin/main with nothing on /system saying so -- deploy failures and
+  // "N commits behind" both need to be as loud as migration drift.
+  const deploymentData = deployments.data?.data;
+  if (deploymentData?.current?.result === "failed") {
+    problems.push({ key: "deploy-failed", text: "last deploy failed" });
+  } else if (deploymentData && !deploymentData.commits_behind_available) {
+    problems.push({ key: "commits-behind-unavailable", text: "commits-behind-origin/main check unavailable" });
+  } else if (deploymentData && (deploymentData.commits_behind_main ?? 0) > 0) {
+    const n = deploymentData.commits_behind_main as number;
+    problems.push({
+      key: "commits-behind",
+      text: `serving ${n} commit${n === 1 ? "" : "s"} behind origin/main`,
     });
   }
 

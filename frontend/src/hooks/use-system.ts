@@ -13,6 +13,7 @@ import {
   getBackupFacts,
   getButlerHeartbeats,
   getDatabaseFacts,
+  getDeploymentFacts,
   getDriftFacts,
   getEgressCatalog,
   getHealth,
@@ -122,6 +123,22 @@ export function useDriftFacts() {
   return useQuery({
     queryKey: ["system-drift"],
     queryFn: () => getDriftFacts(),
+    refetchInterval: 60_000,
+  });
+}
+
+/**
+ * Fetch the current (most recent) deployment plus recent deployment history
+ * (bu-9r3hd.3/bu-hmdqz.1).
+ *
+ * Always HTTP 200 for a legitimately empty ledger. `commits_behind_available:
+ * false` means the "N commits behind origin/main" comparison itself failed --
+ * render "unknown", never "up to date".
+ */
+export function useDeploymentFacts() {
+  return useQuery({
+    queryKey: ["system-deployments"],
+    queryFn: () => getDeploymentFacts(),
     refetchInterval: 60_000,
   });
 }

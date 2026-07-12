@@ -78,10 +78,15 @@ from butlers.db import db_params_from_env
 
 logger = logging.getLogger(__name__)
 
-# Cadence for the background loop below. Weekly, per the epic's acceptance
-# criteria ("backup status is verified, never hardcoded 'success'" plus a
-# restore drill).
+# Cadence for the drill itself. Weekly, per the epic's acceptance criteria
+# ("backup status is verified, never hardcoded 'success'" plus a restore
+# drill).
 DEFAULT_RESTORE_DRILL_INTERVAL_S = 7 * 24 * 3600.0
+
+# Cadence for the *due-time check* (bu-hmdqz.1) -- distinct from the drill
+# interval above. Hourly, so a due drill runs within an hour of becoming
+# overdue rather than waiting for a full week-long in-process sleep to elapse.
+DEFAULT_RESTORE_DRILL_CHECK_INTERVAL_S = 3600.0
 
 #: Scratch database the drill restores into, dropped before and after every
 #: attempt. Fixed name (not per-tick unique) so a previous run's leftover
@@ -290,36 +295,61 @@ async def get_last_restore_drill(pool: asyncpg.Pool) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+async def _restore_drill_overdue(pool: asyncpg.Pool, interval_s: float) -> bool:
+    """True if the last recorded restore drill is missing or ``interval_s`` old.
+
+    Reads the due-time from ``public.audit_log`` (via :func:`get_last_restore_drill`)
+    rather than tracking it purely in-process -- see :func:`run_restore_drill_loop`.
+    """
+    last = await get_last_restore_drill(pool)
+    if last is None:
+        return True
+    checked_at = _as_aware_utc(datetime.fromisoformat(last["checked_at"]))
+    age_s = (datetime.now(UTC) - checked_at).total_seconds()
+    return age_s >= interval_s
+
+
 async def run_restore_drill_loop(
     db: DatabaseManager,
     *,
     interval_s: float = DEFAULT_RESTORE_DRILL_INTERVAL_S,
+    check_interval_s: float = DEFAULT_RESTORE_DRILL_CHECK_INTERVAL_S,
 ) -> None:
-    """Run :func:`run_restore_drill_check` every ``interval_s`` until cancelled.
+    """Run a restore drill whenever it is ``interval_s`` overdue (bu-hmdqz.1).
 
-    Sleeps first, mirroring ``run_migration_drift_loop`` / ``run_external_
-    deadman_loop`` -- avoids a real restore attempt at every process boot
-    (dev reloads, full-lifespan tests) before the first tick actually
-    matters. A single tick's failure is logged and swallowed so one bad tick
-    (or one week of ``createdb: permission denied``) never kills the loop --
-    it keeps retrying, and keeps recording the true state, every week.
+    Checks on boot (no sleep-first) and every ``check_interval_s`` thereafter,
+    reading the drill's due-time from ``public.audit_log`` via
+    :func:`_restore_drill_overdue` rather than an in-process sleep timer. This
+    replaces the prior "sleep the full weekly interval, then run" design,
+    which reset its wait on every process restart -- a daemon that restarts
+    more often than the weekly cadence (routine redeploys, dev reloads) could
+    leave ``restore_drill.result='pending'`` on ``/api/system/backups``
+    forever, since the loop's in-memory clock never survived a restart. A
+    single tick's failure is logged and swallowed so one bad tick (or one
+    week of ``createdb: permission denied``) never kills the loop -- it keeps
+    retrying, and keeps recording the true state.
     """
     if interval_s <= 0:
         raise ValueError(f"interval_s must be a positive number, got {interval_s!r}")
+    if check_interval_s <= 0:
+        raise ValueError(f"check_interval_s must be a positive number, got {check_interval_s!r}")
     while True:
-        await asyncio.sleep(interval_s)
         backup_dir_value = os.environ.get(BACKUP_DIR_ENV, "").strip()
         if not backup_dir_value:
+            await asyncio.sleep(check_interval_s)
             continue  # unconfigured -- legitimate absence, nothing to drill
         try:
             pool = db.pool("switchboard")
         except KeyError:
             logger.warning("restore drill: switchboard pool unavailable, skipping tick")
+            await asyncio.sleep(check_interval_s)
             continue
         try:
-            summary = await run_restore_drill_check(pool, Path(backup_dir_value))
-            logger.info("restore_drill_check: %s", summary)
+            if await _restore_drill_overdue(pool, interval_s):
+                summary = await run_restore_drill_check(pool, Path(backup_dir_value))
+                logger.info("restore_drill_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("restore_drill_check: tick failed")
+        await asyncio.sleep(check_interval_s)

@@ -1,14 +1,16 @@
 /**
  * System Overview page (/system).
  *
- * Surfaces five ownership-fact domains: software version and uptime, database
- * state, backup state, data egress catalog (owner-only), and per-butler
- * heartbeats.
+ * Surfaces ownership-fact domains: software version and uptime, database
+ * state, backup state, data egress catalog (owner-only), per-butler
+ * heartbeats, migration drift, and (bu-hmdqz.1) the deployment ledger --
+ * what git SHA is actually serving, and how far behind origin/main it is.
  */
 
 import { BackupTile } from "@/components/system/BackupTile";
 import { ButlerHeartbeatTile } from "@/components/system/ButlerHeartbeatTile";
 import { DbSizeTile } from "@/components/system/DbSizeTile";
+import { DeploymentTile } from "@/components/system/DeploymentTile";
 import { DriftTile } from "@/components/system/DriftTile";
 import { EgressCatalogTile } from "@/components/system/EgressCatalogTile";
 import { InsightDeliveryTile } from "@/components/system/InsightDeliveryTile";
@@ -116,6 +118,7 @@ export function SystemPage() {
         <SecurityPostureTile />
         <InsightDeliveryTile />
         <DriftTile />
+        <DeploymentTile />
         <div className="lg:col-span-2 h-full">
           <BackupTile />
         </div>

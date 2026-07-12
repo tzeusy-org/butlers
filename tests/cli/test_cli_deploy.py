@@ -28,6 +28,10 @@ class TestDeployCommand:
         assert result2.exit_code == 0
         assert "--timeout" in result2.output
         assert "--dir" in result2.output
+        assert "--project-name" in result2.output
+        assert "--env-file" in result2.output
+        assert "--health-url" in result2.output
+        assert "--profile" in result2.output
 
     def test_success_prints_summary_and_exits_zero(self, runner, tmp_path):
         with patch("butlers.core.deploy.run_deploy", new=AsyncMock()) as mock_run:
@@ -62,3 +66,65 @@ class TestDeployCommand:
 
         assert result.exit_code == 0
         assert captured["config"].health_timeout_s == 42.0
+
+    def test_defaults_unchanged_when_new_options_omitted(self, runner, tmp_path):
+        """bu-hmdqz.1: project-name/env-file/health-url/profile are opt-in --
+        omitting them must reproduce the exact prior prod-targeting behavior."""
+        captured = {}
+
+        async def fake_run_deploy(config, **kwargs):
+            captured["config"] = config
+            return DeployResult(git_sha="abc1234", migration_head=None, result="success")
+
+        with patch("butlers.core.deploy.run_deploy", new=fake_run_deploy):
+            result = runner.invoke(cli, ["deploy", "--dir", str(tmp_path)])
+
+        assert result.exit_code == 0
+        config = captured["config"]
+        assert config.project_name == "butlers"
+        assert config.env_file == ".env.prod"
+        assert config.health_url == "http://localhost:41200/health"
+        assert config.profiles == ()
+
+    def test_dev_stack_options_are_threaded_into_deploy_config(self, runner, tmp_path):
+        """bu-hmdqz.1: redeploying the live 'butlers-dev' stack needs the
+        project name, env file, health URL, and 'dev' profile (frontend-dev
+        is profile-gated) all threaded through explicitly."""
+        captured = {}
+
+        async def fake_run_deploy(config, **kwargs):
+            captured["config"] = config
+            return DeployResult(git_sha="abc1234", migration_head="core_163", result="success")
+
+        with patch("butlers.core.deploy.run_deploy", new=fake_run_deploy):
+            result = runner.invoke(
+                cli,
+                [
+                    "deploy",
+                    "--dir",
+                    str(tmp_path),
+                    "--project-name",
+                    "butlers-dev",
+                    "--env-file",
+                    ".env.dev",
+                    "--health-url",
+                    "http://localhost:42200/health",
+                    "--profile",
+                    "dev",
+                ],
+            )
+
+        assert result.exit_code == 0
+        config = captured["config"]
+        assert config.project_name == "butlers-dev"
+        assert config.env_file == ".env.dev"
+        assert config.health_url == "http://localhost:42200/health"
+        assert config.profiles == ("dev",)
+
+    def test_rejects_hotreload_profile_with_clean_error(self, runner, tmp_path):
+        """The CLI must surface DeployConfig's hotreload guard as a clean
+        error/exit code, not a traceback."""
+        result = runner.invoke(cli, ["deploy", "--dir", str(tmp_path), "--profile", "hotreload"])
+
+        assert result.exit_code == 1
+        assert "hotreload" in result.output

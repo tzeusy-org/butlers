@@ -6941,6 +6941,32 @@ export interface DriftFacts {
   drift_check_available: boolean;
 }
 
+/** Single row from public.deployments (one per `butlers up` process boot). */
+export interface DeploymentRecord {
+  id: string;
+  git_sha: string;
+  migration_head: string | null;
+  started_at: string;
+  finished_at: string | null;
+  /** "success" | "failed" */
+  result: string;
+}
+
+/**
+ * Current (most recent) deployment plus recent deployment history (bu-9r3hd.3/bu-hmdqz.1).
+ *
+ * `commits_behind_available: false` means the "N commits behind origin/main"
+ * comparison itself failed (no current deployment, unknown git_sha, or the
+ * GitHub compare call failed) -- per the fleet-wide degraded-envelope
+ * convention, render that as "unknown", never as "up to date".
+ */
+export interface DeploymentFacts {
+  current: DeploymentRecord | null;
+  recent: DeploymentRecord[];
+  commits_behind_main: number | null;
+  commits_behind_available: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Dashboard briefing (GET /api/dashboard/briefing)
 //

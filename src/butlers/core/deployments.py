@@ -22,6 +22,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.migrations import get_chain_revision_ids
+
 logger = logging.getLogger(__name__)
 
 VALID_RESULTS = frozenset({"success", "failed"})
@@ -41,21 +43,44 @@ def resolve_git_sha() -> str:
 
 
 async def read_migration_head(pool: asyncpg.Pool, schema: str) -> str | None:
-    """Best-effort read of one schema's Alembic ``alembic_version`` head.
+    """Best-effort read of the CORE migration chain's applied revision for *schema*.
 
-    This is a representative snapshot for observability, not a drift proof —
-    different schemas can legitimately carry different heads because of
-    butler-specific migration chains. Returns ``None`` (rather than raising)
-    if the table is missing or unreadable, so a deploy still gets recorded
-    with an honestly-absent migration_head instead of failing entirely.
+    ``{schema}.alembic_version`` legitimately holds more than one row: every
+    independent Alembic chain ever applied to that schema (core, plus any
+    module/butler-specific chain, e.g. ``memory``) shares one physical table —
+    see ``butlers.migrations`` and the migration-drift sentinel's own
+    ``_actual_revisions`` (``butlers.jobs.deploy_drift``) for the same shape.
+    A bare ``SELECT ... LIMIT 1`` with no ``ORDER BY`` therefore returns
+    whichever row Postgres happens to return first — observed in practice
+    surfacing a stale module revision (e.g. ``mem_007``) on the /system
+    Deployment card instead of the core chain's head. This intersects the
+    schema's applied revisions against the known core-chain revision ids
+    (``get_chain_revision_ids("core")``) to isolate the core chain
+    specifically, mirroring ``compute_drift_report``'s own chain
+    disambiguation.
+
+    Returns ``None`` (rather than raising) if the table is missing,
+    unreadable, or the core chain has never been applied to this schema, so a
+    deploy still gets recorded with an honestly-absent migration_head instead
+    of failing entirely.
     """
     try:
-        return await pool.fetchval(f'SELECT version_num FROM "{schema}".alembic_version LIMIT 1')
+        rows = await pool.fetch(f'SELECT version_num FROM "{schema}".alembic_version')
     except Exception:
         logger.warning(
             "deployments: could not read alembic_version for schema=%s", schema, exc_info=True
         )
         return None
+
+    applied = {row["version_num"] for row in rows}
+    core_applied = applied & get_chain_revision_ids("core")
+    if not core_applied:
+        return None
+    # The core chain is enforced (get_chain_head) to have exactly one head, so
+    # this set should carry exactly one row in a non-drifted schema; sorting
+    # is a deterministic best-effort tiebreaker for the (already-anomalous)
+    # case where more than one core revision id is somehow present.
+    return sorted(core_applied)[-1]
 
 
 async def record_deployment(

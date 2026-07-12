@@ -9,9 +9,12 @@ Covers:
   drill result (pass or fail) is recorded to public.audit_log via
   audit_router.append.
 - get_last_restore_drill: reads the latest recorded result, or None.
-- run_restore_drill_loop: sleeps first; unconfigured BUTLERS_BACKUP_DIR and a
-  missing switchboard pool are both skipped ticks, not crashes; a tick
-  exception never kills the loop.
+- run_restore_drill_loop: checks due-time on boot (no sleep-first) and every
+  check_interval_s thereafter (bu-hmdqz.1); unconfigured BUTLERS_BACKUP_DIR
+  and a missing switchboard pool are both skipped ticks, not crashes; a tick
+  exception never kills the loop; a drill only actually runs when overdue.
+- _restore_drill_overdue: never-run and stale-past-interval are overdue;
+  recent is not.
 
 No real database or real Postgres client tools required — subprocess and
 pool are faked/mocked throughout.
@@ -30,6 +33,7 @@ import pytest
 from butlers.api.db import DatabaseManager
 from butlers.jobs.backup_health import (
     RestoreDrillResult,
+    _restore_drill_overdue,
     _run_restore_drill_sync,
     get_last_restore_drill,
     run_restore_drill_check,
@@ -359,6 +363,30 @@ async def test_get_last_restore_drill_naive_timestamp_treated_as_utc():
 
 
 # ---------------------------------------------------------------------------
+# _restore_drill_overdue
+# ---------------------------------------------------------------------------
+
+
+async def test_restore_drill_overdue_when_never_run():
+    pool = _FakeAuditPool(row=None)
+    assert await _restore_drill_overdue(pool, interval_s=3600.0) is True
+
+
+async def test_restore_drill_overdue_when_older_than_interval():
+    stale_ts = datetime(2020, 1, 1, tzinfo=UTC)
+    pool = _FakeAuditPool(row={"ts": stale_ts, "result": "pass", "error": None})
+    assert await _restore_drill_overdue(pool, interval_s=3600.0) is True
+
+
+async def test_restore_drill_not_overdue_when_recent():
+    from datetime import timedelta
+
+    recent_ts = datetime.now(UTC) - timedelta(seconds=10)
+    pool = _FakeAuditPool(row={"ts": recent_ts, "result": "pass", "error": None})
+    assert await _restore_drill_overdue(pool, interval_s=3600.0) is False
+
+
+# ---------------------------------------------------------------------------
 # run_restore_drill_loop
 # ---------------------------------------------------------------------------
 
@@ -366,6 +394,13 @@ async def test_get_last_restore_drill_naive_timestamp_treated_as_utc():
 async def test_run_restore_drill_loop_rejects_non_positive_interval():
     with pytest.raises(ValueError):
         await run_restore_drill_loop(MagicMock(spec=DatabaseManager), interval_s=0)
+
+
+async def test_run_restore_drill_loop_rejects_non_positive_check_interval():
+    with pytest.raises(ValueError):
+        await run_restore_drill_loop(
+            MagicMock(spec=DatabaseManager), interval_s=1.0, check_interval_s=0
+        )
 
 
 async def test_run_restore_drill_loop_skips_tick_when_unconfigured(
@@ -382,7 +417,7 @@ async def test_run_restore_drill_loop_skips_tick_when_unconfigured(
 
     db = MagicMock(spec=DatabaseManager)
     with pytest.raises(asyncio.CancelledError):
-        await run_restore_drill_loop(db, interval_s=1.0)
+        await run_restore_drill_loop(db, interval_s=1.0, check_interval_s=1.0)
     check_mock.assert_not_called()
 
 
@@ -401,7 +436,54 @@ async def test_run_restore_drill_loop_skips_tick_when_pool_unavailable(
     db = MagicMock(spec=DatabaseManager)
     db.pool.side_effect = KeyError("switchboard")
     with pytest.raises(asyncio.CancelledError):
-        await run_restore_drill_loop(db, interval_s=1.0)
+        await run_restore_drill_loop(db, interval_s=1.0, check_interval_s=1.0)
+    check_mock.assert_not_called()
+
+
+async def test_run_restore_drill_loop_runs_immediately_when_never_run(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """bu-hmdqz.1: on boot, a never-run drill must fire on the FIRST tick --
+    no sleep-first wait for the full weekly interval."""
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", "/backups")
+
+    async def fake_sleep(seconds):
+        raise asyncio.CancelledError()  # stop right after the first tick
+
+    monkeypatch.setattr("butlers.jobs.backup_health.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill", AsyncMock(return_value=None)
+    )
+    check_mock = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr("butlers.jobs.backup_health.run_restore_drill_check", check_mock)
+
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.return_value = MagicMock()
+    with pytest.raises(asyncio.CancelledError):
+        await run_restore_drill_loop(db, interval_s=3600.0, check_interval_s=1.0)
+    check_mock.assert_awaited_once()
+
+
+async def test_run_restore_drill_loop_skips_when_not_overdue(monkeypatch: pytest.MonkeyPatch):
+    """A recently-completed drill must not re-run just because the hourly
+    check tick fired -- only an overdue drill actually runs."""
+    monkeypatch.setenv("BUTLERS_BACKUP_DIR", "/backups")
+
+    async def fake_sleep(seconds):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr("butlers.jobs.backup_health.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "butlers.jobs.backup_health.get_last_restore_drill",
+        AsyncMock(return_value={"checked_at": datetime.now(UTC).isoformat(), "result": "pass"}),
+    )
+    check_mock = AsyncMock()
+    monkeypatch.setattr("butlers.jobs.backup_health.run_restore_drill_check", check_mock)
+
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.return_value = MagicMock()
+    with pytest.raises(asyncio.CancelledError):
+        await run_restore_drill_loop(db, interval_s=3600.0, check_interval_s=1.0)
     check_mock.assert_not_called()
 
 
@@ -417,12 +499,12 @@ async def test_run_restore_drill_loop_swallows_tick_exception(monkeypatch: pytes
 
     monkeypatch.setattr("butlers.jobs.backup_health.asyncio.sleep", fake_sleep)
     monkeypatch.setattr(
-        "butlers.jobs.backup_health.run_restore_drill_check",
+        "butlers.jobs.backup_health.get_last_restore_drill",
         AsyncMock(side_effect=RuntimeError("boom")),
     )
 
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = MagicMock()
     with pytest.raises(asyncio.CancelledError):
-        await run_restore_drill_loop(db, interval_s=1.0)
+        await run_restore_drill_loop(db, interval_s=1.0, check_interval_s=1.0)
     assert sleep_calls == 2
