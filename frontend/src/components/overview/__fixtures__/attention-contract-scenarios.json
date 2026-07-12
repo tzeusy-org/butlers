@@ -100,6 +100,27 @@
       }
     },
     {
+      "name": "urgent-qa-circuit-breaker-tripped",
+      "board_rows": [],
+      "board_source_error": false,
+      "approvals_pending": 0,
+      "failed_notifications": 0,
+      "notifications_source_available": true,
+      "qa": {
+        "last_patrol_failed": false,
+        "novel_findings": 0,
+        "dispatched_investigations": 0,
+        "circuit_breaker_tripped": true,
+        "circuit_breaker_consecutive_failures": 5
+      },
+      "expect": {
+        "backend_state_class": "urgent",
+        "min_attention_rows": 1,
+        "max_attention_rows": 1,
+        "min_top_severity_rank": "critical"
+      }
+    },
+    {
       "name": "degraded-board-source-error",
       "board_rows": [],
       "board_source_error": true,

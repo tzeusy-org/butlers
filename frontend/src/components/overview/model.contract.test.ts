@@ -136,6 +136,8 @@ interface ContractScenario {
     last_patrol_failed: boolean;
     novel_findings: number;
     dispatched_investigations: number;
+    circuit_breaker_tripped?: boolean;
+    circuit_breaker_consecutive_failures?: number;
   } | null;
   expect: {
     backend_state_class: string;
@@ -183,6 +185,10 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
         }),
         qaSummary: scenario.qa
           ? qaSummary({
+              circuit_breaker: {
+                tripped: scenario.qa.circuit_breaker_tripped ?? false,
+                consecutive_failures: scenario.qa.circuit_breaker_consecutive_failures ?? 0,
+              },
               last_patrol: {
                 id: "patrol-contract-1",
                 started_at: "2026-07-12T10:00:00.000Z",

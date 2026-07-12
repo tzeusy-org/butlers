@@ -670,16 +670,111 @@ class TestFetchQaState:
             return _make_record({"status": "failed", "error_detail": "timeout"})
 
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetch = AsyncMock(return_value=[])
         db.credential_shared_pool.return_value = pool
 
         qa_state, degraded = await _fetch_qa_state(db)
 
         assert degraded is False
         assert qa_state == {
+            "circuit_breaker_tripped": False,
+            "circuit_breaker_consecutive_failures": 0,
             "last_patrol_failed": True,
             "novel_findings": 2,
             "dispatched_investigations": 1,
         }
+
+    async def test_circuit_breaker_tripped_feeds_qa_state(self):
+        """bu-y2xqi: a tripped breaker with no failed patrol / novel signal
+        must still surface -- this is the exact drift the bead pins."""
+        db = MagicMock()
+        pool = AsyncMock()
+
+        async def _fetchrow(sql, *args):
+            if "novel_count" in sql:
+                return _make_record({"novel_findings": 0, "dispatched_investigations": 0})
+            return _make_record({"status": "completed", "error_detail": None})
+
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetch = AsyncMock(return_value=[_make_record({"status": "failed"}) for _ in range(5)])
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert degraded is False
+        assert qa_state == {
+            "circuit_breaker_tripped": True,
+            "circuit_breaker_consecutive_failures": 5,
+            "last_patrol_failed": False,
+            "novel_findings": 0,
+            "dispatched_investigations": 0,
+        }
+
+    async def test_circuit_breaker_untripped_feeds_qa_state(self):
+        db = MagicMock()
+        pool = AsyncMock()
+
+        async def _fetchrow(sql, *args):
+            if "novel_count" in sql:
+                return _make_record({"novel_findings": 0, "dispatched_investigations": 0})
+            return _make_record({"status": "completed", "error_detail": None})
+
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetch = AsyncMock(return_value=[_make_record({"status": "failed"}) for _ in range(2)])
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert degraded is False
+        assert qa_state["circuit_breaker_tripped"] is False
+        assert qa_state["circuit_breaker_consecutive_failures"] == 2
+
+    async def test_circuit_breaker_query_failure_degrades_without_discarding_patrol_signal(self):
+        """A breaker-query failure (distinct table from qa_patrols) must not
+        blank out the patrol-derived signal already successfully fetched."""
+        db = MagicMock()
+        pool = AsyncMock()
+
+        async def _fetchrow(sql, *args):
+            if "novel_count" in sql:
+                return _make_record({"novel_findings": 3, "dispatched_investigations": 0})
+            return _make_record({"status": "completed", "error_detail": None})
+
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetch = AsyncMock(side_effect=RuntimeError("connection dropped"))
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert degraded is True
+        assert qa_state == {
+            "circuit_breaker_tripped": False,
+            "circuit_breaker_consecutive_failures": 0,
+            "last_patrol_failed": False,
+            "novel_findings": 3,
+            "dispatched_investigations": 0,
+        }
+
+    async def test_circuit_breaker_missing_table_is_legitimately_absent(self):
+        """healing_attempts un-provisioned is legitimately absent, not degraded."""
+        db = MagicMock()
+        pool = AsyncMock()
+
+        async def _fetchrow(sql, *args):
+            if "novel_count" in sql:
+                return _make_record({"novel_findings": 0, "dispatched_investigations": 0})
+            return _make_record({"status": "completed", "error_detail": None})
+
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+        pool.fetch = AsyncMock(
+            side_effect=RuntimeError('relation "healing_attempts" does not exist')
+        )
+        db.credential_shared_pool.return_value = pool
+
+        qa_state, degraded = await _fetch_qa_state(db)
+
+        assert degraded is False
+        assert qa_state["circuit_breaker_tripped"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +825,54 @@ class TestQaAttentionItem:
         assert item["severity"] == "medium"
         assert "novel QA finding" in item["description"]
         assert item["occurrences"] == 1
+
+    def test_circuit_breaker_tripped_wins_over_everything(self):
+        """bu-y2xqi: mirrors model.ts::summarizeQaState checking
+        circuit_breaker.tripped BEFORE last_patrol_failed."""
+        state = {
+            "circuit_breaker_tripped": True,
+            "circuit_breaker_consecutive_failures": 5,
+            "last_patrol_failed": True,
+            "novel_findings": 5,
+            "dispatched_investigations": 5,
+        }
+        item = _qa_attention_item(state)
+        assert item["severity"] == "high"
+        assert "circuit breaker tripped" in item["description"]
+        assert "5 consecutive failures" in item["description"]
+        assert item["occurrences"] == 5
+
+    def test_circuit_breaker_tripped_singular_failure_count(self):
+        state = {
+            "circuit_breaker_tripped": True,
+            "circuit_breaker_consecutive_failures": 1,
+            "last_patrol_failed": False,
+            "novel_findings": 0,
+            "dispatched_investigations": 0,
+        }
+        item = _qa_attention_item(state)
+        assert "1 consecutive failure)" in item["description"]
+
+    def test_circuit_breaker_untripped_falls_through_to_failed_patrol(self):
+        state = {
+            "circuit_breaker_tripped": False,
+            "circuit_breaker_consecutive_failures": 0,
+            "last_patrol_failed": True,
+            "novel_findings": 0,
+            "dispatched_investigations": 0,
+        }
+        item = _qa_attention_item(state)
+        assert item["description"] == "QA patrol failed"
+
+    def test_missing_circuit_breaker_key_is_treated_as_untripped(self):
+        """Backward-compat: a qa_state dict without the new keys (e.g. an
+        older cached shape) must not raise and must fall through normally."""
+        state = {
+            "last_patrol_failed": False,
+            "novel_findings": 0,
+            "dispatched_investigations": 0,
+        }
+        assert _qa_attention_item(state) is None
 
 
 # ---------------------------------------------------------------------------

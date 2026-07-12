@@ -8,7 +8,7 @@ This spec defines the wire contract (`GET /api/dashboard/briefing`), the `Briefi
 
 The headline is classified from the SAME composed attention model the Overview dashboard page renders (bu-gcz9e.1, "one attention model on the dashboard"), not a second, independently-maintained one: butler liveness comes from `GET /api/butlers/board`'s canonical verdict, audit-derived issues from the shared audit-group CTE also used by the Issues page, pending approvals from the same all-pools fan-out the Settings Console uses, failed notifications from `GET /api/notifications/stats`, and QA state from the same last-patrol-failed / dispatched / novel-findings priority the Overview page's QA summarization uses.
 
-bu-gcz9e.2 pins this cross-surface contract with a consistency test driven from SHARED fixtures: `tests/dashboard/test_briefing_attention_contract.py` (this endpoint's classification) and `frontend/src/components/overview/model.contract.test.ts` (the `dashboard-overview` attention list) both read the same named scenarios from `frontend/src/components/overview/__fixtures__/attention-contract-scenarios.json` and assert each scenario's `state_class` implies matching row-count/severity bounds on the other surface. Known residual gap (tracked as a follow-up, not yet pinned as a passing contract): a tripped QA circuit breaker (`GET /api/qa/summary`'s `circuit_breaker.tripped`) is visible to the `dashboard-overview` attention list (see that spec's "A tripped QA circuit breaker surfaces as an attention row" scenario) but this endpoint's QA-derived attention item (the scenario above) never reads circuit-breaker state, so a breaker trip with no failed patrol / dispatched / novel signal can still compose `state_class = "quiet"`.
+bu-gcz9e.2 pins this cross-surface contract with a consistency test driven from SHARED fixtures: `tests/dashboard/test_briefing_attention_contract.py` (this endpoint's classification) and `frontend/src/components/overview/model.contract.test.ts` (the `dashboard-overview` attention list) both read the same named scenarios from `frontend/src/components/overview/__fixtures__/attention-contract-scenarios.json` and assert each scenario's `state_class` implies matching row-count/severity bounds on the other surface. A tripped QA circuit breaker (`GET /api/qa/summary`'s `circuit_breaker.tripped`) is part of this pinned contract (bu-y2xqi): the QA-derived attention item (the scenario below) checks circuit-breaker state FIRST, before the failed-patrol check, matching the `dashboard-overview` spec's "A tripped QA circuit breaker surfaces as an attention row" scenario -- a breaker trip with no failed patrol / dispatched / novel signal now composes `state_class = "urgent"`, never `"quiet"`.
 
 ## Requirements
 ### Requirement: Briefing Response Schema
@@ -68,14 +68,18 @@ This replaces every SENT notification counting individually toward attention; on
 
 #### Scenario: QA-derived attention item
 
-- **WHEN** the most recent non-running QA patrol has `status = "failed"` or a non-null `error_detail`
+- **WHEN** `GET /api/qa/summary`'s circuit breaker (computed from `public.healing_attempts` the same way `qa.py`'s `/api/qa/circuit-breaker` and dispatch-admission gate do) is tripped
+- **THEN** a single attention item is added with `severity = "high"` and `source = "qa"` naming the tripped breaker and its consecutive-failure count, and no further QA checks are considered -- checked BEFORE the failed-patrol check below (a tripped breaker means QA has stopped dispatching entirely, a more severe state than one failed patrol run, matching the `dashboard-overview` spec's "A tripped QA circuit breaker surfaces as an attention row" precedence)
+- **WHEN** the breaker is not tripped, and the most recent non-running QA patrol has `status = "failed"` or a non-null `error_detail`
 - **THEN** a single attention item is added with `severity = "high"` and `source = "qa"`, and no further QA checks are considered
-- **WHEN** the last patrol did not fail, and one or more QA investigations were dispatched in the last 24 hours
+- **WHEN** neither of the above is true, and one or more QA investigations were dispatched in the last 24 hours
 - **THEN** a single attention item is added with `severity = "medium"` and `source = "qa"` naming the dispatched count
-- **WHEN** neither of the above is true, and one or more novel QA findings occurred in the last 24 hours
+- **WHEN** none of the above is true, and one or more novel QA findings occurred in the last 24 hours
 - **THEN** a single attention item is added with `severity = "medium"` and `source = "qa"` naming the novel-finding count
 - **WHEN** the QA tables are not provisioned on this deployment (undefined relation)
 - **THEN** QA is treated as legitimately absent, contributing no attention item and no degraded source
+- **WHEN** the `public.qa_patrols` query succeeds but the circuit-breaker query against `public.healing_attempts` fails for a reason other than the table being un-provisioned
+- **THEN** the QA source is recorded in `state.degraded_sources`, but the patrol-derived signal (failed patrol / dispatched / novel findings) already fetched still contributes normally -- one query's failure does not discard another query's successful result
 
 #### Scenario: Attention item source fetch failure
 

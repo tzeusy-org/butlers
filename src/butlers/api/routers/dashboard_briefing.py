@@ -38,8 +38,9 @@ dashboard page renders, not a second, independently-drifting one:
       (the same terminal-failure definition and all-time window the
       Overview page's useNotificationStats() reads) -- replaces the former
       feed that counted every SENT notification as attention.
-    - QA: the same last-patrol-failed / dispatched / novel-findings priority
-      frontend/src/components/overview/model.ts::summarizeQaState uses.
+    - QA: the same circuit-breaker-tripped / last-patrol-failed / dispatched /
+      novel-findings priority frontend/src/components/overview/model.ts::
+      summarizeQaState uses.
 
 A source that cannot be read is tracked via DegradedSources and surfaces as
 the "degraded" state_class instead of silently composing "quiet"
@@ -541,10 +542,11 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
 
     qa_state mirrors the fields GET /api/qa/summary exposes that
     frontend/src/components/overview/model.ts::summarizeQaState reads to
-    decide whether QA needs an attention row: the last non-running patrol's
-    failure state, and the current 24h window's novel/dispatched counts.
-    ``None`` when the QA tables are not provisioned (legitimately absent, not
-    degraded).
+    decide whether QA needs an attention row: the circuit-breaker tripped
+    state (checked FIRST, mirroring summarizeQaState -- bu-y2xqi), the last
+    non-running patrol's failure state, and the current 24h window's
+    novel/dispatched counts. ``None`` when the QA tables are not provisioned
+    (legitimately absent, not degraded).
     """
     try:
         pool = db.credential_shared_pool()
@@ -576,8 +578,40 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
         logger.warning("Could not fetch QA state for briefing: %s", exc)
         return None, True
 
+    # Circuit breaker: reuse qa.py's canonical computation (the SAME
+    # launched-attempt + latest-reset filter GET /api/qa/summary and the
+    # dispatch-admission gate use) rather than reimplementing it here. This
+    # is a distinct table (public.healing_attempts) from qa_patrols above, so
+    # its own failure degrades the QA source without discarding the
+    # patrol-derived signal already fetched -- mirrors the
+    # per-pool-failure-but-keep-going pattern in _fetch_approvals_state.
+    degraded = False
+    circuit_breaker_tripped = False
+    circuit_breaker_consecutive_failures = 0
+    try:
+        from butlers.api.routers.qa import (
+            _CIRCUIT_BREAKER_THRESHOLD,
+            _compute_circuit_breaker_state,
+            _fetch_recent_circuit_breaker_rows,
+        )
+
+        cb_rows = await _fetch_recent_circuit_breaker_rows(pool, limit=_CIRCUIT_BREAKER_THRESHOLD)
+        _, circuit_breaker_consecutive_failures, circuit_breaker_tripped = (
+            _compute_circuit_breaker_state(cb_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD)
+        )
+    except Exception as exc:
+        if _is_missing_relation_error(exc, "healing_attempts") or _is_missing_relation_error(
+            exc, "breaker_resets"
+        ):
+            pass
+        else:
+            logger.warning("Could not fetch QA circuit breaker state for briefing: %s", exc)
+            degraded = True
+
     return (
         {
+            "circuit_breaker_tripped": circuit_breaker_tripped,
+            "circuit_breaker_consecutive_failures": circuit_breaker_consecutive_failures,
             "last_patrol_failed": bool(
                 last_patrol is not None
                 and (last_patrol["status"] == "failed" or last_patrol["error_detail"])
@@ -587,7 +621,7 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
                 int(stats_24h["dispatched_investigations"]) if stats_24h else 0
             ),
         },
-        False,
+        degraded,
     )
 
 
@@ -595,12 +629,35 @@ def _qa_attention_item(qa_state: dict | None) -> dict | None:
     """Return an attention item for QA state, or None.
 
     Mirrors frontend/src/components/overview/model.ts::summarizeQaState's
-    priority order exactly (failed patrol > dispatched investigations > novel
-    findings), so the briefing and the attention list agree on when QA needs
-    a look.
+    priority order exactly (circuit-breaker tripped > failed patrol >
+    dispatched investigations > novel findings), so the briefing and the
+    attention list agree on when QA needs a look. A tripped breaker means the
+    QA staffer has stopped dispatching entirely after repeated consecutive
+    failures -- more severe than a single failed patrol run, so it is checked
+    FIRST (bu-y2xqi).
     """
     if qa_state is None:
         return None
+
+    if qa_state.get("circuit_breaker_tripped"):
+        n = qa_state.get("circuit_breaker_consecutive_failures", 0)
+        # severity="high" -- the briefing's attention-item vocabulary tops
+        # out at "high" (no "critical" tier); this mirrors
+        # attention_item_from_audit_group_row's "briefing maps critical to
+        # high for display" convention. The Overview attention list's own
+        # row for this same signal renders its finer "critical" severity
+        # directly from summarizeQaState.
+        return {
+            "severity": "high",
+            "type": "qa",
+            "butler": "qa",
+            "description": (
+                f"QA circuit breaker tripped ({n} consecutive failure{'' if n == 1 else 's'})"
+            ),
+            "link": "/qa",
+            "occurrences": n,
+            "source": "qa",
+        }
 
     if qa_state["last_patrol_failed"]:
         return {
