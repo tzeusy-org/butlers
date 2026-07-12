@@ -34,7 +34,7 @@
 // now accept from/to, mirroring /api/spend/daily).
 // ---------------------------------------------------------------------------
 
-import { useState, useMemo, useRef, useEffect, useCallback } from "react"
+import { useState, useMemo, useRef } from "react"
 import { Link } from "react-router"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { differenceInCalendarDays, subDays } from "date-fns"
@@ -48,6 +48,7 @@ import { toast } from "sonner"
 import { apiFetch } from "@/api/client"
 import { useSpendTicker } from "@/hooks/use-spend-ticker"
 import { useModelCatalog } from "@/hooks/use-model-catalog"
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval"
 import {
   useSpendSummary,
   useDailySpend,
@@ -594,10 +595,16 @@ type BreakdownBy = "butler" | "model" | "feature" | "purpose"
 
 function BreakdownSection() {
   const [by, setBy] = useState<BreakdownBy>("butler")
+  // Live path: spendPatch invalidates ["spend-breakdown"] on every spend
+  // call event (bu-01r64.4, see event-cache-registry.ts) -- previously a
+  // bespoke, throttled useEffect in the page's root component did this by
+  // hand. The poll below is now a bus-aware reconciliation sweep, not the
+  // primary update path.
+  const refetchInterval = useBusAwarePollInterval()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["spend-breakdown", by],
     queryFn: () => fetchBreakdown(by),
-    refetchInterval: 120_000,
+    refetchInterval,
   })
 
   const entries = useMemo(() => {
@@ -1252,10 +1259,15 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
 function SpendRulesSection() {
   const queryClient = useQueryClient()
   const [creating, setCreating] = useState(false)
+  // Live path: spendPatch invalidates ["spend-rules"] on every spend call
+  // event (bu-01r64.4) -- a reconciliation nudge alongside the direct
+  // mutation invalidations below (create/delete/reorder), not their
+  // replacement. The poll is a bus-aware reconciliation sweep.
+  const refetchInterval = useBusAwarePollInterval()
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["spend-rules"],
     queryFn: fetchRules,
-    refetchInterval: 60_000,
+    refetchInterval,
   })
 
   const deleteMutation = useMutation({
@@ -1354,10 +1366,12 @@ function SpendRulesSection() {
 // ---------------------------------------------------------------------------
 
 export default function SpendPage() {
-  const queryClient = useQueryClient()
-
   // Posture — always the current month, independent of the explore-section
   // time window below (matches the original /settings/spend behavior).
+  // Live path: spendPatch invalidates ["spend-forecast"] on every spend call
+  // event (bu-01r64.4) -- the poll below is a bus-aware reconciliation
+  // sweep, not the primary update path.
+  const forecastRefetchInterval = useBusAwarePollInterval()
   const {
     data: forecastData,
     isLoading: forecastLoading,
@@ -1366,7 +1380,7 @@ export default function SpendPage() {
   } = useQuery({
     queryKey: ["spend-forecast"],
     queryFn: fetchForecast,
-    refetchInterval: 120_000,
+    refetchInterval: forecastRefetchInterval,
   })
   const forecast = forecastData?.data
 
@@ -1407,23 +1421,13 @@ export default function SpendPage() {
     }
   }, [forecast, streamedCostUsd, baselineForecast, baselineStreamedCostUsd])
 
-  // When new spend events arrive, invalidate the breakdown query on the next
-  // natural polling cycle.  Throttled to at most once per 30 s to avoid
-  // excessive invalidations when events are frequent.
-  const lastInvalidationRef = useRef<number>(0)
-  const invalidateBreakdown = useCallback(() => {
-    const now = Date.now()
-    if (now - lastInvalidationRef.current > 30_000) {
-      lastInvalidationRef.current = now
-      queryClient.invalidateQueries({ queryKey: ["spend-breakdown"] })
-    }
-  }, [queryClient])
-
-  useEffect(() => {
-    if (streamedCostUsd > 0) {
-      invalidateBreakdown()
-    }
-  }, [streamedCostUsd, invalidateBreakdown])
+  // NOTE: spend-breakdown invalidation on live spend events used to be a
+  // bespoke, throttled useEffect here. bu-01r64.4 moved that coverage into
+  // spendPatch (event-cache-registry.ts), which now invalidates
+  // ["spend-breakdown"] globally on every "spend" bus event alongside
+  // cost-summary/daily-costs/top-sessions/costs-by-schedule -- see
+  // BreakdownSection's useBusAwarePollInterval-driven poll above for the
+  // reconciliation-sweep safety net.
 
   // Over-ceiling attention condition — the only state-color-on-background use.
   const overCeiling =

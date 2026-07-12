@@ -42,6 +42,7 @@ The Sessions page (`/sessions`) provides a paginated, filterable table of sessio
 - **WHEN** the Sessions page renders
 - **THEN** a session-volume-over-time chart (`SessionStripeChart`, stacked per-butler bars) is shown as the page's primary visualization above the filter bar
 - **AND** the chart is scoped to the active filter window (it observes the same filter params as the list, not the page cursor)
+- **AND** its data polls via `useBusAwarePollInterval` (bu-01r64.4): the chart's `["session-stripe"]` query key is invalidated by "session" bus events (same as the list below it — see `event-cache-manifest.ts`), so both surfaces update within the same beat rather than the list going live while the chart lags on its own fixed poll
 
 #### Scenario: Window-true KPI strip
 - **WHEN** the Sessions page renders
@@ -375,6 +376,8 @@ All visibility surfaces use TanStack Query (React Query) for data fetching. Bus-
 - **THEN** audit entries refetch every 30 seconds
 - **WHEN** the Issues page is active
 - **THEN** issues poll the same bus-aware cadence as Sessions/Timeline above (issues are bus-covered — see `event-cache-manifest.ts`)
+- **WHEN** the Sessions page's `SessionStripeChart` is active
+- **THEN** it polls the same bus-aware cadence as the sessions list above (bu-01r64.4 closed its coverage-manifest gap — see `event-cache-manifest.ts`)
 
 #### Scenario: Dashboard overview refresh
 - **WHEN** the dashboard is active

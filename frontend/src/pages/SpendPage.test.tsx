@@ -37,6 +37,16 @@ vi.mock("@/hooks/use-spend-ticker", () => ({
   useSpendTicker: () => mockUseSpendTicker(),
 }))
 
+// BreakdownSection/SpendRulesSection/the posture forecast query now call
+// useBusAwarePollInterval directly (bu-01r64.4), which reads the real
+// EventBusProvider context via useContext -- invalid without a provider in
+// the render tree. Stub the bus as always "open" (same pattern as
+// use-issues.test.ts / SessionStripeChart.test.tsx), giving every test here
+// the reconciliation cadence.
+vi.mock("@/lib/event-bus", () => ({
+  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+}))
+
 vi.mock("@/hooks/use-model-catalog", () => ({
   useModelCatalog: () => ({
     data: {

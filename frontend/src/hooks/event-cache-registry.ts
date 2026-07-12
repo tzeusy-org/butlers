@@ -69,12 +69,24 @@ const approvalPatch: CachePatch = (qc, event) => {
  * the other three, so it was demoted onto the same POLL_BUS_RECONCILE_MS
  * reconciliation cadence and needed the matching invalidation here to
  * actually be bus-covered rather than just sharing the interval's magnitude).
+ *
+ * bu-01r64.4 added SpendPage.tsx's own derived keys —
+ * ["spend-breakdown"] / ["spend-rules"] / ["spend-forecast"] — which change
+ * on exactly the same spend call events but were previously invalidated by a
+ * bespoke, throttled `useEffect` living in the page component (spend-
+ * breakdown) or not bus-covered at all (spend-rules, spend-forecast), so
+ * both the 2026-07-10 JARVIS pursuit dossier and the coverage manifest
+ * missed them. The page-local throttle is gone now that this registry
+ * invalidates the key directly, same as every other bus-covered surface.
  */
 const spendPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["cost-summary"] });
   qc.invalidateQueries({ queryKey: ["daily-costs"] });
   qc.invalidateQueries({ queryKey: ["top-sessions"] });
   qc.invalidateQueries({ queryKey: ["costs-by-schedule"] });
+  qc.invalidateQueries({ queryKey: ["spend-breakdown"] });
+  qc.invalidateQueries({ queryKey: ["spend-rules"] });
+  qc.invalidateQueries({ queryKey: ["spend-forecast"] });
 };
 
 /**
@@ -96,6 +108,13 @@ const spendPatch: CachePatch = (qc) => {
  * butler-scoped branch below) since invalidateQueries prefix-matches every
  * currently-cached id anyway, and a session "ended" event carries no
  * guarantee the owner is even looking at that specific session's page.
+ *
+ * Also invalidates ["session-stripe"] (bu-01r64.4) — SessionStripeChart's
+ * rolling per-butler stripe sits directly above the sessions list on
+ * SessionsPage/BulterDetailPage and was the proven "same page updates at two
+ * speeds" gap: the list below it went live via ["sessions"] above while the
+ * chart itself lagged up to 60s on its own fixed poll, with no manifest row
+ * to catch the drift (2026-07-10 JARVIS pursuit dossier).
  */
 const sessionPatch: CachePatch = (qc, event) => {
   qc.invalidateQueries({ queryKey: ["sessions"] });
@@ -107,6 +126,7 @@ const sessionPatch: CachePatch = (qc, event) => {
   // its live tail must reflect without waiting for the next 30s poll.
   qc.invalidateQueries({ queryKey: ["timeline"] });
   qc.invalidateQueries({ queryKey: ["session-detail-global"] });
+  qc.invalidateQueries({ queryKey: ["session-stripe"] });
   const butler = asString(event.data.butler);
   const sessionId = asString(event.data.session_id);
   if (butler && sessionId) {

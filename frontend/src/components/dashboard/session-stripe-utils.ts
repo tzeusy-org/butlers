@@ -5,6 +5,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { getSessions } from "@/api/index.ts"
 import type { KeysetMeta, SessionParams } from "@/api/types.ts"
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval"
 
 // ---------------------------------------------------------------------------
 // Row type
@@ -173,9 +174,12 @@ function resolveWindow(
  * (butler/trigger/status/request_id) are forwarded so the chart matches the
  * page's filter set.
  *
- * `refetchInterval` is passed through from the caller (SessionStripeChart
- * uses a fixed 60s cadence -- this key is not bus-covered, see
- * SessionStripeChart.tsx). Pass `false` to disable polling entirely.
+ * `refetchInterval` is passed through from the caller as an explicit
+ * override; omit it (or pass `undefined`) to fall back to the bus-aware
+ * default -- ["session-stripe"] is invalidated by "session" bus events (see
+ * event-cache-registry.ts's sessionPatch, bu-01r64.4), so the default
+ * cadence is a POLL_BUS_RECONCILE_MS reconciliation sweep, not the primary
+ * update path. Pass `false` to disable polling entirely.
  */
 async function fetchAllSessionsForWindow(
   windowHours: number,
@@ -199,14 +203,20 @@ async function fetchAllSessionsForWindow(
 
 export function useSessionStripeData(
   windowHours = 24,
-  refetchInterval: number | false = 60_000,
+  refetchInterval?: number | false,
   filterParams?: StripeFilterParams,
 ) {
+  // Live path: sessionPatch invalidates ["session-stripe"] on every session
+  // started/ended bus event (bu-01r64.4). Default poll is a bus-aware
+  // reconciliation sweep; callers that pass an explicit refetchInterval
+  // override (including `false` to disable polling) are unaffected.
+  const busAwareInterval = useBusAwarePollInterval()
+
   return useQuery({
     // Key on window length + filters; refetchInterval drives the rolling advance.
     queryKey: ["session-stripe", windowHours, filterParams ?? null],
     queryFn: () => fetchAllSessionsForWindow(windowHours, filterParams),
-    refetchInterval,
+    refetchInterval: refetchInterval ?? busAwareInterval,
   })
 }
 

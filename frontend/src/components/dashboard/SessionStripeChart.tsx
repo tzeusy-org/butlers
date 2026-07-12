@@ -104,13 +104,13 @@ export function SessionStripeChart({
   butlers,
   filterParams,
 }: SessionStripeChartProps) {
-  // Not bus-covered (["session-stripe", ...] has no fleet-event-bus
-  // invalidation -- see event-cache-registry.ts), so this stays a fixed
-  // primary-path poll rather than a useBusAwarePollInterval reconciliation
-  // sweep. The manual auto-refresh toggle that used to gate this (bu-u4s65)
-  // retired with AutoRefreshToggle (bu-01r64.3); a fixed 60s cadence matches
-  // its prior default.
-  const { data, isLoading, isError } = useSessionStripeData(windowHours, 60_000, filterParams)
+  // Bus-covered (bu-01r64.4): sessionPatch invalidates ["session-stripe"] on
+  // every session started/ended event -- see event-cache-registry.ts. Omit
+  // the refetchInterval override so useSessionStripeData falls back to its
+  // own useBusAwarePollInterval default (a reconciliation sweep, not the
+  // primary update path). The manual auto-refresh toggle that used to gate
+  // this (bu-u4s65) retired with AutoRefreshToggle (bu-01r64.3).
+  const { data, isLoading, isError } = useSessionStripeData(windowHours, undefined, filterParams)
 
   const sessions = useMemo(() => data?.data ?? [], [data])
 

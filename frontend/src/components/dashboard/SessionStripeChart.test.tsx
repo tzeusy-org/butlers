@@ -30,6 +30,15 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   }
 })
 
+// useSessionStripeData now calls useBusAwarePollInterval (bu-01r64.4), which
+// reads the real EventBusProvider context via useContext -- invalid outside
+// a React render tree that provides it. Stub the bus as always "open" (same
+// pattern as use-issues.test.ts / use-sessions.aggregate.test.tsx), giving
+// every test here the reconciliation cadence.
+vi.mock("@/lib/event-bus", () => ({
+  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+}))
+
 // ---------------------------------------------------------------------------
 // Mock recharts
 // ---------------------------------------------------------------------------
@@ -65,6 +74,7 @@ import { useQuery } from "@tanstack/react-query"
 import { SessionStripeChart } from "./SessionStripeChart"
 import { pivotSessionsIntoRows } from "./session-stripe-utils"
 import type { ButlerSummary } from "@/api/types"
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -330,13 +340,17 @@ describe("pivotSessionsIntoRows — time-bucket boundary", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Fixed refetchInterval [bu-01r64.3 -- replaces the retired useAutoRefresh
-// integration test above; the manual toggle is gone, the chart now always
-// polls at a fixed 60s cadence (not bus-covered, see SessionStripeChart.tsx)]
+// Bus-aware refetchInterval [bu-01r64.3 retired the manual auto-refresh
+// toggle in favor of a fixed poll; bu-01r64.4 closed the coverage-manifest
+// gap and made ["session-stripe"] bus-covered (sessionPatch in
+// event-cache-registry.ts), so the chart now defers to
+// useSessionStripeData's useBusAwarePollInterval default instead of a raw
+// 60s literal -- POLL_BUS_RECONCILE_MS while the bus is connected (stubbed
+// "open" above).]
 // ---------------------------------------------------------------------------
 
-describe("SessionStripeChart — fixed poll cadence", () => {
-  it("passes a fixed refetchInterval=60_000 to useQuery", () => {
+describe("SessionStripeChart — bus-aware poll cadence", () => {
+  it("passes the bus-aware reconciliation interval to useQuery", () => {
     mockUseQuery.mockReturnValue({
       data: undefined,
       isLoading: true,
@@ -346,7 +360,7 @@ describe("SessionStripeChart — fixed poll cadence", () => {
     renderChart({ butlers: [] })
 
     expect(mockUseQuery).toHaveBeenCalledWith(
-      expect.objectContaining({ refetchInterval: 60_000 }),
+      expect.objectContaining({ refetchInterval: POLL_BUS_RECONCILE_MS }),
     )
   })
 })

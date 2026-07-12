@@ -45,6 +45,12 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "spend", queryKey: ["daily-costs"], source: "use-spend.ts (useDailySpend)" },
   { eventType: "spend", queryKey: ["top-sessions"], source: "use-spend.ts (useTopSessions)" },
   { eventType: "spend", queryKey: ["costs-by-schedule"], source: "use-spend.ts (useCostsBySchedule)" },
+  // bu-01r64.4: SpendPage's own derived keys — see event-cache-registry.ts's
+  // spendPatch header comment for why these lag no differently than the four
+  // hook-owned keys above despite living in the page component itself.
+  { eventType: "spend", queryKey: ["spend-breakdown"], source: "SpendPage.tsx (BreakdownSection)" },
+  { eventType: "spend", queryKey: ["spend-rules"], source: "SpendPage.tsx (SpendRulesSection)" },
+  { eventType: "spend", queryKey: ["spend-forecast"], source: "SpendPage.tsx (posture forecast query)" },
 
   // session
   { eventType: "session", queryKey: ["sessions"], source: "use-sessions.ts (useSessions)" },
@@ -53,6 +59,9 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "session", queryKey: ["butlers", "board"], source: "use-butlers.ts (useButlersBoard)" },
   { eventType: "session", queryKey: ["timeline"], source: "use-timeline.ts (useTimeline)" },
   { eventType: "session", queryKey: ["session-detail-global", "sess-1"], source: "use-sessions.ts (useGlobalSessionDetail / SessionDetailPage)" },
+  // bu-01r64.4: the session-stripe chart above SessionsPage's list lagged the
+  // list itself by up to 60s because sessionPatch never touched its key.
+  { eventType: "session", queryKey: ["session-stripe"], source: "session-stripe-utils.ts (useSessionStripeData) / SessionStripeChart.tsx" },
 
   // notification (the proven-gap surfaces, fixed alongside this manifest)
   { eventType: "notification", queryKey: ["notifications"], source: "use-notifications.ts (useNotifications)" },
