@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from fastmcp.exceptions import ToolError
 
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -33,6 +34,7 @@ from butlers.api.pricing import (
     load_pricing,
 )
 from butlers.api.routers.spend import _get_db_manager as _costs_get_db
+from butlers.api.routers.spend import _is_tool_absent_error
 from butlers.core.model_routing import check_monthly_ceiling
 
 pytestmark = pytest.mark.unit
@@ -317,6 +319,43 @@ async def test_cost_summary_unreachable_butler_skipped(app):
     # The dropped butler must be named, not silently absorbed into the total
     # as an unremarkable $0.00 (bu-qvnce.1 -- honest aggregation).
     assert data["unavailable_butlers"] == ["broken"]
+
+
+async def test_cost_summary_tool_absent_not_marked_unavailable(app):
+    """A staffer butler with no ``sessions_summary`` tool registered raises
+    ``ToolError('Unknown tool: ...')`` -- that is a legitimately-absent MCP
+    tool (see ``core_tools/_sessions.py``: sessions tools are non-STAFFER
+    only), NOT a degraded source. It must contribute a truthful $0 and must
+    NOT appear in ``unavailable_butlers`` (bu-hmdqz.7 -- classify-before-
+    flagging in the flagging direction; mirrors
+    ``memory.py::_is_missing_memory_schema_error`` for the tool-absence
+    case)."""
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="switchboard", port=41101),
+    ]
+    sw_data = {
+        "total_sessions": 2,
+        "total_input_tokens": 1000,
+        "total_output_tokens": 500,
+        "by_model": {"claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500}},
+    }
+    mgr = _mock_mgr(
+        {
+            "sw": _make_tool_result(sw_data),
+            "switchboard": ToolError("Unknown tool: 'sessions_summary'"),
+        }
+    )
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend")
+    data = resp.json()["data"]
+    assert data["total_sessions"] == 2
+    assert "switchboard" not in data["by_butler"]
+    # Legitimately absent -- must not be confused with a genuine failure.
+    assert data["unavailable_butlers"] == []
 
 
 async def test_cost_summary_all_reachable_reports_no_unavailable_butlers(app):
@@ -814,6 +853,28 @@ async def test_cost_summary_date_range_invalid_returns_422(app, params):
 
 
 # ---------------------------------------------------------------------------
+# _is_tool_absent_error -- absent-vs-degraded classifier (bu-hmdqz.7)
+# ---------------------------------------------------------------------------
+
+
+def test_is_tool_absent_error_true_for_unknown_tool():
+    """The exact shape fastmcp.Client.call_tool raises when the remote
+    FastMCP server has no matching tool registered (see
+    fastmcp/server/server.py's NotFoundError -> "Unknown tool: '<name>'")."""
+    assert _is_tool_absent_error(ToolError("Unknown tool: 'sessions_summary'")) is True
+
+
+def test_is_tool_absent_error_false_for_other_failures():
+    """A ToolError raised by the tool's own body for a different reason, or
+    any non-ToolError failure, is a genuine failure and must still be
+    tracked -- only the exact "Unknown tool: ..." shape is legitimately
+    absent."""
+    assert _is_tool_absent_error(ToolError("division by zero")) is False
+    assert _is_tool_absent_error(ButlerUnreachableError("broken")) is False
+    assert _is_tool_absent_error(TimeoutError()) is False
+
+
+# ---------------------------------------------------------------------------
 # GET /api/spend/by-schedule
 # ---------------------------------------------------------------------------
 
@@ -829,7 +890,13 @@ async def test_by_schedule_contract_and_zero_division(app):
         "total_output_tokens": 15000,
         "runs_per_day": 1.0,
     }
-    zero_sched = {**sched, "total_runs": 0, "total_input_tokens": 0, "total_output_tokens": 0}
+    zero_sched = {
+        **sched,
+        "name": "empty-report",
+        "total_runs": 0,
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+    }
     mgr = _mock_mgr({"sw": _make_tool_result({"schedules": [sched, zero_sched]})})
     _wire(app, mgr, configs, _flat_pricing())
     async with httpx.AsyncClient(
@@ -844,6 +911,86 @@ async def test_by_schedule_contract_and_zero_division(app):
     ScheduleCost(**real)
     assert zero["avg_cost_per_run"] == 0.0
     assert zero["projected_monthly_usd"] == 0.0
+
+
+async def test_by_schedule_merges_multi_model_fragments(app):
+    """A schedule that ran under 2+ models in the window must collapse into
+    ONE ScheduleCost entry per (butler, schedule_name) -- the underlying DB
+    query groups by (name, cron, model), so before this fix each model
+    produced its own fragment that under-ranked the schedule's true burn and
+    collided on the frontend's `${butler}-${schedule_name}` React key
+    (bu-hmdqz.7)."""
+    configs = [ButlerConnectionInfo(name="sw", port=41100)]
+    sonnet_fragment = {
+        "name": "drain-curriculum-request",
+        "cron": "0 8 * * *",
+        "model": "claude-sonnet-4-20250514",
+        "total_runs": 20,
+        "total_input_tokens": 20000,
+        "total_output_tokens": 10000,
+        "runs_per_day": 1.0,
+    }
+    haiku_fragment = {
+        **sonnet_fragment,
+        "model": "claude-haiku-35-20241022",
+        "total_runs": 10,
+        "total_input_tokens": 10000,
+        "total_output_tokens": 5000,
+    }
+    mgr = _mock_mgr({"sw": _make_tool_result({"schedules": [sonnet_fragment, haiku_fragment]})})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    items = resp.json()["data"]
+    matches = [i for i in items if i["schedule_name"] == "drain-curriculum-request"]
+    # Exactly one row -- no duplicate (butler, schedule_name) React key.
+    assert len(matches) == 1
+    merged = matches[0]
+    assert merged["total_runs"] == 30
+    # Cost is the sum of both per-model fragments, priced independently.
+    sonnet_cost = 20000 * 0.000003 + 10000 * 0.000015
+    haiku_cost = 10000 * 0.0000008 + 5000 * 0.000004
+    assert merged["total_cost_usd"] == pytest.approx(sonnet_cost + haiku_cost, abs=1e-6)
+    assert merged["avg_cost_per_run"] == pytest.approx((sonnet_cost + haiku_cost) / 30, abs=1e-6)
+
+
+async def test_by_schedule_tool_absent_not_marked_unavailable(app):
+    """A staffer butler with no ``schedule_costs`` tool registered raises
+    ``ToolError('Unknown tool: ...')`` -- legitimately absent (see
+    ``core_tools/_scheduling.py``: ``schedule_costs`` is non-STAFFER only),
+    NOT a degraded source, and must not appear in
+    ``meta.unavailable_butlers`` (bu-hmdqz.7)."""
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="switchboard", port=41101),
+    ]
+    sched = {
+        "name": "daily-report",
+        "cron": "0 8 * * *",
+        "model": "claude-sonnet-4-20250514",
+        "total_runs": 30,
+        "total_input_tokens": 30000,
+        "total_output_tokens": 15000,
+        "runs_per_day": 1.0,
+    }
+    mgr = _mock_mgr(
+        {
+            "sw": _make_tool_result({"schedules": [sched]}),
+            "switchboard": ToolError("Unknown tool: 'schedule_costs'"),
+        }
+    )
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert any(i["schedule_name"] == "daily-report" for i in body["data"])
+    assert "unavailable_butlers" not in body["meta"]
 
 
 async def test_by_schedule_reports_unavailable_butlers_for_genuine_failure(app):

@@ -41,6 +41,7 @@ from fastapi import (
     Query,
     Request,
 )
+from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from butlers.api.db import DatabaseManager
@@ -73,6 +74,28 @@ router = APIRouter(prefix="/api/spend", tags=["spend"])
 
 _STATUS_TIMEOUT_S = 5.0
 _SESSIONS_SUMMARY_TOOL = "sessions_summary"
+
+
+def _is_tool_absent_error(exc: Exception) -> bool:
+    """Return whether *exc* means the remote butler never registered this tool.
+
+    ``fastmcp.Client.call_tool`` raises ``ToolError`` (message ``"Unknown tool:
+    '<name>'"``) when the server-side ``FastMCP`` instance has no tool
+    matching the requested name -- see ``fastmcp/server/server.py``'s
+    ``NotFoundError`` on the dispatch path. For this router that is the
+    expected, common case for a **staffer** butler: ``sessions_summary`` /
+    ``sessions_daily`` / ``top_sessions`` / ``schedule_costs`` are all
+    registered only for non-STAFFER butlers (``core_tools/_sessions.py``,
+    ``core_tools/_scheduling.py``), so every staffer (switchboard, messenger,
+    qa) structurally lacks them regardless of its ``core_groups`` config. That
+    is NOT a degraded source -- it must not land in ``unavailable_butlers`` --
+    mirrors the classify-before-flagging rule in
+    ``memory.py::_is_missing_memory_schema_error`` for the MCP-tool-absence
+    case instead of the DB-schema-absence case. Any other failure (unreachable
+    butler, timeout, malformed JSON, or a ``ToolError`` raised by the tool's
+    own body for a different reason) is genuine and must still be tracked.
+    """
+    return isinstance(exc, ToolError) and str(exc).startswith("Unknown tool:")
 
 
 def _get_db_manager() -> DatabaseManager | None:
@@ -285,6 +308,14 @@ async def _get_butler_session_stats(
         if tracker is not None:
             tracker.mark(info.name, msg="Cost summary returned invalid JSON")
     except Exception as exc:
+        if _is_tool_absent_error(exc):
+            logger.debug(
+                "Butler %s has no %s tool registered (staffer or module not "
+                "enabled) -- legitimately absent, not a degraded source",
+                info.name,
+                _SESSIONS_SUMMARY_TOOL,
+            )
+            return (info.name, 0.0, 0, 0, 0, {})
         logger.warning(
             "Cost summary tool call failed for butler %s via %s (%s: %s)",
             info.name,
@@ -370,6 +401,14 @@ async def _get_butler_session_stats_for_range(
         if tracker is not None:
             tracker.mark(info.name, msg="Cost summary (date range) returned invalid JSON")
     except Exception as exc:
+        if _is_tool_absent_error(exc):
+            logger.debug(
+                "Butler %s has no sessions_daily tool registered (staffer or "
+                "module not enabled) -- legitimately absent, not a degraded "
+                "source",
+                info.name,
+            )
+            return (info.name, 0.0, 0, 0, 0, {})
         logger.warning(
             "Cost summary (date range) tool call failed for butler %s via sessions_daily (%s: %s)",
             info.name,
@@ -543,7 +582,15 @@ async def _get_butler_daily_stats(
                         }
                     )
                 return days
-    except (ButlerUnreachableError, TimeoutError, Exception):
+    except (ButlerUnreachableError, TimeoutError, Exception) as exc:
+        if _is_tool_absent_error(exc):
+            logger.debug(
+                "Butler %s has no sessions_daily tool registered (staffer or "
+                "module not enabled) -- legitimately absent, not a degraded "
+                "source",
+                info.name,
+            )
+            return []
         if tracker is not None:
             tracker.mark(info.name, msg="Daily cost query failed")
     return []
@@ -718,7 +765,15 @@ async def _get_butler_top_sessions(
                         )
                     )
                 return sessions
-    except (ButlerUnreachableError, TimeoutError, Exception):
+    except (ButlerUnreachableError, TimeoutError, Exception) as exc:
+        if _is_tool_absent_error(exc):
+            logger.debug(
+                "Butler %s has no top_sessions tool registered (staffer or "
+                "module not enabled) -- legitimately absent, not a degraded "
+                "source",
+                info.name,
+            )
+            return []
         if tracker is not None:
             tracker.mark(info.name, msg="Top sessions query failed")
     return []
@@ -811,12 +866,23 @@ async def _get_butler_schedule_costs(
             text = result.content[0].text if hasattr(result.content[0], "text") else ""
             if text:
                 data = json.loads(text)
-                costs = []
+                # ``core/sessions.py::schedule_costs`` groups its SQL by
+                # (name, cron, model) -- a schedule that ran under 2+ models
+                # in the window emits one raw row PER MODEL here. Price each
+                # model fragment individually (pricing is model-specific) but
+                # merge fragments sharing a schedule name into a single bucket
+                # BEFORE building ``ScheduleCost`` objects, so this function
+                # always returns exactly one entry per (butler, schedule_name)
+                # -- otherwise a multi-model schedule silently splits into
+                # under-ranked fragments and collides on the frontend's
+                # `${butler}-${schedule_name}` React key (bu-hmdqz.7).
+                merged: dict[str, dict] = {}
                 for entry in data.get("schedules", []):
+                    name = entry.get("name", "")
                     model_id = entry.get("model", "")
                     input_tokens = entry.get("total_input_tokens", 0)
                     output_tokens = entry.get("total_output_tokens", 0)
-                    total_cost = estimate_session_cost(
+                    fragment_cost = estimate_session_cost(
                         pricing,
                         model_id,
                         input_tokens,
@@ -825,14 +891,33 @@ async def _get_butler_schedule_costs(
                         cache_creation_tokens=entry.get("total_cache_creation_tokens", 0),
                         context_tokens=entry.get("context_tokens"),
                     )
-                    total_runs = entry.get("total_runs", 0)
+                    bucket = merged.setdefault(
+                        name,
+                        {
+                            "cron": entry.get("cron", ""),
+                            "total_runs": 0,
+                            "total_cost_usd": 0.0,
+                            # runs_per_day is derived from the cron alone (see
+                            # ``_estimate_runs_per_day``), so it is identical
+                            # across every model fragment of the same
+                            # schedule -- take it once, don't sum it.
+                            "runs_per_day": entry.get("runs_per_day", 0.0),
+                        },
+                    )
+                    bucket["total_runs"] = bucket["total_runs"] + entry.get("total_runs", 0)
+                    bucket["total_cost_usd"] = bucket["total_cost_usd"] + fragment_cost
+
+                costs = []
+                for name, bucket in merged.items():
+                    total_runs = bucket["total_runs"]
+                    total_cost = bucket["total_cost_usd"]
                     avg_cost = total_cost / total_runs if total_runs > 0 else 0.0
-                    runs_per_day = entry.get("runs_per_day", 0.0)
+                    runs_per_day = bucket["runs_per_day"]
                     costs.append(
                         ScheduleCost(
-                            schedule_name=entry.get("name", ""),
+                            schedule_name=name,
                             butler=info.name,
-                            cron=entry.get("cron", ""),
+                            cron=bucket["cron"],
                             total_runs=total_runs,
                             total_cost_usd=round(total_cost, 6),
                             avg_cost_per_run=round(avg_cost, 6),
@@ -841,7 +926,15 @@ async def _get_butler_schedule_costs(
                         )
                     )
                 return costs
-    except (ButlerUnreachableError, TimeoutError, Exception):
+    except (ButlerUnreachableError, TimeoutError, Exception) as exc:
+        if _is_tool_absent_error(exc):
+            logger.debug(
+                "Butler %s has no schedule_costs tool registered (staffer or "
+                "module not enabled) -- legitimately absent, not a degraded "
+                "source",
+                info.name,
+            )
+            return []
         if tracker is not None:
             tracker.mark(info.name, msg="Schedule cost query failed")
     return []

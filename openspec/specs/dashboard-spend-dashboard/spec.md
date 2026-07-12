@@ -47,6 +47,16 @@ The dashboard SHALL expose the spend endpoints.
 - **AND** `projection_confidence = "low"` when `days_elapsed < 3`, else `"normal"`. This signals to the Console aggregator NOT to fire a "spend near ceiling" attention item from a low-confidence projection.
 - **AND** a code-level TODO marks the location of the smarter estimator for a future change.
 
+#### Scenario: Spend by-schedule aggregation
+- **WHEN** `GET /api/spend/by-schedule` (or `?by=feature` on `/api/spend/breakdown`) is called and a schedule ran under 2+ models within the queried window
+- **THEN** the response contains exactly one `ScheduleCost` entry per `(butler, schedule_name)` — the per-butler fan-out prices each `(schedule, model)` fragment individually (pricing is model-specific) but merges same-named fragments into a single bucket (summed `total_runs` and `total_cost_usd`; `runs_per_day` taken once, since it derives only from the cron) before returning
+- **AND** `avg_cost_per_run` and `projected_monthly_usd` are computed from the merged totals, not from any individual model fragment — a multi-model schedule must never under-rank its true burn or produce duplicate `(butler, schedule_name)` rows (the frontend keys table rows on `${butler}-${schedule_name}`).
+
+#### Scenario: MCP tool-absence is not a degraded source
+- **WHEN** the per-butler MCP fan-out behind `/api/spend`, `/api/spend/daily`, `/api/spend/top-sessions`, or `/api/spend/by-schedule` calls a butler that has never registered the requested tool (`sessions_summary` / `sessions_daily` / `top_sessions` / `schedule_costs` are registered only for non-STAFFER butlers — see `core_tools/_sessions.py`, `core_tools/_scheduling.py` — so every STAFFER butler, e.g. `switchboard`/`messenger`/`qa`, structurally lacks all four regardless of its `core_groups` config)
+- **THEN** the call fails with `fastmcp.exceptions.ToolError` whose message starts with `"Unknown tool:"`, and the router classifies this as legitimately absent — the butler contributes a truthful zero/empty result and is NOT added to `unavailable_butlers`
+- **AND** any other failure on the same call (unreachable butler, timeout, malformed JSON, or a `ToolError` raised by the tool's own body for a different reason) is still tracked and the butler IS added to `unavailable_butlers`, so a genuine failure is never mistaken for "this butler doesn't have that feature".
+
 #### Scenario: Spend rule condition dimensions
 - **WHEN** a rule `condition` is created or updated
 - **THEN** the supported dimensions are `butler` (identity name), `complexity`/`tier` (alias pair — canonical complexity tier), and `trigger`/`purpose` (alias pair — the dispatch `trigger_source`, matching the same vocabulary `/spend/breakdown?by=purpose` and `token_usage_ledger.purpose` use for this dimension)
