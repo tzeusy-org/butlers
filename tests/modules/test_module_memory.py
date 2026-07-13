@@ -806,8 +806,19 @@ class TestGetEmbeddingEngineSingleton:
                 _helpers._embedding_engines.clear()
                 _helpers._embedding_engines.update(saved)
 
+    @pytest.mark.faketime_fragile
     async def test_concurrent_same_model_builds_single_instance(self):
-        """Concurrent same-model calls do not race duplicate engine construction."""
+        """Concurrent same-model calls do not race duplicate engine construction.
+
+        Deselected from the nightly faketime matrix legs: the race is arbitrated
+        by ``second_check_entered.wait(timeout=1)`` in the first worker, which
+        MUST expire (the second worker is blocked on ``_embedding_engines_lock``
+        and can never set the event). Under libfaketime the +45d/+120d offset
+        pushes that CLOCK_REALTIME-based deadline days into the future, so the
+        wait never returns, the first worker holds the lock forever, and the
+        xdist worker deadlocks for the whole leg (bu-tegqi). The test has no
+        time semantics, so it runs everywhere except those legs.
+        """
         from butlers.modules.memory.tools import _helpers
         from butlers.modules.memory.tools._helpers import get_embedding_engine
 

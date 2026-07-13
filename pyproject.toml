@@ -144,6 +144,17 @@ markers = [
     # and synced), so the faketime legs deselect them via `-m "not pg_clock"`;
     # they stay in every other job (default CI, regular nightly). See bu-szgi9.
     "pg_clock: Test mixes Postgres-clock and Python-clock time; deselected only from the faketime matrix legs (see bu-szgi9)",
+    # faketime_fragile: tests whose progress DEPENDS on a timed thread-sync
+    # primitive actually EXPIRING — threading.Event.wait(timeout)/Lock.acquire(
+    # timeout)/Thread.join(timeout)/Future.result(timeout). CPython implements
+    # those via a CLOCK_REALTIME-based timed wait, which libfaketime shifts
+    # (+45d/+120d); the deadline lands 45-120 faked days out, so the wait never
+    # returns and the test deadlocks, wedging an xdist worker for the whole leg
+    # (root cause of the recurring faketime-matrix hang — see bu-tegqi). These
+    # are pure concurrency/thread-safety tests with no time semantics, so they
+    # carry zero value under faketime; the legs deselect them via
+    # `-m "not faketime_fragile"` while every other job keeps running them.
+    "faketime_fragile: Test relies on a timed thread-sync primitive expiring; deselected only from the faketime matrix legs (see bu-tegqi)",
 ]
 filterwarnings = [
     # Third-party websockets/uvicorn deprecation: tracked upstream, not actionable here
