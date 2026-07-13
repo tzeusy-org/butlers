@@ -17,7 +17,8 @@ class GeneralModuleConfig(BaseModel):
 
 
 class GeneralModule(Module):
-    """General module providing 9 MCP tools for collections and entities."""
+    """General module providing MCP tools for collections, entities, and the
+    situational context bus (check/set/clear_context)."""
 
     def __init__(self) -> None:
         self._db: Any = None

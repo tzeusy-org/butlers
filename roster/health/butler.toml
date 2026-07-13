@@ -50,6 +50,15 @@ cron = "0 7 * * 1"
 dispatch_mode = "job"
 job_name = "insight_scan"
 
+# Situational context-bus producer (RFC 0009): deterministic, zero-LLM.
+# Publishes `sleeping` from the owner-declared quiet-hours window every 15
+# minutes, activating the shipped notify sleeping-gate.
+[[butler.schedule]]
+name = "context_producer_sleep_window"
+cron = "*/15 * * * *"
+dispatch_mode = "job"
+job_name = "context_producer_sleep_window"
+
 [modules.calendar]
 provider = "google"
 groups = ["core", "butler_events"]

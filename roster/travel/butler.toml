@@ -91,6 +91,14 @@ cron = "56 6 * * *"
 dispatch_mode = "job"
 job_name = "calendar_prep_contribution"
 
+# Situational context-bus producer (RFC 0009): deterministic, zero-LLM.
+# Publishes `traveling` from a currently-underway trip every 15 minutes.
+[[butler.schedule]]
+name = "context_producer_travel"
+cron = "*/15 * * * *"
+dispatch_mode = "job"
+job_name = "context_producer_travel"
+
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
 # Enable by uncommenting and re-authorizing via /api/oauth/google/start?force_consent=true
 # [modules.google_drive]

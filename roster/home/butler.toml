@@ -67,4 +67,13 @@ cron = "55 6 * * *"
 dispatch_mode = "job"
 job_name = "daily_briefing_contribution"
 
+# Situational context-bus producer (RFC 0009): deterministic, zero-LLM.
+# Publishes `at_home` from fresh Home Assistant presence entities every 10
+# minutes; a stale HA feed never asserts presence.
+[[butler.schedule]]
+name = "context_producer_home_presence"
+cron = "*/10 * * * *"
+dispatch_mode = "job"
+job_name = "context_producer_home_presence"
+
 [modules.google_drive]

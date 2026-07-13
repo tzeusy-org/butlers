@@ -13,8 +13,72 @@ def register_tools(mcp: Any, module: Any) -> None:
     """Register all general MCP tools on *mcp*, using *module* for pool access."""
 
     # Import sub-modules (deferred to avoid import-time side effects)
+    from datetime import UTC, datetime, timedelta
+
+    from butlers import context_bus as _ctx
     from butlers.tools.general import collections as _coll
     from butlers.tools.general import items as _items
+
+    # =============================================================
+    # Situational context-bus tools (RFC 0009)
+    #
+    # Explicit, user-initiated signals (primarily dnd/sick) that no
+    # deterministic producer can infer. Writes go through the general butler,
+    # which RFC 0009 authorizes for every signal type; permission and
+    # vocabulary are enforced by context_bus.set_context.
+    # =============================================================
+
+    @mcp.tool()
+    async def check_context() -> list[dict[str, Any]]:
+        """Return the owner's currently-active situational context signals.
+
+        Deterministic read of the shared context bus (e.g. traveling, sleeping,
+        meeting, dnd). Use it before acting to adapt tone or defer non-urgent
+        prompts. Returns an empty list when no signals are active.
+        """
+        signals = await _ctx.get_active_context(module._get_pool())
+        return [
+            {
+                "signal_type": s.signal_type,
+                "value": s.value,
+                "set_by_butler": s.set_by_butler,
+                "set_at": s.set_at.isoformat(),
+                "expires_at": s.expires_at.isoformat(),
+                "confidence": s.confidence,
+            }
+            for s in signals
+        ]
+
+    @mcp.tool()
+    async def set_context(
+        signal_type: str,
+        value: str | None = None,
+        hours: float | None = None,
+    ) -> dict[str, Any]:
+        """Assert a situational context signal on the owner's behalf.
+
+        For explicit, user-stated context the butlers cannot infer — most
+        commonly ``dnd`` (do not disturb) and ``sick``. ``signal_type`` must be
+        a valid vocabulary member (see RFC 0009); ``hours`` overrides the
+        default TTL (clamped to the per-signal maximum). Confidence is 1.0
+        (explicit). Raises on an invalid or unauthorized signal type.
+        """
+        expires_at = datetime.now(UTC) + timedelta(hours=hours) if hours is not None else None
+        await _ctx.set_context(
+            module._get_pool(),
+            butler_name="general",
+            signal_type=signal_type,
+            value=value,
+            expires_at=expires_at,
+            confidence=1.0,
+        )
+        return {"status": "set", "signal_type": signal_type, "value": value}
+
+    @mcp.tool()
+    async def clear_context(signal_type: str) -> dict[str, Any]:
+        """Clear a context signal the general butler previously set (e.g. dnd)."""
+        await _ctx.clear_context(module._get_pool(), butler_name="general", signal_type=signal_type)
+        return {"status": "cleared", "signal_type": signal_type}
 
     # =============================================================
     # Collection tools

@@ -1112,6 +1112,54 @@ async def _run_collect_briefing_contributions_job(
 
 
 # ---------------------------------------------------------------------------
+# Situational context-bus producers (RFC 0009)
+#
+# Deterministic, zero-LLM producers that light public.user_context. Each runs
+# on the butler RFC 0009 authorizes as the signal's single writer.
+# ---------------------------------------------------------------------------
+
+
+async def _run_context_producer_calendar_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish meeting/focused context from the general butler's live calendar."""
+    from butlers.jobs.context_producers import run_calendar_context_producer
+
+    return await run_calendar_context_producer(pool, job_args)
+
+
+async def _run_context_producer_home_presence_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish at_home context from fresh Home Assistant presence entities."""
+    from butlers.jobs.context_producers import run_home_presence_context_producer
+
+    return await run_home_presence_context_producer(pool, job_args)
+
+
+async def _run_context_producer_travel_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish traveling context from a currently-underway trip."""
+    from butlers.jobs.context_producers import run_travel_context_producer
+
+    return await run_travel_context_producer(pool, job_args)
+
+
+async def _run_context_producer_sleep_window_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Publish sleeping context from the owner-declared quiet-hours window."""
+    from butlers.jobs.context_producers import run_sleep_window_context_producer
+
+    return await run_sleep_window_context_producer(pool, job_args)
+
+
+# ---------------------------------------------------------------------------
 # Home butler jobs
 # ---------------------------------------------------------------------------
 
@@ -1185,6 +1233,7 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "environment_report": _run_home_environment_report_job,
     "energy_digest": _run_home_energy_digest_job,
     "maintenance_schedule_check": _run_home_maintenance_schedule_check_job,
+    "context_producer_home_presence": _run_context_producer_home_presence_job,
 }
 
 
@@ -1609,6 +1658,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "general": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "collect_briefing_contributions": _run_collect_briefing_contributions_job,
+            "context_producer_calendar": _run_context_producer_calendar_job,
             # Retention pruners (disabled by default — see docs/operations/data-retention.md)
             "session_process_logs_prune": _run_session_process_logs_prune_job,
             "filtered_events_partition_prune": _run_filtered_events_partition_prune_job,
@@ -1620,6 +1670,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "daily_briefing_contribution": _run_health_briefing_contribution_job,
             "calendar_overlay_contribution": _run_health_calendar_overlay_contribution_job,
             "insight_scan": _run_health_insight_scan_job,
+            "context_producer_sleep_window": _run_context_producer_sleep_window_job,
             # Per-butler session log pruner
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
@@ -1655,6 +1706,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_travel_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_travel_calendar_prep_contribution_job,
             "insight_scan": _run_travel_insight_scan_job,
+            "context_producer_travel": _run_context_producer_travel_job,
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "messenger": {

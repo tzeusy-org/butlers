@@ -89,6 +89,15 @@ cron = "58 6 * * *"
 dispatch_mode = "job"
 job_name = "collect_briefing_contributions"
 
+# Situational context-bus producer (RFC 0009): deterministic, zero-LLM.
+# Publishes meeting/focused from the live calendar every 10 minutes so
+# spawned-session preambles and the notify gate see real context.
+[[butler.schedule]]
+name = "context_producer_calendar"
+cron = "*/10 * * * *"
+dispatch_mode = "job"
+job_name = "context_producer_calendar"
+
 [modules.general]
 
 # Maintenance schedules (memory_decay_sweep, memory_consolidation,
