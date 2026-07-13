@@ -121,8 +121,10 @@ Every terminal decision the `notify()` owner-default quiet-hours gate makes SHAL
 - **AND** the notify() call returns `{"status": "suppressed_context_bus", "channel": ..., "context_signal": "<signal_type>"}`
 
 #### Scenario: Delivery-preferences defer is recorded
-- **WHEN** `notify()` defers a notification via the existing per-butler `delivery_preferences` quiet-hours mechanism
-- **THEN** a `public.attention_ledger` row is written with `outcome="deferred"` and `reason="delivery_preferences_quiet_hours"`, and `notification_ref` set to the `deferred_notifications` row id
+- **WHEN** any notify-boundary caller (the `notify()` tool itself, or a process-boundary-forced consumer composing the same primitives) defers a notification via the per-butler `delivery_preferences` quiet-hours mechanism
+- **THEN** a `public.attention_ledger` row is written with `outcome="deferred"` and `reason="delivery_preferences_quiet_hours"`, and `notification_ref` set to the enqueued `deferred_notifications` row id
+- **AND** the `delivery_preferences` gate is checked FIRST, ahead of the approvals-policy and context-bus gates, mirroring `notify()`'s own gate ordering
+- **AND** a process-boundary consumer that has no butler identity of its own (e.g. `butlers.jobs.secrets_lifecycle`) keys the `delivery_preferences` lookup on the identity it already delivers under (`"switchboard"`) — `delivery_preferences` is a per-schema table, so the lookup uses that identity's own pool
 
 #### Scenario: Successful delivery is recorded
 - **WHEN** `notify()` successfully delivers a notification (either via direct Switchboard self-delivery or via the switchboard client)

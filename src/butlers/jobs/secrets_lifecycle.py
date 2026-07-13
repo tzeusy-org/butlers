@@ -30,18 +30,23 @@ Design
   writes its marker. Revisit with a proper claim (e.g. an advisory lock or a
   unique constraint) before this job is ever run with more than one replica.
 - Delivery reuses the same gating and dispatch primitives ``notify()`` uses
-  for the owner-default page (quiet hours via
-  ``butlers.core.approvals_policy``, context-bus dnd/sleeping via
-  ``butlers.core.attention_ledger.get_suppressing_context_signal``,
-  and the Switchboard ``deliver()`` dispatch path used by the insight
-  delivery cycle in ``butlers.scheduled_jobs``), and every outcome is
-  recorded via ``record_attention_event`` so it shows up honestly as
-  delivered/suppressed/failed in the attention ledger (bu-hmdqz.3: a genuine
-  delivery failure — no recipient, a transport error, an unexpected
-  exception — is recorded as ``outcome="failed"``, never ``"deferred"``,
-  which is reserved for a benign hold that resolves on its own). Priority is
-  "medium" — important, but not the priority>=90 tier that bypasses quiet
-  hours — so quiet hours genuinely defer it, per the bead's guidance.
+  for the owner-default page, applying the THREE gates in notify()'s own order
+  (bu-178v1): (1) the per-butler ``delivery_preferences`` quiet-hours gate
+  (``get_delivery_preferences`` → ``should_defer_notification``, keyed on the
+  ``_DELIVERY_IDENTITY`` this job delivers under — see that constant's
+  ``[decision]``), which DEFERS by enqueuing a ``notify.v1`` envelope the
+  switchboard flusher redelivers at the next batch window; (2) the
+  approvals-policy quiet-hours gate (``butlers.core.approvals_policy``); and
+  (3) the context-bus dnd/sleeping gate
+  (``butlers.core.attention_ledger.get_suppressing_context_signal``). Gates
+  (2)/(3) SUPPRESS (drop, retry next scan). Every outcome is recorded via
+  ``record_attention_event`` so it shows up honestly as
+  delivered/deferred/suppressed/failed in the attention ledger (bu-hmdqz.3: a
+  genuine delivery failure — no recipient, a transport error, an unexpected
+  exception — is recorded as ``outcome="failed"``, never ``"deferred"``, which
+  is reserved for a benign hold that resolves on its own). Priority is "medium"
+  — important, but not the priority>=90 tier that bypasses quiet hours — so
+  quiet hours genuinely defer it, per the bead's guidance.
 - Why this doesn't call the ``notify()`` MCP tool directly (bu-qvnce.8
   doctrine question): ``notify()`` is a closure defined inside
   ``register_notification_tools(ctx, mcp, _core_tool)``
@@ -60,14 +65,13 @@ Design
   the identical primitives rather than re-deriving their logic — a single
   source of truth is preserved for *what* the gate decides, even though the
   call site is a second, process-boundary-forced consumer alongside
-  ``notify()`` and ``delivery_cycle()``. Known gap: this does not consult
-  the *per-butler* delivery-preferences override
-  (``butlers.core.temporal.delivery_db.get_delivery_preferences`` /
-  ``should_defer_notification``, the first, older quiet-hours gate in
-  ``notify()``) — that gate is keyed on a specific butler_name's own
-  preferences row, and this job has no single natural butler identity to
-  key it on. Tracked as a follow-up rather than blocking this change (see
-  PR #2951 discussion).
+  ``notify()`` and ``delivery_cycle()``. The *per-butler* delivery-preferences
+  override (``get_delivery_preferences`` / ``should_defer_notification``,
+  notify()'s first quiet-hours gate) IS now consulted (bu-178v1, closing the
+  PR #2951 follow-up): this job has no butler identity of its own, so it keys
+  the lookup on ``_DELIVERY_IDENTITY`` ("switchboard") — the same identity it
+  already delivers and enqueues retries under (see that constant's
+  ``[decision]``).
 - Cross-container transport (bu-hmdqz.3): ``deliver()``'s underlying
   ``switchboard.route()`` connects directly to the target butler's MCP
   endpoint, resolved from ``switchboard.butler_registry`` — every daemon
@@ -131,8 +135,10 @@ from butlers.core.approvals_policy import (
 )
 from butlers.core.attention_ledger import get_suppressing_context_signal, record_attention_event
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.core.temporal.delivery import compute_deliver_at, should_defer_notification
 from butlers.core.temporal.delivery_db import (
     cancel_pending_notifications_matching_line,
+    get_delivery_preferences,
     insert_deferred_notification,
 )
 from butlers.credential_store import resolve_owner_telegram_recipient
@@ -146,6 +152,20 @@ _ATTENTION_STATES = frozenset({"expiring", "failing", "expired"})
 
 _LIFECYCLE_NOTIFIED_ACTION = "lifecycle_state_notified"
 _LIFECYCLE_ACTOR = "secrets_lifecycle_check"
+
+# [decision] (bu-178v1) The butler identity this job assumes for the per-butler
+# delivery_preferences quiet-hours lookup (notify()'s FIRST gate). This job runs
+# in the dashboard-api process with no butler identity; it already attributes
+# every delivery to source_butler/origin_butler="switchboard", delivers to the
+# OWNER (not a per-butler recipient), and enqueues its retry envelopes on
+# switchboard's own deferred_notifications table. So "switchboard" is the one
+# consistent, least-surprising delivery identity — mirroring how notify() keys
+# delivery_preferences on the *calling* butler. Option (a) "per-credential
+# owning butler" was rejected: the cli/user/shared credential families have no
+# owning butler, and gating an owner-level credential-expiry ping on some
+# unrelated butler's quiet hours is surprising. delivery_preferences rows are
+# per-schema (the query is unqualified), so this is read via db.pool(identity).
+_DELIVERY_IDENTITY = "switchboard"
 
 _STATE_DESCRIPTIONS: dict[str, str] = {
     "expiring": "is expiring soon",
@@ -388,17 +408,27 @@ async def _supersede_pending_retries(pool: Any, dedup_marker: str) -> int:
         return 0
 
 
-async def _enqueue_delivery_retry(
+async def _enqueue_deferred_envelope(
     db: DatabaseManager,
     *,
     channel: str,
     message: str,
     recipient: str,
     dedup_marker: str,
+    deliver_at: datetime,
 ) -> str | None:
-    """Enqueue a retry envelope for a transport-failed delivery, best-effort.
+    """Supersede prior pending envelopes for this credential, then enqueue a
+    fresh ``notify.v1`` envelope on switchboard's ``deferred_notifications``.
 
-    bu-hmdqz.3 slice 2: a ``delivery_error`` here does not mean the message
+    This is the SINGLE deferral path (bu-178v1) shared by both callers:
+    ``_enqueue_delivery_retry`` (a transport failure — short retry backoff) and
+    the ``delivery_preferences`` quiet-hours gate in
+    ``run_secrets_lifecycle_check`` (a benign owner-quiet-hours hold — the next
+    batch window). They differ ONLY in ``deliver_at``; the supersede, envelope
+    shape, target pool, and best-effort contract are identical, so there is no
+    second deferral mechanism to keep in sync.
+
+    bu-hmdqz.3 slice 2: a ``delivery_error`` does not mean the message
     itself is undeliverable — it means THIS process (dashboard-api) could not
     reach a butler MCP endpoint. Rather than depending on the next 30-minute
     scan tick (which would re-run through the exact same cross-container
@@ -477,41 +507,200 @@ async def _enqueue_delivery_retry(
             message=message,
             priority="medium",
             envelope=envelope,
-            deliver_at=datetime.now(UTC) + _RETRY_BACKOFF,
+            deliver_at=deliver_at,
         )
     except Exception:
         logger.warning(
-            "secrets_lifecycle_check: failed to enqueue delivery retry envelope",
+            "secrets_lifecycle_check: failed to enqueue deferred envelope",
             exc_info=True,
         )
         return None
+
+
+async def _enqueue_delivery_retry(
+    db: DatabaseManager,
+    *,
+    channel: str,
+    message: str,
+    recipient: str,
+    dedup_marker: str,
+) -> str | None:
+    """Enqueue a retry envelope for a transport-failed delivery, best-effort.
+
+    Thin wrapper over ``_enqueue_deferred_envelope`` with a short
+    ``_RETRY_BACKOFF`` ``deliver_at``: switchboard's own scheduler tick (running
+    inside butlers-up, not this dashboard-api process) redelivers it, so the
+    retry is never subject to this job's cross-container transport problem.
+    """
+    return await _enqueue_deferred_envelope(
+        db,
+        channel=channel,
+        message=message,
+        recipient=recipient,
+        dedup_marker=dedup_marker,
+        deliver_at=datetime.now(UTC) + _RETRY_BACKOFF,
+    )
+
+
+async def _delivery_preferences_deferral(
+    db: DatabaseManager,
+    *,
+    channel: str,
+    priority: str,
+) -> datetime | None:
+    """Return the batch ``deliver_at`` if switchboard's ``delivery_preferences``
+    quiet hours defer this notification, else ``None``.
+
+    Mirrors notify()'s FIRST quiet-hours gate
+    (``core_tools/_notifications.py``: ``get_delivery_preferences`` →
+    ``should_defer_notification`` → ``compute_deliver_at``), keyed on the
+    ``_DELIVERY_IDENTITY`` this job delivers under (see the ``[decision]`` note
+    on that constant). ``delivery_preferences`` is a per-schema table (the query
+    is unqualified), so the lookup uses that identity's own pool.
+
+    Best-effort and fail-open: a missing switchboard pool, a missing table, or
+    any lookup error returns ``None`` (deliver now), never blocking the
+    notification — identical to notify()'s own "deliver immediately on lookup
+    failure" contract.
+    """
+    try:
+        identity_pool = db.pool(_DELIVERY_IDENTITY)
+    except KeyError:
+        return None
+
+    try:
+        prefs = await get_delivery_preferences(identity_pool, _DELIVERY_IDENTITY)
+    except Exception:
+        logger.debug(
+            "secrets_lifecycle_check: delivery_preferences lookup failed; delivering now",
+            exc_info=True,
+        )
+        return None
+
+    if prefs is None:
+        return None
+
+    # `or "UTC"` (not a .get default) so an explicit null timezone value also
+    # falls back rather than reaching ZoneInfo(None); the try/except still
+    # guards an invalid tz *string*.
+    tz_name = prefs.get("timezone") or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    now_utc = datetime.now(UTC)
+    now_local = now_utc.astimezone(tz).time()
+
+    if should_defer_notification(
+        priority=priority, current_time=now_local, prefs=prefs, channel=channel
+    ):
+        return compute_deliver_at(prefs=prefs, now=now_utc)
+    return None
 
 
 async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     """Scan every credential and push a debounced owner notification for
     each NEW transition into an attention state.
 
-    Returns a summary dict: ``{scanned, attention, delivered, suppressed,
-    errors}``. Never raises — a failure in one credential's notify attempt is
-    logged and counted in ``errors``, and the scan continues to the rest.
+    Returns a summary dict: ``{scanned, attention, delivered, deferred,
+    suppressed, errors}``. ``deferred`` counts owner-quiet-hours holds enqueued
+    to the deferred_notifications table (a benign hold the flusher redelivers) —
+    distinct from ``suppressed`` (approvals-policy/context-bus drops) and
+    ``errors`` (genuine failures). Never raises — a failure in one credential's
+    notify attempt is logged and counted in ``errors``, and the scan continues.
     """
     try:
         shared_pool = db.credential_shared_pool()
     except KeyError:
         logger.warning("secrets_lifecycle_check: no shared credential pool configured; skipping")
-        return {"scanned": 0, "attention": 0, "delivered": 0, "suppressed": 0, "errors": 0}
+        return {
+            "scanned": 0,
+            "attention": 0,
+            "delivered": 0,
+            "deferred": 0,
+            "suppressed": 0,
+            "errors": 0,
+        }
 
     snapshots = await _collect_snapshots(db)
     attention = [s for s in snapshots if s.state in _ATTENTION_STATES]
 
     dashboard_url = _dashboard_url()
-    delivered = suppressed = errors = 0
+    delivered = deferred = suppressed = errors = 0
 
     for snapshot in attention:
         try:
             last_state = await _last_notified_state(shared_pool, snapshot.key)
             if last_state == snapshot.state:
                 # Already notified for this exact state — debounce.
+                continue
+
+            message = _compose_message(snapshot, dashboard_url)
+            # State-independent dedup token for this credential's deferred/retry
+            # envelopes (see _focus_fragment / _supersede_pending_retries).
+            dedup_marker = _focus_fragment(snapshot.key)
+
+            # Gate 1 (mirrors notify()'s FIRST gate): per-butler
+            # delivery_preferences quiet hours, keyed on this job's switchboard
+            # delivery identity. Unlike the approvals-policy/context-bus gates
+            # below (which SUPPRESS — drop, retry next scan), a delivery_prefs
+            # hold is a benign DEFERRAL: enqueue a notify.v1 envelope that
+            # switchboard's flusher redelivers when the window ends. Reuses the
+            # single _enqueue_deferred_envelope path (supersede-at-enqueue,
+            # bu-id0fh) so a persistent multi-scan window never accumulates more
+            # than one pending envelope per credential. The debounce marker is
+            # deliberately NOT advanced here (only a confirmed direct delivery
+            # advances it), and the post-delivery supersede cancels the leftover
+            # envelope on the recovery scan — the same ≤1-residual guarantee the
+            # transport-retry path already relies on.
+            deferred_at = await _delivery_preferences_deferral(
+                db, channel="telegram", priority="medium"
+            )
+            if deferred_at is not None:
+                recipient = await resolve_owner_telegram_recipient(shared_pool)
+                if not recipient:
+                    # No deliverable recipient — the deferred envelope would be
+                    # undeliverable at flush time, so this is a genuine failure,
+                    # recorded honestly rather than enqueued to silently expire.
+                    errors += 1
+                    logger.warning(
+                        "secrets_lifecycle_check: no telegram recipient configured for owner; "
+                        "cannot defer notification for key=%s",
+                        snapshot.key,
+                    )
+                    await record_attention_event(
+                        shared_pool,
+                        origin_butler=_LIFECYCLE_ACTOR,
+                        source="notify",
+                        outcome="failed",
+                        channel="telegram",
+                        intent="send",
+                        priority="medium",
+                        reason="no_recipient_configured",
+                        dedup_key=snapshot.key,
+                    )
+                    continue
+                envelope_ref = await _enqueue_deferred_envelope(
+                    db,
+                    channel="telegram",
+                    message=message,
+                    recipient=recipient,
+                    dedup_marker=dedup_marker,
+                    deliver_at=deferred_at,
+                )
+                deferred += 1
+                await record_attention_event(
+                    shared_pool,
+                    origin_butler=_LIFECYCLE_ACTOR,
+                    source="notify",
+                    outcome="deferred",
+                    channel="telegram",
+                    intent="send",
+                    priority="medium",
+                    reason="delivery_preferences_quiet_hours",
+                    dedup_key=snapshot.key,
+                    notification_ref=envelope_ref,
+                )
                 continue
 
             suppress_reason = await _check_suppression(shared_pool)
@@ -556,11 +745,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 )
                 continue
 
-            message = _compose_message(snapshot, dashboard_url)
-            # State-independent dedup token for this credential's retry
-            # envelopes (see _focus_fragment / _supersede_pending_retries).
-            dedup_marker = _focus_fragment(snapshot.key)
-
+            # message / dedup_marker were computed above (before the gates).
             # Import locally: roster/ modules aren't always importable at
             # collection time (e.g. minimal test environments), and this is
             # the only place in this module that needs the live dispatch
@@ -687,6 +872,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
         "scanned": len(snapshots),
         "attention": len(attention),
         "delivered": delivered,
+        "deferred": deferred,
         "suppressed": suppressed,
         "errors": errors,
     }

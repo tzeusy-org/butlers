@@ -18,6 +18,7 @@ No real database required — DatabaseManager and its pools are faked/mocked.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -28,6 +29,7 @@ from butlers.jobs.secrets_lifecycle import (
     _check_suppression,
     _collect_snapshots,
     _compose_message,
+    _delivery_preferences_deferral,
     _focus_fragment,
     _last_notified_state,
     run_secrets_lifecycle_check,
@@ -266,7 +268,14 @@ async def test_run_secrets_lifecycle_check_debounces_same_state():
 
     last_notified.assert_awaited_once()
     suppression.assert_not_called()
-    assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 0, "errors": 0}
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 0,
+    }
 
 
 async def test_run_secrets_lifecycle_check_delivers_on_new_transition():
@@ -319,7 +328,14 @@ async def test_run_secrets_lifecycle_check_delivers_on_new_transition():
     assert audit_append.await_args.kwargs["target"] == "u:google"
     assert audit_append.await_args.kwargs["note"] == "expiring"
 
-    assert summary == {"scanned": 1, "attention": 1, "delivered": 1, "suppressed": 0, "errors": 0}
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 1,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 0,
+    }
 
 
 async def test_run_secrets_lifecycle_check_suppressed_does_not_write_debounce_marker():
@@ -356,7 +372,14 @@ async def test_run_secrets_lifecycle_check_suppressed_does_not_write_debounce_ma
     assert ledger_mock.await_args.kwargs["outcome"] == "suppressed"
     assert ledger_mock.await_args.kwargs["reason"] == "quiet_hours"
     audit_append.assert_not_called()
-    assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 1, "errors": 0}
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 1,
+        "errors": 0,
+    }
 
 
 async def test_run_secrets_lifecycle_check_no_recipient_counts_as_error_no_marker():
@@ -398,7 +421,14 @@ async def test_run_secrets_lifecycle_check_no_recipient_counts_as_error_no_marke
     assert ledger_mock.await_args.kwargs["reason"] == "no_recipient_configured"
     assert ledger_mock.await_args.kwargs["dedup_key"] == "s:SOME_KEY"
     audit_append.assert_not_called()
-    assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 0, "errors": 1}
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 1,
+    }
 
 
 async def test_run_secrets_lifecycle_check_delivery_error_records_failed_and_enqueues_retry():
@@ -461,7 +491,14 @@ async def test_run_secrets_lifecycle_check_delivery_error_records_failed_and_enq
     assert ledger_mock.await_args.kwargs["reason"].startswith("delivery_error:")
     assert ledger_mock.await_args.kwargs["notification_ref"] == "deferred-notif-1"
     audit_append.assert_not_called()
-    assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 0, "errors": 1}
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 1,
+    }
 
 
 async def test_run_secrets_lifecycle_check_delivery_error_supersedes_prior_pending():
@@ -585,7 +622,14 @@ async def test_run_secrets_lifecycle_check_direct_delivery_cancels_leftover_pend
     assert cancel_mock.await_args.kwargs["line_token"] == _focus_fragment("u:google")
     # the debounce marker still advances only on genuine delivery.
     audit_append.assert_awaited_once()
-    assert summary == {"scanned": 1, "attention": 1, "delivered": 1, "suppressed": 0, "errors": 0}
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 1,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 0,
+    }
 
 
 async def test_run_secrets_lifecycle_check_unexpected_error_writes_ledger_row():
@@ -624,13 +668,27 @@ async def test_run_secrets_lifecycle_check_unexpected_error_writes_ledger_row():
     assert ledger_mock.await_args.kwargs["reason"] == "unexpected_error:RuntimeError"
     assert ledger_mock.await_args.kwargs["dedup_key"] == "s:SOME_KEY"
     audit_append.assert_not_called()
-    assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 0, "errors": 1}
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 1,
+    }
 
 
 async def test_run_secrets_lifecycle_check_no_shared_pool_is_a_clean_noop():
     db = _FakeDatabaseManager(butler_pools={}, shared_pool=None)
     summary = await run_secrets_lifecycle_check(db)
-    assert summary == {"scanned": 0, "attention": 0, "delivered": 0, "suppressed": 0, "errors": 0}
+    assert summary == {
+        "scanned": 0,
+        "attention": 0,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 0,
+    }
 
 
 async def test_run_secrets_lifecycle_check_ignores_non_attention_states():
@@ -652,4 +710,256 @@ async def test_run_secrets_lifecycle_check_ignores_non_attention_states():
         summary = await run_secrets_lifecycle_check(db)
 
     last_notified.assert_not_called()
-    assert summary == {"scanned": 2, "attention": 0, "delivered": 0, "suppressed": 0, "errors": 0}
+    assert summary == {
+        "scanned": 2,
+        "attention": 0,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# _delivery_preferences_deferral (notify()'s first quiet-hours gate, bu-178v1)
+# ---------------------------------------------------------------------------
+
+_PREFS = {"timezone": "America/New_York", "quiet_hours_start": "22:00", "quiet_hours_end": "07:00"}
+_DELIVER_AT = datetime(2026, 7, 14, 11, 0, tzinfo=UTC)
+
+
+async def test_delivery_preferences_deferral_defers_in_quiet_hours():
+    """Prefs present + should_defer True -> returns the computed batch deliver_at,
+    keyed on the 'switchboard' identity."""
+    switchboard_pool = object()
+    db = _FakeDatabaseManager(butler_pools={"switchboard": switchboard_pool}, shared_pool=object())
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle.get_delivery_preferences",
+            new=AsyncMock(return_value=_PREFS),
+        ) as prefs_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.should_defer_notification", return_value=True
+        ) as defer_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.compute_deliver_at", return_value=_DELIVER_AT
+        ) as compute_mock,
+    ):
+        result = await _delivery_preferences_deferral(db, channel="telegram", priority="medium")
+
+    assert result == _DELIVER_AT
+    # Keyed on the switchboard identity + its own pool (per-schema prefs table).
+    assert prefs_mock.await_args.args == (switchboard_pool, "switchboard")
+    assert defer_mock.call_args.kwargs["priority"] == "medium"
+    assert defer_mock.call_args.kwargs["channel"] == "telegram"
+    compute_mock.assert_called_once()
+
+
+async def test_delivery_preferences_deferral_none_outside_quiet_hours():
+    """Prefs present but should_defer False -> None (deliver now)."""
+    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=object())
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle.get_delivery_preferences",
+            new=AsyncMock(return_value=_PREFS),
+        ),
+        patch("butlers.jobs.secrets_lifecycle.should_defer_notification", return_value=False),
+    ):
+        result = await _delivery_preferences_deferral(db, channel="telegram", priority="medium")
+    assert result is None
+
+
+async def test_delivery_preferences_deferral_none_when_no_prefs_row():
+    """No delivery_preferences row for switchboard -> None (passthrough)."""
+    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=object())
+    with patch(
+        "butlers.jobs.secrets_lifecycle.get_delivery_preferences",
+        new=AsyncMock(return_value=None),
+    ):
+        result = await _delivery_preferences_deferral(db, channel="telegram", priority="medium")
+    assert result is None
+
+
+async def test_delivery_preferences_deferral_none_when_no_switchboard_pool():
+    """No switchboard pool -> None (fail-open), never raises."""
+    db = _FakeDatabaseManager(butler_pools={}, shared_pool=object())
+    result = await _delivery_preferences_deferral(db, channel="telegram", priority="medium")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# run_secrets_lifecycle_check: delivery_preferences defer gate outcomes
+# ---------------------------------------------------------------------------
+
+
+async def test_run_secrets_lifecycle_check_deferred_enqueues_envelope_not_delivered():
+    """Defer window: the notify.v1 envelope is enqueued (single deferral path)
+    with the batch deliver_at, deliver() is NOT called, the ledger records
+    'deferred', and the debounce marker is NOT advanced (so the transition still
+    resolves)."""
+    shared_pool = object()
+    switchboard_pool = object()
+    db = _FakeDatabaseManager(
+        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
+    )
+    snapshot = CredentialSnapshot(key="u:google", family="user", label="Google", state="expiring")
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state", new=AsyncMock(return_value=None)
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._delivery_preferences_deferral",
+            new=AsyncMock(return_value=_DELIVER_AT),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value="12345"),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._supersede_pending_retries",
+            new=AsyncMock(return_value=0),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.insert_deferred_notification",
+            new=AsyncMock(return_value="deferred-env-1"),
+        ) as insert_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle._check_suppression", new=AsyncMock()
+        ) as suppression_mock,
+        patch("butlers.tools.switchboard.notification.deliver.deliver") as deliver_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ) as ledger_mock,
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    # Enqueued on switchboard's table with the batch deliver_at; NOT delivered.
+    insert_mock.assert_awaited_once()
+    assert insert_mock.await_args.kwargs["butler_name"] == "switchboard"
+    assert insert_mock.await_args.kwargs["deliver_at"] == _DELIVER_AT
+    assert insert_mock.await_args.kwargs["envelope"]["delivery"]["recipient"] == "12345"
+    deliver_mock.assert_not_called()
+    # Gate 1 short-circuits before the approvals/context suppression gate.
+    suppression_mock.assert_not_called()
+    ledger_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "deferred"
+    assert ledger_mock.await_args.kwargs["reason"] == "delivery_preferences_quiet_hours"
+    assert ledger_mock.await_args.kwargs["notification_ref"] == "deferred-env-1"
+    # Debounce marker NOT advanced — a deferred hold is not a confirmed delivery.
+    audit_append.assert_not_called()
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 0,
+        "deferred": 1,
+        "suppressed": 0,
+        "errors": 0,
+    }
+
+
+async def test_run_secrets_lifecycle_check_delivers_when_delivery_preferences_pass():
+    """Gate 1 returns None (no prefs row / outside quiet hours) -> the credential
+    is delivered directly through the normal path."""
+    shared_pool = object()
+    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=shared_pool)
+    snapshot = CredentialSnapshot(key="u:google", family="user", label="Google", state="expiring")
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state", new=AsyncMock(return_value=None)
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._delivery_preferences_deferral",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._check_suppression", new=AsyncMock(return_value=None)
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value="12345"),
+        ),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            new=AsyncMock(return_value={"status": "sent", "notification_id": "n-1"}),
+        ) as deliver_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ) as ledger_mock,
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    deliver_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "delivered"
+    audit_append.assert_awaited_once()
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 1,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 0,
+    }
+
+
+async def test_run_secrets_lifecycle_check_defer_without_recipient_records_failed():
+    """Defer window but no owner recipient: the deferred envelope would be
+    undeliverable, so this is a genuine failure (recorded, not enqueued)."""
+    shared_pool = object()
+    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=shared_pool)
+    snapshot = CredentialSnapshot(key="s:K", family="system", label="K", state="expired")
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state", new=AsyncMock(return_value=None)
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._delivery_preferences_deferral",
+            new=AsyncMock(return_value=_DELIVER_AT),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.insert_deferred_notification",
+            new=AsyncMock(return_value="unused"),
+        ) as insert_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ) as ledger_mock,
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    insert_mock.assert_not_called()
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
+    assert ledger_mock.await_args.kwargs["reason"] == "no_recipient_configured"
+    audit_append.assert_not_called()
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 1,
+    }
