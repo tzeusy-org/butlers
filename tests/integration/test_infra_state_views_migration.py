@@ -1,13 +1,14 @@
 """Real-Postgres regression: infra-state QA discovery views (bu-9r3hd.4).
 
-Exercises migration ``sw_024`` (``public.v_qa_connector_state`` /
-``public.v_qa_butler_heartbeat``) against a fully migrated Postgres instance
-(testcontainers), not just the mocked-pool unit tests in
-``tests/core/qa/test_infra_state.py``:
+Exercises migrations ``sw_024`` and ``sw_026``
+(``public.v_qa_connector_state`` / ``public.v_qa_butler_heartbeat``) against a
+fully migrated Postgres instance (testcontainers), not just the mocked-pool
+unit tests in ``tests/core/qa/test_infra_state.py``:
 
 - Both views exist and are queryable.
-- ``v_qa_connector_state`` surfaces a live ``connector_registry`` row and
-  excludes a soft-deleted / archived one.
+- ``v_qa_connector_state`` surfaces a heartbeat-established
+  ``connector_registry`` row and excludes soft-deleted, archived, and
+  cursor-only rows that do not represent connector processes.
 - ``v_qa_butler_heartbeat`` surfaces a ``butler_registry`` row with its
   ``liveness_ttl_seconds`` / ``quarantined_at`` columns intact.
 - Downgrade cleanly drops both views.
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -63,18 +65,20 @@ async def test_both_views_exist_and_are_queryable(pool: asyncpg.Pool) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_connector_view_surfaces_live_row_and_excludes_archived(
+async def test_connector_view_surfaces_heartbeat_row_and_excludes_non_process_rows(
     pool: asyncpg.Pool,
 ) -> None:
     now = datetime.now(UTC)
     await pool.execute(
         """
         INSERT INTO switchboard.connector_registry
-            (connector_type, endpoint_identity, state, last_heartbeat_at, first_seen_at)
-        VALUES ($1, $2, $3, $4, $5)
+            (connector_type, endpoint_identity, instance_id, state,
+             last_heartbeat_at, first_seen_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
         """,
         "gmail",
         "owner@example.com",
+        UUID("00000000-0000-0000-0000-000000000001"),
         "error",
         now - timedelta(minutes=20),
         now - timedelta(days=5),
@@ -82,16 +86,37 @@ async def test_connector_view_surfaces_live_row_and_excludes_archived(
     await pool.execute(
         """
         INSERT INTO switchboard.connector_registry
-            (connector_type, endpoint_identity, state, last_heartbeat_at,
-             first_seen_at, archived_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (connector_type, endpoint_identity, instance_id, state,
+             last_heartbeat_at, first_seen_at, archived_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         """,
         "spotify",
         "owner",
+        UUID("00000000-0000-0000-0000-000000000002"),
         "error",
         now - timedelta(days=90),
         now - timedelta(days=100),
         now - timedelta(days=40),
+    )
+    # Google Health persists one cursor per account/resource through the shared
+    # cursor store.  That storage upsert creates a connector_registry row but
+    # never sends a heartbeat, so it has no instance_id and must not be treated
+    # as an offline connector process by QA discovery.
+    await pool.execute(
+        """
+        INSERT INTO switchboard.connector_registry
+            (connector_type, endpoint_identity, checkpoint_cursor,
+             checkpoint_updated_at, first_seen_at)
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        "google_health",
+        (
+            "google_health:user:owner@example.com:"
+            "00000000-0000-0000-0000-000000000003:sleep"
+        ),
+        "opaque-cursor",
+        now - timedelta(days=8),
+        now - timedelta(days=8),
     )
 
     rows = await pool.fetch("SELECT * FROM public.v_qa_connector_state ORDER BY connector_type")
