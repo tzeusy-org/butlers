@@ -1721,6 +1721,13 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "session_process_logs_prune": _run_session_process_logs_prune_job,
         },
         "chronicler": {
+            # Memory maintenance handlers (bu-93y4rt): the chronicler now enables
+            # [modules.memory] for the day-close write-back loop, so it must be
+            # able to dispatch the memory module's self-registered maintenance
+            # schedules (decay_sweep / consolidation / episode_cleanup /
+            # purge_superseded / catalog_backfill) or they fail with "unknown
+            # deterministic job".
+            **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,

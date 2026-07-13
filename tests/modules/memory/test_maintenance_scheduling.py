@@ -67,6 +67,7 @@ _MEMORY_ENABLED_BUTLERS = (
     "relationship",
     "travel",
     "finance",
+    "chronicler",  # bu-93y4rt: day-close memory write-back loop
 )
 
 _EXPECTED_MEMORY_JOB_NAMES = {

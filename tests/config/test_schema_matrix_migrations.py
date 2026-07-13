@@ -164,32 +164,47 @@ def _enabled_module_chains(config: ButlerConfig) -> tuple[str, ...]:
     return tuple(chains)
 
 
+def _module_target_schema(config: ButlerConfig, module_name: str) -> str:
+    """Schema a module's migration chain targets for this butler.
+
+    A module MAY declare a private schema via ``memory_schema`` in its
+    ``[modules.<name>]`` block (memory module, bu-93y4rt / bu-w6jca): chronicler
+    routes its memory chain to ``chronicler_mem`` so the memory ``episodes``
+    table does not collide with the domain ``chronicler.episodes``. Every other
+    module lands in the butler's own schema. This mirrors ``lifecycle.py`` step
+    8, which reads the same validated config field.
+    """
+    raw = config.modules.get(module_name) or {}
+    override = raw.get("memory_schema")
+    return override or (config.db_schema or "")
+
+
 def _expected_schema_matrix(
     configs: list[ButlerConfig],
 ) -> tuple[dict[str, set[str]], dict[str, tuple[str, ...]]]:
     expected_by_schema: dict[str, set[str]] = {}
-    chain_by_schema: dict[str, tuple[str, ...]] = {}
+    chain_by_schema: dict[str, list[str]] = {}
+
+    def _add(schema: str, chain: str) -> None:
+        chain_tables = CHAIN_TABLES.get(chain)
+        assert chain_tables is not None, (
+            f"Missing CHAIN_TABLES entry for chain={chain!r} schema={schema!r}"
+        )
+        bucket = expected_by_schema.setdefault(schema, {"alembic_version"})
+        bucket.update(chain_tables)
+        chain_by_schema.setdefault(schema, []).append(chain)
 
     for config in configs:
         schema = config.db_schema
         assert schema is not None
-        chains = ["core"]
+        _add(schema, "core")
         if has_butler_chain(config.name):
-            chains.append(config.name)
-        chains.extend(_enabled_module_chains(config))
+            _add(schema, config.name)
+        # Module chains may target a private override schema (e.g. chronicler_mem).
+        for module_chain in _enabled_module_chains(config):
+            _add(_module_target_schema(config, module_chain), module_chain)
 
-        expected_tables: set[str] = {"alembic_version"}
-        for chain in chains:
-            chain_tables = CHAIN_TABLES.get(chain)
-            assert chain_tables is not None, (
-                f"Missing CHAIN_TABLES entry for chain={chain!r} schema={schema!r}"
-            )
-            expected_tables.update(chain_tables)
-
-        expected_by_schema[schema] = expected_tables
-        chain_by_schema[schema] = tuple(chains)
-
-    return expected_by_schema, chain_by_schema
+    return expected_by_schema, {s: tuple(c) for s, c in chain_by_schema.items()}
 
 
 def _fetch_tables_by_schema(db_url: str, schemas: set[str]) -> dict[str, set[str]]:
@@ -230,7 +245,15 @@ def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_contai
         if has_butler_chain(config.name):
             asyncio.run(run_migrations(db_url, chain=config.name, schema=schema))
         for module_chain in _enabled_module_chains(config):
-            asyncio.run(run_migrations(db_url, chain=module_chain, schema=schema))
+            # Route each module chain to its target schema (private override or
+            # the butler's own schema) — mirrors lifecycle.py step 8.
+            asyncio.run(
+                run_migrations(
+                    db_url,
+                    chain=module_chain,
+                    schema=_module_target_schema(config, module_chain),
+                )
+            )
 
     expected_by_schema, chain_by_schema = _expected_schema_matrix(configs)
     actual_by_schema = _fetch_tables_by_schema(db_url, set(expected_by_schema.keys()))
@@ -252,4 +275,21 @@ def test_one_db_schema_table_matrix_for_core_and_enabled_modules(postgres_contai
         "Schema/table migration matrix verification failed. "
         "Each schema must contain all expected core + enabled module tables.\n"
         + "\n".join(diagnostics)
+    )
+
+    # Chronicler memory isolation (bu-93y4rt / bu-w6jca): the chronicler routes
+    # its memory chain to chronicler_mem so the memory `episodes` table never
+    # collides with the domain `chronicler.episodes`. Prove the two coexist and
+    # that memory-only tables never leak into the chronicler domain schema.
+    chronicler_tables = actual_by_schema.get("chronicler", set())
+    chronicler_mem_tables = actual_by_schema.get("chronicler_mem", set())
+    assert "episodes" in chronicler_tables, "domain chronicler.episodes must exist"
+    assert "episodes" in chronicler_mem_tables, "memory chronicler_mem.episodes must exist"
+    memory_only = {"facts", "rules", "memory_links", "memory_events"}
+    leaked = memory_only & chronicler_tables
+    assert leaked == set(), (
+        f"memory-only tables leaked into the chronicler domain schema: {sorted(leaked)}"
+    )
+    assert memory_only <= chronicler_mem_tables, (
+        f"memory tables missing from chronicler_mem: {sorted(memory_only - chronicler_mem_tables)}"
     )

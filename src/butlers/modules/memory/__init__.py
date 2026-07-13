@@ -248,6 +248,20 @@ class MemoryModuleConfig(ToolGroupMixin, BaseModel):
     # Most deployments leave this unset and let the module infer it.
     catalog_source_schema: str = ""
 
+    # Dedicated schema for this butler's memory tables. When set (e.g.
+    # ``"chronicler_mem"``), the memory module's OWN Alembic chain migrates
+    # into this schema and its runtime storage/search/consolidation pool uses
+    # ``search_path = <schema>, public`` — instead of the butler's own schema.
+    # This is the bounded, module-private exception decided in bu-w6jca: the
+    # chronicler already owns a domain ``chronicler.episodes`` table, which
+    # name-collides with the memory module's own ``episodes`` table, so
+    # chronicler routes its memory to ``chronicler_mem`` while its domain code
+    # keeps using ``chronicler.episodes``. Left unset by every other butler
+    # (memory keeps living in the butler's own schema). Named ``memory_schema``
+    # rather than ``schema`` because a pydantic field named ``schema`` shadows a
+    # BaseModel attribute.
+    memory_schema: str | None = None
+
     # Embedding model identifier surfaced to the dashboard via the
     # ``memory_access`` core tool.  Mirrors the model loaded by
     # ``butlers.modules.memory.embedding.EmbeddingEngine`` — keep this
@@ -264,6 +278,11 @@ class MemoryModule(Module):
         self._config: MemoryModuleConfig = MemoryModuleConfig()
         self._chronicler_pool: Any = None  # Lazy pool for chronicler schema (episode repoint)
         self._relationship_pool: Any = None  # Lazy pool for relationship schema (merge_reviews)
+        # Dedicated memory-schema pool, created only when [modules.memory] sets a
+        # `schema` override (e.g. chronicler_mem) so this butler's memory tables
+        # live in a private schema instead of colliding with a same-named domain
+        # table in the butler's own schema (bu-93y4rt / bu-w6jca decision).
+        self._memory_db: Any = None
 
     @property
     def name(self) -> str:
@@ -287,6 +306,9 @@ class MemoryModule(Module):
         self._db = db
         if isinstance(config, MemoryModuleConfig):
             self._config = config
+
+        # Bind the dedicated memory-schema pool (no-op unless memory_schema set).
+        await self._ensure_memory_schema_pool()
 
         # Register memory hooks so core (spawner, corrections) can call
         # memory operations without importing from modules directly
@@ -424,6 +446,12 @@ class MemoryModule(Module):
         """Clear state references."""
         self._db = None
         self._embedding_engine = None
+        if self._memory_db is not None:
+            try:
+                await self._memory_db.close()
+            except Exception:
+                pass
+            self._memory_db = None
         if self._chronicler_pool is not None:
             try:
                 await self._chronicler_pool.close()
@@ -437,8 +465,57 @@ class MemoryModule(Module):
                 pass
             self._relationship_pool = None
 
+    async def _ensure_memory_schema_pool(self) -> None:
+        """Create the dedicated memory-schema pool when a schema override is set.
+
+        When ``[modules.memory]`` declares ``memory_schema = "<name>"`` (e.g.
+        ``chronicler_mem``), the memory module's runtime storage/search/
+        consolidation must target that private schema rather than the butler's
+        own schema, so its ``episodes``/``facts``/``rules`` tables never collide
+        with a same-named domain table in the butler schema (bu-93y4rt /
+        bu-w6jca owner decision). Idempotent and a no-op when no override is set
+        or the override equals the butler's own schema. Mirrors the existing
+        chronicler/relationship side-pool pattern (``role`` defaults to ``None``,
+        matching those pools).
+        """
+        if self._memory_db is not None:
+            return
+        override = (self._config.memory_schema or "").strip()
+        if not override or self._db is None:
+            return
+        if override == getattr(self._db, "schema", None):
+            return
+        from butlers.db import Database
+
+        mem_db = Database(
+            db_name=self._db.db_name,
+            schema=override,
+            host=self._db.host,
+            port=self._db.port,
+            user=self._db.user,
+            password=self._db.password,
+            ssl=self._db.ssl,
+            min_pool_size=self._db.min_pool_size,
+            max_pool_size=self._db.max_pool_size,
+        )
+        await mem_db.connect()
+        self._memory_db = mem_db
+        logger.info(
+            "MemoryModule: runtime pool bound to dedicated schema %r (search_path=%r)",
+            override,
+            f"{override},public",
+        )
+
     def _get_pool(self):
-        """Return the asyncpg pool, raising if not initialised."""
+        """Return the asyncpg pool, raising if not initialised.
+
+        When a ``memory_schema`` override is configured (see
+        :meth:`_ensure_memory_schema_pool`), returns the dedicated private-schema
+        pool so all memory storage/search/consolidation operate on that schema;
+        otherwise returns the butler's own shared pool.
+        """
+        if self._memory_db is not None:
+            return self._memory_db.pool
         if self._db is None:
             raise RuntimeError("MemoryModule not initialised — no DB available")
         return self._db.pool
@@ -542,15 +619,20 @@ class MemoryModule(Module):
         self._db = db
         if isinstance(config, MemoryModuleConfig):
             self._config = config
+        # Bind the dedicated memory-schema pool (no-op unless memory_schema set).
+        await self._ensure_memory_schema_pool()
         module = self  # capture for closures
         default_context_budget = self._config.retrieval.context_token_budget
 
         # Resolve the source_schema written to public.memory_catalog rows.
-        # Precedence: explicit toml override > the Database handle's own
-        # schema (one-db/multi-schema runtime topology) > butler_name (legacy
-        # single-DB-per-butler topology, where db.schema is None).
+        # Precedence: explicit toml override > the dedicated memory_schema (so
+        # catalog provenance points at where the rows physically live) > the
+        # Database handle's own schema (one-db/multi-schema runtime topology) >
+        # butler_name (legacy single-DB-per-butler topology, where db.schema is
+        # None).
         effective_catalog_source_schema: str | None = (
             self._config.catalog_source_schema
+            or (self._config.memory_schema or None)
             or (db.schema if db is not None else None)
             or (butler_name or None)
         )

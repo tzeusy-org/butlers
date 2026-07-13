@@ -235,6 +235,8 @@ def build_day_close_completion_hooks(
     pool: asyncpg.Pool,
     *,
     timezone: str | ZoneInfo = "UTC",
+    store_fact_fn: Callable[..., Any] | None = None,
+    propose_enrichment_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Callable[..., Any]]:
     """Return the completion_hooks dict for the chronicler scheduler loop.
 
@@ -242,6 +244,14 @@ def build_day_close_completion_hooks(
     :func:`write_day_close_cache` with the pool and owner *timezone* pre-bound.
     The daemon passes the owner's resolved general timezone so the closed day is
     the local calendar day, matching the timezone the cron fires in (#2681).
+
+    When ``store_fact_fn`` is supplied (bu-93y4rt, tasks.md §8) the hook also
+    runs the deterministic memory write-back loop after the prose is cached:
+    it synthesizes derived insights + self-reminders from the chronicler's OWN
+    ``daily_rollups`` and writes them into the chronicler's OWN memory schema,
+    and — when ``propose_enrichment_fn`` is also supplied — proposes recurring
+    companions to relationship over MCP. The write-back is best-effort and adds
+    no owner-facing message; a failure never breaks the cache write.
 
     Usage::
 
@@ -253,5 +263,34 @@ def build_day_close_completion_hooks(
         await write_day_close_cache(
             pool, task_name=task_name, result=result, run_at=run_at, tz=timezone
         )
+        if task_name != DAY_CLOSE_TASK_NAME or store_fact_fn is None:
+            return
+        # Run the once-daily memory write-back beside the cache write. It reads
+        # the chronicler's own rollups (not the prose), so it runs regardless of
+        # whether the summary itself was non-empty — but never raises upward.
+        day_date, _, _ = _compute_day_window(run_at, timezone)
+        try:
+            from butlers.chronicler.writeback import run_day_close_writeback
+
+            wb = await run_day_close_writeback(
+                pool,
+                day_date=day_date,
+                timezone=str(timezone),
+                store_fact_fn=store_fact_fn,
+                propose_enrichment_fn=propose_enrichment_fn,
+            )
+            logger.info(
+                "day_close_writer: write-back for %s (%d insights, %d self-reminders, "
+                "%d proposals, %d errors)",
+                day_date.isoformat(),
+                wb.insights_written,
+                wb.self_reminders_written,
+                wb.proposals_sent,
+                wb.errors,
+            )
+        except Exception:
+            logger.exception(
+                "day_close_writer: memory write-back failed for %s", day_date.isoformat()
+            )
 
     return {DAY_CLOSE_TASK_NAME: _hook}

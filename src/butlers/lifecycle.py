@@ -158,8 +158,18 @@ async def run_startup(daemon: Any) -> None:
             continue
         rev = mod.migration_revisions()
         if rev:
+            # A module MAY declare a private schema (validated config field
+            # ``memory_schema`` on the memory module) so its chain migrates into
+            # a dedicated schema instead of the butler's own — e.g. chronicler
+            # routes memory to ``chronicler_mem`` so the memory ``episodes``
+            # table does not collide with the domain ``chronicler.episodes``
+            # (bu-93y4rt / bu-w6jca). ``env.py`` auto-creates the target schema,
+            # so no extra provisioning is needed. Falls back to the butler
+            # schema for every other module.
+            mod_cfg = daemon._module_configs.get(mod.name)
+            module_migration_schema = getattr(mod_cfg, "memory_schema", None) or migration_schema
             try:
-                await run_migrations(db_url, chain=rev, schema=migration_schema)
+                await run_migrations(db_url, chain=rev, schema=module_migration_schema)
             except Exception as exc:
                 error_msg = str(exc)
                 daemon._module_statuses[mod.name] = ModuleStartupStatus(

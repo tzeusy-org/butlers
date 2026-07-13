@@ -1035,8 +1035,49 @@ class ButlerDaemon:
         if self.config.name == "chronicler":
             from butlers.chronicler.day_close_writer import build_day_close_completion_hooks
 
+            # Wire the memory write-back loop (bu-93y4rt, tasks.md §8) when the
+            # memory module is enabled and started. store_fact_fn writes ONLY to
+            # the chronicler's own schema; the enrichment proposer routes to
+            # relationship over MCP (best-effort — a missing switchboard client
+            # is a silent no-op). Both are optional: without them the hook keeps
+            # doing exactly the tier2-cache write it always has.
+            store_fact_fn = None
+            propose_enrichment_fn = None
+            memory_module = self._resolve_memory_module()
+            if memory_module is not None:
+                try:
+                    memory_engine = memory_module._get_embedding_engine()
+                    # Use the memory module's OWN runtime pool, which targets the
+                    # dedicated memory schema (chronicler_mem) when configured —
+                    # NOT self.db.pool (the chronicler domain schema). This is why
+                    # synthesized facts land in chronicler_mem while chronicler.*
+                    # domain tables stay untouched (bu-93y4rt / bu-w6jca).
+                    memory_pool = memory_module._get_pool()
+                except Exception:
+                    logger.warning(
+                        "Failed to resolve memory pool/engine; chronicler "
+                        "write-back disabled for this run",
+                        exc_info=True,
+                    )
+                    memory_engine = None
+                    memory_pool = None
+
+                if memory_engine is not None and memory_pool is not None:
+                    from butlers.chronicler.writeback import (
+                        build_chronicler_fact_writer,
+                        build_relationship_enrichment_proposer,
+                    )
+
+                    store_fact_fn = build_chronicler_fact_writer(memory_pool, memory_engine)
+                    propose_enrichment_fn = build_relationship_enrichment_proposer(
+                        lambda: self.switchboard_client
+                    )
+
             completion_hooks = build_day_close_completion_hooks(
-                self.db.pool, timezone=default_timezone
+                self.db.pool,
+                timezone=default_timezone,
+                store_fact_fn=store_fact_fn,
+                propose_enrichment_fn=propose_enrichment_fn,
             )
 
         daemon = self
@@ -1052,6 +1093,24 @@ class ButlerDaemon:
             get_eligibility_pool=lambda: daemon._audit_pool,
             default_timezone=default_timezone,
         )
+
+    def _resolve_memory_module(self) -> Any | None:
+        """Return the started memory module instance, or ``None``.
+
+        Used to wire the chronicler day-close memory write-back (bu-93y4rt):
+        the caller reads the module's embedding engine and its runtime pool
+        (which targets the dedicated ``chronicler_mem`` schema). Returns
+        ``None`` when the memory module is absent or failed to start, so the
+        day-close hook falls back to cache-only behaviour.
+        """
+        for mod in self._modules:
+            if mod.name != "memory":
+                continue
+            status = self._module_statuses.get(mod.name)
+            if status is not None and status.status != "active":
+                return None
+            return mod
+        return None
 
     async def _liveness_reporter_loop(self) -> None:
         """Periodically POST to the Switchboard's heartbeat endpoint to signal liveness.
