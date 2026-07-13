@@ -485,6 +485,17 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 - **WHEN** the discretion LLM call fails (timeout, connection error, malformed response)
 - **THEN** the default behaviour depends on the sender's weight: weight >= `weight_fail_open` threshold → FORWARD (fail-open), weight < threshold → IGNORE (fail-closed)
 
+#### Scenario: Primary personal channel fails open on discretion infra failure
+- **WHEN** a primary personal 1:1 messaging channel (e.g. WhatsApp) configures `weight_fail_open` at or below the `unknown` tier weight (0.3) — every sender resolves to at least `unknown`, so every sender fails open
+- **THEN** when the discretion LLM cannot render a verdict (e.g. same-tier failover exhaustion, timeout, provider error) the message FORWARDs rather than being silently dropped, so the owner's private-chat messages are not lost while the discretion model is degraded
+- **AND** a genuine model-judged IGNORE still drops (fail-open governs only the error path, never the LLM's own verdict)
+- **AND** because no sender on that channel is below the threshold, the failover-exhausted suppression ledger row (below) is not produced for it — the message is forwarded, not suppressed
+
+#### Scenario: Per-channel discretion-drop visibility
+- **WHEN** a connector records a discretion IGNORE to `connectors.filtered_events`
+- **THEN** it increments a low-cardinality `discretion_ignore_total{channel, kind}` Prometheus counter, where `kind` is the `classify_ignore_kind` result (`llm_verdict` for a genuine model-judged noise drop vs a fail-closed default such as `failover_exhausted`)
+- **AND** this makes per-channel over-filtering — and specifically the split between genuine noise and fabricated infra drops — observable per channel without re-sampling private payloads or a schema change
+
 ### Requirement: Discretion Failover-Exhausted Suppression Ledger Recording
 When a discretion evaluation is forced to the weight-default IGNORE verdict because the `DiscretionDispatcher`'s same-tier model failover exhausted (a degraded, fabricated suppression rather than a model-judged decision), the evaluator SHALL record one durable row to `public.attention_ledger` with `source="discretion"` and `outcome="suppressed"`, so that a message the owner would otherwise have received but was silently dropped by pipeline degradation is observable on the fleet's honesty surface instead of only via an ERROR log and the `discretion_evaluations_total` metric.
 

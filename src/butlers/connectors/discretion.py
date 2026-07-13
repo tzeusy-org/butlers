@@ -70,6 +70,42 @@ discretion_evaluations_total = Counter(
 - outcome: ok, bypass, timeout, error, parse_error, fail_open, fail_closed
 """
 
+# Per-CHANNEL discretion-drop counter (bu-cicgb). ``discretion_evaluations_total``
+# is labelled by per-source evaluator name (per-chat → high cardinality) and its
+# ``outcome`` does not distinguish a genuine LLM IGNORE from an infra fail-closed
+# default (an ``llm_verdict`` IGNORE has ``outcome="ok"``). This counter is
+# low-cardinality (channel × ignore-kind) so an over-filtering channel — and
+# specifically the split between genuine noise (``llm_verdict``) and fabricated
+# infra drops (``failover_exhausted`` / ``*_default``) — is visible per channel
+# in Prometheus/Grafana without re-sampling private payloads. The audit that
+# motivated it found 9/9 recent WhatsApp drops were ``failover_exhausted`` and
+# zero were ``llm_verdict``.
+discretion_ignore_total = Counter(
+    "discretion_ignore_total",
+    "Discretion IGNORE (dropped message) outcomes by channel and ignore-kind",
+    labelnames=["channel", "kind"],
+)
+"""Labels:
+
+- channel: originating connector channel (e.g. ``whatsapp``, ``live_listener``)
+- kind: :func:`classify_ignore_kind` result — ``llm_verdict`` (genuine noise) vs
+  a fail-closed default (``failover_exhausted``, ``auth_failure_default``,
+  ``provider_unavailable_default``, ``timeout_default``, ``parse_error_default``,
+  ``error_default``).
+"""
+
+
+def record_discretion_ignore(*, channel: str, kind: str) -> None:
+    """Increment the per-channel discretion-drop counter for one IGNORE.
+
+    Call this at the connector site that records a discretion IGNORE to
+    ``connectors.filtered_events`` (it already computes ``kind`` via
+    :func:`classify_ignore_kind`), so the per-channel drop-rate and its
+    genuine-vs-infra split are exported without a schema change.
+    """
+    discretion_ignore_total.labels(channel=channel, kind=kind).inc()
+
+
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a personal-assistant discretion filter. "
     "Given a recent conversation context and a new message, decide whether "

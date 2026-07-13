@@ -67,6 +67,7 @@ from butlers.connectors.discretion import (
     ContactWeightResolver,
     DiscretionEvaluator,
     classify_ignore_kind,
+    record_discretion_ignore,
 )
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -124,6 +125,19 @@ _SSE_RECONNECT_DELAY_S = 5.0  # Delay before reconnecting SSE after failure
 _SSE_KEEPALIVE_TIMEOUT_S = 90.0  # Max silence from SSE stream before treating as stale
 _SSE_PAIRING_IDLE_INTERVAL_S = 30.0  # How often to recheck while awaiting QR pairing (bu-7sh43)
 _CONNECTOR_TYPE = "whatsapp_user_client"
+
+# Discretion fail-open threshold for WhatsApp (bu-cicgb). WhatsApp is a primary
+# personal 1:1 messaging channel; a discretion *infra* failure (most observed:
+# same-tier model-failover exhaustion) must not silently drop the owner's
+# messages. The shared default (0.5) fail-CLOSES every sender below it, and
+# WhatsApp senders resolve to the ``unknown`` tier (0.3) unless a
+# ``has-handle=<full JID>`` triple exists — so under the default, an LLM outage
+# drops 100% of WhatsApp traffic (the bu-cicgb audit: 9/9 recent drops were
+# ``failover_exhausted``, 0 genuine ``llm_verdict``). Setting the threshold to
+# the ``unknown`` floor makes every WhatsApp sender fail-OPEN (FORWARD) when the
+# LLM cannot render a verdict, while a genuine LLM IGNORE still drops (fail-open
+# only affects the error path). Reversible: restore the shared 0.5 default.
+_WHATSAPP_DISCRETION_WEIGHT_FAIL_OPEN = 0.3
 
 # ---------------------------------------------------------------------------
 # Chat buffer data structure
@@ -1432,6 +1446,9 @@ class WhatsAppUserClientConnector:
                     self._discretion_evaluators[chat_jid] = DiscretionEvaluator(
                         source_name=f"wa:{chat_jid}",
                         dispatcher=self._discretion_dispatcher,
+                        # Fail OPEN on a discretion infra failure for this
+                        # primary personal channel — see the constant's rationale.
+                        weight_fail_open=_WHATSAPP_DISCRETION_WEIGHT_FAIL_OPEN,
                     )
 
                 # Resolve sender weight from last event in batch
@@ -1445,13 +1462,18 @@ class WhatsAppUserClientConnector:
                     normalized_text, weight=sender_weight
                 )
                 if d_result.verdict == "IGNORE":
-                    logger.debug("Discretion IGNORE for batch in chat %s", chat_jid)
+                    ignore_kind = classify_ignore_kind(d_result)
+                    logger.debug(
+                        "Discretion IGNORE (%s) for batch in chat %s", ignore_kind, chat_jid
+                    )
+                    # Per-channel drop-rate visibility (bu-cicgb): low-cardinality
+                    # channel × kind counter so over-filtering (and the genuine
+                    # llm_verdict vs infra fail-closed split) is scrapeable.
+                    record_discretion_ignore(channel=self._config.channel, kind=ignore_kind)
                     self._record_batch_filtered_event(
                         chat_jid=chat_jid,
                         batch_event_id=batch_event_id,
-                        filter_reason=FilteredEventBuffer.reason_discretion_ignore(
-                            classify_ignore_kind(d_result)
-                        ),
+                        filter_reason=FilteredEventBuffer.reason_discretion_ignore(ignore_kind),
                         subject_or_preview=normalized_text[:200] if normalized_text else None,
                     )
                     await self._flush_and_drain()
