@@ -1512,7 +1512,17 @@ class GoogleHealthConnector:
             return
         endpoint = _cursor_endpoint_identity(ctx.email, account_uuid, state.bundle.resource)
         try:
-            await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, endpoint, cursor_value)
+            # This key is a per-resource storage record, while Google Health
+            # liveness is reported by the canonical per-account heartbeat key.
+            # Keep the cursor row archived so fleet-health and QA do not treat
+            # it as an independent endpoint that has stopped heartbeating.
+            await save_cursor(
+                self._cursor_pool,
+                _CONNECTOR_TYPE,
+                endpoint,
+                cursor_value,
+                archive=True,
+            )
             state.last_cursor = cursor_value
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save("success")

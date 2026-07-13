@@ -41,6 +41,17 @@ DO UPDATE SET
     checkpoint_updated_at = EXCLUDED.checkpoint_updated_at
 """
 
+_UPSERT_ARCHIVED_SQL = """\
+INSERT INTO switchboard.connector_registry
+    (connector_type, endpoint_identity, checkpoint_cursor, checkpoint_updated_at, archived_at)
+VALUES ($1, $2, $3, $4, $4)
+ON CONFLICT (connector_type, endpoint_identity)
+DO UPDATE SET
+    checkpoint_cursor     = EXCLUDED.checkpoint_cursor,
+    checkpoint_updated_at = EXCLUDED.checkpoint_updated_at,
+    archived_at           = COALESCE(connector_registry.archived_at, EXCLUDED.archived_at)
+"""
+
 _SELECT_SQL = """\
 SELECT checkpoint_cursor
 FROM switchboard.connector_registry
@@ -59,15 +70,20 @@ async def save_cursor(
     connector_type: str,
     endpoint_identity: str,
     cursor_value: str,
+    *,
+    archive: bool = False,
 ) -> None:
     """Upsert checkpoint cursor into ``switchboard.connector_registry``.
 
     If no row exists for (connector_type, endpoint_identity), one is inserted.
+    ``archive=True`` marks a cursor-only storage row as archived so connector
+    liveness and fleet-health surfaces do not mistake it for a heartbeat
+    endpoint. Loading archived cursor rows remains supported.
     """
     now = datetime.now(UTC)
     async with pool.acquire() as conn:
         await conn.execute(
-            _UPSERT_SQL,
+            _UPSERT_ARCHIVED_SQL if archive else _UPSERT_SQL,
             connector_type,
             endpoint_identity,
             cursor_value,

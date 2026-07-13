@@ -1174,6 +1174,29 @@ def test_cursor_endpoint_identity_two_accounts_produce_distinct_keys() -> None:
 
 
 @pytest.mark.asyncio
+async def test_save_cursor_archives_internal_resource_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-resource cursor rows are storage records, not heartbeat endpoints."""
+    account_id = uuid.UUID("11111111-2222-3333-4444-555555555555")
+    connector, _ctx = _make_connector_with_account(account_id=account_id)
+    connector._cursor_pool = MagicMock()
+    save_cursor_mock = AsyncMock()
+    monkeypatch.setattr("butlers.connectors.google_health.save_cursor", save_cursor_mock)
+
+    state = connector._resources[(account_id, "activity")]
+    await connector._save_cursor(account_id, state, "2026-07-13")
+
+    save_cursor_mock.assert_awaited_once_with(
+        connector._cursor_pool,
+        "google_health",
+        _cursor_endpoint_identity(_OWNER_EMAIL, account_id, "activity"),
+        "2026-07-13",
+        archive=True,
+    )
+
+
+@pytest.mark.asyncio
 async def test_cursor_migration_idempotent_and_loads_post_migration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
