@@ -237,6 +237,35 @@ _ALL_DAY_QUIET_POLICY = {"quiet_start_hour": 0, "quiet_end_hour": 23, "timezone"
 _NO_QUIET_POLICY = {"quiet_start_hour": None, "quiet_end_hour": None, "timezone": "UTC"}
 
 
+def _ledger_row_of(mock_pool: AsyncMock, outcome: str) -> tuple[Any, ...] | None:
+    """Return the first attention_ledger INSERT arg tuple whose outcome matches."""
+    for args in _ledger_insert_calls(mock_pool):
+        if len(args) > 8 and args[8] == outcome:
+            return args
+    return None
+
+
+def _make_result(*, is_error: bool, data: Any = None, content_text: str | None = None) -> Any:
+    """Build a FastMCP-CallToolResult-shaped mock for switchboard_client.call_tool."""
+    result = MagicMock()
+    result.is_error = is_error
+    result.data = data
+    result.content = [MagicMock(text=content_text)] if content_text is not None else []
+    return result
+
+
+def _client_returning(result: Any) -> Any:
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(return_value=result)
+    return mock_client
+
+
+def _client_raising(exc: BaseException) -> Any:
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(side_effect=exc)
+    return mock_client
+
+
 class TestQuietHoursLedgerRecording:
     async def test_quiet_hours_suppresses_and_records_ledger(self, butler_dir: Path) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
@@ -363,3 +392,205 @@ class TestQuietHoursLedgerRecording:
         notification_ref = ledger_calls[0][10]
         assert outcome == "delivered"
         assert notification_ref == "notif-123"
+
+
+@pytest.fixture
+def switchboard_butler_dir(tmp_path: Path) -> Path:
+    """A butler dir named 'switchboard' so notify() takes the self-delivery branch."""
+    butler_path = tmp_path / "switchboard"
+    butler_path.mkdir()
+    (butler_path / "butler.toml").write_text(
+        """
+[butler]
+name = "switchboard"
+port = 9110
+description = "Switchboard butler"
+
+[butler.db]
+name = "butlers"
+schema = "switchboard"
+
+[[butler.schedule]]
+name = "daily-check"
+cron = "0 9 * * *"
+prompt = "Do the daily check"
+"""
+    )
+    (butler_path / "MANIFESTO.md").write_text("# Switchboard Butler")
+    (butler_path / "CLAUDE.md").write_text("Switchboard butler instructions.")
+    return butler_path
+
+
+class TestNotifyFailurePathsRecordFailedLedgerRow:
+    """Every terminal notify() dispatch failure stamps ``outcome="failed"`` (bu-zcos8).
+
+    Before this fix, notify()'s delivery-failure returns (switchboard
+    self-delivery failure/exception, and the proxied path's inner
+    ``status="failed"``, MCP-level error, timeout, unreachable, and unexpected
+    exception) returned an error to the caller without writing any attention
+    ledger row — so a genuine outage read identically to a benign quiet-hours
+    hold on the exact surface built to prove silence is chosen. This is the
+    same failure class PR #3171 (bu-hmdqz.3) fixed for the process-boundary
+    consumers, now closed for notify() itself. See core-notify spec
+    §"Attention Ledger Recording at the notify() Boundary".
+
+    Each test asserts (a) a ``failed`` ledger row with a machine-readable
+    reason lands, and (b) the notify() return value keeps its pre-existing
+    error shape (unchanged for callers).
+    """
+
+    async def _run_proxied(self, butler_dir: Path, client: Any) -> tuple[dict[str, Any], AsyncMock]:
+        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = client
+        with (
+            patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
+            patch.object(
+                daemon,
+                "_resolve_default_notify_recipient",
+                new=AsyncMock(return_value="123456789"),
+            ),
+        ):
+            result = await notify_fn(channel="telegram", message="Report")
+        return result, mock_pool
+
+    async def test_proxied_inner_failed_records_failed_ledger_row(self, butler_dir: Path) -> None:
+        client = _client_returning(
+            _make_result(
+                is_error=False,
+                data={
+                    "status": "failed",
+                    "error": "messenger rejected",
+                    "retryable": False,
+                    "notification_id": "notif-fail-1",
+                },
+            )
+        )
+        result, mock_pool = await self._run_proxied(butler_dir, client)
+
+        # Return shape unchanged for callers.
+        assert result["status"] == "error"
+        assert result["error"] == "messenger rejected"
+
+        row = _ledger_row_of(mock_pool, "failed")
+        assert row is not None, "expected a failed attention-ledger row"
+        assert row[2] == "notify"  # source
+        assert row[9] == "delivery_error:messenger rejected"  # reason
+        assert row[10] == "notif-fail-1"  # notification_ref
+
+    async def test_proxied_mcp_error_records_failed_ledger_row(self, butler_dir: Path) -> None:
+        client = _client_returning(_make_result(is_error=True, content_text="mcp boom"))
+        result, mock_pool = await self._run_proxied(butler_dir, client)
+
+        assert result["status"] == "error"
+        assert result["error"] == "mcp boom"
+
+        row = _ledger_row_of(mock_pool, "failed")
+        assert row is not None
+        assert row[9] == "delivery_error:mcp boom"
+
+    async def test_proxied_timeout_records_failed_ledger_row(self, butler_dir: Path) -> None:
+        result, mock_pool = await self._run_proxied(butler_dir, _client_raising(TimeoutError()))
+
+        assert result["status"] == "error"
+        assert result["retryable"] is True
+
+        row = _ledger_row_of(mock_pool, "failed")
+        assert row is not None
+        assert "timeout" in row[9]  # reason
+
+    async def test_proxied_unreachable_records_failed_ledger_row(self, butler_dir: Path) -> None:
+        result, mock_pool = await self._run_proxied(
+            butler_dir, _client_raising(ConnectionError("down"))
+        )
+
+        assert result["status"] == "error"
+        assert result["retryable"] is True
+
+        row = _ledger_row_of(mock_pool, "failed")
+        assert row is not None
+        assert "unreachable" in row[9]
+
+    async def test_proxied_unexpected_exception_records_failed_ledger_row(
+        self, butler_dir: Path
+    ) -> None:
+        result, mock_pool = await self._run_proxied(
+            butler_dir, _client_raising(ValueError("weird"))
+        )
+
+        assert result["status"] == "error"
+        assert result["retryable"] is False
+
+        row = _ledger_row_of(mock_pool, "failed")
+        assert row is not None
+        assert row[9] == "unexpected_error:ValueError"
+
+    async def test_switchboard_self_delivery_failed_records_failed_ledger_row(
+        self, switchboard_butler_dir: Path
+    ) -> None:
+        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(switchboard_butler_dir, patches)
+        daemon.switchboard_client = None  # forces the switchboard self-delivery branch
+
+        deliver_mock = AsyncMock(
+            return_value={
+                "status": "failed",
+                "error": "no route",
+                "notification_id": "sb-fail-1",
+            }
+        )
+        with (
+            patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
+            patch.object(
+                daemon,
+                "_resolve_default_notify_recipient",
+                new=AsyncMock(return_value="123456789"),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.deliver",
+                new=deliver_mock,
+            ),
+        ):
+            result = await notify_fn(channel="telegram", message="Report")
+
+        assert result["status"] == "error"
+        assert result["error"] == "no route"
+
+        row = _ledger_row_of(mock_pool, "failed")
+        assert row is not None
+        assert row[1] == "switchboard"  # origin_butler
+        assert row[9] == "delivery_error:no route"
+        assert row[10] == "sb-fail-1"
+
+    async def test_switchboard_self_delivery_exception_records_failed_ledger_row(
+        self, switchboard_butler_dir: Path
+    ) -> None:
+        mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(switchboard_butler_dir, patches)
+        daemon.switchboard_client = None
+
+        deliver_mock = AsyncMock(side_effect=RuntimeError("kaboom"))
+        with (
+            patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
+            patch.object(
+                daemon,
+                "_resolve_default_notify_recipient",
+                new=AsyncMock(return_value="123456789"),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.deliver",
+                new=deliver_mock,
+            ),
+        ):
+            result = await notify_fn(channel="telegram", message="Report")
+
+        assert result["status"] == "error"
+        assert "Direct delivery failed" in result["error"]
+
+        row = _ledger_row_of(mock_pool, "failed")
+        assert row is not None
+        assert row[1] == "switchboard"
+        assert row[9] == "unexpected_error:RuntimeError"

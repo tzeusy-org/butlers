@@ -990,6 +990,45 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             exc_info=True,
                         )
 
+            async def _record_failed_attention(
+                reason: str,
+                *,
+                retryable: bool | None = None,
+                notification_ref: str | None = None,
+            ) -> None:
+                """Stamp a terminal ``outcome="failed"`` attention-ledger row for a
+                notify() dispatch attempt that errored out (bu-zcos8).
+
+                Every delivery-failure return below (switchboard self-delivery
+                failure/exception, and the proxied path's inner ``status="failed"``,
+                MCP-level error, timeout, unreachable, and unexpected-exception
+                returns) previously returned an error to the caller without writing
+                any ledger row — so a genuine outage read identically to a benign
+                quiet-hours hold (nothing recorded) on the exact surface built to
+                prove silence is chosen. This mirrors the process-boundary consumers'
+                contract (bu-hmdqz.3, core-notify spec §"Attention Ledger Recording
+                at the notify() Boundary"): a real failure is ``"failed"``, never
+                ``"deferred"`` (which is reserved for a hold the system retries on its
+                own). ``retryable`` records whether the transport error may succeed on
+                a later caller retry; it does NOT auto-retry here.
+
+                Best-effort/fail-open: ``record_attention_event`` never raises and
+                no-ops when the pool is absent, so a ledger-write hiccup can never
+                mask the original notify() error being returned.
+                """
+                await record_attention_event(
+                    _notify_pool,
+                    origin_butler=butler_name,
+                    source="notify",
+                    outcome="failed",
+                    channel=channel,
+                    intent=intent,
+                    priority=priority,
+                    reason=reason,
+                    notification_ref=notification_ref,
+                    metadata={"retryable": retryable} if retryable is not None else None,
+                )
+
             # Switchboard self-delivery: call deliver() directly instead of
             # proxying through switchboard_client (which is None on switchboard).
             if client is None and butler_name == "switchboard":
@@ -1011,6 +1050,13 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     )
                     status = result.get("status", "sent")
                     if status == "failed":
+                        await _record_failed_attention(
+                            f"delivery_error:{result.get('error', 'unknown')}",
+                            retryable=bool(result.get("retryable", False)),
+                            notification_ref=(
+                                result.get("notification_id") if isinstance(result, dict) else None
+                            ),
+                        )
                         return {
                             "status": "error",
                             "error": result.get("error", "Delivery failed"),
@@ -1035,6 +1081,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         exc,
                         exc_info=True,
                     )
+                    await _record_failed_attention(f"unexpected_error:{type(exc).__name__}")
                     return {"status": "error", "error": f"Direct delivery failed: {exc}"}
 
             _NOTIFY_TIMEOUT_S = 30
@@ -1047,11 +1094,17 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 if result.is_error:
                     # Extract error text from the result content
                     error_text = str(result.content[0].text) if result.content else "Unknown error"
+                    await _record_failed_attention(f"delivery_error:{error_text}")
                     return {"status": "error", "error": error_text}
                 # Check inner payload for delivery-level failures (e.g. validation
                 # errors from Switchboard/Messenger that don't raise MCP errors).
                 data = result.data
                 if isinstance(data, dict) and data.get("status") == "failed":
+                    await _record_failed_attention(
+                        f"delivery_error:{data.get('error', 'unknown')}",
+                        retryable=bool(data.get("retryable", False)),
+                        notification_ref=data.get("notification_id"),
+                    )
                     return {
                         "status": "error",
                         "error": data.get("error", "Delivery failed"),
@@ -1079,6 +1132,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     _NOTIFY_TIMEOUT_S,
                     butler_name,
                 )
+                await _record_failed_attention(
+                    f"delivery_error:switchboard_timeout_{_NOTIFY_TIMEOUT_S}s",
+                    retryable=True,
+                )
                 return {
                     "status": "error",
                     "error": (
@@ -1094,6 +1151,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     butler_name,
                     exc,
                     exc_info=True,
+                )
+                await _record_failed_attention(
+                    f"delivery_error:switchboard_unreachable:{type(exc).__name__}",
+                    retryable=True,
                 )
                 return {
                     "status": "error",
@@ -1111,6 +1172,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     exc,
                     exc_info=True,
                 )
+                await _record_failed_attention(f"unexpected_error:{type(exc).__name__}")
                 return {
                     "status": "error",
                     "error": (
