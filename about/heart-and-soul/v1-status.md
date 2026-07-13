@@ -293,6 +293,7 @@ A condensed view of the broader feature set listed in v1.md, for orientation.
 | WhatsApp | **implemented** | `src/butlers/modules/whatsapp/` — `WhatsAppModule` |
 | Steam | **implemented** | `src/butlers/modules/steam.py` (`SteamModule`); enabled in `roster/lifestyle/butler.toml` (`[modules.steam]`); `tests/modules/test_module_steam.py` |
 | Insight broker | **implemented** | `roster/switchboard/modules/insight_broker.py` (see SC-8) |
+| Document renderer | **implemented** | `src/butlers/modules/document_renderer/` — `render_document` + `render_chart` tools; `tests/modules/test_document_renderer.py`. Available for opt-in via `[modules.document_renderer]`; no roster butler enables it yet. |
 
 ### Connectors
 
