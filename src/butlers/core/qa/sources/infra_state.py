@@ -29,7 +29,8 @@ Four checks, one discovery source
    online/stale/offline definition the dashboard's own connector list already
    uses — rather than inventing a second threshold that could quietly
    disagree with it. A ``state='paused'`` connector (a deliberate operator
-   action via the pause endpoint) and an archived/soft-deleted identity
+   action via the pause endpoint), an archived/soft-deleted identity, and a
+   cursor-only storage row that never represented a heartbeat identity
    (already excluded by the view itself) are never flagged. A connector with
    no heartbeat yet gets a 15-minute grace window from ``first_seen_at`` so a
    registration moments ago never fires on the very next patrol tick.

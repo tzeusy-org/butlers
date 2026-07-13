@@ -1,13 +1,16 @@
-"""Real-Postgres regression: infra-state QA discovery views (bu-9r3hd.4).
+"""Real-Postgres regression: infra-state QA discovery views.
 
-Exercises migration ``sw_024`` (``public.v_qa_connector_state`` /
-``public.v_qa_butler_heartbeat``) against a fully migrated Postgres instance
+Exercises the views introduced by ``sw_024`` and refined by ``sw_026``
+(``public.v_qa_connector_state`` / ``public.v_qa_butler_heartbeat``) against a
+fully migrated Postgres instance
 (testcontainers), not just the mocked-pool unit tests in
 ``tests/core/qa/test_infra_state.py``:
 
 - Both views exist and are queryable.
 - ``v_qa_connector_state`` surfaces a live ``connector_registry`` row and
   excludes a soft-deleted / archived one.
+- ``v_qa_connector_state`` excludes cursor-only storage rows that never
+  represented a heartbeat identity.
 - ``v_qa_butler_heartbeat`` surfaces a ``butler_registry`` row with its
   ``liveness_ttl_seconds`` / ``quarantined_at`` columns intact.
 - Downgrade cleanly drops both views.
@@ -101,6 +104,51 @@ async def test_connector_view_surfaces_live_row_and_excludes_archived(
     assert row["endpoint_identity"] == "owner@example.com"
     assert row["state"] == "error"
     assert row["last_heartbeat_at"] is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_connector_view_excludes_cursor_only_storage_rows(
+    pool: asyncpg.Pool,
+) -> None:
+    """Per-resource cursors are storage records, not liveness identities."""
+    account_id = "12345678-1234-1234-1234-123456789012"
+    cursor_identity = f"google_health:user:account@example.invalid:{account_id}:resting_hr"
+    await pool.execute(
+        """
+        INSERT INTO switchboard.connector_registry
+            (connector_type, endpoint_identity, state, checkpoint_cursor,
+             checkpoint_updated_at)
+        VALUES ($1, $2, 'unknown', $3, now())
+        """,
+        "google_health",
+        cursor_identity,
+        "2026-07-01",
+    )
+    await pool.execute(
+        """
+        INSERT INTO switchboard.connector_registry
+            (connector_type, endpoint_identity, state, registered_via)
+        VALUES ($1, $2, 'unknown', 'operator')
+        """,
+        "telegram_bot",
+        "telegram:pending-heartbeat",
+    )
+
+    cursor_row = await pool.fetchrow(
+        "SELECT * FROM public.v_qa_connector_state "
+        "WHERE connector_type = $1 AND endpoint_identity = $2",
+        "google_health",
+        cursor_identity,
+    )
+    registered_row = await pool.fetchrow(
+        "SELECT * FROM public.v_qa_connector_state "
+        "WHERE connector_type = $1 AND endpoint_identity = $2",
+        "telegram_bot",
+        "telegram:pending-heartbeat",
+    )
+
+    assert cursor_row is None
+    assert registered_row is not None
 
 
 @pytest.mark.asyncio(loop_scope="session")
