@@ -194,6 +194,33 @@ describe("SessionsPinnedStrip — degraded sources", () => {
     expect(getByText(/Recent failures: unavailable/i)).toBeTruthy();
     expect(getByTestId("pinned-session-row")).toBeTruthy();
   });
+
+  // Partial per-pool drop (meta.sources_degraded) — an otherwise-200 response
+  // that undercounts, distinct from the whole-request *Error flags (bu-hmdqz.12).
+  it("names the dropped pool for running sessions on a partial fan-out, even with zero rows", () => {
+    setup();
+    const { getByText, queryAllByTestId } = render(
+      <SessionsPinnedStrip
+        runningSessions={[]}
+        recentFailures={[]}
+        runningSourcesDegraded={["atlas"]}
+      />,
+    );
+    expect(getByText(/Running sessions: partial — atlas unreachable/i)).toBeTruthy();
+    expect(queryAllByTestId("pinned-session-row")).toHaveLength(0);
+  });
+
+  it("names the dropped pool for recent failures on a partial fan-out", () => {
+    setup();
+    const { getByText } = render(
+      <SessionsPinnedStrip
+        runningSessions={[]}
+        recentFailures={[]}
+        recentFailuresSourcesDegraded={["atlas"]}
+      />,
+    );
+    expect(getByText(/Recent failures: partial — atlas unreachable/i)).toBeTruthy();
+  });
 });
 
 describe("SessionsPinnedStrip — interaction", () => {

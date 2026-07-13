@@ -364,3 +364,53 @@ describe("SessionStripeChart — bus-aware poll cadence", () => {
     )
   })
 })
+
+// ---------------------------------------------------------------------------
+// Degraded-source consumption (bu-hmdqz.12)
+// ---------------------------------------------------------------------------
+
+describe("SessionStripeChart — degraded source", () => {
+  it("names the dropped pool above the bars when data is partial", () => {
+    mockUseQuery.mockReturnValue({
+      data: {
+        data: [{ id: "s1", butler: "home", started_at: "2024-06-15T10:30:00.000Z" }],
+        meta: {
+          total: 1,
+          offset: 0,
+          limit: 2000,
+          has_more: false,
+          sources_degraded: ["atlas"],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useQuery>)
+
+    const html = renderChart({ butlers: [makeButler("home")] })
+    expect(html).toContain("session-stripe-degraded")
+    expect(html).toContain("atlas")
+    expect(html).toContain("recharts-bar-chart")
+  })
+
+  it("gates the calm empty window: a degraded zero names the pool, not the empty copy", () => {
+    mockUseQuery.mockReturnValue({
+      data: {
+        data: [],
+        meta: {
+          total: 0,
+          offset: 0,
+          limit: 2000,
+          has_more: false,
+          sources_degraded: ["atlas"],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as ReturnType<typeof useQuery>)
+
+    const html = renderChart({ butlers: [] })
+    expect(html).toContain("session-stripe-degraded")
+    expect(html).toContain("atlas")
+    expect(html).not.toContain("No sessions in the selected window")
+  })
+})

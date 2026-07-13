@@ -21,6 +21,7 @@ import {
 import { ChartSkeleton } from "@/components/skeletons"
 import type { ButlerSummary } from "@/api/types"
 import { butlerHueVar } from "@/components/ui/ButlerMark"
+import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import {
   bucketUnit,
   currentWindow,
@@ -114,6 +115,21 @@ export function SessionStripeChart({
 
   const sessions = useMemo(() => data?.data ?? [], [data])
 
+  // Butler pools dropped from this window's list fan-out (KeysetMeta.sources_degraded,
+  // bu-hmdqz.12): the chart then undercounts, so name the missing pool(s) above
+  // the bars AND gate the "No sessions in the selected window" empty state — a
+  // degraded zero must not read as a real quiet window.
+  const sourcesDegraded = data?.meta?.sources_degraded ?? []
+  const degradedNote =
+    sourcesDegraded.length > 0 ? (
+      <SourceDegradedNote
+        label="Session activity"
+        detail={`partial — ${sourcesDegraded.join(", ")} unreachable`}
+        className="mb-2"
+        testId="session-stripe-degraded"
+      />
+    ) : null
+
   // Memoize the pivot and name-ordering so they don't rerun on every render.
   // currentWindow() recomputes on every render so the pivot always aligns with
   // the window the hook uses on its next refetch.
@@ -150,6 +166,11 @@ export function SessionStripeChart({
   }
 
   if (sessions.length === 0) {
+    // A degraded zero must not read as a real quiet window: name the dropped
+    // pool(s) instead of the calm empty copy (bu-hmdqz.12).
+    if (degradedNote) {
+      return <div data-testid="session-stripe-chart">{degradedNote}</div>
+    }
     return (
       <div
         className="flex h-[200px] items-center justify-center text-sm text-muted-foreground"
@@ -162,6 +183,7 @@ export function SessionStripeChart({
 
   return (
     <div data-testid="session-stripe-chart">
+      {degradedNote}
       {data?.truncated && (
         <p
           className="mb-1 text-xs text-muted-foreground"

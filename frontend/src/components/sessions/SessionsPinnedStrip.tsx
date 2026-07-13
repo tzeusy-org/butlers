@@ -132,6 +132,14 @@ export interface SessionsPinnedStripProps {
   /** True when the recent-failures query (above) errored. Same rule as
    * `runningError`: never let a fetch failure read as "no recent failures". */
   recentFailuresError?: boolean;
+  /** Butler pools dropped from the running-sessions list fan-out
+   * (KeysetMeta.sources_degraded, bu-hmdqz.12). A partial per-pool drop on an
+   * otherwise-200 response — distinct from `runningError` (whole-request
+   * failure). Named so the pinned running rows never read as the full set. */
+  runningSourcesDegraded?: string[];
+  /** Butler pools dropped from the recent-failures list fan-out. Same rule as
+   * `runningSourcesDegraded`. */
+  recentFailuresSourcesDegraded?: string[];
   onSessionClick?: (session: SessionSummary) => void;
   /** Mirrors ?selected= (same convention as SessionTable). */
   selectedId?: string | null;
@@ -142,6 +150,8 @@ export function SessionsPinnedStrip({
   recentFailures,
   runningError = false,
   recentFailuresError = false,
+  runningSourcesDegraded = [],
+  recentFailuresSourcesDegraded = [],
   onSessionClick,
   selectedId = null,
 }: SessionsPinnedStripProps) {
@@ -151,11 +161,16 @@ export function SessionsPinnedStrip({
   // to whatever the caller passed in `recentFailures` (a handful of rows).
   const errorsById = useSessionErrorExcerpts(recentFailures);
 
-  const hasDegradedSource = runningError || recentFailuresError;
+  const hasDegradedSource =
+    runningError ||
+    recentFailuresError ||
+    runningSourcesDegraded.length > 0 ||
+    recentFailuresSourcesDegraded.length > 0;
 
   // Nothing to pin AND both sources are healthy -> collapse (see module doc
   // decision note). A degraded source always renders its note, even with
-  // zero rows to show, so a fetch failure never reads as "nothing pinned".
+  // zero rows to show, so a fetch failure OR a partial per-pool drop never
+  // reads as "nothing pinned".
   if (runningSessions.length === 0 && recentFailures.length === 0 && !hasDegradedSource) {
     return null;
   }
@@ -175,8 +190,20 @@ export function SessionsPinnedStrip({
           {runningError && (
             <SourceDegradedNote label="Running sessions" detail="unavailable" />
           )}
+          {!runningError && runningSourcesDegraded.length > 0 && (
+            <SourceDegradedNote
+              label="Running sessions"
+              detail={`partial — ${runningSourcesDegraded.join(", ")} unreachable`}
+            />
+          )}
           {recentFailuresError && (
             <SourceDegradedNote label="Recent failures" detail="unavailable" />
+          )}
+          {!recentFailuresError && recentFailuresSourcesDegraded.length > 0 && (
+            <SourceDegradedNote
+              label="Recent failures"
+              detail={`partial — ${recentFailuresSourcesDegraded.join(", ")} unreachable`}
+            />
           )}
         </div>
       )}

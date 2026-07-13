@@ -5,6 +5,7 @@ import { ButlerMark } from "@/components/ui/ButlerMark";
 import { ComplexityBadge } from "@/components/general/ComplexityBadge";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { formatCostUsd } from "@/lib/format-cost";
 import { formatDurationMs } from "@/lib/format-duration";
 import { truncate } from "@/lib/truncate";
@@ -38,6 +39,16 @@ export interface SessionTableProps {
    * focus to sync native DOM focus onto.
    */
   selectedId?: string | null;
+  /**
+   * Butler pools dropped from the list fan-out that produced these rows
+   * (KeysetMeta.sources_degraded). A non-empty list means the page is a
+   * PARTIAL view: rows are missing. Rendered as a named note above the table,
+   * and — critically — it GATES the calm "No sessions found" empty state, so a
+   * degraded zero never reads as a truthful absence (bu-hmdqz.12, fleet-wide
+   * degraded-envelope convention). Defaults to empty for callers on the
+   * butler-scoped `PaginatedResponse` (no per-pool fan-out).
+   */
+  sourcesDegraded?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -116,13 +127,28 @@ export function SessionTable({
   showButlerColumn = false,
   onRequestIdClick,
   selectedId = null,
+  sourcesDegraded = [],
 }: SessionTableProps) {
+  const degradedNote =
+    sourcesDegraded.length > 0 ? (
+      <SourceDegradedNote
+        label="Session list"
+        detail={`partial — ${sourcesDegraded.join(", ")} unreachable`}
+        className="mb-3"
+        testId="sessions-list-degraded"
+      />
+    ) : null;
+
   if (!isLoading && sessions.length === 0) {
-    return <EmptyState />;
+    // A degraded zero must not render calm absence: name the dropped pool(s)
+    // instead of the "No sessions found" all-clear (bu-hmdqz.12).
+    return degradedNote ?? <EmptyState />;
   }
 
   return (
-    <Table>
+    <>
+      {degradedNote}
+      <Table>
       <TableHeader>
         <TableRow>
           <TableHead>Time</TableHead>
@@ -250,5 +276,6 @@ export function SessionTable({
         )}
       </TableBody>
     </Table>
+    </>
   );
 }

@@ -15,9 +15,20 @@
  *   1. every entry names a field that is actually declared in
  *      frontend/src/api/types.ts (catches a stale registry entry after a
  *      rename/removal on the backend or FE-types side);
- *   2. every non-`pending` entry has at least one real consumer somewhere
- *      under frontend/src (excluding the type declaration itself and test
- *      files) — an emitted flag with zero readers fails this test.
+ *   2. every non-`pending` entry has at least one real consumer — scoped to
+ *      the specific file(s) named in `consumerFiles` when given, otherwise
+ *      anywhere under frontend/src (excluding the type declaration itself and
+ *      test files) — an emitted flag with zero readers fails this test.
+ *
+ * PER-ENDPOINT GRANULARITY (bu-hmdqz.12): one flag NAME (e.g. `sources_degraded`)
+ * is emitted by several unrelated endpoints. A codebase-wide "is this name read
+ * anywhere?" check lets a brand-new backend-first emitter hide behind an
+ * existing consumer of the same name on a DIFFERENT surface — the sessions
+ * LIST-level flag went unread for exactly this reason while the aggregate-level
+ * flag was consumed. So an entry that shares a flag name with others carries a
+ * `surface` discriminator AND `consumerFiles` scoping the consumer search to
+ * the file(s) that own that surface. Add a new emitting surface -> add a new
+ * entry, and its own consumer must land in its own file.
  *
  * To register a newly-shipped flag, add ONE entry to REGISTRY. If the flag
  * is typed/emitted but the frontend consumer has not landed yet, set
@@ -45,15 +56,30 @@ const TYPES_FILE = path.join(API_DIR, "types.ts")
 interface DegradedFlagEntry {
   /** Property name as declared on a response interface in api/types.ts. */
   flag: string
+  /**
+   * Discriminator when several endpoints emit the SAME flag name — the
+   * (flag, surface) pair must be unique. Omit for a flag emitted by a single
+   * surface; the uniqueness check then falls back to the flag name itself.
+   */
+  surface?: string
   /** Short human note: which endpoint(s)/surface emits this flag. */
   emittedBy: string
   /**
-   * Regex used to detect a real consumer, matched against every non-test
-   * source file under frontend/src (types.ts excluded). Defaults to a
-   * `\b<flag>\b` word-boundary match, which is safe for this fleet's
-   * multi-word snake_case identifiers (they don't collide with unrelated
-   * code). Override only when the bare flag name is too generic to search
-   * safely on its own — see the `available` entry below.
+   * Scope the consumer search to these file(s) — each is matched as a
+   * path SUFFIX (posix-normalised) against every scannable source file. When
+   * set, the consumer pattern must match inside at least one of them, NOT
+   * "anywhere under frontend/src". REQUIRED for any flag name shared across
+   * surfaces so one surface's consumer can't satisfy another's (bu-hmdqz.12).
+   */
+  consumerFiles?: string[]
+  /**
+   * Regex used to detect a real consumer, matched against the scanned file(s)
+   * (scoped by `consumerFiles` if given, else every non-test source file under
+   * frontend/src with types.ts excluded). Defaults to a `\b<flag>\b`
+   * word-boundary match, which is safe for this fleet's multi-word snake_case
+   * identifiers (they don't collide with unrelated code). Override only when
+   * the bare flag name is too generic to search safely on its own — see the
+   * `available` entry below.
    */
   consumerPattern?: RegExp
   /**
@@ -67,7 +93,47 @@ interface DegradedFlagEntry {
 }
 
 const REGISTRY: DegradedFlagEntry[] = [
-  { flag: "sources_degraded", emittedBy: "sessions list/aggregate, search, issues, approvals" },
+  // `sources_degraded` is emitted by five unrelated surfaces. Each gets its own
+  // entry + consumerFiles scoping so a backend-first emitter on one surface
+  // can't hide behind another surface's existing consumer (bu-hmdqz.12).
+  {
+    flag: "sources_degraded",
+    surface: "sessions-list",
+    emittedBy: "GET /api/sessions (keyset list) + pinned strips + stripe chart",
+    consumerFiles: [
+      "pages/SessionsPage.tsx",
+      "components/sessions/SessionTable.tsx",
+      "components/sessions/SessionsPinnedStrip.tsx",
+      "components/dashboard/SessionStripeChart.tsx",
+    ],
+  },
+  {
+    flag: "sources_degraded",
+    surface: "sessions-aggregate",
+    emittedBy: "GET /api/sessions/aggregate (KPI strip + verdict opener)",
+    consumerFiles: [
+      "components/sessions/SessionsKpiStrip.tsx",
+      "pages/SessionsPage.tsx",
+    ],
+  },
+  {
+    flag: "sources_degraded",
+    surface: "search",
+    emittedBy: "GET /api/search (command finder / entity finder)",
+    consumerFiles: ["components/layout/EntityFinder.tsx"],
+  },
+  {
+    flag: "sources_degraded",
+    surface: "issues",
+    emittedBy: "GET /api/issues (issues feed)",
+    consumerFiles: ["pages/IssuesPage.tsx"],
+  },
+  {
+    flag: "sources_degraded",
+    surface: "approvals",
+    emittedBy: "GET /api/approvals + /api/approvals/history",
+    consumerFiles: ["pages/ApprovalsPage.tsx"],
+  },
   { flag: "pools_failed", emittedBy: "memory stats" },
   { flag: "unavailable_butlers", emittedBy: "spend summary/daily/by-schedule/top-sessions" },
   { flag: "stripe_source_error", emittedBy: "butlers board (per-row hourly activity)" },
@@ -133,6 +199,12 @@ function stripComments(content: string): string {
   return content.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "")
 }
 
+/** Normalise a filesystem path to posix separators so `consumerFiles`
+ * suffix matching (e.g. "pages/SessionsPage.tsx") is platform-independent. */
+function toPosix(filePath: string): string {
+  return filePath.split(path.sep).join("/")
+}
+
 function isScannableSourceFile(filePath: string): boolean {
   if (!(filePath.endsWith(".ts") || filePath.endsWith(".tsx"))) return false
   if (filePath.endsWith(".test.ts") || filePath.endsWith(".test.tsx")) return false
@@ -163,9 +235,35 @@ describe("degraded-envelope FE flag-consumption registry (bu-tpudw.5)", () => {
     expect(fs.existsSync(TYPES_FILE)).toBe(true)
   })
 
-  it("REGISTRY has no duplicate flag entries", () => {
-    const flags = REGISTRY.map((entry) => entry.flag)
-    expect(new Set(flags).size).toBe(flags.length)
+  it("REGISTRY has no duplicate (flag, surface) entries", () => {
+    // A flag may appear more than once (one entry per emitting surface); the
+    // (flag, surface) PAIR is what must be unique. Entries without a surface
+    // fall back to the flag name as their key (a single-surface flag).
+    const keys = REGISTRY.map((entry) => `${entry.flag}::${entry.surface ?? ""}`)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it("every flag shared across surfaces scopes its consumer with consumerFiles", () => {
+    // Per-endpoint granularity guard (bu-hmdqz.12): if a flag NAME is emitted by
+    // more than one surface, every entry for that name MUST scope its consumer
+    // search (consumerFiles) — otherwise a codebase-wide match lets one
+    // surface's consumer vacuously satisfy another's.
+    const countByFlag = new Map<string, number>()
+    for (const entry of REGISTRY) {
+      countByFlag.set(entry.flag, (countByFlag.get(entry.flag) ?? 0) + 1)
+    }
+    const unscoped = REGISTRY.filter(
+      (entry) =>
+        (countByFlag.get(entry.flag) ?? 0) > 1 &&
+        !entry.pending &&
+        (entry.consumerFiles?.length ?? 0) === 0,
+    )
+    expect(
+      unscoped.map((entry) => `${entry.flag} (${entry.surface ?? "no surface"})`),
+      "A flag emitted by multiple surfaces must scope each entry's consumer with\n" +
+        "consumerFiles, so one surface's reader can't stand in for another's:\n\n" +
+        unscoped.map((entry) => `  - ${entry.flag} / ${entry.surface ?? "?"}`).join("\n"),
+    ).toEqual([])
   })
 
   it("every registry entry names a field actually declared in api/types.ts", () => {
@@ -183,7 +281,28 @@ describe("degraded-envelope FE flag-consumption registry (bu-tpudw.5)", () => {
     ).toEqual([])
   })
 
-  it("every non-pending registry flag has at least one real frontend consumer", () => {
+  it("every consumerFiles path resolves to a scannable source file", () => {
+    // A stale/misspelled consumerFiles suffix would silently scope the search
+    // to zero files and fail the consumer assertion for the wrong reason —
+    // catch it explicitly with a clearer message.
+    const sourceFiles = listSourceFiles(SRC_DIR).map(toPosix)
+    const dangling: string[] = []
+    for (const entry of REGISTRY) {
+      for (const suffix of entry.consumerFiles ?? []) {
+        if (!sourceFiles.some((file) => file.endsWith(suffix))) {
+          dangling.push(`${entry.flag}/${entry.surface ?? "?"} -> ${suffix}`)
+        }
+      }
+    }
+    expect(
+      dangling,
+      "consumerFiles suffix(es) match no source file under frontend/src — a\n" +
+        "rename/move left the registry pointing at a nonexistent path:\n\n" +
+        dangling.map((d) => `  - ${d}`).join("\n"),
+    ).toEqual([])
+  })
+
+  it("every non-pending registry flag has at least one real, correctly-scoped consumer", () => {
     const sourceFiles = listSourceFiles(SRC_DIR)
     const contentByFile = new Map<string, string>(
       sourceFiles.map((file) => [file, stripComments(fs.readFileSync(file, "utf-8"))]),
@@ -191,17 +310,28 @@ describe("degraded-envelope FE flag-consumption registry (bu-tpudw.5)", () => {
 
     const unconsumed = REGISTRY.filter((entry) => !entry.pending).filter((entry) => {
       const pattern = entry.consumerPattern ?? new RegExp(`\\b${entry.flag}\\b`)
-      return !sourceFiles.some((file) => pattern.test(contentByFile.get(file) ?? ""))
+      // Scope to consumerFiles (matched as path suffixes) when given, else the
+      // whole tree. Scoping is what makes this per-endpoint: the sessions-list
+      // flag must be read in a sessions-list file, not merely somewhere.
+      const scoped = entry.consumerFiles
+        ? sourceFiles.filter((file) =>
+            entry.consumerFiles!.some((suffix) => toPosix(file).endsWith(suffix)),
+          )
+        : sourceFiles
+      return !scoped.some((file) => pattern.test(contentByFile.get(file) ?? ""))
     })
 
     expect(
-      unconsumed.map((entry) => entry.flag),
-      "Degraded-envelope flag(s) emitted by the backend have ZERO frontend\n" +
-        "consumers under frontend/src (excluding api/types.ts and *.test.ts files).\n" +
+      unconsumed.map((entry) => `${entry.flag}${entry.surface ? `/${entry.surface}` : ""}`),
+      "Degraded-envelope flag(s) have ZERO real consumer in their scoped file(s)\n" +
+        "(consumerFiles), or anywhere under frontend/src for unscoped flags\n" +
+        "(excluding api/types.ts and *.test.ts).\n" +
         "An emitted flag nobody reads means a real source failure can render as a\n" +
-        "silent all-clear in the UI — wire a consumer, or if the flag is mid-rollout,\n" +
-        "mark it `pending` in REGISTRY (types.degraded-flags.test.ts) with a tracking note.\n\n" +
-        unconsumed.map((entry) => `  - ${entry.flag} (${entry.emittedBy})`).join("\n"),
+        "silent all-clear in the UI — wire a consumer on that surface, or if the flag\n" +
+        "is mid-rollout, mark it `pending` in REGISTRY with a tracking note.\n\n" +
+        unconsumed
+          .map((entry) => `  - ${entry.flag}/${entry.surface ?? "?"} (${entry.emittedBy})`)
+          .join("\n"),
     ).toEqual([])
   })
 })

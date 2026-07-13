@@ -114,3 +114,36 @@ describe("SessionTable cost column", () => {
     expect(html).toContain("&lt;$0.01");
   });
 });
+
+describe("SessionTable degraded-source consumption (bu-hmdqz.12)", () => {
+  it("names dropped pools above the table when rows are present", () => {
+    const html = renderToStaticMarkup(
+      <SessionTable
+        sessions={[makeSession({})]}
+        isLoading={false}
+        sourcesDegraded={["atlas"]}
+      />,
+    );
+    expect(html).toContain("sessions-list-degraded");
+    expect(html).toContain("atlas");
+    // Rows still render — a partial page is shown, just annotated.
+    expect(html).toContain('data-testid="session-row"');
+  });
+
+  it("gates the calm empty state: a degraded ZERO renders the note, not 'No sessions found'", () => {
+    const html = renderToStaticMarkup(
+      <SessionTable sessions={[]} isLoading={false} sourcesDegraded={["atlas"]} />,
+    );
+    expect(html).toContain("sessions-list-degraded");
+    expect(html).toContain("atlas");
+    expect(html).not.toContain("No sessions found");
+  });
+
+  it("still shows the calm empty state when zero AND no source is degraded", () => {
+    const html = renderToStaticMarkup(
+      <SessionTable sessions={[]} isLoading={false} sourcesDegraded={[]} />,
+    );
+    expect(html).toContain("No sessions found");
+    expect(html).not.toContain("sessions-list-degraded");
+  });
+});

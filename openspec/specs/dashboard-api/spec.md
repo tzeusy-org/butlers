@@ -157,6 +157,15 @@ The `DatabaseManager.fan_out()` method SHALL execute a SQL query concurrently ac
 - **AND** the sessions KPI strip SHALL name the dropped pools via a
   `SourceDegradedNote` rather than presenting the undercounted totals as
   window-true
+- **AND** the sessions LIST surface SHALL consume `meta.sources_degraded` from
+  its OWN keyset response — distinct from the aggregate-level flag the KPI strip
+  and verdict opener read: the main table renders a `SourceDegradedNote` above
+  the rows AND gates the "No sessions found" empty state; the pinned
+  running/recent-failure strips name any dropped pool as a partial-fan-out note
+  (separate from their whole-request error notes); and the session-activity
+  stripe chart names the dropped pool above the bars AND gates its "No sessions
+  in the selected window" empty state — a degraded partial page or degraded zero
+  MUST NOT read as a complete list or a calm empty window
 
 #### Scenario: Session detail splits not-found from source-degraded
 - **WHEN** `GET /api/sessions/{id}` fans out the detail lookup and no reachable
@@ -177,6 +186,29 @@ The `DatabaseManager.fan_out()` method SHALL execute a SQL query concurrently ac
 - **WHEN** `fan_out_with_status(query, args)` is called
 - **THEN** it returns `(results, failed_butler_names)` where every failed butler also has an empty-list entry in `results`
 - **AND** callers that must surface a degraded-source flag use this instead of `fan_out()`, which discards the failed list
+
+### Requirement: Sessions Owner-Timezone Day-Window Date Filters
+
+The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_date`/`to_date` filter as an owner-timezone calendar-day boundary, not midnight in the database session timezone (UTC). This covers `GET /api/sessions`, `GET /api/sessions/aggregate`, and `GET /api/butlers/{name}/sessions`, whose filters compare against the `started_at` timestamptz column; the dashboard SessionsPage From/To inputs send bare day keys (see `frontend/src/lib/day-window.ts`), mirroring the health butler's `_resolve_valid_at_bound` convention. A full ISO-8601 timestamp value (e.g. the verdict opener's rolling-window cutoff) MUST parse and be used as-is.
+
+#### Scenario: Bare day key resolves to owner-timezone boundaries
+
+- **WHEN** a bare `YYYY-MM-DD` day key is passed as `from_date`
+- **THEN** it MUST resolve to `00:00:00.000000` in the owner's configured timezone
+- **WHEN** a bare `YYYY-MM-DD` day key is passed as `to_date`
+- **THEN** it MUST resolve to `23:59:59.999999` in the owner's timezone, so a session started later that
+  same owner-day is not truncated by the inclusive `started_at <=` comparison
+- **AND** a full ISO-8601 timestamp value MUST be parsed and used as-is (naive stays naive → asyncpg
+  encodes it as UTC), never reinterpreted as a day key; an unparseable value MUST return HTTP 422
+
+#### Scenario: From equals To returns that owner-day's sessions
+
+- **WHEN** `from_date` and `to_date` are the same day key `D`
+- **THEN** the window spans the entire owner-timezone day `D` (`[D 00:00:00, D 23:59:59.999999]`), so a
+  session started at any owner-local time on `D` is returned — not the empty result the pre-fix
+  UTC-midnight inclusive-`<=` upper bound produced
+- **AND** the list and the aggregate resolve identical bounds, so the KPI strip counts the same set the
+  table shows (window coherence)
 
 ### Requirement: Cross-Butler Search Degraded-Source Honesty
 `GET /api/search` fans its sessions and state searches out across every butler DB. A source that fails MUST NOT be silently zero-filled into a truthful-looking empty result. `sessions` and `state` are core tables present in every butler schema, so a fan-out failure is always a genuine transport/permission error (never a legitimately-absent schema) and is always reported. The response envelope SHALL carry `meta.sources_degraded` (the shared `ApiMeta` bag convention) naming every degraded source, so the finder renders a named note rather than a clean "no results".

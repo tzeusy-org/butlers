@@ -153,6 +153,12 @@ export default function SessionsPage() {
   const meta = sessionsResponse?.meta;
   const hasMore = meta?.has_more ?? false;
   const nextCursor = meta?.next_cursor ?? null;
+  // Butler pools dropped from THIS list page's fan-out (KeysetMeta.sources_degraded,
+  // bu-tpudw.2). Consumed below: a note above the table AND gating the empty
+  // state, so a degraded partial/zero page never reads as the whole list or a
+  // calm "No sessions found" (bu-hmdqz.12). Distinct from the aggregate-level
+  // flag the KPI strip / verdict opener already read — this is the list surface.
+  const listSourcesDegraded = meta?.sources_degraded ?? [];
 
   const canGoNewer = cursor != null || prevCursors.length > 0;
 
@@ -289,6 +295,15 @@ export default function SessionsPage() {
   // fleet-wide convention (the aggregate endpoint writes ApiMeta(...)).
   const failedSourcesDegraded =
     (failedAggregateResponse?.meta?.sources_degraded as string[] | undefined) ?? [];
+
+  // Pinned-strip pool degradation (bu-hmdqz.12): the running + recent-failures
+  // list fetches each fan out across butler pools; a dropped pool undercounts
+  // the pinned rows just like the main list, so name it in the strip rather
+  // than letting the partial pins read as the full set. Distinct from the
+  // query-level `*Error` flags (a whole-request failure) the strip already
+  // renders — this is a partial per-pool drop on an otherwise-200 response.
+  const runningSourcesDegraded = runningSessionsResponse?.meta?.sources_degraded ?? [];
+  const recentFailuresSourcesDegraded = recentFailuresResponse?.meta?.sources_degraded ?? [];
 
   // -- j/k/[/]/y keyboard loop (bu-qvnce.5, pursuit move 5 slice 4) ----------
   // j/k rove the current page's rows; [ / ] step Older/Newer (matching the
@@ -511,6 +526,8 @@ export default function SessionsPage() {
         recentFailures={recentFailuresResponse?.data ?? []}
         runningError={runningSessionsError}
         recentFailuresError={recentFailuresError}
+        runningSourcesDegraded={runningSourcesDegraded}
+        recentFailuresSourcesDegraded={recentFailuresSourcesDegraded}
         onSessionClick={handleSessionClick}
         selectedId={selectedSessionId}
       />
@@ -526,6 +543,7 @@ export default function SessionsPage() {
               onRequestIdClick={handleRequestIdClick}
               showButlerColumn={true}
               selectedId={selectedSessionId}
+              sourcesDegraded={listSourcesDegraded}
             />
           </FetchingDim>
         </CardContent>
