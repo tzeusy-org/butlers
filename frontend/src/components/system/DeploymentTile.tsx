@@ -147,7 +147,19 @@ export function DeploymentTile() {
           </div>
           <div>
             <dt className="text-muted-foreground inline">migration head: </dt>
-            <dd className="inline">{current.migration_head ?? "unknown"}</dd>
+            {current.migration_head ? (
+              <dd className="inline">{current.migration_head}</dd>
+            ) : (
+              // Honest unknown -- a null head means the deploy could not read
+              // the core migration chain (bu-l94um). Render it as an explicit
+              // amber "unknown", never the same calm mono value as a real head.
+              <dd
+                data-testid="deployment-tile-migration-head-unknown"
+                className="text-[var(--amber-text)] inline font-medium"
+              >
+                head unknown
+              </dd>
+            )}
           </div>
         </dl>
         <p className="text-muted-foreground mt-3 text-xs">

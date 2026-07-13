@@ -62,10 +62,23 @@ async def read_migration_head(pool: asyncpg.Pool, schema: str) -> str | None:
     Returns ``None`` (rather than raising) if the table is missing,
     unreadable, or the core chain has never been applied to this schema, so a
     deploy still gets recorded with an honestly-absent migration_head instead
-    of failing entirely.
+    of failing entirely. A *missing* ``alembic_version`` table is the expected
+    case for a schema that tracks nothing (e.g. ``public`` on the live DB,
+    which holds cross-butler tables but no migration chain — the core chain is
+    applied per butler schema): it is classified as legitimately-absent and
+    logged at ``debug`` with no traceback, mirroring the fleet convention in
+    ``memory.py::_is_missing_memory_schema_error``. Only a *genuine* failure
+    (dropped connection, permission error, malformed query) still logs loudly.
     """
     try:
         rows = await pool.fetch(f'SELECT version_num FROM "{schema}".alembic_version')
+    except asyncpg.UndefinedTableError:
+        # Expected-absent, not a failure: this schema simply has no migration
+        # chain (e.g. ``public``). No traceback — that noise is exactly what
+        # spooked the bu-hmdqz.1 redeploy into logging a full stack for a
+        # benign missing table.
+        logger.debug("deployments: no alembic_version in schema=%s (expected-absent)", schema)
+        return None
     except Exception:
         logger.warning(
             "deployments: could not read alembic_version for schema=%s", schema, exc_info=True
@@ -81,6 +94,76 @@ async def read_migration_head(pool: asyncpg.Pool, schema: str) -> str | None:
     # is a deterministic best-effort tiebreaker for the (already-anomalous)
     # case where more than one core revision id is somehow present.
     return sorted(core_applied)[-1]
+
+
+async def _schemas_with_alembic_version(pool: asyncpg.Pool) -> list[str]:
+    """Return every schema that physically carries an ``alembic_version`` table.
+
+    The core migration chain is applied *per butler schema*, never to a single
+    canonical schema — on the live DB ``alembic_version`` exists in each butler
+    schema (``chronicler`` .. ``travel``) and NOT in ``public``. Discover the
+    schemas that actually track migrations from the Postgres catalog rather
+    than assuming any one schema (the old ``read_migration_head(pool, "public")``
+    assumption is exactly what recorded ``migration_head=None``). Reads
+    ``pg_catalog.pg_class``/``pg_namespace`` directly (a plain relation,
+    ``relkind = 'r'``) rather than ``information_schema.tables``, which is a
+    slower permission-checked view over the same data.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT n.nspname AS table_schema
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relname = 'alembic_version'
+          AND c.relkind = 'r'
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY n.nspname
+        """
+    )
+    return [row["table_schema"] for row in rows]
+
+
+async def resolve_core_migration_head(pool: asyncpg.Pool) -> str | None:
+    """Resolve the CORE chain's applied head across every schema that tracks it.
+
+    Iterates the schemas that physically carry an ``alembic_version`` table
+    (see :func:`_schemas_with_alembic_version`), reads each one's core-chain
+    head (see :func:`read_migration_head`), and collapses them to a single
+    representative value for the deployments ledger.
+
+    Divergence semantics ([decision], per decision-autonomy): the drift
+    sentinel (``butlers.jobs.deploy_drift``) owns *per-schema* drift reporting;
+    this ledger field only needs one honest representative head. When schemas
+    agree (the healthy case) that shared head is returned. When they disagree
+    — a genuinely anomalous mid-migration or half-applied state — the
+    **newest** head (``max`` over the zero-padded ``core_NNN`` ids, matching
+    :func:`read_migration_head`'s own lexical tiebreak) is recorded, since a
+    successful ``migrate`` phase advances every schema toward the code head, so
+    the furthest-advanced value is the most honest "we got at least this far".
+    The divergence is logged at ``warning`` with the full per-schema map so it
+    is never silently smoothed over.
+
+    Returns ``None`` — never raises for the expected-absent case — when no
+    schema tracks the core chain at all, so a deploy is still recorded with an
+    honestly-absent ``migration_head`` (rendered as an explicit "unknown" on
+    the /system Deployment tile) instead of failing.
+    """
+    schemas = await _schemas_with_alembic_version(pool)
+    heads: dict[str, str] = {}
+    for schema in schemas:
+        head = await read_migration_head(pool, schema)
+        if head is not None:
+            heads[schema] = head
+    if not heads:
+        return None
+    distinct = set(heads.values())
+    if len(distinct) > 1:
+        logger.warning(
+            "deployments: core migration head diverges across schemas %s; "
+            "recording newest for the ledger (drift sentinel owns per-schema reporting)",
+            heads,
+        )
+    return max(heads.values())
 
 
 async def record_deployment(

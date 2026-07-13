@@ -6,9 +6,11 @@ the real-Postgres round trip lives in tests/integration/test_deployments_roundtr
 
 from __future__ import annotations
 
+import logging
 import uuid
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 
 from butlers.core.deployments import (
@@ -17,6 +19,7 @@ from butlers.core.deployments import (
     list_recent_deployments,
     read_migration_head,
     record_deployment,
+    resolve_core_migration_head,
     resolve_git_sha,
 )
 
@@ -87,6 +90,106 @@ class TestReadMigrationHead:
         pool.fetch = AsyncMock(side_effect=Exception("relation does not exist"))
         result = await read_migration_head(pool, "switchboard")
         assert result is None
+
+    async def test_missing_table_is_expected_absent_no_traceback(self, caplog):
+        """bu-l94um: an absent alembic_version table (e.g. ``public`` on the
+        live DB) is legitimately-absent — return None WITHOUT a warning-level
+        traceback. That stack-trace noise is what spooked the redeploy."""
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(
+            side_effect=asyncpg.UndefinedTableError(
+                'relation "public.alembic_version" does not exist'
+            )
+        )
+        with caplog.at_level(logging.DEBUG, logger="butlers.core.deployments"):
+            result = await read_migration_head(pool, "public")
+        assert result is None
+        # No WARNING (and therefore no exc_info traceback) for the benign case.
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any(r.levelno == logging.DEBUG for r in caplog.records)
+
+    async def test_genuine_failure_still_logs_loudly(self, caplog):
+        """A non-missing-table failure (dropped connection, permission error)
+        must still log at WARNING with a traceback."""
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=asyncpg.PostgresConnectionError("connection reset"))
+        with caplog.at_level(logging.DEBUG, logger="butlers.core.deployments"):
+            result = await read_migration_head(pool, "switchboard")
+        assert result is None
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings and warnings[0].exc_info is not None
+
+
+class TestResolveCoreMigrationHead:
+    """bu-l94um: the core chain lives per-butler-schema, never in ``public``.
+    resolve_core_migration_head must discover the schemas that actually track
+    it via information_schema, not assume any single canonical schema."""
+
+    @staticmethod
+    def _make_pool(schemas: list[str], per_schema_rows: dict[str, list[str]]) -> AsyncMock:
+        """Build a pool whose fetch() routes the pg_catalog schema-discovery
+        query vs the per-schema alembic_version reads."""
+
+        async def _fetch(query, *args):
+            if "pg_class" in query:
+                return [{"table_schema": s} for s in schemas]
+            for schema, revs in per_schema_rows.items():
+                if f'"{schema}".alembic_version' in query:
+                    return [{"version_num": r} for r in revs]
+            return []
+
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=_fetch)
+        return pool
+
+    @pytest.fixture(autouse=True)
+    def _core_ids(self, monkeypatch):
+        monkeypatch.setattr(
+            "butlers.core.deployments.get_chain_revision_ids",
+            lambda chain: (
+                frozenset({"core_161", "core_162", "core_163"}) if chain == "core" else frozenset()
+            ),
+        )
+
+    async def test_public_missing_butler_schema_present(self):
+        """``public`` has no alembic_version; the butler schema carries the
+        core head — the resolver reads it from where it actually lives."""
+        pool = self._make_pool(
+            schemas=["chronicler", "switchboard"],
+            per_schema_rows={
+                "chronicler": ["core_163", "mem_007"],
+                "switchboard": ["core_163"],
+            },
+        )
+        assert await resolve_core_migration_head(pool) == "core_163"
+
+    async def test_no_alembic_anywhere_returns_none(self):
+        """Nothing tracks the core chain (fresh DB) → None, no raise."""
+        pool = self._make_pool(schemas=[], per_schema_rows={})
+        assert await resolve_core_migration_head(pool) is None
+
+    async def test_schemas_without_core_chain_return_none(self):
+        """Schemas exist but only carry non-core chains → None."""
+        pool = self._make_pool(
+            schemas=["someschema"],
+            per_schema_rows={"someschema": ["mem_007"]},
+        )
+        assert await resolve_core_migration_head(pool) is None
+
+    async def test_divergent_heads_records_newest_and_warns(self, caplog):
+        """When schemas disagree, record the newest head and log the
+        divergence loudly — never silently smooth it over."""
+        pool = self._make_pool(
+            schemas=["chronicler", "switchboard"],
+            per_schema_rows={
+                "chronicler": ["core_161"],
+                "switchboard": ["core_163"],
+            },
+        )
+        with caplog.at_level(logging.WARNING, logger="butlers.core.deployments"):
+            result = await resolve_core_migration_head(pool)
+        assert result == "core_163"
+        assert any("diverges across schemas" in r.message for r in caplog.records)
 
 
 class TestRecordDeployment:

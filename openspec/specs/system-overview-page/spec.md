@@ -81,9 +81,10 @@ record of when, or whether, any deploy actually took effect).
   - `id: string` -- the ledger row's UUID
   - `git_sha: string` -- the git commit the running image was built from, or
     `"unknown"` if the image was built without the `GIT_SHA` build arg
-  - `migration_head: string | null` -- a representative Alembic revision id read from
-    one schema's `alembic_version` table at boot time (see below); `null` if it could
-    not be read
+  - `migration_head: string | null` -- a representative core-chain (`core_NNN`) Alembic
+    revision id (see below); `null` if it could not be read from any schema that tracks
+    the core chain. `null` is an honest unknown and MUST be rendered as such by the UI,
+    never as a calm/blank value
   - `started_at: string` -- ISO 8601 UTC timestamp
   - `finished_at: string | null` -- ISO 8601 UTC timestamp; in v1 this always equals
     `started_at` (see below)
@@ -113,16 +114,30 @@ record of when, or whether, any deploy actually took effect).
 
 #### Scenario: migration_head is a representative snapshot, not a cross-schema drift proof
 
-- **WHEN** `migration_head` is recorded at boot time
+- **WHEN** `migration_head` is recorded at boot time (`butlers up`)
 - **THEN** it is read from a single representative schema's `alembic_version` table
   (the first-started butler daemon, conventionally `switchboard` per the existing
   `_PRIORITY_BUTLERS` start-order convention) rather than reconciling every butler
   schema's head
+- **AND WHEN** it is recorded by the `butlers deploy` verb, it is resolved by scanning
+  the schemas that actually carry an `alembic_version` table (never assuming `public`,
+  which tracks no chain) and taking the core-chain head — recording `null` when no
+  schema tracks the core chain (see the deployment-and-drift capability)
+- **AND** either way the recorded value is only the core (`core_NNN`) chain's head, so
+  a stale non-core module row (e.g. `mem_007`) is never surfaced as the migration head
 - **AND** this endpoint does NOT itself detect drift between schemas or between the
   recorded head and the live database state -- the hourly alembic-head vs per-schema
   DB-revision vs deployed-SHA comparison surfaced as a red `/system` clause is a
   separate capability (bu-9r3hd.1); this ledger is what that sentinel (and this
   endpoint) reads to answer "what was last recorded as deployed"
+
+#### Scenario: The Deployment tile renders a null migration_head as an explicit unknown
+
+- **WHEN** the `/system` Deployment tile renders a `DeploymentRecord` whose
+  `migration_head` is `null`
+- **THEN** it shows an explicit "head unknown" state with warning (amber) emphasis,
+  visually distinct from a real revision id
+- **AND** it never renders the null head as a blank, calm, or all-clear value
 
 #### Scenario: Deployments endpoint degrades gracefully
 

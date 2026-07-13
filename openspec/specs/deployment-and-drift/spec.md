@@ -238,6 +238,26 @@ re-run at any point in the pipeline.
 - **AND** a failed deploy is therefore always visible in the ledger — never
   silently absent
 
+#### Scenario: The migration_head read resolves the core chain from a schema that tracks it
+
+- **WHEN** the `butlers deploy` verb reads `migration_head` for a ledger row
+  (via `butlers.core.deployments.resolve_core_migration_head`)
+- **THEN** the head is resolved by discovering, through the Postgres catalog
+  (`pg_catalog.pg_class`/`pg_namespace`), the schemas that physically carry an
+  `alembic_version` table and reading the core-chain (`core_NNN`) head from
+  them — NOT by assuming a single canonical
+  schema such as `public`, which on the live deployment carries cross-butler
+  tables but no `alembic_version` (the core chain is applied per butler schema)
+- **AND** when no schema tracks the core chain, `migration_head` is recorded as
+  `null` (an honest unknown) rather than failing the deploy
+- **AND** a missing `alembic_version` table is treated as legitimately-absent —
+  logged at `debug` with no traceback — while a genuine failure (dropped
+  connection, permission error) still logs loudly
+- **AND WHEN** the tracking schemas disagree on the core head (an anomalous
+  half-applied state), the newest head is recorded and the divergence is logged
+  at `warning`; authoritative per-schema drift detection remains the separate
+  hourly sentinel's responsibility (bu-9r3hd.1)
+
 #### Scenario: The pipeline is idempotent across repeated or resumed runs
 
 - **WHEN** `butlers deploy` is run again after a prior run failed at any

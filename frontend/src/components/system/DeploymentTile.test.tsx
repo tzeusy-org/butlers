@@ -168,3 +168,32 @@ describe("DeploymentTile -- up to date", () => {
     expect(html).toContain("core_163")
   })
 })
+
+describe("DeploymentTile -- migration head unknown (bu-l94um)", () => {
+  it("renders migration_head=null as an explicit unknown, never a calm value", () => {
+    mockResult = {
+      isPending: false,
+      data: makeFacts({
+        current: {
+          id: "1",
+          git_sha: "abc1234def",
+          migration_head: null,
+          started_at: "2026-07-12T00:00:00Z",
+          finished_at: "2026-07-12T00:00:00Z",
+          result: "success",
+        },
+      }),
+    }
+    const html = render()
+    expect(html).toContain("deployment-tile-migration-head-unknown")
+    expect(html).toContain("head unknown")
+    // The amber emphasis distinguishes it from a real head, never blank/calm.
+    expect(html).toContain("--amber-text")
+  })
+
+  it("does not render the unknown state when a real head is present", () => {
+    mockResult = { isPending: false, data: makeFacts() }
+    const html = render()
+    expect(html).not.toContain("deployment-tile-migration-head-unknown")
+  })
+})

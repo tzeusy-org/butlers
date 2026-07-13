@@ -358,7 +358,7 @@ class TestRunDeploy:
         record_mock = AsyncMock(return_value="row-1")
         monkeypatch.setattr("butlers.core.deploy.record_deployment", record_mock)
         monkeypatch.setattr(
-            "butlers.core.deploy.read_migration_head", AsyncMock(return_value="core_163")
+            "butlers.core.deploy.resolve_core_migration_head", AsyncMock(return_value="core_163")
         )
 
         result = await run_deploy(_config(), pool=pool)
@@ -381,7 +381,9 @@ class TestRunDeploy:
         pool = AsyncMock()
         record_mock = AsyncMock(return_value="row-1")
         monkeypatch.setattr("butlers.core.deploy.record_deployment", record_mock)
-        monkeypatch.setattr("butlers.core.deploy.read_migration_head", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            "butlers.core.deploy.resolve_core_migration_head", AsyncMock(return_value=None)
+        )
 
         with pytest.raises(DeployError) as exc_info:
             await run_deploy(_config(), pool=pool)
@@ -400,7 +402,7 @@ class TestRunDeploy:
         record_mock = AsyncMock(return_value="row-1")
         monkeypatch.setattr("butlers.core.deploy.record_deployment", record_mock)
         monkeypatch.setattr(
-            "butlers.core.deploy.read_migration_head",
+            "butlers.core.deploy.resolve_core_migration_head",
             AsyncMock(side_effect=Exception("relation does not exist")),
         )
 
@@ -419,7 +421,7 @@ class TestRunDeploy:
             "butlers.core.deploy.record_deployment", AsyncMock(return_value="row-1")
         )
         monkeypatch.setattr(
-            "butlers.core.deploy.read_migration_head", AsyncMock(return_value="core_163")
+            "butlers.core.deploy.resolve_core_migration_head", AsyncMock(return_value="core_163")
         )
 
         await run_deploy(_config())
@@ -433,7 +435,7 @@ class TestRunDeploy:
         record_mock = AsyncMock(return_value="row-1")
         monkeypatch.setattr("butlers.core.deploy.record_deployment", record_mock)
         monkeypatch.setattr(
-            "butlers.core.deploy.read_migration_head", AsyncMock(return_value="core_163")
+            "butlers.core.deploy.resolve_core_migration_head", AsyncMock(return_value="core_163")
         )
 
         self._patch_phases(monkeypatch, fail_at="recreate")

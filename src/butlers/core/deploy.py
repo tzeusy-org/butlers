@@ -70,7 +70,7 @@ from pathlib import Path
 import asyncpg
 import httpx
 
-from butlers.core.deployments import read_migration_head, record_deployment
+from butlers.core.deployments import record_deployment, resolve_core_migration_head
 from butlers.db import db_params_from_env
 
 logger = logging.getLogger(__name__)
@@ -310,8 +310,15 @@ async def _make_pool() -> asyncpg.Pool:
 
 
 async def _best_effort_migration_head(pool: asyncpg.Pool) -> str | None:
+    # Resolve the CORE chain head from whichever schema actually tracks it
+    # (per-butler schema on the live DB), NOT from a hard-coded ``public`` —
+    # ``public`` carries no ``alembic_version`` table, and the old
+    # ``read_migration_head(pool, "public")`` recorded ``migration_head=None``
+    # for every real deploy (bu-l94um). The resolver never raises for the
+    # expected-absent case; this wrapper is the final safety net for a genuine
+    # DB failure, which still logs loudly.
     try:
-        return await read_migration_head(pool, "public")
+        return await resolve_core_migration_head(pool)
     except Exception:
         logger.warning("deploy: could not read migration head for ledger row", exc_info=True)
         return None
