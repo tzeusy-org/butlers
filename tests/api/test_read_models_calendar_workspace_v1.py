@@ -56,9 +56,10 @@ _EVENT_ID = UUID("30000000-0000-0000-0000-000000000003")
 
 
 def _make_record(d: dict) -> MagicMock:
-    """Wrap a dict in a MagicMock that supports subscript access."""
+    """Wrap a dict in a MagicMock that supports subscript + ``.get`` access."""
     m = MagicMock()
     m.__getitem__ = lambda self, k: d[k]
+    m.get = lambda k, default=None: d.get(k, default)
     return m
 
 
@@ -94,6 +95,7 @@ def _workspace_dict(**overrides) -> dict:
         "instance_ends_at": _NOW + timedelta(hours=1),
         "instance_status": None,
         "instance_metadata": None,
+        "instance_updated_at": _NOW - timedelta(minutes=5),
         "event_id": _EVENT_ID,
         "origin_ref": "evt_abc",
         "title": "Team standup",
@@ -275,6 +277,13 @@ def test_row_to_workspace_maps_all_fields():
     assert dto.db_butler == "assistant"
     assert dto.instance_starts_at == _NOW
     assert dto.instance_ends_at == _NOW + timedelta(hours=1)
+    assert dto.instance_updated_at == _NOW - timedelta(minutes=5)
+
+
+def test_workspace_columns_has_instance_updated_at():
+    # The origin_ref dedup pass reads instance_updated_at to pick the freshest
+    # of two time-drifted re-syncs (bu-ssp91).
+    assert "instance_updated_at" in WORKSPACE_COLUMNS
 
 
 def test_row_to_workspace_null_all_day_becomes_false():

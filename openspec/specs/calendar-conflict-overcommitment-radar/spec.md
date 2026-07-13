@@ -92,8 +92,8 @@ default strategy with no overrides (fail-open) rather than failing the scan.
 #### Scenario: Cross-source duplicate cluster does not produce phantom overlaps
 
 - **GIVEN** the same real-world provider event is synced into the workspace as
-  N rows sharing one `origin_ref` (and start instant) — cross-butler-schema
-  copies of one Google Calendar event
+  N rows sharing one `origin_ref` — cross-butler-schema copies of one Google
+  Calendar event
 - **WHEN** `GET /api/calendar/workspace/conflicts` scans the window
 - **THEN** the scan collapses the cluster with the same cross-source dedup
   pass the workspace grid read applies (persisted match strategy and
@@ -105,6 +105,24 @@ default strategy with no overrides (fail-open) rather than failing the scan.
   N-row cluster combinatorially, fabricating N-choose-2 phantom overlaps for
   a slot the grid renders as a single entry — the radar's word must match
   exactly what the owner can see and act on
+
+#### Scenario: Time-drifted re-sync of one event collapses to the fresher row
+
+- **GIVEN** two workspace rows share one non-recurring `origin_ref` but sit at
+  different start instants — a time-drifted re-sync of the same provider event
+  (e.g. one window 8h off the corrected one)
+- **WHEN** the workspace grid read or the conflict scan collapses the window
+- **THEN** the `origin_ref` dedup pass keys on `origin_ref` ALONE (not
+  `(origin_ref, start)`) so the two rows collapse to a single entry
+- **AND** the surviving row is the most-recently-synced copy (highest
+  `instance_updated_at`), with keyset order breaking ties deterministically
+- **AND** a recurring event's occurrences (many rows legitimately sharing one
+  `origin_ref` at different starts) and rows with no `origin_ref` are NOT
+  collapsed by this pass — they retain the `(origin_ref, start)` key
+- **BECAUSE** a re-sync that drifts an event's time leaves a stale prior copy in
+  the ledger; keying identity on `origin_ref` alone lets the read converge to
+  the copy that reflects the provider's current truth instead of rendering the
+  same event twice
 
 #### Scenario: Butler-authored shadow copy excluded from overlap pairing
 

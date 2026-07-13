@@ -142,19 +142,52 @@ class _DedupCluster:
 def _cluster_key(row: Mapping[str, Any], match_pass: str, *, aggressive: bool) -> str:
     """Serialise a row's dedup-cluster identity for the given pass.
 
-    ``origin_ref`` pass keys on (origin_ref, start); ``title`` pass keys on
-    (normalised title, start).  ``aggressive`` strips non-alphanumerics from the
-    title so punctuation/spacing variants collapse together.  The SOH (``\\x01``)
-    separator never appears in titles/refs, so the key round-trips unambiguously.
+    ``origin_ref`` pass keys on ``origin_ref`` **alone** for a non-recurring event
+    (one that carries a real ``origin_ref`` and no ``recurrence_rule``), so a
+    time-drifted re-sync of the same provider event — the same origin identity
+    landing at two different start instants, e.g. an 8h-off window — collapses to
+    one row instead of rendering twice. A recurring event legitimately has many
+    occurrences sharing one ``origin_ref``, and a row with no ``origin_ref`` (a
+    reminder/scheduled task) would over-collapse if keyed on the empty string, so
+    both keep the ``(origin_ref, start)`` key to keep distinct instants separate.
+
+    ``title`` pass keys on (normalised title, start).  ``aggressive`` strips
+    non-alphanumerics from the title so punctuation/spacing variants collapse
+    together.  The SOH (``\\x01``) separator never appears in titles/refs, so the
+    key round-trips unambiguously.
     """
-    epoch = _starts_epoch_ms(_coerce_datetime(row.get("instance_starts_at")))
     if match_pass == "origin_ref":
-        value = row.get("origin_ref") or ""
-    else:
-        value = (row.get("title") or "").strip().lower()
-        if aggressive:
-            value = re.sub(r"[^a-z0-9]+", "", value)
+        origin = row.get("origin_ref") or ""
+        if origin and not row.get("recurrence_rule"):
+            return f"{match_pass}\x01{origin}"
+        epoch = _starts_epoch_ms(_coerce_datetime(row.get("instance_starts_at")))
+        return f"{match_pass}\x01{origin}\x01{epoch}"
+    epoch = _starts_epoch_ms(_coerce_datetime(row.get("instance_starts_at")))
+    value = (row.get("title") or "").strip().lower()
+    if aggressive:
+        value = re.sub(r"[^a-z0-9]+", "", value)
     return f"{match_pass}\x01{value}\x01{epoch}"
+
+
+def _origin_ref_survivor_index(members: list[dict[str, Any]]) -> int:
+    """Index of the row that survives an ``origin_ref`` cluster collapse.
+
+    Prefer the most-recently-synced/updated copy: when a provider re-sync drifts
+    an event's time it INSERTs a fresh instance (new ``origin_instance_ref``) with
+    ``updated_at = now()`` while the stale prior instance keeps its older stamp, so
+    the highest ``instance_updated_at`` is the copy that reflects the provider's
+    current truth.  ``members`` is pre-sorted in keyset order, so ties (equal or
+    missing ``instance_updated_at``) resolve to the lowest-keyset copy — keeping
+    the collapse deterministic and matching the ``title`` pass's survivor rule.
+    """
+    best = 0
+    best_stamp = _coerce_datetime(members[0].get("instance_updated_at"))
+    for idx in range(1, len(members)):
+        stamp = _coerce_datetime(members[idx].get("instance_updated_at"))
+        if stamp is not None and (best_stamp is None or stamp > best_stamp):
+            best = idx
+            best_stamp = stamp
+    return best
 
 
 def _dedup_workspace_rows(
@@ -170,7 +203,11 @@ def _dedup_workspace_rows(
     must collapse them to one entry.  This runs up to two passes (governed by
     ``strategy``) over the globally-sorted rows, keeping the lowest-keyset copy:
 
-    - **Pass 1** ``origin_ref`` — exact event identity ``(origin_ref, start)``.
+    - **Pass 1** ``origin_ref`` — exact event identity. Keyed on ``origin_ref``
+      *alone* for a non-recurring event so a time-drifted re-sync of one provider
+      event collapses to a single row (the freshest copy survives — see
+      :func:`_origin_ref_survivor_index`); keyed on ``(origin_ref, start)`` for
+      recurring events and refless rows so distinct occurrences stay separate.
       ``calendar_id`` is deliberately excluded (Google aliases ``primary`` and the
       explicit address for the same calendar).  Always runs.
     - **Pass 2** ``title`` — cross-calendar copies ``(title, start)``.  Runs for
@@ -182,11 +219,11 @@ def _dedup_workspace_rows(
     clusters are every group of >1 members the dedup *would* collapse (the data
     the review surface exposes), regardless of whether they were kept separate.
 
-    Behaviour for the default ``balanced`` strategy with no overrides is identical
-    to the original two-pass dedup. Callers MUST pre-sort ``rows`` by the global
-    keyset order ``(instance_starts_at, instance_id)`` — this function keeps the
-    lowest-keyset copy per cluster, so an un-sorted input makes "which copy
-    survives" nondeterministic.
+    Callers MUST pre-sort ``rows`` by the global keyset order
+    ``(instance_starts_at, instance_id)``. The ``title`` pass keeps the
+    lowest-keyset copy per cluster and the ``origin_ref`` pass breaks freshness
+    ties by keyset order, so an un-sorted input makes "which copy survives"
+    nondeterministic.
     """
     resolved_strategy = strategy if strategy in DEDUP_STRATEGIES else DEDUP_DEFAULT_STRATEGY
     pinned = keep_separate or set()
@@ -211,10 +248,20 @@ def _dedup_workspace_rows(
                 order.append(ck)
             members_by_key[ck].append(row)
 
+        # Per-cluster survivor id: the origin_ref pass keeps the freshest copy
+        # (most-recently-synced re-sync wins), every other pass keeps the
+        # lowest-keyset copy. ``members`` are ordered survivor-first so the
+        # returned cluster's ``members[0]`` is the row the read keeps.
+        survivor_id_by_key: dict[str, Any] = {}
         for ck in order:
             members = members_by_key[ck]
             if len(members) <= 1:
                 continue
+            survivor_idx = _origin_ref_survivor_index(members) if match_pass == "origin_ref" else 0
+            if survivor_idx != 0:
+                survivor = members.pop(survivor_idx)
+                members.insert(0, survivor)
+            survivor_id_by_key[ck] = members[0].get("instance_id")
             is_pinned = ck in pinned
             clusters[ck] = _DedupCluster(
                 cluster_key=ck,
@@ -235,8 +282,8 @@ def _dedup_workspace_rows(
             members = members_by_key.get(ck, [row])
             if len(members) <= 1:
                 new_survivors.append(row)
-            elif members[0].get("instance_id") == row.get("instance_id"):
-                new_survivors.append(row)  # keep the lowest-keyset copy
+            elif survivor_id_by_key.get(ck) == row.get("instance_id"):
+                new_survivors.append(row)  # keep the chosen survivor
             # else: a collapsed-away duplicate — dropped
         survivors = new_survivors
 
@@ -358,6 +405,7 @@ WORKSPACE_COLUMNS: str = (
     " i.ends_at AS instance_ends_at,"
     " i.status AS instance_status,"
     " i.metadata AS instance_metadata,"
+    " i.updated_at AS instance_updated_at,"
     " e.id AS event_id,"
     " e.origin_ref,"
     " e.title,"
@@ -472,6 +520,10 @@ class CalendarWorkspaceRow:
     instance_ends_at: datetime
     instance_status: str | None
     instance_metadata: Any  # raw asyncpg value (dict or None)
+    #: ``calendar_event_instances.updated_at`` — the row's last projection-write
+    #: instant. Used by the origin_ref dedup pass to pick the freshest of two
+    #: time-drifted re-syncs of one provider event as the survivor.
+    instance_updated_at: datetime | None
     event_id: UUID
     origin_ref: str | None
     title: str | None
@@ -652,6 +704,7 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         instance_ends_at=row["instance_ends_at"],
         instance_status=row["instance_status"],
         instance_metadata=row["instance_metadata"],
+        instance_updated_at=row.get("instance_updated_at"),
         event_id=row["event_id"],
         origin_ref=row["origin_ref"],
         title=row["title"],

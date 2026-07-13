@@ -188,6 +188,61 @@ def test_keep_separate_prevents_collapse_but_still_reports_cluster():
     assert clusters[0].keep_separate is True
 
 
+def test_origin_ref_pass_collapses_time_drifted_resync_keeping_freshest():
+    # Regression (bu-ssp91): the 'Lou Shang farewell' event rendered twice with
+    # one window 8h off. Two rows share one origin_ref but differ in start; keying
+    # the origin_ref pass on origin_ref ALONE must collapse them to a single row,
+    # and the most-recently-synced copy (higher instance_updated_at) must survive.
+    t0 = datetime(2026, 2, 22, 14, 0, tzinfo=UTC)
+    stale = _row(origin_ref="lou", title="Lou Shang farewell", start=t0)
+    stale["instance_updated_at"] = t0  # projected on the original (wrong) sync
+    fresh = _row(origin_ref="lou", title="Lou Shang farewell", start=t0 + timedelta(hours=8))
+    fresh["instance_updated_at"] = t0 + timedelta(days=100)  # corrected re-sync
+
+    # Pre-sorted by (start, id): the stale/earlier copy sorts first, so a survivor
+    # of `fresh` proves freshness beats keyset order.
+    deduped, clusters = _dedup_workspace_rows([stale, fresh], strategy="balanced")
+
+    assert len(deduped) == 1
+    survivor = deduped[0]
+    assert survivor["instance_id"] == fresh["instance_id"]
+    assert survivor["instance_starts_at"] == t0 + timedelta(hours=8)
+    assert len(clusters) == 1
+    assert clusters[0].match_pass == "origin_ref"
+    # The cluster reports the survivor first (members[0]).
+    assert clusters[0].members[0]["instance_id"] == fresh["instance_id"]
+
+
+def test_origin_ref_pass_keeps_recurring_occurrences_separate():
+    # A recurring event's occurrences legitimately share one origin_ref at
+    # different starts — keying origin_ref alone would wrongly collapse them, so
+    # the pass keeps the start in the key when recurrence_rule is set.
+    t0 = datetime(2026, 2, 22, 14, 0, tzinfo=UTC)
+    wk1 = _row(origin_ref="weekly", title="Standup", start=t0)
+    wk1["recurrence_rule"] = "RRULE:FREQ=WEEKLY"
+    wk2 = _row(origin_ref="weekly", title="Standup", start=t0 + timedelta(days=7))
+    wk2["recurrence_rule"] = "RRULE:FREQ=WEEKLY"
+
+    deduped, clusters = _dedup_workspace_rows([wk1, wk2], strategy="balanced")
+
+    assert len(deduped) == 2  # both occurrences survive
+    assert clusters == []
+
+
+def test_origin_ref_pass_does_not_over_collapse_refless_rows():
+    # Rows without an origin_ref (reminders/scheduled tasks) must not all collapse
+    # into one: keying the empty string alone would fuse unrelated rows, so the
+    # pass keeps the start in the key when origin_ref is empty.
+    t0 = datetime(2026, 2, 22, 14, 0, tzinfo=UTC)
+    a = _row(origin_ref="", title="Reminder A", start=t0)
+    b = _row(origin_ref="", title="Reminder B", start=t0 + timedelta(hours=3))
+
+    deduped, clusters = _dedup_workspace_rows([a, b], strategy="exact")
+
+    assert len(deduped) == 2
+    assert clusters == []
+
+
 # ---------------------------------------------------------------------------
 # GET /duplicates
 # ---------------------------------------------------------------------------

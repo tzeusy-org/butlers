@@ -107,6 +107,12 @@ PROJECTION_STALENESS_MULTIPLIER = 2
 SOURCE_KIND_PROVIDER = "provider_event"
 SOURCE_KIND_INTERNAL_SCHEDULER = "internal_scheduler"
 SOURCE_KIND_INTERNAL_REMINDERS = "internal_reminders"
+# Sentinel calendar ids used by credential/health probes, never a real calendar.
+# A probe that reaches the sync/source-registration path would otherwise persist
+# a bogus ``provider:<name>:__invalid_check__`` source that permanently pollutes
+# the source-freshness ledger, so registration is refused for these ids and any
+# residual rows are purged once on startup (bu-ssp91).
+_INVALID_PROBE_CALENDAR_IDS: frozenset[str] = frozenset({"__invalid_check__"})
 # Projection status constants surfaced to sync/status consumers.
 PROJECTION_STATUS_FRESH = "fresh"
 PROJECTION_STATUS_STALE = "stale"
@@ -6163,6 +6169,12 @@ class CalendarModule(Module):
                         stored_default_target,
                     )
 
+        # One-time hygiene: drop any residual probe/sentinel calendar source
+        # (e.g. ``provider:google:__invalid_check__``) left in the ledger by an
+        # older validation path. Idempotent — a no-op once purged, and the
+        # registration guard in ``_ensure_calendar_source`` prevents recreation.
+        await self._purge_invalid_probe_sources()
+
         if self._config.sync.enabled:
             self._sync_task = asyncio.create_task(
                 self._run_sync_poller(), name="calendar-sync-poller"
@@ -6766,6 +6778,33 @@ class CalendarModule(Module):
         metadata = self._normalize_json_object(row["metadata"])
         return metadata.get("sync_enabled") is not False
 
+    async def _purge_invalid_probe_sources(self) -> None:
+        """Delete residual probe/sentinel calendar sources (one-time, idempotent).
+
+        A credential/health probe that historically reached the source-registration
+        path persisted a bogus ``provider:<name>:__invalid_check__`` row that
+        permanently pollutes the source-freshness ledger.  This removes any such
+        row (cascading to its events/instances/cursors); the guard in
+        :meth:`_ensure_calendar_source` prevents recreation, so after the first
+        clean boot this is a no-op.  Fail-open: errors are logged, never raised.
+        """
+        if not _INVALID_PROBE_CALENDAR_IDS:
+            return
+        if not await self._projection_tables_available():
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        try:
+            result = await pool.execute(
+                "DELETE FROM calendar_sources WHERE calendar_id = ANY($1::text[])",
+                list(_INVALID_PROBE_CALENDAR_IDS),
+            )
+            if isinstance(result, str) and not result.endswith(" 0"):
+                logger.info("Purged residual probe calendar sources: %s", result)
+        except Exception as exc:
+            logger.debug("Failed to purge probe calendar sources: %s", exc)
+
     async def _ensure_calendar_source(
         self,
         *,
@@ -6779,6 +6818,12 @@ class CalendarModule(Module):
         writable: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> uuid.UUID | None:
+        # Never register a source for a probe/sentinel calendar id — a
+        # credential/health check that reaches this path must not leave a bogus
+        # ``provider:<name>:__invalid_check__`` row polluting source freshness.
+        if calendar_id is not None and calendar_id in _INVALID_PROBE_CALENDAR_IDS:
+            logger.debug("Refusing to register probe calendar source '%s'", source_key)
+            return None
         if not await self._projection_tables_available():
             return None
         pool = getattr(self._db, "pool", None) if self._db is not None else None
@@ -7368,10 +7413,11 @@ class CalendarModule(Module):
                     event_id=event_db_id,
                     entity_ids=event.entity_ids,
                 )
+            origin_instance_ref = f"{event.event_id}:{event.start_at.isoformat()}"
             await self._upsert_projection_instance(
                 event_id=event_db_id,
                 source_id=source_id,
-                origin_instance_ref=f"{event.event_id}:{event.start_at.isoformat()}",
+                origin_instance_ref=origin_instance_ref,
                 timezone=event.timezone,
                 starts_at=event.start_at,
                 ends_at=event.end_at,
@@ -7380,6 +7426,14 @@ class CalendarModule(Module):
                 origin_updated_at=event.updated_at,
                 metadata={"source_type": SOURCE_KIND_PROVIDER, "provider": provider_name},
             )
+            # A provider event projects to exactly one instance per sync; drop any
+            # older instance of this event left behind by a time-drifted re-sync
+            # (different origin_instance_ref) so the ledger converges to one row
+            # instead of rendering the same event twice (bu-ssp91).
+            await self._prune_superseded_provider_instances(
+                event_id=event_db_id,
+                keep_origin_instance_ref=origin_instance_ref,
+            )
 
         cancelled_at = datetime.now(UTC)
         for cancelled_id in cancelled_ids:
@@ -7387,6 +7441,44 @@ class CalendarModule(Module):
                 source_id=source_id,
                 origin_ref=cancelled_id,
                 origin_updated_at=cancelled_at,
+            )
+
+    async def _prune_superseded_provider_instances(
+        self,
+        *,
+        event_id: uuid.UUID,
+        keep_origin_instance_ref: str,
+    ) -> None:
+        """Delete stale provider instances of *event_id* other than the one just synced.
+
+        A provider (``lane='user'``) event projects to exactly one instance per
+        sync via :meth:`_project_provider_changes`, whose ``origin_instance_ref``
+        embeds the event start (``f"{event_id}:{start.isoformat()}"``).  When a
+        re-sync drifts that start, the ``ON CONFLICT (event_id,
+        origin_instance_ref)`` upsert INSERTs a NEW instance while the prior,
+        time-drifted instance lingers — so the same event renders twice with two
+        different windows.  Deleting every other instance for this event converges
+        the ledger to the single occurrence the provider currently reports.
+        Fail-open: errors are logged but never propagate into the sync loop.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        try:
+            await pool.execute(
+                """
+                DELETE FROM calendar_event_instances
+                WHERE event_id = $1
+                  AND origin_instance_ref IS DISTINCT FROM $2
+                """,
+                event_id,
+                keep_origin_instance_ref,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Failed to prune superseded provider instances (event_id=%s): %s",
+                event_id,
+                exc,
             )
 
     async def _prune_recurring_instances_outside_window(

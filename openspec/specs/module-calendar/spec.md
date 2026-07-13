@@ -465,6 +465,39 @@ The module SHALL provide provider sync with incremental/full modes and a unified
   (non-provider) source are never flagged — only genuine provider-sync death
   counts
 
+#### Scenario: Superseded provider instance pruned on time-drifted re-sync
+
+- **GIVEN** a provider (`lane="user"`) event already projected as one
+  `calendar_event_instances` row, whose `origin_instance_ref` embeds the event
+  start (`f"{event_id}:{start.isoformat()}"`)
+- **WHEN** a later sync re-projects the same event at a drifted start (the
+  `ON CONFLICT (event_id, origin_instance_ref)` upsert INSERTs a NEW instance
+  under a different `origin_instance_ref` rather than updating the prior one)
+- **THEN** `_project_provider_changes` deletes every other instance of that
+  `event_id` (`origin_instance_ref IS DISTINCT FROM` the just-written ref) so the
+  ledger converges to exactly one instance per provider event
+- **AND** the prune is fail-open — a DB error is logged and never propagates into
+  the sync loop
+- **BECAUSE** a provider event projects to exactly one instance per sync; without
+  the prune, each time-drifted re-sync leaves a stale copy behind and the same
+  event renders twice with two different windows
+
+#### Scenario: Probe/sentinel calendar source never registered and purged once
+
+- **GIVEN** a sentinel calendar id used only by credential/health probes
+  (`__invalid_check__`), never a real calendar
+- **WHEN** any source-registration path (`_ensure_calendar_source`) is reached
+  with that calendar id
+- **THEN** registration is refused (returns `None`, no `calendar_sources` row
+  written) so no bogus `provider:<name>:__invalid_check__` source can pollute the
+  source-freshness ledger
+- **AND** on module startup a one-time idempotent purge deletes any residual
+  probe source (`DELETE FROM calendar_sources WHERE calendar_id = ANY(...)`,
+  cascading to its events/instances/cursors), a no-op once clean
+- **BECAUSE** a probe that historically reached the sync path persisted a
+  permanent phantom source that showed as a perpetually-stale lane in the
+  freshness ledger
+
 #### Scenario: Projection authorship fields normalize missing provenance
 
 - **WHEN** `_upsert_projection_event` writes a projection row and `source_butler` is null, blank, or the sentinel `"unknown"`
