@@ -214,20 +214,31 @@ a sender local-part matching `noreply`/`no-reply`/`notifications`/`alerts`
   and the sender's local part does not match a known automated prefix
 - **THEN** `is_clearly_automated` MUST be `FALSE`
 
-### Requirement: Owner-Confirmed Promotion (No Unattended Auto-Write)
+### Requirement: Promotion Application (Owner-Confirmed with Automated-Tier Auto-Apply)
 
-The system SHALL require an explicit owner (or authenticated human actor)
-confirmation for every `rule_promotion_suggestions` row, regardless of
-`is_clearly_automated` or proposed action, before a corresponding
-`switchboard.ingestion_rules` row is created. The system MUST NOT transition a
-suggestion from `pending_review` to `confirmed` (or create the resulting rule)
-without an explicit confirm call.
+The system SHALL apply a clearly-automated suppression suggestion automatically:
+a `rule_promotion_suggestions` row with `is_clearly_automated = TRUE` and
+`proposed_action` in (`skip`, `metadata_only`) MUST have its `ingestion_rules`
+row minted without an explicit confirm. This is the owner disposition (gate
+bu-4pq0s) — that tier only ever suppresses or downgrades an already-automated
+sender (low blast radius) and never routes owner-facing traffic. RFC 0021's
+"no unattended auto-write" ratchet is scoped to `autonomy_suggestions`
+(butler-autonomy tool-calls), not ingestion routing rules; this requirement
+supersedes the original bead-0 sketch that gated the automated tier behind a
+batched confirm.
 
-`is_clearly_automated = TRUE` suggestions with `proposed_action` in (`skip`,
-`metadata_only`) MAY be confirmed in a single batched operation covering
-multiple suggestions at once (see dashboard-approvals delta, "bulk-confirm").
-This reduces confirmation UX cost to one action per batch; it does not remove
-the requirement for an explicit human-initiated confirm call.
+Every other suggestion SHALL require an explicit owner (or authenticated human
+actor) confirm before its `ingestion_rules` row is created — every
+`route_to:<butler>` (higher blast radius: a wrong route sends real traffic to
+the wrong butler) and any non-automated `skip`/`metadata_only`. The system MUST
+NOT transition such a suggestion from `pending_review` to `confirmed` without an
+explicit confirm call.
+
+Applying a suggestion (auto or owner-confirmed) MUST be atomic and idempotent:
+minting the rule and transitioning the suggestion to `confirmed` happen in one
+transaction under a row lock, so a double-apply (concurrent auto-apply + confirm
+click) mints exactly one rule and the second attempt fails on the already-decided
+status rather than double-writing.
 
 #### Scenario: Confirming a suggestion creates the rule
 
@@ -239,23 +250,25 @@ the requirement for an explicit human-initiated confirm call.
 - **AND** the suggestion MUST transition to `status='confirmed'` with
   `decided_at` and `decided_by` set
 
-#### Scenario: No rule is created without a confirm call
+#### Scenario: Automated skip/metadata_only auto-applies
 
 - **WHEN** a suggestion sits in `pending_review` with `is_clearly_automated
-  =TRUE` and `proposed_action='skip'`, and no confirm or bulk-confirm call has
-  been made
-- **THEN** no `ingestion_rules` row MUST exist referencing that suggestion, no
-  matter how long the suggestion has been pending or how high its
-  `evidence_count` has grown
+  =TRUE` and `proposed_action` in (`skip`, `metadata_only`)
+- **THEN** the auto-apply pass MUST mint its `ingestion_rules` row
+  (`created_by='promotion'`, `promoted_from_suggestion_id` set) and transition
+  it to `status='confirmed'` with a distinct auto-apply `decided_by` marker,
+  without any confirm call
+- **AND** the resulting rule MUST be reversibly disable-able (the approvals
+  surface offers an enable/disable of the minted rule), so the auto-apply is an
+  informational, reversible action rather than an irreversible one
 
-#### Scenario: Batched confirm for automated senders
+#### Scenario: route_to is never auto-applied
 
-- **WHEN** an authenticated human actor calls bulk-confirm with a list of
-  `pending_review` suggestion ids, all `is_clearly_automated=TRUE` with
-  `proposed_action` in (`skip`, `metadata_only`)
-- **THEN** each suggestion in the list MUST be confirmed and its corresponding
-  rule created in one operation, with per-suggestion failures reported
-  individually rather than failing the whole batch silently
+- **WHEN** a suggestion has `proposed_action` starting `route_to:` (even with
+  `is_clearly_automated=TRUE`)
+- **THEN** the auto-apply pass MUST NOT mint its rule; it remains
+  `pending_review` until an explicit owner confirm, and confirming an unroutable
+  `route_to` target (not a registered butler) MUST fail without minting a rule
 
 ### Requirement: Rule Provenance
 

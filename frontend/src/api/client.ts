@@ -194,6 +194,8 @@ import type {
   IngestionWindowRollup,
   IngestionWindowRollupParams,
   IngestionRule,
+  RulePromotionSurface,
+  RulePromotionDismissRequest,
   IngestionRuleCreate,
   IngestionRuleUpdate,
   IngestionRuleListParams,
@@ -3657,6 +3659,43 @@ export function dismissAutonomySuggestion(
       method: "POST",
       body: JSON.stringify(request ?? {}),
     },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Rule-promotion approvals surface (bu-o62bc, bead 4)
+// ---------------------------------------------------------------------------
+
+export function getRulePromotionSuggestions(): Promise<ApiResponse<RulePromotionSurface>> {
+  return apiFetch<ApiResponse<RulePromotionSurface>>("/switchboard/rule-promotion-suggestions");
+}
+
+export function confirmRulePromotionSuggestion(
+  suggestionId: string,
+): Promise<ApiResponse<IngestionRule>> {
+  return apiFetch<ApiResponse<IngestionRule>>(
+    `/switchboard/rule-promotion-suggestions/${encodeURIComponent(suggestionId)}/confirm`,
+    { method: "POST" },
+  );
+}
+
+export function dismissRulePromotionSuggestion(
+  suggestionId: string,
+  request?: RulePromotionDismissRequest,
+): Promise<ApiResponse<{ id: string; status: string }>> {
+  return apiFetch<ApiResponse<{ id: string; status: string }>>(
+    `/switchboard/rule-promotion-suggestions/${encodeURIComponent(suggestionId)}/dismiss`,
+    { method: "POST", body: JSON.stringify(request ?? {}) },
+  );
+}
+
+export function setRulePromotionRuleEnabled(
+  suggestionId: string,
+  enabled: boolean,
+): Promise<ApiResponse<{ rule_id: string; enabled: boolean }>> {
+  return apiFetch<ApiResponse<{ rule_id: string; enabled: boolean }>>(
+    `/switchboard/rule-promotion-suggestions/${encodeURIComponent(suggestionId)}/rule-enabled`,
+    { method: "POST", body: JSON.stringify({ enabled }) },
   );
 }
 

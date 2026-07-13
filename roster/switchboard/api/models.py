@@ -971,3 +971,75 @@ class InsightCandidate(BaseModel):
     status: str
     delivered_at: str | None = None
     delivery_attempt_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Rule-promotion approvals surface (bu-o62bc, bead 4)
+# ---------------------------------------------------------------------------
+
+
+class RulePromotionSuggestion(BaseModel):
+    """A pending rule-promotion suggestion needing owner action (a confirm card).
+
+    Covers every ``route_to:<butler>`` suggestion and any non-automated
+    skip/metadata_only one — the clearly-automated skip/metadata_only tier is
+    auto-applied (see :class:`RulePromotionAutoApplied`) and never appears here.
+    """
+
+    id: str
+    sender_key: str
+    source_channel: str
+    proposed_rule_type: str
+    proposed_condition: dict
+    proposed_action: str
+    evidence_count: int
+    is_clearly_automated: bool
+    first_evidence_at: str | None = None
+    last_evidence_at: str | None = None
+    created_at: str
+
+
+class RulePromotionAutoApplied(BaseModel):
+    """An auto-applied (auto-minted) rule-promotion, shown informationally.
+
+    The owner did not confirm this — the clearly-automated skip/metadata_only
+    tier auto-applies (owner gate bu-4pq0s). ``rule_enabled`` reflects the
+    minted rule's live state so the UI can offer a reversible disable/re-enable.
+    """
+
+    id: str
+    sender_key: str
+    source_channel: str
+    proposed_action: str
+    evidence_count: int
+    created_rule_id: str | None = None
+    rule_enabled: bool | None = None
+    decided_at: str | None = None
+    decided_by: str | None = None
+
+
+class RulePromotionSurface(BaseModel):
+    """The rule-promotion approvals banner payload: cards + auto-applied info."""
+
+    pending: list[RulePromotionSuggestion]
+    auto_applied: list[RulePromotionAutoApplied]
+
+
+class RulePromotionDismissRequest(BaseModel):
+    """Body for dismissing a pending rule-promotion suggestion."""
+
+    reason: str | None = None
+    cooldown_days: int = 30
+
+    @field_validator("cooldown_days")
+    @classmethod
+    def cooldown_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("cooldown_days must be >= 0")
+        return v
+
+
+class RulePromotionRuleEnabledRequest(BaseModel):
+    """Body for the reversible enable/disable of an auto-applied promotion rule."""
+
+    enabled: bool

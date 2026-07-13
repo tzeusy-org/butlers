@@ -52,10 +52,16 @@ class TestJobArgsValidation:
             run_rule_promotion_trigger_job,
         )
 
-        with patch(
-            "roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger",
-            new_callable=AsyncMock,
-        ) as mock_run:
+        with (
+            patch(
+                "roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger",
+                new_callable=AsyncMock,
+            ) as mock_run,
+            patch(
+                "roster.switchboard.jobs.rule_promotion_trigger.auto_apply_automated_suggestions",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
             mock_run.return_value = {"candidates_scanned": 0}
             await run_rule_promotion_trigger_job(db_pool=object(), job_args=None)
 
@@ -70,10 +76,16 @@ class TestJobArgsValidation:
             run_rule_promotion_trigger_job,
         )
 
-        with patch(
-            "roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger",
-            new_callable=AsyncMock,
-        ) as mock_run:
+        with (
+            patch(
+                "roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger",
+                new_callable=AsyncMock,
+            ) as mock_run,
+            patch(
+                "roster.switchboard.jobs.rule_promotion_trigger.auto_apply_automated_suggestions",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
             mock_run.return_value = {"candidates_scanned": 0}
             await run_rule_promotion_trigger_job(
                 db_pool=object(),
@@ -90,6 +102,30 @@ class TestJobArgsValidation:
         assert kwargs["min_distinct_days"] == 3
         assert kwargs["min_elapsed"] == timedelta(hours=12)
         assert kwargs["lookback"] == timedelta(days=7)
+
+    async def test_job_runs_auto_apply_and_merges_counts(self):
+        """bu-o62bc: the job runs the auto-apply pass after the scan and merges
+        its counters into the returned summary."""
+        from roster.switchboard.jobs.rule_promotion_trigger import (
+            run_rule_promotion_trigger_job,
+        )
+
+        pool = object()
+        with (
+            patch(
+                "roster.switchboard.jobs.rule_promotion_trigger.run_rule_promotion_trigger",
+                new=AsyncMock(return_value={"candidates_scanned": 1}),
+            ),
+            patch(
+                "roster.switchboard.jobs.rule_promotion_trigger.auto_apply_automated_suggestions",
+                new=AsyncMock(return_value={"auto_apply_candidates": 2, "auto_apply_applied": 2}),
+            ) as mock_auto,
+        ):
+            result = await run_rule_promotion_trigger_job(db_pool=pool, job_args=None)
+
+        mock_auto.assert_awaited_once_with(pool)
+        assert result["candidates_scanned"] == 1
+        assert result["auto_apply_applied"] == 2
 
     async def test_unknown_job_arg_raises(self):
         from roster.switchboard.jobs.rule_promotion_trigger import (

@@ -93,6 +93,11 @@ if _spec is not None and _spec.loader is not None:
     validate_ingestion_action = _models.validate_ingestion_action
     validate_rule_type_for_scope = _models.validate_rule_type_for_scope
     InsightCandidate = _models.InsightCandidate
+    RulePromotionSuggestion = _models.RulePromotionSuggestion
+    RulePromotionAutoApplied = _models.RulePromotionAutoApplied
+    RulePromotionSurface = _models.RulePromotionSurface
+    RulePromotionDismissRequest = _models.RulePromotionDismissRequest
+    RulePromotionRuleEnabledRequest = _models.RulePromotionRuleEnabledRequest
 else:
     raise RuntimeError("Failed to load switchboard API models")
 
@@ -3557,3 +3562,271 @@ async def bulk_ingestion_rules(
             )
 
     return BulkIngestionRuleResponse(op=op, results=results, affected=affected)
+
+
+# ---------------------------------------------------------------------------
+# Rule-promotion approvals surface (bu-o62bc, bead 4)
+# ---------------------------------------------------------------------------
+
+
+def _row_to_rule_promotion_suggestion(r: Any) -> RulePromotionSuggestion:
+    condition = r["proposed_condition"]
+    if isinstance(condition, str):
+        condition = json.loads(condition)
+    return RulePromotionSuggestion(
+        id=str(r["id"]),
+        sender_key=r["sender_key"],
+        source_channel=r["source_channel"],
+        proposed_rule_type=r["proposed_rule_type"],
+        proposed_condition=condition,
+        proposed_action=r["proposed_action"],
+        evidence_count=r["evidence_count"],
+        is_clearly_automated=r["is_clearly_automated"],
+        first_evidence_at=r["first_evidence_at"].isoformat() if r["first_evidence_at"] else None,
+        last_evidence_at=r["last_evidence_at"].isoformat() if r["last_evidence_at"] else None,
+        created_at=r["created_at"].isoformat(),
+    )
+
+
+def _row_to_rule_promotion_auto_applied(r: Any) -> RulePromotionAutoApplied:
+    return RulePromotionAutoApplied(
+        id=str(r["id"]),
+        sender_key=r["sender_key"],
+        source_channel=r["source_channel"],
+        proposed_action=r["proposed_action"],
+        evidence_count=r["evidence_count"],
+        created_rule_id=str(r["created_rule_id"]) if r["created_rule_id"] else None,
+        rule_enabled=r["rule_enabled"],
+        decided_at=r["decided_at"].isoformat() if r["decided_at"] else None,
+        decided_by=r["decided_by"],
+    )
+
+
+@router.get(
+    "/rule-promotion-suggestions",
+    response_model=ApiResponse[RulePromotionSurface],
+)
+async def list_rule_promotion_suggestions(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[RulePromotionSurface]:
+    """The rule-promotion approvals banner payload.
+
+    ``pending`` holds suggestions that need an explicit owner decision — every
+    ``route_to:<butler>`` suggestion, plus any non-automated skip/metadata_only
+    one. The clearly-automated skip/metadata_only tier is auto-applied (owner
+    gate bu-4pq0s) so it never appears as a confirm card; instead
+    ``auto_applied`` surfaces those minted rules informationally with a
+    reversible enable/disable.
+
+    Degraded-honesty: if either section's query fails, that section is returned
+    empty and its name is added to ``meta.sources_degraded`` — never a
+    fabricated "nothing pending" all-clear.
+    """
+    from butlers.api.models import ApiMeta
+    from butlers.tools.switchboard.routing.rule_promotion_apply import (
+        AUTO_APPLY_ACTIONS,
+        AUTO_APPLY_ACTOR,
+    )
+
+    pool = _pool(db)
+    degraded: list[str] = []
+
+    pending: list[RulePromotionSuggestion] = []
+    try:
+        pending_rows = await pool.fetch(
+            """
+            SELECT id, sender_key, source_channel, proposed_rule_type,
+                   proposed_condition, proposed_action, evidence_count,
+                   is_clearly_automated, first_evidence_at, last_evidence_at, created_at
+            FROM rule_promotion_suggestions
+            WHERE status = 'pending_review' AND suggestion_kind = 'promotion'
+              AND NOT (is_clearly_automated = TRUE AND proposed_action = ANY($1::text[]))
+            ORDER BY created_at ASC
+            """,
+            list(AUTO_APPLY_ACTIONS),
+        )
+        pending = [_row_to_rule_promotion_suggestion(r) for r in pending_rows]
+    except Exception:
+        logger.warning("list_rule_promotion_suggestions: pending query failed", exc_info=True)
+        degraded.append("rule_promotion_pending")
+
+    auto_applied: list[RulePromotionAutoApplied] = []
+    try:
+        auto_rows = await pool.fetch(
+            """
+            SELECT s.id, s.sender_key, s.source_channel, s.proposed_action,
+                   s.evidence_count, s.created_rule_id, s.decided_at, s.decided_by,
+                   r.enabled AS rule_enabled
+            FROM rule_promotion_suggestions s
+            LEFT JOIN ingestion_rules r ON r.id = s.created_rule_id
+            WHERE s.status = 'confirmed' AND s.decided_by = $1
+            ORDER BY s.decided_at DESC NULLS LAST
+            LIMIT 50
+            """,
+            AUTO_APPLY_ACTOR,
+        )
+        auto_applied = [_row_to_rule_promotion_auto_applied(r) for r in auto_rows]
+    except Exception:
+        logger.warning("list_rule_promotion_suggestions: auto-applied query failed", exc_info=True)
+        degraded.append("rule_promotion_auto_applied")
+
+    meta = ApiMeta(sources_degraded=degraded) if degraded else ApiMeta()
+    return ApiResponse[RulePromotionSurface](
+        data=RulePromotionSurface(pending=pending, auto_applied=auto_applied),
+        meta=meta,
+    )
+
+
+def _parse_suggestion_id(suggestion_id: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(suggestion_id)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="invalid suggestion id")
+
+
+@router.post(
+    "/rule-promotion-suggestions/{suggestion_id}/confirm",
+    response_model=ApiResponse[IngestionRule],
+)
+async def confirm_rule_promotion_suggestion(
+    suggestion_id: str,
+    request: Request,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[IngestionRule]:
+    """Owner-confirm a pending suggestion: mint its ingestion_rules row.
+
+    404 if the suggestion does not exist, 409 if it is not ``pending_review``
+    (already decided), 422 for an invalid id or a ``route_to`` target that is
+    not a registered butler.
+    """
+    from butlers.tools.switchboard.routing.rule_promotion_apply import (
+        SuggestionNotApplicable,
+        apply_suggestion,
+    )
+
+    pool = _pool(db)
+    sid = _parse_suggestion_id(suggestion_id)
+    try:
+        rule_row = await apply_suggestion(pool, sid, decided_by="owner")
+    except SuggestionNotApplicable as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+    _invalidate_ingestion_cache()
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="rule_promotion_confirm",
+        method="POST",
+        path=f"/api/switchboard/rule-promotion-suggestions/{suggestion_id}/confirm",
+        body={"suggestion_id": suggestion_id},
+        response_status=200,
+        request=request,
+    )
+    return ApiResponse[IngestionRule](data=_row_to_ingestion_rule(rule_row))
+
+
+@router.post("/rule-promotion-suggestions/{suggestion_id}/dismiss")
+async def dismiss_rule_promotion_suggestion(
+    suggestion_id: str,
+    request: Request,
+    body: RulePromotionDismissRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse:
+    """Dismiss a pending suggestion (no rule minted).
+
+    404 if not found, 409 if not ``pending_review``. Sets ``dismissal_reason``,
+    a ``cooldown_until`` window, and the decision provenance.
+    """
+    pool = _pool(db)
+    sid = _parse_suggestion_id(suggestion_id)
+
+    existing = await pool.fetchrow(
+        "SELECT status FROM rule_promotion_suggestions WHERE id = $1", sid
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    if existing["status"] != "pending_review":
+        raise HTTPException(
+            status_code=409,
+            detail=f"suggestion is '{existing['status']}', not 'pending_review'",
+        )
+
+    now = datetime.datetime.now(datetime.UTC)
+    cooldown_until = now + datetime.timedelta(days=body.cooldown_days)
+    await pool.execute(
+        """
+        UPDATE rule_promotion_suggestions
+        SET status = 'dismissed',
+            dismissal_reason = $1,
+            cooldown_until = $2,
+            decided_at = $3,
+            decided_by = 'owner'
+        WHERE id = $4
+        """,
+        body.reason,
+        cooldown_until,
+        now,
+        sid,
+    )
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="rule_promotion_dismiss",
+        method="POST",
+        path=f"/api/switchboard/rule-promotion-suggestions/{suggestion_id}/dismiss",
+        body={"suggestion_id": suggestion_id, "reason": body.reason},
+        response_status=200,
+        request=request,
+    )
+    return ApiResponse(data={"id": suggestion_id, "status": "dismissed"})
+
+
+@router.post("/rule-promotion-suggestions/{suggestion_id}/rule-enabled")
+async def set_rule_promotion_rule_enabled(
+    suggestion_id: str,
+    request: Request,
+    body: RulePromotionRuleEnabledRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse:
+    """Reversibly enable/disable the ingestion rule an auto-applied promotion minted.
+
+    The owner-facing demotion affordance: disabling re-opens the LLM routing
+    path for that sender (the rule stops matching); re-enabling restores it.
+    404 if the suggestion or its minted rule is missing.
+    """
+    pool = _pool(db)
+    sid = _parse_suggestion_id(suggestion_id)
+
+    row = await pool.fetchrow(
+        "SELECT created_rule_id FROM rule_promotion_suggestions WHERE id = $1", sid
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    if row["created_rule_id"] is None:
+        raise HTTPException(status_code=409, detail="suggestion has no minted rule")
+
+    updated = await pool.fetchrow(
+        """
+        UPDATE ingestion_rules
+        SET enabled = $1, updated_at = now()
+        WHERE id = $2 AND deleted_at IS NULL
+        RETURNING id
+        """,
+        body.enabled,
+        row["created_rule_id"],
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="minted rule not found or archived")
+
+    _invalidate_ingestion_cache()
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="rule_promotion_rule_enabled",
+        method="POST",
+        path=f"/api/switchboard/rule-promotion-suggestions/{suggestion_id}/rule-enabled",
+        body={"suggestion_id": suggestion_id, "enabled": body.enabled},
+        response_status=200,
+        request=request,
+    )
+    return ApiResponse(data={"rule_id": str(row["created_rule_id"]), "enabled": body.enabled})

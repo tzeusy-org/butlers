@@ -9045,3 +9045,47 @@ export interface DecisionsListResponse {
   data: DecisionBeadSummary[];
   meta: DecisionsListMeta;
 }
+
+// ---------------------------------------------------------------------------
+// Rule-promotion approvals surface (bu-o62bc, bead 4)
+// ---------------------------------------------------------------------------
+
+/** A pending rule-promotion suggestion needing owner action (a confirm card). */
+export interface RulePromotionSuggestion {
+  id: string;
+  sender_key: string;
+  source_channel: string;
+  proposed_rule_type: string;
+  proposed_condition: Record<string, unknown>;
+  proposed_action: string;
+  evidence_count: number;
+  is_clearly_automated: boolean;
+  first_evidence_at: string | null;
+  last_evidence_at: string | null;
+  created_at: string;
+}
+
+/** An auto-applied (auto-minted) rule-promotion, shown informationally. */
+export interface RulePromotionAutoApplied {
+  id: string;
+  sender_key: string;
+  source_channel: string;
+  proposed_action: string;
+  evidence_count: number;
+  created_rule_id: string | null;
+  rule_enabled: boolean | null;
+  decided_at: string | null;
+  decided_by: string | null;
+}
+
+/** GET /api/switchboard/rule-promotion-suggestions payload. */
+export interface RulePromotionSurface {
+  pending: RulePromotionSuggestion[];
+  auto_applied: RulePromotionAutoApplied[];
+}
+
+/** Body for dismissing a pending rule-promotion suggestion. */
+export interface RulePromotionDismissRequest {
+  reason?: string;
+  cooldown_days?: number;
+}

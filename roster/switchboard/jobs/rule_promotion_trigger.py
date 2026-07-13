@@ -6,6 +6,15 @@ dynamically by ``src/butlers/scheduled_jobs.py`` the same way as
 ``eligibility_sweep.py``. Thin wrapper: validates ``job_args`` and delegates
 to ``butlers.tools.switchboard.routing.rule_promotion.run_rule_promotion_trigger``
 for the actual scan/gate/classify/insert logic.
+
+Auto-apply pass (bu-o62bc, bead 4): after the scan proposes/bumps suggestions,
+this job runs ``auto_apply_automated_suggestions`` in the same tick so a
+freshly-eligible clearly-automated skip/metadata_only suggestion is minted
+within one cadence rather than waiting for a confirm click that — for that
+tier, per owner gate bu-4pq0s — never comes. Its counters are merged into the
+returned summary under the ``auto_apply_*`` keys. route_to (and non-automated)
+suggestions are untouched: they still require an explicit owner confirm via the
+approvals surface.
 """
 
 from __future__ import annotations
@@ -22,6 +31,9 @@ from butlers.tools.switchboard.routing.rule_promotion import (
     DEFAULT_MIN_ELAPSED_FLOOR,
     DEFAULT_PROMOTION_THRESHOLD,
     run_rule_promotion_trigger,
+)
+from butlers.tools.switchboard.routing.rule_promotion_apply import (
+    auto_apply_automated_suggestions,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,5 +101,12 @@ async def run_rule_promotion_trigger_job(
         min_elapsed=min_elapsed,
         lookback=lookback,
     )
+
+    # Auto-apply pass (bu-o62bc): mint the clearly-automated skip/metadata_only
+    # tier the owner gate decided to auto-apply. Best-effort — its own failures
+    # are counted internally and never abort the (already-completed) scan.
+    auto_apply = await auto_apply_automated_suggestions(db_pool)
+    result.update(auto_apply)
+
     logger.info("Rule promotion trigger job completed: %s", result)
     return result

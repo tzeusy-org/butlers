@@ -61,6 +61,13 @@ import {
   type DecisionVerb,
 } from "@/hooks/use-approval-decisions.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
+import { RulePromotionBanner } from "@/components/approvals/rule-promotion-banner.tsx";
+import {
+  useRulePromotions,
+  useConfirmRulePromotion,
+  useDismissRulePromotion,
+  useSetRulePromotionRuleEnabled,
+} from "@/hooks/use-rule-promotions.ts";
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
@@ -1150,6 +1157,63 @@ function AutonomySuggestionsSection() {
   );
 }
 
+function RulePromotionSection() {
+  const { data } = useRulePromotions();
+  const confirmMut = useConfirmRulePromotion();
+  const dismissMut = useDismissRulePromotion();
+  const enabledMut = useSetRulePromotionRuleEnabled();
+
+  const pending = data?.data?.pending ?? [];
+  const autoApplied = data?.data?.auto_applied ?? [];
+
+  const pendingIds = new Set<string>();
+  if (confirmMut.isPending && typeof confirmMut.variables === "string") {
+    pendingIds.add(confirmMut.variables);
+  }
+  if (dismissMut.isPending && dismissMut.variables?.suggestionId) {
+    pendingIds.add(dismissMut.variables.suggestionId);
+  }
+  if (enabledMut.isPending && enabledMut.variables?.suggestionId) {
+    pendingIds.add(enabledMut.variables.suggestionId);
+  }
+
+  if (pending.length === 0 && autoApplied.length === 0) return null;
+
+  return (
+    <div className="px-6 pt-4 pb-2 border-b border-border shrink-0">
+      <RulePromotionBanner
+        pending={pending}
+        autoApplied={autoApplied}
+        pendingIds={pendingIds}
+        onConfirm={(id) =>
+          confirmMut.mutate(id, {
+            onSuccess: () => toast.success("Routing rule created"),
+            onError: (e: Error) => toast.error(`Confirm failed: ${e.message}`),
+          })
+        }
+        onDismiss={(id) =>
+          dismissMut.mutate(
+            { suggestionId: id },
+            {
+              onSuccess: () => toast.success("Suggestion dismissed"),
+              onError: (e: Error) => toast.error(`Dismiss failed: ${e.message}`),
+            },
+          )
+        }
+        onSetEnabled={(id, enabled) =>
+          enabledMut.mutate(
+            { suggestionId: id, enabled },
+            {
+              onSuccess: () => toast.success(enabled ? "Rule re-enabled" : "Rule disabled"),
+              onError: (e: Error) => toast.error(`Update failed: ${e.message}`),
+            },
+          )
+        }
+      />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -1434,6 +1498,7 @@ export default function ApprovalsPage() {
       {/* Autonomy suggestions — rendered above the two-pane body when pending
           promotion/demotion suggestions exist (returns null otherwise). */}
       <AutonomySuggestionsSection />
+      <RulePromotionSection />
 
       {/* Two-pane body */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
