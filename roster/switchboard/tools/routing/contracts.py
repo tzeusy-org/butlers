@@ -194,6 +194,15 @@ class IngestSenderV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     identity: NonEmptyStr
+    display_name: str | None = None
+    """Raw human display name from the source (e.g. the ``From:`` header's
+
+    display part for email). Persisted verbatim to
+    ``public.ingestion_events.source_sender_display_name`` so identity
+    enrichment can use the real name instead of guessing one from the address
+    local-part (bu-vs9cr). ``None`` when the source carried no display name.
+    Unlike ``identity`` this is NOT normalized — it is a display string, not a
+    routing key."""
     participants: dict[str, str] | None = None
     """Batch envelopes: mapping of sender_id → display_name for all participants."""
     owner_sender_id: str | None = None

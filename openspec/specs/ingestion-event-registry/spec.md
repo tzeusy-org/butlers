@@ -10,7 +10,8 @@ The `public.ingestion_events` table is the canonical first-class record of every
 
 #### Scenario: Row created on new ingest accept
 - **WHEN** the Switchboard accepts an ingest envelope and no existing row matches the computed dedupe key
-- **THEN** a new row is inserted into `public.ingestion_events` inside the same advisory-lock transaction used for deduplication, with fields: `id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_provider`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity`, `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`, `policy_tier`, `triage_decision`, and `triage_target`
+- **THEN** a new row is inserted into `public.ingestion_events` inside the same advisory-lock transaction used for deduplication, with fields: `id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_provider`, `source_endpoint_identity`, `source_sender_identity`, `source_sender_display_name`, `source_thread_identity`, `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`, `policy_tier`, `triage_decision`, and `triage_target`
+- **AND** `source_sender_display_name` is the raw sender display name from the envelope's `sender.display_name` (e.g. the email `From:` header's display part), or `NULL` when the envelope carried no display name; unlike `source_sender_identity` it is stored verbatim (not normalized) and is used by identity enrichment to name recurring correspondents from the real display name rather than a guess derived from the address local-part
 - **AND** the row's `id` is returned as `request_id` in `IngestAcceptedResponse`
 
 #### Scenario: Duplicate submission returns existing row ID

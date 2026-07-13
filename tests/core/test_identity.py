@@ -38,6 +38,7 @@ from butlers.identity import (
     channel_value_for_storage,
     create_temp_contact,
     normalize_email_sender,
+    parse_email_sender,
     resolve_contact_by_channel,
     resolve_contacts_by_channel_bulk,
 )
@@ -921,3 +922,41 @@ class TestNormalizeEmailSender:
 
     def test_empty_string_returns_empty(self) -> None:
         assert normalize_email_sender("") == ""
+
+
+class TestParseEmailSender:
+    """parse_email_sender (bu-vs9cr): raw 'From:' header -> (display_name, address)."""
+
+    def test_splits_display_name_and_address(self) -> None:
+        assert parse_email_sender("John Doe <John.Doe@Example.com>") == (
+            "John Doe",
+            "john.doe@example.com",
+        )
+
+    def test_address_matches_normalize_email_sender(self) -> None:
+        """The address slot must be byte-identical to normalize_email_sender's output."""
+        for raw in (
+            "John Doe <John.Doe@Example.com>",
+            "jane@example.com",
+            "Jane@Example.COM",
+            '"Doe, John" <john@example.com>',
+            "unknown",
+            "",
+        ):
+            assert parse_email_sender(raw)[1] == normalize_email_sender(raw)
+
+    def test_quoted_display_name_is_unquoted(self) -> None:
+        # parseaddr strips the surrounding quotes from a quoted display name.
+        assert parse_email_sender('"Doe, John" <john@example.com>') == (
+            "Doe, John",
+            "john@example.com",
+        )
+
+    def test_bare_address_has_no_display_name(self) -> None:
+        assert parse_email_sender("jane@example.com") == (None, "jane@example.com")
+
+    def test_empty_display_name_collapses_to_none(self) -> None:
+        assert parse_email_sender("   <john@example.com>") == (None, "john@example.com")
+
+    def test_empty_string(self) -> None:
+        assert parse_email_sender("") == (None, "")

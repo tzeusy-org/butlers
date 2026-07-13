@@ -286,6 +286,30 @@ class TestIngestionEventsWriteOnAccept:
         # $6 = source_sender_identity
         assert args[5] == "bob@example.com"
 
+    async def test_ingestion_events_source_sender_display_name_populated(self) -> None:
+        pool = _FakePool()
+        envelope = _email_envelope(sender="bob@example.com", message_id="<dn@example.com>")
+        envelope["sender"]["display_name"] = "Bob Roe"
+
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+        args = pool.conn.ingestion_events_args()
+        assert args is not None
+        # $7 = source_sender_display_name (bu-vs9cr)
+        assert args[6] == "Bob Roe"
+
+    async def test_ingestion_events_source_sender_display_name_null_when_absent(self) -> None:
+        pool = _FakePool()
+        # No display_name on the sender -> NULL persisted.
+        envelope = _email_envelope(sender="bob@example.com", message_id="<nodn@example.com>")
+
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+        args = pool.conn.ingestion_events_args()
+        assert args is not None
+        # $7 = source_sender_display_name (bu-vs9cr)
+        assert args[6] is None
+
     async def test_ingestion_events_source_thread_identity_populated(self) -> None:
         pool = _FakePool()
         envelope = _email_envelope(thread_id="thread-xyz", message_id="<thr@example.com>")
@@ -294,8 +318,8 @@ class TestIngestionEventsWriteOnAccept:
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
-        # $7 = source_thread_identity
-        assert args[6] == "thread-xyz"
+        # $8 = source_thread_identity
+        assert args[7] == "thread-xyz"
 
     async def test_ingestion_events_source_thread_identity_null_when_absent(self) -> None:
         pool = _FakePool()
@@ -305,8 +329,8 @@ class TestIngestionEventsWriteOnAccept:
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
-        # $7 = source_thread_identity
-        assert args[6] is None
+        # $8 = source_thread_identity
+        assert args[7] is None
 
     async def test_ingestion_events_external_event_id(self) -> None:
         pool = _FakePool()
@@ -316,8 +340,8 @@ class TestIngestionEventsWriteOnAccept:
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
-        # $8 = external_event_id
-        assert args[7] == "<evid@example.com>"
+        # $9 = external_event_id
+        assert args[8] == "<evid@example.com>"
 
     async def test_ingestion_events_dedupe_strategy_is_connector_api(self) -> None:
         pool = _FakePool()
@@ -327,8 +351,8 @@ class TestIngestionEventsWriteOnAccept:
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
-        # $10 = dedupe_strategy
-        assert args[9] == "connector_api"
+        # $11 = dedupe_strategy
+        assert args[10] == "connector_api"
 
     async def test_ingestion_events_ingestion_tier(self) -> None:
         """Tier 2 (metadata) envelopes write ingestion_tier='metadata'."""
@@ -361,8 +385,8 @@ class TestIngestionEventsWriteOnAccept:
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
-        # $11 = ingestion_tier
-        assert args[10] == "metadata"
+        # $12 = ingestion_tier
+        assert args[11] == "metadata"
 
     async def test_ingestion_events_policy_tier(self) -> None:
         pool = _FakePool()
@@ -372,8 +396,8 @@ class TestIngestionEventsWriteOnAccept:
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
-        # $12 = policy_tier
-        assert args[11] == "high_priority"
+        # $13 = policy_tier
+        assert args[12] == "high_priority"
 
     async def test_ingestion_events_triage_fields_null_when_no_evaluator(self) -> None:
         """triage_decision and triage_target are None when policy_evaluator=None."""
@@ -384,9 +408,9 @@ class TestIngestionEventsWriteOnAccept:
 
         args = pool.conn.ingestion_events_args()
         assert args is not None
-        # $13 = triage_decision, $14 = triage_target
-        assert args[12] is None, "triage_decision must be None when no evaluator"
-        assert args[13] is None, "triage_target must be None when no evaluator"
+        # $14 = triage_decision, $15 = triage_target
+        assert args[13] is None, "triage_decision must be None when no evaluator"
+        assert args[14] is None, "triage_target must be None when no evaluator"
 
     async def test_ingestion_events_triage_decision_populated(self) -> None:
         """triage_decision and triage_target are written from the PolicyDecision result."""
@@ -412,10 +436,10 @@ class TestIngestionEventsWriteOnAccept:
         args = pool.conn.ingestion_events_args()
         assert args is not None
         # With an empty rule set, evaluator produces pass_through; target_butler is None
-        assert args[12] == "pass_through", (
+        assert args[13] == "pass_through", (
             "triage_decision should be 'pass_through' for empty rule set"
         )
-        assert args[13] is None, "triage_target must be None for pass_through decision"
+        assert args[14] is None, "triage_target must be None for pass_through decision"
 
     async def test_both_inserts_share_same_received_at(self) -> None:
         """message_inbox and public.ingestion_events receive the same received_at."""

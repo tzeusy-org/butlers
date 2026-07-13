@@ -125,6 +125,7 @@ async def identity_pool(provisioned_postgres_pool):
                 source_provider          TEXT NOT NULL DEFAULT 'gmail',
                 source_endpoint_identity TEXT NOT NULL DEFAULT 'gmail:user:test@example.com',
                 source_sender_identity   TEXT,
+                source_sender_display_name TEXT,
                 source_thread_identity   TEXT,
                 external_event_id        TEXT NOT NULL DEFAULT '',
                 dedupe_key               TEXT NOT NULL UNIQUE,
@@ -155,17 +156,25 @@ async def identity_pool(provisioned_postgres_pool):
         yield pool
 
 
-async def _insert_event(pool, *, address: str, thread_id: str, day_offset: int) -> None:
+async def _insert_event(
+    pool,
+    *,
+    address: str,
+    thread_id: str,
+    day_offset: int,
+    display_name: str | None = None,
+) -> None:
     await pool.execute(
         """
         INSERT INTO public.ingestion_events
             (id, received_at, source_channel, source_sender_identity,
-             source_thread_identity, dedupe_key, status)
-        VALUES ($1, $2, 'email', $3, $4, $5, 'ingested')
+             source_sender_display_name, source_thread_identity, dedupe_key, status)
+        VALUES ($1, $2, 'email', $3, $4, $5, $6, 'ingested')
         """,
         uuid.uuid4(),
         _NOW - timedelta(days=day_offset),
         address,
+        display_name,
         thread_id,
         f"dedupe:{address}:{thread_id}:{day_offset}",
     )
@@ -230,6 +239,32 @@ class TestEmailIdentityEnrichmentJobRealDb:
             "john.doe@example.com",
         )
         assert fact_count == 0
+
+    async def test_prefers_stored_display_name_over_local_part(self, identity_pool) -> None:
+        """The proposed entity uses the stored From: display name, not the local-part (bu-vs9cr)."""
+        pool = identity_pool
+        for i, thread in enumerate(["t1", "t2", "t3"]):
+            await _insert_event(
+                pool,
+                address="hsbc.bank.singapore@example.com",
+                thread_id=thread,
+                day_offset=i,
+                # Only the newest row carries the stored name; it must still win.
+                display_name="Alice Tan" if thread == "t1" else None,
+            )
+
+        rjobs = _get_rjobs()
+        result = await rjobs.run_email_identity_enrichment(pool)
+
+        assert result["created_new"] == 1
+        entity_row = await pool.fetchrow(
+            "SELECT canonical_name FROM public.entities "
+            "WHERE metadata->>'proposed_from_address' = $1",
+            "hsbc.bank.singapore@example.com",
+        )
+        assert entity_row is not None
+        # Real stored name, NOT the local-part guess "Hsbc Bank Singapore".
+        assert entity_row["canonical_name"] == "Alice Tan"
 
     async def test_links_to_existing_real_entity_by_name_match(self, identity_pool) -> None:
         pool = identity_pool

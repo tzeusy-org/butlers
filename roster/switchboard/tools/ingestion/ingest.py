@@ -996,6 +996,7 @@ async def ingest_v1(
                         source_provider,
                         source_endpoint_identity,
                         source_sender_identity,
+                        source_sender_display_name,
                         source_thread_identity,
                         external_event_id,
                         dedupe_key,
@@ -1005,7 +1006,7 @@ async def ingest_v1(
                         triage_decision,
                         triage_target
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
                     )
                     """,
                     request_id,
@@ -1014,6 +1015,7 @@ async def ingest_v1(
                     _strip_null_bytes(envelope.source.provider),
                     _strip_null_bytes(envelope.source.endpoint_identity),
                     _strip_null_bytes(envelope.sender.identity),
+                    _strip_null_bytes(envelope.sender.display_name),
                     _strip_null_bytes(envelope.event.external_thread_id),
                     _strip_null_bytes(envelope.event.external_event_id),
                     _strip_null_bytes(dedupe_key),

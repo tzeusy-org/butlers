@@ -14,15 +14,19 @@ Backing logic for two features (bu-qeaou):
 Both consumers read ONLY ``public.ingestion_events`` (never
 ``switchboard.message_inbox`` — that table lives in the Switchboard butler's
 own schema and is not reachable from another butler's schema-scoped DB role;
-see CLAUDE.md's "Database Isolation" section). This means the raw ``From:``
-header (with its human display name) is not recoverable here for historical
-rows — only the normalized bare address survives in
-``public.ingestion_events.source_sender_identity``. Display names are
-therefore *derived* heuristically from the address local-part
-(:func:`derive_display_name_from_address`) rather than read verbatim. This is
-a deliberate scoping decision, not an oversight — see the module docstring of
-``relationship_jobs.py``'s ``run_email_identity_enrichment`` for the full
-rationale and the discovered-follow-up this implies.
+see CLAUDE.md's "Database Isolation" section).
+
+Display name source (bu-vs9cr): the ingest write path now captures the raw
+``From:`` display name into
+``public.ingestion_events.source_sender_display_name``.
+:func:`fetch_email_sender_stats` surfaces the best stored display name per
+address as ``EmailSenderStats.display_name`` (junk-guarded via
+:func:`clean_stored_display_name`), so enrichment/backfill can prefer the real
+name. Historical rows ingested before that column existed hold ``NULL`` — for
+those the display name is still *derived* heuristically from the address
+local-part (:func:`derive_display_name_from_address`) rather than read
+verbatim. The address itself remains the normalized bare form in
+``source_sender_identity``.
 """
 
 from __future__ import annotations
@@ -30,11 +34,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 import asyncpg
 
-from butlers.identity import normalize_email_sender
+from butlers.identity import normalize_email_sender, parse_email_sender
 
 # Bounded scan window: only consider ingestion activity from the last N days.
 # Keeps the query cheap and keeps proposals grounded in *recent* recurring
@@ -96,6 +101,14 @@ class EmailSenderStats:
     distinct_days: int
     first_seen: datetime
     last_seen: datetime
+    display_name: str | None = None
+    """Best stored ``From:`` display name for this address (bu-vs9cr).
+
+    The most recent junk-guarded ``source_sender_display_name`` seen across the
+    address's ingestion rows (junk-guarded via
+    :func:`clean_stored_display_name`). ``None`` when no row carried a usable
+    stored name — enrichment/backfill then fall back to
+    :func:`derive_display_name_from_address`."""
 
 
 @dataclass(frozen=True)
@@ -131,7 +144,8 @@ async def fetch_email_sender_stats(
     since = datetime.now(UTC) - timedelta(days=lookback_days)
     rows = await pool.fetch(
         """
-        SELECT source_sender_identity, source_thread_identity, received_at
+        SELECT source_sender_identity, source_sender_display_name,
+               source_thread_identity, received_at
         FROM public.ingestion_events
         WHERE source_channel = 'email'
           AND status = 'ingested'
@@ -149,6 +163,8 @@ async def fetch_email_sender_stats(
         rows = rows[:row_limit]
 
     by_address: dict[str, dict] = {}
+    # Rows arrive newest-first (received_at DESC), so the FIRST usable stored
+    # display name encountered for an address is its most-recent one.
     for row in rows:
         address = normalize_email_sender(row["source_sender_identity"])
         if not address or "@" not in address:
@@ -164,6 +180,7 @@ async def fetch_email_sender_stats(
                 "days": set(),
                 "first_seen": received_at,
                 "last_seen": received_at,
+                "display_name": None,
             },
         )
         bucket["event_count"] += 1
@@ -174,6 +191,8 @@ async def fetch_email_sender_stats(
             bucket["first_seen"] = received_at
         if received_at > bucket["last_seen"]:
             bucket["last_seen"] = received_at
+        if bucket["display_name"] is None:
+            bucket["display_name"] = _stored_display_name_for_row(row, address)
 
     stats = [
         EmailSenderStats(
@@ -183,6 +202,7 @@ async def fetch_email_sender_stats(
             distinct_days=len(b["days"]),
             first_seen=b["first_seen"],
             last_seen=b["last_seen"],
+            display_name=b["display_name"],
         )
         for address, b in by_address.items()
     ]
@@ -212,6 +232,74 @@ def is_bulk_or_noreply_address(address: str) -> bool:
     if domain and (_BULK_DOMAIN_LABEL_RE.search(domain) or _BULK_ESP_DOMAIN_RE.search(domain)):
         return True
     return False
+
+
+def clean_stored_display_name(raw: str | None, address: str) -> str | None:
+    """Return a usable display name from a stored ``From:`` name, else ``None``.
+
+    Guards the raw ``source_sender_display_name`` (bu-vs9cr) against junk that
+    would be worse than the local-part heuristic:
+
+    - empty / whitespace-only,
+    - containing ``@`` — an email address in the display slot, not a human name
+      (mailers commonly stuff the bare address, or a *different* address, there,
+      e.g. ``"noreply@x.com" <noreply@x.com>``); this also subsumes the
+      "equal to the sender address" case,
+    - all-punctuation / no alphanumeric character.
+
+    A surviving name is returned stripped. ``None`` means "no usable stored
+    name — fall back to :func:`derive_display_name_from_address`".
+    """
+    if not raw:
+        return None
+    name = raw.strip()
+    if not name:
+        return None
+    if "@" in name:
+        return None
+    if name.lower() == (address or "").strip().lower():
+        return None
+    if not any(ch.isalnum() for ch in name):
+        return None
+    return name
+
+
+def _stored_display_name_for_row(row: Any, address: str) -> str | None:
+    """Best usable stored display name for one ingestion row (bu-vs9cr).
+
+    Prefers the dedicated ``source_sender_display_name`` column. For rows
+    ingested before that column existed (its value is ``NULL``) but whose
+    ``source_sender_identity`` still holds a raw ``"Name <addr>"`` header
+    (pre-normalization rows), the display name is recovered from that raw
+    string. Both candidates pass through :func:`clean_stored_display_name`.
+    """
+    stored = clean_stored_display_name(_row_get(row, "source_sender_display_name"), address)
+    if stored is not None:
+        return stored
+    legacy_name, _ = parse_email_sender(_row_get(row, "source_sender_identity") or "")
+    return clean_stored_display_name(legacy_name, address)
+
+
+def _row_get(row: Any, key: str) -> Any:
+    """Read ``key`` from an asyncpg Record or a plain dict, tolerating absence."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def choose_display_name(stored: str | None, address: str) -> str:
+    """Prefer a stored display name; fall back to the local-part heuristic.
+
+    Single decision point shared by the enrichment job and the backfill script
+    (bu-vs9cr): use the real captured name when present, otherwise derive one
+    from the address local-part. ``stored`` is expected to already be
+    junk-guarded (as produced by :func:`fetch_email_sender_stats`); a falsy
+    value routes to :func:`derive_display_name_from_address`.
+    """
+    if stored:
+        return stored
+    return derive_display_name_from_address(address)
 
 
 def derive_display_name_from_address(address: str) -> str:
@@ -298,6 +386,8 @@ __all__ = [
     "DEFAULT_ROW_LIMIT",
     "EmailSenderStats",
     "EmailSenderStatsResult",
+    "choose_display_name",
+    "clean_stored_display_name",
     "derive_display_name_from_address",
     "fetch_active_has_email_addresses",
     "fetch_email_sender_stats",

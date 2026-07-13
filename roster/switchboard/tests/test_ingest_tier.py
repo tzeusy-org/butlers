@@ -132,6 +132,7 @@ async def pool(provisioned_postgres_pool):
                 source_provider          TEXT NOT NULL,
                 source_endpoint_identity TEXT NOT NULL,
                 source_sender_identity   TEXT,
+                source_sender_display_name TEXT,
                 source_thread_identity   TEXT,
                 external_event_id        TEXT NOT NULL,
                 dedupe_key               TEXT NOT NULL,

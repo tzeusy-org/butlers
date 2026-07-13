@@ -233,3 +233,40 @@ async def test_ingest_persists_multiple_attachments(pool):
     # PDF has no width/height — None-valued fields are omitted from JSONB
     assert attachments[1].get("width") is None
     assert attachments[1].get("height") is None
+
+
+@pytest.mark.integration
+async def test_ingest_persists_sender_display_name(pool):
+    """sender.display_name round-trips into ingestion_events.source_sender_display_name (bu-vs9cr)."""
+    from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+
+    envelope = _build_ingest_envelope(text="Named sender")
+    envelope["sender"]["display_name"] = "John Doe"
+    response = await ingest_v1(pool, envelope)
+
+    assert response.status == "accepted"
+
+    row = await pool.fetchrow(
+        "SELECT source_sender_display_name FROM public.ingestion_events WHERE id = $1",
+        response.request_id,
+    )
+    assert row is not None
+    assert row["source_sender_display_name"] == "John Doe"
+
+
+@pytest.mark.integration
+async def test_ingest_persists_null_display_name_when_absent(pool):
+    """An envelope with no sender.display_name persists NULL (historical/other ingress)."""
+    from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+
+    envelope = _build_ingest_envelope(text="Anonymous sender")
+    response = await ingest_v1(pool, envelope)
+
+    assert response.status == "accepted"
+
+    row = await pool.fetchrow(
+        "SELECT source_sender_display_name FROM public.ingestion_events WHERE id = $1",
+        response.request_id,
+    )
+    assert row is not None
+    assert row["source_sender_display_name"] is None

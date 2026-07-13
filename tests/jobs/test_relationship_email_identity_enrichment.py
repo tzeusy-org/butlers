@@ -34,9 +34,16 @@ pytestmark = pytest.mark.unit
 _NOW = datetime(2026, 7, 1, tzinfo=UTC)
 
 
-def _event_row(address: str, *, thread_id: str, day_offset: int) -> dict[str, Any]:
+def _event_row(
+    address: str,
+    *,
+    thread_id: str,
+    day_offset: int,
+    display_name: str | None = None,
+) -> dict[str, Any]:
     return {
         "source_sender_identity": address,
+        "source_sender_display_name": display_name,
         "source_thread_identity": thread_id,
         "received_at": _NOW - timedelta(days=day_offset),
     }
@@ -219,6 +226,52 @@ async def test_creates_new_entity_and_proposes_link_when_no_match(
 
     assert len(_patch_insight_and_state) == 1
     assert "john.doe@example.com" in _patch_insight_and_state[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_prefers_stored_display_name_over_local_part(
+    _patch_insight_and_state: list[dict[str, Any]],
+) -> None:
+    """When a stored From: display name exists, the proposed entity uses it (bu-vs9cr)."""
+    rjobs = _get_rjobs()
+    pool = _FakePool(
+        sender_rows=[
+            _event_row(
+                "hsbc.bank.singapore@example.com",
+                thread_id="t1",
+                day_offset=0,
+                display_name="Alice Tan",
+            ),
+            _event_row("hsbc.bank.singapore@example.com", thread_id="t2", day_offset=1),
+            _event_row("hsbc.bank.singapore@example.com", thread_id="t3", day_offset=2),
+        ]
+    )
+
+    result = await rjobs.run_email_identity_enrichment(pool)
+
+    assert result["created_new"] == 1
+    # Real stored name is used, NOT the local-part guess "Hsbc Bank Singapore".
+    assert pool.created_entities[0] == ("Alice Tan", "hsbc.bank.singapore@example.com")
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_local_part_when_no_stored_name(
+    _patch_insight_and_state: list[dict[str, Any]],
+) -> None:
+    """Legacy rows with no stored name still derive the name from the local-part."""
+    rjobs = _get_rjobs()
+    pool = _FakePool(
+        sender_rows=[
+            _event_row("john.doe@example.com", thread_id="t1", day_offset=0),
+            _event_row("john.doe@example.com", thread_id="t2", day_offset=1),
+            _event_row("john.doe@example.com", thread_id="t3", day_offset=2),
+        ]
+    )
+
+    result = await rjobs.run_email_identity_enrichment(pool)
+
+    assert result["created_new"] == 1
+    assert pool.created_entities[0] == ("John Doe", "john.doe@example.com")
 
 
 @pytest.mark.asyncio

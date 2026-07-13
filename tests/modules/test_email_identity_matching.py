@@ -20,6 +20,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.modules.contacts.email_identity_matching import (
+    choose_display_name,
+    clean_stored_display_name,
     derive_display_name_from_address,
     fetch_active_has_email_addresses,
     fetch_email_sender_stats,
@@ -30,9 +32,16 @@ from butlers.modules.contacts.email_identity_matching import (
 pytestmark = pytest.mark.unit
 
 
-def _event_row(address: str, *, thread_id: str | None, received_at: datetime) -> dict:
+def _event_row(
+    address: str,
+    *,
+    thread_id: str | None,
+    received_at: datetime,
+    display_name: str | None = None,
+) -> dict:
     return {
         "source_sender_identity": address,
+        "source_sender_display_name": display_name,
         "source_thread_identity": thread_id,
         "received_at": received_at,
     }
@@ -101,6 +110,92 @@ class TestFetchEmailSenderStats:
 
         assert result.stats == []
         assert result.truncated is False
+
+    @pytest.mark.asyncio
+    async def test_surfaces_most_recent_stored_display_name(self) -> None:
+        """The newest (rows arrive DESC) usable stored display name wins per address."""
+        now = datetime(2026, 1, 10, tzinfo=UTC)
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                # newest row first (received_at DESC) — its name is preferred
+                _event_row(
+                    "john@example.com", thread_id="t1", received_at=now, display_name="John Doe"
+                ),
+                _event_row(
+                    "john@example.com",
+                    thread_id="t2",
+                    received_at=now - timedelta(days=1),
+                    display_name="J. Doe (old)",
+                ),
+            ]
+        )
+
+        result = await fetch_email_sender_stats(pool)
+
+        assert result.stats[0].display_name == "John Doe"
+
+    @pytest.mark.asyncio
+    async def test_junk_stored_name_is_ignored_and_falls_to_legacy_then_none(self) -> None:
+        """A stored name equal to the address is junk; with no legacy name, display_name is None."""
+        now = datetime(2026, 1, 10, tzinfo=UTC)
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                _event_row(
+                    "a@example.com",
+                    thread_id="t1",
+                    received_at=now,
+                    display_name="a@example.com",
+                ),
+            ]
+        )
+
+        result = await fetch_email_sender_stats(pool)
+
+        assert result.stats[0].display_name is None
+
+    @pytest.mark.asyncio
+    async def test_legacy_raw_sender_identity_recovers_display_name(self) -> None:
+        """Pre-column rows (display_name NULL) recover the name from the raw From header."""
+        now = datetime(2026, 1, 10, tzinfo=UTC)
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                # Legacy row: normalizer reduces identity to the bare address for
+                # grouping, but the raw header still carries the display name.
+                _event_row(
+                    "Jane Roe <jane@example.com>",
+                    thread_id="t1",
+                    received_at=now,
+                    display_name=None,
+                ),
+            ]
+        )
+
+        result = await fetch_email_sender_stats(pool)
+
+        assert result.stats[0].address == "jane@example.com"
+        assert result.stats[0].display_name == "Jane Roe"
+
+    @pytest.mark.asyncio
+    async def test_missing_display_name_column_key_is_tolerated(self) -> None:
+        """Rows lacking the column key entirely (old mocks) yield display_name None, not error."""
+        now = datetime(2026, 1, 10, tzinfo=UTC)
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "source_sender_identity": "x@example.com",
+                    "source_thread_identity": "t1",
+                    "received_at": now,
+                }
+            ]
+        )
+
+        result = await fetch_email_sender_stats(pool)
+
+        assert result.stats[0].display_name is None
 
     @pytest.mark.asyncio
     async def test_sorted_by_distinct_threads_descending(self) -> None:
@@ -197,6 +292,43 @@ class TestDeriveDisplayNameFromAddress:
 
     def test_all_digits_falls_back_to_local_part(self) -> None:
         assert derive_display_name_from_address("12345@example.com") == "12345"
+
+
+class TestCleanStoredDisplayName:
+    def test_usable_name_passes_through_stripped(self) -> None:
+        assert clean_stored_display_name("  John Doe  ", "john@example.com") == "John Doe"
+
+    def test_none_and_empty_return_none(self) -> None:
+        assert clean_stored_display_name(None, "a@example.com") is None
+        assert clean_stored_display_name("", "a@example.com") is None
+        assert clean_stored_display_name("   ", "a@example.com") is None
+
+    def test_name_equal_to_address_is_rejected(self) -> None:
+        assert clean_stored_display_name("A@Example.com", "a@example.com") is None
+
+    def test_display_name_containing_at_is_rejected(self) -> None:
+        # A display name with '@' is an email address, not a human name — reject
+        # it even when it differs from the sender's own address.
+        assert clean_stored_display_name("A@Example.com", "a@example.com") is None
+        assert clean_stored_display_name("b@example.com", "a@example.com") is None
+
+    def test_all_punctuation_is_rejected(self) -> None:
+        assert clean_stored_display_name("<<>>", "a@example.com") is None
+        assert clean_stored_display_name("--", "a@example.com") is None
+
+    def test_name_with_some_alphanumerics_survives(self) -> None:
+        assert clean_stored_display_name("J.D.", "a@example.com") == "J.D."
+
+
+class TestChooseDisplayName:
+    def test_prefers_stored_name(self) -> None:
+        assert choose_display_name("Real Name", "john.doe@example.com") == "Real Name"
+
+    def test_falls_back_to_local_part_when_absent(self) -> None:
+        assert choose_display_name(None, "john.doe@example.com") == "John Doe"
+
+    def test_empty_string_falls_back(self) -> None:
+        assert choose_display_name("", "john.doe@example.com") == "John Doe"
 
 
 class TestFetchActiveHasEmailAddresses:

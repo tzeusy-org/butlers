@@ -76,6 +76,7 @@ The connector supports two ingestion modes with different latency/complexity tra
   - `event.external_thread_id` = Gmail `threadId`
   - `event.observed_at` = connector-observed timestamp (RFC3339)
   - `sender.identity` = normalized sender address from `From` header
+  - `sender.display_name` = the raw display-name part of the `From` header (e.g. `"John Doe"` from `"John Doe <john@example.com>"`), or `null` when the header carried no display name; stored verbatim (not normalized) so identity enrichment can use the real name instead of guessing one from the address local-part
   - `payload.raw` = full Gmail API message payload (Tier 1) or `null` (Tier 2)
   - `payload.normalized_text` = normalized subject + body text (Tier 1) or subject only (Tier 2)
   - `control.idempotency_key` = `"gmail:<endpoint_identity>:<message_id>"`

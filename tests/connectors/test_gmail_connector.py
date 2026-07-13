@@ -97,6 +97,28 @@ async def test_build_ingest_envelope_event_fields(
     assert envelope["sender"]["identity"] == "sender@example.com"
 
 
+async def test_build_ingest_envelope_captures_from_display_name(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """The raw From: display name is captured into sender.display_name (bu-vs9cr)."""
+    envelope = await gmail_runtime._build_ingest_envelope(
+        _make_message(from_addr="John Doe <John.Doe@Example.com>")
+    )
+    # identity stays normalized (bare, lowercased); display_name is verbatim.
+    assert envelope["sender"]["identity"] == "john.doe@example.com"
+    assert envelope["sender"]["display_name"] == "John Doe"
+
+
+async def test_build_ingest_envelope_display_name_none_for_bare_address(
+    gmail_runtime: GmailConnectorRuntime,
+) -> None:
+    """A bare From: address (no display part) yields sender.display_name=None."""
+    envelope = await gmail_runtime._build_ingest_envelope(
+        _make_message(from_addr="sender@example.com")
+    )
+    assert envelope["sender"]["display_name"] is None
+
+
 async def test_build_ingest_envelope_body_in_normalized_text(
     gmail_runtime: GmailConnectorRuntime,
 ) -> None:

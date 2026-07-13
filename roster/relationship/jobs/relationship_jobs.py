@@ -3277,12 +3277,15 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
 
     Design notes (see also ``email_identity_matching.py``'s module docstring):
 
-    * Display names are *derived* from the address local-part, not read from
-      the raw ``From:`` header — this job's DB role can only read
-      ``public.ingestion_events`` (``public`` schema) and
+    * Display names prefer the real ``From:`` display name captured at ingest
+      into ``public.ingestion_events.source_sender_display_name`` (bu-vs9cr,
+      surfaced as ``EmailSenderStats.display_name``). Only rows ingested before
+      that column existed fall back to a name *derived* from the address
+      local-part (``derive_display_name_from_address``). This job's DB role can
+      read ``public.ingestion_events`` (``public`` schema) and
       ``relationship.entity_facts``/``public.entities`` (this butler's own
       schema + ``public``), never ``switchboard.message_inbox`` (a different
-      butler's private schema). A human reviewer can rename the proposed
+      butler's private schema). A human reviewer can still rename the proposed
       entity after approval.
     * Eagerly creating an entity for a "create" proposal (rather than waiting
       for approval) mirrors the existing ``create_temp_contact`` pattern
@@ -3308,7 +3311,7 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
         created_new, errors, truncated (True if the underlying scan hit its row cap).
     """
     from butlers.modules.contacts.email_identity_matching import (
-        derive_display_name_from_address,
+        choose_display_name,
         fetch_active_has_email_addresses,
         fetch_email_sender_stats,
         is_bulk_or_noreply_address,
@@ -3414,7 +3417,9 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
                 stats["already_proposed"] += 1
                 continue
 
-            display_name = derive_display_name_from_address(address)
+            # Prefer the real stored From: display name (bu-vs9cr); fall back to
+            # the address local-part heuristic for legacy rows with no stored name.
+            display_name = choose_display_name(candidate.display_name, address)
             matched_entity_id = await match_existing_person_entity(db_pool, display_name)
 
             if matched_entity_id is not None:

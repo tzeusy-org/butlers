@@ -85,6 +85,32 @@ def normalize_email_sender(raw: str) -> str:
     return (address or raw or "").strip().lower()
 
 
+def parse_email_sender(raw: str) -> tuple[str | None, str]:
+    """Split a raw email ``From:`` header into ``(display_name, address)``.
+
+    Companion to :func:`normalize_email_sender`. Both delegate to
+    :func:`email.utils.parseaddr`, which returns ``(display_name, address)`` for
+    a header like ``"John Doe <john@example.com>"`` — but ``normalize_email_sender``
+    deliberately discards slot 0. This helper preserves it so the ingest write
+    path can persist the real display name alongside the normalized address
+    (bu-vs9cr), instead of downstream code guessing a name from the address
+    local-part.
+
+    The returned ``address`` is byte-for-byte identical to what
+    ``normalize_email_sender`` would return for the same input (bare, stripped,
+    lowercased) so the two never disagree on the canonical address form. The
+    returned ``display_name`` is stripped; empty / whitespace-only display names
+    collapse to ``None``. No further junk filtering (name == address,
+    all-punctuation) happens here — that is a consumer concern (see
+    ``email_identity_matching.clean_stored_display_name``) so this helper stays a
+    faithful parse of the header.
+    """
+    display_name, address = parseaddr(raw or "")
+    normalized_address = (address or raw or "").strip().lower()
+    display_name = (display_name or "").strip()
+    return (display_name or None, normalized_address)
+
+
 def channel_value_for_storage(channel_type: str, channel_value: str) -> str:
     """Return the canonical ``relationship.entity_facts`` storage form for a value.
 
@@ -932,6 +958,7 @@ __all__ = [
     "build_identity_preamble",
     "create_temp_contact",
     "normalize_email_sender",
+    "parse_email_sender",
     "resolve_contact_by_channel",
     "resolve_contacts_by_channel_bulk",
     "resolve_outbound_channel",

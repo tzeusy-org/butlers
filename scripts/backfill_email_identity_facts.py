@@ -101,7 +101,7 @@ async def backfill_email_identity_facts(
     # Import lazily: triggers butlers.tools' dynamic butler-tool registration
     # (see src/butlers/tools/__init__.py) so relationship_assert_fact resolves.
     from butlers.modules.contacts.email_identity_matching import (
-        derive_display_name_from_address,
+        choose_display_name,
         fetch_active_has_email_addresses,
         fetch_email_sender_stats,
         match_existing_person_entity,
@@ -139,19 +139,21 @@ async def backfill_email_identity_facts(
             summary["already_linked"] += 1
             continue
 
-        display_name = derive_display_name_from_address(address)
+        # Prefer the real stored From: display name (bu-vs9cr); fall back to the
+        # address local-part heuristic for legacy rows with no stored name.
+        display_name = choose_display_name(candidate.display_name, address)
         matched_entity_id = await match_existing_person_entity(pool, display_name)
         if matched_entity_id is None:
             summary["ambiguous_or_unmatched"] += 1
             logger.debug(
-                "skip address=%s derived_name=%r — no unambiguous entity match",
+                "skip address=%s name=%r — no unambiguous entity match",
                 address,
                 display_name,
             )
             continue
 
         logger.info(
-            "%s address=%s -> entity=%s (derived_name=%r)",
+            "%s address=%s -> entity=%s (name=%r)",
             "would link" if dry_run else "linking",
             address,
             matched_entity_id,
