@@ -264,6 +264,58 @@ describe("QA case dossier composition", () => {
     expect(screen.getByText("No PR. Escalated to user.")).toBeTruthy();
   });
 
+  it("renders the failure banner with a concise sentence and a scrollable raw-error box", () => {
+    const rawError =
+      "Traceback (most recent call last):\n" +
+      "  File \"healing.py\", line 42, in run\n".repeat(20) +
+      "RuntimeError: investigation crashed before producing a fix";
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        state_track_stage: "failed",
+        investigation_notes: null,
+        pr: null,
+        journal: [],
+        error_detail: rawError,
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    // Banner keeps a short, styled sentence -- it must NOT inline the raw text.
+    const banner = screen.getByTestId("qa-case-failure-banner");
+    expect(banner.textContent).toContain("The investigation crashed before producing a fix.");
+
+    // Raw error_detail lives in a bounded, scrollable monospace container so a
+    // long stack trace cannot break the dossier layout (bu-773mv).
+    const detail = screen.getByTestId("qa-case-failure-detail");
+    expect(detail.tagName).toBe("PRE");
+    expect(detail.textContent).toBe(rawError);
+    expect(detail.className).toContain("overflow-auto");
+    expect(detail.className).toContain("max-h-64");
+    expect(detail.className).toContain("font-mono");
+  });
+
+  it("omits the raw-error box when a failed case has no error_detail", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        state_track_stage: "failed",
+        investigation_notes: null,
+        pr: null,
+        journal: [],
+        error_detail: null,
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    expect(screen.getByTestId("qa-case-failure-banner")).toBeTruthy();
+    expect(screen.queryByTestId("qa-case-failure-detail")).toBeNull();
+  });
+
   it.each([
     ["pr"],
     ["landed"],

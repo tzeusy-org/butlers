@@ -713,15 +713,42 @@ class TestGetQaSummary:
 
 
 class TestDetectRuntimeCredentialAlert:
-    """Direct tests for ``_detect_runtime_credential_alert`` (bu-hmdqz.9).
+    """Direct tests for ``_detect_runtime_credential_alert`` (bu-hmdqz.9, bu-773mv).
 
     Exercised directly against a hand-built pool + monkeypatched
-    ``get_breaker_state`` rather than through the full ``/api/qa/summary``
+    ``get_breaker_states`` rather than through the full ``/api/qa/summary``
     mock-pool call sequence, since it is deliberately the LAST DB-touching
     step in that handler (see its call-site comment) and its own internals
-    (breaker-state-per-catalog-entry, conditional follow-up query) don't fit
+    (batched breaker-state lookup, conditional follow-up query) don't fit
     the endpoint test's fixed-length ``side_effect`` list style.
+
+    The implementation issues at most three fixed queries regardless of
+    candidate count (bu-773mv): ``pool.fetch`` for the eligible catalog ids,
+    one ``get_breaker_states`` call, and a single batched
+    ``ROW_NUMBER()``-ranked ``pool.fetch`` for the latest failure text of the
+    open entries. The ``pool.fetch`` mock below uses a two-element
+    ``side_effect`` for that pair (catalog-ids, then failure-text rows).
     """
+
+    @staticmethod
+    def _patch_breaker_states(monkeypatch: pytest.MonkeyPatch, *, open_ids: set[uuid.UUID]) -> None:
+        from butlers.api.routers import qa as qa_router
+        from butlers.core.model_routing import BreakerState
+
+        async def _fake_breaker_states(
+            _pool: Any, catalog_entry_ids: list[uuid.UUID] | None = None
+        ) -> dict[uuid.UUID, BreakerState]:
+            ids = catalog_entry_ids or []
+            return {
+                cid: BreakerState(
+                    open=cid in open_ids,
+                    consecutive_failures=5 if cid in open_ids else 0,
+                    last_attempt_at=None,
+                )
+                for cid in ids
+            }
+
+        monkeypatch.setattr(qa_router, "get_breaker_states", _fake_breaker_states)
 
     async def test_returns_none_with_no_workhorse_candidates(self) -> None:
         from butlers.api.routers.qa import _detect_runtime_credential_alert
@@ -735,26 +762,26 @@ class TestDetectRuntimeCredentialAlert:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from butlers.api.routers import qa as qa_router
-        from butlers.core.model_routing import BreakerState
 
         catalog_id = uuid.uuid4()
         pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[{"id": catalog_id}])
-        pool.fetchrow = AsyncMock(
-            return_value={
-                "error_message": (
-                    "Codex CLI exited with code 1: Your access token could not be "
-                    "refreshed because your refresh token was revoked. Please log "
-                    "out and sign in again."
-                ),
-                "failure_reason": None,
-            }
+        pool.fetch = AsyncMock(
+            side_effect=[
+                [{"id": catalog_id}],
+                [
+                    {
+                        "catalog_entry_id": catalog_id,
+                        "error_message": (
+                            "Codex CLI exited with code 1: Your access token could not be "
+                            "refreshed because your refresh token was revoked. Please log "
+                            "out and sign in again."
+                        ),
+                        "failure_reason": None,
+                    }
+                ],
+            ]
         )
-
-        async def _fake_breaker_state(_pool: Any, _catalog_id: uuid.UUID) -> BreakerState:
-            return BreakerState(open=True, consecutive_failures=5, last_attempt_at=None)
-
-        monkeypatch.setattr(qa_router, "get_breaker_state", _fake_breaker_state)
+        self._patch_breaker_states(monkeypatch, open_ids={catalog_id})
 
         alert = await qa_router._detect_runtime_credential_alert(pool)
 
@@ -763,21 +790,16 @@ class TestDetectRuntimeCredentialAlert:
 
     async def test_returns_none_when_breaker_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from butlers.api.routers import qa as qa_router
-        from butlers.core.model_routing import BreakerState
 
         catalog_id = uuid.uuid4()
         pool = MagicMock()
         pool.fetch = AsyncMock(return_value=[{"id": catalog_id}])
-        pool.fetchrow = AsyncMock()
-
-        async def _fake_breaker_state(_pool: Any, _catalog_id: uuid.UUID) -> BreakerState:
-            return BreakerState(open=False, consecutive_failures=0, last_attempt_at=None)
-
-        monkeypatch.setattr(qa_router, "get_breaker_state", _fake_breaker_state)
+        self._patch_breaker_states(monkeypatch, open_ids=set())
 
         assert await qa_router._detect_runtime_credential_alert(pool) is None
-        # A closed breaker must never trigger the follow-up failure-text query.
-        pool.fetchrow.assert_not_awaited()
+        # A closed breaker must never trigger the batched failure-text query,
+        # so pool.fetch is called exactly once (the catalog-ids lookup).
+        assert pool.fetch.await_count == 1
 
     async def test_ignores_open_breaker_with_non_auth_failure_text(
         self, monkeypatch: pytest.MonkeyPatch
@@ -786,21 +808,56 @@ class TestDetectRuntimeCredentialAlert:
         surface a misleading 'credential' alert -- only auth/credential-marker
         text is worth paging the operator over here."""
         from butlers.api.routers import qa as qa_router
-        from butlers.core.model_routing import BreakerState
 
         catalog_id = uuid.uuid4()
         pool = MagicMock()
-        pool.fetch = AsyncMock(return_value=[{"id": catalog_id}])
-        pool.fetchrow = AsyncMock(
-            return_value={"error_message": "connection reset by peer", "failure_reason": None}
+        pool.fetch = AsyncMock(
+            side_effect=[
+                [{"id": catalog_id}],
+                [
+                    {
+                        "catalog_entry_id": catalog_id,
+                        "error_message": "connection reset by peer",
+                        "failure_reason": None,
+                    }
+                ],
+            ]
         )
-
-        async def _fake_breaker_state(_pool: Any, _catalog_id: uuid.UUID) -> BreakerState:
-            return BreakerState(open=True, consecutive_failures=5, last_attempt_at=None)
-
-        monkeypatch.setattr(qa_router, "get_breaker_state", _fake_breaker_state)
+        self._patch_breaker_states(monkeypatch, open_ids={catalog_id})
 
         assert await qa_router._detect_runtime_credential_alert(pool) is None
+
+    async def test_only_open_breaker_among_many_is_surfaced(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With several eligible candidates, only the open one's failure text is
+        checked/surfaced -- same-tier failover would otherwise mask it, and the
+        batched query filters to the open ids (bu-773mv)."""
+        from butlers.api.routers import qa as qa_router
+
+        closed_id = uuid.uuid4()
+        open_id = uuid.uuid4()
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            side_effect=[
+                [{"id": closed_id}, {"id": open_id}],
+                [
+                    {
+                        "catalog_entry_id": open_id,
+                        "error_message": "your refresh token was revoked",
+                        "failure_reason": None,
+                    }
+                ],
+            ]
+        )
+        self._patch_breaker_states(monkeypatch, open_ids={open_id})
+
+        alert = await qa_router._detect_runtime_credential_alert(pool)
+
+        assert alert == "your refresh token was revoked"
+        # The batched failure-text query must be filtered to the open ids only.
+        second_call = pool.fetch.await_args_list[1]
+        assert second_call.args[1] == [open_id]
 
     async def test_query_failure_is_non_fatal(self) -> None:
         from butlers.api.routers.qa import _detect_runtime_credential_alert

@@ -97,10 +97,19 @@ export function CaseDossier({
             <div className="space-y-2" data-testid="qa-case-failure-banner">
               <DossierEyebrow>Failure</DossierEyebrow>
               <p className="font-serif text-[17px] italic leading-8 text-destructive">
-                {dossier.error_detail
-                  ? `The investigation crashed: "${dossier.error_detail}"`
-                  : "The investigation crashed before producing a fix."}
+                The investigation crashed before producing a fix.
               </p>
+              {dossier.error_detail ? (
+                // Raw crash text can be a long message or multi-line stack
+                // trace; keep it in a bounded, scrollable monospace box so it
+                // never blows out the dossier layout (bu-773mv).
+                <pre
+                  data-testid="qa-case-failure-detail"
+                  className="max-h-64 overflow-auto whitespace-pre-wrap break-words border border-destructive/40 bg-destructive/5 px-3 py-2 font-mono text-[11px] leading-relaxed text-destructive"
+                >
+                  {dossier.error_detail}
+                </pre>
+              ) : null}
             </div>
           ) : null}
           {notes ? (
