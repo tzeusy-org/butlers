@@ -66,9 +66,11 @@ Key invariants that all sources must honour:
 | `log_scanner` | `logs/butlers/*.log`, `logs/connectors/*.log`, `logs/uvicorn/*.log` | Reads backwards from end of active file; skips rotated files |
 | `session_records` | `public.v_qa_recent_failures` view (RFC 0010 pattern) | Read-only cross-butler union view; `event_summary` anonymized before storage |
 | `butler_reports` | In-memory buffer drained from `report_finding` MCP tool | Volatile; buffer cleared on restart; `session_records` provides recovery coverage |
+| `tool_call_failures` | `public.v_qa_tool_call_failures` view | Finds failed tool calls inside otherwise-successful sessions |
+| `infra_state` | Connector/butler state views, backup facts, external-deadman audit events | Point-in-time health checks; ignores the patrol lookback window |
 
 **Future sources** (protocol accommodates without triage/dispatch/dashboard changes):
-`prometheus_metrics`, `mcp_reachability`, `scheduler_drift`, `connector_heartbeat`, `git_regression`.
+`prometheus_metrics`, `mcp_reachability`, `scheduler_drift`, `git_regression`.
 
 ### D2: Fingerprint-Based Triage and Deduplication
 
@@ -235,7 +237,7 @@ without waiting for the next scheduled tick.
 | `log_lookback_minutes` | 15 | Lookback window passed to all sources |
 | `max_concurrent_investigations` | 2 | QA-only concurrency cap |
 | `severity_threshold` | 2 | Minimum severity for dispatch |
-| `enabled_sources` | `["log_scanner", "session_records", "butler_reports"]` | Active sources |
+| `enabled_sources` | `["log_scanner", "session_records", "butler_reports", "tool_call_failures", "infra_state"]` | Active sources |
 | `max_reactive_buffer` | 50 | Max buffered reactive findings; oldest dropped on overflow |
 | `log_scanner_max_entries` | 10000 | Error/warning candidates per scan (benign lines excluded) |
 | `log_scanner_max_findings` | 100 | Distinct fingerprints returned per scan |
