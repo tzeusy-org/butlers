@@ -131,6 +131,38 @@ describe("TimelineLedger — heartbeat collapsing", () => {
   });
 });
 
+describe("TimelineLedger — failed delivery honesty", () => {
+  it("marks a failed notification row destructive with a 'failed' word", () => {
+    const events = [
+      makeEvent("n1", "2026-07-04T15:10:00Z", {
+        type: "notification",
+        summary: "Credential SPOTIFY_ACCESS_TOKEN has expired",
+        data: { status: "failed" },
+      }),
+    ];
+    renderLedger({ events });
+    const row = container.querySelector('[data-testid="timeline-row"]') as HTMLElement;
+    expect(row.textContent).toContain("failed");
+    // The destructive dot is applied (calm purple is reserved for delivered).
+    expect(row.querySelector(".bg-destructive")).not.toBeNull();
+    expect(row.querySelector(".bg-purple-500")).toBeNull();
+  });
+
+  it("keeps a delivered notification row on the calm neutral dot", () => {
+    const events = [
+      makeEvent("n2", "2026-07-04T15:10:00Z", {
+        type: "notification",
+        summary: "Daily digest sent",
+        data: { status: "sent" },
+      }),
+    ];
+    renderLedger({ events });
+    const row = container.querySelector('[data-testid="timeline-row"]') as HTMLElement;
+    expect(row.querySelector(".bg-purple-500")).not.toBeNull();
+    expect(row.querySelector(".bg-destructive")).toBeNull();
+  });
+});
+
 describe("TimelineLedger — drawer", () => {
   it("opens the drawer when ?event=<id> is in the URL", () => {
     const events = [makeEvent("e1", "2026-07-04T15:10:00Z", { type: "notification" })];

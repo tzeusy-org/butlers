@@ -277,6 +277,7 @@ async def query_timeline_notifications_single(
     before_id: UUID | None = None,
     limit: int,
     source_butlers: list[str] | None = None,
+    only_failed: bool = False,
 ) -> list[TimelineNotificationRow]:
     """Query the notifications table from a single pool (switchboard DB).
 
@@ -298,6 +299,11 @@ async def query_timeline_notifications_single(
         Maximum rows to fetch.
     source_butlers:
         If given, filter to notifications whose ``source_butler`` is in this list.
+    only_failed:
+        When ``True``, restrict to failed deliveries (``status = 'failed'``).
+        This backs the timeline Errors lens, which surfaces bounced deliveries
+        alongside failed sessions — a failed owner alert is an error the owner
+        must see, not a calm notification. Defaults to ``False`` (all statuses).
 
     Returns
     -------
@@ -322,6 +328,9 @@ async def query_timeline_notifications_single(
         conditions.append(f"source_butler = ANY(${idx})")
         args.append(source_butlers)
         idx += 1
+
+    if only_failed:
+        conditions.append("status = 'failed'")
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     sql = (

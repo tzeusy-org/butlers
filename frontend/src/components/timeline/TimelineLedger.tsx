@@ -56,11 +56,25 @@ const TYPE_DOT_CLASS: Record<string, string> = {
   notification: "bg-purple-500",
 };
 
-function TypeBadge({ type }: { type: string }) {
+// A notification whose delivery bounced (data.status === "failed") is a
+// failure impersonating health if rendered with the calm purple dot — an
+// hours-long bounced-alert outage read as routine. Give it the destructive
+// mark so the row is legible as an error at a glance, matching the Errors lens
+// that now also selects these deliveries server-side (bu-hmdqz.14).
+function isFailedNotification(event: TimelineEvent): boolean {
+  return event.type === "notification" && event.data?.status === "failed";
+}
+
+function TypeBadge({ type, failed = false }: { type: string; failed?: boolean }) {
+  const dotClass = failed ? "bg-destructive" : (TYPE_DOT_CLASS[type] ?? "bg-muted-foreground/50");
   return (
-    <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground shrink-0">
-      <span className={`size-1.5 rounded-full ${TYPE_DOT_CLASS[type] ?? "bg-muted-foreground/50"}`} />
-      {type}
+    <span
+      className={`inline-flex items-center gap-1.5 font-mono text-[11px] shrink-0 ${
+        failed ? "text-destructive" : "text-muted-foreground"
+      }`}
+    >
+      <span className={`size-1.5 rounded-full ${dotClass}`} />
+      {failed ? "failed" : type}
     </span>
   );
 }
@@ -199,7 +213,7 @@ function EventRow({
         className="font-mono tabular-nums text-[11px] text-muted-foreground"
       />
       <span className="font-mono text-[11px] text-muted-foreground truncate">{event.butler}</span>
-      <TypeBadge type={event.type} />
+      <TypeBadge type={event.type} failed={isFailedNotification(event)} />
       <span className="truncate font-serif text-[13px] leading-[1.5]" title={event.summary}>
         {event.summary}
       </span>

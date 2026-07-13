@@ -153,7 +153,7 @@ The `SessionDetailPage` (`/sessions/:id?butler=<name>`) provides a full-page vie
 - **THEN** an "Error" card renders with `text-destructive` title and the error in a preformatted block with `bg-destructive/10` background
 
 ### Requirement: Unified Timeline
-The Timeline page (`/timeline`) merges events from all butlers into a single reverse-chronological stream. It answers "what has been happening across the entire system?" and is the primary surface for detecting anomalous patterns spanning multiple butlers.
+The Timeline page (`/timeline`) SHALL merge events from all butlers into a single reverse-chronological stream. It answers "what has been happening across the entire system?" and is the primary surface for detecting anomalous patterns spanning multiple butlers.
 
 #### Scenario: Timeline event stream
 - **WHEN** the operator navigates to `/timeline`
@@ -198,6 +198,24 @@ The Timeline page (`/timeline`) merges events from all butlers into a single rev
 - **WHEN** the Timeline page loads
 - **THEN** its data polls automatically via `useBusAwarePollInterval` (bu-01r64.3): a 5-minute reconciliation sweep while the fleet event bus is connected, a 30-second fallback while it's down/reconnecting
 - **AND** there is no manual toggle or interval picker — the prior `AutoRefreshToggle`/`useAutoRefresh` mechanism retired
+
+#### Scenario: Human-readable event summary derivation
+- **WHEN** a session's stored prompt is machine text — a message fenced in `<routed_message>` or `<user_message>` tags (possibly inside a REQUEST CONTEXT / guidance envelope or a wrapper sentence), a `"Please use the /<skill> skill ..."` skill-dispatch preamble, or a QA-canary system prompt — the backend derives the row's `summary` (`_derive_session_summary`) rather than dumping the raw prompt
+- **THEN** a fenced message body is unwrapped to its inner human text (e.g. `<user_message>Came online</user_message>` → "Came online")
+- **AND** a skill-dispatch preamble is collapsed to a humanized trigger label derived from the skill slug (e.g. `/message-triage` → "Message triage")
+- **AND** a QA-canary session is labelled by its system-prompt sentinel (e.g. "You are a QA investigation agent for the butler system." → "QA patrol investigation"), never by dumping the system prompt
+- **AND** a plain human prompt with no envelope passes through unchanged, and when no readable text survives the summary falls back to a trigger-source label
+
+#### Scenario: Failed-delivery row honesty
+- **WHEN** a notification event has `data.status === "failed"` (a bounced delivery, e.g. a repeatedly-failing owner alert)
+- **THEN** its row renders the destructive mark — a `bg-destructive` dot and the word "failed" — instead of the calm neutral `bg-purple-500` "notification" dot reserved for delivered notifications
+- **AND** a delivered (`sent`) notification keeps the calm neutral dot
+
+#### Scenario: Errors lens includes failed deliveries
+- **WHEN** the Errors-only view queries `GET /api/timeline?event_type=error`
+- **THEN** the result includes failed notification deliveries (`status = 'failed'`) alongside failed sessions (`success = false`) — a bounced owner alert is an error the owner must see, not a calm notification hidden from the Errors lens
+- **AND** the notification sub-query is restricted to failed deliveries in SQL (keeping keyset pagination truthful over the actually-matching set)
+- **AND** `event_type=notification` (or an unfiltered stream) is unaffected — it returns notifications of all statuses
 
 ### Requirement: Notification Audit Trail
 The Notifications page (`/notifications`) provides a complete audit trail of every notification sent by any butler across all delivery channels. This surface is essential for verifying that user-facing communications were delivered successfully and diagnosing delivery failures.

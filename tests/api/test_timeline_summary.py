@@ -116,6 +116,83 @@ def test_long_routed_body_is_truncated():
 
 
 # ---------------------------------------------------------------------------
+# Machine-envelope unwrapping — table-driven over the live-observed prompt
+# shapes that leaked into the chronicle's primary column (bu-hmdqz.14).
+#
+# Live GET /api/timeline?limit=50 found 30/50 head-page summaries were machine
+# text: raw <user_message> fences, "/message-triage" skill-dispatch preambles,
+# and a QA-canary system prompt rendered as an (error-badged) row.
+# ---------------------------------------------------------------------------
+
+_QA_INVESTIGATION_PROMPT = (
+    "You are a QA investigation agent for the butler system. An automated patrol "
+    "cycle has detected a recurring error in the travel butler and you have been "
+    "spawned to investigate the root cause and propose a fix.\n\n## Error Context\n..."
+)
+
+_MESSAGE_TRIAGE_PROMPT = (
+    "Please use the /message-triage skill to analyze the following message and route "
+    "relevant components to the appropriate butler(s) by calling the `route_to_butler` "
+    "MCP tool.\n\nIMPORTANT: You MUST call the MCP tool `route_to_butler` at least once."
+)
+
+
+@pytest.mark.parametrize(
+    ("prompt", "trigger_source", "expected"),
+    [
+        # <user_message> fence — the whole prompt is the fence.
+        ("<user_message>Came online</user_message>", "route", "Came online"),
+        # <user_message> fence embedded in a wrapper sentence — unwrap the fence.
+        (
+            "The user reports: <user_message>Status changed to away</user_message> "
+            "This appears to be a presence update.",
+            "route",
+            "Status changed to away",
+        ),
+        # QA-canary system prompt — labelled, never dumped.
+        (_QA_INVESTIGATION_PROMPT, "schedule", "QA patrol investigation"),
+        (
+            "You are a QA review follow-up agent. A QA investigation PR ...",
+            "schedule",
+            "QA review follow-up",
+        ),
+        # Skill-dispatch preamble — collapsed to a humanized trigger label.
+        (_MESSAGE_TRIAGE_PROMPT, "classification", "Message triage"),
+        (
+            "Please use the /signal-extraction skill to decompose the conversation.",
+            "classification",
+            "Signal extraction",
+        ),
+        # <routed_message> still preferred (unchanged behavior).
+        ("<routed_message>Book a table</routed_message>", "route", "Book a table"),
+        # Plain human prompt passes through untouched.
+        ("Run the nightly digest", "schedule", "Run the nightly digest"),
+    ],
+)
+def test_derive_session_summary_unwraps_machine_envelopes(prompt, trigger_source, expected):
+    summary = _derive_session_summary(prompt, trigger_source=trigger_source)
+    assert summary == expected
+
+
+def test_qa_canary_prompt_never_leaks_system_prompt():
+    """The QA system prompt body must not appear in the summary."""
+    summary = _derive_session_summary(_QA_INVESTIGATION_PROMPT, trigger_source="schedule")
+    assert "investigation agent" not in summary
+    assert "Error Context" not in summary
+    assert summary == "QA patrol investigation"
+
+
+def test_skill_preamble_only_matches_at_start():
+    """A fenced body that merely mentions a skill is not a dispatch preamble."""
+    prompt = "<routed_message>Please use the /calendar skill I mentioned</routed_message>"
+    # Fenced body wins; not collapsed to a skill label.
+    assert (
+        _derive_session_summary(prompt, trigger_source="route")
+        == "Please use the /calendar skill I mentioned"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _session_to_event — uses the derivation
 # ---------------------------------------------------------------------------
 
@@ -288,6 +365,19 @@ async def test_query_timeline_notifications_single_composite_cursor_in_sql():
     assert cursor_ts in args
     assert cursor_id in args
     assert "ORDER BY created_at DESC, id DESC" in sql
+
+
+async def test_query_timeline_notifications_single_only_failed_pushes_status_filter():
+    """only_failed restricts the notifications query to failed deliveries (bu-hmdqz.14)."""
+    pool = _FakeNotificationPool(rows=[])
+    await query_timeline_notifications_single(pool, limit=10, only_failed=True)
+    sql, _args = pool.calls[0]
+    assert "status = 'failed'" in sql
+
+    pool2 = _FakeNotificationPool(rows=[])
+    await query_timeline_notifications_single(pool2, limit=10, only_failed=False)
+    sql2, _args2 = pool2.calls[0]
+    assert "status = 'failed'" not in sql2
 
 
 # ---------------------------------------------------------------------------
@@ -479,3 +569,73 @@ async def test_timeline_endpoint_session_filter_forwards_only_errors_false(app):
     assert resp.status_code == 200
     called_sql = mock_db.fan_out_with_status.call_args.args[0]
     assert "success IS DISTINCT FROM false" in called_sql
+
+
+# ---------------------------------------------------------------------------
+# Errors lens widening (bu-hmdqz.14): event_type=error surfaces failed
+# deliveries alongside failed sessions. Previously "error" mapped solely to
+# sessions with success=False, so a multi-hour bounced owner-alert outage was
+# invisible to the Errors-only view — failure impersonating health.
+# ---------------------------------------------------------------------------
+
+
+def _make_notification_row(*, message: str, status: str, source_butler: str = "switchboard"):
+    return {
+        "id": uuid4(),
+        "source_butler": source_butler,
+        "channel": "telegram",
+        "recipient": "owner",
+        "message": message,
+        "status": status,
+        "created_at": _NOW,
+    }
+
+
+async def test_timeline_error_lens_includes_failed_delivery(app):
+    """A failed notification delivery appears under event_type=error (contract test)."""
+    failed_row = _make_notification_row(
+        message="Credential SPOTIFY_ACCESS_TOKEN has expired", status="failed"
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[failed_row])
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/timeline", params={"event_type": "error"})
+
+    assert resp.status_code == 200
+    events = resp.json()["data"]
+    # The failed delivery is present in the Errors lens...
+    assert len(events) == 1
+    assert events[0]["data"]["status"] == "failed"
+    # ...and the notification query was restricted to failed deliveries only.
+    notif_sql = mock_pool.fetch.call_args.args[0]
+    assert "status = 'failed'" in notif_sql
+
+
+async def test_timeline_notification_lens_unaffected_by_error_widening(app):
+    """event_type=notification still returns all statuses (no failed-only restriction)."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/timeline", params={"event_type": "notification"})
+
+    assert resp.status_code == 200
+    notif_sql = mock_pool.fetch.call_args.args[0]
+    assert "status = 'failed'" not in notif_sql
+    # And sessions are not queried at all for a notification-only lens.
+    mock_db.fan_out_with_status.assert_not_called()

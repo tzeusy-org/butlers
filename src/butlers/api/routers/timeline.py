@@ -55,16 +55,46 @@ def _get_db_manager() -> DatabaseManager:
 
 _SUMMARY_MAX_LEN = 120
 
-# Inner payload of a routed message; this carries the genuine user/trigger
+# Inner payload of a message fence; this carries the genuine user/trigger
 # intent. Switchboard fences the real message as
 # ``<routed_message>\n...\n</routed_message>`` and prepends a large
-# REQUEST CONTEXT / guidance envelope, so the fenced text is what we want.
-# The body must not contain a nested ``<routed_message>`` open tag, otherwise a
-# guidance mention of the tag (e.g. "instructions within <routed_message>
-# tags") would be captured instead of the real fenced payload.
-_ROUTED_MESSAGE_RE = re.compile(
-    r"<routed_message>(?P<body>(?:(?!<routed_message>).)*?)</routed_message>",
+# REQUEST CONTEXT / guidance envelope; other producers wrap presence/status
+# updates as ``<user_message>...</user_message>`` (sometimes inline, e.g.
+# "The user reports: <user_message>Status changed to away</user_message>"). The
+# fenced text is the human-readable content in all of these, so we unwrap a
+# fixed *family* of known fence tags rather than dumping the machine wrapper.
+#
+# The family is an explicit allowlist (not "any XML tag") so a stray guidance
+# mention of some other tag can never be mistaken for real content. Each body
+# must not contain a nested open of *its own* tag, otherwise a guidance mention
+# (e.g. "instructions within <routed_message> tags") could capture across it.
+_FENCE_TAGS = ("routed_message", "user_message")
+_FENCE_RE = re.compile(
+    r"<(?P<tag>" + "|".join(_FENCE_TAGS) + r")>"
+    r"(?P<body>(?:(?!<(?P=tag)>).)*?)"
+    r"</(?P=tag)>",
     re.DOTALL,
+)
+
+# Skill-dispatch preamble: ingestion/classification sessions open with
+# "Please use the /<skill> skill to ..." followed by pages of tool-calling
+# instructions. That machine preamble is not human intent — collapse it to a
+# readable label derived from the skill slug (e.g. "/message-triage" ->
+# "Message triage"). Anchored at the start so a fenced body that merely mentions
+# a skill is never mistaken for a dispatch preamble.
+_SKILL_PREAMBLE_RE = re.compile(
+    r"^\s*Please use the /(?P<skill>[a-z0-9][a-z0-9-]*) skill\b",
+    re.IGNORECASE,
+)
+
+# QA-canary sessions are spawned with a system prompt that opens with a fixed
+# sentinel. Dumping that prompt renders the canary as an opaque (and, when the
+# session fails, error-badged) row describing the QA agent's own instructions
+# instead of the household event it stands in for. Map the sentinel to a short
+# operational label keyed by prompt prefix.
+_QA_PROMPT_LABELS = (
+    ("You are a QA investigation agent for the butler system.", "QA patrol investigation"),
+    ("You are a QA review follow-up agent.", "QA review follow-up"),
 )
 
 # Structured-context preamble markers prepended to a session prompt. Anything
@@ -107,30 +137,52 @@ def _truncate(text: str) -> str:
     return collapsed
 
 
+def _skill_label(skill_slug: str) -> str:
+    """Humanize a skill slug into a trigger label ("message-triage" -> "Message triage")."""
+    return skill_slug.replace("-", " ").strip().capitalize()
+
+
 def _derive_session_summary(prompt: str, *, trigger_source: str | None) -> str:
     """Derive a human-readable summary from a (possibly enveloped) session prompt.
 
-    Session prompts are composed as ``f"{context}\\n\\n{prompt}"`` where
-    ``context`` is the REQUEST CONTEXT / guidance envelope and ``prompt`` is the
-    genuine message fenced in ``<routed_message>`` tags. Dumping the raw prompt
-    surfaces the JSON envelope ("REQUEST CONTEXT (for reply targeting ...){...")
-    in the activity feed, which is unreadable. We instead:
+    Session prompts are machine text as often as not: routed messages carry a
+    REQUEST CONTEXT / guidance envelope with the real message fenced in
+    ``<routed_message>`` (or ``<user_message>``) tags; ingestion/classification
+    sessions open with a "Please use the /<skill> skill ..." dispatch preamble;
+    QA-canary sessions carry a fixed system prompt. Dumping the raw prompt
+    surfaces that plumbing in the chronicle's primary column, which promises
+    every household event in human terms. We instead:
 
-    1. Prefer the fenced ``<routed_message>`` body (the real user/trigger text).
-    2. Otherwise strip any structured-context preamble (REQUEST CONTEXT, INPUT
+    1. Label QA-canary sessions by their system-prompt sentinel.
+    2. Collapse a "Please use the /<skill> skill" dispatch preamble to a
+       readable trigger label derived from the skill slug.
+    3. Prefer a fenced message body (``<routed_message>`` / ``<user_message>``)
+       — the real user/trigger text — when present.
+    4. Otherwise strip any structured-context preamble (REQUEST CONTEXT, INPUT
        CONTEXT, guidance sections) and use whatever readable text remains.
-    3. Fall back to a trigger-based label when nothing readable survives.
+    5. Fall back to a trigger-based label when nothing readable survives.
     """
     text = prompt or ""
+    lead = text.lstrip()
 
-    # 1. Prefer the genuine routed-message payload when present.
-    match = _ROUTED_MESSAGE_RE.search(text)
+    # 1. QA-canary system prompt — label it, never dump its instructions.
+    for sentinel, label in _QA_PROMPT_LABELS:
+        if lead.startswith(sentinel):
+            return label
+
+    # 2. Skill-dispatch preamble — collapse to a trigger label.
+    skill_match = _SKILL_PREAMBLE_RE.match(lead)
+    if skill_match:
+        return _skill_label(skill_match.group("skill"))
+
+    # 3. Prefer the genuine fenced message payload when present.
+    match = _FENCE_RE.search(text)
     if match:
         body = match.group("body").strip()
         if body:
             return _truncate(body)
 
-    # 2. Strip the structured-context preamble. Keep only the text that precedes
+    # 4. Strip the structured-context preamble. Keep only the text that precedes
     #    the first machine-context marker.
     cut = len(text)
     for marker in _CONTEXT_PREAMBLE_MARKERS:
@@ -141,7 +193,7 @@ def _derive_session_summary(prompt: str, *, trigger_source: str | None) -> str:
     if stripped:
         return _truncate(stripped)
 
-    # 3. Nothing readable survived — fall back to a trigger-based label.
+    # 5. Nothing readable survived — fall back to a trigger-based label.
     return _TRIGGER_LABELS.get(trigger_source or "", "Activity")
 
 
@@ -261,7 +313,17 @@ async def list_timeline(
     want_session_type = event_type is None or "session" in event_type
     want_error_type = event_type is None or "error" in event_type
     want_sessions = want_session_type or want_error_type
-    want_notifications = event_type is None or "notification" in event_type
+    want_notification_type = event_type is None or "notification" in event_type
+
+    # Errors lens widening: a failed delivery is an error the owner must see, so
+    # ``event_type=error`` now selects failed notifications alongside failed
+    # sessions (previously "error" mapped solely to sessions with success=False,
+    # leaving a multi-hour bounced-alert outage invisible to the Errors view).
+    want_notifications = want_notification_type or want_error_type
+    # When notifications are pulled ONLY because of the error lens (not an
+    # explicit notification request), restrict them to failed deliveries so the
+    # Errors view stays errors-only.
+    only_failed_notifications = want_error_type and not want_notification_type
 
     # Push the session/error split into SQL (only_errors) instead of fetching
     # the newest sessions and filtering the derived type afterward — the old
@@ -305,6 +367,7 @@ async def list_timeline(
                 before_id=before_id,
                 limit=limit + 1,
                 source_butlers=target_butlers,
+                only_failed=only_failed_notifications,
             )
             for dto in notif_dtos:
                 events.append(_notification_dto_to_event(dto))
