@@ -609,6 +609,8 @@ async def _deliver(
 async def run_decision_review_digest(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None = None,
+    *,
+    _now: datetime | None = None,
 ) -> dict[str, Any]:
     """Weekly digest of open owner-decision beads. Never fabricates an all-clear.
 
@@ -617,9 +619,14 @@ async def run_decision_review_digest(
     message when it finds beads that still need migrating to the `decision`
     label -- independent of whether any decisions are *currently* open, so
     label-migration nudges keep firing even during a genuine all-clear week.
+
+    ``_now`` is a test-only clock override (see ``compute_decision_digest``'s
+    ``now``); the scheduler never passes it, so production uses the real wall
+    clock. Injecting it lets faketime-matrix tests anchor the staleness check
+    to the same fixed reference the export mtime is stamped to.
     """
     del job_args
-    digest = compute_decision_digest()
+    digest = compute_decision_digest(now=_now)
 
     if not digest.available:
         logger.warning(
@@ -670,6 +677,8 @@ async def run_decision_review_digest(
 async def run_decision_escalation_check(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None = None,
+    *,
+    _now: datetime | None = None,
 ) -> dict[str, Any]:
     """Escalate once per (decision, blocked-issue) pair once a block exceeds 48h.
 
@@ -679,9 +688,14 @@ async def run_decision_escalation_check(
     Only a successfully *delivered* escalation writes the marker, so a
     quiet-hours-suppressed escalation is retried on the next tick instead of
     being silently dropped forever.
+
+    ``_now`` is a test-only clock override (see ``compute_decision_digest``'s
+    ``now``); the scheduler never passes it, so production uses the real wall
+    clock. Injecting it lets faketime-matrix tests anchor the staleness check
+    to the same fixed reference the export mtime is stamped to.
     """
     del job_args
-    digest = compute_decision_digest()
+    digest = compute_decision_digest(now=_now)
 
     if not digest.available:
         logger.warning(

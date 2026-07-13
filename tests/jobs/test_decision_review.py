@@ -600,7 +600,7 @@ async def test_run_digest_unavailable_records_deferred_ledger_event_and_sends_no
             "butlers.jobs.decision_review.record_attention_event", new=AsyncMock()
         ) as record_mock,
     ):
-        result = await run_decision_review_digest(pool)
+        result = await run_decision_review_digest(pool, _now=_NOW)
 
     assert result == {"available": False, "reason": "export_missing"}
     record_mock.assert_awaited_once()
@@ -617,7 +617,7 @@ async def test_run_digest_genuine_zero_sends_nothing(tmp_path):
         patch("butlers.jobs.decision_review._DEFAULT_EXPORT_PATH", export),
         patch("butlers.jobs.decision_review._run_unlabeled_marker_lint", return_value=[]),
     ):
-        result = await run_decision_review_digest(pool)
+        result = await run_decision_review_digest(pool, _now=_NOW)
 
     assert result == {
         "available": True,
@@ -647,7 +647,7 @@ async def test_run_digest_delivers_when_decisions_open(tmp_path):
         ) as deliver_mock,
         patch("butlers.jobs.decision_review.record_attention_event", new=AsyncMock()),
     ):
-        result = await run_decision_review_digest(pool)
+        result = await run_decision_review_digest(pool, _now=_NOW)
 
     assert result == {
         "available": True,
@@ -686,7 +686,7 @@ async def test_run_digest_lint_violations_deliver_separate_low_priority_message(
         ) as deliver_mock,
         patch("butlers.jobs.decision_review.record_attention_event", new=AsyncMock()),
     ):
-        result = await run_decision_review_digest(pool)
+        result = await run_decision_review_digest(pool, _now=_NOW)
 
     assert result == {
         "available": True,
@@ -760,7 +760,7 @@ async def test_run_escalation_check_skips_already_escalated(tmp_path):
         patch("butlers.jobs.decision_review._DEFAULT_EXPORT_PATH", export),
         patch("butlers.jobs.decision_review.audit_router.append", new=AsyncMock()) as append_mock,
     ):
-        result = await run_decision_escalation_check(pool)
+        result = await run_decision_escalation_check(pool, _now=_NOW)
 
     assert result == {
         "available": True,
@@ -804,7 +804,7 @@ async def test_run_escalation_check_delivers_and_records_marker(tmp_path):
         patch("butlers.jobs.decision_review.record_attention_event", new=AsyncMock()),
         patch("butlers.jobs.decision_review.audit_router.append", new=AsyncMock()) as append_mock,
     ):
-        result = await run_decision_escalation_check(pool)
+        result = await run_decision_escalation_check(pool, _now=_NOW)
 
     assert result == {
         "available": True,
@@ -861,7 +861,7 @@ async def test_run_escalation_check_one_failure_does_not_sink_the_others(tmp_pat
         patch("butlers.jobs.decision_review.record_attention_event", new=AsyncMock()),
         patch("butlers.jobs.decision_review.audit_router.append", new=AsyncMock()) as append_mock,
     ):
-        result = await run_decision_escalation_check(pool)
+        result = await run_decision_escalation_check(pool, _now=_NOW)
 
     assert result["available"] is True
     assert result["escalations_found"] == 2
@@ -897,7 +897,7 @@ async def test_run_escalation_check_suppressed_does_not_write_marker(tmp_path):
         patch("butlers.jobs.decision_review.record_attention_event", new=AsyncMock()),
         patch("butlers.jobs.decision_review.audit_router.append", new=AsyncMock()) as append_mock,
     ):
-        result = await run_decision_escalation_check(pool)
+        result = await run_decision_escalation_check(pool, _now=_NOW)
 
     assert result["escalated"] == 0
     append_mock.assert_not_awaited()
