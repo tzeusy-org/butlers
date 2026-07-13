@@ -12,8 +12,8 @@
  * `useRegisterShortcut` is the one hook that both:
  *   1. installs the actual key handling for as long as the calling component
  *      stays mounted, with a single shared guard (editable fields, `<select>`,
- *      contentEditable, and — new here, subsuming bu-5o22a — any open
- *      modal/dialog overlay); and
+ *      contentEditable, keystrokes aimed into any open dialog, and — new here,
+ *      subsuming bu-5o22a — any open *modal* overlay); and
  *   2. publishes the binding's description + display keys to the '?' help
  *      sheet's "On this page" section (see `components/ui/shortcut-hints.tsx`)
  *      via `useShortcutHintEntries`.
@@ -72,8 +72,8 @@ export interface ShortcutBinding {
   /** Invoked when the chord matches and the shortcut isn't suspended. */
   handler: () => void;
   /**
-   * Fire even while focus is in an editable field, a `<select>`, or a
-   * modal/dialog is open. Default false — almost every page-scoped
+   * Fire even while focus is in an editable field or inside a dialog, or while
+   * a modal dialog owns the app. Default false — almost every page-scoped
    * single-key shortcut collides with normal typing and must stay
    * suspended in those contexts.
    */
@@ -126,9 +126,10 @@ export function ShortcutRegistryProvider({ children }: { children: ReactNode }) 
 }
 
 /**
- * Suspend page-scoped shortcuts while focus sits in an editable field or any
- * modal/dialog overlay is open. Extends the app-wide editable-field guard
- * (`use-keyboard-shortcuts.ts`) to `<select>` and to open overlays — bu-5o22a's
+ * Suspend page-scoped shortcuts while focus sits in an editable field, inside
+ * any open dialog, or anywhere while a *modal* dialog owns the app. Extends the
+ * app-wide editable-field guard (`use-keyboard-shortcuts.ts`) to `<select>`,
+ * to keystrokes aimed into any dialog, and to open modal overlays — bu-5o22a's
  * gap plus the "double-fire under an open palette" failure mode this hook
  * exists to make structurally impossible.
  */
@@ -139,12 +140,24 @@ export function isShortcutTargetSuspended(target: EventTarget | null): boolean {
   if (el) {
     if (SUSPENDED_TAGS.has(el.tagName)) return true;
     if (el.isContentEditable) return true;
+    // Target-containment: a keystroke fired while focus sits INSIDE any dialog
+    // — modal or not, e.g. the persistent non-modal floating chat widget — is
+    // that dialog's keystroke and must never leak through to a page-scoped
+    // shortcut beneath it, regardless of the dialog's modality.
+    if (typeof el.closest === "function" && el.closest('[role="dialog"]')) return true;
   }
-  // Any open modal/dialog overlay (EntityFinder's Command menu, the '?' help
-  // sheet, or any future overlay built on useModalChoreography, bu-qvnce.10)
-  // owns the keyboard while it's up — a page-scoped shortcut firing
-  // underneath it is exactly the double-fire this hook exists to prevent.
-  if (typeof document !== "undefined" && document.querySelector('[role="dialog"]')) return true;
+  // A *modal* overlay (role="dialog" + aria-modal="true": EntityFinder's
+  // Command menu, the '?' help sheet, any useModalChoreography dialog,
+  // bu-qvnce.10) owns the keyboard app-wide while it's up, so page-scoped
+  // shortcuts stay suspended regardless of where focus sits — that's the
+  // double-fire this hook exists to prevent. A NON-modal role="dialog" (the
+  // floating chat widget, mounted persistently in RootLayout with no
+  // aria-modal) deliberately does NOT suspend the page: only keystrokes aimed
+  // into it (the containment check above) are withheld, so approvals
+  // j/k/a/d/x, the chronicles bracket keys, sessions, etc. keep working while
+  // chat is open (bu-hmdqz.11).
+  if (typeof document !== "undefined" && document.querySelector('[role="dialog"][aria-modal="true"]'))
+    return true;
   return false;
 }
 

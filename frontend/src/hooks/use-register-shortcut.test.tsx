@@ -145,22 +145,87 @@ describe("useRegisterShortcut", () => {
   // `contentEditable = "true"` div), so a DOM-event-level test here would be
   // a false negative, not real coverage.
 
-  it("suspends while any [role=dialog] overlay is open", () => {
+  it("suspends app-wide while a MODAL [role=dialog][aria-modal=true] overlay is open", () => {
     const handler = vi.fn();
     act(() => {
       root.render(<Registrar bindings={[{ key: "a", display: ["a"], description: "Approve", handler }]} />);
     });
 
-    const dialog = document.createElement("div");
-    dialog.setAttribute("role", "dialog");
-    document.body.appendChild(dialog);
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    document.body.appendChild(modal);
 
+    // Focus on the page (event target is window) — a true modal still suspends.
     act(() => press("a"));
     expect(handler).not.toHaveBeenCalled();
 
-    dialog.remove();
+    modal.remove();
     act(() => press("a"));
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  // bu-hmdqz.11: the persistent floating chat widget is a NON-modal role=dialog
+  // (no aria-modal). Before this fix, its mere presence killed every
+  // page-scoped shortcut app-wide (approvals j/k/a/d/x, chronicles brackets,
+  // sessions) while the '?' sheet still advertised them.
+  it("chat open (non-modal dialog) + focus on the page → the page verb still fires", () => {
+    const handler = vi.fn();
+    act(() => {
+      root.render(<Registrar bindings={[{ key: "a", display: ["a"], description: "Approve", handler }]} />);
+    });
+
+    const chat = document.createElement("div");
+    chat.setAttribute("role", "dialog"); // NON-modal: no aria-modal
+    document.body.appendChild(chat);
+
+    // Focus is on the page (event target is window), not inside the chat.
+    act(() => press("a"));
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    chat.remove();
+  });
+
+  it("focus INSIDE a dialog (modal or not) never leaks to a page-scoped shortcut", () => {
+    const handler = vi.fn();
+    act(() => {
+      root.render(<Registrar bindings={[{ key: "a", display: ["a"], description: "Approve", handler }]} />);
+    });
+
+    const chat = document.createElement("div");
+    chat.setAttribute("role", "dialog"); // NON-modal floating chat widget
+    const inner = document.createElement("button");
+    chat.appendChild(inner);
+    document.body.appendChild(chat);
+
+    // Keystroke fired from an element inside the chat — its keystroke, not the page's.
+    act(() => inner.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })));
+    expect(handler).not.toHaveBeenCalled();
+
+    chat.remove();
+  });
+
+  it("a true modal (aria-modal=true) suspends everything regardless of focus", () => {
+    const handler = vi.fn();
+    act(() => {
+      root.render(<Registrar bindings={[{ key: "a", display: ["a"], description: "Approve", handler }]} />);
+    });
+
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    const inside = document.createElement("button");
+    modal.appendChild(inside);
+    document.body.appendChild(modal);
+
+    // Focus on the page ...
+    act(() => press("a"));
+    expect(handler).not.toHaveBeenCalled();
+    // ... and focus inside the modal — both suspended.
+    act(() => inside.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })));
+    expect(handler).not.toHaveBeenCalled();
+
+    modal.remove();
   });
 
   it("fires even in an editable field / open overlay when allowWhenSuspended is set", () => {
@@ -352,10 +417,29 @@ describe("isShortcutTargetSuspended", () => {
     expect(isShortcutTargetSuspended(editable)).toBe(true);
   });
 
-  it("returns true when a [role=dialog] element exists anywhere in the document", () => {
-    const dialog = document.createElement("div");
-    dialog.setAttribute("role", "dialog");
-    document.body.appendChild(dialog);
+  it("returns true when a MODAL [role=dialog][aria-modal=true] exists (page focus)", () => {
+    const modal = document.createElement("div");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    document.body.appendChild(modal);
     expect(isShortcutTargetSuspended(document.body)).toBe(true);
+  });
+
+  it("returns FALSE for a page target while only a NON-modal [role=dialog] is open", () => {
+    // The persistent floating chat widget is a non-modal dialog: it must not
+    // suspend page-scoped shortcuts merely by being mounted (bu-hmdqz.11).
+    const chat = document.createElement("div");
+    chat.setAttribute("role", "dialog"); // no aria-modal
+    document.body.appendChild(chat);
+    expect(isShortcutTargetSuspended(document.body)).toBe(false);
+  });
+
+  it("returns true for a target INSIDE any dialog, modal or not (containment)", () => {
+    const chat = document.createElement("div");
+    chat.setAttribute("role", "dialog"); // non-modal
+    const inner = document.createElement("button");
+    chat.appendChild(inner);
+    document.body.appendChild(chat);
+    expect(isShortcutTargetSuspended(inner)).toBe(true);
   });
 });

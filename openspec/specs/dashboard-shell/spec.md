@@ -459,6 +459,20 @@ The application SHALL support vim-inspired two-key navigation shortcuts and sear
 - **AND** the button has `opacity-60` by default and `opacity-100` on hover
 - **AND** the button is fixed-positioned at `bottom-4 right-4` with `z-50`
 
+#### Scenario: Page-scoped shortcut suspension
+
+Page-scoped shortcuts (registered per-page via `useRegisterShortcut`, e.g. approvals triage j/k/a/d/x/u) are suspended in the contexts below so they never collide with typing or leak underneath an overlay that owns the keyboard.
+
+- **WHEN** focus is in an `input`, `textarea`, `<select>`, or `contentEditable` element
+- **THEN** page-scoped shortcuts do not fire
+- **WHEN** focus sits inside any open dialog (`[role="dialog"]`), whether modal or not
+- **THEN** the keystroke belongs to that dialog and page-scoped shortcuts do not fire
+- **WHEN** a modal dialog (`[role="dialog"][aria-modal="true"]`, e.g. the command menu, the `?` help sheet, or any `useModalChoreography` overlay) is open
+- **THEN** page-scoped shortcuts are suspended app-wide regardless of where focus sits
+- **WHEN** only a non-modal dialog (`[role="dialog"]` without `aria-modal`, e.g. the persistent floating chat widget mounted in the shell) is open and focus is on the page
+- **THEN** page-scoped shortcuts continue to fire — a non-modal overlay does not claim the app's keyboard
+- **AND** a binding may opt out of all of the above suspension contexts by setting `allowWhenSuspended`
+
 ### Requirement: Dark Mode and Theme System
 
 The dashboard SHALL support three theme modes (light, dark, system) using a CSS class-based dark mode strategy with localStorage persistence.
