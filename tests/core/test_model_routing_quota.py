@@ -352,6 +352,7 @@ async def test_quota_within_limits_and_exceeded(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.pg_clock
 async def test_quota_reset_and_window_exclusion(pool: asyncpg.Pool) -> None:
     """reset_at excludes old usage; usage older than 30d excluded from 30d window."""
     # reset_24h_at: old row excluded, recent row counted

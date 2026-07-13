@@ -509,6 +509,7 @@ async def test_ensure_module_default_schedule_rejects_invalid_cron(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.integration
+@pytest.mark.pg_clock
 async def test_run_decay_sweep_fades_and_expires_facts_and_rules(core_memory_db_url: str) -> None:
     from butlers.modules.memory.storage import run_decay_sweep
 
@@ -617,6 +618,7 @@ async def test_run_decay_sweep_fades_and_expires_facts_and_rules(core_memory_db_
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.integration
+@pytest.mark.pg_clock
 async def test_run_decay_sweep_recovers_fading_fact_to_active(core_memory_db_url: str) -> None:
     """A fading fact whose confidence clock is reset (memory_confirm) recovers
     to validity='active' on the next sweep, and the stale metadata.status key
@@ -662,6 +664,7 @@ async def test_run_decay_sweep_recovers_fading_fact_to_active(core_memory_db_url
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.integration
+@pytest.mark.pg_clock
 async def test_memory_stats_reader_surfaces_swept_fading_count(core_memory_db_url: str) -> None:
     """The memory_stats MCP tool — a reader named explicitly in bu-5ud8p.1 —
     must count a sweep-produced fading fact via validity='fading', matching
@@ -701,6 +704,7 @@ async def test_memory_stats_reader_surfaces_swept_fading_count(core_memory_db_ur
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.integration
+@pytest.mark.pg_clock
 async def test_store_fact_supersedes_a_fading_fact(core_memory_db_url: str) -> None:
     """store_fact's supersession lookup must still find a fading fact for the
     same (entity/subject, scope, predicate) — otherwise a fresh write leaves

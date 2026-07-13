@@ -600,6 +600,7 @@ async def test_score_zero_for_no_interactions(dunbar_pool):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.pg_clock
 async def test_score_reflects_recency(dunbar_pool):
     """A more recent interaction produces a higher score than an older one."""
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
@@ -1432,6 +1433,7 @@ async def test_urgency_ordered_descending(dunbar_pool):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.pg_clock
 async def test_urgency_upcoming_date_bonus(dunbar_pool):
     """Upcoming date within 14 days adds +2.0 context bonus."""
     from butlers.tools.relationship.dunbar import _BONUS_UPCOMING_DATE, compute_urgency
@@ -1541,6 +1543,7 @@ async def test_urgency_positive_note_bonus(dunbar_pool):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.pg_clock
 async def test_urgency_stay_in_touch_overrides_tier_cadence(dunbar_pool):
     """stay_in_touch_days on a contact overrides the tier default cadence."""
     from butlers.tools.relationship.dunbar import compute_urgency, get_tier_ranking
@@ -2076,6 +2079,7 @@ async def test_contacts_overdue_with_tiers_tier_1500_excluded(simple_pool):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.pg_clock
 async def test_contacts_overdue_with_tiers_enriched_fields(simple_pool):
     """Overdue contacts include dunbar_tier, dunbar_score, effective_cadence."""
     from butlers.tools.relationship.dunbar import contacts_overdue_with_tiers

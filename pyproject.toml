@@ -132,6 +132,18 @@ markers = [
     "db: Database integration tests — require Docker (testcontainers with real PostgreSQL)",
     "contract: Architectural contract tests — validate invariants from heart-and-soul doctrine and key RFCs",
     "perf: Performance/scale tests — seed large datasets and measure query latency; opt-in via -m perf",
+    # pg_clock: tests whose pass/fail hinges on comparing a Postgres-clock
+    # timestamp (a column DEFAULT now(), an inline SQL now()/CURRENT_TIMESTAMP,
+    # or a PG-computed age/decay/window band) against a Python-clock value
+    # (datetime.now() used to build a cutoff or assertion). These pass normally
+    # because both clocks are the same wall time, but they FALSE-FAIL under the
+    # nightly faketime matrix legs (.github/workflows/nightly.yml): libfaketime
+    # shifts only the Python process clock (+45d/+120d), not the Postgres
+    # testcontainer, so the two sides skew by the offset. They are NOT
+    # wall-clock time-bombs (nothing breaks in prod, where both clocks are real
+    # and synced), so the faketime legs deselect them via `-m "not pg_clock"`;
+    # they stay in every other job (default CI, regular nightly). See bu-szgi9.
+    "pg_clock: Test mixes Postgres-clock and Python-clock time; deselected only from the faketime matrix legs (see bu-szgi9)",
 ]
 filterwarnings = [
     # Third-party websockets/uvicorn deprecation: tracked upstream, not actionable here

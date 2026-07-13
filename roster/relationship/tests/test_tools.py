@@ -2419,6 +2419,7 @@ async def test_stay_in_touch_set_not_found(pool_with_cadence):
         await stay_in_touch_set(pool, fake_id, 30)
 
 
+@pytest.mark.pg_clock
 async def test_contacts_overdue_with_stale_interaction(pool_with_cadence):
     """Contact with last interaction beyond cadence shows as overdue."""
     from butlers.tools.relationship import (

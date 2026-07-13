@@ -214,6 +214,7 @@ async def test_lookup_by_ref_leaves_db_byte_identical(pool, seeded_entity):
     "age_days",
     [0, FRESH_MAX_DAYS, FRESH_MAX_DAYS + 1, AGING_MAX_DAYS, AGING_MAX_DAYS + 1, 400],
 )
+@pytest.mark.pg_clock
 async def test_sql_band_matches_python_at_boundaries(pool, age_days):
     """The lookup's SQL band must equal the Python helper at exact boundaries.
 
@@ -265,6 +266,7 @@ async def test_sql_band_matches_python_at_boundaries(pool, age_days):
 
 
 @pytest.mark.parametrize("age_days", [5, 90, 365])
+@pytest.mark.pg_clock
 async def test_recency_band_matches_python_via_shared_builder(pool, age_days):
     """The whole-entity recency band agrees with the Python helper.
 

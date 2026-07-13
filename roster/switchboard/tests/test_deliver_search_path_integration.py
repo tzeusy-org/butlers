@@ -153,6 +153,7 @@ async def dual_scoped_pools(postgres_container):
         await public_db.close()
 
 
+@pytest.mark.pg_clock
 async def test_deliver_succeeds_under_public_only_search_path(dual_scoped_pools) -> None:
     """deliver() must find the registry row and complete dispatch even when
     the caller's pool search_path is scoped to ``public`` only -- the exact

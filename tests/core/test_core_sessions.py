@@ -184,6 +184,7 @@ async def test_session_fields_sanitize_untranslatable_unicode(pool):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.pg_clock
 async def test_sessions_list_and_summary(pool):
     """sessions_list returns sessions in order; sessions_summary aggregates correctly."""
     from butlers.core.sessions import (
@@ -232,6 +233,7 @@ async def test_sessions_list_and_summary(pool):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.pg_clock
 async def test_recover_orphaned_sessions_closes_open_rows(pool):
     """Open sessions are closed and marked failed; completed rows untouched."""
     from datetime import UTC, datetime, timedelta
@@ -284,6 +286,7 @@ async def test_recover_orphaned_sessions_closes_open_rows(pool):
     assert completed_row["error"] is None
 
 
+@pytest.mark.pg_clock
 async def test_recover_orphaned_sessions_clamps_duration_for_very_old_rows(pool):
     """30-day-old orphans must not overflow the INTEGER duration_ms column."""
     from datetime import UTC, datetime, timedelta

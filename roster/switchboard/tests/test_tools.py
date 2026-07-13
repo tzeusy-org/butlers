@@ -648,6 +648,7 @@ async def test_route_span_error_on_not_found(pool, otel_provider):
 # ------------------------------------------------------------------
 
 
+@pytest.mark.pg_clock
 async def test_route_updates_last_seen_at_on_success(pool):
     """Successful route updates the target butler's last_seen_at timestamp."""
     from butlers.tools.switchboard import register_butler, route

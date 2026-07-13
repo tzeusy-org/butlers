@@ -339,6 +339,7 @@ async def test_query_ledger_list_filters_by_outcome_and_origin_butler(pool: asyn
     assert result.data[0].occurred_at >= result.data[1].occurred_at
 
 
+@pytest.mark.pg_clock
 async def test_query_ledger_list_windows_by_since_until(pool: asyncpg.Pool) -> None:
     import datetime as dt
 
@@ -380,6 +381,7 @@ async def test_query_ledger_list_windows_by_since_until(pool: asyncpg.Pool) -> N
     assert out_of_window.meta.total == 0
 
 
+@pytest.mark.pg_clock
 async def test_query_ledger_summary_flags_suppressed_never_delivered(pool: asyncpg.Pool) -> None:
     """The real GROUP BY/FILTER SQL against Postgres -- not a mocked
     aggregate -- computes suppressed_never_delivered exactly as the epic's

@@ -442,6 +442,7 @@ class TestCorrectRouteUnregistered:
     caller can pick a valid routing target.
     """
 
+    @pytest.mark.pg_clock
     async def test_unregistered_butler_returns_butler_not_registered(
         self, pool: asyncpg.Pool
     ) -> None:
@@ -590,6 +591,7 @@ class TestCorrectRouteSuccess:
         call_fn = AsyncMock(return_value={"ok": True})
         return call_fn
 
+    @pytest.mark.pg_clock
     async def test_success_registers_butler_and_dispatches(self, pool: asyncpg.Pool) -> None:
         """Successful re-dispatch returns success=True with expected fields."""
         request_id = _make_request_id()
@@ -624,6 +626,7 @@ class TestCorrectRouteSuccess:
         assert result["correct_butler"] == "personal_assistant"
         assert result["lifecycle_state"] == "corrected"
 
+    @pytest.mark.pg_clock
     async def test_success_updates_lifecycle_state(self, pool: asyncpg.Pool) -> None:
         """Successful re-dispatch marks message_inbox as 'corrected'."""
         request_id = _make_request_id()
@@ -655,6 +658,7 @@ class TestCorrectRouteSuccess:
         assert row is not None
         assert row["lifecycle_state"] == "corrected"
 
+    @pytest.mark.pg_clock
     async def test_success_embeds_correction_metadata_in_inbox(self, pool: asyncpg.Pool) -> None:
         """Successful re-dispatch stores correction_id in processing_metadata."""
         request_id = _make_request_id()
@@ -693,6 +697,7 @@ class TestCorrectRouteSuccess:
         assert correction_section["correct_butler"] == "correct_butler"
         assert correction_section["description"] == "Test correction"
 
+    @pytest.mark.pg_clock
     async def test_success_writes_operator_audit_log(self, pool: asyncpg.Pool) -> None:
         """Successful re-dispatch records an entry in operator_audit_log."""
         request_id = _make_request_id()
@@ -731,6 +736,7 @@ class TestCorrectRouteSuccess:
         assert audit_row["outcome"] == "success"
         assert str(correction_id) in audit_row["operator_identity"]
 
+    @pytest.mark.pg_clock
     async def test_success_calls_route_with_original_context(self, pool: asyncpg.Pool) -> None:
         """The call_fn receives routing args containing the original context."""
         request_id = _make_request_id()
@@ -771,6 +777,7 @@ class TestCorrectRouteSuccess:
         assert context["original_request_id"] == str(request_id)
         assert context["correction_type"] == "misroute"
 
+    @pytest.mark.pg_clock
     async def test_success_with_correcting_session_id(self, pool: asyncpg.Pool) -> None:
         """correcting_session_id is included in routing args and correction metadata."""
         request_id = _make_request_id()
@@ -817,6 +824,7 @@ class TestCorrectRouteSuccess:
         metadata = json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
         assert metadata["correction"]["correcting_session_id"] == str(correcting_session_id)
 
+    @pytest.mark.pg_clock
     async def test_string_uuids_are_accepted(self, pool: asyncpg.Pool) -> None:
         """correct_route accepts string UUIDs for all UUID parameters."""
         request_id = str(uuid.uuid4())
@@ -855,6 +863,7 @@ class TestCorrectRouteNewSessionId:
     tool, whose return surfaces the spawned session UUID as ``session_id``.
     """
 
+    @pytest.mark.pg_clock
     async def test_success_returns_new_session_id_from_re_dispatch(
         self, pool: asyncpg.Pool
     ) -> None:
@@ -895,6 +904,7 @@ class TestCorrectRouteNewSessionId:
         assert result["success"] is True
         assert result["new_session_id"] == str(new_session_id)
 
+    @pytest.mark.pg_clock
     async def test_success_new_session_id_none_when_absent(self, pool: asyncpg.Pool) -> None:
         """new_session_id is None when the re-dispatch return omits session_id."""
         request_id = _make_request_id()

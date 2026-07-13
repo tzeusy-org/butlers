@@ -325,6 +325,7 @@ async def _co_attended_edges(pool, entity_a: uuid.UUID, entity_b: uuid.UUID) -> 
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.pg_clock
 async def test_co_attended_edges_minted_for_shared_event(provisioned_postgres_pool):
     """Two attendees at the same event receive co-attended edges in both directions."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
@@ -363,6 +364,7 @@ async def test_co_attended_edges_minted_for_shared_event(provisioned_postgres_po
         assert str(entity_b) in subjects
 
 
+@pytest.mark.pg_clock
 async def test_co_attended_edges_all_pairs_for_three_attendees(provisioned_postgres_pool):
     """Three attendees at the same event produce 3 pairs × 2 directions = 6 edges."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
@@ -396,6 +398,7 @@ async def test_co_attended_edges_all_pairs_for_three_attendees(provisioned_postg
         assert total_ef_rows == 6
 
 
+@pytest.mark.pg_clock
 async def test_no_co_attended_edges_for_entities_in_different_events(provisioned_postgres_pool):
     """Entities attending different events do not receive co-attended edges."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
@@ -439,6 +442,7 @@ async def test_no_co_attended_edges_for_entities_in_different_events(provisioned
         assert len(edges) == 0
 
 
+@pytest.mark.pg_clock
 async def test_no_co_attended_edges_for_sole_attendee(provisioned_postgres_pool):
     """A single resolved attendee per event produces no co-attended edges."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
@@ -465,6 +469,7 @@ async def test_no_co_attended_edges_for_sole_attendee(provisioned_postgres_pool)
         assert result["errors"] == 0
 
 
+@pytest.mark.pg_clock
 async def test_co_attended_edges_idempotent_on_second_run(provisioned_postgres_pool):
     """Running interaction_sync twice for the same event does not duplicate edges."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync

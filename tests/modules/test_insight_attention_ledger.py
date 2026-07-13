@@ -145,6 +145,7 @@ class TestContextBusGating:
         assert result["skipped"] is True
         notify_mock.assert_not_awaited()
 
+    @pytest.mark.pg_clock
     async def test_dnd_signal_bypassed_for_urgent_candidate(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 

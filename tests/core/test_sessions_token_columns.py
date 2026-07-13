@@ -155,6 +155,7 @@ class TestSessionTokenColumns:
         )
         assert child_row["parent_session_id"] == parent_id
 
+    @pytest.mark.pg_clock
     async def test_cache_token_columns_roundtrip_and_summary(self, pool_with_migrations):
         """session_complete persists cache buckets; sessions_summary aggregates them.
 

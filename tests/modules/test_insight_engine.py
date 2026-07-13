@@ -201,6 +201,7 @@ class TestVerbosityOff:
 class TestEndToEndInsightFlow:
     """End-to-end flow from propose_insight_candidate through delivery cycle to notify."""
 
+    @pytest.mark.pg_clock
     async def test_single_candidate_delivered_standalone(self, insight_pool):
         """Single candidate → standalone delivery, status=delivered, cooldown recorded."""
         from butlers.tools.switchboard.insight.broker import (
@@ -342,6 +343,7 @@ class TestEndToEndInsightFlow:
 class TestCrossButlerDeduplication:
     """Cross-butler deduplication: same dedup_key, highest priority wins."""
 
+    @pytest.mark.pg_clock
     async def test_highest_priority_wins_across_butlers(self, insight_pool):
         """Two butlers propose the same dedup_key; highest priority is delivered."""
         from butlers.tools.switchboard.insight.broker import (
@@ -905,6 +907,7 @@ class TestDigestFormatting:
 
     @pytest.mark.skipif(not _docker_available, reason="Docker not available")
     @pytest.mark.integration
+    @pytest.mark.pg_clock
     async def test_multiple_candidates_delivered_as_digest(self, insight_pool):
         """Budget > 1 causes multiple candidates to be delivered in digest format."""
         from butlers.tools.switchboard.insight.broker import (
@@ -1112,6 +1115,7 @@ class TestBudgetEnforcement:
         )
         assert pending == 2
 
+    @pytest.mark.pg_clock
     async def test_highest_priority_candidate_wins_under_budget(self, insight_pool):
         """When budget=1, the highest-priority candidate is selected."""
         from butlers.tools.switchboard.insight.broker import (
@@ -1387,6 +1391,7 @@ class TestDeliveryAttemptTracking:
         assert row["delivery_attempt_count"] == 1
         assert row["status"] == "pending"
 
+    @pytest.mark.pg_clock
     async def test_candidate_filtered_after_three_failures(self, insight_pool):
         """After 3 failed delivery attempts, candidate is marked filtered."""
         from butlers.tools.switchboard.insight.broker import delivery_cycle
@@ -1417,6 +1422,7 @@ class TestDeliveryAttemptTracking:
         assert row["delivery_attempt_count"] == 3
         assert row["status"] == "filtered"
 
+    @pytest.mark.pg_clock
     async def test_successful_delivery_does_not_increment_count(self, insight_pool):
         """Successful delivery does not touch delivery_attempt_count."""
         from butlers.tools.switchboard.insight.broker import delivery_cycle
@@ -1478,6 +1484,7 @@ class TestDeliveryAttemptTracking:
         assert row["status"] == "pending"
         assert row["delivery_attempt_count"] == 0
 
+    @pytest.mark.pg_clock
     async def test_delivery_attempt_count_reset_on_success_after_prior_failures(self, insight_pool):
         """Successful delivery resets delivery_attempt_count to 0.
 
@@ -2090,6 +2097,7 @@ class TestInsightDeliveryPathsSpec:
     # Case 4: 3-consecutive-failure → filtered
     # -----------------------------------------------------------------------
 
+    @pytest.mark.pg_clock
     async def test_three_consecutive_failures_mark_candidate_filtered_no_cooldown(
         self, insight_pool
     ):
@@ -2159,6 +2167,7 @@ class TestInsightDeliveryPathsSpec:
     # Case 5: success — full path with engagement tracking
     # -----------------------------------------------------------------------
 
+    @pytest.mark.pg_clock
     async def test_success_propose_queue_deliver_engagement_tracked(self, insight_pool):
         """Case 5 (success): full delivery path — propose → queue → deliver → engage.
 

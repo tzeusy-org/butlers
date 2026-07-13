@@ -598,6 +598,7 @@ async def test_insight_scan_birthday_message_includes_contact_name(provisioned_p
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
     provisioned_postgres_pool,
 ):
@@ -625,6 +626,7 @@ async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
         assert rows[0]["priority"] == 45
 
 
+@pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
     provisioned_postgres_pool,
 ):
@@ -676,6 +678,7 @@ async def test_insight_scan_stale_contact_not_yet_overdue_excluded(provisioned_p
         assert len(rows) == 0
 
 
+@pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
     provisioned_postgres_pool,
 ):
@@ -707,6 +710,7 @@ async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
         assert f"{iso_year}-W{iso_week:02d}" in dedup_key
 
 
+@pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_expires_7_days_from_now(provisioned_postgres_pool):
     """Stale contact candidate expires 7 days from generation."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
@@ -2012,6 +2016,7 @@ async def test_interaction_sync_missing_calendar_table_skips_calendar_scan(
         assert result["errors"] == 0
 
 
+@pytest.mark.pg_clock
 async def test_interaction_sync_calendar_logs_attendee_interaction(provisioned_postgres_pool):
     """A calendar event with a resolved attendee email logs an interaction fact."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
@@ -2065,6 +2070,7 @@ async def test_interaction_sync_calendar_logs_attendee_interaction(provisioned_p
         assert "event_id" in extra
 
 
+@pytest.mark.pg_clock
 async def test_interaction_sync_calendar_unresolved_attendee_skipped(
     provisioned_postgres_pool,
 ):
@@ -2150,6 +2156,7 @@ async def test_interaction_sync_calendar_cancelled_event_excluded(provisioned_po
         assert result["logged"] == 0
 
 
+@pytest.mark.pg_clock
 async def test_interaction_sync_calendar_owner_attendee_excluded(provisioned_postgres_pool):
     """The owner's own attendee entry (self=True) is excluded from interaction logging."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
@@ -2181,6 +2188,7 @@ async def test_interaction_sync_calendar_owner_attendee_excluded(provisioned_pos
         assert result["skipped_owner"] == 0  # excluded before owner check (self=True filter)
 
 
+@pytest.mark.pg_clock
 async def test_interaction_sync_calendar_owner_contact_skipped(provisioned_postgres_pool):
     """Owner contact resolved via non-self email entry is counted as skipped_owner."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
@@ -2213,6 +2221,7 @@ async def test_interaction_sync_calendar_owner_contact_skipped(provisioned_postg
         assert result["logged"] == 0
 
 
+@pytest.mark.pg_clock
 async def test_interaction_sync_calendar_case_insensitive_email_match(
     provisioned_postgres_pool,
 ):
@@ -2242,6 +2251,7 @@ async def test_interaction_sync_calendar_case_insensitive_email_match(
         assert result["logged"] == 1
 
 
+@pytest.mark.pg_clock
 async def test_interaction_sync_calendar_multiple_attendees_same_event(
     provisioned_postgres_pool,
 ):
@@ -2319,6 +2329,7 @@ async def test_interaction_sync_calendar_event_outside_window_excluded(
         assert result["logged"] == 0
 
 
+@pytest.mark.pg_clock
 async def test_interaction_sync_calendar_idempotent_second_run(provisioned_postgres_pool):
     """Running interaction sync twice for the same event does not create duplicate facts."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync
@@ -2377,6 +2388,7 @@ async def test_interaction_sync_calendar_no_attendees_field_skipped(
         assert result["logged"] == 0
 
 
+@pytest.mark.pg_clock
 async def test_interaction_sync_combined_messages_and_calendar(provisioned_postgres_pool):
     """Messages and calendar events are both processed in a single run."""
     from butlers.jobs._roster.relationship_jobs import run_interaction_sync

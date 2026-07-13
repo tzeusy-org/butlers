@@ -190,6 +190,7 @@ async def switchboard_pool(provisioned_postgres_pool):
 class TestIngressToCompletion:
     """Test full ingress → decomposition → fanout → completion flow."""
 
+    @pytest.mark.pg_clock
     async def test_single_target_success_flow(self, switchboard_pool):
         """Test successful request flow to a single target butler."""
         async with switchboard_pool.acquire() as conn:
@@ -275,6 +276,7 @@ class TestIngressToCompletion:
             assert final["response_summary"] == "Success"
             assert final["final_state_at"] is not None
 
+    @pytest.mark.pg_clock
     async def test_multi_target_fanout_flow(self, switchboard_pool):
         """Test fanout to multiple target butlers."""
         async with switchboard_pool.acquire() as conn:
@@ -366,6 +368,7 @@ class TestIngressToCompletion:
 class TestPartialFailureHandling:
     """Test partial failure scenarios in fanout."""
 
+    @pytest.mark.pg_clock
     async def test_partial_fanout_failure(self, switchboard_pool):
         """Test fanout with one target failing."""
         async with switchboard_pool.acquire() as conn:
@@ -437,6 +440,7 @@ class TestPartialFailureHandling:
 class TestTimeoutScenarios:
     """Test timeout handling."""
 
+    @pytest.mark.pg_clock
     async def test_request_timeout(self, switchboard_pool):
         """Test request that exceeds timeout budget."""
         async with switchboard_pool.acquire() as conn:
@@ -511,6 +515,7 @@ class TestTimeoutScenarios:
 class TestDeadLetterReplay:
     """Test dead-letter capture and replay."""
 
+    @pytest.mark.pg_clock
     async def test_capture_and_replay_flow(self, switchboard_pool):
         """Test capturing a failed request and replaying it."""
         async with switchboard_pool.acquire() as conn:
@@ -612,6 +617,7 @@ class TestDeadLetterReplay:
             assert audit_log["operator_identity"] == "test_operator"
             assert audit_log["outcome"] == "success"
 
+    @pytest.mark.pg_clock
     async def test_replay_idempotency(self, switchboard_pool):
         """Test that replaying an already-replayed request fails."""
         async with switchboard_pool.acquire() as conn:
@@ -677,6 +683,7 @@ class TestDeadLetterReplay:
 class TestOperatorControls:
     """Test operator intervention tools."""
 
+    @pytest.mark.pg_clock
     async def test_manual_reroute(self, switchboard_pool):
         """Test manual reroute of a request."""
         async with switchboard_pool.acquire() as conn:
@@ -733,6 +740,7 @@ class TestOperatorControls:
             assert audit["outcome"] == "success"
             assert audit["operator_identity"] == "test_operator"
 
+    @pytest.mark.pg_clock
     async def test_cancel_request(self, switchboard_pool):
         """Test cancelling an in-flight request."""
         async with switchboard_pool.acquire() as conn:
@@ -773,6 +781,7 @@ class TestOperatorControls:
             assert request["lifecycle_state"] == "cancelled"
             assert request["final_state_at"] is not None
 
+    @pytest.mark.pg_clock
     async def test_force_complete(self, switchboard_pool):
         """Test force-completing a request."""
         async with switchboard_pool.acquire() as conn:
@@ -816,6 +825,7 @@ class TestOperatorControls:
             assert request["lifecycle_state"] == "completed"
             assert "Force-completed by operator" in request["response_summary"]
 
+    @pytest.mark.pg_clock
     async def test_cannot_reroute_terminal_request(self, switchboard_pool):
         """Test that terminal requests cannot be rerouted."""
         async with switchboard_pool.acquire() as conn:

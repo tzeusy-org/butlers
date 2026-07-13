@@ -98,6 +98,7 @@ async def _post_reset(app) -> httpx.Response:
         return await client.post("/api/qa/circuit-breaker/reset")
 
 
+@pytest.mark.pg_clock
 async def test_reset_records_ledger_row_and_admits_without_fabrication(
     provisioned_postgres_pool,
 ) -> None:

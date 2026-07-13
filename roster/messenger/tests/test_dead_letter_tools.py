@@ -288,6 +288,7 @@ async def test_messenger_dead_letter_list_filter_by_error_class(delivery_pool):
         assert dl["error_class"] == "timeout"
 
 
+@pytest.mark.pg_clock
 async def test_messenger_dead_letter_list_filter_by_since(delivery_pool):
     """Test messenger_dead_letter_list filters by since timestamp."""
     now = datetime.now(UTC)

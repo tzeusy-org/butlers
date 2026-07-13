@@ -89,6 +89,7 @@ def _sample_payload() -> dict:
     )
 
 
+@pytest.mark.pg_clock
 async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg.Pool) -> None:
     """record() + flush() persist full_payload as a jsonb OBJECT, not a
     jsonb-typed string."""
@@ -122,6 +123,7 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
     assert stored["payload"]["normalized_text"] == "Hello"
 
 
+@pytest.mark.pg_clock
 async def test_drain_replay_pending_handles_clean_object_row(pool: asyncpg.Pool) -> None:
     """drain_replay_pending submits a clean (object-shaped) full_payload row
     unchanged, and marks it replay_complete."""

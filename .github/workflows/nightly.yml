@@ -166,9 +166,16 @@ jobs:
           # session end and is lost on cancel -- the PR #3176 failure mode
           # where no names were recoverable). -rf/--tb=short still give the
           # clean summary + tracebacks on the runs that do finish.
+          # bu-szgi9: `not pg_clock` drops the tests whose pass/fail hinges on
+          # comparing a Postgres-clock timestamp against a Python-clock value.
+          # libfaketime shifts only the Python process clock, not the Postgres
+          # testcontainer, so those tests skew by the offset and false-fail --
+          # they are CI-artifact skew, not wall-clock time-bombs, so they are
+          # excluded from THIS leg only (they still run in every other job).
           LD_PRELOAD="${LIBFAKETIME_SO}" FAKETIME="${{ matrix.offset }}" \
             uv run pytest tests/ roster/ -v -rf --tb=short --ignore=tests/e2e \
-            -m "not bench and not perf and not nightly" -n auto --dist loadfile \
+            -m "not bench and not perf and not nightly and not pg_clock" \
+            -n auto --dist loadfile \
             --timeout=300 --timeout-method=thread
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"

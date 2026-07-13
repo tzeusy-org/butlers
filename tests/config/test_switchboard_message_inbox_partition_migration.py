@@ -100,6 +100,7 @@ def test_partition_migration_builds_partitioned_table_and_indexes(postgres_conta
     assert _function_exists(db_url, "switchboard_message_inbox_drop_expired_partitions")
 
 
+@pytest.mark.pg_clock
 def test_partition_maintenance_and_downgrade_round_trip(postgres_container):
     """Maintenance functions and downgrade path preserve operability."""
     from butlers.migrations import _build_alembic_config, run_migrations

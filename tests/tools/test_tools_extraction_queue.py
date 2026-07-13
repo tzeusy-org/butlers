@@ -123,6 +123,7 @@ async def test_resolve_confirm_dismiss_and_errors(pool):
         await extraction_queue_resolve(pool, e4["id"], "dismiss")
 
 
+@pytest.mark.pg_clock
 async def test_stats_expire_and_lifecycle(pool):
     """Stats counts; expire respects per-entry TTL; pending_count and get work."""
     from butlers.tools.extraction_queue import (
