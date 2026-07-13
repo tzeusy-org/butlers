@@ -161,6 +161,7 @@ The connector SHALL persist per-resource cursors that disambiguate by account, s
 - **WHEN** a polling loop successfully submits an envelope
 - **THEN** the connector SHALL persist via `cursor_store.save_cursor(pool, connector_type="google_health", endpoint_identity="google_health:user:<email>:<account_uuid>:<resource>", cursor_value=...)`
 - **AND** the per-account dimension SHALL be encoded into the `endpoint_identity` between the email and the resource
+- **AND** the cursor-only registry row SHALL be archived from connector liveness and fleet-health surfaces; the canonical per-account heartbeat row remains active and is the sole liveness signal
 
 ### Requirement: Rate-Limit Discipline
 

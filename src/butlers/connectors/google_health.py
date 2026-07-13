@@ -1512,7 +1512,13 @@ class GoogleHealthConnector:
             return
         endpoint = _cursor_endpoint_identity(ctx.email, account_uuid, state.bundle.resource)
         try:
-            await save_cursor(self._cursor_pool, _CONNECTOR_TYPE, endpoint, cursor_value)
+            await save_cursor(
+                self._cursor_pool,
+                _CONNECTOR_TYPE,
+                endpoint,
+                cursor_value,
+                archive=True,
+            )
             state.last_cursor = cursor_value
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save("success")
