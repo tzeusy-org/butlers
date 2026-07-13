@@ -187,6 +187,45 @@ def benchmark_models(request: pytest.FixtureRequest) -> list[str] | None:
 
 
 # ---------------------------------------------------------------------------
+# Benchmark vs validate collection gating
+# ---------------------------------------------------------------------------
+#
+# The suite has two mutually exclusive execution paths over the scenario corpus:
+#
+# - validate mode (default): the per-scenario parametrized tests
+#   (``test_scenario_routing`` / ``test_scenario_tool_calls``, marked
+#   ``routing_accuracy`` / ``tool_accuracy``) hard-assert against the currently
+#   configured model.
+# - benchmark mode (``--benchmark``): the ``test_benchmark_all_models`` driver
+#   (marked ``benchmark``) runs the full corpus once per model via
+#   ``run_benchmark`` and accumulates results.
+#
+# Running both in benchmark mode would execute the corpus twice. This hook keeps
+# exactly one path live per mode. The pure decision lives in
+# ``benchmark.partition_benchmark_items`` so the gating is unit-testable without
+# pytest internals or importing this (testcontainers-dependent) conftest.
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Keep exactly one corpus execution path live per mode (see above).
+
+    Defensive: if the ``--benchmark`` option is not registered (e.g. this
+    conftest is loaded in an unexpected context), the hook is a no-op.
+    """
+    from tests.e2e.benchmark import partition_benchmark_items  # noqa: PLC0415
+
+    try:
+        is_benchmark = bool(config.getoption("--benchmark"))
+    except (ValueError, KeyError):
+        return
+
+    selected, deselected = partition_benchmark_items(items, is_benchmark=is_benchmark)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
+
+
+# ---------------------------------------------------------------------------
 # Session-scoped skip guards (autouse)
 # ---------------------------------------------------------------------------
 

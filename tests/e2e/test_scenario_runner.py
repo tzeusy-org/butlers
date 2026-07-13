@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from tests.e2e.benchmark import orchestrate_benchmark
 from tests.e2e.conftest import ButlerEcosystem, CostTracker
 from tests.e2e.scenarios import ALL_SCENARIOS, DbAssertion, Scenario
 
@@ -610,8 +611,13 @@ def _record_benchmark_entry(
     None (no accumulator available), a warning is logged and the call is a no-op.
 
     The model name is read from the ``E2E_CURRENT_MODEL`` environment variable
-    which is set by the benchmark loop in ``conftest.pytest_sessionfinish``.
+    that :func:`tests.e2e.benchmark.run_benchmark` sets for each model's corpus.
     When that variable is not set, ``"unknown"`` is used as the model key.
+
+    Note: the multi-model benchmark path is driven by ``test_benchmark_all_models``
+    via ``run_benchmark`` (which records entries directly). This per-scenario
+    recorder is the validate-mode-parametrized path and is deselected in
+    benchmark mode by ``conftest.pytest_collection_modifyitems``.
     """
     import os  # noqa: PLC0415
 
@@ -907,4 +913,77 @@ async def test_scenario_deduplication(
         "[%s] dedup PASS: request_id=%s (both injections)",
         scenario.id,
         resp1.request_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Multi-model benchmark driver
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.e2e
+@pytest.mark.benchmark
+async def test_benchmark_all_models(
+    butler_ecosystem: ButlerEcosystem,
+    cost_tracker: CostTracker,
+    benchmark_mode: bool,
+    benchmark_models: list[str] | None,
+    benchmark_result: BenchmarkResult | None,
+    scenario_tag_filter: str | None,
+) -> None:
+    """Run the full scenario corpus once per configured model (benchmark mode).
+
+    This is the single driver that actually calls ``run_benchmark`` — the
+    multi-model orchestration loop the spec's "Sequential model iteration"
+    requirement defines. It:
+
+    1. Reads the model list from the ``benchmark_models`` fixture
+       (``--benchmark-models`` / ``E2E_BENCHMARK_MODELS``; the fixture raises a
+       clear ``pytest.UsageError`` when benchmark mode is active but no list is
+       provided).
+    2. Runs every scenario for model A, then model B, ... (no interleaving),
+       with ``E2E_CURRENT_MODEL`` pinned to the active model for each corpus.
+    3. Merges every result into the session-scoped ``benchmark_result``
+       accumulator so ``pytest_sessionfinish`` writes the scorecards.
+
+    Only runs in benchmark mode: the per-scenario validate tests are deselected
+    in benchmark mode (and this driver is deselected in validate mode) by
+    ``conftest.pytest_collection_modifyitems``; the guard below is a belt-and-
+    suspenders skip for direct ``-k`` invocation.
+    """
+    if not benchmark_mode:
+        pytest.skip("benchmark mode not active — pass --benchmark to run the model loop")
+
+    assert benchmark_models, (
+        "benchmark_models must supply a model list in benchmark mode "
+        "(the fixture raises UsageError otherwise)"
+    )
+
+    # Mirror the per-scenario --scenarios tag filter so a tagged benchmark
+    # (e.g. --scenarios=smoke) runs the same subset the validate path would.
+    scenarios = ALL_SCENARIOS
+    if scenario_tag_filter is not None:
+        scenarios = [s for s in ALL_SCENARIOS if scenario_tag_filter in s.tags]
+
+    butler_names = list(butler_ecosystem.pools.keys())
+    switchboard_pool = butler_ecosystem.pools["switchboard"]
+
+    async def _run(scenario: Scenario) -> ScenarioResult:
+        return await _run_scenario(scenario, butler_ecosystem, cost_tracker, envelope_override=None)
+
+    await orchestrate_benchmark(
+        benchmark_mode=True,
+        models=benchmark_models,
+        pool=switchboard_pool,
+        butler_names=butler_names,
+        scenarios=scenarios,
+        run_scenario_fn=_run,
+        accumulator=benchmark_result,
+    )
+
+    logger.info(
+        "[benchmark] driver complete: models=%s scenarios=%d",
+        benchmark_models,
+        len(scenarios),
     )

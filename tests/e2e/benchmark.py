@@ -22,6 +22,7 @@ Key design decisions:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,12 @@ _BENCHMARK_SOURCE = "e2e-benchmark"
 
 # Priority value used for benchmark overrides — must exceed all production values.
 _BENCHMARK_PRIORITY = 999
+
+# Environment variable that names the model currently pinned for the running
+# benchmark. run_benchmark() sets it for the duration of each model's scenario
+# corpus so in-process scenario execution (and any per-scenario recorder that
+# reads it) can attribute results to the active model.
+E2E_CURRENT_MODEL_ENV = "E2E_CURRENT_MODEL"
 
 
 # ---------------------------------------------------------------------------
@@ -370,93 +377,111 @@ async def run_benchmark(
     """
     results = BenchmarkResult()
 
-    for model in models:
-        logger.info("[benchmark] Starting model run: %r (%d scenarios)", model, len(scenarios))
-        t_model_start = time.monotonic()
+    # Capture the ambient E2E_CURRENT_MODEL so the loop can restore it and never
+    # leak the last-pinned model into the environment after the benchmark ends.
+    prev_current_model = os.environ.get(E2E_CURRENT_MODEL_ENV)
 
-        try:
-            # Pin model for all butlers before running any scenarios.
-            await pin_model(pool, model, butler_names, runtime_type=runtime_type)
+    try:
+        for model in models:
+            logger.info("[benchmark] Starting model run: %r (%d scenarios)", model, len(scenarios))
+            t_model_start = time.monotonic()
 
-            # Run all scenarios sequentially for this model.
-            for scenario in scenarios:
-                logger.debug(
-                    "[benchmark] Running scenario %r with model %r",
-                    scenario.id,
-                    model,
-                )
-                t0 = time.monotonic()
+            # Set E2E_CURRENT_MODEL for the whole corpus of this model so scenario
+            # execution runs with the active model observable in-process. It is
+            # reset for the next model at the top of the loop and restored to the
+            # pre-run value in the outer finally.
+            os.environ[E2E_CURRENT_MODEL_ENV] = model
 
-                try:
-                    scenario_result = await run_scenario_fn(scenario)
-                except Exception as exc:
-                    logger.error(
-                        "[benchmark] Scenario %r raised with model %r: %s",
+            try:
+                # Pin model for all butlers before running any scenarios.
+                await pin_model(pool, model, butler_names, runtime_type=runtime_type)
+
+                # Run all scenarios sequentially for this model.
+                for scenario in scenarios:
+                    logger.debug(
+                        "[benchmark] Running scenario %r with model %r",
                         scenario.id,
                         model,
-                        exc,
                     )
+                    t0 = time.monotonic()
+
+                    try:
+                        scenario_result = await run_scenario_fn(scenario)
+                    except Exception as exc:
+                        logger.error(
+                            "[benchmark] Scenario %r raised with model %r: %s",
+                            scenario.id,
+                            model,
+                            exc,
+                        )
+                        entry = BenchmarkEntry(
+                            model=model,
+                            scenario_id=scenario.id,
+                            routing_passed=False,
+                            routing_expected=scenario.expected_routing,
+                            routing_actual=None,
+                            tool_calls_passed=False,
+                            tool_calls_expected=scenario.expected_tool_calls,
+                            tool_calls_actual=[],
+                            input_tokens=0,
+                            output_tokens=0,
+                            duration_ms=int((time.monotonic() - t0) * 1000),
+                            timed_out=False,
+                            error=str(exc),
+                        )
+                        results.record(entry)
+                        continue
+
+                    # Extract routing result.
+                    routing_passed = False
+                    routing_expected = scenario.expected_routing
+                    routing_actual: str | None = None
+                    if scenario_result.routing is not None:
+                        routing_actual = scenario_result.routing.actual
+                        routing_passed = scenario_result.routing.passed
+
+                    # Extract tool-call result.
+                    tc_passed = True
+                    tc_expected: list[str] = scenario.expected_tool_calls
+                    tc_actual: list[str] = []
+                    if scenario_result.tool_calls is not None:
+                        tc_passed = scenario_result.tool_calls.passed
+                        tc_actual = scenario_result.tool_calls.actual_names
+
                     entry = BenchmarkEntry(
                         model=model,
                         scenario_id=scenario.id,
-                        routing_passed=False,
-                        routing_expected=scenario.expected_routing,
-                        routing_actual=None,
-                        tool_calls_passed=False,
-                        tool_calls_expected=scenario.expected_tool_calls,
-                        tool_calls_actual=[],
+                        routing_passed=routing_passed,
+                        routing_expected=routing_expected,
+                        routing_actual=routing_actual,
+                        tool_calls_passed=tc_passed,
+                        tool_calls_expected=tc_expected,
+                        tool_calls_actual=tc_actual,
                         input_tokens=0,
                         output_tokens=0,
-                        duration_ms=int((time.monotonic() - t0) * 1000),
-                        timed_out=False,
-                        error=str(exc),
+                        duration_ms=scenario_result.duration_ms,
+                        timed_out=scenario_result.timed_out,
+                        error=scenario_result.error,
                     )
                     results.record(entry)
-                    continue
 
-                # Extract routing result.
-                routing_passed = False
-                routing_expected = scenario.expected_routing
-                routing_actual: str | None = None
-                if scenario_result.routing is not None:
-                    routing_actual = scenario_result.routing.actual
-                    routing_passed = scenario_result.routing.passed
-
-                # Extract tool-call result.
-                tc_passed = True
-                tc_expected: list[str] = scenario.expected_tool_calls
-                tc_actual: list[str] = []
-                if scenario_result.tool_calls is not None:
-                    tc_passed = scenario_result.tool_calls.passed
-                    tc_actual = scenario_result.tool_calls.actual_names
-
-                entry = BenchmarkEntry(
-                    model=model,
-                    scenario_id=scenario.id,
-                    routing_passed=routing_passed,
-                    routing_expected=routing_expected,
-                    routing_actual=routing_actual,
-                    tool_calls_passed=tc_passed,
-                    tool_calls_expected=tc_expected,
-                    tool_calls_actual=tc_actual,
-                    input_tokens=0,
-                    output_tokens=0,
-                    duration_ms=scenario_result.duration_ms,
-                    timed_out=scenario_result.timed_out,
-                    error=scenario_result.error,
+            finally:
+                # Always unpin, even if a scenario raised an exception.
+                removed = await unpin_model(pool)
+                t_model_elapsed = int((time.monotonic() - t_model_start) * 1000)
+                logger.info(
+                    "[benchmark] Finished model run: %r (elapsed=%dms, overrides_removed=%d)",
+                    model,
+                    t_model_elapsed,
+                    removed,
                 )
-                results.record(entry)
-
-        finally:
-            # Always unpin, even if a scenario raised an exception.
-            removed = await unpin_model(pool)
-            t_model_elapsed = int((time.monotonic() - t_model_start) * 1000)
-            logger.info(
-                "[benchmark] Finished model run: %r (elapsed=%dms, overrides_removed=%d)",
-                model,
-                t_model_elapsed,
-                removed,
-            )
+    finally:
+        # Restore the pre-run E2E_CURRENT_MODEL so the benchmark loop never leaks
+        # the last-pinned model into the ambient environment.
+        if prev_current_model is None:
+            os.environ.pop(E2E_CURRENT_MODEL_ENV, None)
+        else:
+            os.environ[E2E_CURRENT_MODEL_ENV] = prev_current_model
 
     return results
 
@@ -490,9 +515,146 @@ def resolve_benchmark_models(
         Parsed list of model IDs (whitespace-stripped, empty strings removed),
         or ``None`` if neither CLI nor env var provided a value.
     """
-    import os
-
     raw = cli_value or os.environ.get(env_var)
     if not raw:
         return None
     return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Orchestration entry point (called from conftest.py's benchmark driver test)
+# ---------------------------------------------------------------------------
+
+
+async def orchestrate_benchmark(
+    *,
+    benchmark_mode: bool,
+    models: list[str] | None,
+    pool: asyncpg.Pool,
+    butler_names: list[str],
+    scenarios: list[Any],
+    run_scenario_fn: Any,
+    accumulator: BenchmarkResult | None = None,
+    runtime_type: str = "claude",
+) -> BenchmarkResult | None:
+    """Drive the multi-model benchmark loop and aggregate into an accumulator.
+
+    This is the single, unit-testable seam between pytest wiring (the benchmark
+    driver test in ``conftest``/``test_scenario_runner``) and the model
+    iteration loop (:func:`run_benchmark`). Keeping it a plain coroutine — rather
+    than burying the logic inside a test body — lets the mechanics (mode gating,
+    model iteration, ``E2E_CURRENT_MODEL`` propagation, result aggregation) be
+    exercised with a stub ``run_scenario_fn`` and a fake pool, without a live
+    ecosystem or any real LLM calls.
+
+    Behaviour:
+
+    - **Validate mode** (``benchmark_mode`` is ``False``): a no-op. Returns
+      ``None`` and never pins a model, calls ``run_scenario_fn``, or touches the
+      database. The default per-scenario tests own the validate path.
+    - **Benchmark mode** (``benchmark_mode`` is ``True``): runs
+      :func:`run_benchmark` over ``models`` (full corpus per model, sequential,
+      no interleaving) and, when ``accumulator`` is supplied, records every
+      resulting :class:`BenchmarkEntry` into it so a session-scoped
+      ``benchmark_result`` reflects all models for ``pytest_sessionfinish``.
+
+    Parameters
+    ----------
+    benchmark_mode:
+        Whether ``--benchmark`` was requested. When ``False`` this is a no-op.
+    models:
+        Model IDs to benchmark. Must be non-empty in benchmark mode.
+    pool:
+        asyncpg pool used to pin/unpin catalog overrides.
+    butler_names:
+        Butler names to pin each model for (typically all roster butlers).
+    scenarios:
+        Scenario corpus to run for every model.
+    run_scenario_fn:
+        Async callable ``(scenario) -> ScenarioResult`` (see
+        :func:`run_benchmark`).
+    accumulator:
+        Optional session-scoped :class:`BenchmarkResult`. When provided, all
+        entries are merged into it and it is returned; otherwise the fresh
+        result from :func:`run_benchmark` is returned.
+    runtime_type:
+        Runtime adapter for the pinned catalog entries. Defaults to ``"claude"``.
+
+    Returns
+    -------
+    BenchmarkResult | None
+        The populated accumulator (or the fresh result when no accumulator was
+        supplied) in benchmark mode, else ``None``.
+
+    Raises
+    ------
+    ValueError
+        In benchmark mode when ``models`` is empty or ``None`` — the caller
+        (the ``benchmark_models`` fixture) is expected to have already surfaced
+        a clear configuration error, so reaching here empty is a wiring bug.
+    """
+    if not benchmark_mode:
+        return None
+
+    if not models:
+        raise ValueError(
+            "orchestrate_benchmark called in benchmark mode with no models — "
+            "the benchmark_models fixture should have raised before this point"
+        )
+
+    results = await run_benchmark(
+        models,
+        pool,
+        butler_names,
+        scenarios,
+        run_scenario_fn=run_scenario_fn,
+        runtime_type=runtime_type,
+    )
+
+    if accumulator is None:
+        return results
+
+    for entry in results.all_entries():
+        accumulator.record(entry)
+    return accumulator
+
+
+# ---------------------------------------------------------------------------
+# Collection gating (called from conftest.pytest_collection_modifyitems)
+# ---------------------------------------------------------------------------
+
+# Markers on the per-scenario validate tests that run the corpus once against the
+# ambient model. In benchmark mode the multi-model driver runs the corpus per
+# model instead, so these are deselected to avoid executing the corpus twice.
+_CORPUS_VALIDATE_MARKERS = ("routing_accuracy", "tool_accuracy")
+
+# Marker on the multi-model benchmark driver test. Deselected in validate mode
+# so it never needs a model list or live pinning.
+_BENCHMARK_DRIVER_MARKER = "benchmark"
+
+
+def partition_benchmark_items(items: list, *, is_benchmark: bool) -> tuple[list, list]:
+    """Split collected pytest items into ``(selected, deselected)`` for the mode.
+
+    Pure decision function behind ``conftest.pytest_collection_modifyitems`` —
+    kept here (not in the testcontainers-dependent conftest) so the gating can be
+    unit-tested with lightweight fake items exposing only ``get_closest_marker``.
+
+    - **benchmark mode** (``is_benchmark`` True): deselect the per-scenario
+      corpus validate tests (``routing_accuracy`` / ``tool_accuracy``); the
+      ``benchmark`` driver runs the corpus per model instead.
+    - **validate mode** (``is_benchmark`` False): deselect the ``benchmark``
+      driver so it never needs a model list or live pinning.
+
+    Matching is by marker (``get_closest_marker``), never by test-name string,
+    so renames do not silently change gating.
+    """
+    selected: list = []
+    deselected: list = []
+    for item in items:
+        if is_benchmark:
+            drop = any(item.get_closest_marker(m) is not None for m in _CORPUS_VALIDATE_MARKERS)
+        else:
+            drop = item.get_closest_marker(_BENCHMARK_DRIVER_MARKER) is not None
+        (deselected if drop else selected).append(item)
+    return selected, deselected
