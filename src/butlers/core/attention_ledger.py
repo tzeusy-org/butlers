@@ -1,11 +1,25 @@
-"""The attention ledger — one durable record of all proactive owner egress.
+"""The attention ledger — one durable record of attention that was intended
+or expected to reach the owner but may not have.
 
 Move 8 (2026-07-04 JARVIS pursuit, slice 1/2) — bu-qvnce.8. See RFC 0011
 Amendment 1 (``about/legends-and-lore/rfcs/0011-proactive-insight-delivery.md``)
 for the design rationale.
 
-Every proactive message that could reach the owner passes through one of a
-small, known set of egress paths:
+The bulk of the ledger records proactive owner EGRESS (``source="notify"`` /
+``source="insight"``): every proactive message that could reach the owner
+passes through one of a small, known set of egress paths. But the ledger also
+records one INBOUND honesty gap — a message the owner would have received had
+the pipeline not degraded (``source="discretion"``, bu-5go3y): when the shared
+connector discretion layer's same-tier model failover exhausts,
+``DiscretionEvaluator`` falls back to the weight-default IGNORE verdict — a
+fabricated suppression, not a model-judged decision — and silently drops a
+message that would otherwise have been forwarded. That failover-exhausted
+fallback is recorded here as ``outcome="suppressed"``; genuine
+model-evaluated IGNORE verdicts are legitimate decisions and are NOT recorded
+(classify-before-flagging). See
+``butlers.connectors.discretion.DiscretionEvaluator``.
+
+The egress paths are:
 
 - ``notify()`` (``butlers.core_tools._notifications``) — the core MCP tool
   every non-STAFFER butler registers, for direct owner-facing sends.
@@ -68,7 +82,7 @@ logger = logging.getLogger(__name__)
 # Shared vocabulary
 # ---------------------------------------------------------------------------
 
-Source = Literal["notify", "insight"]
+Source = Literal["notify", "insight", "discretion"]
 # "deferred" means a benign, chosen hold that resolves on its own (quiet
 # hours, a coalescing window) -- the notification WILL be attempted again.
 # "failed" (bu-hmdqz.3) means a genuine terminal failure at this attempt (no
@@ -80,7 +94,7 @@ Source = Literal["notify", "insight"]
 # ledger -- the exact failure mode bu-hmdqz.3 fixed for secrets_lifecycle.
 Outcome = Literal["delivered", "coalesced", "deferred", "suppressed", "failed"]
 
-VALID_SOURCES = frozenset({"notify", "insight"})
+VALID_SOURCES = frozenset({"notify", "insight", "discretion"})
 VALID_OUTCOMES = frozenset({"delivered", "coalesced", "deferred", "suppressed", "failed"})
 
 # Priority range shared with RFC 0011's Priority Scoring Convention (1-100

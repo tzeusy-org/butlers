@@ -56,9 +56,9 @@ class AttentionSourceSummary(BaseModel):
     "Source" here means ``origin_butler`` (e.g. ``secrets_lifecycle``,
     ``home``, ``finance``) -- the meaningful trust dimension for a Trust
     Console panel -- not the ledger's own ``source`` column (the
-    ``notify``/``insight`` choke-point literal, which is a separate filter on
-    the list endpoint). See the governing spec amendment for this naming
-    decision.
+    ``notify``/``insight``/``discretion`` choke-point literal, which is a
+    separate filter on the list endpoint). See the governing spec amendment
+    for this naming decision.
     """
 
     origin_butler: str

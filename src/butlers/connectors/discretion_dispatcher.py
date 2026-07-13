@@ -166,6 +166,17 @@ class DiscretionDispatcher:
         self._last_auth_failure_at: float | None = None
         self._last_auth_failure_reason: str | None = None
 
+    @property
+    def pool(self) -> asyncpg.Pool:
+        """The asyncpg pool this dispatcher resolves models against.
+
+        Exposed read-only so a :class:`~butlers.connectors.discretion.DiscretionEvaluator`
+        wired with this dispatcher can reach the same DB pool for its best-effort
+        attention-ledger write (the failover-exhausted suppression record,
+        bu-5go3y) without reaching into a private attribute.
+        """
+        return self._pool
+
     def _get_or_create_adapter(
         self,
         runtime_type: str,

@@ -485,6 +485,26 @@ The discretion layer uses the project's RuntimeAdapter interface via a dedicated
 - **WHEN** the discretion LLM call fails (timeout, connection error, malformed response)
 - **THEN** the default behaviour depends on the sender's weight: weight >= `weight_fail_open` threshold → FORWARD (fail-open), weight < threshold → IGNORE (fail-closed)
 
+### Requirement: Discretion Failover-Exhausted Suppression Ledger Recording
+When a discretion evaluation is forced to the weight-default IGNORE verdict because the `DiscretionDispatcher`'s same-tier model failover exhausted (a degraded, fabricated suppression rather than a model-judged decision), the evaluator SHALL record one durable row to `public.attention_ledger` with `source="discretion"` and `outcome="suppressed"`, so that a message the owner would otherwise have received but was silently dropped by pipeline degradation is observable on the fleet's honesty surface instead of only via an ERROR log and the `discretion_evaluations_total` metric.
+
+This is the single inbound honesty gap the attention ledger records; every other ledger source (`notify`, `insight`) is proactive owner egress. The ledger write MUST be best-effort/fail-open: a ledger failure MUST NOT alter or break the discretion verdict the evaluator returns (mirrors the notify() boundary's fail-open ledger contract).
+
+Recording is scoped by classify-before-flagging: ONLY the failover-exhausted weight-default IGNORE is recorded. A genuine model-evaluated IGNORE verdict, a weight-default FORWARD (fail-open, which still reaches the pipeline), and any other failure class (auth failure, provider unavailable, timeout, unparseable response) MUST NOT be recorded to the ledger — they are legitimate decisions or out-of-scope failures, not this honesty gap.
+
+#### Scenario: Failover-exhausted low-trust IGNORE is recorded
+- **WHEN** a sender's weight is below the `weight_fail_open` threshold (fail-closed) and the discretion LLM call raises the dispatcher's `same_tier_failover_exhausted` error
+- **THEN** the evaluator returns the weight-default IGNORE verdict
+- **AND** one `public.attention_ledger` row is written with `source="discretion"`, `outcome="suppressed"`, `reason="failover_exhausted"`, and metadata including `weight_default=true`, the per-source identity, and the terminal error detail (carrying the tier and attempt count)
+
+#### Scenario: Genuine and out-of-scope outcomes are not recorded
+- **WHEN** the discretion LLM returns a model-judged IGNORE verdict, OR a weight-default FORWARD (fail-open) results, OR the failure classifies as anything other than failover exhaustion (auth failure, provider unavailable, timeout, parse error)
+- **THEN** no `source="discretion"` attention-ledger row is written
+
+#### Scenario: Ledger write is fail-open
+- **WHEN** the `public.attention_ledger` table is unavailable (unmigrated DB), the evaluator has no DB pool, or the INSERT otherwise fails
+- **THEN** the discretion verdict returned to the caller is unchanged and the failure is swallowed (logged, not raised)
+
 ### Requirement: Identity-Based Discretion Weight
 The discretion layer SHALL support sender-relationship weighting that controls bypass and fail behaviour.
 

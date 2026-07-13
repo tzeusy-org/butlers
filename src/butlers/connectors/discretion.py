@@ -19,8 +19,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
+import asyncpg
 from prometheus_client import Counter
 
+from butlers.core.attention_ledger import record_attention_event
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.identity import _CHANNEL_TYPE_TO_PREDICATE, _resolve_entity_by_triple
 
@@ -41,6 +43,16 @@ _INNER_CIRCLE_ROLES: frozenset[str] = frozenset({"family", "close-friends"})
 # bypass discretion evaluation entirely.  Dashboard messages are submitted
 # directly by the owner via the web interface; they must never be filtered.
 DISCRETION_BYPASS_CHANNELS: frozenset[str] = frozenset({"dashboard"})
+
+# ``origin_butler`` stamped on the attention-ledger row written when a discretion
+# evaluation is suppressed by same-tier failover exhaustion (bu-5go3y). Discretion
+# runs inside connectors, not a butler daemon, so there is no butler identity to
+# attribute; this stable marker mirrors ``DiscretionDispatcher``'s default
+# ``butler_name`` ("__discretion__") already used for token-usage attribution, so
+# the ledger's per-``origin_butler`` Trust Console summary groups every inbound
+# discretion suppression under one honest, low-cardinality name. The per-source
+# identity (chat/mic/etc.) is preserved in the row's ``metadata.source_identity``.
+_DISCRETION_LEDGER_ORIGIN = "__discretion__"
 
 # ---------------------------------------------------------------------------
 # Prometheus metrics
@@ -442,6 +454,7 @@ class DiscretionEvaluator:
         weight_bypass: float = _DEFAULT_WEIGHT_BYPASS,
         weight_fail_open: float = _DEFAULT_WEIGHT_FAIL_OPEN,
         system_prompt: str = _DEFAULT_SYSTEM_PROMPT,
+        ledger_pool: asyncpg.Pool | None = None,
     ) -> None:
         self._source = source_name
         self._dispatcher = dispatcher
@@ -451,6 +464,15 @@ class DiscretionEvaluator:
         self._window = ContextWindow(
             max_size=window_size,
             max_age_seconds=window_seconds,
+        )
+        # DB pool for the best-effort failover-exhausted suppression ledger write
+        # (bu-5go3y). Defaults to the dispatcher's own pool so the six existing
+        # connector construction sites are wired automatically — the evaluator is
+        # always injected with a DiscretionDispatcher, which owns the pool. Falls
+        # back to None (write no-ops) when the dispatcher exposes no ``pool`` (e.g.
+        # a mock caller in tests); an explicit ``ledger_pool`` overrides both.
+        self._ledger_pool: asyncpg.Pool | None = (
+            ledger_pool if ledger_pool is not None else getattr(dispatcher, "pool", None)
         )
 
     @property
@@ -587,9 +609,20 @@ class DiscretionEvaluator:
                 verdict=fail_verdict,
                 outcome="error",
             ).inc()
+            default_reason = _classify_default_error(exc)
+            # Durably record ONLY the failover-exhausted weight-default IGNORE —
+            # a degraded, fabricated suppression that silently drops a message
+            # the owner would otherwise have seen (bu-5go3y). A fail-OPEN default
+            # (FORWARD) still reaches the pipeline, so it is not an honesty gap;
+            # and any non-failover error class (auth_failure, provider_unavailable,
+            # timeout, parse_error, opaque exception) is out of this bead's scope —
+            # classify-before-flagging. Best-effort/fail-open: the ledger write
+            # never alters the discretion verdict returned below.
+            if not fail_open and default_reason == "failover_exhausted":
+                await self._record_failover_suppression(exc, weight=weight, channel=channel)
             return DiscretionResult(
                 verdict=fail_verdict,
-                reason=f"{fail_label}: {_classify_default_error(exc)}",
+                reason=f"{fail_label}: {default_reason}",
                 is_fail_open=fail_open,
             )
 
@@ -626,3 +659,53 @@ class DiscretionEvaluator:
             outcome="ok",
         ).inc()
         return DiscretionResult(verdict=verdict, reason=reason, is_fail_open=False)
+
+    async def _record_failover_suppression(
+        self,
+        exc: Exception,
+        *,
+        weight: float,
+        channel: str | None,
+    ) -> None:
+        """Best-effort attention-ledger row for a failover-exhausted IGNORE (bu-5go3y).
+
+        Records the one inbound honesty gap the ledger tracks: a message the
+        owner would have received had the discretion pipeline not degraded, but
+        which was suppressed because same-tier model failover exhausted and the
+        weight-default IGNORE verdict (a fabricated suppression, not a
+        model-judged decision) kicked in.
+
+        Fail-open, mirroring ``_notifications._record_failed_attention``:
+        :func:`~butlers.core.attention_ledger.record_attention_event` never
+        raises and no-ops when the pool is absent, and the whole call is wrapped
+        defensively so a ledger hiccup can never alter or break the discretion
+        verdict the caller is about to return.
+        """
+        try:
+            await record_attention_event(
+                self._ledger_pool,
+                origin_butler=_DISCRETION_LEDGER_ORIGIN,
+                source="discretion",
+                outcome="suppressed",
+                channel=channel,
+                intent="discretion",
+                reason="failover_exhausted",
+                metadata={
+                    "reason": "failover_exhausted",
+                    "weight_default": True,
+                    "verdict": "IGNORE",
+                    "source_identity": self._source,
+                    "weight": weight,
+                    # str(exc) carries the dispatcher's terminal message —
+                    # ``same_tier_failover_exhausted: tier=<tier> after N
+                    # attempt(s); ...`` — so the tier and attempt count are
+                    # preserved for querying without brittle parsing here.
+                    "detail": str(exc)[:500],
+                },
+            )
+        except Exception:  # noqa: BLE001 — never let ledger trouble touch discretion
+            logger.warning(
+                "Discretion failover-exhausted ledger write failed for source=%s",
+                self._source,
+                exc_info=True,
+            )

@@ -16,10 +16,12 @@ Two endpoints:
   suppression rollup over a window, with the ``suppressed_never_delivered``
   flag the Trust Console panel exists to surface loudly.
 
-Naming note: the ledger's own ``source`` column is the two-value notify/insight
-choke-point literal; the Trust Console's "per source" grouping means
-``origin_butler`` (which butler/job attempted the egress) -- see
-``AttentionSourceSummary`` for the decision record.
+Naming note: the ledger's own ``source`` column is the choke-point literal
+(``notify``/``insight`` for proactive egress, plus ``discretion`` for the one
+inbound honesty gap the ledger records -- a connector discretion evaluation
+suppressed by same-tier failover exhaustion, bu-5go3y); the Trust Console's
+"per source" grouping instead means ``origin_butler`` (which butler/job
+attempted the egress) -- see ``AttentionSourceSummary`` for the decision record.
 """
 
 from __future__ import annotations
@@ -228,7 +230,9 @@ async def list_attention_ledger(
     since: datetime | None = Query(None, description="Only rows occurred_at at/after this time"),
     until: datetime | None = Query(None, description="Only rows occurred_at at/before this time"),
     intent: str | None = Query(None, description="Filter by intent (e.g. send, insight)"),
-    source: str | None = Query(None, description="Filter by choke point: notify or insight"),
+    source: str | None = Query(
+        None, description="Filter by choke point: notify, insight, or discretion"
+    ),
     outcome: str | None = Query(
         None, description="Filter by outcome: delivered, coalesced, deferred, suppressed, failed"
     ),
@@ -237,8 +241,8 @@ async def list_attention_ledger(
 ) -> AttentionLedgerListResponse:
     """Return paginated attention-ledger rows, newest first.
 
-    Filterable by intent, ``source`` (the notify/insight choke-point column),
-    ``outcome``, and ``origin_butler``; windowed by ``since``/``until``.
+    Filterable by intent, ``source`` (the notify/insight/discretion choke-point
+    column), ``outcome``, and ``origin_butler``; windowed by ``since``/``until``.
     """
     pool = _get_shared_pool(db)
     if pool is None:
@@ -346,7 +350,9 @@ async def get_attention_ledger_summary(
     ),
     until: datetime | None = Query(None, description="Window end. Defaults to now when omitted."),
     intent: str | None = Query(None, description="Filter by intent (e.g. send, insight)"),
-    source: str | None = Query(None, description="Filter by choke point: notify or insight"),
+    source: str | None = Query(
+        None, description="Filter by choke point: notify, insight, or discretion"
+    ),
     origin_butler: str | None = Query(
         None, description="Narrow the rollup to a single originating butler/job"
     ),
