@@ -255,10 +255,18 @@ class TestContextProducersIntegration:
     async def test_home_presence_producer_sets_and_clears(self, home_db_url):
         pool = await _pool(home_db_url)
         try:
+            # Build captured_at from the Python clock (the same clock the
+            # producer reads via datetime.now(UTC)) rather than PG now(): under
+            # libfaketime the Python process clock is shifted +45d/+120d but the
+            # testcontainer Postgres clock is not, so a PG-now() row would look
+            # ~45 days stale to the freshness gate and resolve to "unknown".
+            # Python-relative timestamps stay fresh under both clocks, keeping
+            # faketime coverage of the 30-min freshness gate.
             await pool.execute("TRUNCATE ha_entity_snapshot")
             await pool.execute(
                 "INSERT INTO ha_entity_snapshot (entity_id, state, captured_at) "
-                "VALUES ('person.owner', 'home', now())"
+                "VALUES ('person.owner', 'home', $1)",
+                datetime.now(UTC),
             )
             result = await run_home_presence_context_producer(pool)
             assert result["presence"] == "home"
@@ -270,7 +278,8 @@ class TestContextProducersIntegration:
 
             # Owner leaves: producer clears at_home.
             await pool.execute(
-                "UPDATE ha_entity_snapshot SET state = 'not_home', captured_at = now()"
+                "UPDATE ha_entity_snapshot SET state = 'not_home', captured_at = $1",
+                datetime.now(UTC),
             )
             result2 = await run_home_presence_context_producer(pool)
             assert result2["presence"] == "away"
@@ -281,7 +290,8 @@ class TestContextProducersIntegration:
 
             # Stale feed: producer leaves state untouched (unknown).
             await pool.execute(
-                "UPDATE ha_entity_snapshot SET state = 'home', captured_at = now() - interval '2 hours'"
+                "UPDATE ha_entity_snapshot SET state = 'home', captured_at = $1",
+                datetime.now(UTC) - timedelta(hours=2),
             )
             result3 = await run_home_presence_context_producer(pool)
             assert result3["presence"] == "unknown"
