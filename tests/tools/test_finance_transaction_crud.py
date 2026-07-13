@@ -124,6 +124,53 @@ class _CategoryTaxonomyPool:
         return None
 
 
+async def test_resolve_account_id_from_composite_label():
+    """Composite institution/type/last-four labels resolve without a UUID."""
+    account_id = uuid4()
+    pool = _make_pool()
+
+    async def fetch_accounts(query, *args):
+        if "SELECT id, institution, type, name, last_four" in query:
+            return [
+                {
+                    "id": account_id,
+                    "institution": "Example Bank",
+                    "type": "credit",
+                    "name": None,
+                    "last_four": "4321",
+                }
+            ]
+        return []
+
+    pool.fetch = AsyncMock(side_effect=fetch_accounts)
+
+    result = await _txn_module._resolve_account_id(
+        pool,
+        "example-bank-credit-card-4321",
+    )
+
+    assert result == str(account_id)
+
+
+async def test_resolve_account_id_rejects_ambiguous_composite_label():
+    """Composite labels never choose arbitrarily between matching accounts."""
+    account_rows = [
+        {
+            "id": uuid4(),
+            "institution": "Example Bank",
+            "type": "credit",
+            "name": "Travel Card",
+            "last_four": None,
+        }
+        for _ in range(2)
+    ]
+    pool = _make_pool()
+    pool.fetch = AsyncMock(side_effect=[[], [], account_rows])
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        await _txn_module._resolve_account_id(pool, "example-bank-travel-card")
+
+
 async def test_unknown_category_falls_back_to_uncategorized_when_taxonomy_exists():
     """Unknown categories are converted before the category FK can reject the insert."""
     metadata: dict = {}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid as _uuid_mod
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -29,13 +30,64 @@ def _is_uuid(value: str) -> bool:
         return False
 
 
+def _normalize_account_label(value: object | None) -> str:
+    """Normalize a human-readable account label for exact comparison."""
+    if value is None:
+        return ""
+    return "-".join(part for part in re.split(r"[\W_]+", str(value).casefold()) if part)
+
+
+def _account_label_candidates(row: Any) -> set[str]:
+    """Build safe composite labels for one account row."""
+    institution = _normalize_account_label(row["institution"])
+    account_type = _normalize_account_label(row["type"])
+    name = _normalize_account_label(row["name"])
+    last_four = _normalize_account_label(row["last_four"])
+    type_labels = {account_type}
+    if account_type == "credit":
+        type_labels.add("credit-card")
+
+    labels: set[str] = set()
+
+    def add_label(*parts: str) -> None:
+        if all(parts):
+            labels.add("-".join(parts))
+
+    add_label(institution)
+    add_label(name)
+    add_label(last_four)
+    add_label(name, last_four)
+    add_label(institution, name)
+    add_label(institution, name, last_four)
+    for type_label in type_labels:
+        add_label(type_label, last_four)
+        add_label(institution, type_label)
+        add_label(institution, type_label, last_four)
+        add_label(institution, type_label, name)
+        add_label(institution, type_label, name, last_four)
+    return labels
+
+
+def _resolved_account_id(rows: list[Any], raw: str) -> str | None:
+    """Return one matched account ID, rejecting ambiguous matches."""
+    account_ids = {str(row["id"]) for row in rows}
+    if len(account_ids) == 1:
+        return account_ids.pop()
+    if len(account_ids) > 1:
+        raise ValueError(
+            f"account_id '{raw}' is ambiguous — matched multiple accounts. "
+            "Pass the account UUID instead."
+        )
+    return None
+
+
 async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None:
     """Resolve a human-readable account identifier to its UUID.
 
     Accepts a UUID string (returned as-is) or a fuzzy identifier that is
-    matched against ``accounts.name``, ``accounts.institution``, or
-    ``accounts.last_four``.  Returns ``None`` when *raw* is ``None`` or
-    when no matching account is found.
+    matched against ``accounts.name``, ``accounts.institution``,
+    ``accounts.last_four``, or an exact normalized composite of account
+    attributes. Returns ``None`` when *raw* is ``None``.
 
     Raises :class:`ValueError` with an actionable hint when a non-UUID
     identifier matches zero or multiple accounts.
@@ -45,8 +97,8 @@ async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None
     if _is_uuid(raw):
         return raw
 
-    # Try exact match on name, then institution, then last_four.
-    row = await pool.fetchrow(
+    # Try exact match on name, institution, or last_four.
+    rows = await pool.fetch(
         """
         SELECT id FROM accounts
         WHERE name = $1 OR institution = $1 OR last_four = $1
@@ -54,29 +106,42 @@ async def _resolve_account_id(pool: asyncpg.Pool, raw: str | None) -> str | None
         """,
         raw,
     )
-    if row is None:
-        # Try case-insensitive ILIKE on name and institution.
-        rows = await pool.fetch(
-            """
-            SELECT id FROM accounts
-            WHERE name ILIKE $1 OR institution ILIKE $1
-            LIMIT 2
-            """,
-            f"%{raw}%",
-        )
-        if len(rows) == 1:
-            return str(rows[0]["id"])
-        if len(rows) > 1:
-            raise ValueError(
-                f"account_id '{raw}' is ambiguous — matched multiple accounts. "
-                "Pass the account UUID instead. List accounts with list_accounts()."
-            )
-        raise ValueError(
-            f"account_id '{raw}' is not a valid UUID and no matching account was "
-            "found by name, institution, or last_four. "
-            "List accounts with list_accounts() and pass the UUID."
-        )
-    return str(row["id"])
+    if account_id := _resolved_account_id(rows, raw):
+        return account_id
+
+    # Try case-insensitive substring matching on name and institution.
+    rows = await pool.fetch(
+        """
+        SELECT id FROM accounts
+        WHERE name ILIKE $1 OR institution ILIKE $1
+        LIMIT 2
+        """,
+        f"%{raw}%",
+    )
+    if account_id := _resolved_account_id(rows, raw):
+        return account_id
+
+    # Finally, match normalized composite labels such as
+    # "example-bank-credit-card-4321". Matching is exact after normalization
+    # so extra or missing components cannot silently link the wrong account.
+    account_rows = await pool.fetch(
+        """
+        SELECT id, institution, type, name, last_four
+        FROM accounts
+        """
+    )
+    normalized_raw = _normalize_account_label(raw)
+    composite_matches = [
+        row for row in account_rows if normalized_raw in _account_label_candidates(row)
+    ]
+    if account_id := _resolved_account_id(composite_matches, raw):
+        return account_id
+
+    raise ValueError(
+        f"account_id '{raw}' is not a valid UUID and no matching account was "
+        "found by name, institution, last_four, or composite label. "
+        "Pass the account UUID instead."
+    )
 
 
 # Module-level cache for _has_column results.

@@ -352,6 +352,31 @@ async def test_record_transaction_with_account_id(pool):
     assert result["account_id"] == str(account_id)
 
 
+async def test_record_transaction_resolves_composite_account_label(pool):
+    """Human-readable account labels can combine institution, name, and last four."""
+    from butlers.tools.finance.transactions import record_transaction
+
+    account_id = await pool.fetchval(
+        """
+        INSERT INTO accounts (institution, type, name, last_four, currency)
+        VALUES ('Example Bank', 'credit', 'Travel Card', '4321', 'USD')
+        RETURNING id
+        """
+    )
+
+    result = await record_transaction(
+        pool=pool,
+        posted_at=_utcnow(),
+        merchant="Example Merchant",
+        amount=-25.00,
+        currency="USD",
+        category="travel",
+        account_id="example-bank-travel-card-4321",
+    )
+
+    assert result["account_id"] == str(account_id)
+
+
 async def test_record_transaction_returns_string_id(pool):
     """Returned id is a string (UUID serialized)."""
     from butlers.tools.finance.transactions import record_transaction
