@@ -51,16 +51,25 @@ async def insight_pool(provisioned_postgres_pool):
 
 
 async def _insert_candidate(pool, *, dedup_key: str, priority: int, origin_butler: str = "health"):
+    # Seed created_at from the Python clock rather than the PG DEFAULT now().
+    # delivery_cycle's retention purge (broker._purge_old_insight_data) computes
+    # its cutoff from datetime.now(UTC), so under libfaketime (+45d/+120d) a row
+    # left at the unshifted testcontainer-PG now() looks weeks old and gets
+    # deleted mid-cycle. Anchoring created_at to the same clock the purge reads
+    # keeps candidates fresh under both real and faked clocks; identical to
+    # PG now() on a normal run.
     await pool.execute(
         """
         INSERT INTO insight_candidates
-            (origin_butler, priority, category, dedup_key, expires_at, message, status)
-        VALUES ($1, $2, 'health', $3, $4, 'candidate message', 'pending')
+            (origin_butler, priority, category, dedup_key, expires_at, message,
+             status, created_at)
+        VALUES ($1, $2, 'health', $3, $4, 'candidate message', 'pending', $5)
         """,
         origin_butler,
         priority,
         dedup_key,
         _future(),
+        datetime.now(UTC),
     )
 
 
