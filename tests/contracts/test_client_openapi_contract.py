@@ -46,13 +46,18 @@ What this test does NOT do: resolve arbitrary caller-supplied numeric
 a hook layer to its client.ts function — that requires a real call-graph
 across ``frontend/src/hooks/*`` and every page/component, which is out of
 scope for this contract (see the value-constraint test below for the one
-concrete case this bug class was fixed for, pinned directly). A follow-up
-audit of the ~8 other hardcoded ``limit:`` literals found across
-``frontend/src`` during this bead's investigation (e.g.
-``GanttSwimlane.tsx``, ``ChroniclesDrilldownPanel.tsx``,
-``SymptomTracker.tsx``) is deliberately NOT done here — each needs its
-target endpoint's real ``le`` verified individually, which is broader than
-this bead's circles-scoped fix.
+concrete case this bug class was fixed for, and the per-literal pins in
+``_LIMIT_LITERAL_PINS`` below). The follow-up audit of the other hardcoded
+``limit:`` literals across ``frontend/src`` (``GanttSwimlane.tsx``,
+``ChroniclesDrilldownPanel.tsx``, ``SymptomTracker.tsx``,
+``MeasurementChart.tsx``, ``ManualRefreshButton.tsx``, and the at-bound
+named constants) was completed in bu-5ela3: no production literal exceeded
+its endpoint's ``le``, and every zero-headroom literal is now pinned in
+``_LIMIT_LITERAL_PINS`` so a future ``le`` tightening (or a bumped literal)
+fails CI instead of 422-ing every load. Two calls to the dead
+``GET /api/relationship/contacts`` path (``FiltersPipeline.tsx``,
+``EntityDetailPage.tsx``) 404 rather than 422 — a different drift class,
+tracked via the dead-path allowlist, not the pins here.
 
 Known, tracked exceptions
 --------------------------
@@ -715,40 +720,144 @@ def test_known_undeclared_query_params_are_still_undeclared(
 # This is the exact bug class bu-hmdqz.5 fixed: a client-side numeric
 # literal exceeding a backend Query(..., le=N) ceiling, 422-ing every real
 # request. General call-graph resolution of arbitrary FE literals is out of
-# scope (see module docstring); this pins the concrete regression directly
-# so it cannot silently return.
+# scope for the static scanner (see module docstring), so each known
+# hardcoded pagination literal is pinned to its endpoint by hand (from the
+# bu-5ela3 audit) and checked against the live OpenAPI `maximum`.
+#
+# This closes the class for every ZERO-HEADROOM literal — one whose value
+# already equals its endpoint's ceiling (CirclesPage `limit:200`==200, the
+# chronicler/health `limit:500`==500, etc.). A future `le` tightening OR a
+# bumped FE literal fails CI here instead of 422-ing every page load. The
+# bu-5ela3 audit confirmed no production literal currently exceeds its bound;
+# these pins keep it that way.
+#
+# Each entry: (label, fe_relpath, literal_regex, api_path, param_name).
+# `literal_regex` MUST capture the numeric literal in group 1 and match at
+# least once — if the FE structure changes so it stops matching, the test
+# fails LOUD (prompting a re-audit) rather than silently passing. Multiple
+# matches are all checked (the worst/largest must satisfy the bound).
 # ---------------------------------------------------------------------------
 
+_LIMIT_LITERAL_PINS: list[tuple[str, str, str, str, str]] = [
+    # label, frontend path (under frontend/src), regex, OpenAPI path, param
+    (
+        "circles-groups",
+        "components/relationship/CirclesPage.tsx",
+        r"\bFETCH_LIMIT\s*=\s*(\d+)",
+        "/api/relationship/groups",
+        "limit",
+    ),
+    (
+        "gantt-episodes",
+        "components/chronicles/GanttSwimlane.tsx",
+        r"limit:\s*(\d+)",
+        "/api/chronicler/episodes",
+        "limit",
+    ),
+    (
+        "drilldown-episodes",
+        "components/chronicles/ChroniclesDrilldownPanel.tsx",
+        r"overlaps_end:[^,]*,\s*limit:\s*(\d+)",
+        "/api/chronicler/episodes",
+        "limit",
+    ),
+    (
+        "drilldown-events",
+        "components/chronicles/ChroniclesDrilldownPanel.tsx",
+        r"until:[^,]*,\s*limit:\s*(\d+)",
+        "/api/chronicler/events",
+        "limit",
+    ),
+    (
+        "manual-refresh-events",
+        "components/chronicles/ManualRefreshButton.tsx",
+        r"until:[^,]*,\s*limit:\s*(\d+)",
+        "/api/chronicler/events",
+        "limit",
+    ),
+    (
+        "measurement-chart",
+        "components/health/MeasurementChart.tsx",
+        r"limit:\s*(\d+)",
+        "/api/health/measurements",
+        "limit",
+    ),
+    (
+        "symptom-conditions",
+        "components/health/SymptomTracker.tsx",
+        r"useConditions\(\{\s*limit:\s*(\d+)",
+        "/api/health/conditions",
+        "limit",
+    ),
+    (
+        "entities-search",
+        "components/relationship/EntitiesIndexPage.tsx",
+        r"\bSEARCH_RESULT_LIMIT\s*=\s*(\d+)",
+        "/api/relationship/entities/search",
+        "limit",
+    ),
+    (
+        "general-collections",
+        "components/butler-detail/ButlerGeneralEntitiesTab.tsx",
+        r"\bDROPDOWN_FETCH_LIMIT\s*=\s*(\d+)",
+        "/api/general/collections",
+        "limit",
+    ),
+    (
+        "entity-facts-initial",
+        "pages/EntityDetailPage.tsx",
+        r"\bFACTS_INITIAL_LIMIT\s*=\s*(\d+)",
+        "/api/relationship/entities/{entity_id}/facts",
+        "limit",
+    ),
+]
 
-def test_circles_fetch_limit_within_backend_groups_limit_ceiling(
+
+@pytest.mark.parametrize(
+    ("label", "fe_relpath", "literal_regex", "api_path", "param_name"),
+    _LIMIT_LITERAL_PINS,
+    ids=[e[0] for e in _LIMIT_LITERAL_PINS],
+)
+def test_frontend_limit_literal_within_backend_ceiling(
+    label: str,
+    fe_relpath: str,
+    literal_regex: str,
+    api_path: str,
+    param_name: str,
     openapi_paths: dict[str, dict],
 ):
-    circles_page = (
-        _REPO_ROOT / "frontend" / "src" / "components" / "relationship" / "CirclesPage.tsx"
-    )
-    assert circles_page.exists(), f"CirclesPage.tsx not found at {circles_page}"
-    text = circles_page.read_text(encoding="utf-8")
-    m = re.search(r"\bconst FETCH_LIMIT\s*=\s*(\d+)", text)
-    assert m is not None, (
-        "CirclesPage.tsx no longer defines a numeric FETCH_LIMIT constant — "
-        "update this regression guard to match however it now caps the "
-        "GET /api/relationship/groups page size."
-    )
-    fetch_limit = int(m.group(1))
+    fe_file = _REPO_ROOT / "frontend" / "src" / Path(fe_relpath)
+    assert fe_file.exists(), f"{label}: {fe_relpath} not found — update or remove this pin"
+    text = fe_file.read_text(encoding="utf-8")
 
-    groups_op = openapi_paths.get("/api/relationship/groups", {}).get("get")
-    assert groups_op is not None, "GET /api/relationship/groups is no longer mounted"
-    limit_param = next((p for p in groups_op.get("parameters", []) if p["name"] == "limit"), None)
-    assert limit_param is not None, (
-        "GET /api/relationship/groups no longer declares a `limit` query param"
+    matches = re.findall(literal_regex, text)
+    assert matches, (
+        f"{label}: literal regex {literal_regex!r} no longer matches in {fe_relpath} — "
+        "the frontend structure changed. Re-audit this literal against its endpoint's "
+        "declared ceiling and update the pin (do not just delete it)."
     )
-    maximum = limit_param["schema"].get("maximum")
-    assert maximum is not None, "limit query param no longer declares a maximum"
+    literals = [int(m) for m in matches]
 
-    assert fetch_limit <= maximum, (
-        f"CirclesPage.tsx FETCH_LIMIT={fetch_limit} exceeds "
-        f"GET /api/relationship/groups's limit ceiling ({maximum}) — every "
-        "real page load will 422 (this is the exact bu-hmdqz.5 regression)."
+    op = openapi_paths.get(api_path, {}).get("get")
+    assert op is not None, f"{label}: GET {api_path} is no longer mounted"
+    # Defensive: `parameters` may be absent or explicitly null; a param may
+    # carry `content` instead of `schema` — either way fall through to the
+    # clear "no maximum" assertion below rather than raising KeyError.
+    param = next((p for p in (op.get("parameters") or []) if p["name"] == param_name), None)
+    assert param is not None, (
+        f"{label}: GET {api_path} no longer declares a `{param_name}` query param"
+    )
+    maximum = param.get("schema", {}).get("maximum")
+    assert maximum is not None, (
+        f"{label}: `{param_name}` on GET {api_path} no longer declares a maximum (le)"
+    )
+
+    worst = max(literals)
+    assert worst <= maximum, (
+        f"{label}: {fe_relpath} passes {param_name}={worst} to GET {api_path}, exceeding "
+        f"its declared ceiling ({maximum}) — every real load will 422 (the bu-hmdqz.5 / "
+        "PR #3173 CirclesPage regression class). Lower the frontend literal or raise the "
+        "backend `le`."
     )
 
 
