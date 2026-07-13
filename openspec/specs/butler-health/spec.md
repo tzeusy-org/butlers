@@ -256,7 +256,14 @@ The Health butler SHALL receive `wellness/google_health` envelopes from the Swit
 - **THEN** it SHALL extract `payload.raw` (the full Google Health API response dict)
 - **AND** SHALL derive the appropriate predicate from the envelope's resource hint
 - **AND** SHALL call the memory module's fact-store write tool (tool name confirmed against `src/butlers/modules/memory/tools/__init__.py` — `memory_store_fact`) with the derived predicate, `valid_at`, `entity_id = owner_entity_id`, `scope = 'health'`, and `metadata` matching the predicate taxonomy
+- **AND** SHALL stamp a canonical `source` metadata key (`"google_health"`) on the fact so the reading is attributable by `GET /api/health/measurements/sources`
 - **AND** SHALL be safe under replay (duplicate envelopes with the same `control.idempotency_key` SHALL NOT produce duplicate facts)
+
+#### Scenario: Canonical source-attribution key
+
+- **WHEN** the Health butler writes any wellness measurement fact (from either the `google_health` or `home_assistant` arm)
+- **THEN** the fact's `metadata` SHALL carry a single canonical `source` key (`"google_health"` or `"home_assistant"` respectively) — the key `GET /api/health/measurements/sources` reads first
+- **AND** the source endpoint SHALL resolve the source name as `COALESCE(metadata->>'source', metadata->>'provider')` so facts written before this convention (carrying only the legacy `provider` key) remain attributable without a backfill
 
 #### Scenario: Scope revocation during in-flight envelope
 
@@ -306,7 +313,8 @@ provider SHALL be rejected with a labeled rejection metric and no fact written.
 - **THEN** the Health butler SHALL write exactly one fact with predicate
   `measurement_{metric}`, `scope = "health"`, `valid_at` from the payload,
   `entity_id` = the owner entity, and `metadata` containing at least
-  `provider`, `source_entity_id`, `unit`, and the numeric `value`
+  `source` (the canonical source-attribution key, value `"home_assistant"`),
+  `source_entity_id`, `unit`, and the numeric `value`
 - **AND** SHALL NOT spawn an LLM session to do so
 
 #### Scenario: Malformed Home Assistant payload rejected

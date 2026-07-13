@@ -477,6 +477,13 @@ async def _translate_google_health_envelope(
                 continue
             return {"status": "skipped_malformed_payload"}
 
+        # Stamp the canonical source key so GET /measurements/sources can
+        # attribute the reading (added AFTER the empty-metadata guard above so
+        # a source stamp never masks an otherwise-empty extraction).  ``source``
+        # is the single canonical key across both ingest arms; the HA arm writes
+        # it too (see below).
+        metadata["source"] = "google_health"
+
         content = normalized_text or f"wellness:{predicate}:{valid_at}"
 
         try:
@@ -630,8 +637,11 @@ async def _translate_home_assistant_envelope(
 
     idempotency_key = _agnostic_idempotency_key(owner_entity_id_str, scope, predicate, valid_at_iso)
 
+    # ``source`` is the canonical source-attribution key across both ingest
+    # arms (GET /measurements/sources resolves it, falling back to the legacy
+    # ``provider`` key only for facts written before this convention).
     metadata: dict[str, Any] = {
-        "provider": "home_assistant",
+        "source": "home_assistant",
         "source_entity_id": source_entity_id,
         "unit": unit,
         "value": value,

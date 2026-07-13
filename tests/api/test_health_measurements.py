@@ -435,3 +435,23 @@ class TestMeasurementSources:
         assert src["name"] == "fitbit"
         assert "last_sample_at" in src
         assert src["sample_count"] == 10
+
+    async def test_source_name_coalesces_source_and_provider(self):
+        """The source-name query MUST fall back to the legacy ``provider`` key.
+
+        Live facts written before the canonical ``source`` key existed carry
+        only ``metadata->>'provider'`` (the Home Assistant arm's historical
+        key). Reading ``source`` alone returned ``{sources:[]}`` against those
+        rows; the query MUST resolve the name via
+        ``COALESCE(metadata->>'source', metadata->>'provider')``.
+        """
+        pool = _mock_pool(fetch_rows=[])
+        app = _build_app(pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.get("/api/health/measurements/sources")
+
+        sql = pool.fetch.call_args.args[0]
+        assert "COALESCE(metadata->>'source', metadata->>'provider')" in sql

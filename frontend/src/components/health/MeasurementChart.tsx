@@ -16,6 +16,7 @@ import type {
   MeasurementTrendWindowDays,
 } from "@/api/types";
 import { Button } from "@/components/ui/button";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
@@ -165,7 +166,7 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
     until: until || undefined,
     limit: 500,
   };
-  const { data, isLoading } = useMeasurements(params);
+  const { data, isLoading, isError, refetch } = useMeasurements(params);
   const measurements = useMemo(() => data?.data ?? [], [data]);
 
   const isBP = activeType === "blood_pressure";
@@ -256,6 +257,13 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
               <Skeleton key={i} className="h-6 w-full" />
             ))}
           </div>
+        ) : trendQuery.isError ? (
+          <SourceDegradedNote
+            label={`${typeLabel} trend`}
+            detail="trend source unavailable"
+            onRetry={() => void trendQuery.refetch()}
+            testId="measurement-trend-degraded"
+          />
         ) : buckets.length === 0 ? (
           <EmptyLine>No trend for {typeLabel} in the last {windowDays} days.</EmptyLine>
         ) : (
@@ -342,6 +350,13 @@ export default function MeasurementChart({ initialType }: MeasurementChartProps)
       {/* Chart */}
       {isLoading ? (
         <Skeleton className="h-64 w-full" />
+      ) : isError ? (
+        <SourceDegradedNote
+          label={`${typeLabel} readings`}
+          detail="measurement source unavailable"
+          onRetry={() => void refetch()}
+          testId="measurement-readings-degraded"
+        />
       ) : chartData.length === 0 ? (
         <EmptyLine>No {typeLabel} readings for this range.</EmptyLine>
       ) : (

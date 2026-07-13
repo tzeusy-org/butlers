@@ -19,6 +19,14 @@ interface KpiCell {
   eyebrow: string;
   value: string | number;
   delta?: string;
+  /**
+   * Tone for the delta line. `"amber"` tints it with `--amber-text` to flag a
+   * stale/at-risk reading (e.g. a vital past its freshness SLA); defaults to
+   * the quiet muted-foreground.
+   */
+  deltaTone?: "muted" | "amber";
+  /** Optional `title` tooltip for the cell, e.g. the reading's data source. */
+  title?: string;
 }
 
 interface KpiStripProps {
@@ -38,6 +46,7 @@ export function KpiStrip({ cells }: KpiStripProps) {
       {cells.map((cell, i) => (
         <div
           key={cell.eyebrow}
+          title={cell.title}
           style={{
             paddingRight: i < 3 ? "16px" : undefined,
             paddingLeft: i > 0 ? "16px" : undefined,
@@ -72,7 +81,10 @@ export function KpiStrip({ cells }: KpiStripProps) {
                 fontFamily: "var(--font-mono)",
                 fontSize: "10px",
                 lineHeight: 1,
-                color: "var(--muted-foreground)",
+                color:
+                  cell.deltaTone === "amber"
+                    ? "var(--amber-text)"
+                    : "var(--muted-foreground)",
                 margin: 0,
               }}
             >

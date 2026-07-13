@@ -29,6 +29,7 @@ import MealTracker from "@/components/health/MealTracker";
 import { Display } from "@/components/ui/Display";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { Voice } from "@/components/ui/Voice";
 import { daysAgoISO, todayISO } from "@/lib/day-window";
@@ -56,9 +57,9 @@ function DailyTotals({ since, until }: DailyTotalsProps) {
   const start = since || daysAgoISO(30, ownerTz);
   const end = until || todayISO(ownerTz);
 
-  const { data, isLoading } = useNutritionSummary({ start, end });
+  const { data, isLoading, isError, refetch } = useNutritionSummary({ start, end });
 
-  const noData = !isLoading && (!data || data.meal_count === 0);
+  const noData = !isLoading && !isError && (!data || data.meal_count === 0);
 
   const totals: Array<{ label: string; value: string; unit: string }> = [
     {
@@ -102,6 +103,13 @@ function DailyTotals({ since, until }: DailyTotalsProps) {
             </div>
           ))}
         </div>
+      ) : isError ? (
+        <SourceDegradedNote
+          label="Daily totals"
+          detail="nutrition source unavailable"
+          onRetry={() => void refetch()}
+          testId="nutrition-totals-degraded"
+        />
       ) : noData ? (
         <Voice variant="italic" className="text-sm text-muted-foreground">
           No nutrition data for this window.

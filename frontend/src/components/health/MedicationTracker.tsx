@@ -42,7 +42,7 @@ import {
 } from "@/components/ui/dialog";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Mono } from "@/components/ui/Mono";
-import { QueryBoundary } from "@/components/ui/query-boundary";
+import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Row } from "@/components/ui/Row";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StateDot, type AnyDotState } from "@/components/ui/StateDot";
@@ -119,10 +119,24 @@ function adherenceDotState(active: boolean, adherence?: MedicationAdherence): An
  * is genuinely falling.
  */
 function AdherenceStatement({ medicationId }: { medicationId: string }) {
-  const { data, isLoading } = useMedicationAdherence(medicationId);
+  const { data, isLoading, isError, refetch } = useMedicationAdherence(medicationId);
 
   if (isLoading) {
     return <Skeleton className="mt-1 h-3 w-32" />;
+  }
+
+  // A failed adherence read must NOT fall through to "No doses logged yet" —
+  // that renders calm absence over a broken source. Name the degradation.
+  if (isError) {
+    return (
+      <SourceDegradedNote
+        label="Adherence"
+        detail="source unavailable"
+        onRetry={() => void refetch()}
+        className="mt-1"
+        testId="adherence-degraded"
+      />
+    );
   }
 
   if (!data || data.total_doses === 0 || data.adherence_rate == null) {
@@ -153,7 +167,7 @@ function AdherenceStatement({ medicationId }: { medicationId: string }) {
 // ---------------------------------------------------------------------------
 
 function DoseHistory({ medicationId, name }: { medicationId: string; name: string }) {
-  const { data: doses, isLoading } = useMedicationDoses(medicationId);
+  const { data: doses, isLoading, isError, refetch } = useMedicationDoses(medicationId);
   const logDose = useLogMedicationDose();
 
   async function handleLog(skipped: boolean) {
@@ -184,6 +198,13 @@ function DoseHistory({ medicationId, name }: { medicationId: string; name: strin
             <Skeleton key={i} className="h-4 w-full" />
           ))}
         </div>
+      ) : isError ? (
+        <SourceDegradedNote
+          label="Dose history"
+          detail="source unavailable"
+          onRetry={() => void refetch()}
+          testId="dose-history-degraded"
+        />
       ) : !doses || doses.length === 0 ? (
         <Voice variant="italic" className="text-sm text-muted-foreground">
           No doses recorded yet.

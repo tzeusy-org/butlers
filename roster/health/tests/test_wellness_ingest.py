@@ -428,6 +428,21 @@ class TestActivityFanOut:
         )
         assert am_call.kwargs.get("predicate") == "measurement_active_minutes"
 
+    async def test_google_health_stamps_canonical_source_key(self) -> None:
+        """The google_health arm MUST stamp metadata['source'] = 'google_health'.
+
+        ``source`` is the canonical source-attribution key GET
+        /measurements/sources reads; the google_health arm historically wrote
+        neither ``source`` nor ``provider``, so those facts were invisible to
+        the freshness surface.
+        """
+        envelope = _make_daily_envelope("resting_hr")
+        result, mock_store, _ = await _call_translate(envelope)
+
+        assert result["status"] == "ok"
+        meta = mock_store.call_args.kwargs.get("metadata")
+        assert meta["source"] == "google_health"
+
     async def test_activity_no_top_level_predicate_field(self) -> None:
         """Fan-out result has no top-level 'predicate' key (only single-predicate does)."""
         envelope = _make_activity_envelope()
@@ -1270,7 +1285,7 @@ class TestHomeAssistantArm:
         assert call.kwargs.get("valid_at") == "2026-06-12T14:30:00+00:00"
 
     async def test_metadata_shape(self) -> None:
-        """metadata = {provider, source_entity_id, unit, value}."""
+        """metadata = {source, source_entity_id, unit, value} (canonical source key)."""
         envelope = _make_ha_envelope(
             metric="heart_rate",
             value=72,
@@ -1282,7 +1297,7 @@ class TestHomeAssistantArm:
         assert result["status"] == "ok"
         meta = mock_store.call_args.kwargs.get("metadata")
         assert meta == {
-            "provider": "home_assistant",
+            "source": "home_assistant",
             "source_entity_id": "sensor.oura_heart_rate",
             "unit": "bpm",
             "value": 72,
@@ -1317,7 +1332,7 @@ class TestHomeAssistantArm:
         mock_counter.labels.return_value.inc.assert_called_once()
 
     async def test_xiaomi_scale_weight_writes_measurement_weight_fact(self) -> None:
-        """Xiaomi body-composition scale weight reading writes measurement_weight with provider=home_assistant.
+        """Xiaomi body-composition scale weight reading writes measurement_weight with source=home_assistant.
 
         Regression test for bu-aabi1: HA scale weight events (lifecycle_state='parsed')
         produced zero health facts because (a) the policy bypass envelope used the HA
@@ -1343,7 +1358,7 @@ class TestHomeAssistantArm:
         assert call.kwargs.get("predicate") == "measurement_weight"
         assert call.kwargs.get("scope") == "health"
         meta = call.kwargs.get("metadata")
-        assert meta["provider"] == "home_assistant"
+        assert meta["source"] == "home_assistant"
         assert meta["source_entity_id"] == "sensor.xiaomi_weighing_scale_weight"
         assert meta["unit"] == "kg"
         assert meta["value"] == 75.4

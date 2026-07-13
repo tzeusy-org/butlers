@@ -1771,8 +1771,12 @@ async def get_measurements_sources(
     """Return all data sources observed across measurements.
 
     Reads from the ``facts`` table — facts with predicates of the form
-    ``measurement_*`` store their source in ``metadata->>'source'``.  Rows
-    with a missing or empty source are excluded.
+    ``measurement_*`` carry their source in metadata.  ``source`` is the
+    canonical key written at ingest going forward (wellness_ingest); older
+    facts predating that convention carry only ``provider`` (the Home
+    Assistant arm's historical key), so the source name is resolved as
+    ``COALESCE(metadata->>'source', metadata->>'provider')``.  Rows whose
+    resolved source is missing or empty are excluded.
 
     The pool is butler-scoped — no butler_name filter is applied.
     """
@@ -1781,16 +1785,16 @@ async def get_measurements_sources(
     rows = await pool.fetch(
         """
         SELECT
-            metadata->>'source'  AS name,
-            MAX(valid_at)        AS last_sample_at,
-            COUNT(*)             AS sample_count
+            COALESCE(metadata->>'source', metadata->>'provider')  AS name,
+            MAX(valid_at)                                         AS last_sample_at,
+            COUNT(*)                                              AS sample_count
         FROM facts
         WHERE predicate LIKE 'measurement~_%' ESCAPE '~'
           AND scope = 'health'
           AND validity = 'active'
-          AND metadata->>'source' IS NOT NULL
-          AND metadata->>'source' <> ''
-        GROUP BY metadata->>'source'
+          AND COALESCE(metadata->>'source', metadata->>'provider') IS NOT NULL
+          AND COALESCE(metadata->>'source', metadata->>'provider') <> ''
+        GROUP BY COALESCE(metadata->>'source', metadata->>'provider')
         ORDER BY last_sample_at DESC
         """
     )

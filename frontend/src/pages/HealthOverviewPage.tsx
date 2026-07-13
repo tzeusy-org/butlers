@@ -110,6 +110,79 @@ function fmtBloodPressure(entry: LatestMeasurementEntry | null | undefined): str
 }
 
 // ---------------------------------------------------------------------------
+// KPI freshness — per-vital age + SLA tint + source tooltip
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-vital freshness SLA in DAYS. Past this age, the KPI's age label reads
+ * amber to flag a stale reading rather than presenting week-old data as
+ * current (the "fabricated calm" this move removes). SLAs are vital-specific:
+ * weight drifts slowly (a few days is fine), while heart rate and blood sugar
+ * are expected roughly daily, so they go amber sooner. Documented constant,
+ * tuned per vital — not a single global threshold.
+ */
+const VITAL_SLA_DAYS: Record<string, number> = {
+  weight: 3,
+  blood_pressure: 3,
+  heart_rate: 2,
+  blood_sugar: 2,
+};
+
+/**
+ * Compact age of a reading for the KPI delta line (e.g. "7d", "3h", "now").
+ * Returns null when the timestamp is absent or unparseable, so a cell with no
+ * reading shows no age (never a fabricated "0d").
+ */
+function measurementAge(
+  measuredAt: string | null | undefined,
+): { label: string; days: number } | null {
+  if (!measuredAt) return null;
+  const ts = new Date(measuredAt).getTime();
+  if (isNaN(ts)) return null;
+  const ageMs = Date.now() - ts;
+  const minutes = Math.floor(ageMs / 60_000);
+  const days = ageMs / 86_400_000;
+  let label: string;
+  if (minutes < 1) label = "now";
+  else if (minutes < 60) label = `${minutes}m`;
+  else if (minutes < 1440) label = `${Math.floor(minutes / 60)}h`;
+  else label = `${Math.floor(days)}d`;
+  return { label, days };
+}
+
+/** Resolve a reading's data source from its metadata (canonical `source`,
+ * falling back to the legacy `provider` key). */
+function entrySource(entry: LatestMeasurementEntry | null | undefined): string | null {
+  const meta = entry?.metadata;
+  if (!meta) return null;
+  const source = meta["source"] ?? meta["provider"];
+  return typeof source === "string" && source ? source : null;
+}
+
+/**
+ * Build a KPI cell that threads the reading's age (amber past the vital's SLA)
+ * into the delta line and its data source into the cell tooltip.
+ */
+function buildVitalCell(
+  eyebrow: string,
+  type: string,
+  value: string,
+  entry: LatestMeasurementEntry | null | undefined,
+): { eyebrow: string; value: string; delta?: string; deltaTone?: "muted" | "amber"; title?: string } {
+  const age = entry ? measurementAge(entry.measured_at) : null;
+  const source = entrySource(entry);
+  const sla = VITAL_SLA_DAYS[type];
+  const stale = age != null && sla != null && age.days > sla;
+  return {
+    eyebrow,
+    value,
+    delta: age?.label,
+    deltaTone: stale ? "amber" : "muted",
+    title: source ? `Source: ${source}` : undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Source freshness chip
 // ---------------------------------------------------------------------------
 
@@ -290,16 +363,19 @@ export default function HealthOverviewPage() {
   const hrEntry = measurements["heart_rate"] ?? null;
   const bsEntry = measurements["blood_sugar"] ?? null;
 
+  // Each cell threads the reading's measured_at age into its delta line
+  // (amber past the vital's freshness SLA) and its data source into a tooltip,
+  // so a week-old weight no longer renders as current with zero age signal.
   const kpiCells: [
-    { eyebrow: string; value: string },
-    { eyebrow: string; value: string },
-    { eyebrow: string; value: string },
-    { eyebrow: string; value: string },
+    ReturnType<typeof buildVitalCell>,
+    ReturnType<typeof buildVitalCell>,
+    ReturnType<typeof buildVitalCell>,
+    ReturnType<typeof buildVitalCell>,
   ] = [
-    { eyebrow: "Weight", value: fmtScalar(weightEntry) },
-    { eyebrow: "Blood pressure", value: fmtBloodPressure(bpEntry) },
-    { eyebrow: "Heart rate", value: fmtScalar(hrEntry) },
-    { eyebrow: "Blood sugar", value: fmtScalar(bsEntry) },
+    buildVitalCell("Weight", "weight", fmtScalar(weightEntry), weightEntry),
+    buildVitalCell("Blood pressure", "blood_pressure", fmtBloodPressure(bpEntry), bpEntry),
+    buildVitalCell("Heart rate", "heart_rate", fmtScalar(hrEntry), hrEntry),
+    buildVitalCell("Blood sugar", "blood_sugar", fmtScalar(bsEntry), bsEntry),
   ];
 
   // Palette verbs (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5).

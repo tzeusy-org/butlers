@@ -32,11 +32,18 @@ The Overview MUST contain, in the left column:
 - A **KPI strip** of exactly four cells, each a mono eyebrow over the latest value, for: latest
   `weight`, latest `blood_pressure`, latest `heart_rate`, latest `blood_sugar` — sourced from
   `GET /api/health/measurements/latest`. No fabricated or placeholder values; an absent reading
-  renders a single em-dash, never a fake number.
+  renders a single em-dash, never a fake number. Each cell with a reading MUST thread the reading's
+  `measured_at` age into a delta line (e.g. "7d"); the age MUST render amber (`--amber-text`) once it
+  exceeds a per-vital freshness SLA so week-old data is never presented as current. The per-vital
+  SLAs are a documented constant (`weight` 3 days, `blood_pressure` 3 days, `heart_rate` 2 days,
+  `blood_sugar` 2 days). Each cell MUST expose its reading's data source (resolved from the latest
+  entry's metadata) as a hover tooltip.
 - A **data-freshness indicator** sourced from `GET /api/health/measurements/sources` (one of the
   wire-orphaned reads this redesign consumes), shown as a quiet mono chip (e.g. "synced 2h ago" per
   source). It MUST state real last-sample times only; when no source data exists the chip is omitted,
-  never faked.
+  never faked. The source name for each row MUST be resolved as
+  `COALESCE(metadata->>'source', metadata->>'provider')` so facts carrying only the legacy `provider`
+  key are still attributed rather than dropped.
 
 The Overview MUST contain, in the right column, an **AttentionList** sourced from the Switchboard
 insight reader (`GET /api/switchboard/insights?butler=health&status=pending`). Each attention item MUST link to
@@ -58,6 +65,21 @@ serif-italic line, with no empty-state decoration.
 - **THEN** the four cells MUST be latest `weight`, `blood_pressure`, `heart_rate`, and `blood_sugar`
 - **AND** a cell with no available reading MUST render an em-dash, never a fabricated value
 
+#### Scenario: KPI cell surfaces reading age and staleness
+
+- **WHEN** a KPI cell has a reading whose `measured_at` age exceeds that vital's freshness SLA
+- **THEN** the cell MUST show the reading's age (e.g. "7d") rendered amber
+- **WHEN** the reading is within the vital's SLA
+- **THEN** the age MUST render in the quiet muted tone, not amber
+- **AND** the cell MUST expose the reading's data source as a hover tooltip when the source is known
+
+#### Scenario: Freshness source name falls back to the legacy provider key
+
+- **WHEN** the data-freshness indicator aggregates measurement sources and a fact carries only the
+  legacy `metadata->>'provider'` key (no canonical `source`)
+- **THEN** that fact MUST still be attributed to its provider via
+  `COALESCE(metadata->>'source', metadata->>'provider')`, never dropped from the source list
+
 #### Scenario: Voice line carries the honesty pill
 
 - **WHEN** the Voice briefing renders a model-written elaboration served from cache
@@ -70,6 +92,44 @@ serif-italic line, with no empty-state decoration.
 - **WHEN** `GET /api/switchboard/insights?butler=health&status=pending` returns zero candidates
 - **THEN** the attention index MUST collapse to a single serif-italic line
 - **AND** it MUST NOT render placeholder cards, confetti, or celebratory styling
+
+---
+
+### Requirement: Health read surfaces distinguish a failing source from calm absence
+
+Health read surfaces MUST NOT render a calm empty state (e.g. "No doses logged yet", "No doses
+recorded yet", "No nutrition data for this window", an empty trend, or an empty readings chart) when
+the underlying query has failed. A failed read MUST instead render an inline degraded note that
+names the source (the `SourceDegradedNote` vocabulary), so a broken source is never mistaken for
+"nothing logged" on a health surface. This applies to the measurement trend list and readings chart
+(`GET /api/health/measurements/trend`, `GET /api/health/measurements`), the medication adherence
+statement and dose history (`GET /api/health/medications/{id}/adherence`,
+`GET /api/health/medications/{id}/doses`), and the meals daily-totals mini-KPI
+(`GET /api/health/nutrition/summary`).
+
+#### Scenario: A failing adherence source is named, not rendered as calm absence
+
+- **WHEN** the medication adherence read for a row errors
+- **THEN** the row MUST render an inline degraded note naming the failed adherence source
+- **AND** it MUST NOT render "No doses logged yet" over the failure
+
+#### Scenario: A failing dose-history source is named, not rendered as calm absence
+
+- **WHEN** the dose-history read for an expanded medication errors
+- **THEN** the detail panel MUST render an inline degraded note naming the failed source
+- **AND** it MUST NOT render "No doses recorded yet" over the failure
+
+#### Scenario: A failing nutrition-summary source is named, not rendered as calm absence
+
+- **WHEN** the meals daily-totals read errors
+- **THEN** the mini-KPI MUST render an inline degraded note naming the failed nutrition source
+- **AND** it MUST NOT render "No nutrition data for this window" over the failure
+
+#### Scenario: A failing measurement read is named, not rendered as an empty surface
+
+- **WHEN** the measurement trend read or the readings read errors
+- **THEN** the corresponding surface MUST render an inline degraded note naming the failed source
+- **AND** it MUST NOT render an empty trend or empty chart over the failure
 
 ---
 
