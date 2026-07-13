@@ -28,6 +28,7 @@ from butlers.jobs.secrets_lifecycle import (
     _check_suppression,
     _collect_snapshots,
     _compose_message,
+    _focus_fragment,
     _last_notified_state,
     run_secrets_lifecycle_check,
 )
@@ -461,6 +462,130 @@ async def test_run_secrets_lifecycle_check_delivery_error_records_failed_and_enq
     assert ledger_mock.await_args.kwargs["notification_ref"] == "deferred-notif-1"
     audit_append.assert_not_called()
     assert summary == {"scanned": 1, "attention": 1, "delivered": 0, "suppressed": 0, "errors": 1}
+
+
+async def test_run_secrets_lifecycle_check_delivery_error_supersedes_prior_pending():
+    """bu-id0fh: a transport-failed tick cancels prior pending retry envelopes
+    for the same credential BEFORE enqueueing the latest one, so a persistent
+    multi-tick outage cannot accumulate N pending envelopes (N+1 duplicates on
+    recovery). The enqueued envelope carries the CURRENT state's message
+    (latest-state-wins supersede)."""
+    shared_pool = object()
+    switchboard_pool = object()
+    db = _FakeDatabaseManager(
+        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
+    )
+    snapshot = CredentialSnapshot(
+        key="s:SPOTIFY_ACCESS_TOKEN", family="system", label="SPOTIFY_ACCESS_TOKEN", state="failing"
+    )
+    call_order: list = []
+
+    async def fake_cancel(pool, *, butler_name, line_token):
+        call_order.append(("cancel", butler_name, line_token))
+        return 3
+
+    async def fake_insert(*args, **kwargs):
+        call_order.append(("insert", kwargs["envelope"]))
+        return "deferred-notif-1"
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._check_suppression", new=AsyncMock(return_value=None)
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value="12345"),
+        ),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            new=AsyncMock(return_value={"status": "failed", "error": "connection refused"}),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.cancel_pending_notifications_matching_line",
+            side_effect=fake_cancel,
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.insert_deferred_notification",
+            side_effect=fake_insert,
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ),
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)),
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    # supersede ran, on switchboard's queue, keyed by the state-independent
+    # focus fragment, and strictly BEFORE the insert.
+    assert call_order[0][0] == "cancel"
+    assert call_order[0][1] == "switchboard"
+    assert call_order[0][2] == _focus_fragment("s:SPOTIFY_ACCESS_TOKEN")
+    assert call_order[1][0] == "insert"
+    # the newly enqueued envelope reflects the CURRENT state.
+    assert "failing its health probe" in call_order[1][1]["delivery"]["message"]
+    assert summary["errors"] == 1
+
+
+async def test_run_secrets_lifecycle_check_direct_delivery_cancels_leftover_pending():
+    """bu-id0fh: once a direct delivery finally succeeds, any retry envelope left
+    over from a prior failed tick is cancelled so switchboard's flusher does not
+    ALSO redeliver it — the common recovery path, giving exactly one delivery."""
+    shared_pool = object()
+    switchboard_pool = object()
+    db = _FakeDatabaseManager(
+        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
+    )
+    snapshot = CredentialSnapshot(
+        key="u:google", family="user", label="Google", state="expiring", provider="google"
+    )
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state",
+            new=AsyncMock(return_value="ok"),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._check_suppression", new=AsyncMock(return_value=None)
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value="12345"),
+        ),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            new=AsyncMock(return_value={"status": "sent", "notification_id": "n-1"}),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.cancel_pending_notifications_matching_line",
+            new=AsyncMock(return_value=1),
+        ) as cancel_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ),
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    cancel_mock.assert_awaited_once()
+    assert cancel_mock.await_args.kwargs["butler_name"] == "switchboard"
+    assert cancel_mock.await_args.kwargs["line_token"] == _focus_fragment("u:google")
+    # the debounce marker still advances only on genuine delivery.
+    audit_append.assert_awaited_once()
+    assert summary == {"scanned": 1, "attention": 1, "delivered": 1, "suppressed": 0, "errors": 0}
 
 
 async def test_run_secrets_lifecycle_check_unexpected_error_writes_ledger_row():

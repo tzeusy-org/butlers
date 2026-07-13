@@ -236,3 +236,129 @@ class TestDeliveryPreferencesDB:
         # Cancel: invalid UUID raises
         with pytest.raises(ValueError, match="Invalid notification_id"):
             await cancel_deferred_notification(pool, "not-a-uuid", butler_name=butler)
+
+    async def test_cancel_pending_matching_line_boundaries_and_supersede(self, pool):
+        """bu-id0fh: cancel_pending_notifications_matching_line supersedes prior
+        pending retry envelopes sharing a state-independent dedup token, with
+        line-boundary anchoring so a shorter key never collides with a longer
+        sibling, and only PENDING rows for the given butler are touched."""
+        from butlers.core.temporal.delivery_db import (
+            cancel_pending_notifications_matching_line,
+            insert_deferred_notification,
+        )
+        from butlers.jobs.secrets_lifecycle import _focus_fragment
+
+        now = datetime.now(UTC)
+        spotify = _focus_fragment("s:SPOTIFY")  # /secrets?focus=s%3ASPOTIFY
+        access = _focus_fragment("s:SPOTIFY_ACCESS_TOKEN")  # longer sibling
+        assert spotify in access, "test premise: one fragment is a prefix of the other"
+        base = "http://localhost:41200"
+
+        async def _insert(butler, message, deliver_offset_h=1):
+            return await insert_deferred_notification(
+                pool,
+                butler_name=butler,
+                channel="telegram",
+                message=message,
+                priority="medium",
+                envelope={"schema_version": "notify.v1"},
+                deliver_at=now + timedelta(hours=deliver_offset_h),
+            )
+
+        # Fragment at end-of-message (non-OAuth credential shape).
+        id_eos = await _insert("switchboard", f"Credential 'SPOTIFY' has expired.\n{base}{spotify}")
+        # Fragment mid-message, followed by a newline (OAuth re-authorize line).
+        id_mid = await _insert(
+            "switchboard",
+            f"Credential 'SPOTIFY' is expiring soon.\n{base}{spotify}\nRe-authorize: {base}/x",
+        )
+        # Longer sibling — MUST NOT be superseded by the shorter token.
+        id_sibling = await _insert(
+            "switchboard", f"Credential 'SPOTIFY_ACCESS_TOKEN' has expired.\n{base}{access}"
+        )
+        # A different butler's row with the same token — butler isolation.
+        id_other = await _insert("finance", f"Credential 'SPOTIFY' has expired.\n{base}{spotify}")
+        # An already-delivered switchboard row — only pending rows are cancellable.
+        id_delivered = await _insert("switchboard", f"done.\n{base}{spotify}")
+        await pool.execute(
+            "UPDATE deferred_notifications SET status = 'delivered' WHERE id = $1",
+            uuid.UUID(id_delivered),
+        )
+
+        cancelled = await cancel_pending_notifications_matching_line(
+            pool, butler_name="switchboard", line_token=spotify
+        )
+        assert cancelled == 2  # id_eos + id_mid only
+
+        async def _status(nid):
+            return await pool.fetchval(
+                "SELECT status FROM deferred_notifications WHERE id = $1", uuid.UUID(nid)
+            )
+
+        assert await _status(id_eos) == "cancelled"
+        assert await _status(id_mid) == "cancelled"
+        assert await _status(id_sibling) == "pending", "longer sibling must survive"
+        assert await _status(id_other) == "pending", "other butler must be isolated"
+        assert await _status(id_delivered) == "delivered", "delivered rows untouched"
+
+        # Empty token is a no-op — never a mass-cancel footgun.
+        assert (
+            await cancel_pending_notifications_matching_line(
+                pool, butler_name="switchboard", line_token=""
+            )
+            == 0
+        )
+        assert await _status(id_sibling) == "pending"
+
+    async def test_multi_tick_outage_bounds_pending_to_one_then_zero(self, pool):
+        """bu-id0fh reproduction: emulate the secrets_lifecycle enqueue loop over
+        a persistent multi-tick outage. Each tick supersedes-then-inserts, so the
+        queue holds exactly ONE pending envelope (carrying the latest state) no
+        matter how many ticks the outage spans — not N. On recovery the direct
+        delivery's own supersede drains it, leaving zero: one delivery, not N+1."""
+        from butlers.core.temporal.delivery_db import (
+            cancel_pending_notifications_matching_line,
+            insert_deferred_notification,
+        )
+        from butlers.jobs.secrets_lifecycle import _focus_fragment
+
+        now = datetime.now(UTC)
+        marker = _focus_fragment("s:SPOTIFY_ACCESS_TOKEN")
+        base = "http://localhost:41200"
+        states = ["expiring", "expiring", "failing", "expired"]  # incl. a mid-outage change
+
+        async def _pending_count():
+            return await pool.fetchval(
+                "SELECT COUNT(*) FROM deferred_notifications "
+                "WHERE butler_name = 'switchboard' AND status = 'pending'"
+            )
+
+        for tick, state in enumerate(states):
+            # supersede then insert, mirroring _enqueue_delivery_retry
+            await cancel_pending_notifications_matching_line(
+                pool, butler_name="switchboard", line_token=marker
+            )
+            await insert_deferred_notification(
+                pool,
+                butler_name="switchboard",
+                channel="telegram",
+                message=f"Credential 'SPOTIFY_ACCESS_TOKEN' is now '{state}'.\n{base}{marker}",
+                priority="medium",
+                envelope={"schema_version": "notify.v1"},
+                deliver_at=now + timedelta(minutes=30),
+            )
+            assert await _pending_count() == 1, f"tick {tick}: queue must never exceed one pending"
+
+        # The single surviving envelope carries the LATEST state (expired).
+        surviving = await pool.fetchval(
+            "SELECT message FROM deferred_notifications "
+            "WHERE butler_name = 'switchboard' AND status = 'pending'"
+        )
+        assert "'expired'" in surviving
+
+        # Recovery: the direct delivery's post-success supersede drains it.
+        drained = await cancel_pending_notifications_matching_line(
+            pool, butler_name="switchboard", line_token=marker
+        )
+        assert drained == 1
+        assert await _pending_count() == 0

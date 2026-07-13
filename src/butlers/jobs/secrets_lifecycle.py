@@ -82,6 +82,25 @@ Design
   anyway is queued for retry via ``_enqueue_delivery_retry`` (switchboard's
   own ``deferred_notifications`` table, flushed by switchboard's in-container
   scheduler tick — never subject to this same cross-container problem).
+- Retry-envelope dedup (bu-id0fh): the debounce marker only advances on a
+  *confirmed* delivery, and the scan interval equals the retry backoff, so a
+  persistent multi-tick outage would otherwise enqueue a fresh retry envelope
+  every cycle — on recovery every accumulated envelope plus the next direct
+  attempt each fires, giving the owner N+1 duplicate pings for one state
+  transition (bounded only by the 24h expiry, so N can reach ~48).
+  ``_enqueue_delivery_retry`` therefore *supersedes*: it cancels prior pending
+  envelopes for the same credential (matched on the state-independent
+  ``_focus_fragment`` deep-link, since the strict ``notify.v1`` envelope cannot
+  carry a dedup field) before enqueueing the latest state, bounding the queue
+  to one pending envelope per credential; and a subsequent direct delivery
+  cancels that leftover too. Net: exactly one delivery per transition on the
+  common recovery path, a bounded ≤2 in the rare drain-races-the-scan case —
+  never N+1. Drain-side dedup is deliberately NOT added: enqueue-time supersede
+  already guarantees ≤1 pending per credential under the
+  single-dashboard-api-replica assumption this job's audit_log debounce already
+  relies on. The debounce marker is still written only on genuine delivery, so
+  the fix never trades a duplicate for a *silent* credential — the failure mode
+  the original design guards against, and the strictly worse one.
 - Natural future home: bu-a63hn (background verification loop) once it
   exists. This job does not block on it; it is a standalone scheduled check.
 """
@@ -112,7 +131,10 @@ from butlers.core.approvals_policy import (
 )
 from butlers.core.attention_ledger import get_suppressing_context_signal, record_attention_event
 from butlers.core.credential_keys import normalize_credential_key
-from butlers.core.temporal.delivery_db import insert_deferred_notification
+from butlers.core.temporal.delivery_db import (
+    cancel_pending_notifications_matching_line,
+    insert_deferred_notification,
+)
 from butlers.credential_store import resolve_owner_telegram_recipient
 
 logger = logging.getLogger(__name__)
@@ -301,6 +323,26 @@ async def _check_suppression(pool: Any) -> str | None:
     return None
 
 
+def _focus_fragment(key: str) -> str:
+    """State-independent deep-link fragment embedded in every lifecycle message
+    for a credential.
+
+    Serves double duty: it is the ``/secrets`` deep link ``_compose_message``
+    builds, and — because it is identical across every state a credential passes
+    through (``expiring`` → ``expired`` …) yet unique per credential — it is the
+    dedup token used to supersede prior pending retry envelopes for the same
+    credential (see ``_enqueue_delivery_retry`` and the direct-delivery cleanup
+    in ``run_secrets_lifecycle_check``). Keeping the two uses on one helper means
+    the deep link and the dedup discriminator can never silently drift apart.
+
+    The fragment appears on its own line in the composed message (``_compose_message``
+    joins lines with ``\n``), so it is always either followed by a newline or at
+    end-of-message — the line boundary ``cancel_pending_notifications_matching_line``
+    anchors on to avoid a shorter key colliding with a longer sibling.
+    """
+    return f"/secrets?focus={quote(key, safe='')}"
+
+
 def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     """Build the owner-facing notification body for one lifecycle transition.
 
@@ -310,7 +352,7 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     provider's consent screen, so it's directly clickable from a Telegram
     message without a separate POST round-trip.
     """
-    focus_url = f"{dashboard_url}/secrets?focus={quote(snapshot.key, safe='')}"
+    focus_url = f"{dashboard_url}{_focus_fragment(snapshot.key)}"
     description = _STATE_DESCRIPTIONS.get(snapshot.state, f"is now '{snapshot.state}'")
     lines = [f"Credential '{snapshot.label}' {description}.", focus_url]
 
@@ -322,12 +364,37 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     return "\n".join(lines)
 
 
+async def _supersede_pending_retries(pool: Any, dedup_marker: str) -> int:
+    """Cancel prior PENDING retry envelopes sharing ``dedup_marker``, best-effort.
+
+    ``dedup_marker`` is a credential's state-independent ``_focus_fragment``.
+    Cancelling before enqueueing a fresh envelope (and again once a direct
+    delivery finally succeeds) is what bounds a persistent multi-tick outage to
+    a single pending envelope per credential — the core of bu-id0fh's N+1 fix.
+    A failure here is logged and swallowed: superseding is an optimisation on
+    top of the (already-recorded) delivery attempt, never a reason to abort it.
+    """
+    try:
+        return await cancel_pending_notifications_matching_line(
+            pool, butler_name="switchboard", line_token=dedup_marker
+        )
+    except Exception:
+        logger.warning(
+            "secrets_lifecycle_check: failed to supersede prior pending retry "
+            "envelopes for marker=%s",
+            dedup_marker,
+            exc_info=True,
+        )
+        return 0
+
+
 async def _enqueue_delivery_retry(
     db: DatabaseManager,
     *,
     channel: str,
     message: str,
     recipient: str,
+    dedup_marker: str,
 ) -> str | None:
     """Enqueue a retry envelope for a transport-failed delivery, best-effort.
 
@@ -348,6 +415,21 @@ async def _enqueue_delivery_retry(
     ``deliver()``'s ``notify_request.origin_butler == source_butler`` check
     for the flusher's in-process switchboard-self-delivery path.
 
+    Supersede (bu-id0fh): before inserting, prior PENDING envelopes for the
+    same credential (matched by ``dedup_marker``, a state-independent
+    ``_focus_fragment``) are cancelled. Without this, a persistent outage —
+    where every 30-minute scan re-fails and re-enqueues because the debounce
+    marker only advances on a *confirmed* delivery — would leave one pending
+    envelope per tick (up to ~48 before the 24h expiry), and every one of them
+    plus the next direct attempt would fire on recovery: N+1 duplicate pings
+    for a single state transition. Cancel-then-insert bounds the queue to
+    exactly one pending envelope carrying the *latest* state (latest-state-wins
+    supersede — a credential that changed state mid-outage supersedes its own
+    stale envelope rather than delivering both). The dedup key is NOT stored in
+    the envelope itself: the ``notify.v1`` envelope is strictly re-validated
+    (``extra="forbid"``) when the flusher redelivers it, so it is matched on the
+    already-present deep-link fragment in ``message`` instead.
+
     Best-effort: a failure to enqueue is logged and swallowed (mirrors
     ``record_attention_event``'s own degraded-honesty contract) — the
     original delivery attempt has already failed and been recorded regardless
@@ -364,6 +446,18 @@ async def _enqueue_delivery_retry(
             recipient,
         )
         return None
+
+    # Supersede prior pending envelopes for this credential BEFORE enqueueing
+    # the fresh one, so the queue never holds more than a single pending retry
+    # per credential regardless of how many ticks the outage spans.
+    superseded = await _supersede_pending_retries(switchboard_pool, dedup_marker)
+    if superseded:
+        logger.info(
+            "secrets_lifecycle_check: superseded %d prior pending retry "
+            "envelope(s) before enqueueing latest state (marker=%s)",
+            superseded,
+            dedup_marker,
+        )
 
     envelope = {
         "schema_version": "notify.v1",
@@ -463,6 +557,9 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 continue
 
             message = _compose_message(snapshot, dashboard_url)
+            # State-independent dedup token for this credential's retry
+            # envelopes (see _focus_fragment / _supersede_pending_retries).
+            dedup_marker = _focus_fragment(snapshot.key)
 
             # Import locally: roster/ modules aren't always importable at
             # collection time (e.g. minimal test environments), and this is
@@ -492,7 +589,11 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 # dashboard-api process) actually redelivers it — see
                 # _enqueue_delivery_retry's docstring.
                 retry_ref = await _enqueue_delivery_retry(
-                    db, channel="telegram", message=message, recipient=recipient
+                    db,
+                    channel="telegram",
+                    message=message,
+                    recipient=recipient,
+                    dedup_marker=dedup_marker,
                 )
                 await record_attention_event(
                     shared_pool,
@@ -531,6 +632,33 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 target=snapshot.key,
                 note=snapshot.state,
             )
+            # This direct delivery satisfied the state transition. Cancel any
+            # pending retry envelope left over from a prior failed tick so
+            # switchboard's flusher does not ALSO redeliver it (the drain path
+            # is credential-agnostic and cannot advance the debounce marker
+            # itself) — the common recovery path where transport is healthy
+            # again by the time the next scan runs, giving exactly one delivery
+            # rather than one direct + one drained (bu-id0fh). A drain that
+            # happens to fire just before this scan is the bounded residual:
+            # one extra ping, never the old N+1.
+            # Best-effort: this cleanup runs AFTER the delivery + marker have
+            # already succeeded, so any failure resolving the switchboard pool
+            # must not propagate to the outer handler (which would increment
+            # `errors` and record a duplicate `failed` event for a delivery
+            # that actually succeeded). Swallow broadly, not just KeyError.
+            try:
+                switchboard_pool = db.pool("switchboard")
+            except Exception:
+                switchboard_pool = None
+            if switchboard_pool is not None:
+                cancelled = await _supersede_pending_retries(switchboard_pool, dedup_marker)
+                if cancelled:
+                    logger.info(
+                        "secrets_lifecycle_check: direct delivery superseded %d pending "
+                        "retry envelope(s) (marker=%s)",
+                        cancelled,
+                        dedup_marker,
+                    )
         except Exception as exc:
             errors += 1
             logger.exception(

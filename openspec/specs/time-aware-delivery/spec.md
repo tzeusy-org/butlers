@@ -61,6 +61,14 @@ Deferred notifications are stored in a `deferred_notifications` table with field
 
 This table's storage-and-flush mechanism is also reused (bu-hmdqz.3) to retry a genuinely *failed* delivery attempt, not just to batch a quiet-hours defer: a caller running outside every butler daemon's own container (e.g. `butlers.jobs.secrets_lifecycle`, scheduled inside `dashboard-api`) that hits a transport error MAY insert a retry envelope directly into a target butler's `deferred_notifications` table (via `insert_deferred_notification`) so that butler's OWN scheduler tick flushes and redelivers it in-process. This is an ordinary `deliver_at`-scheduled row like any other -- no schema or flush-pass distinction from a quiet-hours defer -- but the attention-ledger row describing the original attempt is recorded with `outcome="failed"` (see the Notify Contract spec's Attention Ledger requirement), not `outcome="deferred"`, since the retry is an explicit caller action rather than the standard quiet-hours hold.
 
+A caller that re-derives the same transition on a recurring scan MUST dedup its own retry envelopes so a persistent multi-tick outage does not accumulate one pending envelope per tick (which would all fire on recovery -- N+1 duplicate deliveries for a single transition). Before enqueueing a fresh retry envelope for a transition, the caller SHALL cancel prior `pending` envelopes for the same transition (supersede: latest state wins), and once a later direct delivery for the same transition succeeds it SHALL likewise cancel any leftover `pending` retry envelope, so switchboard's flush does not also redeliver it. This bounds the queue to one pending retry envelope per transition and yields exactly one delivery on the common recovery path. Because the `notify.v1` envelope is strictly re-validated on flush and cannot carry an out-of-band dedup field, the dedup token is a state-independent substring of the envelope's `message` (matched at a line boundary so a shorter token cannot collide with a longer sibling).
+
+#### Scenario: Retry envelopes superseded across a persistent outage
+- **WHEN** a recurring scan re-derives the same failed transition on each tick during a multi-tick transport outage
+- **THEN** each tick cancels the prior `pending` retry envelope for that transition before enqueueing the latest one
+- **AND** the `deferred_notifications` table holds at most one `pending` retry envelope for that transition at any time
+- **AND** on recovery the owner receives a single delivery for the transition, not one per elapsed tick
+
 #### Scenario: Deferred notification persisted
 - **WHEN** a medium-priority notification is deferred during quiet hours
 - **THEN** a row is inserted into `deferred_notifications` with `status='pending'` and `deliver_at` computed as the next occurrence of `batch_delivery_time` in the user's timezone

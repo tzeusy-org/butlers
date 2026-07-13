@@ -240,6 +240,56 @@ async def insert_deferred_notification(
     return str(notif_id)
 
 
+async def cancel_pending_notifications_matching_line(
+    pool: asyncpg.Pool,
+    *,
+    butler_name: str,
+    line_token: str,
+) -> int:
+    """Cancel every PENDING deferred notification for a butler whose ``message``
+    contains ``line_token`` as a whole line.
+
+    "Whole line" means ``line_token`` is immediately followed by a newline, or
+    the message ends with it. This line-boundary anchoring is deliberate: a
+    caller uses a state-independent substring of the message (e.g. the
+    ``/secrets?focus=<key>`` deep-link fragment shared by every notification for
+    one credential) as a dedup token, and a bare substring match would let a
+    shorter token collide with a longer sibling
+    (``.../focus=s%3ASPOTIFY`` must NOT match ``.../focus=s%3ASPOTIFY_ACCESS_TOKEN``).
+    Both branches use literal matching (``strpos`` / ``right``) rather than
+    ``LIKE`` so ``%`` and ``_`` inside a percent-encoded token are never treated
+    as wildcards.
+
+    This is the enqueue-time *supersede* primitive behind the
+    ``secrets_lifecycle`` retry-envelope dedup (bu-id0fh): before enqueueing a
+    fresh retry envelope for a credential (or on a later direct delivery for the
+    same credential), prior pending envelopes sharing the dedup token are
+    cancelled so a persistent multi-tick outage can never accumulate N pending
+    envelopes that all fire on recovery. Returns the number of rows cancelled.
+
+    An empty ``line_token`` is a no-op (returns 0) — matching every pending row
+    would be a footgun, and there is nothing meaningful to dedup on.
+    """
+    if not line_token:
+        return 0
+    result = await pool.execute(
+        r"""
+        UPDATE deferred_notifications
+        SET status = 'cancelled'
+        WHERE butler_name = $1
+          AND status = 'pending'
+          AND (
+                strpos(message, $2 || E'\n') > 0
+                OR right(message, char_length($2)) = $2
+              )
+        """,
+        butler_name,
+        line_token,
+    )
+    # asyncpg returns "UPDATE N"
+    return int(result.split()[-1])
+
+
 async def list_deferred_notifications(
     pool: asyncpg.Pool,
     *,
