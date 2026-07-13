@@ -124,3 +124,40 @@ async def test_eligibility_sweep_no_transition_and_skip():
         result2 = await run_eligibility_sweep(pool2, now=_NOW)
     assert result2["skipped"] == 1
     assert result2["transitioned"] == 0
+
+
+class TestDeriveEligibilityStateClockSkew:
+    """_derive_eligibility_state bounds the TTL window against a future last_seen_at.
+
+    Without the 5-minute future-skew guard, a future-dated last_seen_at (clock
+    skew between a butler host and the DB, or a bad writer) satisfies
+    ``last_seen_at + ttl >= now`` forever and keeps the butler eligible
+    indefinitely.
+    """
+
+    def test_fresh_last_seen_is_active(self):
+        from butlers.tools.switchboard.registry.registry import _derive_eligibility_state
+
+        row = _make_row(last_seen_at=_NOW - timedelta(seconds=100), liveness_ttl_seconds=300)
+        assert _derive_eligibility_state(row, now=_NOW) == "active"
+
+    def test_past_ttl_is_stale(self):
+        from butlers.tools.switchboard.registry.registry import _derive_eligibility_state
+
+        row = _make_row(last_seen_at=_NOW - timedelta(seconds=400), liveness_ttl_seconds=300)
+        assert _derive_eligibility_state(row, now=_NOW) == "stale"
+
+    def test_future_within_tolerance_is_active(self):
+        from butlers.tools.switchboard.registry.registry import _derive_eligibility_state
+
+        # 1 min into the future — within the 5-min skew tolerance, still trusted.
+        row = _make_row(last_seen_at=_NOW + timedelta(minutes=1), liveness_ttl_seconds=300)
+        assert _derive_eligibility_state(row, now=_NOW) == "active"
+
+    def test_future_beyond_tolerance_is_stale(self):
+        from butlers.tools.switchboard.registry.registry import _derive_eligibility_state
+
+        # 10 min into the future — beyond the 5-min tolerance. Without the guard
+        # the unbounded TTL window would report "active"; it must be "stale".
+        row = _make_row(last_seen_at=_NOW + timedelta(minutes=10), liveness_ttl_seconds=300)
+        assert _derive_eligibility_state(row, now=_NOW) == "stale"

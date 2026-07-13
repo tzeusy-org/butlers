@@ -261,6 +261,41 @@ async def test_butler_within_ttl_yields_nothing(monkeypatch):
     assert findings == []
 
 
+async def test_future_heartbeat_within_tolerance_yields_nothing(monkeypatch):
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+
+    # 1 min in the future — within the 5-min skew tolerance, still trusted.
+    row = _heartbeat_row(
+        last_seen_at=datetime.now(UTC) + timedelta(minutes=1),
+        liveness_ttl_seconds=300,
+    )
+    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[row])).discover(
+        lookback_minutes=15
+    )
+    assert findings == []
+
+
+async def test_future_heartbeat_beyond_tolerance_trips_a_finding(monkeypatch):
+    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+
+    # 10 min in the future — beyond the 5-min tolerance. Without the guard the
+    # unbounded TTL window (last_seen_at + ttl >= now) would evade the detector;
+    # a future-dated heartbeat must be flagged stale.
+    row = _heartbeat_row(
+        name="finance",
+        last_seen_at=datetime.now(UTC) + timedelta(minutes=10),
+        liveness_ttl_seconds=300,
+    )
+    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[row])).discover(
+        lookback_minutes=15
+    )
+    assert len(findings) == 1
+    assert findings[0].exception_type == "ButlerHeartbeatStale"
+    assert findings[0].source_butler == "finance"
+
+
 async def test_quarantined_butler_always_trips_regardless_of_ttl(monkeypatch):
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)

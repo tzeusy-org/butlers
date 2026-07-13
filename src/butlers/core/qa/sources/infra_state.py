@@ -103,6 +103,12 @@ _BACKUP_DIR_ENV = "BUTLERS_BACKUP_DIR"
 #: its registration time before being flagged -- avoids firing on the very
 #: first patrol tick after a fresh registration.
 _NEVER_SEEN_GRACE = timedelta(minutes=15)
+# Tolerance for a heartbeat timestamp reported in the future (clock skew / bad
+# writer). Beyond this the timestamp is untrustworthy, so a future-dated
+# heartbeat must be flagged stale rather than silently evading the staleness
+# detector. Mirrors _CLOCK_SKEW_TOLERANCE_SECONDS in
+# src/butlers/api/routers/butlers.py (PR #3167).
+_CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
 
 #: How many missed external-deadman ping intervals to tolerate before
 #: flagging staleness -- absorbs a transient network blip without noise.
@@ -265,7 +271,16 @@ class InfraStateSource:
                 # eligibility_state column: that column is only reconciled
                 # lazily on routing calls and can freeze stale forever for a
                 # butler nobody routes to anymore.
-                stale = anchor is None or (anchor + timedelta(seconds=ttl_seconds)) < now
+                #
+                # A heartbeat further in the future than the skew tolerance is
+                # untrustworthy (clock skew / bad writer) — treat it as stale so
+                # a future-dated timestamp cannot evade the detector via the
+                # unbounded TTL window.
+                stale = (
+                    anchor is None
+                    or anchor > now + _CLOCK_SKEW_TOLERANCE
+                    or (anchor + timedelta(seconds=ttl_seconds)) < now
+                )
 
             if not stale:
                 continue

@@ -31,6 +31,12 @@ _AGENT_TYPES = frozenset({AGENT_TYPE_BUTLER, AGENT_TYPE_STAFFER})
 
 DEFAULT_LIVENESS_TTL_SECONDS = 300
 DEFAULT_ROUTE_CONTRACT_VERSION = 1
+# Tolerance for a last_seen_at reported in the future (clock skew between a
+# butler host and the DB server, or a bad writer). Beyond this the timestamp is
+# untrustworthy rather than confidently recent, so it must NOT keep eligibility
+# asserted forever. Mirrors _CLOCK_SKEW_TOLERANCE_SECONDS in
+# src/butlers/api/routers/butlers.py (PR #3167).
+_CLOCK_SKEW_TOLERANCE_SECONDS = 5 * 60
 
 
 def _normalize_string_list(raw: Any) -> list[str]:
@@ -92,6 +98,12 @@ def _derive_eligibility_state(
 
     last_seen_at = row.get("last_seen_at")
     if last_seen_at is None:
+        return ELIGIBILITY_STALE
+
+    # A last_seen_at further in the future than our skew tolerance is
+    # untrustworthy (clock skew / bad writer) — treat it as stale rather than
+    # letting the unbounded TTL window keep the butler eligible indefinitely.
+    if last_seen_at > now + timedelta(seconds=_CLOCK_SKEW_TOLERANCE_SECONDS):
         return ELIGIBILITY_STALE
 
     ttl_seconds = _normalize_positive_int(
