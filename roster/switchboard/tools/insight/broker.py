@@ -1105,16 +1105,23 @@ async def delivery_cycle(
 
     # notify_fn is guaranteed non-None here (None case returns early above)
     deliver_success = True
+    # Machine-readable failure class for the attention ledger (bu-wsm9m),
+    # mirroring notify()'s reason vocabulary (bu-zcos8): a notify_fn error
+    # return is a delivery_error, an exception mid-dispatch is an
+    # unexpected_error. Stays None on the success path.
+    failure_reason: str | None = None
     try:
         notify_result = await notify_fn(delivery_message, notify_metadata)
         if isinstance(notify_result, dict) and notify_result.get("status") == "error":
             deliver_success = False
+            failure_reason = f"delivery_error:{notify_result.get('error', 'unknown')}"
             logger.error(
                 "insight-delivery-cycle: notify failed: %s",
                 notify_result.get("error"),
             )
-    except Exception:
+    except Exception as exc:
         deliver_success = False
+        failure_reason = f"unexpected_error:{type(exc).__name__}"
         logger.exception("insight-delivery-cycle: notify raised exception")
 
     if deliver_success:
@@ -1199,6 +1206,68 @@ async def delivery_cycle(
             "insight-delivery-cycle: delivery failed for %d candidates; incremented attempt counts",
             len(selected_ids),
         )
+
+        # Attention ledger: stamp one terminal outcome="failed" row per
+        # candidate this cycle failed to deliver (bu-wsm9m). Before this, the
+        # deliver_success=False branch bumped delivery_attempt_count and (after
+        # 3 strikes) marked candidates 'filtered' with only a warn-log — the
+        # insight choke point wrote NO ledger row, so a genuine delivery outage
+        # read identically to a benign quiet-hours hold (which DOES write a
+        # 'suppressed' row) on the exact surface built to prove silence is
+        # chosen. This mirrors the notify() choke point's all-paths failed
+        # accounting (bu-zcos8/bu-hmdqz.3, core-notify spec §"Attention Ledger
+        # Recording at the notify() Boundary"): a real failure is "failed",
+        # never "deferred"/"suppressed" (those are benign, chosen holds).
+        #
+        # [decision] The 3-strikes 'filtered' give-up does NOT get its own
+        # distinct ledger row. The outcome vocabulary has no "abandoned"
+        # outcome, and reusing "suppressed" would misrepresent a repeated-
+        # failure give-up as a chosen quiet-hours/context-bus hold — the exact
+        # conflation bu-hmdqz.3/bu-zcos8 warn against. Instead the terminal
+        # give-up is encoded in the same per-candidate "failed" row's metadata
+        # (terminally_filtered=true, retryable=false), keeping one row per
+        # candidate per cycle (mirroring the delivered/coalesced branch's
+        # cardinality) while still making every give-up provable via a metadata
+        # filter. A pre-3-strikes failure stays 'pending' and the next cycle
+        # retries it, so its row carries retryable=true.
+        #
+        # Deliberately OUTSIDE any transaction and best-effort/fail-open (see
+        # record_attention_event's degraded-honesty contract): a ledger-write
+        # hiccup must never abort the attempt-count/filter bookkeeping it
+        # merely describes.
+        reason = failure_reason or "delivery_error:unknown"
+        post_rows = await pool.fetch(
+            """
+            SELECT id, origin_butler, priority, dedup_key, channel,
+                   status, delivery_attempt_count
+            FROM insight_candidates
+            WHERE id = ANY($1::uuid[])
+            """,
+            selected_ids,
+        )
+        for _r in post_rows:
+            _terminally_filtered = _r["status"] == "filtered"
+            await record_attention_event(
+                pool,
+                # insight_candidates.origin_butler is NOT NULL (see the schema
+                # in create_insight_tables / the core migration), and this is a
+                # bare asyncpg Record access — a missing key would KeyError, not
+                # yield None — so no None-guard is warranted here.
+                origin_butler=_r["origin_butler"],
+                source="insight",
+                outcome="failed",
+                channel=delivery_channel or _r["channel"],
+                intent="insight",
+                priority=_r["priority"],
+                dedup_key=_r["dedup_key"],
+                notification_ref=str(_r["id"]),
+                reason=reason,
+                metadata={
+                    "failed_attempts": _r["delivery_attempt_count"],
+                    "terminally_filtered": _terminally_filtered,
+                    "retryable": not _terminally_filtered,
+                },
+            )
 
     # Step 10: Cleanup + disengagement auto-off. Skipped in urgent_only mode —
     # these are daily-cadence maintenance concerns the regular cycle already

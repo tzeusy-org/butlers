@@ -64,6 +64,11 @@ async def _insert_candidate(pool, *, dedup_key: str, priority: int, origin_butle
     )
 
 
+async def _candidate_id(pool, dedup_key: str) -> str:
+    row = await pool.fetchrow("SELECT id FROM insight_candidates WHERE dedup_key = $1", dedup_key)
+    return str(row["id"])
+
+
 class TestUrgentBypassesQuietHours:
     async def test_urgent_delivered_routine_stays_pending(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
@@ -395,3 +400,177 @@ class TestUrgentOnlySubCycle:
 
         assert daily_result["delivered"] == [routine_id]
         daily_notify.assert_awaited_once()
+
+
+class TestFailedDeliveryLedgerRecording:
+    """The deliver_success=False branch stamps outcome="failed" ledger rows (bu-wsm9m).
+
+    Before this fix the insight choke point's delivery-failure branch bumped
+    ``delivery_attempt_count`` and (after 3 strikes) marked candidates
+    ``filtered`` with only a warn-log — no ``record_attention_event`` — so a
+    genuine insight-delivery outage read identically to a benign quiet-hours
+    hold (which DOES write a ``suppressed`` row) on the exact surface built to
+    prove silence is chosen. Mirrors the notify() choke point's all-paths
+    failed accounting (bu-zcos8/bu-hmdqz.3).
+
+    ``insight_pool`` only creates the four insight tables, so the real ledger
+    write would fail open silently; these tests patch
+    ``record_attention_event`` in the broker module to capture the exact call
+    shape while still asserting the unchanged bookkeeping (attempt-count bump,
+    3-strikes ``filtered`` transition) against the real insight tables.
+    """
+
+    @staticmethod
+    def _patch_ledger():
+        calls: list[dict] = []
+
+        async def _capture(_pool, **kwargs):
+            calls.append(kwargs)
+            return "ledger-row-id"
+
+        patcher = patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(side_effect=_capture),
+        )
+        return patcher, calls
+
+    @staticmethod
+    def _no_context_signal():
+        return patch(
+            "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+            new=AsyncMock(return_value=None),
+        )
+
+    async def _seed_normal_no_quiet_hours(self, pool):
+        await pool.execute("""
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=NULL, quiet_end=NULL
+        """)
+
+    async def test_notify_error_return_records_failed_ledger_row(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await self._seed_normal_no_quiet_hours(insight_pool)
+        await _insert_candidate(insight_pool, dedup_key="health:fail:e1:2026", priority=70)
+        cand_id = await _candidate_id(insight_pool, "health:fail:e1:2026")
+
+        notify_mock = AsyncMock(return_value={"status": "error", "error": "boom"})
+        patcher, calls = self._patch_ledger()
+        with patcher, self._no_context_signal():
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        # No successful delivery.
+        assert result["delivered"] == []
+
+        # A single failed ledger row with a machine-readable reason.
+        failed = [c for c in calls if c.get("outcome") == "failed"]
+        assert len(failed) == 1
+        row = failed[0]
+        assert row["source"] == "insight"
+        assert row["reason"] == "delivery_error:boom"
+        assert row["notification_ref"] == cand_id
+        assert row["dedup_key"] == "health:fail:e1:2026"
+        assert row["intent"] == "insight"
+        # Pre-3-strikes: retryable, not terminally filtered.
+        assert row["metadata"]["retryable"] is True
+        assert row["metadata"]["terminally_filtered"] is False
+        assert row["metadata"]["failed_attempts"] == 1
+
+        # Existing behavior unchanged: attempt count bumped, still pending.
+        cand = await insight_pool.fetchrow(
+            "SELECT status, delivery_attempt_count FROM insight_candidates WHERE id = $1::uuid",
+            cand_id,
+        )
+        assert cand["status"] == "pending"
+        assert cand["delivery_attempt_count"] == 1
+
+    async def test_notify_exception_records_failed_ledger_row(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await self._seed_normal_no_quiet_hours(insight_pool)
+        await _insert_candidate(insight_pool, dedup_key="health:fail:x1:2026", priority=70)
+        cand_id = await _candidate_id(insight_pool, "health:fail:x1:2026")
+
+        notify_mock = AsyncMock(side_effect=ValueError("weird"))
+        patcher, calls = self._patch_ledger()
+        with patcher, self._no_context_signal():
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        assert result["delivered"] == []
+        failed = [c for c in calls if c.get("outcome") == "failed"]
+        assert len(failed) == 1
+        assert failed[0]["reason"] == "unexpected_error:ValueError"
+        assert failed[0]["notification_ref"] == cand_id
+
+        cand = await insight_pool.fetchrow(
+            "SELECT status, delivery_attempt_count FROM insight_candidates WHERE id = $1::uuid",
+            cand_id,
+        )
+        assert cand["status"] == "pending"
+        assert cand["delivery_attempt_count"] == 1
+
+    async def test_third_strike_records_terminally_filtered_metadata(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await self._seed_normal_no_quiet_hours(insight_pool)
+        await _insert_candidate(insight_pool, dedup_key="health:fail:t1:2026", priority=70)
+        cand_id = await _candidate_id(insight_pool, "health:fail:t1:2026")
+        # Two prior failures already recorded; this cycle is the 3rd strike.
+        await insight_pool.execute(
+            "UPDATE insight_candidates SET delivery_attempt_count = 2 WHERE id = $1::uuid",
+            cand_id,
+        )
+
+        notify_mock = AsyncMock(return_value={"status": "error", "error": "still down"})
+        patcher, calls = self._patch_ledger()
+        with patcher, self._no_context_signal():
+            await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        failed = [c for c in calls if c.get("outcome") == "failed"]
+        assert len(failed) == 1
+        row = failed[0]
+        assert row["reason"] == "delivery_error:still down"
+        assert row["metadata"]["failed_attempts"] == 3
+        assert row["metadata"]["terminally_filtered"] is True
+        assert row["metadata"]["retryable"] is False
+
+        # Existing behavior unchanged: 3-strikes filtered transition + metadata.
+        cand = await insight_pool.fetchrow(
+            "SELECT status, delivery_attempt_count, metadata "
+            "FROM insight_candidates WHERE id = $1::uuid",
+            cand_id,
+        )
+        assert cand["status"] == "filtered"
+        assert cand["delivery_attempt_count"] == 3
+        import json as _json
+
+        meta = cand["metadata"]
+        meta = _json.loads(meta) if isinstance(meta, str) else meta
+        assert meta["delivery_failure"] is True
+        assert meta["failed_attempts"] == 3
+
+    async def test_digest_failure_records_one_failed_row_per_candidate(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await self._seed_normal_no_quiet_hours(insight_pool)
+        await _insert_candidate(insight_pool, dedup_key="health:fail:d1:2026", priority=72)
+        await _insert_candidate(insight_pool, dedup_key="health:fail:d2:2026", priority=71)
+        id1 = await _candidate_id(insight_pool, "health:fail:d1:2026")
+        id2 = await _candidate_id(insight_pool, "health:fail:d2:2026")
+
+        notify_mock = AsyncMock(return_value={"status": "error", "error": "digest boom"})
+        patcher, calls = self._patch_ledger()
+        with patcher, self._no_context_signal():
+            result = await delivery_cycle(insight_pool, notify_fn=notify_mock)
+
+        # A >1 selection means notify was called once with a digest, and both
+        # candidates get their own failed row.
+        assert result["delivered"] == []
+        failed = [c for c in calls if c.get("outcome") == "failed"]
+        assert len(failed) == 2
+        refs = {c["notification_ref"] for c in failed}
+        assert refs == {id1, id2}
+        for c in failed:
+            assert c["reason"] == "delivery_error:digest boom"
+            assert c["source"] == "insight"

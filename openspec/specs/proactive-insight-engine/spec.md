@@ -216,8 +216,10 @@ The delivery cycle SHALL consult the situational context bus (`public.user_conte
 - **AND** the seed migration (or a re-run of its guarded UPDATE) executes
 - **THEN** the existing values are unchanged
 
-### Requirement: Attention Ledger Recording of Delivered/Coalesced Candidates
-Every candidate the delivery cycle successfully delivers SHALL be recorded to `public.attention_ledger`. A single-candidate delivery is recorded with `outcome="delivered"`; when multiple candidates are folded into one digest message (`deliver_count > 1`), each candidate in the digest is recorded with `outcome="coalesced"` — distinguishing "sent alone" from "sent as part of a composed batch" for later dashboard/audit use.
+### Requirement: Attention Ledger Recording of Delivered/Coalesced/Failed Candidates
+Every candidate the delivery cycle attempts to deliver SHALL be recorded to `public.attention_ledger`. A single-candidate delivery is recorded with `outcome="delivered"`; when multiple candidates are folded into one digest message (`deliver_count > 1`), each candidate in the digest is recorded with `outcome="coalesced"` — distinguishing "sent alone" from "sent as part of a composed batch" for later dashboard/audit use.
+
+When the `notify_fn` dispatch fails (an error return or an exception), each selected candidate SHALL instead be recorded with `outcome="failed"` and a machine-readable `reason` (`"delivery_error:<detail>"` for an error return, `"unexpected_error:<ExceptionType>"` for an exception), so an insight-delivery outage is provable at the insight choke point instead of reading identically to a benign quiet-hours hold. `failed` MUST NOT be conflated with `deferred`/`suppressed` (benign, chosen holds) — this mirrors the `notify()` boundary's failed-vs-deferred distinction (see `core-notify` spec §"Attention Ledger Recording at the notify() Boundary"). Ledger recording is best-effort/fail-open: a ledger-write failure MUST NOT abort the `delivery_attempt_count`/3-strikes `filtered` bookkeeping it describes.
 
 #### Scenario: Standalone delivery recorded as delivered
 - **WHEN** the delivery cycle selects exactly one candidate and delivers it
@@ -227,9 +229,15 @@ Every candidate the delivery cycle successfully delivers SHALL be recorded to `p
 - **WHEN** the delivery cycle selects 3 candidates and delivers them as one digest message
 - **THEN** 3 `public.attention_ledger` rows are written, each with `outcome="coalesced"` and its own candidate's `dedup_key`/id
 
-#### Scenario: Failed delivery is not recorded to the ledger
-- **WHEN** the `notify_fn` call for a selected candidate fails
-- **THEN** no `public.attention_ledger` row is written for that cycle's delivery attempt — the existing `delivery_attempt_count`/3-strikes `filtered` mechanism (unchanged by this requirement) remains the record of the failure
+#### Scenario: Failed delivery recorded as failed, one row per candidate
+- **WHEN** the `notify_fn` call for the selected candidates returns `status="error"` (or raises)
+- **THEN** one `public.attention_ledger` row is written per selected candidate with `outcome="failed"`, `source="insight"`, the candidate's `dedup_key`/id, and a `reason` of `"delivery_error:<detail>"` (error return) or `"unexpected_error:<ExceptionType>"` (exception)
+- **AND** the existing `delivery_attempt_count` bump and 3-strikes `filtered` transition remain unchanged
+
+#### Scenario: 3-strikes give-up encoded in the failed row's metadata, not a separate row
+- **WHEN** a selected candidate's delivery fails for the 3rd time and is marked `filtered`
+- **THEN** its `outcome="failed"` ledger row carries `metadata.terminally_filtered=true` and `metadata.retryable=false` — no distinct `suppressed`/`abandoned` row is written, so the terminal give-up is provable via a metadata filter without conflating it with a benign chosen hold
+- **AND** a candidate whose failure count is still below 3 records `metadata.retryable=true` (the next cycle retries it)
 
 ### Requirement: Hourly Urgent Sub-Cycle
 `delivery_cycle()` SHALL accept an `urgent_only` mode used by a dedicated hourly schedule (distinct from the existing daily schedule), so a candidate at or above `URGENT_PRIORITY_THRESHOLD` (90) is delivered within the hour rather than waiting for the next daily cycle.
