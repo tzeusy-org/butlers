@@ -279,6 +279,18 @@ def dashboard(host: str, port: int) -> None:
         "-- DeployConfig rejects it."
     ),
 )
+@click.option(
+    "--allow-dirty-root",
+    "allow_dirty_root",
+    is_flag=True,
+    default=False,
+    help=(
+        "Downgrade the preflight guard from a hard rejection to a loud warning, "
+        "for an intentional branch deploy. Without it, deploying from a linked "
+        "git worktree or a HEAD that is not an ancestor of origin/main is "
+        "refused before any build/migrate step (bu-hmdqz.1 stale-code incident)."
+    ),
+)
 def deploy(
     repo_root: Path,
     health_timeout_s: float,
@@ -286,6 +298,7 @@ def deploy(
     env_file: str | None,
     health_url: str | None,
     profiles: tuple[str, ...],
+    allow_dirty_root: bool,
 ) -> None:
     """Idempotent production deploy: build, migrate, recreate, verify, record.
 
@@ -313,6 +326,7 @@ def deploy(
         "repo_root": repo_root.resolve(),
         "health_timeout_s": health_timeout_s,
         "profiles": tuple(profiles),
+        "allow_dirty_root": allow_dirty_root,
     }
     if project_name is not None:
         config_kwargs["project_name"] = project_name
@@ -333,6 +347,8 @@ def deploy(
     except DeployError as exc:
         click.echo(f"Deploy failed at phase={exc.phase}: {exc}", err=True)
         sys.exit(1)
+    for reason in result.overrides:
+        click.echo(f"WARNING: preflight guard overridden (--allow-dirty-root): {reason}", err=True)
     click.echo(
         f"Deployed {result.git_sha} (migration_head={result.migration_head}, "
         f"result={result.result})"

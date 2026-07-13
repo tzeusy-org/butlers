@@ -268,3 +268,51 @@ re-run at any point in the pipeline.
   configuration or image actually changed, and each invocation inserts a new
   ledger row rather than mutating a prior one
 
+### Requirement: `butlers deploy` — Preflight Guard Against a Frozen or Divergent Deploy Root
+
+The system SHALL, before any build/migrate/recreate/health-check/record step,
+reject a deploy whose `--dir` root is a linked git worktree or whose `HEAD` is
+not an ancestor of `origin/main` — the two shapes of the bu-hmdqz.1 incident
+where the live stack served stale code baked from a frozen `.worktrees/`
+checkout. An operator MAY override the guard for an intentional branch deploy,
+in which case both rejections are downgraded to loud warnings.
+
+#### Scenario: A linked-worktree deploy root is rejected
+
+- **WHEN** the deploy root's `.git` is a file (a `gitdir:` pointer, the
+  filesystem tell of a `git worktree add` checkout) rather than a directory
+- **THEN** the preflight refuses the deploy before any build step, raising a
+  clear error that names the offending path and explains that deploys must run
+  from the canonical main checkout so `docker build` bakes committed code
+  rather than a frozen worktree snapshot
+- **AND** no `public.deployments` ledger row is written for a refused deploy
+  (a refusal to deploy is not a recorded deploy attempt)
+
+#### Scenario: A HEAD that is not an ancestor of origin/main is rejected
+
+- **WHEN** the deploy root's `HEAD` is not an ancestor of `origin/main` (a
+  best-effort `git fetch origin main` runs first so the check reflects the true
+  remote head; a fetch failure degrades to the last-known `origin/main` with a
+  warning rather than failing the deploy)
+- **THEN** the preflight refuses the deploy before any build step, raising a
+  clear error that reports how divergent the checkout is (commits ahead of and
+  behind `origin/main`)
+
+#### Scenario: The override downgrades both rejections to warnings
+
+- **WHEN** the deploy is invoked with the `--allow-dirty-root` override (CLI)
+  / `allow_dirty_root=True` (programmatic)
+- **THEN** a linked-worktree root and/or a non-ancestor `HEAD` no longer raise;
+  each violation is logged as a loud warning and surfaced on the command
+  output, and the deploy proceeds and records its real (possibly divergent)
+  `git_sha` to the ledger — that divergent SHA is itself the durable record
+  that a non-main commit was deployed, which the drift sentinel compares
+  against main
+
+#### Scenario: The guard applies to both programmatic and CLI deploys
+
+- **WHEN** a deploy is initiated either through the `butlers deploy` CLI command
+  or through the programmatic `run_deploy` entry point
+- **THEN** the same preflight guard runs in both paths — the CLI does not carry
+  a guard the library entry point lacks
+

@@ -32,6 +32,7 @@ class TestDeployCommand:
         assert "--env-file" in result2.output
         assert "--health-url" in result2.output
         assert "--profile" in result2.output
+        assert "--allow-dirty-root" in result2.output
 
     def test_success_prints_summary_and_exits_zero(self, runner, tmp_path):
         with patch("butlers.core.deploy.run_deploy", new=AsyncMock()) as mock_run:
@@ -120,6 +121,50 @@ class TestDeployCommand:
         assert config.env_file == ".env.dev"
         assert config.health_url == "http://localhost:42200/health"
         assert config.profiles == ("dev",)
+
+    def test_allow_dirty_root_defaults_false(self, runner, tmp_path):
+        """The preflight override must be opt-in — omitting the flag keeps the
+        canonical fail-closed guard."""
+        captured = {}
+
+        async def fake_run_deploy(config, **kwargs):
+            captured["config"] = config
+            return DeployResult(git_sha="abc1234", migration_head=None, result="success")
+
+        with patch("butlers.core.deploy.run_deploy", new=fake_run_deploy):
+            result = runner.invoke(cli, ["deploy", "--dir", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert captured["config"].allow_dirty_root is False
+
+    def test_allow_dirty_root_flag_threads_into_config(self, runner, tmp_path):
+        captured = {}
+
+        async def fake_run_deploy(config, **kwargs):
+            captured["config"] = config
+            return DeployResult(git_sha="abc1234", migration_head=None, result="success")
+
+        with patch("butlers.core.deploy.run_deploy", new=fake_run_deploy):
+            result = runner.invoke(cli, ["deploy", "--dir", str(tmp_path), "--allow-dirty-root"])
+
+        assert result.exit_code == 0
+        assert captured["config"].allow_dirty_root is True
+
+    def test_override_reasons_are_printed_as_warnings(self, runner, tmp_path):
+        """When the preflight guard is overridden, each downgraded reason is
+        surfaced loudly on the deploy output."""
+        with patch("butlers.core.deploy.run_deploy", new=AsyncMock()) as mock_run:
+            mock_run.return_value = DeployResult(
+                git_sha="abc1234",
+                migration_head="core_163",
+                result="success",
+                overrides=("deploy root /wt is a linked git worktree",),
+            )
+            result = runner.invoke(cli, ["deploy", "--dir", str(tmp_path), "--allow-dirty-root"])
+
+        assert result.exit_code == 0
+        assert "WARNING" in result.output
+        assert "linked git worktree" in result.output
 
     def test_rejects_hotreload_profile_with_clean_error(self, runner, tmp_path):
         """The CLI must surface DeployConfig's hotreload guard as a clean

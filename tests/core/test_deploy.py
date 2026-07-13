@@ -8,6 +8,7 @@ tests/integration/test_deploy_ledger_roundtrip.py.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -20,8 +21,10 @@ from butlers.core.deploy import (
     DeployError,
     _clean_compose_env,
     _compose_base_args,
+    _head_vs_origin_main,
     build_image,
     materialize_beads_export,
+    preflight_check,
     recreate_services,
     resolve_git_sha,
     run_deploy,
@@ -350,6 +353,10 @@ class TestRunDeploy:
         monkeypatch.setattr("butlers.core.deploy.recreate_services", make("recreate"))
         monkeypatch.setattr("butlers.core.deploy.wait_for_health", _wait_ok)
         monkeypatch.setattr("butlers.core.deploy.resolve_git_sha", lambda repo_root: "deadbeef")
+        # Preflight is exercised directly in TestPreflightCheck against real
+        # tmp git repos; the orchestration tests use a fake `/repo` path, so
+        # stub it as a clean (no-override) pass here.
+        monkeypatch.setattr("butlers.core.deploy.preflight_check", lambda config: ())
         return calls
 
     async def test_success_records_success_row(self, monkeypatch):
@@ -447,3 +454,143 @@ class TestRunDeploy:
 
         assert result.result == "success"
         assert record_mock.await_count == 2
+
+    async def test_preflight_rejection_writes_no_ledger_row(self, monkeypatch):
+        """A preflight refusal happens before any build/ledger step — nothing
+        is attempted, so no `public.deployments` row is written (a refusal to
+        deploy, not a recorded deploy failure)."""
+        self._patch_phases(monkeypatch)
+
+        def _reject(config):
+            raise DeployError("preflight", "deploy root is a linked git worktree")
+
+        monkeypatch.setattr("butlers.core.deploy.preflight_check", _reject)
+        pool = AsyncMock()
+        record_mock = AsyncMock(return_value="row-1")
+        monkeypatch.setattr("butlers.core.deploy.record_deployment", record_mock)
+
+        with pytest.raises(DeployError) as exc_info:
+            await run_deploy(_config(), pool=pool)
+
+        assert exc_info.value.phase == "preflight"
+        record_mock.assert_not_awaited()
+
+    async def test_override_reasons_thread_into_result(self, monkeypatch):
+        """allow_dirty_root override reasons flow through to DeployResult so the
+        CLI can surface them; the (possibly divergent) git_sha is still recorded."""
+        self._patch_phases(monkeypatch)
+        monkeypatch.setattr(
+            "butlers.core.deploy.preflight_check",
+            lambda config: ("deploy root /wt is a linked git worktree",),
+        )
+        pool = AsyncMock()
+        record_mock = AsyncMock(return_value="row-1")
+        monkeypatch.setattr("butlers.core.deploy.record_deployment", record_mock)
+        monkeypatch.setattr(
+            "butlers.core.deploy.resolve_core_migration_head", AsyncMock(return_value="core_163")
+        )
+
+        result = await run_deploy(_config(), pool=pool)
+
+        assert result.overrides == ("deploy root /wt is a linked git worktree",)
+        record_mock.assert_awaited_once_with(
+            pool, git_sha="deadbeef", migration_head="core_163", result="success"
+        )
+
+
+def _git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    )
+    return proc.stdout.strip()
+
+
+def _init_repo_with_origin(tmp_path: Path) -> Path:
+    """Create a local bare `origin` + a working `main` checkout pushed to it.
+
+    Returns the path to the canonical main checkout (``.git`` is a directory,
+    HEAD == origin/main). All git ops are local (the bare origin lives under
+    tmp_path), so the preflight `git fetch origin main` works fully offline.
+    """
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True
+    )
+    main = tmp_path / "main"
+    subprocess.run(["git", "clone", str(origin), str(main)], check=True, capture_output=True)
+    _git(main, "config", "user.email", "t@example.com")
+    _git(main, "config", "user.name", "Test")
+    (main / "README.md").write_text("hi\n")
+    _git(main, "add", "README.md")
+    _git(main, "commit", "-m", "initial")
+    _git(main, "push", "origin", "main")
+    return main
+
+
+class TestPreflightCheck:
+    """Preflight guard against deploying a frozen worktree or divergent HEAD
+    (bu-5phh8). Uses real tmp git repos, mirroring the issue's test plan."""
+
+    def test_canonical_main_checkout_passes(self, tmp_path):
+        main = _init_repo_with_origin(tmp_path)
+        assert preflight_check(_config(repo_root=main)) == ()
+
+    def test_linked_worktree_rejected(self, tmp_path):
+        main = _init_repo_with_origin(tmp_path)
+        wt = tmp_path / "wt"
+        _git(main, "worktree", "add", str(wt))
+        # Sanity: a linked worktree's .git is a file, not a directory.
+        assert (wt / ".git").is_file()
+        with pytest.raises(DeployError) as exc_info:
+            preflight_check(_config(repo_root=wt))
+        assert exc_info.value.phase == "preflight"
+        assert "linked git worktree" in str(exc_info.value)
+        assert str(wt) in str(exc_info.value)
+
+    def test_diverged_head_rejected(self, tmp_path):
+        main = _init_repo_with_origin(tmp_path)
+        (main / "extra.txt").write_text("x\n")
+        _git(main, "add", "extra.txt")
+        _git(main, "commit", "-m", "local unmerged commit")
+        with pytest.raises(DeployError) as exc_info:
+            preflight_check(_config(repo_root=main))
+        assert exc_info.value.phase == "preflight"
+        assert "not an ancestor of origin/main" in str(exc_info.value)
+        assert "1 commit(s) ahead" in str(exc_info.value)
+
+    def test_allow_dirty_root_downgrades_worktree_to_warning(self, tmp_path, caplog):
+        main = _init_repo_with_origin(tmp_path)
+        wt = tmp_path / "wt"
+        _git(main, "worktree", "add", str(wt))
+        with caplog.at_level(logging.WARNING, logger="butlers.core.deploy"):
+            overrides = preflight_check(_config(repo_root=wt, allow_dirty_root=True))
+        assert any("linked git worktree" in reason for reason in overrides)
+        assert any("OVERRIDDEN" in rec.getMessage() for rec in caplog.records)
+
+    def test_allow_dirty_root_downgrades_diverged_head_to_warning(self, tmp_path):
+        main = _init_repo_with_origin(tmp_path)
+        (main / "extra.txt").write_text("x\n")
+        _git(main, "add", "extra.txt")
+        _git(main, "commit", "-m", "local unmerged commit")
+        overrides = preflight_check(_config(repo_root=main, allow_dirty_root=True))
+        assert any("not an ancestor of origin/main" in reason for reason in overrides)
+
+    def test_non_git_directory_rejected_with_clear_message(self, tmp_path):
+        """A plain directory with no .git gets an explicit "not a git repository"
+        error, not a confusing ancestry message from a failed git subprocess."""
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        with pytest.raises(DeployError) as exc_info:
+            preflight_check(_config(repo_root=plain))
+        assert exc_info.value.phase == "preflight"
+        assert "not a git repository" in str(exc_info.value)
+
+    def test_ancestry_check_fails_closed_when_git_unavailable(self, monkeypatch):
+        """If the git binary cannot execute, ancestry is unconfirmed → fail
+        closed (not an ancestor, zeroed counts), never an unhandled traceback."""
+
+        def _boom(*args, **kwargs):
+            raise OSError("git: command not found")
+
+        monkeypatch.setattr(subprocess, "run", _boom)
+        assert _head_vs_origin_main(Path("/repo")) == (False, 0, 0)

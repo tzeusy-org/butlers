@@ -60,6 +60,9 @@ def _patch_pipeline(monkeypatch, *, git_sha: str, fail_at: str | None = None) ->
     monkeypatch.setattr("butlers.core.deploy.recreate_services", make("recreate"))
     monkeypatch.setattr("butlers.core.deploy.wait_for_health", _wait_ok)
     monkeypatch.setattr("butlers.core.deploy.resolve_git_sha", lambda repo_root: git_sha)
+    # Preflight (linked-worktree / non-ancestor-HEAD guard) needs a real git
+    # repo; this roundtrip uses a fake `/repo` path, so stub it as a clean pass.
+    monkeypatch.setattr("butlers.core.deploy.preflight_check", lambda config: ())
 
 
 async def test_successful_deploy_writes_success_row(monkeypatch, pool: asyncpg.Pool) -> None:
