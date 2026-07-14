@@ -216,7 +216,7 @@ Never treat a missing or `false` `aggregates_available` field as an error — sh
 
 **Classify before flagging.** A source that is *legitimately* absent (e.g. a butler with no memory tables, a pre-migration table that does not exist yet via `UndefinedTableError`) is not a degraded source — only flag a *genuine* failure (dropped connection, timeout, permission error, unreachable pool). See `memory.py::_is_missing_memory_schema_error` for the reference classifier. Getting this distinction wrong in either direction reintroduces either false alarms or fabricated calm.
 
-Frontend: gate any verdict/all-clear renderer on the relevant flag(s) using the `SourceDegradedNote` vocabulary (`frontend/src/components/ui/query-boundary.tsx`) — name the degraded source inline with an em-dash, never suppress it.
+Frontend: gate any verdict/all-clear renderer on the relevant flag(s) using the `SourceDegradedNote` vocabulary (`frontend/src/components/ui/query-boundary.tsx`) — name the degraded source inline (colon-separated source and reason), never suppress it.
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
