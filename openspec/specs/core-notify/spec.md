@@ -110,6 +110,13 @@ Every terminal decision the `notify()` owner-default quiet-hours gate makes SHAL
 - **WHEN** a caller enqueues a retry envelope for a transport-failed delivery (e.g. via `insert_deferred_notification` on a `deferred_notifications` table that a scheduler tick will flush)
 - **THEN** the corresponding `outcome="failed"` ledger row's `notification_ref` is set to the enqueued row's id, so the failure is traceable to its retry attempt rather than a dead end
 
+#### Scenario: An unexpected exception retries only when enough state is resolved
+- **WHEN** a process-boundary consumer's per-credential dispatch raises an unexpected exception AFTER the message AND recipient have been resolved (e.g. `deliver()` itself raises instead of returning `status="failed"`, or a ledger write faults post-resolution)
+- **THEN** the failure is treated as retryable: a retry envelope is enqueued on the SAME single deferral path the transport-failed case uses (`_enqueue_deferred_envelope` / `insert_deferred_notification`, with supersede-at-enqueue dedup), and the `outcome="failed"` ledger row records `reason="unexpected_error_retry:<ExceptionType>"` with `notification_ref` set to the enqueued row's id
+- **AND WHEN** the exception raises BEFORE the message/recipient are resolvable (e.g. inside the last-notified-state or suppression lookups)
+- **THEN** there is nothing safe to enqueue, so the row is stamped honestly as `reason="unexpected_error:<ExceptionType>"` with `notification_ref` null — never a half-built or mis-addressed envelope
+- **AND** the retry's `deliver_at` honors any resolved quiet-hours deferral so the retry is not redelivered inside quiet hours (the flush path gates purely on `deliver_at`), and the debounce marker is NOT advanced on the retry path (only a confirmed direct delivery advances it)
+
 #### Scenario: Quiet-hours suppression is recorded
 - **WHEN** `notify()`'s owner-default path is suppressed by `public.approvals_policy` quiet hours
 - **THEN** a `public.attention_ledger` row is written with `outcome="suppressed"` and `reason="quiet_hours"`

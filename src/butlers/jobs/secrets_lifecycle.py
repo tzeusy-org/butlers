@@ -639,6 +639,19 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     delivered = deferred = suppressed = errors = 0
 
     for snapshot in attention:
+        # Per-iteration resolved state (bu-ziuye). The per-credential try below can
+        # raise at many points — inside _last_notified_state, _delivery_preferences_deferral,
+        # _check_suppression, the deliver import/call, or the ledger/audit writes. Track
+        # message / recipient / dedup_marker / deferred_at as each becomes resolvable so
+        # the except handler can enqueue a retry envelope ONLY when enough state exists for
+        # a correct redelivery. These are reset every iteration precisely because Python
+        # names are function-scoped, not block-scoped: without the reset, a raise-before-
+        # resolution would read a PRIOR credential's leftover message/recipient and enqueue
+        # a mis-addressed envelope.
+        message: str | None = None
+        recipient: str | None = None
+        dedup_marker: str | None = None
+        deferred_at: datetime | None = None
         try:
             last_state = await _last_notified_state(shared_pool, snapshot.key)
             if last_state == snapshot.state:
@@ -861,11 +874,50 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
             )
             # A genuine terminal failure — must be recorded, not silent, or an
             # exception deep in the dispatch path (e.g. a DB error) reads
-            # identically to quiet-hours discipline in the ledger. Not
-            # retried via the deferred queue: unlike delivery_error, message
-            # and recipient are not reliably resolved at every raise point in
-            # this try block (e.g. an exception inside _check_suppression),
-            # so there is nothing safe to enqueue.
+            # identically to quiet-hours discipline in the ledger.
+            #
+            # bu-ziuye: retry when enough state is resolved. If the raise landed
+            # AFTER message + recipient (+ dedup_marker) were resolved — e.g. the
+            # deliver() import or call itself raised instead of returning a
+            # failed result, or a ledger write faulted — a later retry can
+            # genuinely succeed, exactly like the delivery_error path. Enqueue on
+            # the SAME single deferral path (_enqueue_deferred_envelope, bu-id0fh
+            # supersede-at-enqueue) — no second mechanism. If the raise fired
+            # BEFORE the message/recipient were resolvable (e.g. inside
+            # _last_notified_state or _check_suppression), there is nothing safe
+            # to enqueue, so we stamp a plain failed row honestly rather than
+            # queueing a half-built or mis-addressed envelope.
+            #
+            # deliver_at: honor a resolved quiet-hours deferral (deferred_at) so
+            # the retry is never redelivered inside quiet hours — the flusher
+            # gates purely on deliver_at (deliver() does not re-check quiet
+            # hours), so respecting the window means carrying its timestamp
+            # through, not reimplementing the gate. In practice message +
+            # recipient are only both resolved on the non-deferred main path
+            # (the defer branch resolves recipient but continues without a
+            # raisable call after it), so this normally uses the short transport
+            # backoff; the deferred_at guard keeps the retry correct regardless.
+            # The debounce marker is deliberately NOT advanced here — only a
+            # confirmed direct delivery advances it, so the retry (or the next
+            # scan) still fires.
+            retry_ref: str | None = None
+            if message is not None and recipient is not None and dedup_marker is not None:
+                retry_deliver_at = (
+                    deferred_at if deferred_at is not None else datetime.now(UTC) + _RETRY_BACKOFF
+                )
+                retry_ref = await _enqueue_deferred_envelope(
+                    db,
+                    channel="telegram",
+                    message=message,
+                    recipient=recipient,
+                    dedup_marker=dedup_marker,
+                    deliver_at=retry_deliver_at,
+                )
+            reason = (
+                f"unexpected_error_retry:{type(exc).__name__}"
+                if retry_ref is not None
+                else f"unexpected_error:{type(exc).__name__}"
+            )
             await record_attention_event(
                 shared_pool,
                 origin_butler=_LIFECYCLE_ACTOR,
@@ -874,8 +926,9 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 channel="telegram",
                 intent="send",
                 priority="medium",
-                reason=f"unexpected_error:{type(exc).__name__}",
+                reason=reason,
                 dedup_key=snapshot.key,
+                notification_ref=retry_ref,
             )
 
     return {

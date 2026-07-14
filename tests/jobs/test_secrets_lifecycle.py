@@ -1015,3 +1015,122 @@ async def test_run_secrets_lifecycle_check_defer_without_recipient_records_faile
         "suppressed": 0,
         "errors": 1,
     }
+
+
+async def test_run_secrets_lifecycle_check_unexpected_error_after_resolution_enqueues_retry():
+    """bu-ziuye: when an unexpected exception raises AFTER message + recipient are
+    resolved (e.g. deliver() itself raises instead of returning a failed result),
+    the failure is retryable — a retry envelope is enqueued on the SAME
+    _enqueue_deferred_envelope path as delivery_error, the ledger reason is
+    distinguished (unexpected_error_retry:*) with the envelope ref, and the
+    debounce marker is NOT advanced."""
+    shared_pool = object()
+    switchboard_pool = object()
+    db = _FakeDatabaseManager(
+        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
+    )
+    snapshot = CredentialSnapshot(
+        key="s:SPOTIFY_ACCESS_TOKEN", family="system", label="SPOTIFY_ACCESS_TOKEN", state="failing"
+    )
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._check_suppression", new=AsyncMock(return_value=None)
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._delivery_preferences_deferral",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value="12345"),
+        ),
+        # deliver() RAISES (not returns failed) — the exact gap bu-ziuye closes.
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            new=AsyncMock(side_effect=RuntimeError("boom deep in deliver")),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.insert_deferred_notification",
+            new=AsyncMock(return_value="retry-notif-1"),
+        ) as insert_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ) as ledger_mock,
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    # A retry envelope was enqueued on switchboard's deferred_notifications with
+    # the resolved message + recipient.
+    insert_mock.assert_awaited_once()
+    insert_kwargs = insert_mock.await_args.kwargs
+    assert insert_kwargs["butler_name"] == "switchboard"
+    assert insert_kwargs["envelope"]["delivery"]["recipient"] == "12345"
+
+    # Ledger row: failed, retry reason distinguished from pre-resolution failure,
+    # carries the envelope ref.
+    ledger_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
+    assert ledger_mock.await_args.kwargs["reason"] == "unexpected_error_retry:RuntimeError"
+    assert ledger_mock.await_args.kwargs["notification_ref"] == "retry-notif-1"
+
+    # Debounce marker NOT advanced on the retry path.
+    audit_append.assert_not_called()
+    assert summary["errors"] == 1
+    assert summary["delivered"] == 0
+
+
+async def test_run_secrets_lifecycle_check_unexpected_error_before_resolution_no_envelope():
+    """bu-ziuye: an exception BEFORE the message/recipient are resolvable (here,
+    inside _last_notified_state) has nothing safe to enqueue — it stamps a plain
+    failed row (unexpected_error:*, no envelope ref) rather than a half-built
+    envelope."""
+    shared_pool = object()
+    switchboard_pool = object()
+    db = _FakeDatabaseManager(
+        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
+    )
+    snapshot = CredentialSnapshot(
+        key="s:SOME_KEY", family="system", label="SOME_KEY", state="expired"
+    )
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        # Raise at the very first step — before message / recipient exist.
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state",
+            side_effect=RuntimeError("db down"),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.insert_deferred_notification",
+            new=AsyncMock(return_value="should-not-be-used"),
+        ) as insert_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ) as ledger_mock,
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    # Nothing safe to enqueue → no retry envelope.
+    insert_mock.assert_not_called()
+    ledger_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
+    assert ledger_mock.await_args.kwargs["reason"] == "unexpected_error:RuntimeError"
+    assert ledger_mock.await_args.kwargs["notification_ref"] is None
+    audit_append.assert_not_called()
+    assert summary["errors"] == 1
