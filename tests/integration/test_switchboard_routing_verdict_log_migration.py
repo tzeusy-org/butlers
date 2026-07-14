@@ -28,6 +28,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import (
     create_migrated_test_db,
     index_exists,
@@ -45,14 +46,26 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
+    # Provision the switchboard chain into its own schema (bu-9auxy) so the harness
+    # mirrors prod's per-butler-schema topology instead of landing switchboard tables
+    # in public.
     return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "switchboard"]
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
     )
 
 
 @pytest.fixture
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    p = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard,public"},
+    )
     yield p
     await p.close()
 
@@ -104,14 +117,14 @@ async def _insert_session(pool: asyncpg.Pool) -> uuid.UUID:
 
 
 def test_routing_verdict_log_table_exists_with_expected_columns(migrated_db_url: str) -> None:
-    assert table_exists(migrated_db_url, "routing_verdict_log")
+    assert table_exists(migrated_db_url, "routing_verdict_log", schema="switchboard")
 
     engine = create_engine(migrated_db_url)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = 'routing_verdict_log'"
+                "WHERE table_schema = 'switchboard' AND table_name = 'routing_verdict_log'"
             )
         ).fetchall()
     engine.dispose()
@@ -132,8 +145,10 @@ def test_routing_verdict_log_table_exists_with_expected_columns(migrated_db_url:
 
 
 def test_expected_indexes_exist(migrated_db_url: str) -> None:
-    assert index_exists(migrated_db_url, "ix_routing_verdict_log_sender_channel_decided")
-    assert index_exists(migrated_db_url, "ix_routing_verdict_log_llm_only")
+    assert index_exists(
+        migrated_db_url, "ix_routing_verdict_log_sender_channel_decided", schema="switchboard"
+    )
+    assert index_exists(migrated_db_url, "ix_routing_verdict_log_llm_only", schema="switchboard")
 
 
 # ---------------------------------------------------------------------------
@@ -333,12 +348,19 @@ def test_downgrade_drops_table_and_indexes(postgres_container) -> None:
     from butlers.migrations import _build_alembic_config
 
     db_url = create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "switchboard"]
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
     )
 
-    config = _build_alembic_config(db_url, chains=["switchboard"])
+    # target_schema makes the downgrade run against the switchboard schema (its
+    # alembic_version + search_path), matching the schema the chain provisioned into.
+    config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
     command.downgrade(config, "switchboard@sw_018")
 
-    assert not table_exists(db_url, "routing_verdict_log")
-    assert not index_exists(db_url, "ix_routing_verdict_log_sender_channel_decided")
-    assert not index_exists(db_url, "ix_routing_verdict_log_llm_only")
+    assert not table_exists(db_url, "routing_verdict_log", schema="switchboard")
+    assert not index_exists(
+        db_url, "ix_routing_verdict_log_sender_channel_decided", schema="switchboard"
+    )
+    assert not index_exists(db_url, "ix_routing_verdict_log_llm_only", schema="switchboard")

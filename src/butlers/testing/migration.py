@@ -108,18 +108,22 @@ def bootstrap_extensions(db_url: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def table_exists(db_url: str, table_name: str) -> bool:
-    """Return True when *table_name* exists in the ``public`` schema."""
+def table_exists(db_url: str, table_name: str, schema: str = "public") -> bool:
+    """Return True when *table_name* exists in *schema* (default ``public``).
+
+    Pass ``schema`` to inspect a schema-scoped chain (e.g. ``schema="switchboard"``
+    for tables the switchboard chain provisioned into its own schema, bu-9auxy).
+    """
     engine = create_engine(db_url)
     with engine.connect() as conn:
         result = conn.execute(
             text(
                 "SELECT EXISTS ("
                 "  SELECT 1 FROM information_schema.tables"
-                "  WHERE table_schema = 'public' AND table_name = :t"
+                "  WHERE table_schema = :s AND table_name = :t"
                 ")"
             ),
-            {"t": table_name},
+            {"s": schema, "t": table_name},
         )
         exists = result.scalar()
     engine.dispose()
@@ -144,28 +148,36 @@ def constraint_exists(db_url: str, table_name: str, constraint_name: str) -> boo
     return bool(exists)
 
 
-def index_exists(db_url: str, index_name: str) -> bool:
-    """Return True when *index_name* exists in the ``public`` schema."""
+def index_exists(db_url: str, index_name: str, schema: str = "public") -> bool:
+    """Return True when *index_name* exists in *schema* (default ``public``).
+
+    Pass ``schema`` for indexes a schema-scoped chain provisioned into its own
+    schema (e.g. ``schema="switchboard"``, bu-9auxy).
+    """
     engine = create_engine(db_url)
     with engine.connect() as conn:
         result = conn.execute(
             text(
                 "SELECT EXISTS ("
                 "  SELECT 1 FROM pg_indexes"
-                "  WHERE schemaname = 'public' AND indexname = :i"
+                "  WHERE schemaname = :s AND indexname = :i"
                 ")"
             ),
-            {"i": index_name},
+            {"s": schema, "i": index_name},
         )
         exists = result.scalar()
     engine.dispose()
     return bool(exists)
 
 
-def get_column_info(db_url: str, table_name: str, column_name: str) -> dict | None:
+def get_column_info(
+    db_url: str, table_name: str, column_name: str, schema: str = "public"
+) -> dict | None:
     """Return column metadata from ``information_schema``, or None if absent.
 
     The returned dict has keys: ``data_type``, ``column_default``, ``is_nullable``.
+    Pass ``schema`` for a table a schema-scoped chain provisioned into its own
+    schema (e.g. ``schema="switchboard"``, bu-9auxy).
     """
     engine = create_engine(db_url)
     with engine.connect() as conn:
@@ -173,9 +185,9 @@ def get_column_info(db_url: str, table_name: str, column_name: str) -> dict | No
             text(
                 "SELECT data_type, column_default, is_nullable "
                 "FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = :t AND column_name = :c"
+                "WHERE table_schema = :s AND table_name = :t AND column_name = :c"
             ),
-            {"t": table_name, "c": column_name},
+            {"s": schema, "t": table_name, "c": column_name},
         )
         row = result.fetchone()
     engine.dispose()

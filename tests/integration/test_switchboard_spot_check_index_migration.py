@@ -28,6 +28,7 @@ import uuid
 import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, index_exists, migration_db_name
 from butlers.tools.switchboard.routing.rule_demotion import maybe_create_demotion_suggestion
 from butlers.tools.switchboard.routing.verdict_log import record_routing_verdict
@@ -41,14 +42,25 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
+    # Provision the switchboard chain into its own schema (bu-9auxy) to mirror prod's
+    # per-butler-schema topology instead of landing switchboard tables in public.
     return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "switchboard"]
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
     )
 
 
 @pytest.fixture
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    p = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard,public"},
+    )
     yield p
     await p.close()
 
@@ -92,7 +104,9 @@ async def _insert_promoted_rule(
 
 
 def test_spot_check_index_exists(migrated_db_url: str) -> None:
-    assert index_exists(migrated_db_url, "ix_routing_verdict_log_spot_check_rule")
+    assert index_exists(
+        migrated_db_url, "ix_routing_verdict_log_spot_check_rule", schema="switchboard"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -228,10 +242,13 @@ def test_downgrade_drops_spot_check_index(postgres_container) -> None:
     from butlers.migrations import _build_alembic_config
 
     db_url = create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "switchboard"]
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
     )
 
-    config = _build_alembic_config(db_url, chains=["switchboard"])
+    config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
     command.downgrade(config, "switchboard@sw_020")
 
-    assert not index_exists(db_url, "ix_routing_verdict_log_spot_check_rule")
+    assert not index_exists(db_url, "ix_routing_verdict_log_spot_check_rule", schema="switchboard")

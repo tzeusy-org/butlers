@@ -33,6 +33,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import (
     create_migrated_test_db,
     index_exists,
@@ -49,14 +50,25 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
+    # Provision the switchboard chain into its own schema (bu-9auxy) to mirror prod's
+    # per-butler-schema topology instead of landing switchboard tables in public.
     return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "switchboard"]
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
     )
 
 
 @pytest.fixture
 async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    p = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard,public"},
+    )
     yield p
     await p.close()
 
@@ -130,14 +142,14 @@ async def _insert_demotion_suggestion(
 def test_rule_promotion_suggestions_table_exists_with_expected_columns(
     migrated_db_url: str,
 ) -> None:
-    assert table_exists(migrated_db_url, "rule_promotion_suggestions")
+    assert table_exists(migrated_db_url, "rule_promotion_suggestions", schema="switchboard")
 
     engine = create_engine(migrated_db_url)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = 'rule_promotion_suggestions'"
+                "WHERE table_schema = 'switchboard' AND table_name = 'rule_promotion_suggestions'"
             )
         ).fetchall()
     engine.dispose()
@@ -167,10 +179,18 @@ def test_rule_promotion_suggestions_table_exists_with_expected_columns(
 
 
 def test_expected_indexes_exist(migrated_db_url: str) -> None:
-    assert index_exists(migrated_db_url, "ix_rule_promotion_suggestions_status_created")
-    assert index_exists(migrated_db_url, "ux_rule_promotion_suggestions_pending_promotion")
-    assert index_exists(migrated_db_url, "ux_rule_promotion_suggestions_pending_demotion")
-    assert index_exists(migrated_db_url, "ix_rule_promotion_suggestions_target_rule")
+    assert index_exists(
+        migrated_db_url, "ix_rule_promotion_suggestions_status_created", schema="switchboard"
+    )
+    assert index_exists(
+        migrated_db_url, "ux_rule_promotion_suggestions_pending_promotion", schema="switchboard"
+    )
+    assert index_exists(
+        migrated_db_url, "ux_rule_promotion_suggestions_pending_demotion", schema="switchboard"
+    )
+    assert index_exists(
+        migrated_db_url, "ix_rule_promotion_suggestions_target_rule", schema="switchboard"
+    )
 
 
 def test_ingestion_rules_gains_promoted_from_suggestion_id_column(migrated_db_url: str) -> None:
@@ -179,13 +199,15 @@ def test_ingestion_rules_gains_promoted_from_suggestion_id_column(migrated_db_ur
         rows = conn.execute(
             text(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = 'ingestion_rules' "
+                "WHERE table_schema = 'switchboard' AND table_name = 'ingestion_rules' "
                 "AND column_name = 'promoted_from_suggestion_id'"
             )
         ).fetchall()
     engine.dispose()
     assert len(rows) == 1
-    assert index_exists(migrated_db_url, "ix_ingestion_rules_promoted_from_suggestion")
+    assert index_exists(
+        migrated_db_url, "ix_ingestion_rules_promoted_from_suggestion", schema="switchboard"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -470,25 +492,38 @@ def test_downgrade_drops_table_indexes_and_ingestion_rules_column(
     from butlers.migrations import _build_alembic_config
 
     db_url = create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "switchboard"]
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
     )
 
-    config = _build_alembic_config(db_url, chains=["switchboard"])
+    config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
     command.downgrade(config, "switchboard@sw_019")
 
-    assert not table_exists(db_url, "rule_promotion_suggestions")
-    assert not index_exists(db_url, "ix_rule_promotion_suggestions_status_created")
-    assert not index_exists(db_url, "ux_rule_promotion_suggestions_pending_promotion")
-    assert not index_exists(db_url, "ux_rule_promotion_suggestions_pending_demotion")
-    assert not index_exists(db_url, "ix_rule_promotion_suggestions_target_rule")
-    assert not index_exists(db_url, "ix_ingestion_rules_promoted_from_suggestion")
+    assert not table_exists(db_url, "rule_promotion_suggestions", schema="switchboard")
+    assert not index_exists(
+        db_url, "ix_rule_promotion_suggestions_status_created", schema="switchboard"
+    )
+    assert not index_exists(
+        db_url, "ux_rule_promotion_suggestions_pending_promotion", schema="switchboard"
+    )
+    assert not index_exists(
+        db_url, "ux_rule_promotion_suggestions_pending_demotion", schema="switchboard"
+    )
+    assert not index_exists(
+        db_url, "ix_rule_promotion_suggestions_target_rule", schema="switchboard"
+    )
+    assert not index_exists(
+        db_url, "ix_ingestion_rules_promoted_from_suggestion", schema="switchboard"
+    )
 
     engine = create_engine(db_url)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = 'ingestion_rules' "
+                "WHERE table_schema = 'switchboard' AND table_name = 'ingestion_rules' "
                 "AND column_name = 'promoted_from_suggestion_id'"
             )
         ).fetchall()
