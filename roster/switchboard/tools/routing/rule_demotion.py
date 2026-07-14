@@ -183,7 +183,7 @@ async def _fetch_promoted_rule(pool: asyncpg.Pool, rule_id: str) -> asyncpg.Reco
     return await pool.fetchrow(
         """
         SELECT id, action, created_by, enabled
-        FROM ingestion_rules
+        FROM switchboard.ingestion_rules
         WHERE id = $1
         """,
         rule_id,
@@ -195,7 +195,7 @@ async def _fetch_pending_demotion(pool: asyncpg.Pool, rule_id: str) -> asyncpg.R
     return await pool.fetchrow(
         """
         SELECT id
-        FROM rule_promotion_suggestions
+        FROM switchboard.rule_promotion_suggestions
         WHERE target_rule_id = $1
           AND status = 'pending_review' AND suggestion_kind = 'demotion'
         """,
@@ -215,7 +215,7 @@ async def _fetch_recent_spot_checks(
     return await pool.fetch(
         """
         SELECT verdict_action, verdict_target, decided_at
-        FROM routing_verdict_log
+        FROM switchboard.routing_verdict_log
         WHERE matched_rule_id = $1 AND verdict_source = 'spot_check'
         ORDER BY decided_at DESC
         LIMIT $2
@@ -243,7 +243,7 @@ async def _insert_demotion_suggestion(
     """
     return await pool.fetchval(
         """
-        INSERT INTO rule_promotion_suggestions
+        INSERT INTO switchboard.rule_promotion_suggestions
             (suggestion_kind, target_rule_id, evidence_count,
              first_evidence_at, last_evidence_at, status)
         VALUES ('demotion', $1, $2, $3, $4, 'pending_review')

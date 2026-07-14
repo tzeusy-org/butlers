@@ -165,7 +165,7 @@ async def record_routing_verdict(
     try:
         row_id = await pool.fetchval(
             """
-            INSERT INTO routing_verdict_log
+            INSERT INTO switchboard.routing_verdict_log
                 (ingestion_event_id, sender_key, source_channel, verdict_source,
                  verdict_action, verdict_target, matched_rule_id, session_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)

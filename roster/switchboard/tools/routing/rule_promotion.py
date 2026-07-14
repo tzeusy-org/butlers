@@ -306,7 +306,7 @@ async def _fetch_candidates(pool: asyncpg.Pool, *, since: datetime) -> list[asyn
     return await pool.fetch(
         """
         SELECT DISTINCT sender_key, source_channel
-        FROM routing_verdict_log
+        FROM switchboard.routing_verdict_log
         WHERE verdict_source = 'llm' AND decided_at >= $1
         """,
         since,
@@ -320,7 +320,7 @@ async def _fetch_pending_suggestion(
     return await pool.fetchrow(
         """
         SELECT id, evidence_count, last_evidence_at, proposed_action
-        FROM rule_promotion_suggestions
+        FROM switchboard.rule_promotion_suggestions
         WHERE sender_key = $1 AND source_channel = $2
           AND status = 'pending_review' AND suggestion_kind = 'promotion'
         """,
@@ -340,7 +340,7 @@ async def _fetch_latest_llm_verdicts(
     return await pool.fetch(
         """
         SELECT decided_at, verdict_action, verdict_target, ingestion_event_id
-        FROM routing_verdict_log
+        FROM switchboard.routing_verdict_log
         WHERE sender_key = $1 AND source_channel = $2 AND verdict_source = 'llm'
         ORDER BY decided_at DESC
         LIMIT $3
@@ -365,7 +365,7 @@ async def _fetch_new_agreeing_verdicts(
     return await pool.fetch(
         """
         SELECT decided_at
-        FROM routing_verdict_log
+        FROM switchboard.routing_verdict_log
         WHERE sender_key = $1 AND source_channel = $2 AND verdict_source = 'llm'
           AND decided_at > $3
           AND verdict_action = $4
@@ -455,7 +455,7 @@ async def _insert_suggestion(
     """
     return await pool.fetchval(
         """
-        INSERT INTO rule_promotion_suggestions
+        INSERT INTO switchboard.rule_promotion_suggestions
             (suggestion_kind, sender_key, source_channel, proposed_rule_type,
              proposed_condition, proposed_action, evidence_count,
              first_evidence_at, last_evidence_at, is_clearly_automated, status)
@@ -483,7 +483,7 @@ async def _bump_suggestion(
 ) -> None:
     await pool.execute(
         """
-        UPDATE rule_promotion_suggestions
+        UPDATE switchboard.rule_promotion_suggestions
         SET evidence_count = evidence_count + $1, last_evidence_at = $2
         WHERE id = $3
         """,

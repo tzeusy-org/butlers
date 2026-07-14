@@ -152,7 +152,7 @@ class TestRecordRoutingVerdict:
         assert result == "row-id-123"
         pool.fetchval.assert_awaited_once()
         query, *params = pool.fetchval.await_args.args
-        assert "INSERT INTO routing_verdict_log" in query
+        assert "INSERT INTO switchboard.routing_verdict_log" in query
         assert params[0] == "00000000-0000-0000-0000-000000000001"
         assert params[1] == "billing@chase.com"  # normalized sender_key
         assert params[2] == "email"
