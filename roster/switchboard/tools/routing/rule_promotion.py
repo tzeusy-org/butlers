@@ -406,7 +406,7 @@ async def _fetch_evidence_headers(
     rows = await pool.fetch(
         """
         SELECT raw_payload #> '{payload,raw,headers}' AS headers
-        FROM message_inbox
+        FROM switchboard.message_inbox
         WHERE id = ANY($1::uuid[]) AND received_at BETWEEN $2 AND $3
         """,
         event_ids,

@@ -121,7 +121,7 @@ async def mint_rule_from_suggestion(
             """
             SELECT id, suggestion_kind, proposed_rule_type, proposed_condition,
                    proposed_action, status
-            FROM rule_promotion_suggestions
+            FROM switchboard.rule_promotion_suggestions
             WHERE id = $1
             FOR UPDATE
             """,
@@ -148,7 +148,7 @@ async def mint_rule_from_suggestion(
         condition = suggestion["proposed_condition"]
         rule_row = await conn.fetchrow(
             """
-            INSERT INTO ingestion_rules
+            INSERT INTO switchboard.ingestion_rules
                 (scope, rule_type, condition, action, priority, enabled,
                  name, description, created_by, promoted_from_suggestion_id)
             VALUES ('global', $1, $2::jsonb, $3, $4, TRUE, $5, $6, 'promotion', $7)
@@ -167,7 +167,7 @@ async def mint_rule_from_suggestion(
 
         await conn.execute(
             """
-            UPDATE rule_promotion_suggestions
+            UPDATE switchboard.rule_promotion_suggestions
             SET status = 'confirmed',
                 created_rule_id = $1,
                 decided_at = $2,
@@ -217,7 +217,7 @@ async def auto_apply_automated_suggestions(pool: asyncpg.Pool) -> dict[str, int]
     rows = await pool.fetch(
         """
         SELECT id
-        FROM rule_promotion_suggestions
+        FROM switchboard.rule_promotion_suggestions
         WHERE status = 'pending_review'
           AND suggestion_kind = 'promotion'
           AND is_clearly_automated = TRUE

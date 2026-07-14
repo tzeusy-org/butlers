@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from datetime import UTC, datetime
 
 import asyncpg
 import pytest
@@ -35,6 +36,7 @@ import pytest
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.routing.rule_demotion import maybe_create_demotion_suggestion
+from butlers.tools.switchboard.routing.rule_promotion import _fetch_evidence_headers
 from butlers.tools.switchboard.routing.verdict_log import record_routing_verdict
 
 docker_available = shutil.which("docker") is not None
@@ -208,3 +210,69 @@ async def test_maybe_create_demotion_suggestion_runs_under_public_only_search_pa
     assert row["suggestion_kind"] == "demotion"
     assert row["status"] == "pending_review"
     assert row["evidence_count"] == 5
+
+
+async def _insert_message_inbox_with_headers(
+    switchboard_pool: asyncpg.Pool,
+    *,
+    event_id: uuid.UUID,
+    received_at: datetime,
+    headers: dict[str, str],
+) -> None:
+    """Seed one ``switchboard.message_inbox`` row carrying email headers.
+
+    message_inbox is partitioned by ``received_at`` (monthly); the DB function
+    ``switchboard_message_inbox_ensure_partition`` creates the covering
+    partition on demand (same recipe as
+    ``test_switchboard_rule_promotion_trigger_job.py``). Seeded through the
+    switchboard-scoped pool -- the read under test uses the public-only pool.
+    """
+    await switchboard_pool.execute(
+        "SELECT switchboard_message_inbox_ensure_partition($1)", received_at
+    )
+    await switchboard_pool.execute(
+        """
+        INSERT INTO switchboard.message_inbox (id, received_at, normalized_text, raw_payload)
+        VALUES ($1, $2, 'evidence body', $3::jsonb)
+        """,
+        event_id,
+        received_at,
+        {"payload": {"raw": {"headers": headers}}},
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_fetch_evidence_headers_reads_message_inbox_under_public_only_search_path(
+    public_pool: asyncpg.Pool, switchboard_pool: asyncpg.Pool
+) -> None:
+    """``_fetch_evidence_headers`` joins the rule-promotion evidence back to
+    ``switchboard.message_inbox`` for the automated-sender header signal.
+
+    Unlike the verdict/demotion writers this helper does *not* swallow errors,
+    so a bare ``FROM message_inbox`` under a public-only pool raises
+    ``UndefinedTableError`` outright (and would abort a promotion candidate).
+    The schema-qualified read resolves and returns the seeded headers.
+    """
+    event_id = uuid.uuid4()
+    received_at = datetime.now(UTC)
+    await _insert_message_inbox_with_headers(
+        switchboard_pool,
+        event_id=event_id,
+        received_at=received_at,
+        headers={"List-Unsubscribe": "<mailto:x@y.z>", "From": "noreply@chase.com"},
+    )
+
+    # Sanity: the public-only pool genuinely cannot see message_inbox unqualified.
+    with pytest.raises(asyncpg.UndefinedTableError):
+        await public_pool.fetch("SELECT id FROM message_inbox")
+
+    # _fetch_evidence_headers duck-types its evidence rows via __getitem__, so a
+    # plain dict stands in for the asyncpg.Record it normally receives.
+    headers_list = await _fetch_evidence_headers(
+        public_pool,
+        [{"ingestion_event_id": event_id, "decided_at": received_at}],
+    )
+
+    assert len(headers_list) == 1  # teeth: bare read raises UndefinedTableError pre-fix
+    assert headers_list[0]["List-Unsubscribe"] == "<mailto:x@y.z>"
+    assert headers_list[0]["From"] == "noreply@chase.com"
