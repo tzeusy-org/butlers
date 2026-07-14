@@ -682,6 +682,54 @@ async def test_daily_costs_all_reachable_reports_no_unavailable_butlers(app):
     assert "unavailable_butlers" not in resp.json()["meta"]
 
 
+async def test_daily_costs_tool_absent_not_marked_unavailable(app):
+    """A staffer butler with no ``sessions_daily`` tool registered raises
+    ``ToolError('Unknown tool: ...')`` -- legitimately absent (see
+    ``core_tools/_sessions.py``: ``sessions_daily`` is non-STAFFER only), NOT a
+    degraded source. It must contribute nothing and must NOT appear in
+    ``meta.unavailable_butlers`` (bu-hmdqz.7 -- classify-before-flagging in the
+    flagging direction; the tool-absent twin of the genuine-failure test above,
+    closing the asymmetric coverage flagged in bu-agdql). ``db`` is None so the
+    fan-out takes the MCP path where the ``_is_tool_absent_error`` classification
+    lives (the DB-first path is bypassed)."""
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="switchboard", port=41101),
+    ]
+    sw_daily = {
+        "days": [
+            {
+                "date": "2026-02-08",
+                "sessions": 1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "by_model": {
+                    "claude-sonnet-4-20250514": {"input_tokens": 100, "output_tokens": 50}
+                },
+            }
+        ]
+    }
+    mgr = _mock_mgr(
+        {
+            "sw": _make_tool_result(sw_daily),
+            "switchboard": ToolError("Unknown tool: 'sessions_daily'"),
+        }
+    )
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/spend/daily", params={"from": "2026-02-08", "to": "2026-02-08"}
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    # The reachable butler's day is present (data is the per-day list); the
+    # tool-absent staffer contributes nothing and is NOT flagged as a failure.
+    assert body["data"], "reachable butler's daily series must render"
+    assert "unavailable_butlers" not in body["meta"]
+
+
 async def test_daily_costs_db_fallback_failure_reports_unavailable_butlers(app):
     """/daily's DB-primary-then-MCP-fallback branch must also mark the tracker:
     a butler with no DB pool (KeyError -> None, triggering the MCP fallback)
@@ -1452,6 +1500,51 @@ async def test_top_sessions_all_reachable_reports_no_unavailable_butlers(app):
     ) as client:
         resp = await client.get("/api/spend/top-sessions")
     assert "unavailable_butlers" not in resp.json()["meta"]
+
+
+async def test_top_sessions_tool_absent_not_marked_unavailable(app):
+    """A staffer butler with no ``top_sessions`` tool registered raises
+    ``ToolError('Unknown tool: ...')`` -- legitimately absent (see
+    ``core_tools/_sessions.py``: ``top_sessions`` is non-STAFFER only), NOT a
+    degraded source. It must contribute nothing and must NOT appear in
+    ``meta.unavailable_butlers`` (bu-hmdqz.7 -- classify-before-flagging in the
+    flagging direction; the tool-absent twin of the genuine-failure test above,
+    closing the asymmetric coverage flagged in bu-agdql). ``db`` is None so the
+    fan-out takes the MCP path where the ``_is_tool_absent_error`` classification
+    lives (the DB-first path added in bu-h1i8k is bypassed)."""
+    configs = [
+        ButlerConnectionInfo(name="sw", port=41100),
+        ButlerConnectionInfo(name="switchboard", port=41101),
+    ]
+    sw_sessions = {
+        "sessions": [
+            {
+                "session_id": "s1",
+                "model": "claude-sonnet-4-20250514",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "started_at": "2026-02-08T00:00:00Z",
+            }
+        ]
+    }
+    mgr = _mock_mgr(
+        {
+            "sw": _make_tool_result(sw_sessions),
+            "switchboard": ToolError("Unknown tool: 'top_sessions'"),
+        }
+    )
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/top-sessions")
+    assert resp.status_code == 200
+    body = resp.json()
+    # The reachable butler's session is present; the tool-absent staffer
+    # contributes nothing and is NOT flagged as a genuine failure.
+    assert any(s["session_id"] == "s1" for s in body["data"])
+    assert not any(s["butler"] == "switchboard" for s in body["data"])
+    assert "unavailable_butlers" not in body["meta"]
 
 
 @pytest.mark.parametrize(
