@@ -231,7 +231,7 @@ def _stats_fetch_router(*, counts=None, ids=None, counts_exc=None, ids_exc=None)
             if counts_exc is not None:
                 raise counts_exc
             return counts or []
-        if "FROM ingestion_rules" in sql:
+        if "FROM switchboard.ingestion_rules" in sql:
             if ids_exc is not None:
                 raise ids_exc
             return ids or []

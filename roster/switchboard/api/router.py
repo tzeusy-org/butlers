@@ -338,12 +338,12 @@ async def list_routing_log(
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    total = await pool.fetchval(f"SELECT count(*) FROM routing_log{where}", *args) or 0
+    total = await pool.fetchval(f"SELECT count(*) FROM switchboard.routing_log{where}", *args) or 0
 
     rows = await pool.fetch(
         f"SELECT id, source_butler, target_butler, tool_name, success,"
         f" duration_ms, error, created_at"
-        f" FROM routing_log{where}"
+        f" FROM switchboard.routing_log{where}"
         f" ORDER BY created_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
@@ -388,7 +388,7 @@ async def list_registry(
         " eligibility_state, liveness_ttl_seconds, quarantined_at, quarantine_reason,"
         " route_contract_min, route_contract_max, eligibility_updated_at, registered_at,"
         " agent_type"
-        " FROM butler_registry"
+        " FROM switchboard.butler_registry"
         " ORDER BY name",
     )
 
@@ -534,7 +534,7 @@ async def receive_heartbeat(
     now = datetime.datetime.now(datetime.UTC)
 
     row = await pool.fetchrow(
-        "SELECT eligibility_state, last_seen_at FROM butler_registry WHERE name = $1",
+        "SELECT eligibility_state, last_seen_at FROM switchboard.butler_registry WHERE name = $1",
         body.butler_name,
     )
 
@@ -542,7 +542,8 @@ async def receive_heartbeat(
         registered = await _register_missing_butler_from_roster(pool, body.butler_name)
         if registered:
             row = await pool.fetchrow(
-                "SELECT eligibility_state, last_seen_at FROM butler_registry WHERE name = $1",
+                "SELECT eligibility_state, last_seen_at "
+                "FROM switchboard.butler_registry WHERE name = $1",
                 body.butler_name,
             )
 
@@ -564,7 +565,7 @@ async def receive_heartbeat(
         # where a concurrent operator quarantine overwrites the stale state
         # after our SELECT but before our UPDATE.
         result = await pool.execute(
-            "UPDATE butler_registry"
+            "UPDATE switchboard.butler_registry"
             " SET last_seen_at = $1, eligibility_state = 'active',"
             "     eligibility_updated_at = $1, agent_type = $3"
             " WHERE name = $2 AND eligibility_state = 'stale'",
@@ -575,7 +576,7 @@ async def receive_heartbeat(
         rows_affected = int(result.split(" ")[-1]) if result else 0
         if rows_affected > 0:
             await pool.execute(
-                "INSERT INTO butler_registry_eligibility_log"
+                "INSERT INTO switchboard.butler_registry_eligibility_log"
                 " (butler_name, previous_state, new_state, reason,"
                 "  previous_last_seen_at, new_last_seen_at, observed_at)"
                 " VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -592,12 +593,13 @@ async def receive_heartbeat(
             # Row was concurrently modified (e.g. quarantined); re-read
             # the current state and fall through to the last_seen_at update.
             re_read = await pool.fetchrow(
-                "SELECT eligibility_state FROM butler_registry WHERE name = $1",
+                "SELECT eligibility_state FROM switchboard.butler_registry WHERE name = $1",
                 body.butler_name,
             )
             current_state = re_read["eligibility_state"] if re_read else current_state
             await pool.execute(
-                "UPDATE butler_registry SET last_seen_at = $1, agent_type = $3 WHERE name = $2",
+                "UPDATE switchboard.butler_registry "
+                "SET last_seen_at = $1, agent_type = $3 WHERE name = $2",
                 now,
                 body.butler_name,
                 agent_type,
@@ -607,7 +609,7 @@ async def receive_heartbeat(
         # Transition quarantined → active: CAS guard on eligibility_state to avoid
         # TOCTOU race with a concurrent operator re-quarantine.
         result = await pool.execute(
-            "UPDATE butler_registry"
+            "UPDATE switchboard.butler_registry"
             " SET last_seen_at = $1, eligibility_state = 'active',"
             "     eligibility_updated_at = $1,"
             "     quarantined_at = NULL, quarantine_reason = NULL,"
@@ -620,7 +622,7 @@ async def receive_heartbeat(
         rows_affected = int(result.split(" ")[-1]) if result else 0
         if rows_affected > 0:
             await pool.execute(
-                "INSERT INTO butler_registry_eligibility_log"
+                "INSERT INTO switchboard.butler_registry_eligibility_log"
                 " (butler_name, previous_state, new_state, reason,"
                 "  previous_last_seen_at, new_last_seen_at, observed_at)"
                 " VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -636,12 +638,13 @@ async def receive_heartbeat(
         else:
             # Row was concurrently modified; re-read and fall through to last_seen_at
             re_read = await pool.fetchrow(
-                "SELECT eligibility_state FROM butler_registry WHERE name = $1",
+                "SELECT eligibility_state FROM switchboard.butler_registry WHERE name = $1",
                 body.butler_name,
             )
             current_state = re_read["eligibility_state"] if re_read else current_state
             await pool.execute(
-                "UPDATE butler_registry SET last_seen_at = $1, agent_type = $3 WHERE name = $2",
+                "UPDATE switchboard.butler_registry "
+                "SET last_seen_at = $1, agent_type = $3 WHERE name = $2",
                 now,
                 body.butler_name,
                 agent_type,
@@ -650,7 +653,8 @@ async def receive_heartbeat(
     else:
         # Active: update last_seen_at and agent_type, do not change state
         await pool.execute(
-            "UPDATE butler_registry SET last_seen_at = $1, agent_type = $3 WHERE name = $2",
+            "UPDATE switchboard.butler_registry "
+            "SET last_seen_at = $1, agent_type = $3 WHERE name = $2",
             now,
             body.butler_name,
             agent_type,
@@ -715,7 +719,7 @@ async def set_butler_eligibility(
     now = datetime.datetime.now(datetime.UTC)
 
     row = await pool.fetchrow(
-        "SELECT eligibility_state, last_seen_at FROM butler_registry WHERE name = $1",
+        "SELECT eligibility_state, last_seen_at FROM switchboard.butler_registry WHERE name = $1",
         name,
     )
     if row is None:
@@ -741,7 +745,7 @@ async def set_butler_eligibility(
         update_fields["quarantine_reason"] = None
 
     await pool.execute(
-        "UPDATE butler_registry"
+        "UPDATE switchboard.butler_registry"
         " SET eligibility_state = $1,"
         "     eligibility_updated_at = $2,"
         "     quarantined_at = $3,"
@@ -758,7 +762,7 @@ async def set_butler_eligibility(
     try:
         await pool.execute(
             """
-            INSERT INTO butler_registry_eligibility_log (
+            INSERT INTO switchboard.butler_registry_eligibility_log (
                 butler_name, previous_state, new_state, reason,
                 previous_last_seen_at, new_last_seen_at, observed_at
             )
@@ -836,7 +840,7 @@ async def get_eligibility_history(
 
     # Verify butler exists
     current = await pool.fetchrow(
-        "SELECT eligibility_state FROM butler_registry WHERE name = $1",
+        "SELECT eligibility_state FROM switchboard.butler_registry WHERE name = $1",
         name,
     )
     if current is None:
@@ -846,7 +850,7 @@ async def get_eligibility_history(
 
     rows = await pool.fetch(
         "SELECT previous_state, new_state, observed_at"
-        " FROM butler_registry_eligibility_log"
+        " FROM switchboard.butler_registry_eligibility_log"
         " WHERE butler_name = $1 AND observed_at >= $2"
         " ORDER BY observed_at ASC",
         name,
@@ -1038,7 +1042,7 @@ async def list_connectors(
             " cr.observed_scopes, cr.required_scopes_version,"
             " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
             " COALESCE(ts.today_failed, 0) AS today_messages_failed"
-            " FROM connector_registry cr"
+            " FROM switchboard.connector_registry cr"
             " LEFT JOIN ("
             "   SELECT connector_type, endpoint_identity,"
             "     SUM(delta_ingested) AS today_ingested,"
@@ -1049,7 +1053,7 @@ async def list_connectors(
             "         - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,"
             "       GREATEST(0, MAX(counter_messages_failed)"
             "         - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed"
-            "     FROM connector_heartbeat_log"
+            "     FROM switchboard.connector_heartbeat_log"
             "     WHERE received_at >= CURRENT_DATE"
             "     GROUP BY connector_type, endpoint_identity, instance_id"
             "   ) per_instance"
@@ -1096,7 +1100,7 @@ async def get_connectors_summary(
                 last_heartbeat_at,
                 coalesce(counter_messages_ingested, 0) AS messages_ingested,
                 coalesce(counter_messages_failed, 0)   AS messages_failed
-            FROM connector_registry
+            FROM switchboard.connector_registry
             WHERE deleted_at IS NULL
               -- Archived (superseded) identities are excluded from the
               -- fleet-health rollup so a permanently-offline dead endpoint
@@ -1173,7 +1177,7 @@ async def get_connector_detail(
             " cr.observed_scopes, cr.required_scopes_version,"
             " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
             " COALESCE(ts.today_failed, 0) AS today_messages_failed"
-            " FROM connector_registry cr"
+            " FROM switchboard.connector_registry cr"
             " LEFT JOIN ("
             "   SELECT connector_type, endpoint_identity,"
             "     SUM(delta_ingested) AS today_ingested,"
@@ -1184,7 +1188,7 @@ async def get_connector_detail(
             "         - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,"
             "       GREATEST(0, MAX(counter_messages_failed)"
             "         - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed"
-            "     FROM connector_heartbeat_log"
+            "     FROM switchboard.connector_heartbeat_log"
             "     WHERE received_at >= CURRENT_DATE"
             "     GROUP BY connector_type, endpoint_identity, instance_id"
             "   ) per_instance"
@@ -1236,7 +1240,7 @@ async def delete_connector(
     pool = _pool(db)
 
     deleted = await pool.fetchval(
-        "DELETE FROM connector_registry"
+        "DELETE FROM switchboard.connector_registry"
         " WHERE connector_type = $1 AND endpoint_identity = $2"
         " RETURNING connector_type",
         connector_type,
@@ -1252,7 +1256,7 @@ async def delete_connector(
     # Best-effort cleanup of heartbeat log entries
     try:
         await pool.execute(
-            "DELETE FROM connector_heartbeat_log"
+            "DELETE FROM switchboard.connector_heartbeat_log"
             " WHERE connector_type = $1 AND endpoint_identity = $2",
             connector_type,
             endpoint_identity,
@@ -1312,7 +1316,7 @@ async def update_connector_cursor(
     # Update cursor + timestamp, returning the full row for the response.
     try:
         row = await pool.fetchrow(
-            "UPDATE connector_registry"
+            "UPDATE switchboard.connector_registry"
             " SET checkpoint_cursor = $3,"
             "     checkpoint_updated_at = now()"
             " WHERE connector_type = $1 AND endpoint_identity = $2"
@@ -1393,7 +1397,7 @@ async def update_connector_settings(
 
     try:
         row = await pool.fetchrow(
-            "UPDATE connector_registry"
+            "UPDATE switchboard.connector_registry"
             " SET settings = COALESCE(settings, '{}'::jsonb) || $3::jsonb"
             " WHERE connector_type = $1 AND endpoint_identity = $2"
             " RETURNING *",
@@ -1660,7 +1664,7 @@ async def get_ingestion_overview(
     try:
         active_connectors = await pool.fetchval(
             "SELECT count(*)"
-            " FROM connector_registry"
+            " FROM switchboard.connector_registry"
             " WHERE last_heartbeat_at >= now() - make_interval(hours => $1)"
             " AND state = 'healthy'",
             hours,
@@ -1700,7 +1704,7 @@ async def get_ingestion_overview(
                 count(*) FILTER (
                     WHERE processing_metadata->>'policy_tier' = 'tier3'
                 ) AS tier3_skip
-            FROM message_inbox
+            FROM switchboard.message_inbox
             WHERE received_at >= $1
             """,
             inbox_cutoff,
@@ -1775,7 +1779,7 @@ async def get_ingestion_volume(
                         - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,
                     GREATEST(0, MAX(counter_messages_failed)
                         - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed
-                FROM connector_heartbeat_log
+                FROM switchboard.connector_heartbeat_log
                 WHERE received_at >= NOW() - INTERVAL '{interval}'
                 GROUP BY bucket, connector_type, endpoint_identity
             ) per_connector
@@ -2457,7 +2461,7 @@ async def get_thread_affinity_settings(
             thread_affinity_ttl_days,
             thread_overrides,
             updated_at::text AS updated_at
-        FROM thread_affinity_settings
+        FROM switchboard.thread_affinity_settings
         WHERE id = 1
         """
     )
@@ -2514,7 +2518,8 @@ async def update_thread_affinity_settings(
 
     await pool.execute(
         f"""
-        INSERT INTO thread_affinity_settings (id, thread_affinity_enabled, thread_affinity_ttl_days)
+        INSERT INTO switchboard.thread_affinity_settings
+            (id, thread_affinity_enabled, thread_affinity_ttl_days)
         VALUES (1, TRUE, 30)
         ON CONFLICT (id) DO UPDATE
         SET {set_sql}
@@ -2552,7 +2557,9 @@ async def list_thread_affinity_overrides(
     """
     pool = _pool(db)
 
-    row = await pool.fetchrow("SELECT thread_overrides FROM thread_affinity_settings WHERE id = 1")
+    row = await pool.fetchrow(
+        "SELECT thread_overrides FROM switchboard.thread_affinity_settings WHERE id = 1"
+    )
 
     if row is None or not row["thread_overrides"]:
         return []
@@ -2590,7 +2597,7 @@ async def upsert_thread_affinity_override(
     # Upsert the settings row if missing, then merge override into JSONB
     await pool.execute(
         """
-        INSERT INTO thread_affinity_settings (id)
+        INSERT INTO switchboard.thread_affinity_settings (id)
         VALUES (1)
         ON CONFLICT (id) DO NOTHING
         """
@@ -2598,7 +2605,7 @@ async def upsert_thread_affinity_override(
 
     await pool.execute(
         """
-        UPDATE thread_affinity_settings
+        UPDATE switchboard.thread_affinity_settings
         SET thread_overrides = thread_overrides || jsonb_build_object($1::text, $2::text),
             updated_at = NOW()
         WHERE id = 1
@@ -2645,7 +2652,7 @@ async def delete_thread_affinity_override(
 
     await pool.execute(
         """
-        UPDATE thread_affinity_settings
+        UPDATE switchboard.thread_affinity_settings
         SET thread_overrides = thread_overrides - $1::text,
             updated_at = NOW()
         WHERE id = 1
@@ -2715,7 +2722,7 @@ async def list_routing_instructions(
     rows = await pool.fetch(
         f"SELECT id, instruction, priority, enabled,"
         f" created_by, created_at, updated_at"
-        f" FROM routing_instructions{where}"
+        f" FROM switchboard.routing_instructions{where}"
         f" ORDER BY priority ASC, created_at ASC, id ASC",
         *args,
     )
@@ -2747,7 +2754,7 @@ async def create_routing_instruction(
     pool = _pool(db)
 
     row = await pool.fetchrow(
-        "INSERT INTO routing_instructions"
+        "INSERT INTO switchboard.routing_instructions"
         " (instruction, priority, enabled, created_by)"
         " VALUES ($1, $2, $3, 'dashboard')"
         " RETURNING id, instruction, priority, enabled,"
@@ -2800,7 +2807,7 @@ async def update_routing_instruction(
         raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID")
 
     existing = await pool.fetchrow(
-        "SELECT id FROM routing_instructions WHERE id = $1 AND deleted_at IS NULL",
+        "SELECT id FROM switchboard.routing_instructions WHERE id = $1 AND deleted_at IS NULL",
         instruction_id,
     )
     if existing is None:
@@ -2821,7 +2828,7 @@ async def update_routing_instruction(
         row = await pool.fetchrow(
             "SELECT id, instruction, priority, enabled,"
             " created_by, created_at, updated_at"
-            " FROM routing_instructions WHERE id = $1",
+            " FROM switchboard.routing_instructions WHERE id = $1",
             instruction_id,
         )
         return ApiResponse[RoutingInstruction](data=_row_to_routing_instruction(row))
@@ -2842,7 +2849,7 @@ async def update_routing_instruction(
     args.append(instruction_id)
 
     row = await pool.fetchrow(
-        f"UPDATE routing_instructions SET {', '.join(set_parts)}"
+        f"UPDATE switchboard.routing_instructions SET {', '.join(set_parts)}"
         f" WHERE id = ${idx} AND deleted_at IS NULL"
         f" RETURNING id, instruction, priority, enabled,"
         f"           created_by, created_at, updated_at",
@@ -2897,7 +2904,7 @@ async def delete_routing_instruction(
 
     now = datetime.datetime.now(datetime.UTC)
     result = await pool.execute(
-        "UPDATE routing_instructions"
+        "UPDATE switchboard.routing_instructions"
         " SET deleted_at = $1, enabled = FALSE, updated_at = $1"
         " WHERE id = $2 AND deleted_at IS NULL",
         now,
@@ -2938,7 +2945,9 @@ async def _assert_route_to_eligible(pool: Any, action: str) -> None:
     if not action.startswith("route_to:"):
         return
     target = action[len("route_to:") :]
-    row = await pool.fetchrow("SELECT name FROM butler_registry WHERE name = $1", target)
+    row = await pool.fetchrow(
+        "SELECT name FROM switchboard.butler_registry WHERE name = $1", target
+    )
     if row is None:
         raise HTTPException(
             status_code=422,
@@ -3042,7 +3051,7 @@ async def list_ingestion_rules(
     rows = await pool.fetch(
         f"SELECT id, scope, rule_type, condition, action, priority, enabled,"
         f" name, description, created_by, created_at, updated_at, deleted_at"
-        f" FROM ingestion_rules{where}"
+        f" FROM switchboard.ingestion_rules{where}"
         f" ORDER BY priority ASC, created_at ASC, id ASC",
         *args,
     )
@@ -3101,7 +3110,7 @@ async def create_ingestion_rule(
         raise HTTPException(status_code=422, detail=str(exc))
 
     row = await pool.fetchrow(
-        "INSERT INTO ingestion_rules"
+        "INSERT INTO switchboard.ingestion_rules"
         " (scope, rule_type, condition, action, priority, enabled,"
         "  name, description, created_by)"
         " VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, 'dashboard')"
@@ -3163,7 +3172,7 @@ async def get_ingestion_rule(
     row = await pool.fetchrow(
         "SELECT id, scope, rule_type, condition, action, priority, enabled,"
         " name, description, created_by, created_at, updated_at, deleted_at"
-        " FROM ingestion_rules WHERE id = $1 AND deleted_at IS NULL",
+        " FROM switchboard.ingestion_rules WHERE id = $1 AND deleted_at IS NULL",
         rule_id,
     )
 
@@ -3206,7 +3215,7 @@ async def update_ingestion_rule(
     existing = await pool.fetchrow(
         "SELECT id, scope, rule_type, condition, action, priority, enabled,"
         " name, description, created_by, created_at, updated_at, deleted_at"
-        " FROM ingestion_rules WHERE id = $1",
+        " FROM switchboard.ingestion_rules WHERE id = $1",
         rule_id,
     )
     if existing is None:
@@ -3303,7 +3312,7 @@ async def update_ingestion_rule(
     # transition was validated above (only restore is permitted). Restoring a
     # rule must be able to clear deleted_at, which this WHERE would otherwise block.
     row = await pool.fetchrow(
-        f"UPDATE ingestion_rules SET {', '.join(set_parts)}"
+        f"UPDATE switchboard.ingestion_rules SET {', '.join(set_parts)}"
         f" WHERE id = ${idx}"
         f" RETURNING id, scope, rule_type, condition, action, priority, enabled,"
         f"           name, description, created_by, created_at, updated_at, deleted_at",
@@ -3358,7 +3367,7 @@ async def delete_ingestion_rule(
 
     now = datetime.datetime.now(datetime.UTC)
     result = await pool.execute(
-        "UPDATE ingestion_rules"
+        "UPDATE switchboard.ingestion_rules"
         " SET deleted_at = $1, enabled = FALSE, updated_at = $1"
         " WHERE id = $2 AND deleted_at IS NULL",
         now,
@@ -3487,7 +3496,8 @@ async def bulk_ingestion_rules(
 
         # Fetch the rule to check existence and scope
         row = await pool.fetchrow(
-            "SELECT id, scope, action, enabled, deleted_at FROM ingestion_rules WHERE id = $1",
+            "SELECT id, scope, action, enabled, deleted_at "
+            "FROM switchboard.ingestion_rules WHERE id = $1",
             rule_id,
         )
 
@@ -3513,19 +3523,21 @@ async def bulk_ingestion_rules(
         # Apply the operation
         if op == "enable":
             await pool.execute(
-                "UPDATE ingestion_rules SET enabled = TRUE, updated_at = $1 WHERE id = $2",
+                "UPDATE switchboard.ingestion_rules "
+                "SET enabled = TRUE, updated_at = $1 WHERE id = $2",
                 now,
                 rule_id,
             )
         elif op == "disable":
             await pool.execute(
-                "UPDATE ingestion_rules SET enabled = FALSE, updated_at = $1 WHERE id = $2",
+                "UPDATE switchboard.ingestion_rules "
+                "SET enabled = FALSE, updated_at = $1 WHERE id = $2",
                 now,
                 rule_id,
             )
         elif op == "delete":
             await pool.execute(
-                "UPDATE ingestion_rules"
+                "UPDATE switchboard.ingestion_rules"
                 " SET deleted_at = $1, enabled = FALSE, updated_at = $1"
                 " WHERE id = $2",
                 now,
@@ -3659,7 +3671,7 @@ async def list_rule_promotion_suggestions(
                    s.evidence_count, s.created_rule_id, s.decided_at, s.decided_by,
                    r.enabled AS rule_enabled
             FROM rule_promotion_suggestions s
-            LEFT JOIN ingestion_rules r ON r.id = s.created_rule_id
+            LEFT JOIN switchboard.ingestion_rules r ON r.id = s.created_rule_id
             WHERE s.status = 'confirmed' AND s.decided_by = $1
             ORDER BY s.decided_at DESC NULLS LAST
             LIMIT 50
@@ -3733,7 +3745,7 @@ async def get_rule_promotion_stats(
             await pool.fetchval(
                 """
                 SELECT COUNT(*)::bigint
-                FROM ingestion_rules
+                FROM switchboard.ingestion_rules
                 WHERE created_by = 'promotion'
                   AND enabled = TRUE
                   AND deleted_at IS NULL
@@ -3756,7 +3768,7 @@ async def get_rule_promotion_stats(
         promoted_rule_ids = [
             r["id"]
             for r in await pool.fetch(
-                "SELECT id FROM ingestion_rules WHERE created_by = 'promotion'"
+                "SELECT id FROM switchboard.ingestion_rules WHERE created_by = 'promotion'"
             )
         ]
         if promoted_rule_ids:
@@ -3913,7 +3925,7 @@ async def set_rule_promotion_rule_enabled(
 
     updated = await pool.fetchrow(
         """
-        UPDATE ingestion_rules
+        UPDATE switchboard.ingestion_rules
         SET enabled = $1, updated_at = now()
         WHERE id = $2 AND deleted_at IS NULL
         RETURNING id

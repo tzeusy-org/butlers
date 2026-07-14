@@ -247,7 +247,7 @@ class TestUpsertThreadAffinityOverride:
         # Verify both the singleton-ensure INSERT and the override UPDATE were executed
         # (independent of audit middleware calls)
         calls = [str(c.args[0]) for c in pool.execute.call_args_list]
-        assert any("INSERT INTO thread_affinity_settings" in sql for sql in calls), (
+        assert any("INSERT INTO switchboard.thread_affinity_settings" in sql for sql in calls), (
             "Expected singleton-ensure INSERT to have been called"
         )
         assert any("thread_overrides" in sql and "UPDATE" in sql for sql in calls), (

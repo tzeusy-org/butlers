@@ -325,3 +325,47 @@ async def test_thread_affinity_lookup_works_on_public_scoped_pool(pool):
 
     assert result.outcome == AffinityOutcome.HIT
     assert result.target_butler == "finance"
+
+
+async def test_list_routing_log_endpoint_works_on_public_scoped_pool(pool):
+    """bu-1c7jp: the /routing-log api endpoint (list_routing_log) queries
+    switchboard.routing_log, so it works from a public-scoped connection. Before
+    qualification the bare read raised UndefinedTableError under a public-only
+    search_path (the endpoint does not catch DB errors). The roster api router is
+    auto-discovered, so it is loaded here the same way router_discovery loads it
+    (importlib from the file path); its Query() defaults are passed explicitly
+    since it is called outside FastAPI. SET LOCAL reverts on commit (no leak)."""
+    import importlib.util
+    import pathlib
+    from unittest.mock import MagicMock
+
+    spec = importlib.util.spec_from_file_location(
+        "sw_api_router_1c7jp", pathlib.Path("roster/switchboard/api/router.py").resolve()
+    )
+    sw_router = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sw_router)
+
+    await pool.execute("DELETE FROM switchboard.routing_log")
+    await pool.execute(
+        "INSERT INTO switchboard.routing_log "
+        "(source_butler, target_butler, tool_name, success) "
+        "VALUES ('switchboard', 'finance', 'route', TRUE)"
+    )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SET LOCAL search_path TO public, pg_catalog")
+            mock_db = MagicMock()
+            mock_db.pool = MagicMock(return_value=conn)
+            resp = await sw_router.list_routing_log(
+                source_butler=None,
+                target_butler=None,
+                since=None,
+                until=None,
+                offset=0,
+                limit=50,
+                db=mock_db,
+            )
+
+    assert resp.meta.total >= 1
+    assert any(entry.target_butler == "finance" for entry in resp.data)
