@@ -138,13 +138,23 @@ def _resolve_valid_at_bound(value: str, owner_tz: ZoneInfo, *, upper: bool) -> d
 
     Any other value is parsed as a full ISO-8601 timestamp and returned as-is
     (a naive timestamp stays naive → asyncpg encodes it as UTC, matching prior
-    behavior).  Raises HTTP 422 on an unparseable value.
+    behavior).  Raises HTTP 422 on an unparseable value — including a
+    day-key-shaped value with an out-of-range calendar component (e.g.
+    ``2026-13-40``), which would otherwise reach ``datetime(...)`` and raise a
+    bare ``ValueError`` that only the app-wide handler catches (as a 400, not
+    the documented 422). Mirrors the sessions resolver fix (PR #3184).
     """
     if _DAY_KEY_RE.match(value):
         year, month, day = (int(part) for part in value.split("-"))
-        if upper:
-            return datetime(year, month, day, 23, 59, 59, 999999, tzinfo=owner_tz)
-        return datetime(year, month, day, tzinfo=owner_tz)
+        try:
+            if upper:
+                return datetime(year, month, day, 23, 59, 59, 999999, tzinfo=owner_tz)
+            return datetime(year, month, day, tzinfo=owner_tz)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid date or timestamp: {value!r}",
+            ) from exc
     try:
         return datetime.fromisoformat(value)
     except ValueError as exc:
