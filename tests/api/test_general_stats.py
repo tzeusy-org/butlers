@@ -216,3 +216,58 @@ class TestGeneralStats503:
             resp = await client.get("/api/general/stats")
 
         assert resp.status_code == 503
+
+
+class TestCollectionsSearch:
+    """GET /api/general/collections honors the `q` search filter (bu-4u5l6).
+
+    The Collections tab search box sends `q`; before bu-4u5l6 the backend
+    declared no `q` param and never filtered, so the box was silently broken.
+    """
+
+    async def test_q_applies_ilike_pattern_to_count_and_rows(self, app):
+        _, pool = _make_app(app, fetchval_seq=[0], fetch_seq=[[]])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/general/collections", params={"q": "recipes"})
+
+        assert resp.status_code == 200
+        # Both the count and the row query receive the ILIKE pattern, so `total`
+        # and the page agree on the filtered set.
+        assert pool.fetchval.await_args.args[-1] == "%recipes%"
+        assert pool.fetch.await_args.args[1] == "%recipes%"
+
+    async def test_no_q_passes_null_filter(self, app):
+        _, pool = _make_app(app, fetchval_seq=[0], fetch_seq=[[]])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/general/collections")
+
+        assert resp.status_code == 200
+        # No filter -> the ILIKE pattern binding is NULL (returns every row).
+        assert pool.fetchval.await_args.args[-1] is None
+        assert pool.fetch.await_args.args[1] is None
+
+    async def test_whitespace_only_q_is_treated_as_no_filter(self, app):
+        _, pool = _make_app(app, fetchval_seq=[0], fetch_seq=[[]])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/general/collections", params={"q": "   "})
+
+        assert resp.status_code == 200
+        # A whitespace-only query must not become a spurious '%   %' ILIKE.
+        assert pool.fetchval.await_args.args[-1] is None
+        assert pool.fetch.await_args.args[1] is None
+
+    async def test_q_is_trimmed_before_matching(self, app):
+        _, pool = _make_app(app, fetchval_seq=[0], fetch_seq=[[]])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/general/collections", params={"q": "  recipes  "})
+
+        assert resp.status_code == 200
+        assert pool.fetch.await_args.args[1] == "%recipes%"

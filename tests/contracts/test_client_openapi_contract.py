@@ -67,13 +67,14 @@ Known, tracked exceptions
   ``ButlerRelationshipContactsTab`` that still consume them is deferred to
   the contact-era excision cluster (epic bu-oluyt) — this test documents the
   drift instead of silently ignoring it (see ``KNOWN_DEAD_PATH_FUNCTIONS``).
-- Five pre-existing "extra query param the backend does not declare" cases
-  (``getSessions``, ``getSessionAggregate``, ``getButlerSessions``,
-  ``getButlerNotifications``, ``getGeneralCollections``) — see
-  ``KNOWN_UNDECLARED_QUERY_PARAMS`` for the per-function rationale. FastAPI
-  silently ignores undeclared query params (no 422), so these are latent
-  cruft rather than a live break; flagged as a discovered follow-up rather
-  than fixed inline here.
+
+The formerly-tracked "extra query param the backend does not declare" cases
+(``getSessions`` / ``getSessionAggregate`` / ``getButlerSessions`` /
+``getButlerNotifications`` / ``getGeneralCollections``) were all resolved in
+bu-4u5l6 — the shared session/notification query builders were split so each
+route only sends its declared params, and ``GET /api/general/collections`` now
+declares and honors its ``q`` search filter. The undeclared-query-param gate
+therefore enforces ZERO drift with no allowlist.
 """
 
 from __future__ import annotations
@@ -127,29 +128,6 @@ KNOWN_DEAD_PATH_FUNCTIONS: dict[str, str] = {
 # discovered by this test's first run (not introduced by bu-hmdqz.5).
 # FastAPI ignores undeclared query params rather than 422-ing, so these are
 # latent cruft, not a live break. Rationale per entry:
-KNOWN_UNDECLARED_QUERY_PARAMS: dict[str, set[str]] = {
-    # sessionSearchParams() is a single shared builder feeding THREE routes
-    # with different pagination models (keyset-cursor for /sessions and
-    # /sessions/aggregate; offset for /butlers/{name}/sessions) plus a
-    # butler-scoped route where `butler` is redundant (implied by the path).
-    # It unconditionally sets both `offset` and `cursor` regardless of which
-    # route consumes it, so each individual route sees one param it never
-    # declared.
-    "getSessions": {"offset", "include_trigger_breakdown"},
-    "getSessionAggregate": {"cursor", "offset", "limit"},
-    "getButlerSessions": {"cursor", "butler", "include_trigger_breakdown"},
-    # getButlerNotifications hits a butler-scoped path
-    # (/butlers/{name}/notifications); `butler` is implied by the path and
-    # never actually needed in the query string.
-    "getButlerNotifications": {"butler"},
-    # getGeneralCollections sends `q` unconditionally, but
-    # GET /api/general/collections does not declare a `q` query param —
-    # the backend silently ignores it (the collections search box may not
-    # actually filter server-side). Worth auditing separately.
-    "getGeneralCollections": {"q"},
-}
-
-
 # ---------------------------------------------------------------------------
 # Minimal, defensive TypeScript-fragment scanner
 #
@@ -674,9 +652,7 @@ def test_every_client_ts_query_param_is_declared_or_tracked(
         declared = _declared_query_params(contract, openapi_paths)
         if declared is None:
             continue  # unmatched path already reported by Check A
-        undeclared = contract.query_names - declared
-        tracked = KNOWN_UNDECLARED_QUERY_PARAMS.get(name, set())
-        unexpected = undeclared - tracked
+        unexpected = contract.query_names - declared
         if unexpected:
             offenders.append(f"{name}: {sorted(unexpected)} (declared={sorted(declared)})")
 
@@ -684,33 +660,9 @@ def test_every_client_ts_query_param_is_declared_or_tracked(
         "client.ts sends a query param name the matched backend operation "
         "does not declare (FastAPI silently ignores it, but this is drift — "
         "a stale param, a rename that didn't land both sides, or a genuine "
-        "typo). If intentional and tracked, add it to "
-        "KNOWN_UNDECLARED_QUERY_PARAMS with a rationale. Offenders:\n"
-        + "\n".join(f"  {o}" for o in offenders)
-    )
-
-
-def test_known_undeclared_query_params_are_still_undeclared(
-    fe_contracts: dict[str, FunctionContract], openapi_paths: dict[str, dict]
-):
-    """Anti-rot: if the backend starts declaring one of these params, the
-    allowlist entry must shrink (not linger claiming drift that no longer
-    exists)."""
-    now_declared: list[str] = []
-    for name, tracked in KNOWN_UNDECLARED_QUERY_PARAMS.items():
-        contract = fe_contracts.get(name)
-        assert contract is not None, (
-            f"{name} is in KNOWN_UNDECLARED_QUERY_PARAMS but the scanner no "
-            "longer finds it in client.ts — remove the stale allowlist entry."
-        )
-        declared = _declared_query_params(contract, openapi_paths) or set()
-        newly_declared = tracked & declared
-        if newly_declared:
-            now_declared.append(f"{name}: {sorted(newly_declared)}")
-    assert now_declared == [], (
-        "The following tracked-undeclared query params are now declared by "
-        "the backend — shrink their KNOWN_UNDECLARED_QUERY_PARAMS entry: \n"
-        + "\n".join(f"  {o}" for o in now_declared)
+        "typo). Fix it: stop sending the param (split the shared builder so a "
+        "route only sends its declared params) or declare it on the backend "
+        "handler. Offenders:\n" + "\n".join(f"  {o}" for o in offenders)
     )
 
 

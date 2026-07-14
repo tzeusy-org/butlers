@@ -647,22 +647,26 @@ export function getButlerModules(name: string): Promise<ApiResponse<ModuleStatus
   return apiFetch<ApiResponse<ModuleStatus[]>>(`/butlers/${encodeURIComponent(name)}/modules`);
 }
 
-/** Build a URLSearchParams from session query parameters. */
-function sessionSearchParams(params?: SessionParams): URLSearchParams {
+/**
+ * Build the filter query params shared by every sessions route.
+ *
+ * Only the params EVERY session route declares live here; pagination and
+ * route-specific params are added by each caller so no route is sent a param
+ * its backend never declares (bu-4u5l6). The three routes have disjoint
+ * pagination models — keyset `cursor` for `/sessions`, none for
+ * `/sessions/aggregate`, offset for `/butlers/{name}/sessions` — so a single
+ * shared builder could not honestly serve all three.
+ */
+function sessionCommonSearchParams(params?: SessionParams): URLSearchParams {
   const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
   if (params?.trigger_source != null && params.trigger_source !== "")
     sp.set("trigger_source", params.trigger_source);
   if (params?.request_id != null && params.request_id !== "")
     sp.set("request_id", params.request_id);
-  if (params?.cursor != null && params.cursor !== "") sp.set("cursor", params.cursor);
   if (params?.status != null && params.status !== "all") sp.set("status", params.status);
   // Backend uses from_date/to_date; SessionParams uses since/until as field names.
   if (params?.since != null && params.since !== "") sp.set("from_date", params.since);
   if (params?.until != null && params.until !== "") sp.set("to_date", params.until);
-  if (params?.include_trigger_breakdown) sp.set("include_trigger_breakdown", "true");
   return sp;
 }
 
@@ -677,7 +681,12 @@ function sessionSearchParams(params?: SessionParams): URLSearchParams {
 export function getSessions(
   params?: SessionParams,
 ): Promise<KeysetResponse<SessionSummary>> {
-  const qs = sessionSearchParams(params).toString();
+  const sp = sessionCommonSearchParams(params);
+  // /sessions: keyset (cursor) pagination, cross-butler (accepts a butler filter).
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  if (params?.cursor != null && params.cursor !== "") sp.set("cursor", params.cursor);
+  if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
+  const qs = sp.toString();
   const path = qs ? `/sessions?${qs}` : "/sessions";
   return apiFetch<KeysetResponse<SessionSummary>>(path);
 }
@@ -693,7 +702,12 @@ export function getSessions(
 export function getSessionAggregate(
   params?: SessionParams,
 ): Promise<ApiResponse<SessionAggregate>> {
-  const qs = sessionSearchParams(params).toString();
+  const sp = sessionCommonSearchParams(params);
+  // /sessions/aggregate: NOT paginated (window-true counts). Accepts the
+  // cross-butler filter and the trigger-breakdown toggle.
+  if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
+  if (params?.include_trigger_breakdown) sp.set("include_trigger_breakdown", "true");
+  const qs = sp.toString();
   const path = qs ? `/sessions/aggregate?${qs}` : "/sessions/aggregate";
   return apiFetch<ApiResponse<SessionAggregate>>(path);
 }
@@ -708,7 +722,12 @@ export function getButlerSessions(
   name: string,
   params?: SessionParams,
 ): Promise<PaginatedResponse<SessionSummary>> {
-  const qs = sessionSearchParams(params).toString();
+  const sp = sessionCommonSearchParams(params);
+  // /butlers/{name}/sessions: offset pagination; the butler is the path param
+  // (never a redundant `?butler=`), and there is no keyset `cursor`.
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
   const base = `/butlers/${encodeURIComponent(name)}/sessions`;
   const path = qs ? `${base}?${qs}` : base;
   return apiFetch<PaginatedResponse<SessionSummary>>(path);
@@ -792,11 +811,10 @@ export function getButlerMemoryStats(
  * are intentionally omitted from the query string so the backend does not
  * add spurious WHERE clauses that would return zero rows.
  */
-function notificationSearchParams(params?: NotificationParams): URLSearchParams {
+function notificationCommonSearchParams(params?: NotificationParams): URLSearchParams {
   const sp = new URLSearchParams();
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
   if (params?.channel != null && params.channel !== "" && params.channel !== "all")
     sp.set("channel", params.channel);
   if (params?.status != null && params.status !== "" && params.status !== "all")
@@ -810,7 +828,10 @@ function notificationSearchParams(params?: NotificationParams): URLSearchParams 
 export function getNotifications(
   params?: NotificationParams,
 ): Promise<NotificationListResponse> {
-  const qs = notificationSearchParams(params).toString();
+  const sp = notificationCommonSearchParams(params);
+  // Only the cross-butler /notifications route declares a `butler` filter.
+  if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
+  const qs = sp.toString();
   const path = qs ? `/notifications?${qs}` : "/notifications";
   return apiFetch<NotificationListResponse>(path);
 }
@@ -838,7 +859,9 @@ export function getButlerNotifications(
   name: string,
   params?: NotificationParams,
 ): Promise<NotificationListResponse> {
-  const qs = notificationSearchParams(params).toString();
+  // Butler-scoped route: the butler is the path param `{name}`, so no
+  // redundant `?butler=` is sent (bu-4u5l6).
+  const qs = notificationCommonSearchParams(params).toString();
   const base = `/butlers/${encodeURIComponent(name)}/notifications`;
   const path = qs ? `${base}?${qs}` : base;
   return apiFetch<NotificationListResponse>(path);

@@ -156,14 +156,31 @@ async def get_stats(
 
 @router.get("/collections", response_model=PaginatedResponse[Collection])
 async def list_collections(
+    q: str | None = Query(
+        None, description="Case-insensitive substring filter on collection name."
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Collection]:
-    """List collections with entity counts, paginated."""
-    pool = _pool(db)
+    """List collections with entity counts, paginated.
 
-    total = await pool.fetchval("SELECT count(*) FROM collections") or 0
+    When ``q`` is provided, filters to collections whose name matches it
+    (case-insensitive substring) — the search box on the Collections tab
+    (bu-4u5l6). Without it, all collections are returned.
+    """
+    pool = _pool(db)
+    # Trim surrounding whitespace and treat a blank/whitespace-only query as no
+    # filter (return all) rather than an ILIKE '%   %' that matches spuriously.
+    like = f"%{q.strip()}%" if q and q.strip() else None
+
+    total = (
+        await pool.fetchval(
+            "SELECT count(*) FROM collections WHERE ($1::text IS NULL OR name ILIKE $1)",
+            like,
+        )
+        or 0
+    )
 
     rows = await pool.fetch(
         """
@@ -175,10 +192,12 @@ async def list_collections(
             count(e.id) AS entity_count
         FROM collections c
         LEFT JOIN collection_items e ON e.collection_id = c.id
+        WHERE ($1::text IS NULL OR c.name ILIKE $1)
         GROUP BY c.id
         ORDER BY c.name
-        OFFSET $1 LIMIT $2
+        OFFSET $2 LIMIT $3
         """,
+        like,
         offset,
         limit,
     )
