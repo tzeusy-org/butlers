@@ -117,45 +117,62 @@ async def search(
     session_results: list[SearchResult] = []
     state_results: list[SearchResult] = []
 
-    # --- Entities search (shared schema) via search_v1 read-model ---
-    pool = _any_pool(db)
-    entity_rows = await query_entity_search(pool, pattern, limit)
-    for entity_row in entity_rows:
-        alias_text = ", ".join(entity_row.aliases[:3])
-        snippet = entity_row.entity_type or ""
-        if alias_text:
-            snippet += f" · {alias_text}"
-        entity_results.append(
-            SearchResult(
-                id=str(entity_row.id),
-                butler="memory",
-                type="entity",
-                title=entity_row.canonical_name,
-                snippet=snippet,
-                url=f"/entities/{entity_row.id}",
-            )
+    # --- Entities + contacts search (shared schema) via search_v1 read-model ---
+    # No pool available at all (e.g. no butler DBs registered) is itself a
+    # degraded state for the two shared-schema groups: flag them rather than
+    # letting _any_pool raise a 500 and break the always-200 contract (bu-c3u8i,
+    # gemini review). The per-group empties then read as degraded, never a clean
+    # "no results".
+    entity_degraded: list[str] = []
+    contact_degraded: list[str] = []
+    try:
+        pool = _any_pool(db)
+    except RuntimeError:
+        logger.warning(
+            "Search: no database pool available for shared-schema entity/contact queries",
+            exc_info=True,
         )
+        pool = None
+        entity_degraded = ["entities"]
+        contact_degraded = ["contacts"]
 
-    # --- Contacts search (shared schema) via search_v1 read-model ---
-    # Channel identifiers now come from relationship.entity_facts (bu-hjo3i).
-    contact_rows = await query_contact_search(pool, pattern, limit)
-    for contact_row in contact_rows:
-        parts = []
-        if contact_row.email:
-            parts.append(contact_row.email)
-        if contact_row.phone:
-            parts.append(contact_row.phone)
-        snippet = " · ".join(parts) if parts else ""
-        contact_results.append(
-            SearchResult(
-                id=str(contact_row.id),
-                butler="relationship",
-                type="contact",
-                title=contact_row.name or "Unnamed",
-                snippet=snippet,
-                url=f"/contacts/{contact_row.id}",
+    if pool is not None:
+        entity_rows, entity_degraded = await query_entity_search(pool, pattern, limit)
+        for entity_row in entity_rows:
+            alias_text = ", ".join(entity_row.aliases[:3])
+            snippet = entity_row.entity_type or ""
+            if alias_text:
+                snippet += f" · {alias_text}"
+            entity_results.append(
+                SearchResult(
+                    id=str(entity_row.id),
+                    butler="memory",
+                    type="entity",
+                    title=entity_row.canonical_name,
+                    snippet=snippet,
+                    url=f"/entities/{entity_row.id}",
+                )
             )
-        )
+
+        # Channel identifiers now come from relationship.entity_facts (bu-hjo3i).
+        contact_rows, contact_degraded = await query_contact_search(pool, pattern, limit)
+        for contact_row in contact_rows:
+            parts = []
+            if contact_row.email:
+                parts.append(contact_row.email)
+            if contact_row.phone:
+                parts.append(contact_row.phone)
+            snippet = " · ".join(parts) if parts else ""
+            contact_results.append(
+                SearchResult(
+                    id=str(contact_row.id),
+                    butler="relationship",
+                    type="contact",
+                    title=contact_row.name or "Unnamed",
+                    snippet=snippet,
+                    url=f"/contacts/{contact_row.id}",
+                )
+            )
 
     # --- Sessions search (per-butler fan-out) via search_v1 read-model ---
     session_fan_out, session_degraded = await query_session_search(db, pattern, limit)
@@ -197,12 +214,17 @@ async def search(
                 )
             )
 
-    # Degraded-source honesty (bu-tpudw.4): a search over a half-down fleet
-    # must never render as a clean "no results". The per-butler fan-outs report
-    # which sources failed; surface them via meta.sources_degraded (the shared
+    # Degraded-source honesty (bu-tpudw.4; entity/contact groups added in
+    # bu-c3u8i): a search over a half-down fleet must never render as a clean
+    # "no results". Each read-model reports which sources failed -- the
+    # per-butler fan-outs name the failed butlers, the shared-schema
+    # entity/contact queries name their own group on a genuine (non-absent)
+    # failure -- and we surface them via meta.sources_degraded (the shared
     # ApiMeta bag convention) so the finder can name the missing sources inline
     # instead of showing a fabricated empty result.
-    degraded = sorted(set(session_degraded) | set(state_degraded))
+    degraded = sorted(
+        set(entity_degraded) | set(contact_degraded) | set(session_degraded) | set(state_degraded)
+    )
     meta = ApiMeta(sources_degraded=degraded) if degraded else ApiMeta()
 
     # Trim to limit (fan_out may return limit per butler, need global trim)

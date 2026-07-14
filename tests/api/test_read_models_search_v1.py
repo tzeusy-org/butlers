@@ -4,10 +4,12 @@ Verifies:
 - ``READ_MODEL_VERSION`` is stable
 - Column constants are non-empty strings with expected identifiers
 - Row converter functions map asyncpg Records to typed DTOs
-- ``query_entity_search`` returns a list of EntitySearchRow on success
-- ``query_entity_search`` returns [] on exception
-- ``query_contact_search`` returns a list of ContactSearchRow with snippet data
-- ``query_contact_search`` returns [] on exception
+- ``query_entity_search`` returns a ([EntitySearchRow], degraded) tuple on success
+- ``query_entity_search`` classifies a missing schema as absent (not degraded)
+  and a genuine failure as ``["entities"]`` degraded (bu-c3u8i)
+- ``query_contact_search`` returns a ([ContactSearchRow], degraded) tuple with snippet data
+- ``query_contact_search`` classifies a missing schema as absent (not degraded)
+  and a genuine failure as ``["contacts"]`` degraded (bu-c3u8i)
 - ``query_session_search`` returns a ({butler: [SessionSearchRow]}, degraded) tuple
 - ``query_session_search`` threads the fan_out_with_status failed list as degraded sources
 - ``query_session_search`` returns ({}, ["sessions"]) on a structural fan-out exception
@@ -23,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
+from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.read_models.search_v1 import (
     CONTACT_COLUMNS,
@@ -286,27 +289,47 @@ async def test_query_entity_search_returns_typed_dtos():
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[_make_record(_entity_dict())])
 
-    result = await query_entity_search(mock_pool, "%alice%", 20)
+    result, degraded = await query_entity_search(mock_pool, "%alice%", 20)
 
     assert len(result) == 1
     assert isinstance(result[0], EntitySearchRow)
     assert result[0].canonical_name == "Alice Smith"
+    assert degraded == []
 
 
 async def test_query_entity_search_empty_result():
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=[])
 
-    result = await query_entity_search(mock_pool, "%nomatch%", 20)
+    result, degraded = await query_entity_search(mock_pool, "%nomatch%", 20)
     assert result == []
+    assert degraded == [], "a genuine-empty result is not a degraded source"
 
 
-async def test_query_entity_search_swallows_exception():
+async def test_query_entity_search_missing_schema_is_absent_not_degraded():
+    """bu-c3u8i: a legitimately-absent entities table (pre-migration, or a pool
+    that never provisioned it) yields an empty result with NO degraded flag --
+    classify before flagging, mirroring memory.py's schema-absence exemption."""
     mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(side_effect=RuntimeError("relation does not exist"))
+    mock_pool.fetch = AsyncMock(
+        side_effect=UndefinedTableError('relation "public.entities" does not exist')
+    )
 
-    result = await query_entity_search(mock_pool, "%foo%", 5)
+    result, degraded = await query_entity_search(mock_pool, "%foo%", 5)
     assert result == []
+    assert degraded == []
+
+
+async def test_query_entity_search_genuine_failure_flags_degraded():
+    """bu-c3u8i: a genuine failure (dropped connection / permission), NOT a
+    missing schema, flags the source so a half-down search never reads as a
+    clean empty."""
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(side_effect=RuntimeError("connection reset by peer"))
+
+    result, degraded = await query_entity_search(mock_pool, "%foo%", 5)
+    assert result == []
+    assert degraded == ["entities"]
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +341,7 @@ async def test_query_contact_search_returns_typed_dtos():
     mock_pool = AsyncMock()
     entity_row = _make_record(_contact_dict())
     mock_pool.fetch = AsyncMock(side_effect=[[entity_row], []])  # second call: empty ef_rows
-    result = await query_contact_search(mock_pool, "%alice%", 20)
+    result, degraded = await query_contact_search(mock_pool, "%alice%", 20)
     assert len(result) == 1
     assert isinstance(result[0], ContactSearchRow)
     assert result[0].name == "Alice Smith"
@@ -326,6 +349,7 @@ async def test_query_contact_search_returns_typed_dtos():
     assert result[0].entity_id == _ENTITY_ID
     assert result[0].email is None
     assert result[0].phone is None
+    assert degraded == []
 
 
 async def test_query_contact_search_populates_email_from_entity_facts():
@@ -337,10 +361,11 @@ async def test_query_contact_search_populates_email_from_entity_facts():
     )
     mock_pool.fetch = AsyncMock(side_effect=[[contact_row], [ef_row]])
 
-    result = await query_contact_search(mock_pool, "%alice%", 20)
+    result, degraded = await query_contact_search(mock_pool, "%alice%", 20)
 
     assert result[0].email == "alice@example.com"
     assert result[0].phone is None
+    assert degraded == []
 
 
 async def test_query_contact_search_populates_phone_from_entity_facts():
@@ -352,10 +377,11 @@ async def test_query_contact_search_populates_phone_from_entity_facts():
     )
     mock_pool.fetch = AsyncMock(side_effect=[[contact_row], [ef_row]])
 
-    result = await query_contact_search(mock_pool, "%alice%", 20)
+    result, degraded = await query_contact_search(mock_pool, "%alice%", 20)
 
     assert result[0].phone == "+1-555-0100"
     assert result[0].email is None
+    assert degraded == []
 
 
 async def test_query_contact_search_second_fetch_always_runs():
@@ -363,17 +389,34 @@ async def test_query_contact_search_second_fetch_always_runs():
     mock_pool = AsyncMock()
     entity_row = _make_record(_contact_dict())  # entity_id always set
     mock_pool.fetch = AsyncMock(side_effect=[[entity_row], []])
-    result = await query_contact_search(mock_pool, "%alice%", 20)
+    result, degraded = await query_contact_search(mock_pool, "%alice%", 20)
     assert mock_pool.fetch.call_count == 2
     assert result[0].email is None
+    assert degraded == []
 
 
-async def test_query_contact_search_swallows_exception():
+async def test_query_contact_search_missing_schema_is_absent_not_degraded():
+    """bu-c3u8i: a legitimately-absent entities / relationship.entity_facts
+    schema (butler without the module, or pre-migration) yields an empty result
+    with NO degraded flag -- classify before flagging."""
     mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(side_effect=RuntimeError("permission denied"))
+    mock_pool.fetch = AsyncMock(side_effect=RuntimeError('schema "relationship" does not exist'))
 
-    result = await query_contact_search(mock_pool, "%foo%", 5)
+    result, degraded = await query_contact_search(mock_pool, "%foo%", 5)
     assert result == []
+    assert degraded == []
+
+
+async def test_query_contact_search_genuine_failure_flags_degraded():
+    """bu-c3u8i: a genuine failure (here, a permission error -- not a missing
+    schema) flags the source so a failed contact fan-out never renders as a
+    clean empty."""
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(side_effect=RuntimeError("permission denied for relation entities"))
+
+    result, degraded = await query_contact_search(mock_pool, "%foo%", 5)
+    assert result == []
+    assert degraded == ["contacts"]
 
 
 # ---------------------------------------------------------------------------

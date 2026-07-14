@@ -30,19 +30,30 @@ Row DTOs:
     StateSearchRow
 
 Query functions (all async):
-    query_entity_search(pool, pattern, limit) -> list[EntitySearchRow]
-    query_contact_search(pool, pattern, limit) -> list[ContactSearchRow]
+    query_entity_search(pool, pattern, limit)
+        -> tuple[list[EntitySearchRow], list[str]]
+    query_contact_search(pool, pattern, limit)
+        -> tuple[list[ContactSearchRow], list[str]]
     query_session_search(db, pattern, limit)
         -> tuple[dict[str, list[SessionSearchRow]], list[str]]
     query_state_search(db, pattern, limit)
         -> tuple[dict[str, list[StateSearchRow]], list[str]]
 
-The two per-butler fan-out queries return a ``(results, degraded_sources)``
-tuple so the endpoint never mistakes a half-down fleet for "no results": the
-second element names the sources whose query failed (per-butler names from
-``fan_out_with_status``, or the sentinel category name on a structural
-fan-out failure). See ``degraded.py`` and CLAUDE.md "Degraded-Mode Response
-Envelope".
+Every query returns a ``(results, degraded_sources)`` tuple so the endpoint
+never mistakes a failed source for "no results": the second element names the
+sources whose query failed (per-butler names from ``fan_out_with_status`` for
+the fan-outs, or the sentinel category name -- ``["entities"]`` / ``["contacts"]``
+/ ``["sessions"]`` / ``["state"]`` -- when the source as a whole failed). See
+``degraded.py`` and CLAUDE.md "Degraded-Mode Response Envelope".
+
+Classify before flagging: the shared-schema entity/contact queries touch
+``public.entities`` and ``relationship.entity_facts``, which are legitimately
+absent on a pre-migration DB or a pool that never provisioned them. Such a
+missing-schema error (:func:`_is_missing_schema_error`) is NOT a degraded
+source -- it yields an empty result with no flag. Only a genuine failure
+(dropped connection, timeout, permission) flags the source. ``sessions`` and
+``state`` are core tables in every butler schema, so their fan-outs have no
+such exemption (any failure is genuine).
 
 Version marker:
     READ_MODEL_VERSION
@@ -57,6 +68,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.db import DatabaseManager
 
@@ -224,11 +236,28 @@ def row_to_state(row: asyncpg.Record) -> StateSearchRow:
 # ---------------------------------------------------------------------------
 
 
+def _is_missing_schema_error(exc: BaseException) -> bool:
+    """Return whether *exc* means the queried table/schema simply does not exist.
+
+    Legitimately absent -- a pre-migration DB, or a pool whose schema was never
+    provisioned (a butler without the relationship module) -- NOT a degraded
+    source. Mirrors ``memory.py::_is_missing_memory_schema_error`` (extended to
+    a missing schema as well as a missing relation). Any OTHER error (a dropped
+    connection, a timeout, a permission error, a malformed query) is a genuine
+    failure and MUST be flagged as degraded, never folded into the same
+    "no such table" skip.
+    """
+    if isinstance(exc, UndefinedTableError):
+        return True
+    msg = str(exc).lower()
+    return "does not exist" in msg and ("relation" in msg or "table" in msg or "schema" in msg)
+
+
 async def query_entity_search(
     pool: asyncpg.Pool,
     pattern: str,
     limit: int,
-) -> list[EntitySearchRow]:
+) -> tuple[list[EntitySearchRow], list[str]]:
     """Search ``public.entities`` by canonical name or alias.
 
     Excludes merged and deleted entities.  Results are ordered by
@@ -245,8 +274,13 @@ async def query_entity_search(
 
     Returns
     -------
-    list[EntitySearchRow]
-        Matched entity rows, or an empty list on error.
+    tuple[list[EntitySearchRow], list[str]]
+        ``(rows, degraded_sources)``.  ``rows`` is the matched entities (empty
+        on error).  ``degraded_sources`` is ``["entities"]`` when the query
+        failed for a genuine reason (transport/permission), or ``[]`` on success
+        OR when ``public.entities`` is legitimately absent
+        (:func:`_is_missing_schema_error`) -- so a missing schema never reads as
+        a degraded source (classify before flagging).
     """
     try:
         rows = await pool.fetch(
@@ -265,17 +299,22 @@ async def query_entity_search(
             pattern,
             limit,
         )
-        return [row_to_entity(r) for r in rows]
-    except Exception:
+        return [row_to_entity(r) for r in rows], []
+    except Exception as exc:
+        if _is_missing_schema_error(exc):
+            logger.debug(
+                "Entity search: entities schema absent (legitimately absent, not degraded)"
+            )
+            return [], []
         logger.warning("Entity search failed", exc_info=True)
-        return []
+        return [], ["entities"]
 
 
 async def query_contact_search(
     pool: asyncpg.Pool,
     pattern: str,
     limit: int,
-) -> list[ContactSearchRow]:
+) -> tuple[list[ContactSearchRow], list[str]]:
     """Search ``public.entities`` by canonical name, alias, or entity_facts channel value.
 
     After bu-tzyuh this function no longer references ``public.contacts``;
@@ -296,9 +335,13 @@ async def query_contact_search(
 
     Returns
     -------
-    list[ContactSearchRow]
-        Matched contact rows with ``email``/``phone`` snippet fields populated
-        where available, or an empty list on error.
+    tuple[list[ContactSearchRow], list[str]]
+        ``(rows, degraded_sources)``.  ``rows`` is the matched contacts with
+        ``email``/``phone`` snippets (empty on error).  ``degraded_sources`` is
+        ``["contacts"]`` when the query failed for a genuine reason, or ``[]`` on
+        success OR when ``public.entities`` / ``relationship.entity_facts`` is
+        legitimately absent (:func:`_is_missing_schema_error`) -- classify
+        before flagging.
     """
     try:
         entity_rows = await pool.fetch(
@@ -358,10 +401,16 @@ async def query_contact_search(
             if eid is not None:
                 contact.email = email_by_entity.get(eid)
                 contact.phone = phone_by_entity.get(eid)
-        return contacts
-    except Exception:
+        return contacts, []
+    except Exception as exc:
+        if _is_missing_schema_error(exc):
+            logger.debug(
+                "Contact search: entities/entity_facts schema absent "
+                "(legitimately absent, not degraded)"
+            )
+            return [], []
         logger.warning("Contact search failed", exc_info=True)
-        return []
+        return [], ["contacts"]
 
 
 async def query_session_search(

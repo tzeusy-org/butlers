@@ -211,7 +211,7 @@ The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_da
   table shows (window coherence)
 
 ### Requirement: Cross-Butler Search Degraded-Source Honesty
-`GET /api/search` fans its sessions and state searches out across every butler DB. A source that fails MUST NOT be silently zero-filled into a truthful-looking empty result. `sessions` and `state` are core tables present in every butler schema, so a fan-out failure is always a genuine transport/permission error (never a legitimately-absent schema) and is always reported. The response envelope SHALL carry `meta.sources_degraded` (the shared `ApiMeta` bag convention) naming every degraded source, so the finder renders a named note rather than a clean "no results".
+`GET /api/search` returns four result groups: the per-butler `sessions` and `state` fan-outs across every butler DB, plus the shared-schema `entities` and `contacts` searches (`public.entities` / `relationship.entity_facts` on a single pool). A source that fails MUST NOT be silently zero-filled into a truthful-looking empty result. `sessions` and `state` are core tables present in every butler schema, so a fan-out failure is always a genuine transport/permission error (never a legitimately-absent schema) and is always reported. The `entities` / `contacts` groups apply classify-before-flagging: a legitimately-absent schema (a pre-migration DB, or a pool that never provisioned `public.entities` / `relationship.entity_facts`) is NOT a degraded source and yields a clean empty, whereas a genuine failure (dropped connection, timeout, permission) IS flagged. The response envelope SHALL carry `meta.sources_degraded` (the shared `ApiMeta` bag convention) naming every degraded source, so the finder renders a named note rather than a clean "no results".
 
 #### Scenario: Healthy fan-out
 - **WHEN** every butler's sessions/state query succeeds
@@ -226,6 +226,12 @@ The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_da
 - **WHEN** the whole sessions or state fan-out raises before any per-butler status is available
 - **THEN** the affected source is flagged with the sentinel name (`"sessions"` / `"state"`) in `meta.sources_degraded`
 - **AND** the endpoint returns HTTP 200 with empty results for that source rather than a 500 or a deceptive clean empty
+
+#### Scenario: Shared-schema entity/contact failure is classified before flagging
+- **WHEN** the `entities` or `contacts` shared-schema query fails because the table/schema is legitimately absent (a pre-migration DB, or a pool without `public.entities` / `relationship.entity_facts`)
+- **THEN** that group returns an empty result and its name (`"entities"` / `"contacts"`) does NOT appear in `meta.sources_degraded`
+- **AND WHEN** the same query fails for a genuine reason (dropped connection, timeout, permission)
+- **THEN** the group name IS added to `meta.sources_degraded` so the failure never renders as a clean empty
 
 #### Scenario: Finder names the degraded source
 - **WHEN** `meta.sources_degraded` is non-empty
@@ -460,7 +466,7 @@ was removed (no compat shim).
 #### Search
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/search` | Cross-butler ILIKE search (sessions + state) |
+| GET | `/api/search` | Cross-butler ILIKE search (entities, contacts, sessions, state) |
 
 #### Audit Log
 | Method | Path | Purpose |
