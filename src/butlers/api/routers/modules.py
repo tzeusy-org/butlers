@@ -25,6 +25,7 @@ import tomllib
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastmcp.exceptions import ToolError
 
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -32,12 +33,28 @@ from butlers.api.deps import (
     MCPClientManager,
     get_butler_configs,
     get_mcp_manager,
+    is_tool_absent_error,
 )
-from butlers.api.models import ApiResponse
+from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.models.modules import (
     ModuleRuntimeStateResponse,
     ModuleSetEnabledRequest,
 )
+
+
+class _ModuleStatesUnavailable(Exception):
+    """The butler's ``module.states`` tool is not registered.
+
+    Raised inside :func:`_get_module_states_via_mcp` when ``module_mgmt`` is not
+    among the butler's enabled core groups (e.g. finance, relationship). The
+    endpoint catches this and returns a graceful degraded 200 payload rather
+    than the 502 a bare ``ToolError`` would have produced.
+    """
+
+    def __init__(self, butler_name: str) -> None:
+        self.butler_name = butler_name
+        super().__init__(butler_name)
+
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +140,27 @@ async def _get_module_states_via_mcp(
             status_code=503,
             detail=f"Butler '{butler_name}' is unreachable",
         )
+    except ToolError as exc:
+        if is_tool_absent_error(exc):
+            # module.states is gated behind the 'module_mgmt' core group, which
+            # finance/relationship do not enable. That is a structural config
+            # state, not a fault -- degrade gracefully (200 + flag) instead of
+            # the 502 the broad handler below would produce.
+            logger.debug(
+                "module.states tool absent on butler %s (module_mgmt not enabled)",
+                butler_name,
+            )
+            raise _ModuleStatesUnavailable(butler_name) from exc
+        # A genuine failure inside an ENABLED module.states tool stays a 5xx.
+        logger.warning(
+            "Unexpected error fetching module states for butler %s",
+            butler_name,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to retrieve module states for butler '{butler_name}'",
+        )
     except Exception:
         logger.warning(
             "Unexpected error fetching module states for butler %s",
@@ -157,12 +195,25 @@ async def get_module_states(
 
     Raises 404 if the butler is not known.
     Raises 503 if the butler daemon is unreachable.
+
+    Returns a graceful degraded payload (200 with an empty ``data`` list and
+    ``meta.module_states_unavailable = True``) when the butler does not expose
+    ``module.states`` because its ``module_mgmt`` core group is not enabled
+    (e.g. finance, relationship) -- rather than the 502 a raw tool-absent error
+    would have produced. Frontends must gate the module list on this flag and
+    render "module states unavailable" instead of an empty module list.
     """
     if not any(cfg.name == name for cfg in configs):
         raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
 
     butler_dir = roster_dir / name
-    states = await _get_module_states_via_mcp(name, mcp_manager, butler_dir)
+    try:
+        states = await _get_module_states_via_mcp(name, mcp_manager, butler_dir)
+    except _ModuleStatesUnavailable:
+        return ApiResponse[list[ModuleRuntimeStateResponse]](
+            data=[],
+            meta=ApiMeta(module_states_unavailable=True),
+        )
     return ApiResponse[list[ModuleRuntimeStateResponse]](data=states)
 
 
@@ -199,7 +250,9 @@ async def set_module_enabled(
         If the butler or module is not found.
     409
         If the module is unavailable (health=failed or cascade_failed) and
-        cannot be toggled.
+        cannot be toggled, or if the butler does not expose
+        ``module.set_enabled`` because its ``module_mgmt`` core group is not
+        enabled (e.g. finance, relationship).
     503
         If the butler daemon is unreachable.
     """
@@ -223,6 +276,21 @@ async def set_module_enabled(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
         )
+    except ToolError as exc:
+        if is_tool_absent_error(exc):
+            # module.set_enabled is gated behind 'module_mgmt', which
+            # finance/relationship do not enable. Structural config state,
+            # not a transient fault -> 409, not 500.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"tool 'module.set_enabled' not available on butler '{name}' "
+                    "(core group 'module_mgmt' not enabled)"
+                ),
+            ) from exc
+        # A genuine failure inside an ENABLED module.set_enabled tool must still
+        # surface as a 5xx, not be masked as a 409.
+        raise
 
     # Parse the tool response
     response_data: dict = {}

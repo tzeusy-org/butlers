@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastmcp import Client as MCPClient
+from fastmcp.exceptions import ToolError
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -87,6 +88,30 @@ class ButlerUnreachableError(Exception):
         if cause:
             msg += f": {cause}"
         super().__init__(msg)
+
+
+def is_tool_absent_error(exc: BaseException) -> bool:
+    """Return True if *exc* means the target butler never registered this tool.
+
+    ``fastmcp.Client.call_tool`` raises ``ToolError`` with message
+    ``"Unknown tool: '<name>'"`` when the butler's ``FastMCP`` instance has no
+    tool of that name. Core tools are gated by a butler's ``core_groups`` -- the
+    ``_core_tool(group)`` no-op decorator in ``daemon.py`` leaves a tool
+    unregistered when its group is not enabled -- so a dashboard proxy call to a
+    structurally-absent core tool surfaces here rather than as a transport
+    failure. Concrete cases in the API layer: ``state_set`` / ``state_delete``
+    on ``switchboard`` (omits the ``state`` group) and ``module.set_enabled`` /
+    ``module.states`` on ``finance`` / ``relationship`` (omit ``module_mgmt``).
+
+    This is a client-visible *configuration* state, not a transient fault, so
+    write proxies should render it as ``409`` and read/fan-out proxies as a
+    graceful degraded payload -- never a ``500``. Any *other* ``ToolError`` (a
+    tool that IS registered but raised for its own reason) is a genuine failure
+    and must still surface as a ``5xx``; callers must re-raise it. Mirrors
+    ``spend.py::_is_tool_absent_error`` and the classify-before-flagging rule in
+    ``memory.py::_is_missing_memory_schema_error``.
+    """
+    return isinstance(exc, ToolError) and str(exc).startswith("Unknown tool:")
 
 
 class MCPClientManager:

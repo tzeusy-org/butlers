@@ -16,12 +16,14 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastmcp.exceptions import ToolError
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerUnreachableError,
     MCPClientManager,
     get_mcp_manager,
+    is_tool_absent_error,
 )
 from butlers.api.models import ApiResponse
 from butlers.api.models.state import StateEntry, StateSetRequest
@@ -130,7 +132,12 @@ async def set_state(
     """Set a state value via the butler's MCP ``state_set`` tool.
 
     Proxies the write through MCP so the butler's own state management
-    logic is invoked. Returns 503 if the butler is unreachable.
+    logic is invoked.
+
+    Returns 503 if the butler is unreachable. Returns 409 if the butler does
+    not expose ``state_set`` because its ``state`` core group is not enabled
+    (e.g. switchboard) -- a structural configuration state, not a transient
+    fault, so it must not surface as a 500.
     """
     summary = {"key": key}
     try:
@@ -144,6 +151,26 @@ async def set_state(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
         )
+    except ToolError as exc:
+        if is_tool_absent_error(exc):
+            await log_audit_entry(
+                db,
+                name,
+                "state.set",
+                summary,
+                result="error",
+                error="state_set tool not available (core group 'state' not enabled)",
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"tool 'state_set' not available on butler '{name}' "
+                    "(core group 'state' not enabled)"
+                ),
+            ) from exc
+        # A genuine failure inside an ENABLED state_set tool must still surface
+        # as a 5xx, not be masked as a 409.
+        raise
 
     await log_audit_entry(db, name, "state.set", summary)
     return ApiResponse[dict](data={"key": key, "status": "ok"})
@@ -162,7 +189,12 @@ async def delete_state(
     """Delete a state entry via the butler's MCP ``state_delete`` tool.
 
     Proxies the delete through MCP so the butler's own state management
-    logic is invoked. Returns 503 if the butler is unreachable.
+    logic is invoked.
+
+    Returns 503 if the butler is unreachable. Returns 409 if the butler does
+    not expose ``state_delete`` because its ``state`` core group is not enabled
+    (e.g. switchboard) -- a structural configuration state, not a transient
+    fault, so it must not surface as a 500.
     """
     summary = {"key": key}
     try:
@@ -176,6 +208,26 @@ async def delete_state(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
         )
+    except ToolError as exc:
+        if is_tool_absent_error(exc):
+            await log_audit_entry(
+                db,
+                name,
+                "state.delete",
+                summary,
+                result="error",
+                error="state_delete tool not available (core group 'state' not enabled)",
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"tool 'state_delete' not available on butler '{name}' "
+                    "(core group 'state' not enabled)"
+                ),
+            ) from exc
+        # A genuine failure inside an ENABLED state_delete tool must still
+        # surface as a 5xx, not be masked as a 409.
+        raise
 
     await log_audit_entry(db, name, "state.delete", summary)
     return ApiResponse[dict](data={"key": key, "status": "deleted"})
