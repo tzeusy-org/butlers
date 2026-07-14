@@ -224,13 +224,13 @@ async def test_check_suppression_quiet_hours():
     pool = object()
     with (
         patch(
-            "butlers.jobs.secrets_lifecycle.get_approvals_policy_quiet_hours",
+            "butlers.core.attention_ledger.get_approvals_policy_quiet_hours",
             new=AsyncMock(
                 return_value={"quiet_start_hour": 0, "quiet_end_hour": 23, "timezone": "UTC"}
             ),
         ),
         patch(
-            "butlers.jobs.secrets_lifecycle.get_suppressing_context_signal",
+            "butlers.core.attention_ledger.get_suppressing_context_signal",
             new=AsyncMock(return_value=None),
         ),
     ):
@@ -242,11 +242,11 @@ async def test_check_suppression_context_bus():
     pool = object()
     with (
         patch(
-            "butlers.jobs.secrets_lifecycle.get_approvals_policy_quiet_hours",
+            "butlers.core.attention_ledger.get_approvals_policy_quiet_hours",
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "butlers.jobs.secrets_lifecycle.get_suppressing_context_signal",
+            "butlers.core.attention_ledger.get_suppressing_context_signal",
             new=AsyncMock(return_value="dnd"),
         ),
     ):
@@ -258,11 +258,11 @@ async def test_check_suppression_none_when_clear():
     pool = object()
     with (
         patch(
-            "butlers.jobs.secrets_lifecycle.get_approvals_policy_quiet_hours",
+            "butlers.core.attention_ledger.get_approvals_policy_quiet_hours",
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "butlers.jobs.secrets_lifecycle.get_suppressing_context_signal",
+            "butlers.core.attention_ledger.get_suppressing_context_signal",
             new=AsyncMock(return_value=None),
         ),
     ):

@@ -236,12 +236,12 @@ def _patch_no_suppression():
     """Patch the quiet-hours/context-bus gate open (not suppressed)."""
     return (
         patch(
-            "butlers.jobs.home.get_approvals_policy_quiet_hours",
+            "butlers.core.attention_ledger.get_approvals_policy_quiet_hours",
             new_callable=AsyncMock,
             return_value=None,
         ),
         patch(
-            "butlers.jobs.home.get_suppressing_context_signal",
+            "butlers.core.attention_ledger.get_suppressing_context_signal",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -254,11 +254,11 @@ async def test_send_notify_suppressed_by_quiet_hours():
 
     with (
         patch(
-            "butlers.jobs.home.get_approvals_policy_quiet_hours",
+            "butlers.core.attention_ledger.get_approvals_policy_quiet_hours",
             new_callable=AsyncMock,
             return_value={"timezone": "UTC", "quiet_start_hour": 0, "quiet_end_hour": 23},
         ),
-        patch("butlers.jobs.home.should_suppress_by_policy", return_value=True),
+        patch("butlers.core.attention_ledger.should_suppress_by_policy", return_value=True),
         patch(
             "butlers.jobs.home.resolve_owner_telegram_recipient", new_callable=AsyncMock
         ) as mock_resolve,

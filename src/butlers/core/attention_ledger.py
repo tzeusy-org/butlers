@@ -73,8 +73,14 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 import asyncpg
+
+from butlers.core.approvals_policy import (
+    get_approvals_policy_quiet_hours,
+    should_suppress_by_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -372,4 +378,46 @@ async def get_suppressing_context_signal(pool: asyncpg.Pool | None) -> str | Non
     for candidate in _SUPPRESSING_CONTEXT_SIGNALS:
         if candidate in active_types:
             return candidate
+    return None
+
+
+async def check_owner_notify_suppression(
+    pool: asyncpg.Pool | None, *, log_context: str
+) -> str | None:
+    """Decide whether a medium-priority owner notification should be suppressed.
+
+    Mirrors ``notify()``'s owner-default gate (``core_tools/_notifications.py``
+    lines ~588-690): quiet hours via ``public.approvals_policy``
+    (:func:`get_approvals_policy_quiet_hours` + :func:`should_suppress_by_policy`),
+    then the context-bus dnd/sleeping signal
+    (:func:`get_suppressing_context_signal`). Returns a machine-readable reason
+    string (``"quiet_hours"`` or ``"context_bus:<signal>"``) when suppressed, else
+    ``None``.
+
+    Shared by the out-of-process job callers that replicate this gate:
+    ``butlers.jobs.secrets_lifecycle._check_suppression`` and
+    ``butlers.jobs.home._check_owner_notify_suppression`` (bu-gts7r). ``log_context``
+    is the debug-log prefix used when the quiet-hours policy lookup fails, so each
+    caller's log line reads exactly as it did before the extraction.
+    """
+    try:
+        policy = await get_approvals_policy_quiet_hours(pool)
+    except Exception:
+        logger.debug("%s: quiet-hours policy lookup failed", log_context, exc_info=True)
+        policy = None
+
+    if policy is not None:
+        tz_name = policy.get("timezone", "UTC")
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("UTC")
+        now_local = datetime.now(UTC).astimezone(tz)
+        if should_suppress_by_policy(policy, current_hour=now_local.hour):
+            return "quiet_hours"
+
+    context_signal = await get_suppressing_context_signal(pool)
+    if context_signal is not None:
+        return f"context_bus:{context_signal}"
+
     return None

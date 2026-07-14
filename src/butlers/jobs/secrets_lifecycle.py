@@ -130,11 +130,10 @@ from butlers.api.routers.secrets_v2 import (
     _fetch_user_secrets,
     _infer_provider_from_type,
 )
-from butlers.core.approvals_policy import (
-    get_approvals_policy_quiet_hours,
-    should_suppress_by_policy,
+from butlers.core.attention_ledger import (
+    check_owner_notify_suppression,
+    record_attention_event,
 )
-from butlers.core.attention_ledger import get_suppressing_context_signal, record_attention_event
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.core.temporal.delivery import compute_deliver_at, should_defer_notification
 from butlers.core.temporal.delivery_db import (
@@ -324,33 +323,13 @@ async def _last_notified_state(pool: Any, key: str) -> str | None:
 async def _check_suppression(pool: Any) -> str | None:
     """Decide whether a medium-priority owner notification should be suppressed.
 
-    Mirrors notify()'s owner-default gate (quiet hours via
-    ``public.approvals_policy``, then context-bus dnd/sleeping) — see
-    ``core_tools/_notifications.py`` lines ~588-690 for the reference
-    implementation this deliberately parallels. Returns a machine-readable
-    reason string when suppressed, else None.
+    Thin wrapper over the shared owner-notify suppression gate
+    (:func:`butlers.core.attention_ledger.check_owner_notify_suppression`), which
+    replicates notify()'s owner-default gate (quiet hours + context-bus). Kept as a
+    module-local name because ``run_secrets_lifecycle_check`` and its tests reference
+    and monkeypatch it (bu-gts7r).
     """
-    try:
-        policy = await get_approvals_policy_quiet_hours(pool)
-    except Exception:
-        logger.debug("secrets_lifecycle_check: quiet-hours policy lookup failed", exc_info=True)
-        policy = None
-
-    if policy is not None:
-        tz_name = policy.get("timezone", "UTC")
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            tz = ZoneInfo("UTC")
-        now_local = datetime.now(UTC).astimezone(tz)
-        if should_suppress_by_policy(policy, current_hour=now_local.hour):
-            return "quiet_hours"
-
-    context_signal = await get_suppressing_context_signal(pool)
-    if context_signal is not None:
-        return f"context_bus:{context_signal}"
-
-    return None
+    return await check_owner_notify_suppression(pool, log_context="secrets_lifecycle_check")
 
 
 def _focus_fragment(key: str) -> str:

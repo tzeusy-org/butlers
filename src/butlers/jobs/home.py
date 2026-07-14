@@ -58,16 +58,14 @@ import re
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypedDict
-from zoneinfo import ZoneInfo
 
 import asyncpg
 import httpx
 
-from butlers.core.approvals_policy import (
-    get_approvals_policy_quiet_hours,
-    should_suppress_by_policy,
+from butlers.core.attention_ledger import (
+    check_owner_notify_suppression,
+    record_attention_event,
 )
-from butlers.core.attention_ledger import get_suppressing_context_signal, record_attention_event
 from butlers.core.state import state_get
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import (
@@ -221,35 +219,13 @@ _HOME_NOTIFY_TIMEOUT_S = 30
 async def _check_owner_notify_suppression(pool: asyncpg.Pool) -> str | None:
     """Decide whether an owner-facing Home butler push should be suppressed.
 
-    Mirrors notify()'s owner-default gate (quiet hours via
-    ``public.approvals_policy``, then context-bus dnd/sleeping) — see
-    ``core_tools/_notifications.py`` lines ~588-690 for the reference
-    implementation this deliberately parallels, and
-    ``butlers.jobs.secrets_lifecycle._check_suppression`` for an identical
-    replication of the same gate for a different out-of-process caller.
-    Returns a machine-readable reason string when suppressed, else None.
+    Thin wrapper over the shared owner-notify suppression gate
+    (:func:`butlers.core.attention_ledger.check_owner_notify_suppression`), which
+    replicates notify()'s owner-default gate (quiet hours + context-bus). Kept as a
+    module-local name because ``_send_notify`` and its tests reference and
+    monkeypatch it (bu-gts7r).
     """
-    try:
-        policy = await get_approvals_policy_quiet_hours(pool)
-    except Exception:
-        logger.debug("_send_notify: quiet-hours policy lookup failed", exc_info=True)
-        policy = None
-
-    if policy is not None:
-        tz_name = policy.get("timezone", "UTC")
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            tz = ZoneInfo("UTC")
-        now_local = datetime.now(UTC).astimezone(tz)
-        if should_suppress_by_policy(policy, current_hour=now_local.hour):
-            return "quiet_hours"
-
-    context_signal = await get_suppressing_context_signal(pool)
-    if context_signal is not None:
-        return f"context_bus:{context_signal}"
-
-    return None
+    return await check_owner_notify_suppression(pool, log_context="_send_notify")
 
 
 async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
