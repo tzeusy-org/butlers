@@ -70,6 +70,26 @@ jobs:
             --commit-range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
             --review-comments-file "${RUNNER_TEMP}/review_comments.json"
 
+  em-dash-guard:
+    # Fast, dependency-free gate (bu-370uj): enforces non-negotiable #6 ("no
+    # em-dashes in doctrine or dashboard copy") over the doctrine markdown
+    # corpus (about/ essays + roster/*/MANIFESTO.md + roster/*/AGENTS.md). A
+    # per-file baseline (scripts/em-dash-baseline.json) freezes pre-existing
+    # debt so the gate lands green today while blocking any net-new em-dash and
+    # any new dirty file. Frontend user-facing copy is enforced by the eslint
+    # rule in the `frontend` job instead. Advisory like every other check here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check for em-dashes in doctrine + dashboard copy
+        run: python3 scripts/check-no-em-dashes.py
+
   check:
     runs-on: ubuntu-latest
 
@@ -290,6 +310,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Em-dash copy gate (bu-370uj)
+        run: npm run lint:emdash
 
       - name: Import graph (knip)
         run: npm run knip

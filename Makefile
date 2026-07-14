@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-qg test-qg-serial test-qg-parallel check check-for-update-joins check-integration-coverage check-em-dashes check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -79,7 +79,13 @@ check-for-update-joins:
 check-integration-coverage:
 	uv run python3 scripts/check_integration_coverage.py
 
-check: lint check-for-update-joins check-integration-coverage test
+# Non-negotiable #6: no em-dashes in doctrine or dashboard copy. Ratchets a
+# per-file baseline (scripts/em-dash-baseline.json) so pre-existing debt is
+# frozen while any net-new em-dash fails. Mirrors the CI `em-dash-guard` job.
+check-em-dashes:
+	python3 scripts/check-no-em-dashes.py
+
+check: lint check-for-update-joins check-integration-coverage check-em-dashes test
 
 # Local dry run of the session-link-guard CI job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage
