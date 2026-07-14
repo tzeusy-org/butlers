@@ -106,18 +106,39 @@ band composition addendum and visually in each cell's `ButlerMark` component.
 
 #### Scenario: Activity verb derivation
 
-- **WHEN** the activity chip is rendered for a butler cell
-- **THEN** the activity verb and chip color SHALL be derived client-side from
-  existing signals using this priority order:
-  1. If `status = down`: verb is `offline`, chip color is red
-  2. If `eligibility_state = quarantined`: verb is `quarantined`, chip color is red
-  3. If `active_session_count > 0`: verb is `running`, chip is green
-  4. Otherwise: verb is `idle`, chip is dim
-- **AND** the backend `_probe_butler` emits only `ok` and `down`; no `degraded`
-  or `waiting` status values are produced by the current implementation.
+- **WHEN** a butler's board row is assembled by `GET /api/butlers/board`
+- **THEN** the activity verb (`BoardRow.activity`) and chip color
+  (`BoardRow.cell_tone`) SHALL be derived SERVER-SIDE by the canonical
+  `_derive_board_activity` function (`src/butlers/api/routers/butlers.py`) --
+  this endpoint is the single source of the liveness verdict for every
+  butler-status surface, replacing the former client-side per-cell derivation
+  (bu-86c4c.17) -- using this first-match-wins priority order:
+  1. `status = down` (the raw MCP probe result): verb `offline`, tone `red`
+  2. `eligibility = quarantined`: verb `quarantined`, tone `red`
+  3. `heartbeat_unavailable` is true, OR the registry `last_seen_at` is
+     clock-skewed more than 5 minutes into the future (`clock_skewed`): verb
+     `unknown`, tone `neutral` (an untrustworthy heartbeat is not a confidently
+     healthy one, the bu-y1am9 clock-skew fold)
+  4. `active_session_count > 0`: verb `running`, tone `green`
+  5. `cadence_status = overdue` (silent longer than twice the butler's own cron
+     cadence per `_CADENCE_OVERDUE_FACTOR`, or longer than 5 minutes when no
+     cadence is known): verb `overdue`, tone `amber`
+  6. otherwise: verb `idle`, tone `neutral`
+- **AND** the complete verb set is `running` / `idle` / `overdue` / `offline` /
+  `quarantined` / `unknown`, and the complete tone set is `green` / `amber` /
+  `red` / `neutral` (there is no `dim` tone).
+- **AND** `eligibility` may also be `unavailable` when the butler registry source
+  errored (`_fetch_board_row` sets it when `registry_source_error` is true or no
+  registry row exists); `unavailable` is NOT `quarantined`, so it does not
+  trigger rule 2, and the row's verb is derived from the remaining heartbeat /
+  session / cadence signals.
+- **AND** the raw `_probe_butler` status (`BoardRow.status`) is only `ok` or
+  `down`; the richer `overdue` / `unknown` verbs are produced by the derivation
+  above, not by the probe, and no `degraded` or `waiting` status value is
+  produced.
 - **AND** the mockup verbs `patrol`, `consolidating`, and `ingesting` MUST NOT
   be used. These verbs imply butler-specific semantic knowledge not carried by
-  `ButlerSummary` and are explicitly rejected.
+  the board row, and are explicitly rejected.
 
 #### Scenario: Load percentage
 
