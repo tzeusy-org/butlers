@@ -43,6 +43,9 @@ def _write_export(path: Path, records: list[dict]) -> None:
 
 
 def _decision(id_, *, title="DECISION REQUIRED (owner): pick one", created_days_ago=10, **kw):
+    # bu-uo37y: the runtime title-marker fallback is retired, so a decision bead
+    # is classified solely by the `decision` label. Default fixtures to a labeled
+    # decision; pass labels=[] via **kw for an intentionally unlabeled bead.
     return {
         "id": id_,
         "title": title,
@@ -51,6 +54,7 @@ def _decision(id_, *, title="DECISION REQUIRED (owner): pick one", created_days_
         "issue_type": "task",
         "created_at": _iso(_NOW - timedelta(days=created_days_ago)),
         "dependencies": [],
+        "labels": ["decision"],
         **kw,
     }
 

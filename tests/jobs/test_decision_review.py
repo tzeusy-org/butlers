@@ -3,8 +3,9 @@
 Covers:
 - compute_decision_digest: missing/stale/unreadable export -> available=False
   (never a fabricated all-clear); real fixture -> correct decision detection
-  (title-marker heuristic), P1-bug/deploy escalation detection via `blocks`
-  dependency edges, and the 48h age threshold.
+  (by the `decision` label; the legacy title-marker fallback was retired in
+  bu-uo37y), P1-bug/deploy escalation detection via `blocks` dependency edges,
+  and the 48h age threshold.
 - Message composition: weekly digest header + escalation message shape.
 - _check_suppression: mirrors notify()'s quiet-hours + context-bus gate.
 - run_decision_review_digest / run_decision_escalation_check: degraded-data
@@ -66,6 +67,10 @@ def _iso(dt: datetime) -> str:
 
 
 def _decision(id_, *, title="DECISION REQUIRED (owner): pick one", created_days_ago=10, **kw):
+    # bu-uo37y: the runtime title-marker fallback is retired, so a decision bead
+    # is classified solely by the `decision` label. Default fixtures to a labeled
+    # decision (the fleet's current reality); tests that need an UNLABELED bead
+    # pass labels=[] (or their own label list) via **kw to override.
     return {
         "id": id_,
         "title": title,
@@ -74,6 +79,7 @@ def _decision(id_, *, title="DECISION REQUIRED (owner): pick one", created_days_
         "issue_type": "task",
         "created_at": _iso(_NOW - timedelta(days=created_days_ago)),
         "dependencies": [],
+        "labels": ["decision"],
         **kw,
     }
 
@@ -208,23 +214,35 @@ def test_digest_tolerates_malformed_dependencies_field(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_digest_detects_decision_beads_by_title_marker(tmp_path):
+def test_digest_ignores_unlabeled_title_marker_beads(tmp_path):
+    """bu-uo37y: the legacy runtime title-marker fallback is retired. A bead
+    whose TITLE carries a legacy marker but which lacks the `decision` label is
+    NOT classified as a decision at runtime -- only the label counts. (Such a
+    bead is instead surfaced to the owner by the digest's unlabeled-marker lint,
+    covered separately.)"""
     export = tmp_path / "issues.export.jsonl"
     _write_export(
         export,
         [
-            _decision(
-                "bu-v4ipc", title="DECISION REQUIRED (owner): identity model", created_days_ago=6
-            ),
-            _decision("bu-zhfd0", title="Deploy core migrations [OWNER-GATED]", created_days_ago=6),
-            _decision("bu-closed", title="DECISION REQUIRED (owner): old", status="closed"),
+            # Labeled decision -> detected.
+            _decision("bu-labeled", title="Re-enable the api-haiku lane?", created_days_ago=6),
+            # Title marker but NO `decision` label -> NOT detected (fallback retired).
             {
-                "id": "bu-ordinary",
-                "title": "Refactor the widget loader",
+                "id": "bu-v4ipc",
+                "title": "DECISION REQUIRED (owner): identity model",
                 "status": "open",
-                "priority": 2,
+                "priority": 1,
                 "issue_type": "task",
-                "created_at": _iso(_NOW - timedelta(days=1)),
+                "created_at": _iso(_NOW - timedelta(days=6)),
+                "dependencies": [],
+            },
+            {
+                "id": "bu-zhfd0",
+                "title": "Deploy core migrations [OWNER-GATED]",
+                "status": "open",
+                "priority": 1,
+                "issue_type": "task",
+                "created_at": _iso(_NOW - timedelta(days=6)),
                 "dependencies": [],
             },
         ],
@@ -233,8 +251,9 @@ def test_digest_detects_decision_beads_by_title_marker(tmp_path):
     digest = compute_decision_digest(export, now=_NOW)
     assert digest.available is True
     ids = {d.id for d in digest.open_decisions}
-    assert ids == {"bu-v4ipc", "bu-zhfd0"}
-    assert "bu-ordinary" not in ids, "non-decision-marked titles must not match"
+    assert ids == {"bu-labeled"}
+    assert "bu-v4ipc" not in ids, "unlabeled title-marker beads must not match at runtime"
+    assert "bu-zhfd0" not in ids
 
 
 def test_digest_detects_decision_beads_by_convention_label(tmp_path):
@@ -268,7 +287,9 @@ def test_digest_detects_decision_beads_by_convention_label(tmp_path):
     assert ids == {"bu-labeled"}
 
 
-def test_is_decision_bead_label_takes_precedence_over_missing_title_marker():
+def test_is_decision_bead_detected_by_label():
+    """The `decision` label alone classifies a decision bead -- a plain,
+    non-marker title is fine (bu-ckkpz.1)."""
     assert _is_decision_bead(
         {
             "status": "open",
@@ -279,43 +300,40 @@ def test_is_decision_bead_label_takes_precedence_over_missing_title_marker():
     )
 
 
-def test_is_decision_bead_widened_title_markers_match_legacy_fallback():
-    """bu-a9p6y's widened fallback shapes, incorporated directly here:
-    'ARCHITECTURAL DECISION' and 'OWNER:' title prefixes must still be
-    detected via the legacy regex fallback (no `decision` label present)."""
-    assert _is_decision_bead(
+def test_is_decision_bead_ignores_title_markers_without_label():
+    """bu-uo37y: the legacy title-marker fallback is retired, so beads whose
+    titles carry a marker ('ARCHITECTURAL DECISION', 'OWNER:', 'DECISION
+    REQUIRED', ...) but which lack the `decision` label are NOT classified as
+    decisions at runtime."""
+    for title in (
+        "ARCHITECTURAL DECISION (owner): pick a queue backend",
+        "OWNER: decide on the retention window",
+        "DECISION REQUIRED (owner): identity model",
+    ):
+        assert not _is_decision_bead({"status": "open", "issue_type": "task", "title": title}), (
+            title
+        )
+        # A meta/dev bead that merely QUOTES the markers is likewise inert now
+        # (moots the runtime half of bu-d4lkb's self-match concern).
+    assert not _is_decision_bead(
         {
             "status": "open",
             "issue_type": "task",
-            "title": "ARCHITECTURAL DECISION (owner): pick a queue backend",
-        }
-    )
-    assert _is_decision_bead(
-        {
-            "status": "open",
-            "issue_type": "task",
-            "title": "OWNER: decide on the retention window",
+            "title": 'Doc the "DECISION REQUIRED" / "OWNER:" marker strings',
         }
     )
 
 
-def test_is_decision_bead_excludes_epics_even_with_label_or_title_marker():
+def test_is_decision_bead_excludes_epics_even_with_label():
     """An epic is a container for a body of work, not a single decision --
-    exclude it regardless of whether it carries the `decision` label or a
-    title-marker match (e.g. bu-ckkpz's own title)."""
+    exclude it even when it carries the `decision` label (e.g. bu-ckkpz's own
+    container epic)."""
     assert not _is_decision_bead(
         {
             "status": "open",
             "issue_type": "epic",
             "title": "Owner Decision Desk: decision beads become first-class attention citizens",
             "labels": ["decision"],
-        }
-    )
-    assert not _is_decision_bead(
-        {
-            "status": "open",
-            "issue_type": "epic",
-            "title": "DECISION REQUIRED (owner): epic-level rollup",
         }
     )
 
@@ -709,7 +727,14 @@ def test_run_unlabeled_marker_lint_real_subprocess_wiring(tmp_path):
     _write_export(
         export,
         [
-            _decision("bu-w6jca", title="ARCHITECTURAL DECISION (owner): pick a schema"),
+            # The linter's whole job is to catch a decision-shaped bead filed
+            # WITHOUT the `decision` label, so this fixture is deliberately
+            # unlabeled (labels=[]) -- that is the unlabeled-marker violation.
+            _decision(
+                "bu-w6jca",
+                title="ARCHITECTURAL DECISION (owner): pick a schema",
+                labels=[],
+            ),
             {"id": "bu-ordinary", "title": "fix a typo", "status": "open"},
         ],
     )

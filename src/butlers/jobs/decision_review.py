@@ -57,26 +57,29 @@ repeatedly hardened against (see ``src/butlers/api/degraded.py`` and its
 callers). A *genuine* zero (file readable, zero beads matched) is a real
 all-clear and is reported as such without sending an owner notification.
 
-Decision-bead detection: convention first, title regex as legacy fallback
+Decision-bead detection: convention label only
 ---------------------------------------------------------------------------
 bu-ckkpz.1 (the structured decision-bead convention: ``decision`` label +
 ``metadata.decision.{options,default}`` + native ``due_at`` deadline,
 enforced by ``scripts/lint_decision_beads.py`` -- see AGENTS.md
 "Decision-bead convention") has shipped (PR #3141). :func:`_is_decision_bead`
-checks the convention's own marker first -- the ``decision`` label, the same
-field ``bd list --label decision`` and the linter key off (see
-:data:`_DECISION_LABEL`) -- and only falls back to
-:data:`_DECISION_TITLE_MARKERS` (a title-text regex) for beads that predate
-the convention and were never labeled. Empirically, the epic's original seed
-queue (bu-v4ipc, bu-zhfd0, bu-wyftz, bu-4qfhl, bu-w6jca, bu-4pq0s) is
-title-marker-only today ("DECISION REQUIRED (owner)", "[OWNER-GATED]",
-"ARCHITECTURAL DECISION", "OWNER:") and is the reason the fallback stays
-supported rather than being deleted outright; any *new* decision bead should
-carry the ``decision`` label instead of relying on title text. Both the
-label check and the title-regex fallback exclude ``issue_type == "epic"``: a
-container epic (e.g. bu-ckkpz itself, "Owner Decision Desk: decision beads
-become first-class attention citizens") is not itself a single decision the
-owner resolves in one step, even when its title or label happens to match.
+classifies a bead solely by the convention's own marker -- the ``decision``
+label, the same field ``bd list --label decision`` and the linter key off
+(see :data:`_DECISION_LABEL`).
+
+The legacy title-text regex fallback (for beads that predated the label and
+were never labeled) was retired in bu-uo37y once the fleet finished migrating:
+the label backfill landed and ``scripts/lint_decision_beads.py`` runs clean,
+so every open decision bead now carries the label. The linter keeps its own
+mirror of the title-marker regex as the safety net that catches a
+decision-shaped bead filed WITHOUT the label -- that lint runs as part of the
+weekly digest (:func:`_run_unlabeled_marker_lint`) and surfaces such a bead to
+the owner rather than silently misclassifying it at runtime.
+
+The label check excludes ``issue_type == "epic"``: a container epic (e.g.
+bu-ckkpz itself, "Owner Decision Desk: decision beads become first-class
+attention citizens") is not itself a single decision the owner resolves in one
+step, even when its label happens to match.
 
 P1-bug / deploy-block detection
 --------------------------------
@@ -123,21 +126,11 @@ _ESCALATED_ACTION = "decision_escalation_notified"
 _ESCALATION_THRESHOLD = timedelta(hours=48)
 
 # The convention's own marker (bu-ckkpz.1) -- mirrors DECISION_LABEL in
-# scripts/lint_decision_beads.py. Checked first; see "Decision-bead
+# scripts/lint_decision_beads.py. The sole runtime classifier now that the
+# legacy title-marker fallback is retired (bu-uo37y); see "Decision-bead
 # detection" above.
 _DECISION_LABEL = "decision"
 
-# Legacy fallback for beads that predate the `decision` label (see
-# "Decision-bead detection" above). Validated against the live
-# `.beads/issues.export.jsonl` seed queue: these five alternatives are the
-# real title shapes pre-convention owner-decision beads use (DECISION
-# REQUIRED (owner): ...; ...[OWNER-GATED]; OWNER DECISION ...; ARCHITECTURAL
-# DECISION (owner): ...; OWNER: decide ...) -- bu-v4ipc, bu-zhfd0, bu-wyftz,
-# bu-4qfhl, bu-w6jca, bu-4pq0s all match one of these.
-_DECISION_TITLE_MARKERS = re.compile(
-    r"DECISION REQUIRED|OWNER[- ]GATED|OWNER DECISION|ARCHITECTURAL DECISION|\bOWNER:",
-    re.IGNORECASE,
-)
 _DEPLOY_TITLE_MARKER = re.compile(r"\bdeploy", re.IGNORECASE)
 _OPEN_STATUSES = frozenset({"open", "in_progress", "blocked"})
 _DIGEST_MAX_LISTED = 10
@@ -237,16 +230,13 @@ def _is_decision_bead(issue: dict[str, Any]) -> bool:
     # happens to match below.
     if issue.get("issue_type") == "epic":
         return False
-    # Convention first (bu-ckkpz.1): the `decision` label is the canonical
-    # marker -- same field `bd list --label decision` and
-    # scripts/lint_decision_beads.py key off.
+    # The `decision` label is the sole runtime classifier (bu-ckkpz.1;
+    # bu-uo37y retired the legacy title-marker fallback) -- same field
+    # `bd list --label decision` and scripts/lint_decision_beads.py key off. A
+    # decision-shaped bead filed without the label is caught by the digest's
+    # unlabeled-marker lint (_run_unlabeled_marker_lint), not misclassified here.
     labels = issue.get("labels")
-    if isinstance(labels, list) and _DECISION_LABEL in labels:
-        return True
-    # Legacy fallback for beads that predate the convention and were never
-    # labeled -- see "Decision-bead detection" in the module docstring.
-    title = issue.get("title") or ""
-    return bool(_DECISION_TITLE_MARKERS.search(title))
+    return isinstance(labels, list) and _DECISION_LABEL in labels
 
 
 def _is_p1_bug(issue: dict[str, Any]) -> bool:

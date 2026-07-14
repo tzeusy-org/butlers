@@ -84,14 +84,16 @@ from typing import Any
 
 DECISION_LABEL = "decision"
 
-# Mirrors `_DECISION_TITLE_MARKERS` / `_OPEN_STATUSES` in
-# src/butlers/jobs/decision_review.py exactly (epic-exclusion included).
-# Deliberately duplicated rather than imported -- this script is designed to
-# run standalone (offline `--issues-json-file` mode, no live DB) and stays
-# independent of the `butlers` package's DB-touching import chain, the same
-# rationale decision_review.py itself gives for duplicating DECISION_LABEL
-# in the other direction (see that module's "Decision-bead detection"
-# docstring section). Keep both patterns in sync if either changes.
+# The title-marker regex now lives ONLY here: bu-uo37y retired the runtime
+# copy in src/butlers/jobs/decision_review.py (that module classifies decisions
+# by the `decision` label alone). This lint keeps the regex as the safety net
+# that catches a decision-shaped bead filed WITHOUT the label, surfaced to the
+# owner via decision_review.py's weekly `--check-unlabeled-markers` pass (it is
+# an advisory nudge, not a CI gate). `_OPEN_STATUSES` still mirrors the same
+# frozenset in decision_review.py -- keep that one in sync if either changes.
+# The regex is kept inline rather than imported so this script runs standalone
+# (offline `--issues-json-file` mode) without the `butlers` package's
+# DB-touching import chain.
 _DECISION_TITLE_MARKERS = re.compile(
     r"DECISION REQUIRED|OWNER[- ]GATED|OWNER DECISION|ARCHITECTURAL DECISION|\bOWNER:",
     re.IGNORECASE,
