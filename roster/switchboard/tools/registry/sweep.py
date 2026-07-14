@@ -54,7 +54,7 @@ async def _apply_stale_transition(
     """Persist an active→stale transition and write the audit log entry."""
     await pool.execute(
         """
-        UPDATE butler_registry
+        UPDATE switchboard.butler_registry
         SET
             eligibility_state = $1,
             eligibility_updated_at = $2
@@ -98,7 +98,7 @@ async def _apply_quarantine_transition(
     )
     await pool.execute(
         """
-        UPDATE butler_registry
+        UPDATE switchboard.butler_registry
         SET
             eligibility_state = $1,
             eligibility_updated_at = $2,
@@ -176,7 +176,7 @@ async def run_eligibility_sweep(
             last_seen_at,
             quarantined_at,
             quarantine_reason
-        FROM butler_registry
+        FROM switchboard.butler_registry
         ORDER BY name
         """
     )

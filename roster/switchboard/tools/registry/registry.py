@@ -335,7 +335,7 @@ async def register_butler(
     normalized_type = _normalize_agent_type(agent_type)
 
     existing = await pool.fetchrow(
-        "SELECT eligibility_state, last_seen_at FROM butler_registry WHERE name = $1",
+        "SELECT eligibility_state, last_seen_at FROM switchboard.butler_registry WHERE name = $1",
         name,
     )
     previous_state = (
@@ -347,7 +347,7 @@ async def register_butler(
 
     await pool.execute(
         """
-        INSERT INTO butler_registry (
+        INSERT INTO switchboard.butler_registry (
             name,
             endpoint_url,
             description,
@@ -553,7 +553,7 @@ async def list_butlers(
             capabilities,
             eligibility_updated_at,
             agent_type
-        FROM butler_registry
+        FROM switchboard.butler_registry
         ORDER BY name
         """
     )

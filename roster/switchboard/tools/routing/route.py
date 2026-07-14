@@ -419,7 +419,9 @@ async def post_mail(
         on failure.
     """
     # 1. Validate target butler exists
-    row = await pool.fetchrow("SELECT modules FROM butler_registry WHERE name = $1", target_butler)
+    row = await pool.fetchrow(
+        "SELECT modules FROM switchboard.butler_registry WHERE name = $1", target_butler
+    )
     if row is None:
         await _log_routing(
             pool, sender, target_butler, "mailbox_post", False, 0, "Butler not found"

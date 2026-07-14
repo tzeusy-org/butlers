@@ -235,3 +235,57 @@ async def test_post_mail_string_result_as_message_id(pool):
         call_fn=string_call,
     )
     assert result["message_id"] == "msg-plain-string"
+
+
+async def test_registry_reads_work_on_public_scoped_pool(pool):
+    """bu-k32i0: register_butler / list_butlers schema-qualify
+    ``switchboard.butler_registry``, so they work even from a connection whose
+    ``search_path`` EXCLUDES switchboard -- the exact latent condition
+    bu-tdd4k.2 hardened against (a caller arriving on a public-scoped pool).
+
+    Before the fix, the bare ``FROM butler_registry`` / ``INSERT INTO
+    butler_registry`` resolved against ``search_path`` and raised
+    ``UndefinedTableError`` here; after it, the qualified name resolves
+    regardless of search_path.
+    """
+    from butlers.tools.switchboard import list_butlers, register_butler
+
+    await pool.execute("DELETE FROM switchboard.butler_registry")
+
+    async with pool.acquire() as conn:
+        # Arrive on a public-scoped connection: switchboard is NOT in search_path.
+        # SET LOCAL inside a transaction auto-reverts on commit, so the pooled
+        # connection is never left with a mutated search_path for a later test
+        # (no cross-test pollution -- gemini review).
+        async with conn.transaction():
+            await conn.execute("SET LOCAL search_path TO public, pg_catalog")
+            await register_butler(conn, "pubscoped", "http://localhost:9/sse", modules=["mailbox"])
+            butlers = await list_butlers(conn)
+
+    assert any(b["name"] == "pubscoped" for b in butlers)
+
+
+async def test_post_mail_lookup_works_on_public_scoped_pool(pool):
+    """bu-k32i0: post_mail's target-butler lookup (route.py) queries
+    ``switchboard.butler_registry`` and logs to ``switchboard.routing_log``, so
+    it returns an honest not-found error even from a public-scoped connection
+    rather than crashing with UndefinedTableError on the bare read."""
+    from butlers.tools.switchboard import post_mail
+
+    await pool.execute("DELETE FROM switchboard.butler_registry")
+    await pool.execute("DELETE FROM switchboard.routing_log")
+
+    async with pool.acquire() as conn:
+        # SET LOCAL reverts on commit (no pooled-connection search_path leak).
+        async with conn.transaction():
+            await conn.execute("SET LOCAL search_path TO public, pg_catalog")
+            result = await post_mail(
+                conn, target_butler="nonexistent", sender="alice", sender_channel="mcp", body="Hi"
+            )
+
+    assert "error" in result
+    rows = await pool.fetch(
+        "SELECT * FROM switchboard.routing_log WHERE target_butler = 'nonexistent'"
+    )
+    assert len(rows) == 1
+    assert rows[0]["success"] is False

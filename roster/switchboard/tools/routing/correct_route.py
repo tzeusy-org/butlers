@@ -264,7 +264,7 @@ async def correct_route(
     # User messages must only be re-dispatched to domain butlers; staffers are
     # infrastructure agents that process butler-to-staffer traffic, not user messages.
     target_row = await pool.fetchrow(
-        "SELECT agent_type FROM butler_registry WHERE name = $1",
+        "SELECT agent_type FROM switchboard.butler_registry WHERE name = $1",
         correct_butler,
     )
     if target_row is None:

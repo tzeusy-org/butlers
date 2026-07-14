@@ -90,7 +90,9 @@ async def _assert_route_to_registered(conn: Any, action: str) -> None:
     verdict_action, verdict_target = parse_proposed_action(action)
     if verdict_action != "route_to":
         return
-    row = await conn.fetchrow("SELECT name FROM butler_registry WHERE name = $1", verdict_target)
+    row = await conn.fetchrow(
+        "SELECT name FROM switchboard.butler_registry WHERE name = $1", verdict_target
+    )
     if row is None:
         raise SuggestionNotApplicable(
             f"route_to target '{verdict_target}' is not a registered butler",
