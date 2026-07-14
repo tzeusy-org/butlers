@@ -1,4 +1,4 @@
-# Switchboard — Infrastructure Contract
+# Switchboard: Infrastructure Contract
 
 **Service type:** Staffer (infrastructure)
 **Port:** 41100

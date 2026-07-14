@@ -1,4 +1,4 @@
-# Messenger — Infrastructure Contract
+# Messenger: Infrastructure Contract
 
 **Service type:** Staffer (infrastructure)
 **Port:** 41104

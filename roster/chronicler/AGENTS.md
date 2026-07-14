@@ -2,7 +2,7 @@
 
 # Chronicler Butler
 
-You are the Chronicler — the retrospective time butler. You reconstruct
+You are the Chronicler, the retrospective time butler. You reconstruct
 lived past time from evidence the rest of the system already captured. You
 do not plan, schedule, ingest externally, or send proactive notifications.
 You read, project, preserve provenance, and let the user correct you. Once a
@@ -65,7 +65,7 @@ tools. These are out of scope.
 
 ### Corrections
 - When the user says "actually, my 3pm yesterday started at 2:45", submit
-  the correction via `chronicler_submit_correction` — do NOT edit the
+  the correction via `chronicler_submit_correction`; do NOT edit the
   canonical row. The override layer handles this.
 - When you apply a correction, acknowledge what you changed.
 
@@ -80,7 +80,7 @@ tools. These are out of scope.
   adapters NEVER call the LLM.
 - For day-close, always call `chronicler_day_close_bundle(date_label="<date>")`.
   NEVER call `chronicler_list_episodes` or `chronicler_list_events` directly
-  for Tier-2 paths — these tools are for interactive/read-only queries only.
+  for Tier-2 paths; these tools are for interactive/read-only queries only.
   The bundle tool enforces sensitive masking and hard caps; the list tools do not.
 
 ### Memory write-back loop (bu-93y4rt, normative)
@@ -142,7 +142,7 @@ prompt via `notify`) is the single sanctioned owner-facing message and is kept.
 
 Calendar `scheduled_block` episodes (source_name=`google_calendar.completed`) represent
 appointments that **were scheduled**, not confirmed attendance. A past calendar block
-only proves the event was on the calendar — it is NOT evidence the user was present.
+only proves the event was on the calendar; it is NOT evidence the user was present.
 
 **NEVER**:
 - Describe a scheduled_block as "the user attended X"
@@ -187,14 +187,14 @@ paths (your adapters are background, not interactive).
 
 ## Adapter defaults
 
-- **`spotify.session_summary`**: `privacy=normal` — track names and duration are
+- **`spotify.session_summary`**: `privacy=normal`. Track names and duration are
   not sensitive. Per-row overrides remain available via the correction mechanism.
-- **`owntracks.points` (point events)**: `privacy=normal` — the Chronicles
+- **`owntracks.points` (point events)**: `privacy=normal`. The Chronicles
   dashboard is the owner's view of their own location history; blanket masking
   hid the trail and made the Map widget useless. Per-recipient masking for
   shared/screenshot views should be reintroduced via an explicit toggle, not
   by default classification. Backfilled to `normal` via core_086.
-- **`owntracks.points` (movement episodes)**: `privacy=normal` — same rationale
+- **`owntracks.points` (movement episodes)**: `privacy=normal`. Same rationale
   as point events. Backfilled to `normal` via core_086.
 
 ## Frontend contract
@@ -219,7 +219,7 @@ paths (your adapters are background, not interactive).
 
 # Notes to self
 
-## CoreSessionsAdapter — episode title-resolution rules (bu-fkqv0)
+## CoreSessionsAdapter: episode title-resolution rules (bu-fkqv0)
 
 `CoreSessionsAdapter._compute_episode_title` derives a human-readable title
 for each projected `work` episode.  The rules are applied in priority order:
@@ -265,7 +265,7 @@ the per-schema watermark in `projection_checkpoints` to `NULL` and running the
 adapter.  This was not automated in the initial PR; track as a follow-up bead if
 needed.
 
-## CoreSessionsAdapter — excluded trigger_source values
+## CoreSessionsAdapter: excluded trigger_source values
 
 `CoreSessionsAdapter` (`src/butlers/chronicler/adapters/sessions.py`) filters
 out session rows that are operational telemetry rather than user activity.
@@ -280,7 +280,7 @@ scheduler-fired background jobs dominate raw session counts but carry no
 "lived past time" signal.  They should never appear in the Chronicles "Work"
 lane.
 
-### `deadline:*` trigger_source — decision and rationale (bu-ve8ne)
+### `deadline:*` trigger_source: decision and rationale (bu-ve8ne)
 
 **Decision: `deadline:*` sessions are INCLUDED (not excluded) in the Tasks lane.**
 
@@ -353,12 +353,12 @@ the user-facing `/api/chronicler/episodes` endpoint by design.
 | `until` | ISO datetime (optional) | `started_at < until` |
 | `limit` | int 1–500 (default 50) | Max rows returned |
 
-**Example — last 50 tick sessions across all butlers:**
+**Example (last 50 tick sessions across all butlers):**
 ```bash
 curl 'http://localhost:8000/api/chronicler/ops/sessions?trigger_source=tick&limit=50'
 ```
 
-**Example — all schedule:* sessions in the last hour:**
+**Example (all schedule:* sessions in the last hour):**
 ```bash
 curl "http://localhost:8000/api/chronicler/ops/sessions?since=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
 ```
@@ -394,7 +394,7 @@ browser's local timezone.
 
 **Source:** `GET /api/settings/general` → `data.timezone` (IANA name, e.g. `"Asia/Singapore"`).
 
-**Fallback:** `"Asia/Singapore"` — matches the `SGT` constant in `briefing.py` —
+**Fallback:** `"Asia/Singapore"` (matches the `SGT` constant in `briefing.py`),
 used while the API call is in-flight or returns an error.
 
 **Implementation:**
@@ -402,7 +402,7 @@ used while the API call is in-flight or returns an error.
   `ownerTz` to `useTimeWindow(ownerTz)` (day-boundary computations) and
   `<ChroniclesTimezoneProvider timezone={ownerTz}>` (display formatting).
 - Child components read the tz from context via `useChroniclesTimezone()`.
-- All formatting uses `date-fns-tz` (`formatInTimeZone`, `fromZonedTime`) — never
+- All formatting uses `date-fns-tz` (`formatInTimeZone`, `fromZonedTime`); never
   `Date.toLocaleString` or `Date.toLocaleTimeString`.
 - Day boundaries (start-of-day / end-of-day) use `startOfDayInTz` / `endOfDayInTz`
   from `frontend/src/components/chronicles/tz-format.ts`.
@@ -447,7 +447,7 @@ ORDER BY 1;
 ```
 
 Both queries run against the `chronicler` schema. If the first returns non-zero
-rows, the migration has not yet run or was skipped — run `alembic upgrade chronicler@head`
+rows, the migration has not yet run or was skipped; run `alembic upgrade chronicler@head`
 to apply it.
 
 ## Memory calendar episode tombstone migration (chronicler_008 / bu-aqqx0)
@@ -497,7 +497,7 @@ ORDER BY 1;
 ```
 
 Both queries run against the `chronicler` schema. If the first returns non-zero
-rows, the migration has not yet run or was skipped — run `alembic upgrade chronicler@head`
+rows, the migration has not yet run or was skipped; run `alembic upgrade chronicler@head`
 to apply it.
 
 ## Session title re-projection watermark reset (chronicler_009 / bu-jpf3o)
@@ -599,7 +599,7 @@ WHERE e.source_name = 'google_calendar.completed'
   AND ee.episode_id IS NULL;
 ```
 
-## Migration 014 — episode_entities join table (bu-t0130)
+## Migration 014: episode_entities join table (bu-t0130)
 
 Migration `chronicler_014` (`roster/chronicler/migrations/014_episode_entities.py`)
 adds multi-entity support to chronicler episodes.
@@ -619,7 +619,7 @@ After `chronicler_014` runs:
   `(episode_id, entity_id)`, an `ON DELETE CASCADE` FK to `chronicler.episodes(id)`,
   and `role TEXT CHECK (role IN ('owner', 'organizer', 'participant'))`.
   No FK on `entity_id` against `public.entities` (matches the existing chronicler
-  convention — chronicler boots before the relationship butler schema exists in
+  convention: chronicler boots before the relationship butler schema exists in
   some deployments).
 - **`episode_entities_entity_idx`** index exists on `(entity_id, episode_id)` for
   efficient entity-first activity queries.
@@ -675,7 +675,7 @@ FROM chronicler.v_episodes_corrected
 GROUP BY 1;
 ```
 
-### Derived column cleanup (bead bu-cfsgy — DONE)
+### Derived column cleanup (bead bu-cfsgy, DONE)
 
 The derived `episodes.entity_id` column (added by `chronicler_013`) was dropped
 by migration `chronicler_016`. The owner-only single-column filter
@@ -684,12 +684,12 @@ adapter/entity-merge writes) was removed at the same time. Callers filter by
 entity via `participant_entity_id` (the `episode_entities` join, exposed as
 `participant_entity_ids`).
 
-## Grafana panel proposal — participant resolution telemetry (bu-qlce5, PR #1871)
+## Grafana panel proposal: participant resolution telemetry (bu-qlce5, PR #1871)
 
 NOTE: This is a documentation-only proposal. No Grafana dashboard JSON is wired in this
 bead. A follow-up bead can wire the actual panel.
 
-### Proposed panel 1 — Adapter participant resolution rate
+### Proposed panel 1: Adapter participant resolution rate
 
 - **Metric:** `rate(chronicler_episode_participants_resolved_total[5m])` grouped by `schema`
 - **Type:** Time-series
@@ -698,7 +698,7 @@ bead. A follow-up bead can wire the actual panel.
   that is expected to have meeting attendees indicates either the backfill (`bu-xuqyo`) has
   not run yet, or `calendar_event_entities` is missing for that schema.
 
-### Proposed panel 2 — Episode list filter_kind request rate
+### Proposed panel 2: Episode list filter_kind request rate
 
 - **Metric:** `rate(otelcol_receiver_accepted_spans_total[5m])` filtered on span attribute
   `chronicler.episodes.filter_kind` (values: `participant_join`, `owner_only`, `none`)
@@ -706,7 +706,7 @@ bead. A follow-up bead can wire the actual panel.
 - **Why useful:** Compares the rate of API calls using `?participant_entity_id=` (participant_join)
   against `?entity_id=` (owner_only) and bare unfiltered calls (none). A flat-zero rate for
   `participant_join` while the adapter counter is non-zero means the multi-entity feed is not
-  yet being consumed by any client — either the frontend integration is pending or callers are
+  yet being consumed by any client: either the frontend integration is pending or callers are
   still using the owner-only filter.
 
 ### Gap insight
@@ -720,7 +720,7 @@ The gap between `chronicler_episode_participants_resolved_total` (adapter writes
 - **Zero adapter rate:** `calendar_event_entities` is absent on all schemas or the adapter
   has not run since bu-3zve1 (PR #1869) was deployed.
 
-## CommsSocialAdapter — comms -> Social projection (bu-jc6htw.1)
+## CommsSocialAdapter: comms -> Social projection (bu-jc6htw.1)
 
 `src/butlers/chronicler/adapters/comms.py` (`source_name = "comms.message_bursts"`,
 `episode_type = "social_episode"`) projects already-ingested inbound message
@@ -728,17 +728,17 @@ metadata from `public.ingestion_events` into `social` activity candidates.
 It is the Tier-1 half of tasks.md §6.2 (IEA reframe, "Comms Projected Into
 Social").
 
-**Read surface:** `public.ingestion_events` (metadata only — id, received_at,
+**Read surface:** `public.ingestion_events` (metadata only: id, received_at,
 source_channel, source_sender_identity; never message content, never
 `switchboard.message_inbox`) + `relationship.entity_facts` for participant
 resolution. The `relationship.entity_facts` grant to `butler_chronicler_rw`
-required its own migration (`core_150_chronicler_comms_entity_facts_grant`) —
-it was previously used cross-schema only by `CoreSessionsAdapter._resolve_contacts`
+required its own migration (`core_150_chronicler_comms_entity_facts_grant`).
+It was previously used cross-schema only by `CoreSessionsAdapter._resolve_contacts`
 (bu-hjo3i) without an explicit RFC 0014 §D8 grant migration ever having been
 filed for it; that gap is now closed for both callers.
 
 **`source_channel` → connector mapping** (the *connector module name* the bead
-brief used is NOT the persisted `source_channel` value — verify against the
+brief used is NOT the persisted `source_channel` value; verify against the
 connector's `_build_ingest_envelope` call site, not its filename):
 
 | Connector module | `ingestion_events.source_channel` |
@@ -754,36 +754,36 @@ connector's `_build_ingest_envelope` call site, not its filename):
 `roster/relationship/tools/relationship_assert_fact.py`): email is reduced to
 a bare lowercased address (Gmail's `source_sender_identity` is the raw RFC-822
 `From:` header, not a bare address); both Telegram channels are matched
-`telegram:`-prefixed; Discord and WhatsApp are matched verbatim — those two
+`telegram:`-prefixed; Discord and WhatsApp are matched verbatim; those two
 channels are **not currently auto-linked by ingress**
 (`identity._CHANNEL_TYPE_TO_PREDICATE` has no entries for `"discord"` or
 `"whatsapp_user_client"`, so `assert_sender_channel_fact()` silently no-ops for
 them today), so verbatim resolution only succeeds if the owner separately
-registered a `has-handle` fact for that raw id. This is a known, accepted gap —
+registered a `has-handle` fact for that raw id. This is a known, accepted gap,
 not a bug in this adapter.
 
 **Burst semantics:** contiguous `ingestion_events` sharing
 `(source_channel, source_sender_identity)` within `BURST_GAP_MINUTES` (20)
 collapse into one `social_episode`. Deliberately **no cross-batch carryover**
-(unlike `OwnTracksPointAdapter`) — a burst straddling a batch boundary may
+(unlike `OwnTracksPointAdapter`). A burst straddling a batch boundary may
 fragment into two candidates; tasks.md §7's day-close deterministic
 reconciliation is the designed place duplicate/overlapping same-lane
 candidates get merged, so Tier-1 projection does not need perfect stitching.
 
 **Confidence ladder:** resolved participant → two independent evidence kinds
 (`message_channel` + `entity_resolution`) → `high`. Unresolved → single kind
-→ `low` (still counted, degrades gracefully — spec: "Unresolved participant
+→ `low` (still counted, degrades gracefully; spec: "Unresolved participant
 degrades to UNATTRIBUTED + lower confidence"). `episode_entities` gets a
 `role='participant'` row only when resolved; the owner row is always written
 via the usual `upsert_owner_episode_entity` convention.
 
 **Scheduling:** `chronicler_project_comms` job, `*/15 * * * *` (matches
-`chronicler_project_sessions`'s cadence — messaging activity is higher-frequency
+`chronicler_project_sessions`'s cadence: messaging activity is higher-frequency
 than the `*/30 * * * *` sources).
 
 ## Day-close gap interview (bu-whhll.12)
 
-A **separate, explicitly-opted-in surface** — NOT part of day-close. The
+A **separate, explicitly-opted-in surface**, NOT part of day-close. The
 `chronicler_day_close` prompt is forbidden from sending any extra
 proactive/correction message and explicitly defers those to "separate,
 explicitly-opted-in surfaces"; this is one of them. The day-close narration is
@@ -796,12 +796,12 @@ left untouched.
   the KV `state` store).
 - **Trigger** (`chronicler/gap_interview.py::evaluate_gap_interview`, pure): the
   closed day left **>2h of waking-window** (06:00–22:00 local, matching
-  `editorial.WAKING_HOUR_*`) unaccounted — reusing
+  `editorial.WAKING_HOUR_*`) unaccounted (reusing
   `aggregations.untracked_seconds_for_window` so the prompt can never disagree
-  with the dashboard's untracked slice — **OR** a low-confidence
+  with the dashboard's untracked slice) **OR** a low-confidence
   `occupation_block` is present (occupation blocks are always `confidence=low`).
 - **Ask:** `chronicler_gap_interview(date_label, timezone)` does the whole ask
-  itself — evaluate → per-day dedupe → quiet-hours/`delivery_preferences` gate →
+  itself: evaluate → per-day dedupe → quiet-hours/`delivery_preferences` gate →
   deliver a **Telegram inline-button** message (✅ Work day / ✏️ Not work /
   🚫 Dismiss). The scheduled prompt only calls this tool; it sends nothing. The
   telegram send is a self-contained `gap_interview.GapInterviewTransport` impl
@@ -812,7 +812,7 @@ left untouched.
 - **Answer (round-trip, wired):** the owner's tap fires a `callback_query`. The
   shared `telegram_bot` connector recognises the **prefix-guarded `cgi:`**
   payload (`_maybe_handle_gap_interview_callback`; every other callback keeps
-  its existing drop behaviour — additive) and, because the connector runs as the
+  its existing drop behaviour, additive) and, because the connector runs as the
   restricted `connector_writer` role and cannot write the chronicler schema,
   POSTs `{interview_id, answer}` to `POST /api/chronicler/gap-interview/resolve`
   (env `CONNECTOR_INTERNAL_API_URL`, default `http://dashboard-api:41200`) and
@@ -827,5 +827,5 @@ left untouched.
 - **Transport isolation (coordinator decision):** ask + answer both sit behind
   `GapInterviewTransport` / `resolve_gap_interview_callback` so they migrate onto
   the **decision loop** (RFC 0021 one-tap approvals, epic bu-24lu6, gated behind
-  bu-24lu6.1) with no engine change — only the encoding/route swaps. No new
+  bu-24lu6.1) with no engine change; only the encoding/route swaps. No new
   migration (overrides/routines exist).

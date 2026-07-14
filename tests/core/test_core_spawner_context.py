@@ -19,12 +19,13 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RELATIONSHIP_CONFIG_DIR = REPO_ROOT / "roster" / "relationship"
 
-# Distinctive substring of the "Scope Filter — MANDATORY for All facts Table
+# Distinctive substring of the "Scope Filter: MANDATORY for All facts Table
 # Queries" section in roster/relationship/AGENTS.md. Before bu-1mq1d.1
 # (#3110), this section lived only in AGENTS.md while CLAUDE.md carried a
 # separately-drifted body, so a Claude-runtime relationship session never
-# received the mandate.
-SCOPE_FILTER_MARKER = "Scope Filter — MANDATORY for All facts Table Queries"
+# received the mandate. (The heading separator was an em-dash until bu-yummg
+# reworded the roster doctrine to a colon.)
+SCOPE_FILTER_MARKER = "Scope Filter: MANDATORY for All facts Table Queries"
 
 
 def _make_config(

@@ -1,4 +1,4 @@
-# QA Staffer — Infrastructure Contract
+# QA Staffer: Infrastructure Contract
 
 **Service type:** Staffer (infrastructure)
 **Port:** 41110
@@ -36,7 +36,7 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
   labels. Humans remain in the merge seat.
 - **Relay reception:** Accept findings from butler self-healing modules via
   Switchboard `route()` → `report_finding` tool. This is direct
-  butler-to-staffer tool routing — not user-message classification.
+  butler-to-staffer tool routing, not user-message classification.
 - **Status reporting:** Expose `get_qa_status` and `force_patrol` MCP tools.
 - **Journal capture:** Every QA decision is recorded as a
   `qa_investigation_events` row (`flagged`, `sampled`, `cross-checked`,
@@ -54,7 +54,7 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
 - QA Staffer does **not** respond to user messages (staffer type).
 - QA Staffer does **not** register daily briefing contributions.
 - QA Staffer does **not** perform outbound user-channel delivery.
-- QA Staffer does **not** merge PRs — humans review and merge.
+- QA Staffer does **not** merge PRs; humans review and merge.
 - QA Staffer does **not** access butler schemas directly. It uses only
   `public.v_qa_recent_failures` (sanctioned read-only SQL view) and writes to
   `public.qa_patrols`, `public.qa_findings`, `public.healing_attempts`.
@@ -101,7 +101,7 @@ All source filtering is tool-based (zero LLM invocations during discovery).
 ## Issue Triage Policy
 
 Findings are deduplicated against (in order):
-1. Active `healing_attempts` rows (status: `investigating`, `pr_open`) — `dispatch_pending` is not a valid status; novelty claim and row insertion are atomic
+1. Active `healing_attempts` rows (status: `investigating`, `pr_open`): `dispatch_pending` is not a valid status; novelty claim and row insertion are atomic
 2. Active `qa_dismissals` (not yet expired)
 3. Per-fingerprint cooldown window (recent terminal attempts within `cooldown_minutes`)
 
@@ -116,7 +116,7 @@ skipped without investigation.
 ## Investigation Dispatch Policy
 
 Each novel finding above the severity threshold triggers:
-1. Atomic `create_or_join_attempt()` — atomic novelty claim.
+1. Atomic `create_or_join_attempt()`: atomic novelty claim.
 2. Worktree creation with `qa/` prefix.
 3. Investigation agent spawn with sandboxed environment.
 4. Timeout watchdog (default: 30 minutes).
@@ -130,7 +130,7 @@ variables. No butler DB credentials, API keys, or OAuth tokens leak in.
 
 - Labels: `["self-healing", "automated"]`
 - GitHub token: retrieved via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")`
-- Token scope: branch push, PR create/label only — **no merge/approve**
+- Token scope: branch push, PR create/label only (**no merge/approve**)
 - Anonymization: all event summaries and agent context passed through
   `anonymize()` before inclusion in PRs
 
@@ -203,11 +203,11 @@ access.
 ## Observability
 
 Prometheus metrics registered at startup:
-- `qa_patrol_total{status}` — patrol outcomes counter
-- `qa_findings_total{source_type, dedup_reason}` — findings counter
-- `qa_investigations_active` — gauge
-- `qa_patrol_duration_seconds` — histogram
-- `qa_investigation_duration_seconds{status}` — histogram
+- `qa_patrol_total{status}`: patrol outcomes counter
+- `qa_findings_total{source_type, dedup_reason}`: findings counter
+- `qa_investigations_active`: gauge
+- `qa_patrol_duration_seconds`: histogram
+- `qa_investigation_duration_seconds{status}`: histogram
 
 OTel spans per patrol cycle:
 - `qa.patrol` parent span
