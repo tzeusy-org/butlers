@@ -221,6 +221,7 @@ def _build_app(
     entity_link_rows: dict[str, list[dict]] | None = None,
     entity_people_failed: list[str] | None = None,
     workspace_failed: list[str] | None = None,
+    sources_failed: list[str] | None = None,
     mcp_clients: dict[str, AsyncMock] | None = None,
     calendar_butlers: list[str] | None = None,
 ) -> tuple:
@@ -259,11 +260,14 @@ def _build_app(
         # honesty flags stay independent: ``entity_people_failed`` flips
         # ``people_source_available`` (bu-qs64f); ``workspace_failed`` flips
         # ``entries_source_available`` (bu-yjfk2). A failure on the wrong query
-        # would conflate the two signals.
+        # would conflate the two signals. ``sources_failed`` flips
+        # ``sources_available`` (bu-sn71y) on the calendar_sources fan-out.
         if "FROM calendar_event_entities ee" in query:
             failed = list(entity_people_failed or [])
         elif "FROM calendar_event_instances AS i" in query:
             failed = list(workspace_failed or [])
+        elif "FROM calendar_sources AS s" in query:
+            failed = list(sources_failed or [])
         else:
             failed = []
         return await _fan_out(query, args, butler_names), failed
@@ -532,6 +536,42 @@ async def test_workspace_read_partial_fan_out_failure_flags_degraded(app):
     assert len(body["entries"]) == 1
     # ... but the grid is honestly flagged incomplete.
     assert body["entries_source_available"] is False
+
+
+async def test_workspace_read_partial_sources_fan_out_flags_degraded(app):
+    """A partial calendar_sources fan-out failure flags sources_available=False on
+    the workspace read (independent of the events flag) so source_freshness is not
+    read as a complete all-clear (bu-sn71y)."""
+    user_row = _workspace_event_row(
+        lane="user",
+        source_key="provider:google:primary",
+        source_kind="provider_event",
+        butler_name=None,
+        calendar_id="primary",
+        metadata={"source_type": "provider_event"},
+    )
+    app, _, _ = _build_app(
+        app,
+        workspace_rows={"general": [user_row]},
+        calendar_butlers=["general", "relationship"],
+        sources_failed=["relationship"],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "user",
+                "start": "2026-02-22T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["sources_available"] is False
+    # The events fan-out was clean, so its independent flag stays true.
+    assert body["entries_source_available"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1305,6 +1345,67 @@ async def test_meta_resolves_primary_from_account_email(app):
     assert data["primary_calendar_id"] == account_email
 
 
+async def test_meta_clean_fan_out_reports_sources_available(app):
+    """A clean /meta fan-out reports sources_available=True (bu-sn71y)."""
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:primary",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="primary",
+                writable=True,
+            )
+        ]
+    }
+    app, _, _ = _build_app(app, source_rows=source_rows, calendar_butlers=["general"])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/meta")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["sources_available"] is True
+
+
+async def test_meta_partial_fan_out_failure_flags_degraded(app):
+    """A partial calendar_sources fan-out failure flags sources_available=False
+    while the responding schema's sources still surface — no false all-clear
+    (bu-sn71y)."""
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:primary",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="primary",
+                writable=True,
+            )
+        ]
+    }
+    app, _, _ = _build_app(
+        app,
+        source_rows=source_rows,
+        sources_failed=["relationship"],
+        calendar_butlers=["general", "relationship"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/calendar/workspace/meta")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert len(data["connected_sources"]) == 1  # responding schema still surfaced
+    assert data["sources_available"] is False  # ... but honestly flagged incomplete
+
+
 async def test_meta_writable_calendars_carry_owning_butler(app):
     """User-lane writable calendars must resolve to an owning butler.
 
@@ -1706,6 +1807,30 @@ async def test_entry_detail_returns_404_when_not_found(app):
         resp = await client.get(f"/api/calendar/workspace/entries/{uuid4()}")
 
     assert resp.status_code == 404
+
+
+async def test_entry_detail_returns_503_when_lookup_degraded(app):
+    """GET /entries/{id} returns 503 (not a misleading 404) when the entry is
+    missing BUT a targeted schema failed the fan-out — the entry may live in the
+    degraded schema (bu-sn71y)."""
+    from uuid import uuid4
+
+    # query_calendar_workspace_entry fans out an instance query, so its failure is
+    # simulated via workspace_failed (the calendar_event_instances surface).
+    app, _, _ = _build_app(
+        app,
+        workspace_rows={},
+        workspace_failed=["relationship"],
+        calendar_butlers=["general", "relationship"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/calendar/workspace/entries/{uuid4()}")
+
+    assert resp.status_code == 503
+    assert "relationship" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

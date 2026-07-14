@@ -159,7 +159,9 @@ async def compute_calendar_sync_report(db: DatabaseManager) -> CalendarSyncDeadm
     threshold = timedelta(minutes=DEFAULT_SYNC_INTERVAL_MINUTES * PROJECTION_STALENESS_MULTIPLIER)
 
     try:
-        sources = await query_calendar_sources(db)
+        # This monitoring job inspects per-source sync staleness, not fan-out
+        # transport health, so the degraded-butler list is not consumed here.
+        sources, _failed_butlers = await query_calendar_sources(db)
     except Exception as exc:
         logger.warning("calendar sync deadman: source query failed", exc_info=True)
         return CalendarSyncDeadmanReport(

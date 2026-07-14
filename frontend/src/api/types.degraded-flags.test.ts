@@ -148,7 +148,19 @@ const REGISTRY: DegradedFlagEntry[] = [
     flag: "people_source_available",
     emittedBy: "calendar workspace linked-people resolution",
   },
-  { flag: "sources_available", emittedBy: "calendar workspace audit trail" },
+  {
+    flag: "sources_available",
+    surface: "calendar-audit",
+    emittedBy: "calendar workspace audit trail",
+    consumerFiles: ["pages/CalendarWorkspacePage.tsx"],
+  },
+  {
+    flag: "sources_available",
+    surface: "calendar-meta",
+    emittedBy:
+      "calendar workspace meta + read source-freshness (calendar_sources fan-out, bu-sn71y)",
+    consumerFiles: ["pages/CalendarWorkspacePage.tsx"],
+  },
   { flag: "issues_available", emittedBy: "calendar conflict/overcommitment radar" },
   {
     flag: "available",

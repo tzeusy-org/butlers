@@ -188,6 +188,16 @@ class CalendarWorkspaceReadResponse(BaseModel):
     #: lanes (they do not fan out the events read). Additive — clients that ignore
     #: it observe the prior shape.
     entries_source_available: bool = True
+    #: Sources fan-out honesty flag (bu-sn71y). ``True`` (default) when every targeted
+    #: butler schema's ``calendar_sources`` fan-out ran cleanly. ``False`` when at least
+    #: one schema FAILED — a partial failure silently drops that schema's sources from
+    #: ``source_freshness``, so the FE must render a "some sources unavailable" note
+    #: rather than read a shorter freshness list as a complete all-clear.
+    #: ``calendar_sources`` is a core calendar table present in every calendar butler,
+    #: so a failure is genuine (never a legitimately-absent table). Follows the fleet
+    #: degraded-source convention. Additive — clients that ignore it observe the prior
+    #: shape.
+    sources_available: bool = True
 
 
 class DayBriefingKindGroup(BaseModel):
@@ -358,6 +368,16 @@ class CalendarWorkspaceMetaResponse(BaseModel):
     lane_definitions: list[CalendarWorkspaceLaneDefinition] = Field(default_factory=list)
     default_timezone: str = "UTC"
     primary_calendar_id: str | None = None
+    #: Sources fan-out honesty flag (bu-sn71y). ``True`` (default) when every targeted
+    #: butler schema's ``calendar_sources`` fan-out ran cleanly. ``False`` when at least
+    #: one schema FAILED — a partial failure silently drops that schema's sources from
+    #: ``connected_sources``, so the FE's freshness plaque must render "Sync status
+    #: unavailable" rather than let a shorter list read as "all sources healthy".
+    #: ``calendar_sources`` is a core calendar table present in every calendar butler,
+    #: so a failure is genuine (never a legitimately-absent table). Follows the fleet
+    #: degraded-source convention. Additive — clients that ignore it observe the prior
+    #: shape.
+    sources_available: bool = True
 
 
 class CalendarWorkspaceSyncRequest(BaseModel):

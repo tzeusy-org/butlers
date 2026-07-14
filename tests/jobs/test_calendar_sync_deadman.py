@@ -102,7 +102,7 @@ async def test_compute_report_fresh_source_is_not_stale(monkeypatch):
     sources = [_source(last_synced_at=now - timedelta(minutes=1))]
     monkeypatch.setattr(
         "butlers.jobs.calendar_sync_deadman.query_calendar_sources",
-        AsyncMock(return_value=sources),
+        AsyncMock(return_value=(sources, [])),
     )
 
     report = await compute_calendar_sync_report(_FakeDatabaseManager())
@@ -123,7 +123,7 @@ async def test_compute_report_flags_source_past_threshold(monkeypatch):
     sources = [_source(source_key="provider:google:stale", last_synced_at=stale_at)]
     monkeypatch.setattr(
         "butlers.jobs.calendar_sync_deadman.query_calendar_sources",
-        AsyncMock(return_value=sources),
+        AsyncMock(return_value=(sources, [])),
     )
 
     report = await compute_calendar_sync_report(_FakeDatabaseManager())
@@ -149,7 +149,7 @@ async def test_compute_report_never_synced_provider_source_is_stale(monkeypatch)
     sources = [_source(last_synced_at=None)]
     monkeypatch.setattr(
         "butlers.jobs.calendar_sync_deadman.query_calendar_sources",
-        AsyncMock(return_value=sources),
+        AsyncMock(return_value=(sources, [])),
     )
 
     report = await compute_calendar_sync_report(_FakeDatabaseManager())
@@ -170,7 +170,7 @@ async def test_compute_report_disabled_source_never_flagged(monkeypatch):
     ]
     monkeypatch.setattr(
         "butlers.jobs.calendar_sync_deadman.query_calendar_sources",
-        AsyncMock(return_value=sources),
+        AsyncMock(return_value=(sources, [])),
     )
 
     report = await compute_calendar_sync_report(_FakeDatabaseManager())
@@ -189,7 +189,7 @@ async def test_compute_report_internal_source_never_flagged(monkeypatch):
     sources = [_source(last_synced_at=None, source_kind="internal_scheduler")]
     monkeypatch.setattr(
         "butlers.jobs.calendar_sync_deadman.query_calendar_sources",
-        AsyncMock(return_value=sources),
+        AsyncMock(return_value=(sources, [])),
     )
 
     report = await compute_calendar_sync_report(_FakeDatabaseManager())

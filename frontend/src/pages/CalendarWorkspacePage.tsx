@@ -394,15 +394,25 @@ function formatFreshnessPlaqueDetail(
  * is exactly the failure this plaque exists to prevent (see the 96-day-stale
  * live incident this bead is named for).
  */
-function computeFreshnessPlaque(
+// Exported for unit testing (bu-sn71y): the sources_available degraded path is a
+// pure computation better verified directly than through a full page render.
+// eslint-disable-next-line react-refresh/only-export-components
+export function computeFreshnessPlaque(
   sources: CalendarWorkspaceSourceFreshness[],
   metaStatus: "pending" | "error" | "success",
+  sourcesAvailable: boolean = true,
 ): CalendarFreshnessPlaque | null {
   if (metaStatus === "error") {
     return { detail: "Sync status unavailable", unknown: true };
   }
   if (metaStatus === "pending") {
     return null; // still loading -- not yet an honest signal either way
+  }
+  if (!sourcesAvailable) {
+    // 200 OK but a targeted schema's calendar_sources fan-out FAILED: the
+    // connected list is silently incomplete, so a "fresh" verdict below would be
+    // a false all-clear. Name the degraded lookup instead (bu-sn71y).
+    return { detail: "Sync status unavailable", unknown: true };
   }
   const enabled = sources.filter((source) => source.sync_enabled);
   if (enabled.length === 0) {
@@ -2386,8 +2396,14 @@ export default function CalendarWorkspacePage() {
       computeFreshnessPlaque(
         connectedSources,
         metaQuery.isError ? "error" : metaQuery.isPending ? "pending" : "success",
+        metaQuery.data?.data.sources_available !== false,
       ),
-    [connectedSources, metaQuery.isError, metaQuery.isPending],
+    [
+      connectedSources,
+      metaQuery.isError,
+      metaQuery.isPending,
+      metaQuery.data?.data.sources_available,
+    ],
   );
   const writableCalendars = useMemo(
     () => metaQuery.data?.data.writable_calendars ?? [],

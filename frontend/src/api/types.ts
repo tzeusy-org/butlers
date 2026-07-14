@@ -1389,6 +1389,11 @@ export interface CalendarWorkspaceMetaResponse {
   lane_definitions: CalendarWorkspaceLaneDefinition[];
   default_timezone: string;
   primary_calendar_id: string | null;
+  // Sources fan-out honesty flag (bu-sn71y). false when a targeted schema's
+  // calendar_sources fan-out FAILED, so connected_sources is incomplete and the
+  // freshness plaque must not read "fresh". Optional/default-healthy: read as
+  // `sources_available !== false` so older payloads observe the prior shape.
+  sources_available?: boolean;
 }
 
 /** Query parameters for GET /api/calendar/export/ics (one-shot .ics download). */

@@ -901,7 +901,7 @@ async def query_calendar_sources(
     lane: str | None = None,
     butlers: list[str] | None = None,
     sources: list[str] | None = None,
-) -> list[CalendarSourceRow]:
+) -> tuple[list[CalendarSourceRow], list[str]]:
     """Fan-out query for ``calendar_sources`` across all calendar-enabled butlers.
 
     Supports optional filtering by lane, butler name(s), and source key(s).
@@ -923,8 +923,13 @@ async def query_calendar_sources(
 
     Returns
     -------
-    list[CalendarSourceRow]
-        Flat list of source rows from all queried butler schemas.
+    tuple[list[CalendarSourceRow], list[str]]
+        The flat list of source rows from all queried butler schemas, plus the
+        names of any targeted schemas whose fan-out query FAILED. ``calendar_sources``
+        / ``calendar_sync_cursors`` are core tables present in every calendar-enabled
+        butler, so a failure is genuine (never a legitimately-absent table) — callers
+        must surface it rather than let an incomplete source list read as a truthful
+        all-clear (bu-sn71y).
     """
     conditions: list[str] = []
     args: list[Any] = []
@@ -965,25 +970,30 @@ async def query_calendar_sources(
     else:
         query_targets = db.butlers_with_module("calendar")
 
-    results, _failed = await db.fan_out_with_status(sql, tuple(args), butler_names=query_targets)
+    results, failed = await db.fan_out_with_status(sql, tuple(args), butler_names=query_targets)
     rows: list[CalendarSourceRow] = []
     for butler_name, raw_rows in results.items():
         for row in raw_rows:
             dto = row_to_source(row, db_butler=butler_name)
             rows.append(dto)
-    return rows
+    return rows, failed
 
 
 async def query_calendar_workspace_entry(
     db: DatabaseManager,
     *,
     entry_id: UUID,
-) -> CalendarWorkspaceRow | None:
+) -> tuple[CalendarWorkspaceRow | None, list[str]]:
     """Fetch a single calendar event-instance by its instance ID.
 
     Fans out across all calendar-enabled butler schemas and returns the
     first matching row (instance IDs are UUIDs, so at most one exists).
-    Returns ``None`` when no matching row is found.
+
+    Returns ``(row, failed_butlers)``. ``row`` is ``None`` when no matching row was
+    found. ``failed_butlers`` names any targeted schema whose fan-out query FAILED —
+    a non-empty list with ``row is None`` means the lookup was *degraded* (the owning
+    schema may have errored), which the caller must distinguish from a genuine
+    not-found (a misleading 404 would otherwise mask a 503, bu-sn71y).
     """
     sql = f"""
         SELECT {WORKSPACE_COLUMNS}
@@ -1003,11 +1013,11 @@ async def query_calendar_workspace_entry(
     """
 
     query_targets = db.butlers_with_module("calendar")
-    results, _failed = await db.fan_out_with_status(sql, (entry_id,), butler_names=query_targets)
+    results, failed = await db.fan_out_with_status(sql, (entry_id,), butler_names=query_targets)
     for butler_name, raw_rows in results.items():
         for row in raw_rows:
-            return row_to_workspace(row, db_butler=butler_name)
-    return None
+            return row_to_workspace(row, db_butler=butler_name), failed
+    return None, failed
 
 
 async def query_calendar_workspace(

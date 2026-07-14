@@ -877,6 +877,16 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 - **THEN** the response is HTTP 200 carrying the entries from the schemas that DID respond, with `entries_source_available: false` in the envelope
 - **BECAUSE** a partial failure silently drops the failed schema's entries, so a short grid MUST NOT read as an honest "nothing scheduled" — the frontend renders a "some sources unavailable" note. A clean fan-out (or a genuinely empty window) reports `entries_source_available: true` (default), and clients that ignore the field observe the prior shape. The `calendar_event_instances`/`calendar_events`/`calendar_sources` tables are core to every calendar-enabled butler, so a failure is a genuine degraded source, never a legitimately-absent table. The proposals and overlays lanes do not set this flag (they do not fan out the events read).
 
+#### Scenario: Partial sources fan-out failure flags degraded sources
+- **WHEN** `GET /api/calendar/workspace/meta` (or the source-freshness portion of `GET /api/calendar/workspace`) is called and at least one targeted butler schema's `calendar_sources` fan-out query FAILS while others respond
+- **THEN** the response is HTTP 200 carrying the sources from the schemas that DID respond, with `sources_available: false` in the envelope
+- **BECAUSE** a partial failure silently drops the failed schema's sources, so a shorter `connected_sources`/`source_freshness` list MUST NOT read as a complete "all sources healthy" all-clear — the frontend's grid-level freshness plaque renders "Sync status unavailable" instead of a fresh verdict. A clean fan-out reports `sources_available: true` (default), and clients that ignore the field observe the prior shape. `calendar_sources` is a core calendar table present in every calendar-enabled butler, so a failure is a genuine degraded source, never a legitimately-absent table.
+
+#### Scenario: Single-entry lookup splits not-found from source-degraded
+- **WHEN** `GET /api/calendar/workspace/entries/{entry_id}` is called, no matching instance is found, AND at least one targeted butler schema's fan-out query FAILED
+- **THEN** the response is HTTP 503 (naming the unavailable schema(s)) rather than a 404
+- **BECAUSE** the entry may live in the schema that errored, so a 404 would dishonestly claim "does not exist" when the lookup was degraded; a clean fan-out with no match still returns 404.
+
 #### Scenario: Workspace mutations
 - **WHEN** user-event or butler-event mutation endpoints are called
 - **THEN** the request is proxied to the owning butler via MCP tool calls (`calendar_create_event`, `calendar_update_event`, etc.)

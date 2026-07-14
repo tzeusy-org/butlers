@@ -574,6 +574,19 @@ The dashboard SHALL provide a page at `/butlers/calendar` with a view toggle bet
   fresh" to the owner — the exact failure mode that let a 96-day-old sync
   outage present as a healthy, fully-authoritative week
 
+#### Scenario: Freshness plaque honors a partial sources fan-out failure
+
+- **WHEN** the workspace meta fetch returns HTTP 200 but at least one targeted
+  butler schema's `calendar_sources` fan-out FAILED (so `connected_sources` is
+  silently incomplete) and the sources that DID respond all read `fresh`
+- **THEN** the meta envelope carries `sources_available: false` and the plaque
+  renders a degraded clause ("Sync status unavailable") rather than the quiet
+  all-clear the returned-fresh sources would otherwise produce
+- **BECAUSE** a partial fan-out failure drops the failed schema's sources
+  entirely, so the worst-of the *returned* sources is not the worst of the
+  *real* sources — reading it as fresh is the same false all-clear as an
+  outright meta error, and MUST be surfaced, never suppressed
+
 ### Requirement: Calendar Event Full-Text Search Index
 
 The calendar projection SHALL support index-backed substring search over the human-readable event text. A core Alembic migration (next in the `core_*` chain) SHALL ensure the `pg_trgm` extension and create a GIN trigram index over `calendar_events(title, description, location)` in each butler schema, so free-text lookups do not require a sequential scan of the projection.

@@ -493,7 +493,7 @@ async def _fetch_sources(
     lane: str | None = None,
     butlers: list[str] | None = None,
     sources: list[str] | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Fetch calendar source rows via the versioned read-model boundary.
 
     Delegates to :func:`~butlers.api.read_models.calendar_workspace_v1.query_calendar_sources`
@@ -501,9 +501,15 @@ async def _fetch_sources(
     DTOs back to plain dicts for the existing downstream helpers
     (``_to_source_freshness``, ``_normalize_entry``, etc.) that expect
     ``Mapping[str, Any]`` inputs.
+
+    Returns ``(rows, failed_butlers)`` so callers rendering a source-freshness /
+    connected-sources verdict can flag a partial fan-out failure instead of reading
+    an incomplete source list as a truthful all-clear (bu-sn71y).
     """
-    source_rows = await query_calendar_sources(db, lane=lane, butlers=butlers, sources=sources)
-    return [shallow_asdict(row) for row in source_rows]
+    source_rows, failed = await query_calendar_sources(
+        db, lane=lane, butlers=butlers, sources=sources
+    )
+    return [shallow_asdict(row) for row in source_rows], failed
 
 
 async def _fetch_workspace_rows(
@@ -1286,12 +1292,17 @@ async def get_workspace(
     # tables exist in every calendar butler, so a failure is genuine — never a
     # legitimately-absent table).
     entries_source_available = not workspace_failed
-    source_rows = await _fetch_sources(
+    source_rows, sources_failed = await _fetch_sources(
         db,
         lane=view,
         butlers=butlers,
         sources=sources,
     )
+    # Honesty flag: a partial calendar_sources fan-out failure silently drops the
+    # failed schema's sources, so source_freshness would otherwise read as a complete
+    # all-clear. calendar_sources is a core calendar table present in every calendar
+    # butler, so a failure is genuine — never a legitimately-absent table (bu-sn71y).
+    sources_available = not sources_failed
     if not source_rows and workspace_rows:
         deduped: dict[UUID, dict[str, Any]] = {}
         for row in workspace_rows:
@@ -1401,6 +1412,7 @@ async def get_workspace(
         has_more=has_more,
         people_source_available=people_source_available,
         entries_source_available=entries_source_available,
+        sources_available=sources_available,
     )
     return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 
@@ -1728,8 +1740,18 @@ async def get_entry_detail(
         except ZoneInfoNotFoundError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
 
-    dto = await query_calendar_workspace_entry(db, entry_id=entry_id)
+    dto, lookup_failed = await query_calendar_workspace_entry(db, entry_id=entry_id)
     if dto is None:
+        if lookup_failed:
+            # The entry may live in a schema whose fan-out query FAILED — a 404 would
+            # dishonestly claim "does not exist" when the lookup was degraded (bu-sn71y).
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Entry lookup degraded — some calendar sources were unavailable: "
+                    f"{', '.join(sorted(lookup_failed))}"
+                ),
+            )
         raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
 
     row = shallow_asdict(dto)
@@ -1748,7 +1770,13 @@ async def get_workspace_meta(
     mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[CalendarWorkspaceMetaResponse]:
     """Return workspace metadata: capabilities, sources, lanes, writable calendars."""
-    source_rows = await _fetch_sources(db)
+    source_rows, sources_failed = await _fetch_sources(db)
+    # Honesty flag: a partial calendar_sources fan-out failure silently drops the
+    # failed schema's sources, so connected_sources would otherwise render a truthful
+    # "all sources healthy" all-clear (and the grid's freshness plaque would read
+    # fresh). calendar_sources is a core calendar table present in every calendar
+    # butler, so a failure is genuine — never a legitimately-absent table (bu-sn71y).
+    sources_available = not sources_failed
     connected_sources = [_to_source_freshness(row) for row in source_rows]
 
     # Dedup sources by source_key — fan_out across butler schemas can return
@@ -1809,6 +1837,7 @@ async def get_workspace_meta(
         lane_definitions=_build_lane_definitions(deduped_sources),
         default_timezone="Asia/Singapore",
         primary_calendar_id=primary_calendar_id,
+        sources_available=sources_available,
     )
     return ApiResponse[CalendarWorkspaceMetaResponse](data=data)
 
@@ -1851,7 +1880,10 @@ async def sync_workspace(
     scope = "all"
     if request.source_key is not None or request.source_id is not None:
         scope = "source"
-        source_rows = await _fetch_sources(
+        # Sync targets only need the source rows; per-target failures already
+        # surface as failed CalendarWorkspaceSyncTarget entries (bu-4xdno), so the
+        # fan-out degraded list is not a separate signal here.
+        source_rows, _ = await _fetch_sources(
             db,
             butlers=[request.butler] if request.butler else None,
             sources=[request.source_key] if request.source_key else None,
@@ -1864,7 +1896,7 @@ async def sync_workspace(
     else:
         # Fetch all provider_event sources so we sync every registered calendar,
         # not just each butler's single default resolved calendar ID.
-        source_rows = await _fetch_sources(
+        source_rows, _ = await _fetch_sources(
             db,
             butlers=[request.butler] if request.butler else None,
         )

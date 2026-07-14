@@ -38,6 +38,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     query_calendar_proposals,
     query_calendar_sources,
     query_calendar_workspace,
+    query_calendar_workspace_entry,
     row_to_proposal,
     row_to_source,
     row_to_workspace,
@@ -318,11 +319,12 @@ def test_row_to_workspace_null_optional_fields():
 async def test_query_calendar_sources_returns_typed_dtos():
     db = _make_db({"assistant": [_make_record(_source_dict())]})
 
-    result = await query_calendar_sources(db)
+    result, failed = await query_calendar_sources(db)
 
     assert len(result) == 1
     assert isinstance(result[0], CalendarSourceRow)
     assert result[0].source_key == "primary"
+    assert failed == []
 
 
 async def test_query_calendar_sources_uses_butlers_with_module_when_no_butlers_arg():
@@ -349,7 +351,7 @@ async def test_query_calendar_sources_uses_explicit_butlers_arg():
 async def test_query_calendar_sources_db_butler_set_on_dto():
     db = _make_db({"secretary": [_make_record(_source_dict())]})
 
-    result = await query_calendar_sources(db)
+    result, _failed = await query_calendar_sources(db)
 
     assert result[0].db_butler == "secretary"
 
@@ -362,11 +364,34 @@ async def test_query_calendar_sources_multiple_butlers_flattened():
         }
     )
 
-    result = await query_calendar_sources(db)
+    result, failed = await query_calendar_sources(db)
 
     assert len(result) == 2
     keys = {r.source_key for r in result}
     assert keys == {"primary", "work"}
+    assert failed == []
+
+
+async def test_query_calendar_sources_threads_failed_butlers():
+    """A partial fan-out failure is threaded out so the caller can flag degraded —
+    the healthy schema's rows still surface (bu-sn71y)."""
+    db = _make_db({"assistant": [_make_record(_source_dict())]}, failed=["relationship"])
+
+    result, failed = await query_calendar_sources(db)
+
+    assert len(result) == 1  # healthy schema's source still rendered
+    assert failed == ["relationship"]  # ... but the failure is not silently swallowed
+
+
+async def test_query_calendar_workspace_entry_threads_failed_butlers():
+    """A single-entry lookup whose owning schema FAILED the fan-out returns
+    (None, failed) so the endpoint can 503 instead of a misleading 404 (bu-sn71y)."""
+    db = _make_db({}, failed=["relationship"])
+
+    row, failed = await query_calendar_workspace_entry(db, entry_id=UUID(int=1))
+
+    assert row is None
+    assert failed == ["relationship"]
 
 
 # ---------------------------------------------------------------------------
