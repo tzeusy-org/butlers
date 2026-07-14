@@ -926,6 +926,14 @@ async def run_connector() -> None:
 
     connector = LiveListenerConnector(config=config, db_pool=db_pool)
 
+    # Restore the shared codex CLI-auth token from the credential DB to disk so
+    # this connector's discretion-tier codex calls find ~/.codex/auth.json instead
+    # of 401-ing and silently failing closed (bu-wzbu9). Non-fatal, logs loudly on
+    # failure; degraded state also surfaces via the discretion-auth health hook.
+    from butlers.cli_auth.persistence import restore_connector_cli_auth
+
+    await restore_connector_cli_auth(db_pool, context="live_listener")
+
     try:
         await connector.run_forever()
     except KeyboardInterrupt:

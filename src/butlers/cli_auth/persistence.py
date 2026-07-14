@@ -16,9 +16,13 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import TYPE_CHECKING
 
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
 from butlers.credential_store import CredentialStore
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -118,5 +122,77 @@ async def restore_tokens(store: CredentialStore) -> dict[str, bool]:
                 provider.name,
             )
             results[provider.name] = False
+
+    return results
+
+
+def _record_codex_baseline() -> None:
+    """Record the codex ``auth.json`` baseline after a restore so the first
+    post-startup invocation does not falsely detect a rotation. Best-effort."""
+    try:
+        from butlers.core.runtimes._codex_auth_sync import record_auth_baseline
+
+        codex_provider = PROVIDERS.get("codex")
+        if codex_provider is not None and codex_provider.token_path is not None:
+            record_auth_baseline(codex_provider.token_path)
+    except Exception:
+        logger.debug("codex_auth_sync: baseline recording skipped", exc_info=True)
+
+
+async def restore_connector_cli_auth(pool: asyncpg.Pool | None, *, context: str) -> dict[str, bool]:
+    """Restore CLI-auth tokens from the shared credential DB at connector startup.
+
+    Standalone connector containers (whatsapp/telegram user clients, live-listener)
+    spawn a ``DiscretionDispatcher`` -> ``CodexAdapter`` but, unlike the daemon
+    (:mod:`butlers.lifecycle`) and the dashboard API (:mod:`butlers.api.app`),
+    never restore the shared ``cli-auth/codex`` token to disk. Without it
+    ``~/.codex/auth.json`` is absent, every discretion-tier codex call 401s, and
+    weight-below-fail-open senders silently fail closed (IGNORE). This mirrors the
+    daemon-startup restore (restore_tokens + codex baseline) onto a connector's own
+    DB pool, honoring disposition A (shared daemon codex identity): the codex row
+    lives under the single fixed key ``cli-auth/codex`` in ``butler_secrets`` and is
+    read through whatever pool the connector already has (its cursor pool reaches the
+    shared credential DB in the default single-DB deployment).
+
+    Non-fatal but deliberately LOUD: on any failure, or when no codex token is
+    restored, this logs at WARNING so a connector never *silently* runs without codex
+    auth (the exact bu-wzbu9 fail-closed-IGNORE bug) — surfaced alongside each
+    connector's existing discretion-auth health hook. Returns the per-provider restore
+    results (``{}`` on outright failure).
+    """
+    if pool is None:
+        logger.warning(
+            "%s: no DB pool available to restore CLI auth from the credential DB; "
+            "discretion-tier codex calls will 401 and fail closed until a credential DB "
+            "is reachable",
+            context,
+        )
+        return {}
+
+    store = CredentialStore(pool)
+    try:
+        results = await restore_tokens(store)
+    except Exception:
+        logger.warning(
+            "%s: CLI-auth restore from the credential DB failed; discretion-tier codex "
+            "calls will 401 and fail closed until auth is restored",
+            context,
+            exc_info=True,
+        )
+        return {}
+
+    restored = sum(1 for v in results.values() if v)
+    if restored:
+        logger.info("%s: restored %d CLI auth token(s) from the credential DB", context, restored)
+
+    if results.get("codex"):
+        _record_codex_baseline()
+    else:
+        logger.warning(
+            "%s: no codex CLI-auth token found in the credential DB — ~/.codex/auth.json is "
+            "absent, so discretion-tier codex calls will 401 and low-weight senders fail closed "
+            "(silent IGNORE). Ensure the daemon has authenticated codex (cli-auth/codex).",
+            context,
+        )
 
     return results
