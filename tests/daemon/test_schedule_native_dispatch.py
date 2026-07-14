@@ -9,6 +9,7 @@ import pytest
 from butlers.config import ButlerConfig
 from butlers.core.model_routing import Complexity
 from butlers.daemon import ButlerDaemon
+from butlers.modules.memory import MemoryModule
 
 pytestmark = pytest.mark.unit
 
@@ -132,3 +133,29 @@ class TestNativeScheduleDispatch:
             prompt="routine task", trigger_source="schedule:routine"
         )
         assert mock_spawner.trigger.call_args.kwargs["complexity"] is Complexity.WORKHORSE
+
+    async def test_memory_job_uses_memory_module_schema_override_pool(self, tmp_path):
+        """Memory maintenance must not query a domain schema with colliding tables."""
+        daemon, mock_spawner = self._make_daemon(tmp_path, "chronicler", 41111)
+        memory_pool = AsyncMock()
+        memory_module = MemoryModule()
+        memory_module._db = daemon.db
+        memory_module._memory_db = MagicMock(pool=memory_pool)
+        daemon._modules = [memory_module]
+
+        result = {"episodes_processed": 0}
+        handler = AsyncMock(return_value=result)
+        with patch.dict(
+            "butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
+            {"chronicler": {"memory_consolidation": handler}},
+            clear=True,
+        ):
+            dispatched = await daemon._dispatch_scheduled_task(
+                trigger_source="schedule:memory_consolidation_backfill",
+                job_name="memory_consolidation",
+                job_args={"batch_size": 500},
+            )
+
+        assert dispatched == result
+        handler.assert_awaited_once_with(memory_pool, {"batch_size": 500})
+        mock_spawner.trigger.assert_not_awaited()

@@ -520,6 +520,16 @@ class MemoryModule(Module):
             raise RuntimeError("MemoryModule not initialised — no DB available")
         return self._db.pool
 
+    def get_runtime_pool(self) -> Any:
+        """Return the pool that owns this module's memory tables.
+
+        Most butlers store memory in their daemon schema, but a configured
+        ``memory_schema`` override binds a dedicated pool instead.  Core-owned
+        callers such as deterministic scheduled jobs use this accessor so they
+        follow the same schema routing as the module's MCP tools.
+        """
+        return self._get_pool()
+
     async def _get_or_create_chronicler_pool(self) -> Any:
         """Return a lazily-created asyncpg pool scoped to the chronicler schema.
 

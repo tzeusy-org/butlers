@@ -117,6 +117,7 @@ from butlers.routing_guidance import (
 )
 from butlers.scheduled_jobs import (
     _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,  # noqa: F401 — re-export; tests import from here and patch butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+    _MEMORY_MAINTENANCE_JOB_HANDLERS,
     _DeterministicScheduleJobHandler,  # noqa: F401 — re-export only
     _resolve_deterministic_schedule_job_name,  # noqa: F401 — re-export; tests import from here
 )
@@ -987,9 +988,26 @@ class ButlerDaemon:
 
         Thin wrapper — implementation lives in :func:`butlers.background.dispatch_scheduled_task`.
         """
+        pool = self.db.pool if self.db is not None else None
+        if job_name in _MEMORY_MAINTENANCE_JOB_HANDLERS:
+            memory_module = next(
+                (module for module in self._active_modules if module.name == "memory"),
+                None,
+            )
+            if memory_module is not None:
+                get_runtime_pool = getattr(memory_module, "get_runtime_pool", None)
+                if callable(get_runtime_pool):
+                    pool = get_runtime_pool()
+                    logger.debug(
+                        "Resolved deterministic memory job pool from memory module "
+                        "(butler=%s, job_name=%s)",
+                        self.config.name,
+                        job_name,
+                    )
+
         return await _background.dispatch_scheduled_task(
             butler_name=self.config.name,
-            pool=self.db.pool if self.db is not None else None,
+            pool=pool,
             spawner=self.spawner,
             trigger_source=trigger_source,
             prompt=prompt,
