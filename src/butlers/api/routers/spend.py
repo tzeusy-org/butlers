@@ -66,7 +66,12 @@ from butlers.api.models import (
 from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.routers.audit import append as audit_append
 from butlers.core.model_routing import price_mtd_from_ledger
-from butlers.core.sessions import sessions_daily, sessions_summary
+from butlers.core.sessions import (
+    schedule_costs,
+    sessions_daily,
+    sessions_summary,
+    top_sessions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -704,6 +709,110 @@ async def get_daily_costs(
     return ApiResponse[list[DailySpend]](data=daily, meta=meta)
 
 
+def _top_sessions_from_data(
+    name: str,
+    data: dict,
+    pricing: PricingConfig,
+) -> list[TopSession]:
+    """Build priced ``TopSession`` records from a ``top_sessions`` payload.
+
+    The payload shape is identical whether it came from the butler's
+    ``top_sessions`` MCP tool or a direct ``core.sessions.top_sessions`` DB read
+    (the MCP tool is a thin wrapper over that helper), so both paths share this
+    builder — the DB-first path is byte-for-byte parity with the MCP path.
+    """
+    sessions: list[TopSession] = []
+    for s in data.get("sessions", []):
+        model_id = s.get("model", "")
+        input_tokens = s.get("input_tokens", 0)
+        output_tokens = s.get("output_tokens", 0)
+        cost = estimate_session_cost(
+            pricing,
+            model_id,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens=s.get("cached_input_tokens", 0),
+            cache_creation_tokens=s.get("cache_creation_tokens", 0),
+            context_tokens=s.get("context_tokens"),
+        )
+        sessions.append(
+            TopSession(
+                session_id=s.get("session_id", ""),
+                butler=name,
+                cost_usd=round(cost, 6),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                model=model_id,
+                started_at=s.get("started_at", ""),
+            )
+        )
+    return sessions
+
+
+async def _get_butler_top_sessions_from_db(
+    db: DatabaseManager,
+    info: ButlerConnectionInfo,
+    pricing: PricingConfig,
+    limit: int,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> list[TopSession] | None:
+    """Read a butler's costliest sessions directly from its DB pool.
+
+    Returns the priced ``TopSession`` list on success (possibly empty when the
+    butler genuinely has no completed sessions), or ``None`` when the pool is
+    absent or the query fails so the caller falls back to the MCP tool. A butler
+    whose sessions table does not exist yet (schema not provisioned) raises here
+    and yields ``None`` -- legitimately absent, classified by the fallback, never
+    marked degraded on the DB miss alone.
+    """
+    try:
+        data = await top_sessions(db.pool(info.name), limit, from_date, to_date)
+    except KeyError:
+        logger.debug("Top sessions DB pool unavailable for butler %s", info.name)
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Top sessions DB query failed for butler %s (%s: %s)",
+            info.name,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    return _top_sessions_from_data(info.name, data, pricing)
+
+
+async def _butler_top_sessions_db_first(
+    db: DatabaseManager | None,
+    mgr: MCPClientManager,
+    info: ButlerConnectionInfo,
+    pricing: PricingConfig,
+    limit: int,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    *,
+    tracker: DegradedSources | None = None,
+) -> list[TopSession]:
+    """DB-first, MCP-fallback per butler (bu-h1i8k).
+
+    Tries the direct DB read first (which works even for the staffer butlers
+    switchboard/messenger/qa, whose ``top_sessions`` MCP tool is structurally
+    absent -- filling a permanent evidence hole). On pool absence/query error
+    the DB helper returns ``None`` and we fall back to the MCP tool; only if BOTH
+    paths fail is the butler marked on *tracker* (via the MCP helper's own
+    degraded classification), preserving the ``unavailable_butlers`` contract.
+    """
+    if db is not None:
+        db_result = await _get_butler_top_sessions_from_db(
+            db, info, pricing, limit, from_date, to_date
+        )
+        if db_result is not None:
+            return db_result
+    return await _get_butler_top_sessions(
+        mgr, info, pricing, limit, from_date, to_date, tracker=tracker
+    )
+
+
 async def _get_butler_top_sessions(
     mgr: MCPClientManager,
     info: ButlerConnectionInfo,
@@ -739,32 +848,7 @@ async def _get_butler_top_sessions(
             text = result.content[0].text if hasattr(result.content[0], "text") else ""
             if text:
                 data = json.loads(text)
-                sessions: list[TopSession] = []
-                for s in data.get("sessions", []):
-                    model_id = s.get("model", "")
-                    input_tokens = s.get("input_tokens", 0)
-                    output_tokens = s.get("output_tokens", 0)
-                    cost = estimate_session_cost(
-                        pricing,
-                        model_id,
-                        input_tokens,
-                        output_tokens,
-                        cached_input_tokens=s.get("cached_input_tokens", 0),
-                        cache_creation_tokens=s.get("cache_creation_tokens", 0),
-                        context_tokens=s.get("context_tokens"),
-                    )
-                    sessions.append(
-                        TopSession(
-                            session_id=s.get("session_id", ""),
-                            butler=info.name,
-                            cost_usd=round(cost, 6),
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            model=model_id,
-                            started_at=s.get("started_at", ""),
-                        )
-                    )
-                return sessions
+                return _top_sessions_from_data(info.name, data, pricing)
     except (ButlerUnreachableError, TimeoutError, Exception) as exc:
         if _is_tool_absent_error(exc):
             logger.debug(
@@ -788,12 +872,16 @@ async def get_top_sessions(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
+    db: DatabaseManager | None = Depends(_get_db_manager),
 ) -> ApiResponse[list[TopSession]]:
     """Return most expensive sessions across all butlers.
 
-    Fans out to each butler's ``top_sessions`` MCP tool, merges the results,
-    calculates costs using the pricing config, and returns the top *limit*
-    sessions sorted by cost descending.
+    Reads each butler's costliest sessions DB-first (via
+    ``core.sessions.top_sessions``) with the ``top_sessions`` MCP tool as a
+    per-butler fallback, merges the results, calculates costs using the pricing
+    config, and returns the top *limit* sessions sorted by cost descending. The
+    DB-first path also surfaces the staffer butlers (switchboard/messenger/qa)
+    whose MCP tool is structurally absent (bu-h1i8k).
 
     When ``from`` and ``to`` query params are provided (ISO 8601 date strings,
     matching ``/api/spend/daily``), results are scoped to sessions started
@@ -819,7 +907,9 @@ async def get_top_sessions(
 
     tracker = DegradedSources(logger)
     tasks = [
-        _get_butler_top_sessions(mgr, info, pricing, limit, from_date, to_date, tracker=tracker)
+        _butler_top_sessions_db_first(
+            db, mgr, info, pricing, limit, from_date, to_date, tracker=tracker
+        )
         for info in configs
     ]
     results = await asyncio.gather(*tasks)
@@ -831,6 +921,132 @@ async def get_top_sessions(
     all_sessions.sort(key=lambda s: s.cost_usd, reverse=True)
     meta = ApiMeta(unavailable_butlers=sorted(tracker.names)) if tracker.failed else ApiMeta()
     return ApiResponse[list[TopSession]](data=all_sessions[:limit], meta=meta)
+
+
+def _schedule_costs_from_data(
+    name: str,
+    data: dict,
+    pricing: PricingConfig,
+) -> list[ScheduleCost]:
+    """Build priced, per-schedule-merged ``ScheduleCost`` records from a payload.
+
+    Shared by the MCP and DB-first paths (identical payload shape — the MCP tool
+    wraps ``core.sessions.schedule_costs``).
+
+    ``core/sessions.py::schedule_costs`` groups its SQL by (name, cron, model),
+    so a schedule that ran under 2+ models in the window emits one raw row PER
+    MODEL. Price each model fragment individually (pricing is model-specific) but
+    merge fragments sharing a schedule name into a single bucket BEFORE building
+    ``ScheduleCost`` objects, so exactly one entry per (butler, schedule_name) is
+    returned -- otherwise a multi-model schedule silently splits into
+    under-ranked fragments and collides on the frontend's
+    ``${butler}-${schedule_name}`` React key (bu-hmdqz.7).
+    """
+    merged: dict[str, dict] = {}
+    for entry in data.get("schedules", []):
+        schedule_name = entry.get("name", "")
+        model_id = entry.get("model", "")
+        input_tokens = entry.get("total_input_tokens", 0)
+        output_tokens = entry.get("total_output_tokens", 0)
+        fragment_cost = estimate_session_cost(
+            pricing,
+            model_id,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens=entry.get("total_cached_input_tokens", 0),
+            cache_creation_tokens=entry.get("total_cache_creation_tokens", 0),
+            context_tokens=entry.get("context_tokens"),
+        )
+        bucket = merged.setdefault(
+            schedule_name,
+            {
+                "cron": entry.get("cron", ""),
+                "total_runs": 0,
+                "total_cost_usd": 0.0,
+                # runs_per_day is derived from the cron alone (see
+                # ``_estimate_runs_per_day``), so it is identical across every
+                # model fragment of the same schedule -- take it once, don't sum.
+                "runs_per_day": entry.get("runs_per_day", 0.0),
+            },
+        )
+        bucket["total_runs"] = bucket["total_runs"] + entry.get("total_runs", 0)
+        bucket["total_cost_usd"] = bucket["total_cost_usd"] + fragment_cost
+
+    costs: list[ScheduleCost] = []
+    for schedule_name, bucket in merged.items():
+        total_runs = bucket["total_runs"]
+        total_cost = bucket["total_cost_usd"]
+        avg_cost = total_cost / total_runs if total_runs > 0 else 0.0
+        runs_per_day = bucket["runs_per_day"]
+        costs.append(
+            ScheduleCost(
+                schedule_name=schedule_name,
+                butler=name,
+                cron=bucket["cron"],
+                total_runs=total_runs,
+                total_cost_usd=round(total_cost, 6),
+                avg_cost_per_run=round(avg_cost, 6),
+                runs_per_day=runs_per_day,
+                projected_monthly_usd=round(avg_cost * runs_per_day * 30, 6),
+            )
+        )
+    return costs
+
+
+async def _get_butler_schedule_costs_from_db(
+    db: DatabaseManager,
+    info: ButlerConnectionInfo,
+    pricing: PricingConfig,
+    from_date: date | None = None,
+    to_date: date | None = None,
+) -> list[ScheduleCost] | None:
+    """Read a butler's per-schedule costs directly from its DB pool.
+
+    Returns the priced ``ScheduleCost`` list on success (possibly empty), or
+    ``None`` when the pool is absent or the query fails so the caller falls back
+    to the MCP tool. A butler whose sessions/scheduled_tasks tables do not exist
+    yet raises here and yields ``None`` -- classified by the fallback, never
+    marked degraded on the DB miss alone.
+    """
+    try:
+        data = await schedule_costs(db.pool(info.name), from_date, to_date)
+    except KeyError:
+        logger.debug("Schedule cost DB pool unavailable for butler %s", info.name)
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Schedule cost DB query failed for butler %s (%s: %s)",
+            info.name,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    return _schedule_costs_from_data(info.name, data, pricing)
+
+
+async def _butler_schedule_costs_db_first(
+    db: DatabaseManager | None,
+    mgr: MCPClientManager,
+    info: ButlerConnectionInfo,
+    pricing: PricingConfig,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    *,
+    tracker: DegradedSources | None = None,
+) -> list[ScheduleCost]:
+    """DB-first, MCP-fallback per butler (bu-h1i8k).
+
+    Tries the direct DB read first (which works for the staffer butlers
+    switchboard/messenger/qa whose ``schedule_costs`` MCP tool is structurally
+    absent). On pool absence/query error the DB helper returns ``None`` and we
+    fall back to the MCP tool; only if BOTH fail is the butler marked on
+    *tracker* (via the MCP helper's degraded classification).
+    """
+    if db is not None:
+        db_result = await _get_butler_schedule_costs_from_db(db, info, pricing, from_date, to_date)
+        if db_result is not None:
+            return db_result
+    return await _get_butler_schedule_costs(mgr, info, pricing, from_date, to_date, tracker=tracker)
 
 
 async def _get_butler_schedule_costs(
@@ -866,66 +1082,7 @@ async def _get_butler_schedule_costs(
             text = result.content[0].text if hasattr(result.content[0], "text") else ""
             if text:
                 data = json.loads(text)
-                # ``core/sessions.py::schedule_costs`` groups its SQL by
-                # (name, cron, model) -- a schedule that ran under 2+ models
-                # in the window emits one raw row PER MODEL here. Price each
-                # model fragment individually (pricing is model-specific) but
-                # merge fragments sharing a schedule name into a single bucket
-                # BEFORE building ``ScheduleCost`` objects, so this function
-                # always returns exactly one entry per (butler, schedule_name)
-                # -- otherwise a multi-model schedule silently splits into
-                # under-ranked fragments and collides on the frontend's
-                # `${butler}-${schedule_name}` React key (bu-hmdqz.7).
-                merged: dict[str, dict] = {}
-                for entry in data.get("schedules", []):
-                    name = entry.get("name", "")
-                    model_id = entry.get("model", "")
-                    input_tokens = entry.get("total_input_tokens", 0)
-                    output_tokens = entry.get("total_output_tokens", 0)
-                    fragment_cost = estimate_session_cost(
-                        pricing,
-                        model_id,
-                        input_tokens,
-                        output_tokens,
-                        cached_input_tokens=entry.get("total_cached_input_tokens", 0),
-                        cache_creation_tokens=entry.get("total_cache_creation_tokens", 0),
-                        context_tokens=entry.get("context_tokens"),
-                    )
-                    bucket = merged.setdefault(
-                        name,
-                        {
-                            "cron": entry.get("cron", ""),
-                            "total_runs": 0,
-                            "total_cost_usd": 0.0,
-                            # runs_per_day is derived from the cron alone (see
-                            # ``_estimate_runs_per_day``), so it is identical
-                            # across every model fragment of the same
-                            # schedule -- take it once, don't sum it.
-                            "runs_per_day": entry.get("runs_per_day", 0.0),
-                        },
-                    )
-                    bucket["total_runs"] = bucket["total_runs"] + entry.get("total_runs", 0)
-                    bucket["total_cost_usd"] = bucket["total_cost_usd"] + fragment_cost
-
-                costs = []
-                for name, bucket in merged.items():
-                    total_runs = bucket["total_runs"]
-                    total_cost = bucket["total_cost_usd"]
-                    avg_cost = total_cost / total_runs if total_runs > 0 else 0.0
-                    runs_per_day = bucket["runs_per_day"]
-                    costs.append(
-                        ScheduleCost(
-                            schedule_name=name,
-                            butler=info.name,
-                            cron=bucket["cron"],
-                            total_runs=total_runs,
-                            total_cost_usd=round(total_cost, 6),
-                            avg_cost_per_run=round(avg_cost, 6),
-                            runs_per_day=runs_per_day,
-                            projected_monthly_usd=round(avg_cost * runs_per_day * 30, 6),
-                        )
-                    )
-                return costs
+                return _schedule_costs_from_data(info.name, data, pricing)
     except (ButlerUnreachableError, TimeoutError, Exception) as exc:
         if _is_tool_absent_error(exc):
             logger.debug(
@@ -948,6 +1105,7 @@ async def get_costs_by_schedule(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
+    db: DatabaseManager | None = Depends(_get_db_manager),
 ) -> ApiResponse[list[ScheduleCost]]:
     """Return per-schedule cost analysis across all butlers.
 
@@ -981,7 +1139,7 @@ async def get_costs_by_schedule(
     # bu-h3ej9).
     tracker = DegradedSources(logger)
     tasks = [
-        _get_butler_schedule_costs(mgr, info, pricing, from_date, to_date, tracker=tracker)
+        _butler_schedule_costs_db_first(db, mgr, info, pricing, from_date, to_date, tracker=tracker)
         for info in configs
     ]
     results = await asyncio.gather(*tasks)
@@ -1124,10 +1282,11 @@ async def get_spend_breakdown(
             }
         )
 
-    # by == "feature": proxy to schedule-level spend
+    # by == "feature": proxy to schedule-level spend (DB-first, MCP fallback).
     feature_tracker = DegradedSources(logger)
     schedule_tasks = [
-        _get_butler_schedule_costs(mgr, info, pricing, tracker=feature_tracker) for info in configs
+        _butler_schedule_costs_db_first(db, mgr, info, pricing, tracker=feature_tracker)
+        for info in configs
     ]
     schedule_results = await asyncio.gather(*schedule_tasks)
     all_costs = [c for butler_costs in schedule_results for c in butler_costs]

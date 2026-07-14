@@ -2086,3 +2086,171 @@ def test_spend_rule_create_back_compat_existing_shape() -> None:
         "complexity": "workhorse",
     }
     assert body.action.model_dump(exclude_none=True) == {"model": "claude-haiku-cheap"}
+
+
+# ---------------------------------------------------------------------------
+# DB-first evidence layer for /top-sessions and /by-schedule (bu-h1i8k)
+#
+# DB-first, MCP-fallback per butler: the direct core.sessions.* DB read is tried
+# first (which reaches the staffer butlers whose sessions/scheduling MCP tools
+# are structurally absent), falling back to the MCP tool on a DB pool
+# absence/error, and only marking a butler unavailable when BOTH fail.
+# ---------------------------------------------------------------------------
+
+_TOP_SESSIONS_DB_PAYLOAD = {
+    "sessions": [
+        {
+            "session_id": "db-session-1",
+            "model": "claude-sonnet-4-20250514",
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "started_at": "2026-05-01T08:00:00Z",
+        }
+    ]
+}
+
+_SCHEDULE_COSTS_DB_PAYLOAD = {
+    "schedules": [
+        {
+            "name": "daily-brief",
+            "cron": "0 8 * * *",
+            "model": "claude-sonnet-4-20250514",
+            "total_runs": 4,
+            "total_input_tokens": 4000,
+            "total_output_tokens": 2000,
+            "total_cached_input_tokens": 0,
+            "total_cache_creation_tokens": 0,
+            "runs_per_day": 1.0,
+        }
+    ]
+}
+
+
+async def test_top_sessions_db_first_serves_data_and_skips_mcp(app):
+    """DB-first: a butler's costliest sessions come from the DB read; the MCP tool
+    is not consulted. The MCP client is wired to RAISE, proving the DB path
+    short-circuits it (this is also the staffer case: a butler whose top_sessions
+    MCP tool is structurally absent is now filled by the DB)."""
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
+    db = _mock_db({"switchboard": MagicMock()})
+    mgr = _mock_mgr({"switchboard": ButlerUnreachableError("switchboard")})
+    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(app, db)
+    with patch(
+        "butlers.api.routers.spend.top_sessions",
+        new=AsyncMock(return_value=_TOP_SESSIONS_DB_PAYLOAD),
+    ) as db_helper:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/spend/top-sessions")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [s["session_id"] for s in body["data"]] == ["db-session-1"]
+    assert body["data"][0]["butler"] == "switchboard"
+    db_helper.assert_awaited()
+    assert body["meta"].get("unavailable_butlers", []) == []
+
+
+async def test_top_sessions_db_miss_falls_back_to_mcp(app):
+    """DB pool absent (KeyError) -> the DB helper returns None -> MCP tool serves."""
+    configs = [ButlerConnectionInfo(name="finance", port=41100)]
+    db = _mock_db({})  # no pool -> KeyError -> DB None -> MCP fallback
+    mcp_payload = {
+        "sessions": [
+            {
+                "session_id": "mcp-session-1",
+                "model": "claude-haiku-35-20241022",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "started_at": "2026-05-01T09:00:00Z",
+            }
+        ]
+    }
+    mgr = _mock_mgr({"finance": _make_tool_result(mcp_payload)})
+    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(app, db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/top-sessions")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [s["session_id"] for s in body["data"]] == ["mcp-session-1"]
+    assert body["meta"].get("unavailable_butlers", []) == []
+
+
+async def test_top_sessions_db_and_mcp_both_fail_marks_unavailable(app):
+    """Both DB (pool absent) and MCP (unreachable) fail -> unavailable_butlers."""
+    configs = [ButlerConnectionInfo(name="finance", port=41100)]
+    db = _mock_db({})  # DB None
+    mgr = _mock_mgr({"finance": ButlerUnreachableError("finance")})
+    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(app, db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/top-sessions")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["unavailable_butlers"] == ["finance"]
+
+
+async def test_by_schedule_db_first_serves_data_and_skips_mcp(app):
+    """DB-first: per-schedule costs come from the DB read; MCP is not consulted
+    (staffer butler filled by DB)."""
+    configs = [ButlerConnectionInfo(name="switchboard", port=41100)]
+    db = _mock_db({"switchboard": MagicMock()})
+    mgr = _mock_mgr({"switchboard": ButlerUnreachableError("switchboard")})
+    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(app, db)
+    with patch(
+        "butlers.api.routers.spend.schedule_costs",
+        new=AsyncMock(return_value=_SCHEDULE_COSTS_DB_PAYLOAD),
+    ) as db_helper:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [c["schedule_name"] for c in body["data"]] == ["daily-brief"]
+    assert body["data"][0]["butler"] == "switchboard"
+    assert body["data"][0]["total_runs"] == 4
+    db_helper.assert_awaited()
+    assert body["meta"].get("unavailable_butlers", []) == []
+
+
+async def test_by_schedule_db_miss_falls_back_to_mcp(app):
+    """DB pool absent -> the DB helper returns None -> MCP tool serves."""
+    configs = [ButlerConnectionInfo(name="finance", port=41100)]
+    db = _mock_db({})
+    mgr = _mock_mgr({"finance": _make_tool_result(_SCHEDULE_COSTS_DB_PAYLOAD)})
+    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(app, db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [c["schedule_name"] for c in body["data"]] == ["daily-brief"]
+    assert body["meta"].get("unavailable_butlers", []) == []
+
+
+async def test_by_schedule_db_and_mcp_both_fail_marks_unavailable(app):
+    """Both DB and MCP fail -> unavailable_butlers."""
+    configs = [ButlerConnectionInfo(name="finance", port=41100)]
+    db = _mock_db({})
+    mgr = _mock_mgr({"finance": ButlerUnreachableError("finance")})
+    _wire(app, mgr, configs, _flat_pricing())
+    _wire_db(app, db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend/by-schedule")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["unavailable_butlers"] == ["finance"]

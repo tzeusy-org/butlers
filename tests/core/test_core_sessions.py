@@ -500,3 +500,119 @@ def test_no_delete_or_truncate_in_sessions_module():
     assert not any(
         "delete" in m.lower() or "drop" in m.lower() or "truncate" in m.lower() for m in members
     )
+
+
+# ---------------------------------------------------------------------------
+# Spend DB-first evidence path — real-Postgres integration (bu-h1i8k)
+#
+# The unit tests in tests/api/test_spend.py patch spend.top_sessions /
+# schedule_costs; these run the REAL core-helper SQL against a migrated DB and
+# feed it through the spend DB evidence helpers (SQL + build + pricing + merge),
+# guarding against the mocked-pool-vs-integration skew.
+# ---------------------------------------------------------------------------
+
+
+async def test_spend_top_sessions_from_db_ranks_and_prices(pool):
+    """_get_butler_top_sessions_from_db ranks by token volume and prices per model."""
+    from unittest.mock import MagicMock
+
+    from butlers.api.deps import ButlerConnectionInfo
+    from butlers.api.pricing import ModelPricing, PricingConfig
+    from butlers.api.routers.spend import _get_butler_top_sessions_from_db
+    from butlers.core.sessions import session_complete, session_create
+
+    pricing = PricingConfig(
+        models={
+            "m-costly": ModelPricing(0.00001, 0.00002),
+            "m-cheap": ModelPricing(0.0000001, 0.0000002),
+        }
+    )
+
+    costly = await session_create(
+        pool, prompt="big", trigger_source="tick", request_id=str(uuid.uuid4()), model="m-costly"
+    )
+    await session_complete(
+        pool,
+        costly,
+        output="ok",
+        tool_calls=[],
+        duration_ms=1,
+        success=True,
+        input_tokens=10000,
+        output_tokens=5000,
+    )
+    cheap = await session_create(
+        pool, prompt="small", trigger_source="tick", request_id=str(uuid.uuid4()), model="m-cheap"
+    )
+    await session_complete(
+        pool,
+        cheap,
+        output="ok",
+        tool_calls=[],
+        duration_ms=1,
+        success=True,
+        input_tokens=100,
+        output_tokens=50,
+    )
+
+    db = MagicMock()
+    db.pool = MagicMock(return_value=pool)
+    result = await _get_butler_top_sessions_from_db(
+        db, ButlerConnectionInfo(name="finance", port=1), pricing, limit=10
+    )
+    assert result is not None
+    # top_sessions orders by (input+output) desc: the costly (15k-token) session ranks first.
+    assert result[0].session_id == str(costly)
+    assert result[0].butler == "finance"
+    # priced per model — the costly model's session costs strictly more.
+    assert result[0].cost_usd > result[1].cost_usd
+
+
+async def test_spend_schedule_costs_from_db_merges_multi_model(pool):
+    """_get_butler_schedule_costs_from_db merges a multi-model schedule into one
+    priced (butler, schedule) entry (the core merge that fixes duplicate keys)."""
+    from unittest.mock import MagicMock
+
+    from butlers.api.deps import ButlerConnectionInfo
+    from butlers.api.pricing import ModelPricing, PricingConfig
+    from butlers.api.routers.spend import _get_butler_schedule_costs_from_db
+    from butlers.core.scheduler import schedule_create
+    from butlers.core.sessions import session_complete, session_create
+
+    pricing = PricingConfig(
+        models={
+            "m-a": ModelPricing(0.00001, 0.00002),
+            "m-b": ModelPricing(0.00001, 0.00002),
+        }
+    )
+    await schedule_create(pool, name="brief", cron="0 8 * * *", prompt="brief")
+    for model in ("m-a", "m-b"):
+        sid = await session_create(
+            pool,
+            prompt="run",
+            trigger_source="schedule:brief",
+            request_id=str(uuid.uuid4()),
+            model=model,
+        )
+        await session_complete(
+            pool,
+            sid,
+            output="ok",
+            tool_calls=[],
+            duration_ms=1,
+            success=True,
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+    db = MagicMock()
+    db.pool = MagicMock(return_value=pool)
+    result = await _get_butler_schedule_costs_from_db(
+        db, ButlerConnectionInfo(name="finance", port=1), pricing, None, None
+    )
+    assert result is not None
+    brief = [c for c in result if c.schedule_name == "brief"]
+    assert len(brief) == 1  # merged across m-a + m-b, not split into two fragments
+    assert brief[0].total_runs == 2
+    assert brief[0].butler == "finance"
+    assert brief[0].total_cost_usd > 0
