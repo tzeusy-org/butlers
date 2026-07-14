@@ -1222,7 +1222,7 @@ async def store_fact(
     sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
-) -> uuid.UUID:
+) -> dict:
     """Store a distilled fact with optional supersession.
 
     If ``entity_id`` is provided the fact is anchored to a resolved entity.

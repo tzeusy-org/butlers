@@ -627,12 +627,11 @@ async def _consolidate_new_fact_with_catalog(db_url: str) -> dict:
             ]
         )
 
-        # source_episode_ids=[] deliberately sidesteps an unrelated pre-existing
-        # bug in execute_consolidation's derived_from-link loop (store_fact
-        # returns a dict, but the loop passes it straight to create_link's
-        # UUID-typed source_id parameter) — out of scope for this cascade fix,
-        # reported as a discovered follow-up. facts_created increments outside
-        # that loop, so it is unaffected.
+        # source_episode_ids=[] keeps this test focused on catalog write-behind,
+        # independent of the derived_from-link loop. (That loop's store_fact
+        # dict-vs-UUID bug is fixed in bu-jdi3f; see
+        # test_consolidation_creates_episode_links_with_uuid_source_id for the
+        # non-empty-episodes regression.)
         exec_result = await execute_consolidation(
             pool,
             engine,
@@ -1136,3 +1135,96 @@ def test_migration_is_idempotent(postgres_container) -> None:
     # Tables still exist
     assert _table_exists_in_schema(db_url, "public", "facts")
     assert _table_exists_in_schema(db_url, "public", "predicate_registry")
+
+
+# ---------------------------------------------------------------------------
+# Regression: execute_consolidation must pass store_fact's UUID id (not its
+# dict return) to create_link's UUID-typed source_id (bu-jdi3f)
+# ---------------------------------------------------------------------------
+
+
+async def _consolidate_with_episode_links(db_url: str) -> dict:
+    """Run execute_consolidation with a non-empty ``source_episode_ids`` and
+    read back the ``derived_from`` links created for the new fact."""
+    import uuid
+
+    from butlers.modules.memory.consolidation_executor import execute_consolidation
+    from butlers.modules.memory.consolidation_parser import ConsolidationResult, NewFact
+
+    pool = await asyncpg.create_pool(
+        db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+    )
+    try:
+        embedding_engine = _fake_embedding_engine()
+        episode_ids = [uuid.uuid4(), uuid.uuid4()]
+        parsed = ConsolidationResult(
+            new_facts=[
+                NewFact(
+                    subject="consolidation_user",
+                    predicate="preference",
+                    content="prefers window seats",
+                )
+            ]
+        )
+        result = await execute_consolidation(
+            pool,
+            embedding_engine,
+            parsed,
+            episode_ids,
+            "general",
+        )
+        fact_row = await pool.fetchrow(
+            "SELECT id FROM facts WHERE subject = 'consolidation_user' AND predicate = 'preference'"
+        )
+        links = await pool.fetch(
+            "SELECT source_type, source_id, target_type, target_id, relation "
+            "FROM memory_links "
+            "WHERE source_type = 'fact' AND relation = 'derived_from' "
+            "AND target_id = ANY($1)",
+            episode_ids,
+        )
+        return {
+            "result": result,
+            "fact_id": fact_row["id"] if fact_row else None,
+            "links": [dict(r) for r in links],
+            "episode_ids": episode_ids,
+        }
+    finally:
+        await pool.close()
+
+
+def test_consolidation_creates_episode_links_with_uuid_source_id(
+    memory_migrated_db: str,
+) -> None:
+    """Regression for bu-jdi3f.
+
+    ``execute_consolidation`` must extract ``store_fact``'s ``["id"]`` UUID
+    before handing it to ``create_link``'s UUID-typed ``source_id``. With a
+    non-empty ``source_episode_ids`` this produces one ``derived_from`` link
+    per source episode. Before the fix the whole dict return was passed as the
+    source_id, asyncpg raised an encoding error, and every episode link was
+    silently swallowed into the ``errors`` list (fact never linked).
+
+    This MUST run against real Postgres: a mocked pool would happily accept the
+    dict source_id and never surface the encoding failure (the exact
+    mocked-pool-vs-integration trap class).
+    """
+    out = asyncio.run(_consolidate_with_episode_links(memory_migrated_db))
+
+    result = out["result"]
+    assert result["errors"] == [], f"unexpected consolidation errors: {result['errors']}"
+    assert result["facts_created"] == 1
+    assert out["fact_id"] is not None
+
+    # One derived_from link per source episode, each anchored on the fact's UUID.
+    links = out["links"]
+    assert len(links) == len(out["episode_ids"])
+    for link in links:
+        assert link["source_id"] == out["fact_id"]
+        assert link["source_type"] == "fact"
+        assert link["target_type"] == "episode"
+        assert link["relation"] == "derived_from"
+    assert {link["target_id"] for link in links} == set(out["episode_ids"])

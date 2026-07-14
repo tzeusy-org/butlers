@@ -128,7 +128,7 @@ async def execute_consolidation(
                     fact.subject,
                     fact.predicate,
                 )
-            new_fact_id = await store_fact(
+            store_result = await store_fact(
                 pool,
                 fact.subject,
                 fact.predicate,
@@ -145,6 +145,11 @@ async def execute_consolidation(
                 enable_shared_catalog=enable_shared_catalog,
                 source_schema=source_schema,
             )
+            # store_fact returns a dict ({"id": ..., "supersedes_id": ...}), not a
+            # bare UUID. Extract the id before passing it to create_link's
+            # UUID-typed source_id, or asyncpg raises an encoding error that
+            # silently fails every episode link.
+            new_fact_id = store_result["id"]
             for episode_id in source_episode_ids:
                 await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
             facts_created += 1
@@ -170,7 +175,7 @@ async def execute_consolidation(
                     "facts should always be anchored to an entity",
                     fact.target_id,
                 )
-            new_fact_id = await store_fact(
+            store_result = await store_fact(
                 pool,
                 fact.subject,
                 fact.predicate,
@@ -185,6 +190,11 @@ async def execute_consolidation(
                 enable_shared_catalog=enable_shared_catalog,
                 source_schema=source_schema,
             )
+            # store_fact returns a dict ({"id": ..., "supersedes_id": ...}), not a
+            # bare UUID. Extract the id before passing it to create_link's
+            # UUID-typed source_id, or asyncpg raises an encoding error that
+            # silently fails every episode link.
+            new_fact_id = store_result["id"]
             for episode_id in source_episode_ids:
                 await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
             facts_updated += 1
