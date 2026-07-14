@@ -305,14 +305,10 @@ class ContactWeightResolver:
         if row is None and channel_type == "whatsapp_jid":
             phone = _extract_whatsapp_jid_phone(channel_value)
             if phone is not None:
-                try:
-                    row = await _resolve_entity_by_triple(self._pool, "has-phone", phone)
-                except Exception:  # noqa: BLE001
-                    logger.debug(
-                        "ContactWeightResolver phone-fallback DB error for %s — defaulting unknown",
-                        channel_value,
-                    )
-                    return self._tiers.unknown
+                # _resolve_entity_by_triple is best-effort (returns None on any
+                # DB error, never raises), so no try/except is needed here — a
+                # miss or error simply leaves row=None → the unknown default below.
+                row = await _resolve_entity_by_triple(self._pool, "has-phone", phone)
 
         if row is None:
             return self._tiers.unknown
