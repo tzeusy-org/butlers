@@ -102,6 +102,7 @@ async def test_materialized_day_reads_real_rows(pool) -> None:
     # Zero-filled for every lane in the fixed taxonomy, not just the seeded ones.
     assert lanes_by_name["travel"]["seconds"] == 0
     assert set(lanes_by_name) == {
+        "butler_ops",
         "eat",
         "exercise",
         "play",

@@ -245,7 +245,7 @@ async def test_rollup_upsert_is_idempotent_across_reruns(pool) -> None:
 
     await materialize_daily_rollups(pool, timezone="Asia/Singapore", lookback_days=3, now=now)
     first_rows = await list_daily_rollups(pool, local_date=_LOCAL_DATE)
-    assert len(first_rows) == 8  # one row per LANES entry, zero-filled
+    assert len(first_rows) == 9  # one row per LANES entry, zero-filled (bu-whhll.14: +butler_ops)
 
     # Add a late-arriving episode and re-run.
     await upsert_episode(
@@ -262,7 +262,7 @@ async def test_rollup_upsert_is_idempotent_across_reruns(pool) -> None:
     await materialize_daily_rollups(pool, timezone="Asia/Singapore", lookback_days=3, now=now)
 
     second_rows = await list_daily_rollups(pool, local_date=_LOCAL_DATE)
-    assert len(second_rows) == 8, "re-run must upsert in place, not duplicate rows"
+    assert len(second_rows) == 9, "re-run must upsert in place, not duplicate rows"
     exercise_row = next(r for r in second_rows if r.lane == "exercise")
     assert exercise_row.seconds == 3600
     assert exercise_row.episode_count == 1

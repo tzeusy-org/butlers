@@ -605,8 +605,9 @@ def test_compute_kpi_overlapping_same_lane_episodes_counted_once() -> None:
     start = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
     end = datetime(2026, 7, 3, 0, 0, tzinfo=UTC)
     episodes = [
-        # Two overlapping 'tasks' (-> work lane) episodes, 09:00-11:00 and
-        # 10:00-13:00: overlap union is 09:00-13:00 == 4h, not the naive 5h sum.
+        # Two overlapping owner-Work-lane episodes (bu-whhll.14: focus + screen
+        # both fold into 'occupation' -> Work), 09:00-11:00 and 10:00-13:00:
+        # overlap union is 09:00-13:00 == 4h, not the naive 5h sum.
         _FakeRow(
             title="Focus block",
             s_at=datetime(2026, 7, 2, 9, 0, tzinfo=UTC),
@@ -620,10 +621,10 @@ def test_compute_kpi_overlapping_same_lane_episodes_counted_once() -> None:
             title="Scheduled work",
             s_at=datetime(2026, 7, 2, 10, 0, tzinfo=UTC),
             e_at=datetime(2026, 7, 2, 13, 0, tzinfo=UTC),
-            source_name="core.sessions",
-            episode_type="work",
+            source_name="activitywatch.window",
+            episode_type="screen_episode",
             layer="activity",
-            trigger_source="trigger",
+            trigger_source=None,
         ),
     ]
 

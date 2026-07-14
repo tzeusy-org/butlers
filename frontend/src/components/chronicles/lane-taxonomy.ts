@@ -11,9 +11,10 @@
 //
 // Backend never returns colours, labels, or icons — those live here only.
 //
-// bu-86c4c.6: this is a fixed 9-slot life-activity categorical palette, not
-// the tri-state (red/amber/green) system color vocabulary — "eat" and "rest"
-// happen to land on amber/emerald shades by coincidence of a 9-color
+// bu-86c4c.6: this is a fixed 10-slot life-activity categorical palette (9
+// lanes + the `other` catch-all; bu-whhll.14 added `butler_ops`), not the
+// tri-state (red/amber/green) system color vocabulary — "eat" and "rest"
+// happen to land on amber/emerald shades by coincidence of the categorical
 // taxonomy, not because either lane is a health/error signal. `--category-*`
 // is not a substitute either (that ramp is reserved for butler letter-marks
 // only, per about/heart-and-soul/design-language.md § Butler hue scope).
@@ -24,6 +25,7 @@
 import type { LucideIcon } from "lucide-react"
 import {
   Armchair,
+  Bot,
   Briefcase,
   CircleQuestionMark,
   Dumbbell,
@@ -47,6 +49,7 @@ export type Category =
   | "sleep"
   | "exercise"
   | "work"
+  | "butler_ops"
   | "play"
   | "social"
   | "travel"
@@ -111,26 +114,36 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
     icon: Briefcase,
     sortOrder: 2,
   },
+  // Butler ops (bu-whhll.14): the butlers' OWN LLM sessions (conversations/
+  // tasks), a distinct lane from the owner's Work so butler cron chatter never
+  // masquerades as the owner's workday. Rendered right after Work.
+  butler_ops: {
+    label: "Butler ops",
+    colour: "bg-indigo-500",
+    hex: "#6366f1",
+    icon: Bot,
+    sortOrder: 3,
+  },
   play: {
     label: "Play",
     colour: "bg-violet-600",
     hex: "#7c3aed",
     icon: Gamepad2,
-    sortOrder: 3,
+    sortOrder: 4,
   },
   social: {
     label: "Social",
     colour: "bg-pink-500",
     hex: "#ec4899",
     icon: Users,
-    sortOrder: 4,
+    sortOrder: 5,
   },
   travel: {
     label: "Travel",
     colour: "bg-cyan-500",
     hex: "#06b6d4",
     icon: Plane,
-    sortOrder: 5,
+    sortOrder: 6,
   },
   eat: {
     label: "Eat",
@@ -138,7 +151,7 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
     colour: "bg-amber-500",
     hex: "#f59e0b",
     icon: Utensils,
-    sortOrder: 6,
+    sortOrder: 7,
   },
   rest: {
     label: "Rest",
@@ -146,14 +159,14 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
     colour: "bg-emerald-600",
     hex: "#059669",
     icon: Armchair,
-    sortOrder: 7,
+    sortOrder: 8,
   },
   other: {
     label: "Other",
     colour: "bg-slate-400",
     hex: "#94a3b8",
     icon: CircleQuestionMark,
-    sortOrder: 8,
+    sortOrder: 9,
   },
 }
 
@@ -166,14 +179,15 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
 // response. The backend remains the source of truth — keep this table in sync
 // with the backend mapping whenever new sources land.
 //
-// For core.sessions episodes the backend dispatches by trigger_source, but both
-// conversations and tasks fold into the Work lane, so this fallback resolves
-// core.sessions|work → "work" directly. Calendar is omitted: it is the intent
-// layer and resolves to "other".
+// For core.sessions episodes the backend dispatches by trigger_source; both
+// conversations and tasks are the butlers' OWN LLM sessions, so this fallback
+// resolves core.sessions|work → "butler_ops" (bu-whhll.14), NOT the owner's
+// Work lane. The owner's inferred focus/reading (and occupation) resolve to
+// "work". Calendar is omitted: it is the intent layer and resolves to "other".
 // ---------------------------------------------------------------------------
 
 const SOURCE_CATEGORY_MAP: Record<string, Category> = {
-  "core.sessions|work": "work",
+  "core.sessions|work": "butler_ops",
   "spotify.session_summary|listening_episode": "play",
   "steam.play_history|play_episode": "play",
   "owntracks.points|movement_episode": "travel",
@@ -183,6 +197,9 @@ const SOURCE_CATEGORY_MAP: Record<string, Category> = {
   "home_assistant.history|presence_episode": "rest",
   "chronicler.focus_inferred|focus_block": "work",
   "chronicler.reading_inferred|reading_block": "work",
+  "chronicler.occupation_inferred|occupation_block": "work",
+  "activitywatch.window|screen_episode": "work",
+  "home_assistant.sensor_activity|room_activity_episode": "rest",
 }
 
 /**

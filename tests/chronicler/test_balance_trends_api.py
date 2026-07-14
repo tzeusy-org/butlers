@@ -26,7 +26,7 @@ pytestmark = pytest.mark.unit
 
 _BALANCE_ENDPOINT = "/api/chronicler/balance"
 _TRENDS_ENDPOINT = "/api/chronicler/trends"
-_ALL_LANES = ("eat", "exercise", "play", "rest", "sleep", "social", "travel", "work")
+_ALL_LANES = ("butler_ops", "eat", "exercise", "play", "rest", "sleep", "social", "travel", "work")
 
 
 def _find_chronicler_router_module(app: Any) -> Any:

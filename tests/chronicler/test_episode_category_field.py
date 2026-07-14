@@ -101,7 +101,7 @@ def _build_app(rows: list[_Row]):
     [
         # The category field carries the life-balance Activity lane (IEA, §4).
         # core.sessions: no trigger_source → tasks → Work lane.
-        ("core.sessions", "work", "work"),
+        ("core.sessions", "work", "butler_ops"),
         # Calendar is intent: no lane → "other" (and dropped from counting).
         ("google_calendar.completed", "scheduled_block", "other"),
         ("spotify.session_summary", "listening_episode", "play"),

@@ -64,8 +64,12 @@ _BOTH_ENDPOINTS = [_BY_DAY, _BY_CATEGORY]
 
 def _make_episode_row(
     *,
-    source_name: str = "core.sessions",
-    episode_type: str = "work",
+    # Canonical Work-lane episode: owner occupation (bu-whhll.14). core.sessions
+    # is now the Butler ops lane, so the default owner-Work fixture uses the
+    # occupation source; tests that need a core.sessions/butler_ops episode pass
+    # it explicitly.
+    source_name: str = "chronicler.occupation_inferred",
+    episode_type: str = "occupation_block",
     trigger_source: str | None = None,
     start_at: datetime,
     end_at: datetime | None = None,

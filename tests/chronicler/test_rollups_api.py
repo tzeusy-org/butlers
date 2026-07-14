@@ -126,7 +126,7 @@ def _flag(
 
 
 _DAY = date(2026, 7, 5)
-_ALL_LANES = ("eat", "exercise", "play", "rest", "sleep", "social", "travel", "work")
+_ALL_LANES = ("butler_ops", "eat", "exercise", "play", "rest", "sleep", "social", "travel", "work")
 
 
 # ---------------------------------------------------------------------------

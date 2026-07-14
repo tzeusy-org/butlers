@@ -1508,7 +1508,8 @@ async def test_correction_prompts_read_then_overlay_write_resolves(chronicler_po
         assert [p["episode_id"] for p in prompts] == [str(ep_low.id)]
         only = prompts[0]
         assert only["confidence"] == "low"
-        assert only["best_guess_lane"] == "work"
+        # core.sessions episodes are the Butler ops lane (bu-whhll.14).
+        assert only["best_guess_lane"] == "butler_ops"
         assert only["title"] == "ambiguous block"
 
         # Write a correction through the EXISTING corrections overlay endpoint.

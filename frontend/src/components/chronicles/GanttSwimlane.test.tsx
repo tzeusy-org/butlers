@@ -934,12 +934,14 @@ describe("GanttSwimlaneInner render-all-lanes (bu-p4vd3)", () => {
   })
 
   it("renders 0 empty-lane placeholders when all lanes have data", () => {
-    // One episode per lane (all nine LANE_TAXONOMY entries have data).
+    // One episode per lane (all ten LANE_TAXONOMY entries have data;
+    // bu-whhll.14 added the butler_ops lane).
     // Use `category` as the last key in the spread so it wins over CATEGORY_SOURCES.
     const eps = [
       makeEpisode({ id: "ep-slp", ...CATEGORY_SOURCES.sleep, category: "sleep" }),
       makeEpisode({ id: "ep-exr", ...CATEGORY_SOURCES.workout, category: "exercise" }),
       makeEpisode({ id: "ep-wrk", ...CATEGORY_SOURCES.tasks, category: "work" }),
+      makeEpisode({ id: "ep-bops", ...CATEGORY_SOURCES.tasks, category: "butler_ops" }),
       makeEpisode({ id: "ep-ply", ...CATEGORY_SOURCES.music, category: "play" }),
       makeEpisode({ id: "ep-soc", source_name: "made.up", episode_type: "x", category: "social" }),
       makeEpisode({ id: "ep-trv", ...CATEGORY_SOURCES.travel, category: "travel" }),

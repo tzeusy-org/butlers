@@ -11,14 +11,16 @@ import {
   type LaneConfig,
 } from "./lane-taxonomy"
 
-// The eight life-balance Activity lanes emitted by the backend
-// (aggregations.LANES), plus the "other" catch-all used as a frontend fallback
-// for unmapped categories. Music/gaming fold into Play; calendar is intent and
-// is never a lane (IEA reframe, bu-3n44q5).
+// The nine life-balance Activity lanes emitted by the backend
+// (aggregations.LANES; bu-whhll.14 added `butler_ops`), plus the "other"
+// catch-all used as a frontend fallback for unmapped categories. Music/gaming
+// fold into Play; calendar is intent and is never a lane (IEA reframe,
+// bu-3n44q5).
 const EXPECTED_CATEGORIES: Category[] = [
   "sleep",
   "exercise",
   "work",
+  "butler_ops",
   "play",
   "social",
   "travel",
@@ -28,7 +30,7 @@ const EXPECTED_CATEGORIES: Category[] = [
 ]
 
 describe("LANE_TAXONOMY", () => {
-  it("contains exactly the eight Activity lanes plus the 'other' fallback", () => {
+  it("contains exactly the nine Activity lanes plus the 'other' fallback", () => {
     const keys = Object.keys(LANE_TAXONOMY).sort()
     expect(keys).toEqual([...EXPECTED_CATEGORIES].sort())
   })
@@ -80,8 +82,9 @@ describe("LANE_TAXONOMY", () => {
 
 describe("categoryForSource", () => {
   it.each<[string, string, Category]>([
-    // core.sessions: conversations + tasks both fold into the Work lane.
-    ["core.sessions", "work", "work"],
+    // core.sessions: conversations + tasks are butler LLM sessions → Butler ops
+    // lane (bu-whhll.14), not the owner's Work lane.
+    ["core.sessions", "work", "butler_ops"],
     ["spotify.session_summary", "listening_episode", "play"],
     ["steam.play_history", "play_episode", "play"],
     ["owntracks.points", "movement_episode", "travel"],
@@ -89,8 +92,12 @@ describe("categoryForSource", () => {
     ["google_health.measurements", "workout_episode", "exercise"],
     ["health.meals", "eating_event", "eat"],
     ["home_assistant.history", "presence_episode", "rest"],
+    // Owner focus/reading/occupation/screen → Work lane.
     ["chronicler.focus_inferred", "focus_block", "work"],
     ["chronicler.reading_inferred", "reading_block", "work"],
+    ["chronicler.occupation_inferred", "occupation_block", "work"],
+    ["activitywatch.window", "screen_episode", "work"],
+    ["home_assistant.sensor_activity", "room_activity_episode", "rest"],
   ])("maps (%s, %s) → %s", (source, type, expected) => {
     expect(categoryForSource(source, type)).toBe(expected)
   })

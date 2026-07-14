@@ -202,8 +202,11 @@ def test_core_sessions_route_trigger_source_resolves_to_conversations_lane() -> 
         )
     ]
     result = compute_daily_lane_rollup(episodes, day_start_utc=_DAY_START, day_end_utc=_DAY_END)
-    assert result["work"]["seconds"] == pytest.approx(3600.0)
-    assert result["work"]["episode_count"] == 1
+    # core.sessions (conversations/tasks) is the Butler ops lane (bu-whhll.14),
+    # never the owner's Work lane.
+    assert result["butler_ops"]["seconds"] == pytest.approx(3600.0)
+    assert result["butler_ops"]["episode_count"] == 1
+    assert result["work"]["seconds"] == 0.0
 
 
 # ---------------------------------------------------------------------------

@@ -69,10 +69,19 @@ def test_chronicler_chain_includes_019() -> None:
 
 
 def test_lanes_check_constraint_matches_aggregations_lanes() -> None:
-    """The migration's hardcoded lane CHECK list must match aggregations.LANES
-    exactly — a drift here would let the rollup writer silently reject (or
-    under-constrain) a lane the live endpoint recognizes."""
+    """The CURRENT lane CHECK list must match aggregations.LANES exactly — a
+    drift here would let the rollup writer silently reject (or under-constrain) a
+    lane the live endpoint recognizes. chronicler_019 created the CHECK; the
+    active definer is now chronicler_021 (bu-whhll.14 added the butler_ops lane),
+    so this compares against 021's widened list."""
+    import importlib.util
+
     from butlers.chronicler.aggregations import LANES
 
-    m = _load_migration()
+    path = _MIGRATIONS_DIR / "021_daily_rollup_butler_ops_lane.py"
+    assert path.exists(), f"Migration file not found: {path}"
+    spec = importlib.util.spec_from_file_location("chronicler_021", path)
+    assert spec is not None and spec.loader is not None
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
     assert set(m._LANES) == set(LANES)

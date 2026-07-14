@@ -60,27 +60,34 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     ("google_health.measurements", "workout_episode"): "workout",
     ("health.meals", "eating_event"): "meal",
     ("home_assistant.history", "presence_episode"): "home",
-    # Inferred chronicler-derived sources (bu-i29ix). Both fold into 'tasks'
-    # (→ Work lane); payload.signal carries the kind.
-    ("chronicler.focus_inferred", "focus_block"): "tasks",
-    ("chronicler.reading_inferred", "reading_block"): "tasks",
+    # Inferred chronicler-derived OWNER focus/reading (bu-i29ix). These are the
+    # owner's own productive focus, not butler-session work, so they fold into
+    # the owner-work 'occupation' category (→ Work lane) alongside the
+    # occupation adapter. They were parked in 'tasks' only as a stopgap "closest
+    # existing category" before a dedicated occupation category existed; bu-whhll.14
+    # graduates them so 'tasks' becomes butler-session-only (→ Butler ops lane).
+    # payload.signal still carries the focus-vs-reading kind (no granularity lost;
+    # they were already indistinguishable at the 'tasks' category level).
+    ("chronicler.focus_inferred", "focus_block"): "occupation",
+    ("chronicler.reading_inferred", "reading_block"): "occupation",
     # Inferred exercise from HR+GPS corroboration (bu-1sj3zn) folds into the
     # 'workout' category (→ Exercise lane), matching explicit workout episodes.
     ("chronicler.exercise_inferred", "exercise_episode"): "workout",
     # Comms message bursts (bu-jc6htw.1) fold into the 'social' category
     # (-> Social lane).
     ("comms.message_bursts", "social_episode"): "social",
-    # ActivityWatch desktop-activity screen episodes (bu-whhll.6) fold into
-    # 'tasks' (-> Work lane). No dedicated 'occupation' category exists yet
-    # (epic bu-whhll Tier 2 introduces routine/occupation inference); 'tasks'
-    # is the closest existing category and directly addresses the epic's
-    # motivating gap (10-12h weekday desktop work previously invisible).
-    ("activitywatch.window", "screen_episode"): "tasks",
+    # ActivityWatch desktop-activity screen episodes (bu-whhll.6) are direct
+    # measurement of the OWNER working, so they fold into the owner-work
+    # 'occupation' category (-> Work lane). Originally parked in 'tasks' as the
+    # "closest existing category" before an occupation category existed
+    # (bu-whhll.6 comment); bu-whhll.14 moves them to 'occupation' so 'tasks'
+    # holds butler-session work only (-> Butler ops lane).
+    ("activitywatch.window", "screen_episode"): "occupation",
     # Occupation-block inference from enabled routine windows (bu-whhll.10,
-    # epic bu-whhll Tier 2). Has its own dedicated 'occupation' category
-    # (-> Work lane) rather than folding into 'tasks', so it can be split
-    # from butler-session Work time independently of direct-measurement
-    # sources (tasks.md epic bu-whhll.14).
+    # epic bu-whhll Tier 2). The 'occupation' category is the OWNER-work lane
+    # (-> Work lane); as of bu-whhll.14 it is the sole set of Work-lane sources
+    # (occupation blocks + owner focus/reading/screen above), cleanly split from
+    # the butler-session sources that now form the Butler ops lane.
     ("chronicler.occupation_inferred", "occupation_block"): "occupation",
     # HA non-person sensor-activity ambient motion (bu-49fqa, telemetry-
     # distillation bead 1). Deliberately its own 'ambient' category (-> Rest
@@ -134,6 +141,7 @@ LANES: frozenset[str] = frozenset(
         "sleep",
         "exercise",
         "work",
+        "butler_ops",
         "play",
         "social",
         "travel",
@@ -148,8 +156,11 @@ LANES: frozenset[str] = frozenset(
 # co-presence half of tasks.md §6. Categories with no lane (``other``, and
 # the absent ``calendar``) resolve to ``None`` and are not counted.
 _CATEGORY_TO_LANE: dict[str, str] = {
-    "conversations": "work",
-    "tasks": "work",
+    # Butler LLM sessions (bu-whhll.14): the butlers' own conversations/tasks are
+    # the Butler ops lane, NOT the owner's Work lane. Only 'occupation' (owner
+    # occupation + focus/reading/screen) counts as Work.
+    "conversations": "butler_ops",
+    "tasks": "butler_ops",
     "music": "play",
     "gaming": "play",
     "meal": "eat",
@@ -180,9 +191,9 @@ def sources_for_lane(lane: str) -> frozenset[str]:
     Derived once from ``_CATEGORY_MAP``/``_CATEGORY_TO_LANE`` — the same
     static tables ``category_for``/``lane_for_category`` already use — so
     there is no second source of truth to keep in sync by hand. Includes
-    ``core.sessions`` for ``lane == "work"``, since that source resolves via
-    ``category_for``'s ``trigger_source`` special-case rather than an entry
-    in ``_CATEGORY_MAP``.
+    ``core.sessions`` for ``lane == "butler_ops"`` (bu-whhll.14), since that
+    source resolves via ``category_for``'s ``trigger_source`` special-case
+    (conversations/tasks) rather than an entry in ``_CATEGORY_MAP``.
 
     Used by the anomaly-flag rules (bu-v76a7) to decide which sources must
     be healthy before a lane-level behavioral flag (e.g.
@@ -197,7 +208,11 @@ def sources_for_lane(lane: str) -> frozenset[str]:
         for (source_name, _episode_type), category in _CATEGORY_MAP.items()
         if _CATEGORY_TO_LANE.get(category) == lane
     }
-    if lane == "work":
+    # core.sessions resolves to conversations/tasks via category_for's
+    # trigger_source special-case (not _CATEGORY_MAP), and those categories are
+    # the Butler ops lane as of bu-whhll.14 — so it is the (only) source that
+    # feeds butler_ops, not work.
+    if lane == "butler_ops":
         sources.add("core.sessions")
     return frozenset(sources)
 

@@ -80,7 +80,20 @@ MIN_SUPPORT_COUNT = 3
 # 4 slots = 2 hours. Shorter runs are noise, not a "workday".
 MIN_WINDOW_SLOTS = 4
 
-DESK_SIGNAL_CATEGORIES: frozenset[str] = frozenset({"music", "tasks", "conversations", "social"})
+# Categories that mark a slot as "owner at the desk" for routine mining.
+# bu-whhll.14 moved the owner's direct desk signals (focus_inferred /
+# reading_inferred / activitywatch screen) from category 'tasks' to
+# 'occupation', so 'occupation' is added here to keep them registering (else
+# occupation inference would self-starve). ``mine_routines`` excludes the
+# occupation adapter's OWN output source (``chronicler.occupation_inferred``,
+# also category 'occupation') from its input, so this does NOT create a
+# feedback loop — only the primary focus/reading/screen signals count. 'tasks'
+# stays (butler-session work still counts as it did pre-split; re-scoping what
+# butler activity means for owner-occupation inference is out of this
+# presentation bead's scope).
+DESK_SIGNAL_CATEGORIES: frozenset[str] = frozenset(
+    {"music", "tasks", "conversations", "social", "occupation"}
+)
 CONTRADICTOR_CATEGORIES: frozenset[str] = frozenset({"travel", "gaming"})
 
 _DOW_LABELS: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -339,6 +352,11 @@ async def mine_routines(
         FROM episodes
         WHERE tombstone_at IS NULL
           AND layer = 'activity'
+          -- The miner reads PRIMARY activity signals only, never its own
+          -- derived occupation blocks (bu-whhll.14): occupation_inferred is
+          -- category 'occupation', now a desk signal, so feeding it back would
+          -- make inferred occupation windows self-perpetuate.
+          AND source_name != 'chronicler.occupation_inferred'
           AND start_at < $2
           AND (end_at IS NULL OR end_at > $1)
         ORDER BY start_at ASC

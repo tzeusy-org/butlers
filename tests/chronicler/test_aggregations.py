@@ -54,15 +54,17 @@ _D1_PAIRS: list[tuple[str, str, str | None, str]] = [
     ("google_health.measurements", "workout_episode", None, "workout"),
     ("health.meals", "eating_event", None, "meal"),
     ("home_assistant.history", "presence_episode", None, "home"),
-    # Inferred chronicler-derived sources (bu-i29ix). Both fold into 'tasks'.
-    ("chronicler.focus_inferred", "focus_block", None, "tasks"),
-    ("chronicler.reading_inferred", "reading_block", None, "tasks"),
+    # Inferred owner focus/reading (bu-i29ix) → 'occupation' (owner Work lane)
+    # as of bu-whhll.14; graduated out of 'tasks' so 'tasks' is butler-only.
+    ("chronicler.focus_inferred", "focus_block", None, "occupation"),
+    ("chronicler.reading_inferred", "reading_block", None, "occupation"),
     # Inferred exercise from HR+GPS corroboration (bu-1sj3zn) → Exercise lane.
     ("chronicler.exercise_inferred", "exercise_episode", None, "workout"),
     # Comms message bursts (bu-jc6htw.1) → Social lane.
     ("comms.message_bursts", "social_episode", None, "social"),
-    # ActivityWatch desktop-activity screen episodes (bu-whhll.6) → Work lane.
-    ("activitywatch.window", "screen_episode", None, "tasks"),
+    # ActivityWatch desktop-activity screen (bu-whhll.6) → 'occupation' (owner
+    # Work lane) as of bu-whhll.14; graduated out of 'tasks'.
+    ("activitywatch.window", "screen_episode", None, "occupation"),
     # Occupation-block inference from enabled routine windows (bu-whhll.10)
     # → its own 'occupation' category, still folding into the Work lane.
     ("chronicler.occupation_inferred", "occupation_block", None, "occupation"),
@@ -101,8 +103,9 @@ def test_calendar_has_no_source_category() -> None:
 # Maps each source category to the life-balance lane it folds into. Drives a
 # per-lane test so adding/renaming a lane fails loudly.
 _LANE_BY_CATEGORY: dict[str, str] = {
-    "conversations": "work",
-    "tasks": "work",
+    # Butler LLM sessions → Butler ops lane (bu-whhll.14), not owner Work.
+    "conversations": "butler_ops",
+    "tasks": "butler_ops",
     "music": "play",
     "gaming": "play",
     "meal": "eat",
@@ -113,7 +116,9 @@ _LANE_BY_CATEGORY: dict[str, str] = {
     "travel": "travel",
     "sleep": "sleep",
     "social": "social",
+    # Owner occupation (occupation blocks + graduated focus/reading/screen).
     "occupation": "work",
+    "ambient": "rest",
 }
 
 
@@ -125,7 +130,7 @@ def test_lane_for_category_per_lane(category: str, lane: str) -> None:
 
 
 def test_every_lane_is_covered() -> None:
-    """The mapping table must exercise all eight Activity lanes."""
+    """The mapping table must exercise all nine Activity lanes."""
     assert set(_LANE_BY_CATEGORY.values()) == set(LANES)
 
 
@@ -145,14 +150,21 @@ def test_lane_for_activity_counts_activity_layer() -> None:
     assert (
         lane_for_activity("activity", "google_health.measurements", "workout_episode") == "exercise"
     )
-    # core.sessions conversations + tasks both count as Work.
-    assert lane_for_activity("activity", "core.sessions", "work", trigger_source="route") == "work"
-    assert lane_for_activity("activity", "core.sessions", "work") == "work"
-    # Inferred occupation blocks (bu-whhll.10) also fold into Work.
+    # core.sessions conversations + tasks are butler LLM sessions → Butler ops
+    # lane (bu-whhll.14), never the owner's Work lane.
+    assert (
+        lane_for_activity("activity", "core.sessions", "work", trigger_source="route")
+        == "butler_ops"
+    )
+    assert lane_for_activity("activity", "core.sessions", "work") == "butler_ops"
+    # Inferred occupation blocks (bu-whhll.10) are the OWNER's Work lane.
     assert (
         lane_for_activity("activity", "chronicler.occupation_inferred", "occupation_block")
         == "work"
     )
+    # Graduated owner focus/reading/screen (bu-whhll.14) also fold into Work.
+    assert lane_for_activity("activity", "chronicler.focus_inferred", "focus_block") == "work"
+    assert lane_for_activity("activity", "activitywatch.window", "screen_episode") == "work"
 
 
 def test_lane_for_activity_drops_intent_and_evidence() -> None:
