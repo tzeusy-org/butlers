@@ -381,3 +381,137 @@ class TestBackfillScriptRealDb:
         assert summary["linked"] == 1  # "would link"
         fact_count = await pool.fetchval("SELECT COUNT(*) FROM relationship.entity_facts")
         assert fact_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Rejected-proposal orphan cleanup (bu-3w3tb)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_proposed_entity(pool, *, address: str, name: str = "Proposed Person") -> uuid.UUID:
+    """Mint a placeholder entity exactly as the enrichment job's create branch does."""
+    return await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
+        "VALUES ($1, 'person', jsonb_build_object("
+        "  'proposed_from_address', $2::text, "
+        "  'proposed_source', 'email_identity_enrichment')) "
+        "RETURNING id",
+        name,
+        address,
+    )
+
+
+async def _seed_enrichment_action(pool, *, entity_id: uuid.UUID, address: str, status: str) -> None:
+    await pool.execute(
+        "INSERT INTO pending_actions (tool_name, tool_args, status) "
+        "VALUES ('relationship_assert_fact', jsonb_build_object("
+        "  'subject', $1::text, 'predicate', 'has-email', 'object', $2::text), $3)",
+        str(entity_id),
+        address,
+        status,
+    )
+
+
+class TestRejectedProposalOrphanCleanup:
+    async def test_job_archives_orphan_from_rejected_proposal(self, identity_pool) -> None:
+        """propose -> reject -> the orphaned entity is soft-deleted (archived), not
+        hard-deleted, and its proposed_from_address idempotency tag survives."""
+        pool = identity_pool
+        addr = "rejected@example.com"
+        eid = await _seed_proposed_entity(pool, address=addr)
+        await _seed_enrichment_action(pool, entity_id=eid, address=addr, status="rejected")
+
+        rjobs = _get_rjobs()
+        # No ingestion events -> the job reaps orphans, finds no new senders, returns.
+        result = await rjobs.run_email_identity_enrichment(pool)
+        assert result["archived_orphans"] == 1
+        assert result["created_new"] == 0
+
+        row = await pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", eid)
+        assert row is not None, "entity must be soft-deleted, not hard-deleted"
+        meta = row["metadata"]
+        assert meta.get("deleted_at") is not None
+        assert meta.get("archived_reason") == "rejected_email_identity_enrichment"
+        # Idempotency guard preserved: the address is still tagged, never re-proposed.
+        assert meta.get("proposed_from_address") == addr
+
+        # Idempotent: a second reap does not touch the already-archived entity.
+        again = await rjobs.archive_rejected_identity_enrichment_orphans(pool)
+        assert again == 0
+
+    async def test_reap_leaves_approved_entity_intact(self, identity_pool) -> None:
+        """propose -> approve (live pending_action) -> entity is left intact."""
+        pool = identity_pool
+        addr = "approved@example.com"
+        eid = await _seed_proposed_entity(pool, address=addr)
+        await _seed_enrichment_action(pool, entity_id=eid, address=addr, status="approved")
+
+        rjobs = _get_rjobs()
+        assert await rjobs.archive_rejected_identity_enrichment_orphans(pool) == 0
+
+        row = await pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", eid)
+        assert row["metadata"].get("deleted_at") is None
+
+    async def test_reap_leaves_referenced_entity_intact(self, identity_pool) -> None:
+        """A rejected proposal whose entity has ACQUIRED a reference (an active
+        entity_fact) has graduated to a real entity and is left fully intact --
+        the safety gate never archives a referenced entity."""
+        pool = identity_pool
+        addr = "graduated@example.com"
+        eid = await _seed_proposed_entity(pool, address=addr)
+        await _seed_enrichment_action(pool, entity_id=eid, address=addr, status="rejected")
+        await pool.execute(
+            "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src) "
+            "VALUES ($1, 'has-email', $2, 'literal', 'test')",
+            eid,
+            addr,
+        )
+
+        rjobs = _get_rjobs()
+        assert await rjobs.archive_rejected_identity_enrichment_orphans(pool) == 0
+
+        row = await pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", eid)
+        assert row["metadata"].get("deleted_at") is None
+
+    async def test_reap_skips_undecided_pending_proposal(self, identity_pool) -> None:
+        """A still-pending proposal is undecided -> its entity is not archived."""
+        pool = identity_pool
+        addr = "pending@example.com"
+        eid = await _seed_proposed_entity(pool, address=addr)
+        await _seed_enrichment_action(pool, entity_id=eid, address=addr, status="pending")
+
+        rjobs = _get_rjobs()
+        assert await rjobs.archive_rejected_identity_enrichment_orphans(pool) == 0
+
+        row = await pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", eid)
+        assert row["metadata"].get("deleted_at") is None
+
+    async def test_reap_archives_expired_proposal(self, identity_pool) -> None:
+        """An auto-expired (abandoned) proposal orphan is archived, same as rejected."""
+        pool = identity_pool
+        addr = "expired@example.com"
+        eid = await _seed_proposed_entity(pool, address=addr)
+        await _seed_enrichment_action(pool, entity_id=eid, address=addr, status="expired")
+
+        rjobs = _get_rjobs()
+        assert await rjobs.archive_rejected_identity_enrichment_orphans(pool) == 1
+
+        row = await pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", eid)
+        assert row["metadata"].get("deleted_at") is not None
+
+    async def test_reap_ignores_entities_without_enrichment_provenance(self, identity_pool) -> None:
+        """An entity NOT tagged proposed_source='email_identity_enrichment' is never
+        touched, even with a rejected has-email action pointing at it."""
+        pool = identity_pool
+        addr = "real@example.com"
+        eid = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type) "
+            "VALUES ('Real Person', 'person') RETURNING id"
+        )
+        await _seed_enrichment_action(pool, entity_id=eid, address=addr, status="rejected")
+
+        rjobs = _get_rjobs()
+        assert await rjobs.archive_rejected_identity_enrichment_orphans(pool) == 0
+
+        row = await pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", eid)
+        assert row["metadata"].get("deleted_at") is None

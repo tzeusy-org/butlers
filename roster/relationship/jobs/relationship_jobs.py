@@ -3251,6 +3251,79 @@ _EMAIL_ENRICHMENT_MIN_THREADS = 3
 _EMAIL_ENRICHMENT_MIN_DISTINCT_DAYS = 2
 
 
+async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) -> int:
+    """Archive ``public.entities`` orphaned by rejected/expired enrichment proposals.
+
+    ``run_email_identity_enrichment`` eagerly mints a placeholder ``person`` entity
+    (tagged ``metadata.proposed_source='email_identity_enrichment'`` +
+    ``metadata.proposed_from_address``) for every *create* proposal, because
+    ``relationship_assert_fact``'s subject must reference an existing entity. If the
+    proposal is then rejected or left to expire, that entity is orphaned. There is no
+    single rejection handler to hook: a proposal is terminated by ``reject_action``
+    (REST reject + deny), the duplicated MCP ``_reject_action``, or ``_expire_stale_actions``
+    (auto-expiry) -- all generic to the approvals module, none entity-aware, and putting
+    relationship-entity cleanup in that generic module would be a layering violation. So
+    this reap runs from the enrichment job itself (which owns the provenance, runs on the
+    relationship pool, and already keys on ``proposed_from_address``). It is idempotent and
+    also drains the historical backlog on each run.
+
+    Only a *clean orphan* is touched -- provenance-tagged, not already tombstoned, and with
+    no references acquired since creation (mirrors the safety gate in
+    ``scripts/cleanup_bulk_email_identity_proposals.py``): no ``entity_facts`` as subject or
+    object-entity (an approved has-email
+    proposal writes such a fact, so approved/graduated entities are excluded and left
+    intact) and no live (pending/approved/executed) ``pending_actions`` subject. (Contact
+    linkage lives in ``relationship.entity_facts`` now that ``public.contacts`` is retired,
+    so the entity_facts checks cover it.) Any acquired reference means the entity graduated
+    to a real entity and is left fully intact.
+
+    We *soft-delete* (set ``metadata.deleted_at`` -- the ecosystem tombstone convention,
+    honored alongside ``merged_into`` by every entity query) rather than hard-DELETE, for
+    three reasons: (1) the re-proposal idempotency guard keys on the entity's surviving
+    ``proposed_from_address`` tag, so a hard delete would re-expose rejected addresses to
+    re-proposal, contradicting the proposal's own "will not be re-proposed" promise;
+    (2) it avoids RESTRICT-FK failures (``entity_view_marks``/``merge_reviews``); (3) it is
+    reversible. Returns the number of entities archived.
+    """
+    # NB: public.contacts / public.contact_info were retired (DROPped by core_115 /
+    # core_134); contact linkage now lives entirely in relationship.entity_facts, so the
+    # entity_facts subject/object checks below fully cover "is this entity referenced".
+    archived = await db_pool.fetch(
+        """
+        UPDATE public.entities e
+        SET metadata = e.metadata
+                || jsonb_build_object(
+                    'deleted_at', to_jsonb(now()),
+                    'archived_reason', 'rejected_email_identity_enrichment'
+                ),
+            updated_at = now()
+        WHERE e.metadata ->> 'proposed_source' = 'email_identity_enrichment'
+          AND (e.metadata ->> 'deleted_at') IS NULL
+          AND (e.metadata ->> 'merged_into') IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM relationship.entity_facts ef WHERE ef.subject = e.id
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM relationship.entity_facts ef
+              WHERE ef.object = e.id::text AND ef.object_kind = 'entity'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM pending_actions pa
+              WHERE pa.tool_args ->> 'subject' = e.id::text
+                AND pa.status IN ('pending', 'approved', 'executed')
+          )
+        RETURNING e.id
+        """
+    )
+    if archived:
+        logger.info(
+            "email_identity_enrichment: archived %d orphaned entity(ies) from "
+            "rejected/expired proposals",
+            len(archived),
+        )
+    return len(archived)
+
+
 async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Propose entity creation/linking for recurring human email correspondents.
 
@@ -3292,10 +3365,12 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
       (switchboard ingress already eagerly mints "Unknown (...)" placeholder
       entities for unresolved senders) and is required because
       ``relationship_assert_fact``'s ``subject`` must reference an existing
-      entity. If the proposal is later rejected, the entity is left behind
-      tagged with ``proposed_from_address`` — this job's idempotency guard
-      (below) means it is never re-proposed, but nothing today auto-archives
-      it. Filed as a discovered follow-up rather than solved here.
+      entity. If the proposal is later rejected or expires, the placeholder
+      entity is orphaned; :func:`archive_rejected_identity_enrichment_orphans`
+      (run at the top of every invocation of this job) soft-deletes such clean
+      orphans via the ``metadata.deleted_at`` tombstone (bu-3w3tb). The
+      idempotency guard (below) keys on the surviving ``proposed_from_address``
+      tag, so a rejected address is still never re-proposed.
     * Idempotent / safe to run on every cron tick: skips addresses that
       already have an active has-email fact, already have a pending
       ``relationship_assert_fact`` proposal for ``predicate='has-email'``, or
@@ -3308,7 +3383,8 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
     Returns:
         Dictionary with keys: senders_scanned, already_linked, filtered_bulk,
         insufficient_evidence, already_pending, already_proposed, linked_existing,
-        created_new, errors, truncated (True if the underlying scan hit its row cap).
+        created_new, archived_orphans, errors, truncated (True if the underlying
+        scan hit its row cap).
     """
     from butlers.modules.contacts.email_identity_matching import (
         choose_display_name,
@@ -3330,11 +3406,21 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
         "already_proposed": 0,
         "linked_existing": 0,
         "created_new": 0,
+        "archived_orphans": 0,
         "errors": 0,
         "truncated": False,
     }
 
     now_utc = datetime.now(UTC)
+
+    # Reap entities orphaned by rejected/expired proposals from prior runs before
+    # scanning for new candidates (also drains the historical backlog). Best-effort:
+    # a failure here must not block new-candidate proposals.
+    try:
+        stats["archived_orphans"] = await archive_rejected_identity_enrichment_orphans(db_pool)
+    except Exception:
+        logger.exception("email_identity_enrichment: failed to archive rejected-proposal orphans")
+        stats["errors"] += 1
 
     try:
         scan = await fetch_email_sender_stats(db_pool)
@@ -3547,7 +3633,7 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
     logger.info(
         "email_identity_enrichment complete: scanned=%d already_linked=%d filtered_bulk=%d "
         "insufficient_evidence=%d already_pending=%d already_proposed=%d "
-        "linked_existing=%d created_new=%d errors=%d",
+        "linked_existing=%d created_new=%d archived_orphans=%d errors=%d",
         stats["senders_scanned"],
         stats["already_linked"],
         stats["filtered_bulk"],
@@ -3556,6 +3642,7 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
         stats["already_proposed"],
         stats["linked_existing"],
         stats["created_new"],
+        stats["archived_orphans"],
         stats["errors"],
     )
     return stats
