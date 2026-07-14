@@ -1,19 +1,20 @@
 """Proactive credential lifecycle notifications (bu-1lb5j).
 
 The /secrets passport page is reactive and page-only: a credential can sit
-expired or expiring for days before anyone happens to look at the dashboard
-(the motivating incident: SPOTIFY_ACCESS_TOKEN sat expired for 25 days before
-the owner noticed a red row). This module is a scheduled, deterministic (zero
-LLM) scan that pushes a proactive owner notification the moment a credential
-transitions into a state that needs attention, instead of waiting for a page
-visit.
+expired or expiring for days before anyone happens to look at the dashboard.
+This module is a scheduled, deterministic (zero LLM) scan that pushes a
+proactive owner notification the moment a credential transitions into a state
+that needs attention, instead of waiting for a page visit. Provider-managed
+Spotify OAuth artifacts are excluded because their short-lived access tokens
+rotate routinely; actionable Spotify health comes from the dedicated connector
+status and refresh-failure path.
 
 Design
 ------
 - Reuses the exact same per-family fetch helpers as
-  ``GET /api/secrets/inventory`` (``butlers.api.routers.secrets_v2``), so the
-  notification path can never disagree with what the owner sees on the
-  /secrets page — one state-derivation source of truth.
+  ``GET /api/secrets/inventory`` (``butlers.api.routers.secrets_v2``), then
+  applies the same provider-managed Spotify exclusion as the frontend before
+  producing notifications.
 - "Needs attention" is ``state in {"expiring", "failing", "expired"}``
   (``_ATTENTION_STATES``). ``warn`` (never probed) and the FE-only synthetic
   states (``scope_mismatch``, ``revoked``, ``rotating``) are excluded — this
@@ -150,6 +151,11 @@ logger = logging.getLogger(__name__)
 # the backend never emits ('scope_mismatch', 'revoked', 'rotating').
 _ATTENTION_STATES = frozenset({"expiring", "failing", "expired"})
 
+# Spotify OAuth rows are runtime artifacts managed by the dedicated provider
+# flow. A one-hour access-token expiry is routine, not an actionable credential
+# failure; refresh rejection is surfaced by the Spotify connector status.
+_LIFECYCLE_EXCLUDED_SYSTEM_CATEGORIES = frozenset({"spotify"})
+
 _LIFECYCLE_NOTIFIED_ACTION = "lifecycle_state_notified"
 _LIFECYCLE_ACTOR = "secrets_lifecycle_check"
 
@@ -213,9 +219,9 @@ async def _collect_snapshots(db: DatabaseManager) -> list[CredentialSnapshot]:
     """Collect current lifecycle-relevant state for every known credential.
 
     Reuses the same per-family fetch helpers as ``GET /api/secrets/inventory``
-    so this scan can never see a different state than the /secrets page does.
-    Mirrors get_inventory()'s scan shape (per-butler schemas + shared pool),
-    minus the response-model assembly this job doesn't need.
+    and mirrors its scan shape (per-butler schemas + shared pool), minus the
+    response-model assembly this job doesn't need. Provider-managed Spotify
+    rows are omitted because dedicated provider status owns their health.
     """
     snapshots: list[CredentialSnapshot] = []
 
@@ -225,6 +231,8 @@ async def _collect_snapshots(db: DatabaseManager) -> list[CredentialSnapshot]:
         except KeyError:
             continue
         for row in await _fetch_system_secrets(pool, butler_name):
+            if row.category in _LIFECYCLE_EXCLUDED_SYSTEM_CATEGORIES:
+                continue
             snapshots.append(
                 CredentialSnapshot(
                     key=normalize_credential_key("system", row.key),
@@ -243,7 +251,9 @@ async def _collect_snapshots(db: DatabaseManager) -> list[CredentialSnapshot]:
     # rows — those are the CLI family, fetched separately below. Mirrors
     # get_inventory()'s exclusion so this job never double-counts a row.
     for row in await _fetch_system_secrets(shared_pool, "shared-public"):
-        if row.category in ("cli", "cli-auth"):
+        if row.category in ("cli", "cli-auth") or (
+            row.category in _LIFECYCLE_EXCLUDED_SYSTEM_CATEGORIES
+        ):
             continue
         snapshots.append(
             CredentialSnapshot(

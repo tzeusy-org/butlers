@@ -2,7 +2,8 @@
 
 Covers:
 - _collect_snapshots: aggregates system/cli/user families into canonical keys,
-  excludes cli/cli-auth rows from the system pass (they're the cli family).
+  excludes cli/cli-auth rows from the system pass (they're the cli family),
+  and excludes provider-managed Spotify rows from lifecycle notifications.
 - _last_notified_state: reads the debounce marker back from public.audit_log.
 - _check_suppression: mirrors notify()'s quiet-hours + context-bus gate.
 - _compose_message: deep link always present; re-authorize URL only for OAuth
@@ -121,6 +122,57 @@ async def test_collect_snapshots_aggregates_all_families_with_canonical_keys():
     assert keys["u:google"].family == "user"
     assert keys["u:google"].provider == "google"
     assert keys["u:google"].state == "expiring"
+
+
+async def test_collect_snapshots_excludes_spotify_system_credentials():
+    lifestyle_pool = object()
+    shared_pool = object()
+    db = _FakeDatabaseManager(butler_pools={"lifestyle": lifestyle_pool}, shared_pool=shared_pool)
+
+    async def fake_fetch_system_secrets(pool, butler_name, **kwargs):
+        if pool is lifestyle_pool:
+            return [
+                SystemSecret(
+                    key="SPOTIFY_ACCESS_TOKEN",
+                    state="expired",
+                    butler="lifestyle",
+                    category="spotify",
+                )
+            ]
+        if pool is shared_pool:
+            return [
+                SystemSecret(
+                    key="SPOTIFY_REFRESH_TOKEN",
+                    state="failing",
+                    butler="shared-public",
+                    category="spotify",
+                ),
+                SystemSecret(
+                    key="BUTLER_TELEGRAM_TOKEN",
+                    state="expiring",
+                    butler="shared-public",
+                    category="messaging",
+                ),
+            ]
+        return []
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._fetch_system_secrets",
+            side_effect=fake_fetch_system_secrets,
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._fetch_cli_secrets",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._fetch_user_secrets",
+            new=AsyncMock(return_value=[]),
+        ),
+    ):
+        snapshots = await _collect_snapshots(db)
+
+    assert [snapshot.key for snapshot in snapshots] == ["s:BUTLER_TELEGRAM_TOKEN"]
 
 
 async def test_collect_snapshots_returns_system_only_when_no_shared_pool():
