@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   confirmRulePromotionSuggestion,
   dismissRulePromotionSuggestion,
+  getRulePromotionStats,
   getRulePromotionSuggestions,
   setRulePromotionRuleEnabled,
 } from "@/api/index.ts";
@@ -11,6 +12,7 @@ import type { RulePromotionDismissRequest } from "@/api/index.ts";
 export const rulePromotionKeys = {
   all: ["rule-promotions"] as const,
   surface: () => ["rule-promotions", "surface"] as const,
+  stats: () => ["rule-promotions", "stats"] as const,
 };
 
 /** The rule-promotion approvals surface: pending owner-confirm cards + auto-applied info. */
@@ -18,6 +20,14 @@ export function useRulePromotions() {
   return useQuery({
     queryKey: rulePromotionKeys.surface(),
     queryFn: () => getRulePromotionSuggestions(),
+  });
+}
+
+/** Aggregate rule-promotion metrics for the approvals stats tile (bead 6). */
+export function useRulePromotionStats() {
+  return useQuery({
+    queryKey: rulePromotionKeys.stats(),
+    queryFn: () => getRulePromotionStats(),
   });
 }
 

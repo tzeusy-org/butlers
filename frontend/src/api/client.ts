@@ -195,6 +195,7 @@ import type {
   IngestionWindowRollupParams,
   IngestionRule,
   RulePromotionSurface,
+  RulePromotionStats,
   RulePromotionDismissRequest,
   IngestionRuleCreate,
   IngestionRuleUpdate,
@@ -3668,6 +3669,11 @@ export function dismissAutonomySuggestion(
 
 export function getRulePromotionSuggestions(): Promise<ApiResponse<RulePromotionSurface>> {
   return apiFetch<ApiResponse<RulePromotionSurface>>("/switchboard/rule-promotion-suggestions");
+}
+
+/** Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6). */
+export function getRulePromotionStats(): Promise<ApiResponse<RulePromotionStats>> {
+  return apiFetch<ApiResponse<RulePromotionStats>>("/switchboard/rule-promotion-stats");
 }
 
 export function confirmRulePromotionSuggestion(

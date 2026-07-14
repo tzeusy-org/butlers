@@ -77,3 +77,31 @@ Demotion suggestions (rules flagged via spot-check drift) MUST render with a war
 
 - **WHEN** no pending rule-promotion or demotion suggestions exist
 - **THEN** the Rule Promotion section MUST NOT be rendered
+
+### Requirement: Rule Promotion Metrics Endpoint and Tile
+
+The dashboard SHALL expose a rule-promotion metrics endpoint `GET /api/switchboard/rule-promotion-stats` returning aggregate counts over all time: promotion-suggestion lifecycle counts (`suggestions_pending`, `suggestions_confirmed`, `suggestions_dismissed`), live promoted rules (`promoted_rules_active`, meaning `ingestion_rules` with `created_by='promotion'`, `enabled`, not soft-deleted), events those rules routed without an LLM session (`promoted_rule_matches`, meaning `routing_verdict_log` rows with `verdict_source='rule'` matched to a promoted rule), an `llm_sessions_avoided_estimate`, the demotion drift signal (`demotion_pending`, meaning pending `suggestion_kind='demotion'` suggestions), and the spot-check sample count backing the agreement scores (`promoted_rule_spot_checks`).
+
+`llm_sessions_avoided_estimate` SHALL equal `promoted_rule_matches`: one event routed by a promoted rule is one spawned-session LLM round-trip removed. It MUST be labelled an estimate in the UI (it counts matches since promotion, not a counterfactual replay).
+
+The endpoint SHALL compute each block with an independent sub-query and follow the degraded-envelope convention: a failed sub-query leaves its fields at 0 AND adds its source name (`suggestion_counts`, `promoted_rules`, or `verdict_metrics`) to `meta.sources_degraded`, so a failed query never renders as a truthful zero.
+
+The approvals dashboard SHALL render a rule-promotion metrics tile from this endpoint when there is any promotion history to measure, or whenever a source is degraded. A degraded block SHALL render an inline degraded note naming the unavailable source rather than a fabricated zero.
+
+#### Scenario: Metrics reported for promoted rules
+
+- **WHEN** promoted rules have routed events recorded in `routing_verdict_log` with `verdict_source='rule'`
+- **THEN** `GET /api/switchboard/rule-promotion-stats` returns `promoted_rule_matches` equal to that count
+- **AND** `llm_sessions_avoided_estimate` equals `promoted_rule_matches`
+
+#### Scenario: A failed sub-query is flagged, not zeroed silently
+
+- **WHEN** the verdict-log sub-query raises
+- **THEN** the response still returns 200 with the other blocks computed
+- **AND** `meta.sources_degraded` contains `verdict_metrics`
+- **AND** the tile renders a degraded note for the savings block instead of showing zero sessions avoided
+
+#### Scenario: Sessions-avoided is labelled an estimate
+
+- **WHEN** the metrics tile renders the sessions-avoided figure
+- **THEN** the tile MUST label it an estimate rather than an exact measured count

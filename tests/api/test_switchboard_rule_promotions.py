@@ -211,3 +211,128 @@ async def test_rule_enabled_no_minted_rule_is_409(app):
             json={"enabled": True},
         )
     assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# GET /rule-promotion-stats  (bead 6, bu-hb61f)
+# ---------------------------------------------------------------------------
+
+
+def _stats_fetch_router(*, counts=None, ids=None, counts_exc=None, ids_exc=None):
+    """Route the stats endpoint's two ``pool.fetch`` calls by SQL.
+
+    Block 1 fetches from ``rule_promotion_suggestions`` (the status counts);
+    block 3 fetches promoted-rule ids from ``ingestion_rules``. Routing by SQL
+    keeps the mock robust to call order.
+    """
+
+    async def _fetch(sql, *args):
+        if "FROM rule_promotion_suggestions" in sql:
+            if counts_exc is not None:
+                raise counts_exc
+            return counts or []
+        if "FROM ingestion_rules" in sql:
+            if ids_exc is not None:
+                raise ids_exc
+            return ids or []
+        raise AssertionError(f"unexpected fetch SQL: {sql}")
+
+    return _fetch
+
+
+async def test_stats_happy_path(app):
+    """Aggregate metrics are computed from the sub-queries."""
+    counts = [
+        _make_row({"suggestion_kind": "promotion", "status": "pending_review", "n": 3}),
+        _make_row({"suggestion_kind": "promotion", "status": "confirmed", "n": 7}),
+        _make_row({"suggestion_kind": "promotion", "status": "dismissed", "n": 2}),
+        _make_row({"suggestion_kind": "demotion", "status": "pending_review", "n": 1}),
+    ]
+    ids = [_make_row({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
+    verdict = _make_row({"matches": 128, "spot_checks": 40})
+    _app, mock_pool = _app_with_mock(app)
+    mock_pool.fetch = AsyncMock(side_effect=_stats_fetch_router(counts=counts, ids=ids))
+    mock_pool.fetchval = AsyncMock(return_value=5)
+    mock_pool.fetchrow = AsyncMock(return_value=verdict)
+
+    async with _client(app) as client:
+        resp = await client.get("/api/switchboard/rule-promotion-stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    d = body["data"]
+    assert d["suggestions_pending"] == 3
+    assert d["suggestions_confirmed"] == 7
+    assert d["suggestions_dismissed"] == 2
+    assert d["demotion_pending"] == 1
+    assert d["promoted_rules_active"] == 5
+    assert d["promoted_rule_matches"] == 128
+    # Honest estimate: one promoted-rule match == one avoided LLM session.
+    assert d["llm_sessions_avoided_estimate"] == 128
+    assert d["promoted_rule_spot_checks"] == 40
+    assert not body["meta"].get("sources_degraded")
+
+
+async def test_stats_no_promoted_rules_skips_verdict_query(app):
+    """With no promoted rules, verdict metrics are 0 and not degraded."""
+    counts = [_make_row({"suggestion_kind": "promotion", "status": "pending_review", "n": 1})]
+    _app, mock_pool = _app_with_mock(app)
+    mock_pool.fetch = AsyncMock(side_effect=_stats_fetch_router(counts=counts, ids=[]))
+    mock_pool.fetchval = AsyncMock(return_value=0)
+    # fetchrow must never be called when there are no promoted rule ids.
+    mock_pool.fetchrow = AsyncMock(side_effect=AssertionError("verdict query should be skipped"))
+
+    async with _client(app) as client:
+        resp = await client.get("/api/switchboard/rule-promotion-stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["promoted_rule_matches"] == 0
+    assert body["data"]["llm_sessions_avoided_estimate"] == 0
+    assert not body["meta"].get("sources_degraded")
+
+
+async def test_stats_flags_degraded_verdict_block(app):
+    """A failed verdict-log scan must flag its source, never read as zero savings."""
+    counts = [_make_row({"suggestion_kind": "promotion", "status": "confirmed", "n": 4})]
+    ids = [_make_row({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
+    _app, mock_pool = _app_with_mock(app)
+    mock_pool.fetch = AsyncMock(side_effect=_stats_fetch_router(counts=counts, ids=ids))
+    mock_pool.fetchval = AsyncMock(return_value=2)
+    mock_pool.fetchrow = AsyncMock(side_effect=RuntimeError("boom"))
+
+    async with _client(app) as client:
+        resp = await client.get("/api/switchboard/rule-promotion-stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # The other blocks still computed.
+    assert body["data"]["suggestions_confirmed"] == 4
+    assert body["data"]["promoted_rules_active"] == 2
+    # The verdict block is flagged, and its fields are the un-fabricated 0.
+    assert "verdict_metrics" in body["meta"]["sources_degraded"]
+    assert body["data"]["promoted_rule_matches"] == 0
+    assert body["data"]["llm_sessions_avoided_estimate"] == 0
+
+
+async def test_stats_flags_degraded_suggestion_and_rules_blocks(app):
+    """Each block degrades independently."""
+    ids = [_make_row({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
+    _app, mock_pool = _app_with_mock(app)
+    # Block 1 (suggestion counts) fails; block 3's id fetch succeeds.
+    mock_pool.fetch = AsyncMock(
+        side_effect=_stats_fetch_router(counts_exc=RuntimeError("boom"), ids=ids)
+    )
+    mock_pool.fetchval = AsyncMock(side_effect=RuntimeError("boom"))
+    mock_pool.fetchrow = AsyncMock(return_value=_make_row({"matches": 9, "spot_checks": 0}))
+
+    async with _client(app) as client:
+        resp = await client.get("/api/switchboard/rule-promotion-stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    degraded = body["meta"]["sources_degraded"]
+    assert "suggestion_counts" in degraded
+    assert "promoted_rules" in degraded
+    assert "verdict_metrics" not in degraded
+    assert body["data"]["promoted_rule_matches"] == 9

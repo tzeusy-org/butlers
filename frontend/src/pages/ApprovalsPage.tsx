@@ -62,8 +62,10 @@ import {
 } from "@/hooks/use-approval-decisions.ts";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
 import { RulePromotionBanner } from "@/components/approvals/rule-promotion-banner.tsx";
+import { RulePromotionStatsTile } from "@/components/approvals/rule-promotion-stats.tsx";
 import {
   useRulePromotions,
+  useRulePromotionStats,
   useConfirmRulePromotion,
   useDismissRulePromotion,
   useSetRulePromotionRuleEnabled,
@@ -1214,6 +1216,35 @@ function RulePromotionSection() {
   );
 }
 
+/**
+ * Rule-promotion metrics tile (bead 6). Renders below the promotion banner when
+ * there is any promotion history to measure, or whenever a source is degraded
+ * (so a failed query surfaces instead of the section silently vanishing).
+ */
+function RulePromotionStatsSection() {
+  const { data, refetch } = useRulePromotionStats();
+  const stats = data?.data;
+  const degraded = (data?.meta?.sources_degraded as string[] | undefined) ?? [];
+
+  if (!stats) return null;
+
+  const hasActivity =
+    stats.promoted_rules_active > 0 ||
+    // Keep historical savings visible even after the rules were disabled.
+    stats.promoted_rule_matches > 0 ||
+    stats.suggestions_pending > 0 ||
+    stats.suggestions_confirmed > 0 ||
+    stats.suggestions_dismissed > 0 ||
+    stats.demotion_pending > 0;
+  if (!hasActivity && degraded.length === 0) return null;
+
+  return (
+    <div className="px-6 pt-4 pb-2 border-b border-border shrink-0">
+      <RulePromotionStatsTile stats={stats} degraded={degraded} onRetry={() => refetch()} />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -1499,6 +1530,7 @@ export default function ApprovalsPage() {
           promotion/demotion suggestions exist (returns null otherwise). */}
       <AutonomySuggestionsSection />
       <RulePromotionSection />
+      <RulePromotionStatsSection />
 
       {/* Two-pane body */}
       <div className="flex flex-1 min-h-0 overflow-hidden">

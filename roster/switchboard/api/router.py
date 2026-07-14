@@ -98,6 +98,7 @@ if _spec is not None and _spec.loader is not None:
     RulePromotionSurface = _models.RulePromotionSurface
     RulePromotionDismissRequest = _models.RulePromotionDismissRequest
     RulePromotionRuleEnabledRequest = _models.RulePromotionRuleEnabledRequest
+    RulePromotionStats = _models.RulePromotionStats
 else:
     raise RuntimeError("Failed to load switchboard API models")
 
@@ -3675,6 +3676,111 @@ async def list_rule_promotion_suggestions(
         data=RulePromotionSurface(pending=pending, auto_applied=auto_applied),
         meta=meta,
     )
+
+
+@router.get(
+    "/rule-promotion-stats",
+    response_model=ApiResponse[RulePromotionStats],
+)
+async def get_rule_promotion_stats(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[RulePromotionStats]:
+    """Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6).
+
+    Reports, over all time: promotion-suggestion lifecycle counts, live promoted
+    rules, events those rules routed without an LLM session (the headline win),
+    an honest sessions-avoided estimate, and the demotion drift signal.
+
+    Every block is an independent sub-query. Degraded-honesty (CLAUDE.md): if one
+    fails, its fields stay 0 and its named source is added to
+    ``meta.sources_degraded`` so the tile can show that block as unavailable
+    instead of a fabricated zero (a broken agreement scan must never read as
+    "no rules drifting").
+    """
+    from butlers.api.models import ApiMeta
+
+    pool = _pool(db)
+    degraded: list[str] = []
+    stats = RulePromotionStats()
+
+    # Block 1: suggestion lifecycle counts, keyed by (kind, status).
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT suggestion_kind, status, COUNT(*)::bigint AS n
+            FROM rule_promotion_suggestions
+            GROUP BY suggestion_kind, status
+            """
+        )
+        for r in rows:
+            kind, status, n = r["suggestion_kind"], r["status"], int(r["n"])
+            if kind == "promotion":
+                if status == "pending_review":
+                    stats.suggestions_pending = n
+                elif status == "confirmed":
+                    stats.suggestions_confirmed = n
+                elif status == "dismissed":
+                    stats.suggestions_dismissed = n
+            elif kind == "demotion" and status == "pending_review":
+                stats.demotion_pending = n
+    except Exception:
+        logger.warning("get_rule_promotion_stats: suggestion-count query failed", exc_info=True)
+        degraded.append("suggestion_counts")
+
+    # Block 2: live promoted rules (provenance created_by='promotion').
+    try:
+        stats.promoted_rules_active = int(
+            await pool.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM ingestion_rules
+                WHERE created_by = 'promotion'
+                  AND enabled = TRUE
+                  AND deleted_at IS NULL
+                """
+            )
+            or 0
+        )
+    except Exception:
+        logger.warning("get_rule_promotion_stats: promoted-rules query failed", exc_info=True)
+        degraded.append("promoted_rules")
+
+    # Block 3: verdict-log metrics on promoted rules (matches + spot-checks).
+    # Two-step to stay index-friendly: fetch the (small) set of promoted-rule
+    # ids first, then filter the potentially large routing_verdict_log by the
+    # indexed ``matched_rule_id``. A join filtered on the non-indexed
+    # ``ingestion_rules.created_by`` would scan (gemini review). All promoted
+    # rules count here, not just currently-enabled ones, since a since-disabled
+    # rule still avoided sessions while it was live.
+    try:
+        promoted_rule_ids = [
+            r["id"]
+            for r in await pool.fetch(
+                "SELECT id FROM ingestion_rules WHERE created_by = 'promotion'"
+            )
+        ]
+        if promoted_rule_ids:
+            row = await pool.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE verdict_source = 'rule')::bigint       AS matches,
+                    COUNT(*) FILTER (WHERE verdict_source = 'spot_check')::bigint AS spot_checks
+                FROM routing_verdict_log
+                WHERE matched_rule_id = ANY($1::uuid[])
+                """,
+                promoted_rule_ids,
+            )
+            matches = int(row["matches"] or 0) if row is not None else 0
+            # Each promoted-rule match is one spawned-session LLM round-trip removed.
+            stats.promoted_rule_matches = matches
+            stats.llm_sessions_avoided_estimate = matches
+            stats.promoted_rule_spot_checks = int(row["spot_checks"] or 0) if row is not None else 0
+    except Exception:
+        logger.warning("get_rule_promotion_stats: verdict-log query failed", exc_info=True)
+        degraded.append("verdict_metrics")
+
+    meta = ApiMeta(sources_degraded=degraded) if degraded else ApiMeta()
+    return ApiResponse[RulePromotionStats](data=stats, meta=meta)
 
 
 def _parse_suggestion_id(suggestion_id: str) -> uuid.UUID:

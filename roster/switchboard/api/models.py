@@ -1043,3 +1043,38 @@ class RulePromotionRuleEnabledRequest(BaseModel):
     """Body for the reversible enable/disable of an auto-applied promotion rule."""
 
     enabled: bool
+
+
+class RulePromotionStats(BaseModel):
+    """Aggregate rule-promotion metrics for the approvals dashboard tile.
+
+    Closes the loop on measuring the promotion win (design bead 6): how many
+    suggestions are waiting or decided, how many rules were promoted, how many
+    events those rules routed without spawning an LLM session, and how many
+    promoted rules the spot-check drift detector has flagged for revoke.
+
+    Degraded-honesty: each block is computed by an independent sub-query. On
+    failure that block's fields stay 0 AND its source name is added to
+    ``meta.sources_degraded`` (see the endpoint), so a failed query never renders
+    as a truthful zero (for example a broken agreement scan must not read as
+    "no rules drifting").
+    """
+
+    # Promotion suggestion lifecycle (suggestion_kind='promotion').
+    suggestions_pending: int = 0
+    suggestions_confirmed: int = 0
+    suggestions_dismissed: int = 0
+    # Live promoted rules today (created_by='promotion', enabled, not deleted).
+    promoted_rules_active: int = 0
+    # Events routed by a promoted rule (verdict_source='rule'); each removed one
+    # spawned-session LLM round-trip.
+    promoted_rule_matches: int = 0
+    # Honest estimate of LLM sessions avoided. Equals promoted_rule_matches: one
+    # rule-bypassed event is one session not spawned. Labelled an estimate in the
+    # UI because it counts matches since promotion, not a counterfactual.
+    llm_sessions_avoided_estimate: int = 0
+    # Demotion side: rules the spot-check drift detector has flagged for revoke
+    # (pending demotion suggestions), and the spot-check samples backing the
+    # rolling agreement scores those flags derive from.
+    demotion_pending: int = 0
+    promoted_rule_spot_checks: int = 0

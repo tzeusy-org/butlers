@@ -9084,6 +9084,18 @@ export interface RulePromotionSurface {
   auto_applied: RulePromotionAutoApplied[];
 }
 
+/** Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6). */
+export interface RulePromotionStats {
+  suggestions_pending: number;
+  suggestions_confirmed: number;
+  suggestions_dismissed: number;
+  promoted_rules_active: number;
+  promoted_rule_matches: number;
+  llm_sessions_avoided_estimate: number;
+  demotion_pending: number;
+  promoted_rule_spot_checks: number;
+}
+
 /** Body for dismissing a pending rule-promotion suggestion. */
 export interface RulePromotionDismissRequest {
   reason?: string;

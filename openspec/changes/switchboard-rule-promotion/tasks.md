@@ -7,11 +7,11 @@ bu-h26o9 -> PR #2992, bu-wuwy9 -> PR #2999, bu-x55k3 -> PR #3015). Bead 4
 (section 4, the approvals surface) SHIPPED 2026-07-13 (bu-o62bc -> PR #3213);
 the owner auto-apply-vs-confirm decision (bu-4pq0s) resolved to auto-apply, so
 the batched "bulk-confirm" endpoint (task 4.3) was superseded by auto-mint +
-reversible toggle rather than built. Beads 6 (metrics tile, task 6.1) and 7
-(sender-normalization de-dup, task 7.1) remain UNBUILT in code as of the
-2026-07-14 true-up (verified: no rule-promotion-stats endpoint; verdict_log.py
-still carries the local sender regex). DO NOT archive this change until tasks
-6.1 and 7.1 close.
+reversible toggle rather than built. Bead 6 (metrics tile, task 6.1) SHIPPED
+2026-07-14 (bu-hb61f -> this change's stats endpoint + tile). Bead 7
+(sender-normalization de-dup, task 7.1, low priority) remains UNBUILT in code
+(verdict_log.py still carries the local sender regex, pending bu-jxsew). DO NOT
+archive this change until task 7.1 closes.
 
 ## 1. Verdict mining substrate
 
@@ -95,8 +95,12 @@ still carries the local sender regex). DO NOT archive this change until tasks
 
 ## 6. Rule-promotion metrics
 
-- [ ] 6.1 Stats endpoint/dashboard tile: sessions avoided, pending-suggestion
-      count, estimated LLM-session savings
+- [x] 6.1 Stats endpoint/dashboard tile: sessions avoided, pending-suggestion
+      count, estimated LLM-session savings (bu-hb61f: `GET
+      /api/switchboard/rule-promotion-stats` + `RulePromotionStatsTile` on the
+      approvals page; degraded-envelope per source; sessions-avoided derived as
+      one avoided LLM session per promoted-rule verdict-log match, labelled an
+      estimate)
 
 ## 7. De-duplicate sender normalization against bu-qeaou (low priority)
 
