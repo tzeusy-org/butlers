@@ -107,7 +107,7 @@ async def create_backfill_job(
     connector_row = await pool.fetchrow(
         """
         SELECT connector_type, endpoint_identity
-        FROM connector_registry
+        FROM switchboard.connector_registry
         WHERE connector_type = $1 AND endpoint_identity = $2
         """,
         connector_type,

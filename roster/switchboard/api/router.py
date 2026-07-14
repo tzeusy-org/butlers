@@ -3651,7 +3651,7 @@ async def list_rule_promotion_suggestions(
             SELECT id, sender_key, source_channel, proposed_rule_type,
                    proposed_condition, proposed_action, evidence_count,
                    is_clearly_automated, first_evidence_at, last_evidence_at, created_at
-            FROM rule_promotion_suggestions
+            FROM switchboard.rule_promotion_suggestions
             WHERE status = 'pending_review' AND suggestion_kind = 'promotion'
               AND NOT (is_clearly_automated = TRUE AND proposed_action = ANY($1::text[]))
             ORDER BY created_at ASC
@@ -3670,7 +3670,7 @@ async def list_rule_promotion_suggestions(
             SELECT s.id, s.sender_key, s.source_channel, s.proposed_action,
                    s.evidence_count, s.created_rule_id, s.decided_at, s.decided_by,
                    r.enabled AS rule_enabled
-            FROM rule_promotion_suggestions s
+            FROM switchboard.rule_promotion_suggestions s
             LEFT JOIN switchboard.ingestion_rules r ON r.id = s.created_rule_id
             WHERE s.status = 'confirmed' AND s.decided_by = $1
             ORDER BY s.decided_at DESC NULLS LAST
@@ -3720,7 +3720,7 @@ async def get_rule_promotion_stats(
         rows = await pool.fetch(
             """
             SELECT suggestion_kind, status, COUNT(*)::bigint AS n
-            FROM rule_promotion_suggestions
+            FROM switchboard.rule_promotion_suggestions
             GROUP BY suggestion_kind, status
             """
         )
@@ -3777,7 +3777,7 @@ async def get_rule_promotion_stats(
                 SELECT
                     COUNT(*) FILTER (WHERE verdict_source = 'rule')::bigint       AS matches,
                     COUNT(*) FILTER (WHERE verdict_source = 'spot_check')::bigint AS spot_checks
-                FROM routing_verdict_log
+                FROM switchboard.routing_verdict_log
                 WHERE matched_rule_id = ANY($1::uuid[])
                 """,
                 promoted_rule_ids,
@@ -3859,7 +3859,7 @@ async def dismiss_rule_promotion_suggestion(
     sid = _parse_suggestion_id(suggestion_id)
 
     existing = await pool.fetchrow(
-        "SELECT status FROM rule_promotion_suggestions WHERE id = $1", sid
+        "SELECT status FROM switchboard.rule_promotion_suggestions WHERE id = $1", sid
     )
     if existing is None:
         raise HTTPException(status_code=404, detail="suggestion not found")
@@ -3873,7 +3873,7 @@ async def dismiss_rule_promotion_suggestion(
     cooldown_until = now + datetime.timedelta(days=body.cooldown_days)
     await pool.execute(
         """
-        UPDATE rule_promotion_suggestions
+        UPDATE switchboard.rule_promotion_suggestions
         SET status = 'dismissed',
             dismissal_reason = $1,
             cooldown_until = $2,
@@ -3916,7 +3916,7 @@ async def set_rule_promotion_rule_enabled(
     sid = _parse_suggestion_id(suggestion_id)
 
     row = await pool.fetchrow(
-        "SELECT created_rule_id FROM rule_promotion_suggestions WHERE id = $1", sid
+        "SELECT created_rule_id FROM switchboard.rule_promotion_suggestions WHERE id = $1", sid
     )
     if row is None:
         raise HTTPException(status_code=404, detail="suggestion not found")

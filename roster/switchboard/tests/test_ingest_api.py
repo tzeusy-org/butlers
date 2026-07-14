@@ -68,8 +68,14 @@ async def pool(provisioned_postgres_pool):
     WARNING: This fixture duplicates the database schema from the `sw_008`,
     `sw_015`, `sw_016`, and `sw_019` migrations. If you update the `message_inbox` table
     schema, you must manually update this fixture to keep it synchronized.
+
+    Scoped to the real ``switchboard`` schema (bu-nz1wx) so the bare table DDL
+    below lands in ``switchboard`` and the production code's schema-qualified
+    ``switchboard.message_inbox`` reads/writes resolve — mirroring production's
+    one-db/multi-schema topology.
     """
-    async with provisioned_postgres_pool() as p:
+    async with provisioned_postgres_pool(schema="switchboard") as p:
+        await p.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
         # Create message_inbox table (partitioned, from sw_008 thru sw_019 migrations)
         await p.execute(
             """

@@ -253,7 +253,7 @@ async def _get_previous_snapshot(
             counter_source_api_calls,
             counter_checkpoint_saves,
             counter_dedupe_accepted
-        FROM connector_registry
+        FROM switchboard.connector_registry
         WHERE connector_type = $1 AND endpoint_identity = $2
         """,
         connector_type,
@@ -379,7 +379,7 @@ async def heartbeat(
     try:
         await pool.execute(
             """
-            INSERT INTO connector_registry (
+            INSERT INTO switchboard.connector_registry (
                 connector_type,
                 endpoint_identity,
                 instance_id,
@@ -459,7 +459,7 @@ async def heartbeat(
     try:
         await pool.execute(
             """
-            INSERT INTO connector_heartbeat_log (
+            INSERT INTO switchboard.connector_heartbeat_log (
                 connector_type,
                 endpoint_identity,
                 instance_id,

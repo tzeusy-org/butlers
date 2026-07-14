@@ -169,7 +169,7 @@ async def _write_outbound_message_inbox(
     try:
         await pool.execute(
             """
-            INSERT INTO message_inbox (
+            INSERT INTO switchboard.message_inbox (
                 received_at,
                 request_context,
                 raw_payload,

@@ -227,7 +227,7 @@ def _stats_fetch_router(*, counts=None, ids=None, counts_exc=None, ids_exc=None)
     """
 
     async def _fetch(sql, *args):
-        if "FROM rule_promotion_suggestions" in sql:
+        if "FROM switchboard.rule_promotion_suggestions" in sql:
             if counts_exc is not None:
                 raise counts_exc
             return counts or []

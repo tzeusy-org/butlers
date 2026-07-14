@@ -35,8 +35,15 @@ pytestmark = [
 
 @pytest.fixture
 async def switchboard_pool(provisioned_postgres_pool):
-    """Provision a fresh database with switchboard tables."""
-    async with provisioned_postgres_pool() as pool:
+    """Provision a fresh database with switchboard tables.
+
+    Scoped to the real ``switchboard`` schema (bu-nz1wx) so the bare table DDL
+    below lands in ``switchboard`` and the production code's schema-qualified
+    ``switchboard.message_inbox`` reads/writes resolve — mirroring production's
+    one-db/multi-schema topology.
+    """
+    async with provisioned_postgres_pool(schema="switchboard") as pool:
+        await pool.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
         # Create minimal required tables for conformance tests
         await pool.execute(
             """

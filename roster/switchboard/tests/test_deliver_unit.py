@@ -1445,7 +1445,7 @@ class TestWriteOutboundMessageInbox:
         call_args = pool.execute.call_args
         sql = call_args[0][0]
 
-        assert "INSERT INTO message_inbox" in sql
+        assert "INSERT INTO switchboard.message_inbox" in sql
         assert "direction" in sql
         assert "'outbound'" in sql
 

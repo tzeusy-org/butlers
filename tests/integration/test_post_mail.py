@@ -64,6 +64,23 @@ async def pool(provisioned_postgres_pool):
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
+        # Minimal connector_registry (bu-nz1wx): only the columns
+        # heartbeat._get_previous_snapshot selects, so the arc-closer teeth test
+        # can prove that switchboard-qualified read resolves under a public-only
+        # search_path. Mirrors the switchboard-schema table from migration 002.
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS connector_registry (
+                connector_type TEXT NOT NULL,
+                endpoint_identity TEXT NOT NULL,
+                instance_id UUID,
+                counter_messages_ingested BIGINT DEFAULT 0,
+                counter_messages_failed BIGINT DEFAULT 0,
+                counter_source_api_calls BIGINT DEFAULT 0,
+                counter_checkpoint_saves BIGINT DEFAULT 0,
+                counter_dedupe_accepted BIGINT DEFAULT 0,
+                PRIMARY KEY (connector_type, endpoint_identity)
+            )
+        """)
         yield p
 
 
@@ -369,3 +386,34 @@ async def test_list_routing_log_endpoint_works_on_public_scoped_pool(pool):
 
     assert resp.meta.total >= 1
     assert any(entry.target_butler == "finance" for entry in resp.data)
+
+
+async def test_connector_snapshot_read_works_on_public_scoped_pool(pool):
+    """bu-nz1wx (arc closer): heartbeat's ``_get_previous_snapshot`` reads
+    switchboard.connector_registry, so it returns the real snapshot even from a
+    connection whose search_path EXCLUDES switchboard.
+
+    Representative teeth for the newly-swept tool-layer reads this bead qualified
+    (connector_registry / connector_heartbeat_log / message_inbox across
+    heartbeat, ingest, operator, deliver, correct_route, replay, backfill): before
+    qualification each bare read resolved against public first and raised
+    UndefinedTableError under a public-only search_path. SET LOCAL reverts on
+    commit (no pooled-connection leak).
+    """
+    from butlers.tools.switchboard.connector.heartbeat import _get_previous_snapshot
+
+    await pool.execute(
+        "DELETE FROM switchboard.connector_registry "
+        "WHERE connector_type = 'nz1wx-conn' AND endpoint_identity = 'nz1wx-ep'"
+    )
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry "
+        "(connector_type, endpoint_identity) VALUES ('nz1wx-conn', 'nz1wx-ep')"
+    )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SET LOCAL search_path TO public, pg_catalog")
+            snapshot = await _get_previous_snapshot(conn, "nz1wx-conn", "nz1wx-ep")
+
+    assert snapshot is not None

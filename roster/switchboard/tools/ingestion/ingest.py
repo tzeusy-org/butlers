@@ -304,7 +304,7 @@ async def _find_request_by_dedupe_key(pool: asyncpg.Pool, dedupe_key: str) -> as
     return await pool.fetchrow(
         """
         SELECT (request_context ->> 'request_id')::uuid AS request_id
-        FROM message_inbox
+        FROM switchboard.message_inbox
         WHERE request_context ->> 'dedupe_key' = $1
         ORDER BY received_at DESC
         LIMIT 1
@@ -324,7 +324,7 @@ async def _find_request_by_content_hash(
     return await pool.fetchrow(
         """
         SELECT (request_context ->> 'request_id')::uuid AS request_id
-        FROM message_inbox
+        FROM switchboard.message_inbox
         WHERE request_context ->> 'content_hash_key' = $1
         ORDER BY received_at DESC
         LIMIT 1
@@ -920,7 +920,7 @@ async def ingest_v1(
                 existing = await conn.fetchrow(
                     """
                     SELECT (request_context ->> 'request_id')::uuid AS request_id
-                    FROM message_inbox
+                    FROM switchboard.message_inbox
                     WHERE request_context ->> 'dedupe_key' = $1
                     ORDER BY received_at DESC
                     LIMIT 1
@@ -932,7 +932,7 @@ async def ingest_v1(
                     existing = await conn.fetchrow(
                         """
                         SELECT (request_context ->> 'request_id')::uuid AS request_id
-                        FROM message_inbox
+                        FROM switchboard.message_inbox
                         WHERE request_context ->> 'content_hash_key' = $1
                         ORDER BY received_at DESC
                         LIMIT 1
@@ -958,7 +958,7 @@ async def ingest_v1(
                 # Insert into message_inbox lifecycle store
                 await conn.execute(
                     """
-                    INSERT INTO message_inbox (
+                    INSERT INTO switchboard.message_inbox (
                         id,
                         received_at,
                         request_context,

@@ -170,7 +170,7 @@ async def test_heartbeat_first_submission_self_registration(valid_heartbeat_payl
     # Verify upsert was called
     assert pool.execute.call_count >= 2  # upsert + log insert
     upsert_call = pool.execute.call_args_list[0]
-    assert "INSERT INTO connector_registry" in upsert_call[0][0]
+    assert "INSERT INTO switchboard.connector_registry" in upsert_call[0][0]
     assert "ON CONFLICT (connector_type, endpoint_identity)" in upsert_call[0][0]
 
 
@@ -270,7 +270,7 @@ async def test_heartbeat_appends_to_log_table(valid_heartbeat_payload):
     # Check that log insert was called
     log_insert_call = None
     for call in pool.execute.call_args_list:
-        if "INSERT INTO connector_heartbeat_log" in str(call):
+        if "INSERT INTO switchboard.connector_heartbeat_log" in str(call):
             log_insert_call = call
             break
 

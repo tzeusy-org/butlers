@@ -37,7 +37,7 @@ async def manual_reroute_request(
             lifecycle_state,
             dispatch_outcomes,
             request_context
-        FROM message_inbox
+        FROM switchboard.message_inbox
         WHERE id = $1
         """,
         request_id,
@@ -76,7 +76,7 @@ async def manual_reroute_request(
 
         await conn.execute(
             """
-            UPDATE message_inbox
+            UPDATE switchboard.message_inbox
             SET
                 request_context = $1::jsonb,
                 lifecycle_state = 'rerouted',
@@ -90,7 +90,7 @@ async def manual_reroute_request(
         # Log in operator audit log
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,
@@ -130,7 +130,7 @@ async def manual_reroute_request(
     except Exception as e:
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,
@@ -182,7 +182,7 @@ async def cancel_request(
         SELECT
             id,
             lifecycle_state
-        FROM message_inbox
+        FROM switchboard.message_inbox
         WHERE id = $1
         """,
         request_id,
@@ -205,7 +205,7 @@ async def cancel_request(
     try:
         await conn.execute(
             """
-            UPDATE message_inbox
+            UPDATE switchboard.message_inbox
             SET
                 lifecycle_state = 'cancelled',
                 final_state_at = now(),
@@ -219,7 +219,7 @@ async def cancel_request(
 
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,
@@ -250,7 +250,7 @@ async def cancel_request(
     except Exception as e:
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,
@@ -304,7 +304,7 @@ async def abort_request(
         SELECT
             id,
             lifecycle_state
-        FROM message_inbox
+        FROM switchboard.message_inbox
         WHERE id = $1
         """,
         request_id,
@@ -320,7 +320,7 @@ async def abort_request(
     try:
         await conn.execute(
             """
-            UPDATE message_inbox
+            UPDATE switchboard.message_inbox
             SET
                 lifecycle_state = 'aborted',
                 final_state_at = now(),
@@ -334,7 +334,7 @@ async def abort_request(
 
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,
@@ -365,7 +365,7 @@ async def abort_request(
     except Exception as e:
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,
@@ -419,7 +419,7 @@ async def force_complete_request(
         SELECT
             id,
             lifecycle_state
-        FROM message_inbox
+        FROM switchboard.message_inbox
         WHERE id = $1
         """,
         request_id,
@@ -442,7 +442,7 @@ async def force_complete_request(
     try:
         await conn.execute(
             """
-            UPDATE message_inbox
+            UPDATE switchboard.message_inbox
             SET
                 lifecycle_state = 'completed',
                 final_state_at = now(),
@@ -456,7 +456,7 @@ async def force_complete_request(
 
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,
@@ -488,7 +488,7 @@ async def force_complete_request(
     except Exception as e:
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,

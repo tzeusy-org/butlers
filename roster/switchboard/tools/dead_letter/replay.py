@@ -101,7 +101,7 @@ async def replay_dead_letter_request(
 
         await conn.execute(
             """
-            INSERT INTO message_inbox (
+            INSERT INTO switchboard.message_inbox (
                 id,
                 request_context,
                 raw_payload,
@@ -141,7 +141,7 @@ async def replay_dead_letter_request(
         # Log in operator audit log
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,
@@ -194,7 +194,7 @@ async def replay_dead_letter_request(
 
         await conn.execute(
             """
-            INSERT INTO operator_audit_log (
+            INSERT INTO switchboard.operator_audit_log (
                 action_type,
                 target_request_id,
                 target_table,

@@ -178,7 +178,7 @@ async def correct_route(
             lifecycle_state,
             request_context,
             attachments
-        FROM message_inbox
+        FROM switchboard.message_inbox
         WHERE id = $1
           AND received_at >= $2
           AND received_at <= $3
@@ -337,7 +337,7 @@ async def correct_route(
         try:
             await pool.execute(
                 """
-                INSERT INTO operator_audit_log (
+                INSERT INTO switchboard.operator_audit_log (
                     action_type,
                     target_request_id,
                     target_table,
@@ -409,7 +409,7 @@ async def correct_route(
 
     await pool.execute(
         """
-        UPDATE message_inbox
+        UPDATE switchboard.message_inbox
         SET
             lifecycle_state = 'corrected',
             processing_metadata = processing_metadata || $1,
@@ -423,7 +423,7 @@ async def correct_route(
     # 8. Record in operator_audit_log for traceability
     await pool.execute(
         """
-        INSERT INTO operator_audit_log (
+        INSERT INTO switchboard.operator_audit_log (
             action_type,
             target_request_id,
             target_table,

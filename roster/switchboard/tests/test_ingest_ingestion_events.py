@@ -72,7 +72,7 @@ class _FakeConn:
         return None
 
     def has_message_inbox_insert(self) -> bool:
-        return any("INSERT INTO message_inbox" in sql for sql, _ in self.execute_calls)
+        return any("INSERT INTO switchboard.message_inbox" in sql for sql, _ in self.execute_calls)
 
     def has_ingestion_events_insert(self) -> bool:
         return any("public.ingestion_events" in sql for sql, _ in self.execute_calls)
@@ -452,7 +452,7 @@ class TestIngestionEventsWriteOnAccept:
         inbox_received_at = None
         events_received_at = None
         for sql, args in pool.conn.execute_calls:
-            if "INSERT INTO message_inbox" in sql:
+            if "INSERT INTO switchboard.message_inbox" in sql:
                 inbox_received_at = args[1]  # $2
             elif "public.ingestion_events" in sql:
                 events_received_at = args[1]  # $2

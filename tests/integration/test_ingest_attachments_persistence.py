@@ -28,6 +28,10 @@ async def pool(postgres_container):
     from butlers.db import Database
     from butlers.migrations import run_migrations
 
+    # Scoped to the real ``switchboard`` schema (bu-nz1wx) so the pool's
+    # search_path is ``switchboard,public`` and production's schema-qualified
+    # ``switchboard.message_inbox`` reads/writes resolve — mirroring production's
+    # one-db/multi-schema topology.
     db = Database(
         db_name=_unique_db_name(),
         host=postgres_container.get_container_host_ip(),
@@ -36,13 +40,14 @@ async def pool(postgres_container):
         password=postgres_container.password,
         min_pool_size=1,
         max_pool_size=3,
+        schema="switchboard",
     )
     await db.provision()
     p = await db.connect()
 
     db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
     await run_migrations(db_url, chain="core")
-    await run_migrations(db_url, chain="switchboard")
+    await run_migrations(db_url, chain="switchboard", schema="switchboard")
 
     yield p
 

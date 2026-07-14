@@ -122,6 +122,12 @@ def migrated_db_url(postgres_container) -> str:
         postgres_container,
         migration_db_name(),
         chains=["core", "switchboard"],
+        # bu-nz1wx: provision the switchboard chain into the real ``switchboard``
+        # schema so production's schema-qualified ``switchboard.message_inbox``
+        # writes (ingest_v1) resolve — mirroring production's one-db/multi-schema
+        # topology. Core tables stay in public; the test's own message_inbox reads
+        # are schema-qualified below, so the pool keeps the default search_path.
+        schemas={"switchboard": "switchboard"},
     )
 
 
@@ -136,7 +142,20 @@ async def pool(migrated_db_url: str):
     persist request_context.
     """
     p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+        migrated_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        # bu-nz1wx: switchboard tables + the message_inbox partition function live
+        # in the ``switchboard`` schema; the core per-butler tables this test's
+        # spawned-session stand-in writes (``sessions``, ``dashboard_messages``,
+        # ``conversations``) live in ``public`` and exist in every butler schema —
+        # only ``public.sessions`` carries the core_155 cache-token columns. So
+        # ``public`` must win for those bare core reads/writes, while the
+        # switchboard-only objects (the partition function; the qualified
+        # ``switchboard.message_inbox`` writes) resolve by fallthrough. Hence
+        # ``public`` first, then ``switchboard``.
+        server_settings={"search_path": "public, switchboard"},
     )
     try:
         yield p
@@ -177,7 +196,7 @@ async def _read_request_context(pool: asyncpg.Pool, message_inbox_id: UUID) -> d
     so the pinned ``triage_decision`` reaches the pipeline exactly as shipped.
     """
     row = await pool.fetchrow(
-        "SELECT request_context, lifecycle_state FROM message_inbox WHERE id = $1",
+        "SELECT request_context, lifecycle_state FROM switchboard.message_inbox WHERE id = $1",
         message_inbox_id,
     )
     assert row is not None, "message_inbox row missing after ingest_v1"
@@ -360,7 +379,7 @@ async def test_dashboard_message_lineage_end_to_end(pool):
 
     # --- message_inbox lifecycle reflects the successful bypass route --------
     inbox_state = await pool.fetchval(
-        "SELECT lifecycle_state FROM message_inbox WHERE id = $1", ingest_request_id
+        "SELECT lifecycle_state FROM switchboard.message_inbox WHERE id = $1", ingest_request_id
     )
     assert inbox_state == "parsed"
 
@@ -456,6 +475,6 @@ async def test_dashboard_message_spawn_failure_leaves_no_orphaned_lineage(pool):
 
     # --- message_inbox records the failure, not a false 'parsed' -------------
     inbox_state = await pool.fetchval(
-        "SELECT lifecycle_state FROM message_inbox WHERE id = $1", ingest_request_id
+        "SELECT lifecycle_state FROM switchboard.message_inbox WHERE id = $1", ingest_request_id
     )
     assert inbox_state == "errored"
