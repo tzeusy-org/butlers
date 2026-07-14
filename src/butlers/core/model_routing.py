@@ -225,10 +225,24 @@ class SpendRoutingResult:
         effect, or ``None`` when the matching rule sets no cap (or no rule matched).
         The cap is a hard per-dispatch budget the spawner enforces as a DENY gate —
         distinct from the global monthly ceiling.
+    breaker_open:
+        The live dispatch-outcome circuit-breaker state (bu-hmdqz.2) of the
+        rule-selected model *at rule-resolution time*, but ONLY when that model's
+        breaker is open. ``None`` when no rule re-routed the model, when the
+        rule-selected model's breaker is closed, or when the breaker probe
+        failed (fail-open). Operator spend rules are an explicit human override,
+        so a breaker-open target is honored — NOT silently excluded (bu-14j0m,
+        decision (b)). This field lets the spawner record the breaker-open fact
+        on the dispatch-attempt trail so the "why did this session fail" trail
+        shows the breaker was open when the operator rule selected the model;
+        the existing same-tier failover machinery still handles any real
+        dispatch failure (``next_same_tier_candidate`` excludes breaker-open
+        entries).
     """
 
     resolved: tuple[str, str, list[str], uuid.UUID, int]
     max_cost_per_call: float | None = None
+    breaker_open: BreakerState | None = None
 
 
 # Shared with the ceiling-deny message the spawner builds below AND with
@@ -239,6 +253,21 @@ class SpendRoutingResult:
 # CEILING_DENIAL_REASON_PREFIX in frontend/src/hooks/use-fleet-halt.ts — keep
 # both in sync if this text ever changes.
 CEILING_DENIAL_REASON_PREFIX = "Monthly spend ceiling reached"
+
+# Recorded on a ``public.model_dispatch_attempts`` row (outcome
+# ``breaker_open_override``) when an operator spend rule routes to a model whose
+# dispatch-outcome circuit breaker is open (bu-14j0m, decision (b): honor the
+# rule, warn visibly, do NOT silently exclude). Mirrors the ``failure_reason``
+# prefix idiom used by ``CEILING_DENIAL_REASON_PREFIX`` so the fact is
+# greppable on the dispatch-attempt trail. The row is informational only — its
+# outcome is deliberately NOT ``runtime_failure``/``success`` so the breaker
+# CTE (which counts only those two) neither trips nor resets on it.
+BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX = "Spend rule routed to breaker-open model"
+
+# The ``outcome`` value for the informational breaker-open-override attempt row
+# above. Distinct from the failover outcome vocabulary; ignored by the breaker
+# derivation (see ``_BREAKER_OPEN_CTE``).
+BREAKER_OPEN_RULE_OVERRIDE_OUTCOME = "breaker_open_override"
 
 
 @dataclasses.dataclass
@@ -1196,6 +1225,43 @@ async def apply_spend_routing_rules(
             row["model_id"],
             f" (per-call cap=${max_cost_per_call:.4f})" if max_cost_per_call is not None else "",
         )
+
+        # Circuit-breaker awareness (bu-14j0m, decision (b)): an operator spend
+        # rule is explicit human intent, so a breaker-open target is HONORED,
+        # not silently excluded — silently vetoing operator config would turn an
+        # availability signal into a hidden override (the same fabricated-calm
+        # failure mode inverted). Instead we warn visibly and surface the
+        # breaker state so the spawner records it on the dispatch-attempt trail;
+        # the existing same-tier failover (``next_same_tier_candidate`` excludes
+        # breaker-open entries) still handles any real dispatch failure.
+        # Fail-open: a breaker probe error must never wedge the spawn.
+        breaker_open_state: BreakerState | None = None
+        try:
+            breaker_state = await get_breaker_state(pool, row["id"])
+            if breaker_state.open:
+                breaker_open_state = breaker_state
+                logger.warning(
+                    "apply_spend_routing_rules: rule %s routed butler=%s tier=%s to model %s "
+                    "(catalog_entry=%s) whose dispatch-outcome circuit breaker is OPEN "
+                    "(%d consecutive runtime failures, last attempt %s); honoring the operator "
+                    "rule (not excluding) — same-tier failover remains available if dispatch fails",
+                    rule_id,
+                    butler_name,
+                    tier_value,
+                    row["model_id"],
+                    row["id"],
+                    breaker_state.consecutive_failures,
+                    breaker_state.last_attempt_at,
+                )
+        except Exception:
+            logger.debug(
+                "apply_spend_routing_rules: breaker probe failed for rule-selected model %s "
+                "(catalog_entry=%s); proceeding without breaker annotation (fail-open)",
+                row["model_id"],
+                row["id"],
+                exc_info=True,
+            )
+
         return SpendRoutingResult(
             resolved=(
                 row["runtime_type"],
@@ -1205,6 +1271,7 @@ async def apply_spend_routing_rules(
                 row["session_timeout_s"],
             ),
             max_cost_per_call=max_cost_per_call,
+            breaker_open=breaker_open_state,
         )
 
     # No rule matched — tier-based resolution stands.

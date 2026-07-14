@@ -195,6 +195,23 @@ entirely from `public.model_dispatch_attempts` at query time
   (int), computed via `get_breaker_states` in one batched query alongside the row list —
   not N+1 per-entry queries
 
+#### Scenario: Operator spend rule to a breaker-open model is honored, not excluded
+- **WHEN** an operator spend routing rule (`apply_spend_routing_rules`) resolves to a
+  catalog entry whose dispatch-outcome circuit breaker is open
+- **THEN** the rule SHALL be HONORED — the rule-selected model is returned, NOT excluded —
+  because an operator spend rule is an explicit human override, distinct from automatic
+  tier/failover resolution (which DOES exclude breaker-open entries); silently excluding it
+  would turn an availability signal into a hidden veto of operator configuration
+- **AND** the resolver SHALL log a WARNING naming the model, its consecutive-failure count,
+  and the rule, and surface the open `BreakerState` on `SpendRoutingResult.breaker_open`
+- **AND** the spawner SHALL record ONE informational `public.model_dispatch_attempts` row
+  with outcome `breaker_open_override` (a `failure_reason` prefixed
+  `Spend rule routed to breaker-open model`) so the "why did this session fail" trail shows
+  the breaker was open at rule-resolution time; this outcome is NOT
+  `runtime_failure`/`success`, so it neither trips nor resets the breaker
+- **AND** existing same-tier failover (`next_same_tier_candidate`, which excludes
+  breaker-open entries) SHALL still handle any actual dispatch failure of the honored model
+
 #### Scenario: Deterministic fallback ordering
 - **WHEN** multiple non-attempted candidates remain in the effective tier
 - **THEN** fallback ordering SHALL be deterministic by effective priority descending,

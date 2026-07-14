@@ -22,6 +22,8 @@ import pytest
 from butlers.core.model_routing import (
     _BREAKER_FAILURE_THRESHOLD,
     _BREAKER_HALF_OPEN_COOLDOWN_MINUTES,
+    BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
+    BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     _check_deprecated_tier,
@@ -1840,3 +1842,161 @@ async def test_get_breaker_states_defaults_missing_ids_to_closed(pool: asyncpg.P
     states = await get_breaker_states(pool, [uuid.UUID(entry_id)])
     assert states[uuid.UUID(entry_id)].open is False
     assert states[uuid.UUID(entry_id)].consecutive_failures == 0
+
+
+# ---------------------------------------------------------------------------
+# Spend routing rules × dispatch-outcome circuit breaker (bu-14j0m)
+#
+# Decision (b): an operator spend rule is explicit human intent, so a
+# breaker-open target is HONORED, not silently excluded. apply_spend_routing_rules
+# surfaces the breaker state (SpendRoutingResult.breaker_open) and logs a warning;
+# the model tuple is still re-routed to the rule target.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_to_breaker_open_model_honored_and_flagged(
+    pool: asyncpg.Pool, caplog
+) -> None:
+    """A rule routing to a breaker-open model keeps the override AND flags the breaker.
+
+    The rule-selected model is still returned (honored, not excluded), and
+    ``SpendRoutingResult.breaker_open`` carries the open BreakerState so the
+    spawner can record it on the dispatch-attempt trail. A visible warning is
+    logged naming the model + rule.
+    """
+    import logging
+
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    # Tier resolution picks the healthy default; the rule reroutes to the tripped one.
+    await _insert_catalog_entry(
+        pool, alias="brk-base", model_id="brk-base-model", complexity_tier="workhorse", priority=100
+    )
+    tripped_id = await _insert_catalog_entry(
+        pool,
+        alias="brk-target",
+        model_id="brk-target-model",
+        complexity_tier="workhorse",
+        priority=1,
+    )
+    # Trip the breaker: the most recent _BREAKER_FAILURE_THRESHOLD attempts are all
+    # runtime_failure and recent, so the breaker derives as open.
+    for _ in range(_BREAKER_FAILURE_THRESHOLD):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    assert resolved[1] == "brk-base-model"
+
+    await _insert_spend_rule(
+        pool,
+        position=0,
+        condition={"butler": "general", "complexity": "workhorse"},
+        action={"model": "brk-target-model"},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="butlers.core.model_routing"):
+        result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+
+    # Rule honored: model IS re-routed to the breaker-open target.
+    assert result.resolved[1] == "brk-target-model"
+    assert str(result.resolved[3]) == tripped_id
+    # Breaker state surfaced for the spawner's dispatch-attempt trail.
+    assert result.breaker_open is not None
+    assert result.breaker_open.open is True
+    assert result.breaker_open.consecutive_failures >= _BREAKER_FAILURE_THRESHOLD
+    # Visible warning naming the model and that the rule is honored, not excluded.
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("breaker is OPEN" in m and "brk-target-model" in m for m in warnings)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_to_healthy_model_no_breaker_flag(pool: asyncpg.Pool, caplog) -> None:
+    """A rule routing to a healthy (breaker-closed) model sets no breaker flag/warning."""
+    import logging
+
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    await _insert_catalog_entry(
+        pool, alias="ok-base", model_id="ok-base-model", complexity_tier="workhorse", priority=100
+    )
+    healthy_id = await _insert_catalog_entry(
+        pool, alias="ok-target", model_id="ok-target-model", complexity_tier="workhorse", priority=1
+    )
+    # A single success = breaker closed.
+    await _insert_dispatch_attempt(pool, catalog_entry_id=healthy_id, outcome="success")
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    await _insert_spend_rule(
+        pool,
+        position=0,
+        condition={},
+        action={"model": "ok-target-model"},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="butlers.core.model_routing"):
+        result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+
+    assert result.resolved[1] == "ok-target-model"
+    assert result.breaker_open is None
+    assert not any("breaker is OPEN" in r.message for r in caplog.records)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spend_rule_breaker_flag_matches_get_breaker_state(pool: asyncpg.Pool) -> None:
+    """The surfaced breaker_open state matches get_breaker_state (PR #3170 semantics)."""
+    await pool.execute("TRUNCATE public.spend_rules")
+
+    await _insert_catalog_entry(
+        pool, alias="sem-base", model_id="sem-base-model", complexity_tier="workhorse", priority=100
+    )
+    tripped_id = await _insert_catalog_entry(
+        pool,
+        alias="sem-target",
+        model_id="sem-target-model",
+        complexity_tier="workhorse",
+        priority=1,
+    )
+    for _ in range(_BREAKER_FAILURE_THRESHOLD):
+        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
+
+    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    await _insert_spend_rule(pool, position=0, condition={}, action={"model": "sem-target-model"})
+
+    result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    direct = await get_breaker_state(pool, uuid.UUID(tripped_id))
+
+    assert result.breaker_open is not None
+    assert result.breaker_open.open == direct.open is True
+    assert result.breaker_open.consecutive_failures == direct.consecutive_failures
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_breaker_override_outcome_ignored_by_breaker_derivation(pool: asyncpg.Pool) -> None:
+    """The informational override outcome must not trip/reset the breaker.
+
+    The breaker CTE counts only runtime_failure/success rows, so a
+    breaker_open_override attempt row is inert to breaker derivation.
+    """
+    entry_id = await _insert_catalog_entry(
+        pool, alias="inert", model_id="inert-model", complexity_tier="cheap"
+    )
+    # Only override rows — no runtime_failure/success history.
+    for _ in range(_BREAKER_FAILURE_THRESHOLD + 2):
+        await _insert_dispatch_attempt(
+            pool, catalog_entry_id=entry_id, outcome=BREAKER_OPEN_RULE_OVERRIDE_OUTCOME
+        )
+
+    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    assert state.open is False
+    assert state.consecutive_failures == 0
+    # Prefix constant is greppable on the trail (documents the recorded fact).
+    assert BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX == "Spend rule routed to breaker-open model"

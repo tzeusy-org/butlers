@@ -54,6 +54,8 @@ from butlers.core.mcp_urls import (
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_breaker_attention import maybe_push_breaker_open_attention
 from butlers.core.model_routing import (
+    BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
+    BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     CEILING_DENIAL_REASON_PREFIX,
     Complexity,
     apply_spend_routing_rules,
@@ -1004,6 +1006,12 @@ class Spawner:
         # Per-call USD cap surfaced by a matching spend rule's action.max_cost_per_call
         # effect (None when no rule sets a cap). Enforced as a DENY gate below.
         _spend_rule_max_cost_per_call: float | None = None
+        # Breaker state of a rule-selected model whose circuit breaker was open
+        # at rule-resolution time (bu-14j0m, decision (b)). Non-None means an
+        # operator spend rule deliberately routed to a breaker-open model; we
+        # honor the rule and record the fact on the dispatch-attempt trail
+        # (below, once effective_request_id is minted) rather than excluding it.
+        _spend_rule_breaker_open = None
         if catalog_entry_id is not None and self._pool is not None:
             try:
                 _routing_result = await apply_spend_routing_rules(
@@ -1027,6 +1035,7 @@ class Spawner:
                     catalog_timeout_s,
                 ) = _routing_result.resolved
                 _spend_rule_max_cost_per_call = _routing_result.max_cost_per_call
+                _spend_rule_breaker_open = _routing_result.breaker_open
             except Exception:
                 logger.warning(
                     "Spend routing-rule evaluation failed for butler=%s; "
@@ -1049,6 +1058,35 @@ class Spawner:
         # (suppressed / runtime_failure / success) even when request_id is None
         # (scheduler/tick triggers).
         effective_request_id: str = request_id or generate_uuid7_string()
+
+        # Breaker-open rule override (bu-14j0m, decision (b)): if an operator
+        # spend rule routed to a model whose dispatch-outcome circuit breaker
+        # was open at resolution, record ONE informational attempt row so the
+        # "why did this session fail" trail shows the breaker was open when the
+        # operator rule selected the model. The rule is still honored (the model
+        # stays selected); this row is observational only, and its outcome is
+        # deliberately not runtime_failure/success so it never trips or resets
+        # the breaker. Best-effort — _write_dispatch_attempt never raises.
+        if (
+            _spend_rule_breaker_open is not None
+            and catalog_entry_id is not None
+            and self._pool is not None
+        ):
+            await _write_dispatch_attempt(
+                self._pool,
+                catalog_entry_id=catalog_entry_id,
+                butler=self._config.name,
+                outcome=BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
+                attempt_index=0,
+                failure_reason=(
+                    f"{BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX}: model '{model}' had "
+                    f"{_spend_rule_breaker_open.consecutive_failures} consecutive runtime "
+                    f"failures (last attempt {_spend_rule_breaker_open.last_attempt_at}); "
+                    "operator spend rule honored (not excluded), same-tier failover available"
+                ),
+                tool_call_count=0,
+                logical_session_id=effective_request_id,
+            )
 
         _attempted_ids: list[uuid.UUID] = []
 

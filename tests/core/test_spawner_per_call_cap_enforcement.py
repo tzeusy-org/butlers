@@ -27,7 +27,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.config import ButlerConfig, RuntimeSeedConfig
-from butlers.core.model_routing import CeilingStatus, QuotaStatus, SpendRoutingResult
+from butlers.core.model_routing import (
+    BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
+    BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
+    BreakerState,
+    CeilingStatus,
+    QuotaStatus,
+    SpendRoutingResult,
+)
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
@@ -252,3 +259,84 @@ class TestSpawnerPerCallCapEnforcement:
         mock_est.assert_not_called()
         assert result.success is True
         assert adapter.invoke_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Breaker-open spend-rule override (bu-14j0m, decision (b))
+#
+# When a spend rule routes to a breaker-open model, apply_spend_routing_rules
+# surfaces the open BreakerState on SpendRoutingResult.breaker_open. The spawner
+# HONORS the rule (still dispatches) and records ONE informational
+# breaker_open_override attempt row so the "why did this session fail" trail
+# shows the breaker was open at rule-resolution time.
+# ---------------------------------------------------------------------------
+
+
+def _routing_breaker_open() -> SpendRoutingResult:
+    return SpendRoutingResult(
+        resolved=(DEFAULT_RUNTIME_TYPE, "claude-haiku", [], _FAKE_CATALOG_ID, 1800),
+        max_cost_per_call=None,
+        breaker_open=BreakerState(open=True, consecutive_failures=5, last_attempt_at=None),
+    )
+
+
+def _override_execute_calls(mock_pool: AsyncMock) -> list:
+    """Return _write_dispatch_attempt execute() calls that recorded the override row.
+
+    _write_dispatch_attempt calls pool.execute(SQL, session_id, catalog_entry_id,
+    butler, outcome, failure_reason, ...) — so args[4] is the outcome.
+    """
+    out = []
+    for call in mock_pool.execute.await_args_list:
+        args = call.args
+        if len(args) >= 6 and args[4] == BREAKER_OPEN_RULE_OVERRIDE_OUTCOME:
+            out.append(args)
+    return out
+
+
+class TestSpawnerBreakerOpenRuleOverride:
+    async def test_records_override_row_and_still_dispatches(self, tmp_path: Path) -> None:
+        """Rule → breaker-open model: dispatch still runs AND an override row is recorded."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+        adapter = _MockAdapter(result_text="honored output")
+
+        with ExitStack() as stack:
+            _enter_session_patches(stack)
+            _enter_base_patches(stack, _routing_breaker_open())
+            result = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick", max_token_budget=100_000)
+
+        # Rule honored — the breaker-open model was NOT excluded; the spawn ran.
+        assert result.success is True
+        assert adapter.invoke_calls == 1
+        # The breaker-open fact was recorded on the dispatch-attempt trail.
+        override_calls = _override_execute_calls(mock_pool)
+        assert len(override_calls) == 1
+        # catalog_entry_id (args[2]) is the rule-selected model; failure_reason (args[5])
+        # carries the greppable prefix + the consecutive-failure count.
+        assert override_calls[0][2] == _FAKE_CATALOG_ID
+        assert override_calls[0][5].startswith(BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX)
+        assert "5 consecutive" in override_calls[0][5]
+
+    async def test_no_override_row_when_breaker_closed(self, tmp_path: Path) -> None:
+        """Rule → healthy model (breaker_open=None): no override row is written."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+        adapter = _MockAdapter(result_text="ok")
+
+        with ExitStack() as stack:
+            _enter_session_patches(stack)
+            _enter_base_patches(stack, _routing_no_cap())  # breaker_open defaults to None
+            result = await Spawner(
+                config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick", max_token_budget=100_000)
+
+        assert result.success is True
+        assert adapter.invoke_calls == 1
+        assert _override_execute_calls(mock_pool) == []
