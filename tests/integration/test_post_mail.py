@@ -289,3 +289,39 @@ async def test_post_mail_lookup_works_on_public_scoped_pool(pool):
     )
     assert len(rows) == 1
     assert rows[0]["success"] is False
+
+
+async def test_thread_affinity_lookup_works_on_public_scoped_pool(pool):
+    """bu-qnmso: lookup_thread_affinity's routing-history query reads
+    switchboard.routing_log, so it returns the real history -- a HIT -- even
+    from a connection whose search_path EXCLUDES switchboard. Before
+    qualification the bare read failed under a public-only search_path and the
+    fail-open handler returned MISS_ERROR instead of the true history.
+
+    ``settings`` is passed explicitly to bypass ``load_settings`` -- its own
+    fail-open ``except`` would otherwise swallow a query error while leaving the
+    surrounding transaction aborted, masking what this test isolates (the
+    routing_log read). SET LOCAL reverts on commit (no pooled-connection leak).
+    """
+    from butlers.tools.switchboard.triage.thread_affinity import (
+        AffinityOutcome,
+        ThreadAffinitySettings,
+        lookup_thread_affinity,
+    )
+
+    await pool.execute("DELETE FROM switchboard.routing_log")
+    await pool.execute(
+        "INSERT INTO switchboard.routing_log "
+        "(source_butler, target_butler, tool_name, success, thread_id, source_channel) "
+        "VALUES ('switchboard', 'finance', 'route', TRUE, 't-qnmso', 'email')"
+    )
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SET LOCAL search_path TO public, pg_catalog")
+            result = await lookup_thread_affinity(
+                conn, "t-qnmso", "email", settings=ThreadAffinitySettings.defaults()
+            )
+
+    assert result.outcome == AffinityOutcome.HIT
+    assert result.target_butler == "finance"

@@ -246,7 +246,7 @@ async def load_settings(pool: asyncpg.Pool) -> ThreadAffinitySettings:
         row = await pool.fetchrow(
             """
             SELECT thread_affinity_enabled, thread_affinity_ttl_days, thread_overrides
-            FROM thread_affinity_settings
+            FROM switchboard.thread_affinity_settings
             WHERE id = 1
             """
         )
@@ -390,7 +390,7 @@ async def lookup_thread_affinity(
             SELECT
                 target_butler,
                 MAX(created_at) AS last_routed_at
-            FROM routing_log
+            FROM switchboard.routing_log
             WHERE source_channel = 'email'
               AND thread_id = $1
               AND created_at >= NOW() - ($2 || ' days')::INTERVAL
@@ -445,7 +445,7 @@ async def _has_stale_history(
         row = await pool.fetchrow(
             """
             SELECT 1
-            FROM routing_log
+            FROM switchboard.routing_log
             WHERE source_channel = 'email'
               AND thread_id = $1
               AND created_at < NOW() - ($2 || ' days')::INTERVAL
