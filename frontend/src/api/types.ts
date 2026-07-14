@@ -2768,6 +2768,23 @@ export interface MemoryStats {
 export interface MemoryStatsMeta extends ApiMeta {
   /** Names of memory pools whose stats query failed and were dropped from the totals. */
   pools_failed?: string[];
+  /**
+   * Catalog-drift gauge (bu-5ud8p.4): live / stale / drifted discovery-catalog
+   * row counts summed across butler pools. Present on any successful stats read.
+   * `catalog_drifted` is the leading indicator: non-zero means the shared
+   * catalog is serving memories the owning butler has since disowned, and should
+   * trend to zero as the backfill reconciliation runs.
+   */
+  catalog_live?: number;
+  catalog_stale?: number;
+  catalog_drifted?: number;
+  /**
+   * Names of butler pools whose catalog-drift query failed and were dropped from
+   * the catalog counts (memory.py `catalog_tracker`). Present only on failure; a
+   * non-empty list means the catalog counts undercount and must NOT read as a
+   * clean gauge.
+   */
+  catalog_pools_failed?: string[];
 }
 
 /** GET /api/memory/stats response: aggregate totals + degraded-pool meta. */

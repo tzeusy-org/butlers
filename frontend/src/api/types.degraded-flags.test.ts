@@ -135,6 +135,7 @@ const REGISTRY: DegradedFlagEntry[] = [
     consumerFiles: ["pages/ApprovalsPage.tsx"],
   },
   { flag: "pools_failed", emittedBy: "memory stats" },
+  { flag: "catalog_pools_failed", emittedBy: "memory stats (catalog-drift gauge)" },
   { flag: "unavailable_butlers", emittedBy: "spend summary/daily/by-schedule/top-sessions" },
   { flag: "stripe_source_error", emittedBy: "butlers board (per-row hourly activity)" },
   { flag: "sessions_source_error", emittedBy: "butlers board (aggregate rollup)" },

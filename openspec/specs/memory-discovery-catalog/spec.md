@@ -394,3 +394,13 @@ fields (episode/fact/rule counts).
 - **AND** the other pools' contributions to the gauge, and that pool's own
   episode/fact/rule counts in the response `data`, MUST still be returned
 
+#### Scenario: The memory console renders the gauge and gates the all-clear on the catalog degraded-source list
+
+- **WHEN** the `/memory` console (`MemoryOverture`) reads `GET /api/memory/stats`
+- **THEN** it SHALL render the summed live, stale, and drifted counts from
+  `meta`, with the drifted count carrying the only state color on the band and
+  only when it is greater than zero (a healthy gauge renders no alert color)
+- **AND** when the gauge's catalog degraded-source list in `meta` is non-empty,
+  the console MUST name the dropped pools inline via the `SourceDegradedNote`
+  convention, so the drift counts never render as a clean all-clear
+

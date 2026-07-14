@@ -153,6 +153,50 @@ function PipelineBand({ stats }: { stats: MemoryStats }) {
 }
 
 // ---------------------------------------------------------------------------
+// Catalog-drift gauge (Band 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The discovery-catalog health gauge. Mirrors the pipeline band's mono-numeral
+ * language: `catalog live N / stale N` on the left, a right-aligned `drifted N`
+ * fragment that turns --red ONLY when drift > 0; the leading indicator that the
+ * shared catalog is serving disowned memories (MEMORY_LANGUAGE.md 6: zero red
+ * pixels when healthy). Reads the counts off `meta`, not `data`.
+ */
+function CatalogBand({
+  live,
+  stale,
+  drifted,
+}: {
+  live: number;
+  stale: number;
+  drifted: number;
+}) {
+  const driftActive = drifted > 0;
+  return (
+    <div className="border-b border-[var(--border-soft)] pb-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-y-2 font-mono text-[11px] leading-[1.4]">
+        <div className="flex flex-wrap items-baseline">
+          <PipeStat label="catalog live" value={live} />
+          <span className="px-1 text-[var(--mfg)]">·</span>
+          <PipeStat label="stale" value={stale} />
+        </div>
+        {/* drift fragment: the only state color in this band, and only when
+            drifted > 0 (MEMORY_LANGUAGE.md 6). */}
+        <span
+          className={cn(
+            "whitespace-nowrap tabular-nums",
+            driftActive ? "text-[var(--red-text)]" : "text-[var(--mfg)]",
+          )}
+        >
+          drifted {formatNumeral(drifted)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // MemoryOverture
 // ---------------------------------------------------------------------------
 
@@ -177,6 +221,19 @@ export default function MemoryOverture() {
   // inline instead of letting the numbers read as an all-clear (CLAUDE.md
   // degraded-envelope convention; bu-jad4j.1).
   const poolsFailed = statsResponse?.meta?.pools_failed ?? [];
+
+  // Catalog-drift gauge (bu-i8jlt): live/stale/drifted counts ride on `meta`
+  // (memory.py::get_stats -> catalog_live/catalog_stale/catalog_drifted). A
+  // separate catalog fan-out can drop pools independently of the stats fan-out
+  // above, naming them in `meta.catalog_pools_failed`; when that list is
+  // non-empty the drift counts undercount, so the gauge must NOT read as a clean
+  // all-clear; name the missing pools inline instead (CLAUDE.md degraded
+  // convention; SourceDegradedNote).
+  const catalogMeta = statsResponse?.meta;
+  const catalogLive = catalogMeta?.catalog_live ?? 0;
+  const catalogStale = catalogMeta?.catalog_stale ?? 0;
+  const catalogDrifted = catalogMeta?.catalog_drifted ?? 0;
+  const catalogPoolsFailed = catalogMeta?.catalog_pools_failed ?? [];
 
   // Stats down with nothing cached: the Voice/KPI/pipeline bands would
   // otherwise render blank forever, reading as still-loading when the source
@@ -228,6 +285,30 @@ export default function MemoryOverture() {
             />
           )}
           {stats != null && <PipelineBand stats={stats} />}
+        </div>
+      )}
+
+      {/* Band 3: Catalog-drift gauge. Reserve the band height so the page below
+          does not jump when stats arrive. When one or more butler pools dropped
+          out of the catalog fan-out, a named degraded note precedes the band so
+          its drift counts are not read as a clean gauge. */}
+      {!statsUnavailable && (
+        <div className="flex min-h-[37px] flex-col gap-3">
+          {catalogPoolsFailed.length > 0 && (
+            <SourceDegradedNote
+              label="Catalog drift"
+              detail={`${catalogPoolsFailed.join(", ")} unreachable, drift counts may undercount`}
+              onRetry={() => void refetch()}
+              testId="memory-overture-catalog-degraded"
+            />
+          )}
+          {stats != null && (
+            <CatalogBand
+              live={catalogLive}
+              stale={catalogStale}
+              drifted={catalogDrifted}
+            />
+          )}
         </div>
       )}
     </section>

@@ -81,6 +81,13 @@ function findDeadLetterEl(container: HTMLElement): HTMLElement | undefined {
   );
 }
 
+/** The element carrying the catalog-drift fragment (whitespace-nowrap span). */
+function findDriftEl(container: HTMLElement): HTMLElement | undefined {
+  return Array.from(container.querySelectorAll<HTMLElement>("span")).find((el) =>
+    /^drifted \d/.test(el.textContent ?? ""),
+  );
+}
+
 describe("MemoryOverture", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -254,6 +261,92 @@ describe("MemoryOverture", () => {
       container.querySelector('[data-testid="memory-overture-pools-degraded"]'),
     ).toBeNull();
     expect(container.textContent).toContain("dead letters");
+  });
+
+  // -------------------------------------------------------------------------
+  // Catalog-drift gauge (bu-i8jlt)
+  // -------------------------------------------------------------------------
+
+  it("renders the catalog gauge counts from meta (healthy: drift muted, no red)", () => {
+    setStats(makeStats(), {
+      catalog_live: 812,
+      catalog_stale: 14,
+      catalog_drifted: 0,
+    });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    const text = container.textContent ?? "";
+    expect(text).toContain("catalog live");
+    expect(text).toContain("812");
+    expect(text).toContain("stale");
+    expect(text).toContain("drifted 0");
+    // Healthy: the drift fragment is muted, not red (zero red pixels).
+    const el = findDriftEl(container);
+    expect(el).toBeDefined();
+    expect(el!.className).toContain("text-[var(--mfg)]");
+    expect(el!.className).not.toContain("text-[var(--red-text)]");
+    const reds = Array.from(container.querySelectorAll<HTMLElement>("[class*='--red']"));
+    expect(reds).toHaveLength(0);
+    // Healthy: no catalog degraded note.
+    expect(
+      container.querySelector('[data-testid="memory-overture-catalog-degraded"]'),
+    ).toBeNull();
+  });
+
+  it("turns ONLY the drift fragment red when catalog_drifted > 0", () => {
+    setStats(makeStats({ dead_letter_episodes: 0 }), {
+      catalog_live: 800,
+      catalog_stale: 20,
+      catalog_drifted: 5,
+    });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    const el = findDriftEl(container);
+    expect(el).toBeDefined();
+    expect(el!.textContent).toBe("drifted 5");
+    expect(el!.className).toContain("text-[var(--red-text)]");
+    // Exactly one red-bearing element: the drift fragment (dead letters == 0).
+    const reds = Array.from(container.querySelectorAll<HTMLElement>("[class*='--red']"));
+    expect(reds).toHaveLength(1);
+    expect(reds[0]).toBe(el);
+  });
+
+  it("names failed catalog pools inline (not a clean gauge) when meta.catalog_pools_failed is set", () => {
+    // Degraded catalog fan-out: the backend answered 200 but a catalog pool
+    // errored, so the drift counts undercount. The gauge must NOT read as a
+    // clean all-clear; name the dropped pools inline (bu-i8jlt).
+    setStats(makeStats(), {
+      catalog_live: 400,
+      catalog_stale: 3,
+      catalog_drifted: 0,
+      catalog_pools_failed: ["relationship", "finance"],
+    });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    const note = container.querySelector('[data-testid="memory-overture-catalog-degraded"]');
+    expect(note).not.toBeNull();
+    expect(note!.getAttribute("role")).toBe("alert");
+    expect(note!.textContent).toContain("relationship, finance");
+    // The gauge still renders its (partial) counts; the note qualifies them.
+    expect(container.textContent).toContain("catalog live");
+    // No em-dash in the new degraded copy (em-dash-copy ratchet, PR #3232).
+    const catalogNoteText = note!.textContent ?? "";
+    expect(catalogNoteText).not.toContain("—");
+  });
+
+  it("shows no catalog degraded note on the happy path (catalog_pools_failed absent)", () => {
+    // Mutation guard: the catalog note must depend on the flag.
+    setStats(makeStats(), { catalog_live: 100, catalog_stale: 0, catalog_drifted: 0 });
+    act(() => {
+      root.render(<MemoryOverture />);
+    });
+    expect(
+      container.querySelector('[data-testid="memory-overture-catalog-degraded"]'),
+    ).toBeNull();
+    expect(container.textContent).toContain("catalog live");
   });
 
   it("renders the headline while stats are still loading (reserved height, no shift)", () => {
