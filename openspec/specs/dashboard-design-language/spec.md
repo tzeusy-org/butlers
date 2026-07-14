@@ -344,7 +344,9 @@ by changing color.
 Interface copy SHALL follow the settled voice doctrine
 (`about/heart-and-soul/design-language.md` § Voice and Copy): register is technical, terse,
 slightly formal, owner-direct. Past tense for events, present for state (no future tense); no
-exclamation marks anywhere; no first person — the system is a third party; "the" over "your"
+exclamation marks anywhere; no em-dashes in prose (use a comma, colon, or parentheses instead;
+doctrine non-negotiable #6), the sole exception being a bare `"—"` null-display placeholder; no
+first person (the system is a third party); "the" over "your"
 where it works ("The calendar is paused"; "your" stays only when contrast matters); no hedging
 adverbs (currently, presently, just, simply, basically); no celebration (no "Nice work!", no
 green-check moments — quiet success is the success state); no filler ("Welcome back, Tze!" is
