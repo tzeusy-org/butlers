@@ -19,13 +19,25 @@ ledger-write failure (unmigrated DB, transient connection error, ...) must
 never block or fail the routing decision it is describing. Failures are
 logged at WARNING and swallowed.
 
-Sender-key normalization: this bead intentionally computes its own minimal
-``sender_key`` (lowercase email extraction, same regex approach as
-``butlers.ingestion_policy._extract_emails``), independent of bu-qeaou's
-in-flight normalized-sender-column work on ``public.ingestion_events``. Bead 7
-(low priority, tracked separately) switches this over to bu-qeaou's shared
-column once it ships and deletes the local regex here — see the design doc's
-"Dependency on bu-qeaou" section for the sequencing rationale.
+Sender-key normalization (bead 7, bu-jxsew): the ``sender_key`` here keys
+PERSISTED verdict history across EVERY channel, so the sender identity is often
+a channel-scoped id (``owntracks:th``, ``telegram:bot:@bigbutlerbot``,
+``steam:user:<n>``, ``home_assistant:<host>:443``, ``dashboard:web:<uuid>``),
+not an email. bead 7 converges the EMAIL branch onto bu-qeaou's shared
+``butlers.identity.normalize_email_sender`` — but deliberately keeps this
+channel-aware wrapper rather than replacing the whole function with the shared
+helper. The shared helper is email-only: it runs ``email.utils.parseaddr``,
+which reads the ``prefix:id`` colons in a channel id as RFC-2822 route/group
+syntax and STRIPS everything before the last colon — e.g. ``home_assistant:
+v-on-shenton…:443`` → ``443`` and ``owntracks:th`` → ``th``, mangling ~75% of
+real keys and even COLLIDING distinct senders (any ``…:443`` → ``443``).
+Verified against the live verdict log (8 distinct keys, 6 would mangle). So
+this wrapper extracts an email first and normalizes only that via the shared
+helper (email keys stay byte-identical — the shared and old-local email
+normalization agree on every realistic ``From:`` form), and passes channel-
+scoped ids through a lowercase-whole fallthrough untouched. See
+``test_verdict_log_sender_key.py`` for the channel-key byte-identity pins that
+guard against a future "just use the shared helper" simplification.
 
 Verdict-source mapping for rule-shaped bypasses: ``request_context`` carries
 ``triage_rule_type`` for every non-LLM bypass decision (set by
@@ -58,6 +70,8 @@ from uuid import UUID
 
 import asyncpg
 
+from butlers.identity import normalize_email_sender
+
 logger = logging.getLogger(__name__)
 
 VerdictSource = Literal["llm", "rule", "pinned", "spot_check"]
@@ -66,27 +80,40 @@ VerdictAction = Literal["route_to", "skip", "metadata_only", "pass_through", "bl
 VALID_VERDICT_SOURCES = frozenset({"llm", "rule", "pinned", "spot_check"})
 VALID_VERDICT_ACTIONS = frozenset({"route_to", "skip", "metadata_only", "pass_through", "block"})
 
-# Mirrors butlers.ingestion_policy._EMAIL_RE. Duplicated intentionally (see
-# module docstring) — bead 7 removes this copy once bu-qeaou's shared
-# normalized-sender column ships.
+# The email discriminator for this channel-aware wrapper. NOT duplicated
+# normalization logic (bead 7 delegated that to normalize_email_sender); the
+# regex only DECIDES whether a value is email-shaped vs a channel-scoped id, a
+# split the email-only shared helper cannot make on its own (see the module
+# docstring's parseaddr / colon-stripping note). Mirrors
+# butlers.ingestion_policy._EMAIL_RE.
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[\w]+", re.ASCII)
 
 
 def normalize_sender_key(raw: str | None) -> str:
     """Return a normalized, lowercase sender key for mining/grouping.
 
-    Extracts the first email address found in *raw* (handles RFC 2822
-    ``"Display Name <user@example.com>"`` as well as a bare address). Falls
-    back to the lowercased, stripped raw string when no email address is
-    present (e.g. non-email channels whose sender identity is a chat id or
-    phone number) so every channel still gets a stable, comparable key.
+    Multi-channel by design: the sender identity may be an email or a
+    channel-scoped id (``owntracks:th``, ``telegram:bot:@x``,
+    ``home_assistant:<host>:443``, …). If an email address is present (handling
+    RFC 2822 ``"Display Name <user@example.com>"`` as well as a bare address),
+    the EMAIL is canonicalized via the shared
+    :func:`butlers.identity.normalize_email_sender` (bead 7 convergence —
+    email keys stay byte-identical to the pre-convergence local lowercase).
+    Otherwise the whole stripped value is lowercased, so a channel-scoped id
+    keeps its ``prefix:id`` shape and stays a stable, collision-free key.
+
+    The shared helper is deliberately applied only to the *extracted address*,
+    never the raw value: running ``parseaddr`` on a channel id strips its
+    colon-scoped prefix (``home_assistant:…:443`` → ``443``), mangling and
+    colliding keys — see the module docstring and
+    ``test_verdict_log_sender_key.py``.
     """
     text = (raw or "").strip()
     if not text:
         return ""
     emails = _EMAIL_RE.findall(text)
     if emails:
-        return emails[0].lower()
+        return normalize_email_sender(emails[0])
     return text.lower()
 
 

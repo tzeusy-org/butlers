@@ -2,9 +2,7 @@
 
 ## Purpose
 Defines the unified ingestion filtering and routing rule system that replaces both the triage-specific rule system and the source filter system. All ingestion rules are stored in a single `ingestion_rules` table with scope-based evaluation: `'global'` rules are evaluated post-ingest/pre-LLM by the Switchboard; `'connector:<type>:<identity>'` rules are evaluated at the connector before Switchboard submission.
-
 ## Requirements
-
 ### Requirement: Ingestion rules data model
 
 The system SHALL store all ingestion filtering and routing rules in a single `ingestion_rules` table in the switchboard schema. Each rule has a `scope` that determines its pipeline position: `'global'` rules are evaluated post-ingest/pre-LLM; `'connector:<type>:<identity>'` rules are evaluated at the connector before Switchboard submission.
@@ -49,6 +47,14 @@ Indexes:
 #### Scenario: Soft delete
 - **WHEN** a rule is deleted
 - **THEN** `deleted_at` is set and `enabled` is set to FALSE; the rule is excluded from all evaluator queries
+
+#### Scenario: Promoted rule carries suggestion provenance
+- **WHEN** a rule is created through the rule-promotion suggestion-confirmation flow (see `switchboard-rule-promotion` spec)
+- **THEN** the rule's `created_by` field MUST be `'promotion'` and `promoted_from_suggestion_id` MUST reference the originating `rule_promotion_suggestions` row
+
+#### Scenario: Non-promoted rules leave provenance null
+- **WHEN** a rule is created via the existing dashboard CRUD API, a migration seed, or any path other than suggestion confirmation
+- **THEN** `promoted_from_suggestion_id` MUST be NULL, and existing `created_by` behavior (e.g. `'dashboard'`) is unchanged
 
 ### Requirement: Condition schemas per rule type
 
@@ -272,3 +278,4 @@ The system SHALL emit unified OpenTelemetry metrics replacing both triage and so
 #### Scenario: No-match pass_through is recorded
 - **WHEN** no rule matches at global scope
 - **THEN** `rule_pass_through` counter is incremented with `scope_type=global`, `reason=no_match`
+

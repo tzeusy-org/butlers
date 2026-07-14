@@ -41,6 +41,40 @@ class TestNormalizeSenderKey:
         # e.g. a telegram chat id or phone-number-shaped identity
         assert normalize_sender_key("Telegram:123456789") == "telegram:123456789"
 
+    # bu-jxsew regression pins: channel-scoped ids must pass through the
+    # wrapper BYTE-IDENTICAL (lowercased-whole), never through the shared
+    # email-only normalizer. These are the real forms in the live verdict log;
+    # normalize_email_sender would parseaddr-strip their colon prefixes
+    # (owntracks:th -> "th", home_assistant:...:443 -> "443" — a COLLISION),
+    # mangling ~75% of keys. If a future PR "simplifies" the wrapper to the bare
+    # shared helper, these trip loudly instead of silently corrupting history.
+    @pytest.mark.parametrize(
+        "channel_id",
+        [
+            "owntracks:th",
+            "telegram:bot:@bigbutlerbot",
+            "steam:user:76561198037633688",
+            "home_assistant:v-on-shenton.parrot-hen.ts.net:443",
+            "spotify:tzeusii",
+            "dashboard:web:019e2246-7f41-754e-a991-63fc7adf334b",
+        ],
+    )
+    def test_channel_scoped_ids_pass_through_byte_identical(self, channel_id):
+        assert normalize_sender_key(channel_id) == channel_id
+
+    def test_channel_id_case_is_lowercased_but_prefix_preserved(self):
+        # A mixed-case channel id lowercases whole; the prefix is NOT stripped.
+        assert normalize_sender_key("Home_Assistant:HOST:443") == "home_assistant:host:443"
+
+    def test_email_branch_delegates_to_shared_normalizer(self):
+        # bu-jxsew convergence: the email branch reuses the shared canonical
+        # email normalizer, so its output matches it exactly (and stays
+        # byte-identical to the pre-convergence local lowercase for real forms).
+        from butlers.identity import normalize_email_sender
+
+        for raw in ("User@Example.COM", "GitHub <notifications@github.com>"):
+            assert normalize_sender_key(raw) == normalize_email_sender(raw)
+
     def test_none_input(self):
         assert normalize_sender_key(None) == ""
 

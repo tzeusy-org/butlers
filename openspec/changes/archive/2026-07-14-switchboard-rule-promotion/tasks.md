@@ -8,10 +8,12 @@ bu-h26o9 -> PR #2992, bu-wuwy9 -> PR #2999, bu-x55k3 -> PR #3015). Bead 4
 the owner auto-apply-vs-confirm decision (bu-4pq0s) resolved to auto-apply, so
 the batched "bulk-confirm" endpoint (task 4.3) was superseded by auto-mint +
 reversible toggle rather than built. Bead 6 (metrics tile, task 6.1) SHIPPED
-2026-07-14 (bu-hb61f -> this change's stats endpoint + tile). Bead 7
-(sender-normalization de-dup, task 7.1, low priority) remains UNBUILT in code
-(verdict_log.py still carries the local sender regex, pending bu-jxsew). DO NOT
-archive this change until task 7.1 closes.
+2026-07-14 (bu-hb61f -> PR #3223: stats endpoint + tile). Bead 7
+(sender-normalization de-dup, task 7.1) CLOSED 2026-07-14 (bu-jxsew -> PR #3224):
+converged the EMAIL branch of `verdict_log.normalize_sender_key` onto bu-qeaou's
+shared `butlers.identity.normalize_email_sender`, keeping a documented
+channel-aware wrapper — see 7.1 for the divergence quantification. All 25 tasks
+are now complete; this change is ready to ARCHIVE.
 
 ## 1. Verdict mining substrate
 
@@ -104,6 +106,25 @@ archive this change until task 7.1 closes.
 
 ## 7. De-duplicate sender normalization against bu-qeaou (low priority)
 
-- [ ] 7.1 Once bu-qeaou ships its normalized sender column on
-      `public.ingestion_events`, switch `sender_key` derivation to read it
-      directly; delete the local regex duplication from Task 1.5
+- [x] 7.1 Converge `sender_key` derivation onto bu-qeaou's shared normalizer
+      (bu-jxsew). bu-qeaou (PR #2976) shipped the shared *helper*
+      `butlers.identity.normalize_email_sender`, NOT a normalized-sender column
+      on `public.ingestion_events` (that column was never built), so "read the
+      column directly" is not available. The helper is also email-only: it runs
+      `email.utils.parseaddr`, which reads the `prefix:id` colons in a
+      channel-scoped identity as RFC-2822 route/group syntax and strips
+      everything before the last colon. Quantified against the live verdict log
+      (8 distinct `sender_key`s): 6/8 would MANGLE under the bare shared helper
+      — `owntracks:th` → `th`, `home_assistant:<host>:443` → `443` (a COLLISION
+      across distinct HA senders), `telegram:bot:@x` → `@x`, `steam:user:<n>` →
+      `<n>`, `spotify:<u>` → `<u>`, `dashboard:web:<uuid>` → `<uuid>`; only the
+      2 bare-email keys converge. Persisted email keys are byte-stable (the
+      shared and old-local email normalization agree on every realistic `From:`
+      form across a 25-input comparison). Resolution (owner-approved option B,
+      no re-key / no migration): delegate ONLY the email branch of
+      `normalize_sender_key` to the shared helper (canonical email
+      normalization, converged), and keep the channel-aware wrapper with a
+      lowercase-whole fallthrough for channel-scoped ids — documented in
+      `verdict_log.py` with the parseaddr counterexample, and guarded by
+      byte-identity regression pins in `test_routing_verdict_log.py` so a future
+      "just use the shared helper" simplification trips a named test.
