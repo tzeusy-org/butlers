@@ -84,7 +84,7 @@ export default function EducationPage() {
           data-testid="education-error"
         >
           <p className="text-sm text-destructive">
-            Couldn't reach the education service — retry.
+            Couldn't reach the education service. Retry.
           </p>
           <Button variant="outline" onClick={() => void refetch()}>
             Retry

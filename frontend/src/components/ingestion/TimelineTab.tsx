@@ -373,7 +373,7 @@ function Toolbar({
                     ? "bg-foreground/10 text-foreground border border-border"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 ].join(" ")}
-                title={modified ? "Filters differ from this view — click to re-apply it" : undefined}
+                title={modified ? "Filters differ from this view. Click to re-apply it" : undefined}
                 data-view={view.id}
                 aria-pressed={active}
               >
@@ -423,7 +423,7 @@ function Toolbar({
                     data-view={view.id}
                     data-testid={`custom-view-${view.id}`}
                     aria-pressed={active}
-                    title={modified ? `Filters differ from "${view.name}" — click to re-apply it` : view.name}
+                    title={modified ? `Filters differ from "${view.name}". Click to re-apply it` : view.name}
                   >
                     {view.name}
                     {modified && (

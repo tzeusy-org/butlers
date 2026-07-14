@@ -187,7 +187,7 @@ export function SystemVerdictBanner() {
     problems.push({
       key: "drift",
       text: driftData.escalated
-        ? `${chainCount} migration chain${chainCount === 1 ? "" : "s"} drifted — escalated to QA`
+        ? `${chainCount} migration chain${chainCount === 1 ? "" : "s"} drifted, escalated to QA`
         : `${chainCount} migration chain${chainCount === 1 ? "" : "s"} drifted`,
     });
   }

@@ -617,13 +617,13 @@ describe("QaOverviewPage -- patrol pulse strip", () => {
     const note = 'data-testid="qa-patrol-strip-source-unavailable"';
     expect(html).toContain(note);
     // The degraded note announces itself to assistive tech and names the
-    // source inline with an em-dash qualifier — never a suppressed source.
+    // source inline (source + reason), never a suppressed source.
     const noteIdx = html.indexOf(note);
     const window = html.slice(noteIdx - 200, noteIdx + 300);
     expect(window).toContain('role="alert"');
     expect(html).toContain("Recent patrols");
     expect(html).toContain("patrol source unreachable");
-    expect(html).toContain("—");
+    expect(html).toContain("recent patrols unavailable");
   });
 
   // Mutation guard: the degraded note must depend on isError. If isError still

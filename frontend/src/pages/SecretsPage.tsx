@@ -149,7 +149,7 @@ export default function SecretsPage() {
         <div className="px-9 pt-3" data-testid="secrets-inventory-degraded">
           <SourceDegradedNote
             label="Inventory"
-            detail={`unreachable — showing data from ${formatUpdatedAt(dataUpdatedAt)} · retrying`}
+            detail={`unreachable, showing data from ${formatUpdatedAt(dataUpdatedAt)} · retrying`}
             onRetry={() => refetch()}
           />
         </div>
@@ -158,7 +158,7 @@ export default function SecretsPage() {
         <div className="px-9 pt-3" data-testid="secrets-inventory-partial-degraded">
           <SourceDegradedNote
             label="Inventory"
-            detail={`${degradedFamilies.join(", ")} unavailable — showing the rest`}
+            detail={`${degradedFamilies.join(", ")} unavailable, showing the rest`}
             onRetry={() => refetch()}
           />
         </div>

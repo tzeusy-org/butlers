@@ -164,7 +164,7 @@ function DecisionRow({
             </div>
           ) : (
             <div className="italic">
-              No structured options yet — the decision-bead convention
+              No structured options yet. The decision-bead convention
               (options/default/deadline, bu-ckkpz.1) hasn't shipped. This
               decision is detected by title marker only.
             </div>
@@ -222,7 +222,7 @@ export default function DecisionsPage() {
     decisionsAvailable === false ? (
       <SourceDegradedNote
         label="Decisions"
-        detail={`${data?.meta.unavailable_reason ?? "beads export unreachable"} — decisions may be missing`}
+        detail={`${data?.meta.unavailable_reason ?? "beads export unreachable"}: decisions may be missing`}
         onRetry={() => void refetch()}
         testId="decisions-degraded"
       />

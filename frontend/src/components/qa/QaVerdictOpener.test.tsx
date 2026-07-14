@@ -168,7 +168,7 @@ describe("QaVerdictOpener -- clauses", () => {
     };
     const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
     expect(html).toContain('data-testid="qa-verdict-clauses"');
-    expect(html).toContain("3 consecutive failures — breaker opens at 5");
+    expect(html).toContain("3 consecutive failures, breaker opens at 5");
   });
 
   it("falls back to the known default threshold when the wire omits it", () => {
@@ -177,7 +177,7 @@ describe("QaVerdictOpener -- clauses", () => {
       circuit_breaker: { tripped: false, consecutive_failures: 1 },
     };
     const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
-    expect(html).toContain("1 consecutive failure — breaker opens at 5");
+    expect(html).toContain("1 consecutive failure, breaker opens at 5");
   });
 
   it("names an overdue patrol from last_patrol_at + 2x the interval", () => {
@@ -210,7 +210,7 @@ describe("QaVerdictOpener -- clauses", () => {
     };
     const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
     expect(html).toContain('data-testid="qa-verdict-clauses"');
-    expect(html).toContain("runtime CLI credential may be unhealthy — refresh token was revoked");
+    expect(html).toContain("runtime CLI credential may be unhealthy: refresh token was revoked");
   });
 });
 

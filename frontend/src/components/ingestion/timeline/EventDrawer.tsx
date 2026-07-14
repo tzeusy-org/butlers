@@ -529,7 +529,7 @@ function DrawerReplaysTab({ requestId, enabled }: { requestId: string; enabled: 
           2603, 2950 hardcode "attempt": 1, no retry loop). Recovery is the manual replay
           request above (src/butlers/core/ingestion_events.py `ingestion_event_replay_request`). */}
       <p className="font-serif text-[13px] leading-[1.55] text-muted-foreground italic pt-2">
-        No automatic retries — each dispatch is a single attempt. A failed event stays failed
+        No automatic retries. Each dispatch is a single attempt. A failed event stays failed
         until replay is requested from this drawer.
       </p>
     </div>
@@ -659,7 +659,7 @@ export function EventDrawer({ event, onClose, onOptimisticUpdate }: EventDrawerP
     event.status === 'replay_failed'
 
   const announceText = hasSessions
-    ? `Event detail open — ${sessionList.length} ${sessionList.length === 1 ? 'session' : 'sessions'}`
+    ? `Event detail open: ${sessionList.length} ${sessionList.length === 1 ? 'session' : 'sessions'}`
     : 'Event detail open'
 
   return (

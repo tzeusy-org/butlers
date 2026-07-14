@@ -717,7 +717,7 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
       <div className="flex flex-col gap-1 px-4 py-3 border-b border-border">
         <Eyebrow>Most Expensive Sessions</Eyebrow>
         <p className="text-xs text-muted-foreground">
-          Top sessions by cost, {formatWindowDate(from)} – {formatWindowDate(to)} — click through
+          Top sessions by cost, {formatWindowDate(from)} – {formatWindowDate(to)}. Click through
           to session detail.
         </p>
       </div>
@@ -814,7 +814,7 @@ function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
         <Eyebrow>By Schedule</Eyebrow>
         <p className="text-xs text-muted-foreground">
           Projected monthly cost per cron job, runs from {formatWindowDate(from)} –{" "}
-          {formatWindowDate(to)} — which schedule is burning money.
+          {formatWindowDate(to)}. See which schedule is burning money.
         </p>
       </div>
       <div className="p-4">

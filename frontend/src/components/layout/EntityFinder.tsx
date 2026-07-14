@@ -631,7 +631,7 @@ export default function EntityFinder() {
               <div data-testid="entity-finder-generic-degraded" className="mb-1">
                 <SourceDegradedNote
                   label="Sessions & state"
-                  detail={`search partial — ${genericDegraded.join(", ")} unavailable`}
+                  detail={`search partial: ${genericDegraded.join(", ")} unavailable`}
                 />
               </div>
             )}
@@ -737,7 +737,7 @@ export default function EntityFinder() {
                   <div data-testid="entity-finder-search-degraded">
                     <SourceDegradedNote
                       label="Entities"
-                      detail="search failed — showing previous results"
+                      detail="search failed; showing previous results"
                       className="mb-1"
                       onRetry={() => refetchEntitySearch()}
                     />

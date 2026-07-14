@@ -50,7 +50,9 @@ export function isValidRetentionKind(kind: string): kind is RetentionKind {
 export function formatUpdatedStamp(iso: string, by: string | null, tz: string): string {
   const actor = by ?? "system";
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return `—  · ${actor}`;
+  // Unparseable timestamp: show just the actor rather than an em-dash date
+  // filler (the recipe forbids em-dash filler, same as formatBytes for null).
+  if (Number.isNaN(d.getTime())) return actor;
   return `${dayKeyInTimeZone(d, tz)} · ${actor}`;
 }
 

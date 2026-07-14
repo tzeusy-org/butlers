@@ -74,7 +74,7 @@ export function SessionsKpiStrip({ filterParams }: SessionsKpiStripProps) {
       {!aggUnavailable && sourcesDegraded.length > 0 && (
         <SourceDegradedNote
           label="Session metrics"
-          detail={`partial — ${sourcesDegraded.join(", ")} unreachable`}
+          detail={`partial: ${sourcesDegraded.join(", ")} unreachable`}
           onRetry={() => void refetch()}
           className="mb-3"
           testId="sessions-kpi-degraded"

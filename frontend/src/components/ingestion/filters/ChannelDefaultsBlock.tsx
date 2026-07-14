@@ -173,7 +173,7 @@ function ChannelDefaultEditor({
           className="mb-2 font-mono text-[9.5px] tracking-[0.04em] text-muted-foreground/60"
           data-testid={`channel-default-editor-notfound-${channel}`}
         >
-          no policy configured yet — showing defaults
+          no policy configured yet, showing defaults
         </p>
       )}
       <div

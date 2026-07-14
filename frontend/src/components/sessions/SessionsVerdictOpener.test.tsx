@@ -190,7 +190,7 @@ describe("SessionsVerdictOpener -- degraded fan-out (bu-tpudw.2)", () => {
       />,
     );
     expect(html).toContain('data-testid="sessions-verdict-clauses"');
-    expect(html).toContain("finance, health unreachable — some failures may be missing");
+    expect(html).toContain("finance, health unreachable, so some failures may be missing");
     expect(html).not.toContain("No sessions failed");
   });
 

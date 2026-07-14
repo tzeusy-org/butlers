@@ -821,7 +821,7 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
           </Label>
           <Select onValueChange={applyTemplate}>
             <SelectTrigger id="add-template" className="font-mono text-sm w-full">
-              <SelectValue placeholder="— pick a template (optional)" />
+              <SelectValue placeholder="Pick a template (optional)" />
             </SelectTrigger>
             <SelectContent>
               {ALIAS_TEMPLATES.map((tpl) => (

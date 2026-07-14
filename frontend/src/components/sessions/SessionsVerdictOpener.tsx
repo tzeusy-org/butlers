@@ -68,7 +68,7 @@ function buildClauses(
   if (sourcesDegraded.length > 0) {
     clauses.push({
       key: "sources-degraded",
-      text: `${sourcesDegraded.join(", ")} unreachable — some failures may be missing`,
+      text: `${sourcesDegraded.join(", ")} unreachable, so some failures may be missing`,
     });
   }
 

@@ -310,7 +310,7 @@ function MemberRoster({ groupId, memberCount }: { groupId: string; memberCount: 
       {members.length < memberCount && (
         <p className="text-xs italic text-muted-foreground">
           {memberCount - members.length} member{memberCount - members.length === 1 ? "" : "s"} not
-          yet linked to an entity — omitted from deep-links.
+          yet linked to an entity (omitted from deep-links).
         </p>
       )}
     </div>
@@ -471,7 +471,7 @@ export default function CirclesPage() {
           </div>
           {truncated && (
             <p className="mt-2 text-xs italic text-muted-foreground">
-              Showing the first {FETCH_LIMIT} of {total} circles — search doesn't reach circles
+              Showing the first {FETCH_LIMIT} of {total} circles. Search doesn't reach circles
               beyond this page yet.
             </p>
           )}

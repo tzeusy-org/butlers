@@ -177,7 +177,7 @@ export default function AuditLogTable({ entries, isLoading, isError, error }: Au
         description={
           isDeterministic
             ? (error instanceof ApiError && error.message) ||
-              "The request was rejected — check the filters above."
+              "The request was rejected. Check the filters above."
             : "Failed to load audit log entries. The audit log may be temporarily unavailable. Try again shortly."
         }
       />

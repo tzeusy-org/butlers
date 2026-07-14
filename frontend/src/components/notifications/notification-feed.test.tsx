@@ -131,9 +131,9 @@ describe("NotificationFeed degraded-source honesty", () => {
 
     const note = screen.getByTestId("notification-feed-source-unavailable");
     expect(note.getAttribute("role")).toBe("alert");
-    // Named inline with an em-dash qualifier — never suppressed.
+    // Named inline (source + reason), never suppressed.
     expect(note.textContent).toContain("Notifications");
-    expect(note.textContent).toContain("—");
+    expect(note.textContent).toContain("incomplete");
     // The calm empty-state copy must NOT appear alongside the degraded note.
     expect(screen.queryByText("No notifications found.")).toBeNull();
   });

@@ -3476,7 +3476,7 @@ export function PassportAddPanel({
           {!userAdvanced && (
             <div className="flex flex-col gap-3" data-user-guided-connect="true">
               <Mono size={11} color="var(--dim)">
-                connect the provider directly — the same dance the reauthorize CTA uses.
+                connect the provider directly: the same dance the reauthorize CTA uses.
               </Mono>
 
               <div className="flex gap-2 flex-wrap">
@@ -3527,7 +3527,7 @@ export function PassportAddPanel({
           {userAdvanced && (
             <div className="flex flex-col gap-3" data-user-raw-form="true">
               <Mono size={11} color="var(--amber)">
-                pasted tokens bypass account and scope tracking — prefer the guided connect above when available.
+                pasted tokens bypass account and scope tracking. Prefer the guided connect above when available.
               </Mono>
 
               {/* Type with template suggestions */}
@@ -3551,7 +3551,7 @@ export function PassportAddPanel({
                 </select>
                 {(USER_TYPE_OAUTH_PROVIDER[userType] || USER_TYPE_HAS_DRAWER.has(userType)) && (
                   <Mono size={9} color="var(--dim)">
-                    this type has a guided connect above — only paste here if that path doesn't work.
+                    this type has a guided connect above. Only paste here if that path doesn't work.
                   </Mono>
                 )}
               </div>

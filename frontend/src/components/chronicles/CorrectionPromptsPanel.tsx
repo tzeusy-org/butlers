@@ -77,7 +77,7 @@ export function CorrectionPromptsPanel({
   if (data.prompts.length === 0) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="prompts-empty">
-        Nothing to confirm — every activity today is confidently labelled.
+        Nothing to confirm. Every activity today is confidently labelled.
       </p>
     );
   }

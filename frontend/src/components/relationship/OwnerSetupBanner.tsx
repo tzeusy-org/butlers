@@ -345,7 +345,7 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
                         disabled={isSaving}
                       />
                       <p className="text-xs text-muted-foreground">
-                        From my.telegram.org &mdash; used for user-client (MTProto) connections.
+                        From my.telegram.org, used for user-client (MTProto) connections.
                       </p>
                     </div>
                     <div className="space-y-2">

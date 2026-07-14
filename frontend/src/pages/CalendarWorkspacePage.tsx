@@ -1537,7 +1537,7 @@ export function CalendarActivityPanel({
           <SourceDegradedNote
             testId="audit-sources-degraded"
             label="Activity log"
-            detail="some sources unavailable — recent mutations may be missing"
+            detail="some sources unavailable: recent mutations may be missing"
           />
         ) : null}
         <Voice variant="italic" className="text-[var(--mfg)]">
@@ -1553,7 +1553,7 @@ export function CalendarActivityPanel({
         <SourceDegradedNote
           testId="audit-sources-degraded"
           label="Activity log"
-          detail="some sources unavailable — recent mutations may be missing"
+          detail="some sources unavailable: recent mutations may be missing"
         />
       ) : null}
       <div className="flex items-center justify-between gap-4">
@@ -2730,7 +2730,7 @@ export default function CalendarWorkspacePage() {
                 "This change was already undone (or is no longer reversible).";
             } else if (error.status === 422) {
               message =
-                "Can't undo — the original state wasn't captured, so it can't be reconstructed.";
+                "Can't undo: the original state wasn't captured, so it can't be reconstructed.";
             } else if (error.status === 404) {
               message =
                 "That action is no longer in the audit log, so it can't be undone.";
@@ -4984,7 +4984,7 @@ export default function CalendarWorkspacePage() {
             <div data-testid="entries-source-degraded" className="pb-2">
               <SourceDegradedNote
                 label="Calendar events"
-                detail="some sources unavailable — this view may be missing events"
+                detail="some sources unavailable: this view may be missing events"
               />
             </div>
           ) : null}
@@ -4995,7 +4995,7 @@ export default function CalendarWorkspacePage() {
             <div data-testid="linked-people-degraded" className="pb-2">
               <SourceDegradedNote
                 label="Linked people"
-                detail="unavailable — some events may not show their people"
+                detail="unavailable: some events may not show their people"
               />
             </div>
           ) : null}

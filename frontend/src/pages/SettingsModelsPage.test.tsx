@@ -1358,7 +1358,7 @@ describe("SettingsModelsPage — template dropdown (bu-6jxcw)", () => {
       fireEvent.click(screen.getByRole("button", { name: /new model/i }));
     });
     // The placeholder text must appear in the closed Select trigger.
-    expect(screen.getByText("— pick a template (optional)")).toBeTruthy();
+    expect(screen.getByText("Pick a template (optional)")).toBeTruthy();
   });
 });
 

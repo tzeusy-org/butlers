@@ -632,7 +632,7 @@ export function BlockHead({
 const VISA_STATE_LEGEND: Record<"granted" | "missing" | "extra", string> = {
   granted: "Required and granted.",
   missing: "Required but not yet granted.",
-  extra: "Granted beyond what's required — not a warning.",
+  extra: "Granted beyond what's required (not a warning).",
 };
 
 /** VisaRow: single scope with granted/missing/extra state. */

@@ -213,7 +213,7 @@ export default function TimelinePage() {
       <DispatchHeader
         eyebrow="Fleet · timeline"
         headline="Every household event, newest first."
-        description="Sessions, notifications, and errors across every butler — the fleet's single chronicle."
+        description="Sessions, notifications, and errors across every butler: the fleet's single chronicle."
         aside={<LiveStatusBadge latestReceivedAt={latestReceivedAt} isDown={isLiveFeedDown} />}
       />
 
@@ -223,7 +223,7 @@ export default function TimelinePage() {
             className="font-mono text-[11px] text-[var(--amber-text)] border border-[var(--amber)]/30 bg-[var(--amber)]/5 rounded px-3 py-1.5"
             data-testid="timeline-degraded-banner"
           >
-            Partial data: {degradedSources.join(", ")} temporarily unavailable — this page may be
+            Partial data: {degradedSources.join(", ")} temporarily unavailable. This page may be
             missing some events from that source.
           </p>
         )}

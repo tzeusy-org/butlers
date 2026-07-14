@@ -80,7 +80,7 @@ describe("ConfirmImpact: unavailable state", () => {
     renderWithQuery(<ConfirmImpact provider="google" />)
     await waitFor(() => {
       expect(
-        screen.getByText("impact unavailable — could not reach the dependency catalogue."),
+        screen.getByText("impact unavailable: could not reach the dependency catalogue."),
       ).toBeTruthy()
     })
   })
@@ -90,7 +90,7 @@ describe("ConfirmImpact: unavailable state", () => {
     renderWithQuery(<ConfirmImpact provider="google" />)
     await waitFor(() => {
       expect(
-        screen.getByText("impact unavailable — could not reach the dependency catalogue."),
+        screen.getByText("impact unavailable: could not reach the dependency catalogue."),
       ).toBeTruthy()
     })
   })

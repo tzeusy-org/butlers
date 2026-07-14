@@ -82,7 +82,7 @@ export const GATE_DEFS: GateDefinition[] = [
     gloss:
       'Spawns the butler session in a single attempt. A failure surfaces as failed, not a retry.',
     codePolicy:
-      'Execution policy lives in code, not in the rules DSL. One dispatch attempt — no automatic ' +
+      'Execution policy lives in code, not in the rules DSL. One dispatch attempt, with no automatic ' +
       'retry or back-off. A failed event stays failed/replay_failed until someone requests replay.',
   },
 ]

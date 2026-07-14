@@ -1323,7 +1323,7 @@ export default function ApprovalsPage() {
       <div className="p-4">
         <SourceDegradedNote
           label="Approvals queue"
-          detail={`${pendingSourcesDegraded.join(", ")} unreachable — queue may be incomplete`}
+          detail={`${pendingSourcesDegraded.join(", ")} unreachable. Queue may be incomplete.`}
           onRetry={() => void refetch()}
           testId="approvals-queue-degraded"
         />

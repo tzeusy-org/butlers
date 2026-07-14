@@ -40,7 +40,7 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
       const threshold = summary.circuit_breaker.threshold ?? DEFAULT_CIRCUIT_BREAKER_THRESHOLD;
       clauses.push({
         key: "pre-trip-failure-streak",
-        text: `${n} consecutive failure${n === 1 ? "" : "s"} — breaker opens at ${threshold}`,
+        text: `${n} consecutive failure${n === 1 ? "" : "s"}, breaker opens at ${threshold}`,
       });
     }
     if (summary.staffer_status === "error") {
@@ -63,7 +63,7 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
   if (summary.runtime_credential_alert) {
     clauses.push({
       key: "runtime-credential-alert",
-      text: `runtime CLI credential may be unhealthy — ${summary.runtime_credential_alert}`,
+      text: `runtime CLI credential may be unhealthy: ${summary.runtime_credential_alert}`,
     });
   }
 
@@ -97,7 +97,7 @@ function buildOverduePatrolClause(summary: QaSummary): VerdictClause | null {
 
   return {
     key: "overdue-patrol",
-    text: `patrol overdue — last patrol ${formatRelativeCompact(new Date(lastPatrolMs))}`,
+    text: `patrol overdue: last patrol ${formatRelativeCompact(new Date(lastPatrolMs))}`,
   };
 }
 

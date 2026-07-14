@@ -348,7 +348,7 @@ function ResetBreakerDialog({
           <AlertDialogTitle>Reset the QA circuit breaker?</AlertDialogTitle>
           <AlertDialogDescription>
             The breaker tripped after {attempts.length > 0 ? "these" : "five"} consecutive
-            investigation failures. Resetting re-admits new dispatches — the failure history stays
+            investigation failures. Resetting re-admits new dispatches. The failure history stays
             recorded and un-fabricated.
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -382,8 +382,8 @@ function ResetBreakerDialog({
             className="border-y border-border/60 py-2 font-mono text-[11px] text-[var(--amber-text)]"
           >
             {attemptsAvailable
-              ? "No failing attempts on record — the breaker's evidence is empty."
-              : "Failing-attempt evidence unavailable — the circuit-breaker source is unreachable."}
+              ? "No failing attempts on record: the breaker's evidence is empty."
+              : "Failing-attempt evidence unavailable: the circuit-breaker source is unreachable."}
           </p>
         )}
 
@@ -495,7 +495,7 @@ function PatrolPulseStrip() {
       <div className="border-b border-border/60 px-6 py-2">
         <SourceDegradedNote
           label="Recent patrols"
-          detail="patrol source unreachable — recent patrols unavailable"
+          detail="patrol source unreachable: recent patrols unavailable"
           onRetry={() => void patrols.refetch()}
           testId="qa-patrol-strip-source-unavailable"
         />

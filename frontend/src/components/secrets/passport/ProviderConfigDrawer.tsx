@@ -1097,7 +1097,7 @@ export function SpotifyDrawerContent() {
           data-spotify-error-card="true"
         >
           <Mono size={11} upper tracking="0.12em" color="var(--red)">
-            Error — re-authorization needed
+            Error: re-authorization needed
           </Mono>
           <Mono size={11} color="var(--mfg)">
             {status?.error ?? "Spotify token verification failed. Re-connect your account."}

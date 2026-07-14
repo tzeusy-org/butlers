@@ -49,7 +49,7 @@ function buildClauses(
   if (sourcesDegraded.length > 0) {
     clauses.push({
       key: "sources-degraded",
-      text: `${sourcesDegraded.join(", ")} unreachable — some approvals may be missing`,
+      text: `${sourcesDegraded.join(", ")} unreachable: some approvals may be missing`,
     });
   }
 

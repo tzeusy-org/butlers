@@ -36,7 +36,7 @@ function buildClauses(
   if (decisionsAvailable === false) {
     clauses.push({
       key: "decisions-unavailable",
-      text: "decision digest unavailable — beads export unreachable",
+      text: "decision digest unavailable: beads export unreachable",
     });
     return clauses;
   }

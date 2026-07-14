@@ -133,7 +133,7 @@ export function SessionTable({
     sourcesDegraded.length > 0 ? (
       <SourceDegradedNote
         label="Session list"
-        detail={`partial — ${sourcesDegraded.join(", ")} unreachable`}
+        detail={`partial: ${sourcesDegraded.join(", ")} unreachable`}
         className="mb-3"
         testId="sessions-list-degraded"
       />

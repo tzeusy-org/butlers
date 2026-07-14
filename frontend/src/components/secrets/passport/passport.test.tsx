@@ -1371,7 +1371,7 @@ describe("SpotifyDrawer: client_id config + OAuth connect + disconnect", () => {
     } as any);
     const html = renderInRouter(<SpotifyDrawerContent />);
     expect(html).toContain('data-spotify-error-card="true"');
-    expect(html).toContain("Error — re-authorization needed");
+    expect(html).toContain("Error: re-authorization needed");
     expect(html).toContain("re-connect");
     expect(html).toContain("Spotify token verification failed");
   });

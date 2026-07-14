@@ -76,8 +76,8 @@ export function ArchiveCandidatesList({ connectors }: ArchiveCandidatesListProps
       </div>
 
       <p className="font-serif italic text-[12.5px] text-muted-foreground/80 mb-3 max-w-prose">
-        Offline &gt;30 days with a newer online identity of the same connector —
-        likely superseded. Archiving is never automatic; review each and archive
+        Offline &gt;30 days with a newer online identity of the same connector, so
+        it is likely superseded. Archiving is never automatic; review each and archive
         if it is truly dead.
       </p>
 
@@ -144,7 +144,7 @@ export function ArchiveCandidatesList({ connectors }: ArchiveCandidatesListProps
           data-testid="archive-candidates-error"
           className="font-mono text-[10.5px] text-[var(--red-text)] mt-2"
         >
-          Archive failed — the identity was not archived. Try again.
+          Archive failed. The identity was not archived. Try again.
         </p>
       )}
     </div>

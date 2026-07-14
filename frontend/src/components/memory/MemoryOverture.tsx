@@ -279,7 +279,7 @@ export default function MemoryOverture() {
           {poolsFailed.length > 0 && (
             <SourceDegradedNote
               label="Memory stats"
-              detail={`${poolsFailed.join(", ")} unreachable — totals may undercount`}
+              detail={`${poolsFailed.join(", ")} unreachable. Totals may undercount`}
               onRetry={() => void refetch()}
               testId="memory-overture-pools-degraded"
             />

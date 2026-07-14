@@ -193,7 +193,7 @@ export function SessionsPinnedStrip({
           {!runningError && runningSourcesDegraded.length > 0 && (
             <SourceDegradedNote
               label="Running sessions"
-              detail={`partial — ${runningSourcesDegraded.join(", ")} unreachable`}
+              detail={`partial: ${runningSourcesDegraded.join(", ")} unreachable`}
             />
           )}
           {recentFailuresError && (
@@ -202,7 +202,7 @@ export function SessionsPinnedStrip({
           {!recentFailuresError && recentFailuresSourcesDegraded.length > 0 && (
             <SourceDegradedNote
               label="Recent failures"
-              detail={`partial — ${recentFailuresSourcesDegraded.join(", ")} unreachable`}
+              detail={`partial: ${recentFailuresSourcesDegraded.join(", ")} unreachable`}
             />
           )}
         </div>

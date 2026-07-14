@@ -86,7 +86,7 @@ export function QueryBoundary({
         className={cn("flex flex-col items-start gap-2 py-8", className)}
       >
         <p className="font-serif text-sm italic text-destructive">
-          {subject} — retry{detail ? `. ${detail}` : "."}
+          {subject}. Retry{detail ? `. ${detail}` : "."}
         </p>
         {onRetry && (
           <Button variant="outline" size="sm" onClick={onRetry}>

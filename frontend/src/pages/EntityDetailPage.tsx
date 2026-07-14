@@ -1108,7 +1108,7 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
           className="flex flex-col items-center gap-3 py-8 text-center"
           data-testid="entity-timeline-error"
         >
-          <p className="text-destructive text-sm">Couldn&rsquo;t load activity — retry.</p>
+          <p className="text-destructive text-sm">Couldn&rsquo;t load activity. Retry.</p>
           <Button variant="outline" size="sm" onClick={() => void refetch()}>
             Retry
           </Button>

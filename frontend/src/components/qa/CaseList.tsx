@@ -109,7 +109,7 @@ export function CaseList({
           data-testid="qa-case-list-truncation"
         >
           Showing {cases.length}
-          {totalCount !== undefined ? ` of ${totalCount}` : ""} — narrow filters to see more
+          {totalCount !== undefined ? ` of ${totalCount}` : ""}. Narrow filters to see more
         </p>
       ) : null}
     </aside>

@@ -262,7 +262,7 @@ export default function IssuesPanel({
     sourcesDegraded.length > 0 ? (
       <SourceDegradedNote
         label="Issues feed"
-        detail={`${sourcesDegraded.join(', ')} unavailable — some issues may be missing`}
+        detail={`${sourcesDegraded.join(', ')} unavailable; some issues may be missing`}
         testId="issues-feed-degraded"
       />
     ) : null

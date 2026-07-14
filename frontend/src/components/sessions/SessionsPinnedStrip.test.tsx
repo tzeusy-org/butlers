@@ -206,7 +206,7 @@ describe("SessionsPinnedStrip — degraded sources", () => {
         runningSourcesDegraded={["atlas"]}
       />,
     );
-    expect(getByText(/Running sessions: partial — atlas unreachable/i)).toBeTruthy();
+    expect(getByText(/Running sessions: partial: atlas unreachable/i)).toBeTruthy();
     expect(queryAllByTestId("pinned-session-row")).toHaveLength(0);
   });
 
@@ -219,7 +219,7 @@ describe("SessionsPinnedStrip — degraded sources", () => {
         recentFailuresSourcesDegraded={["atlas"]}
       />,
     );
-    expect(getByText(/Recent failures: partial — atlas unreachable/i)).toBeTruthy();
+    expect(getByText(/Recent failures: partial: atlas unreachable/i)).toBeTruthy();
   });
 });
 

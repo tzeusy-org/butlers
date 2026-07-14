@@ -375,7 +375,7 @@ function EventNotFoundNotice({ eventId, onClose }: { eventId: string; onClose: (
     >
       <span>
         Event <span className="font-medium">{eventId}</span> isn&apos;t in the currently loaded
-        window — it may be older than what&apos;s shown here, or no longer in the live feed.
+        window. It may be older than what&apos;s shown here, or no longer in the live feed.
       </span>
       <Button
         variant="ghost"

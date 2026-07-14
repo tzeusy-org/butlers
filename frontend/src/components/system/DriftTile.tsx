@@ -92,7 +92,7 @@ export function DriftTile() {
         <CardContent data-testid="drift-tile-unavailable">
           <p className="text-muted-foreground text-sm">Drift check unavailable.</p>
           <p className="text-muted-foreground mt-1 text-xs">
-            The comparison itself failed — this is not a clean bill of health.
+            The comparison itself failed. This is not a clean bill of health.
           </p>
         </CardContent>
       </Card>
@@ -142,7 +142,7 @@ export function DriftTile() {
         {facts.first_detected_at && (
           <p className="text-muted-foreground mt-3 text-xs">
             First detected <Time value={facts.first_detected_at} mode="relative" />
-            {facts.escalated ? " — escalated to QA" : ""}
+            {facts.escalated ? ", escalated to QA" : ""}
           </p>
         )}
       </CardContent>

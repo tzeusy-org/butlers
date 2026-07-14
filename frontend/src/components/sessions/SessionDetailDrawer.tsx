@@ -69,7 +69,7 @@ export function SessionDetailDrawer({
               <SheetTitle>Session detail unavailable</SheetTitle>
               <SheetDescription data-testid="session-detail-pool-down" role="alert">
                 A butler database is unreachable, so this session could not be
-                resolved — it may live in a pool that is currently down.{" "}
+                resolved. It may live in a pool that is currently down.{" "}
                 {error instanceof ApiError && error.message ? error.message : null}
               </SheetDescription>
             </SheetHeader>

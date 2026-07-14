@@ -242,9 +242,9 @@ describe("MemoryOverture", () => {
     const note = container.querySelector('[data-testid="memory-overture-pools-degraded"]');
     expect(note).not.toBeNull();
     expect(note!.getAttribute("role")).toBe("alert");
-    // The failed pools are named inline (em-dash qualifier), not hidden.
+    // The failed pools are named inline (source + reason), not hidden.
     expect(note!.textContent).toContain("relationship, finance");
-    expect(note!.textContent).toContain("—");
+    expect(note!.textContent).toContain("undercount");
     // The pipeline band still renders its (partial) totals — the note qualifies
     // them, it does not swap the band out.
     expect(container.textContent).toContain("dead letters");

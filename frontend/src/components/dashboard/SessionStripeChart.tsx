@@ -124,7 +124,7 @@ export function SessionStripeChart({
     sourcesDegraded.length > 0 ? (
       <SourceDegradedNote
         label="Session activity"
-        detail={`partial — ${sourcesDegraded.join(", ")} unreachable`}
+        detail={`partial: ${sourcesDegraded.join(", ")} unreachable`}
         className="mb-2"
         testId="session-stripe-degraded"
       />

@@ -76,7 +76,7 @@ export function WhoYouWereWithPanel({
       {companion_names_unavailable && (
         <SourceDegradedNote
           label="Companion names"
-          detail="name lookup unavailable — durations and channels are still accurate"
+          detail="name lookup unavailable, though durations and channels are still accurate"
         />
       )}
       {companions.length === 0 ? (

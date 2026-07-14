@@ -153,7 +153,7 @@ export function NotificationFeed({
         <div className="py-8">
           <SourceDegradedNote
             label="Notifications"
-            detail="Switchboard source unreachable — this list may be incomplete"
+            detail="Switchboard source unreachable. This list may be incomplete"
             testId="notification-feed-source-unavailable"
           />
         </div>
