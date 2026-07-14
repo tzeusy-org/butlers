@@ -23,7 +23,7 @@ _CHRONICLER_JOBS = (
 
 
 def test_chronicler_jobs_registered_callable_and_resolve() -> None:
-    from butlers.daemon import (
+    from butlers.scheduled_jobs import (
         _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
         _resolve_deterministic_schedule_job_name,
     )

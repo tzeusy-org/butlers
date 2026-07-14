@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.daemon import _ensure_owner_entity
+from butlers.owner_bootstrap import _ensure_owner_entity
 
 pytestmark = pytest.mark.unit
 

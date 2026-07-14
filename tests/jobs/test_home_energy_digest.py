@@ -245,7 +245,7 @@ async def test_run_energy_digest_full_run_with_anomalies():
 
 def test_all_home_deterministic_jobs_registered():
     """All expected home jobs are registered in _DETERMINISTIC_SCHEDULE_JOB_REGISTRY."""
-    from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+    from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
     home_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("home", {})
     for job in (

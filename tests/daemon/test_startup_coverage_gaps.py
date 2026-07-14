@@ -209,7 +209,7 @@ class TestStep25SecretDetection:
     def test_flatten_config_excludes_credentials_env_keys(self, tmp_path: Path) -> None:
         """_flatten_config_for_secret_scan excludes keys ending in _env or credentials_env."""
         from butlers.config import load_config
-        from butlers.daemon import _flatten_config_for_secret_scan
+        from butlers.daemon_utils import _flatten_config_for_secret_scan
 
         toml = """\
 [butler]
@@ -245,7 +245,7 @@ bot_token_env = "TELEGRAM_BOT_TOKEN"
     def test_flatten_config_includes_butler_identity_fields(self, tmp_path: Path) -> None:
         """_flatten_config_for_secret_scan includes butler.name, port, and db.name."""
         from butlers.config import load_config
-        from butlers.daemon import _flatten_config_for_secret_scan
+        from butlers.daemon_utils import _flatten_config_for_secret_scan
 
         toml = """\
 [butler]

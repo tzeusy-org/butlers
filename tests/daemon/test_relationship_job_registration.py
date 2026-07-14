@@ -23,7 +23,7 @@ def _load_relationship_schedules() -> list[dict[str, Any]]:
 
 def test_relationship_job_schedules_have_registered_handlers() -> None:
     """Every relationship schedule using job dispatch must resolve to a callable handler."""
-    from butlers.daemon import (
+    from butlers.scheduled_jobs import (
         _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
         _resolve_deterministic_schedule_job_name,
     )

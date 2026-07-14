@@ -48,7 +48,7 @@ class TestBriefingJobRegistration:
 
     def test_briefing_handlers_registered_callable_and_resolvable(self):
         """All specialist + aggregator briefing handlers are registered, callable, and resolvable."""
-        from butlers.daemon import (
+        from butlers.scheduled_jobs import (
             _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
             _resolve_deterministic_schedule_job_name,
         )
@@ -96,7 +96,7 @@ class TestBriefingJobRegistration:
 class TestHomeJobRegistration:
     def test_home_jobs_registered_callable_and_resolve(self):
         """All four home jobs registered, callable, existing entries intact, and resolve correctly."""
-        from butlers.daemon import (
+        from butlers.scheduled_jobs import (
             _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
             _resolve_deterministic_schedule_job_name,
         )

@@ -273,7 +273,7 @@ async def test_prune_is_noop_when_no_stale_dates():
 
 
 def test_handler_registered_and_callable_no_spawner():
-    from butlers.daemon import (
+    from butlers.scheduled_jobs import (
         _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
         _resolve_deterministic_schedule_job_name,
     )

@@ -15,7 +15,7 @@ def test_finance_insight_scan_schedule_has_registered_handler() -> None:
     """Finance's configured insight-scan job must resolve to a callable handler."""
     import tomllib
 
-    from butlers.daemon import (
+    from butlers.scheduled_jobs import (
         _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
         _resolve_deterministic_schedule_job_name,
     )
@@ -81,7 +81,7 @@ def test_finance_bu_rvz2o_schedules_have_registered_handlers(
     """
     import tomllib
 
-    from butlers.daemon import (
+    from butlers.scheduled_jobs import (
         _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
         _resolve_deterministic_schedule_job_name,
     )

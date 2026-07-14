@@ -28,7 +28,7 @@ class TestNativeScheduleDispatch:
 
     async def test_registry_and_job_dispatch_and_errors(self, tmp_path):
         """Registry has memory jobs + eligibility_sweep; rollup jobs removed; job-mode dispatches; unknown/blank raise."""
-        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+        from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
         expected_memory_jobs = {"memory_consolidation", "memory_episode_cleanup"}
         for butler_name in ("general", "health", "home", "relationship", "switchboard"):
@@ -56,7 +56,7 @@ class TestNativeScheduleDispatch:
 
         # Job-mode dispatches via registry; spawner not called
         with patch.dict(
-            "butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
+            "butlers.scheduled_jobs._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
             {"switchboard": {"eligibility_sweep": mock_handler}},
             clear=True,
         ):
@@ -73,7 +73,7 @@ class TestNativeScheduleDispatch:
         mock_handler2 = AsyncMock(return_value={"evaluated": 1})
         mock_spawner.trigger.reset_mock()
         with patch.dict(
-            "butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
+            "butlers.scheduled_jobs._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
             {"switchboard": {"eligibility_sweep": mock_handler2}},
             clear=True,
         ):

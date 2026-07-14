@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
-from butlers.daemon import ButlerDaemon, ModuleConfigError
+from butlers.daemon import ButlerDaemon
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
 
@@ -598,11 +598,3 @@ class TestValidationPreventsModuleStartup:
         assert daemon._module_statuses["strict_mod"].phase == "config"
         mod = daemon._modules[0]
         assert mod._startup_config is None  # on_startup was never called
-
-
-class TestModuleConfigErrorIsImportable:
-    """ModuleConfigError should be importable from butlers.daemon."""
-
-    def test_import(self) -> None:
-        """ModuleConfigError can be imported and is an Exception subclass."""
-        assert issubclass(ModuleConfigError, Exception)

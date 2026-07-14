@@ -42,7 +42,7 @@ def test_producer_schedule_declared(butler, name, job_name, cron):
 
 @pytest.mark.parametrize("butler,name,job_name,cron", _PRODUCERS)
 def test_producer_job_resolves_to_handler(butler, name, job_name, cron):
-    from butlers.daemon import (
+    from butlers.scheduled_jobs import (
         _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
         _resolve_deterministic_schedule_job_name,
     )

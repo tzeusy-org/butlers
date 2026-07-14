@@ -1931,7 +1931,7 @@ class TestDaemonInsightDeliveryJobHandler:
     """insight_delivery_cycle job is registered and callable in the daemon registry."""
 
     def test_insight_delivery_cycle_registered_and_callable(self):
-        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+        from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
         switchboard_jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("switchboard", {})
         assert "insight_delivery_cycle" in switchboard_jobs

@@ -76,15 +76,8 @@ from butlers.credential_store import (
     resolve_owner_entity_info,
     shared_db_name_from_env,
 )
-
-# The implementations of many helpers have been extracted into focused modules.
-# Names that daemon.py itself uses are imported normally; names that are only
-# re-exported for backward compatibility (tests import them from butlers.daemon)
-# carry a noqa: F401 comment.
 from butlers.daemon_utils import (
-    _extract_delivery_id,  # noqa: F401 — re-export only
     _extract_identity_scope_credentials,
-    _flatten_config_for_secret_scan,  # noqa: F401 — re-export only (tests import from here)
     _format_validation_error,
 )
 from butlers.db import Database, schema_search_path
@@ -96,7 +89,6 @@ from butlers.module_state import (
     _MODULE_DISABLED_BY_KEY_SUFFIX,
     _MODULE_ENABLED_KEY_PREFIX,
     _MODULE_ENABLED_KEY_SUFFIX,
-    ModuleConfigError,  # noqa: F401 — re-export only
     ModuleRuntimeState,
     ModuleStartupStatus,
 )
@@ -104,22 +96,6 @@ from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.base import Module, ToolMeta
 from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry, default_registry
-from butlers.owner_bootstrap import (
-    _ensure_owner_entity,  # noqa: F401 — re-export only (tests import from here)
-)
-from butlers.routing_guidance import (
-    _INTERACTIVE_ROUTE_CHANNELS,  # noqa: F401 — re-export only
-    _PASSIVE_SOURCE_CHANNELS,  # noqa: F401 — re-export only
-    _SOURCE_TO_NOTIFY_CHANNEL,  # noqa: F401 — re-export only
-    _build_interactive_route_guidance,  # noqa: F401 — re-export only
-    _build_non_interactive_route_safety_guidance,  # noqa: F401 — re-export only
-    _build_passive_route_guidance,  # noqa: F401 — re-export only
-)
-from butlers.scheduled_jobs import (
-    _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,  # noqa: F401 — re-export; tests import from here and patch butlers.daemon._DETERMINISTIC_SCHEDULE_JOB_REGISTRY
-    _DeterministicScheduleJobHandler,  # noqa: F401 — re-export only
-    _resolve_deterministic_schedule_job_name,  # noqa: F401 — re-export; tests import from here
-)
 from butlers.storage import S3BlobStore
 
 logger = logging.getLogger(__name__)

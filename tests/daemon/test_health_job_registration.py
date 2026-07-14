@@ -41,7 +41,7 @@ def test_health_insight_scan_schedule_is_weekly() -> None:
 
 def test_health_insight_scan_schedule_has_registered_handler() -> None:
     """Health's configured insight-scan job must resolve to a callable handler."""
-    from butlers.daemon import (
+    from butlers.scheduled_jobs import (
         _DETERMINISTIC_SCHEDULE_JOB_REGISTRY,
         _resolve_deterministic_schedule_job_name,
     )
