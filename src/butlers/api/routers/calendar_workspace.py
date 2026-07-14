@@ -103,6 +103,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     query_calendar_workspace,
     query_calendar_workspace_entry,
     set_keep_separate,
+    shallow_asdict,
     update_calendar_proposal_status,
     update_dedup_rules,
 )
@@ -501,10 +502,8 @@ async def _fetch_sources(
     (``_to_source_freshness``, ``_normalize_entry``, etc.) that expect
     ``Mapping[str, Any]`` inputs.
     """
-    import dataclasses
-
     source_rows = await query_calendar_sources(db, lane=lane, butlers=butlers, sources=sources)
-    return [dataclasses.asdict(row) for row in source_rows]
+    return [shallow_asdict(row) for row in source_rows]
 
 
 async def _fetch_workspace_rows(
@@ -591,8 +590,6 @@ async def _fetch_flattened_workspace_rows(
     fan-out failure (silently-dropped schema) instead of rendering a short result
     as an honest empty grid.
     """
-    import dataclasses
-
     workspace_dtos, failed = await query_calendar_workspace(
         db,
         view=view,
@@ -606,7 +603,7 @@ async def _fetch_flattened_workspace_rows(
         cursor=cursor,
         limit=limit,
     )
-    flattened: list[dict[str, Any]] = [dataclasses.asdict(dto) for dto in workspace_dtos]
+    flattened: list[dict[str, Any]] = [shallow_asdict(dto) for dto in workspace_dtos]
 
     # Re-sort across schemas by the global keyset order so dedup keeps the
     # lowest-id copy deterministically and cursor pagination is stable.
@@ -1684,8 +1681,6 @@ async def search_workspace(
     never errors. The search degrades fail-open when a schema lacks the
     ``pg_trgm`` extension/index (ILIKE fallback or skip), so it does not 500.
     """
-    import dataclasses
-
     display_tz: ZoneInfo | None = None
     if timezone is not None:
         try:
@@ -1709,7 +1704,7 @@ async def search_workspace(
 
     entries: list[UnifiedCalendarEntry] = []
     for match in results.matches:
-        row = dataclasses.asdict(match.row)
+        row = shallow_asdict(match.row)
         try:
             entries.append(_normalize_entry(row, view=view, display_tz=display_tz))
         except ValueError:
@@ -1726,8 +1721,6 @@ async def get_entry_detail(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[UnifiedCalendarEntry]:
     """Fetch a single calendar workspace entry by instance ID."""
-    import dataclasses
-
     display_tz: ZoneInfo | None = None
     if timezone is not None:
         try:
@@ -1739,7 +1732,7 @@ async def get_entry_detail(
     if dto is None:
         raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found")
 
-    row = dataclasses.asdict(dto)
+    row = shallow_asdict(dto)
     view = str(row.get("lane") or "user")
     try:
         entry = _normalize_entry(row, view=view, display_tz=display_tz)

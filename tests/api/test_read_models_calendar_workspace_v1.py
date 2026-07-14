@@ -15,6 +15,7 @@ Verifies:
 
 from __future__ import annotations
 
+from dataclasses import asdict as _stdlib_asdict
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
@@ -40,6 +41,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     row_to_proposal,
     row_to_source,
     row_to_workspace,
+    shallow_asdict,
 )
 
 pytestmark = pytest.mark.unit
@@ -755,3 +757,68 @@ def test_exclude_butler_projected_copies_keeps_non_matching_butler_titles():
     b = {"instance_id": "b", "title": "BUTLER: Draft follow-up"}
     result = _exclude_butler_projected_copies([a, b])
     assert result == [a, b]
+
+
+# ---------------------------------------------------------------------------
+# shallow_asdict: drop-in replacement for dataclasses.asdict on flat DTOs
+# (bu-xqidy)
+# ---------------------------------------------------------------------------
+
+
+def test_shallow_asdict_matches_stdlib_for_fully_populated_source_row():
+    """Structural equality with dataclasses.asdict for a fully-populated
+    CalendarSourceRow, including a nested metadata dict."""
+    dto = row_to_source(
+        _make_record(
+            _source_dict(source_metadata={"account_email": "a@b.com", "nested": {"k": 1}})
+        ),
+        db_butler="assistant",
+    )
+    assert shallow_asdict(dto) == _stdlib_asdict(dto)
+
+
+def test_shallow_asdict_matches_stdlib_for_fully_populated_workspace_row():
+    """Structural equality for a fully-populated CalendarWorkspaceRow with all
+    three metadata dicts populated (one nested)."""
+    dto = row_to_workspace(
+        _make_record(
+            _workspace_dict(
+                instance_metadata={"origin": "google"},
+                event_metadata={"butler_name": "assistant", "flags": {"pinned": True}},
+                source_metadata={"account_email": "a@b.com"},
+            )
+        ),
+        db_butler="assistant",
+    )
+    assert shallow_asdict(dto) == _stdlib_asdict(dto)
+
+
+def test_shallow_asdict_matches_stdlib_for_none_and_default_fields():
+    """None metadata / nullable fields and the ``db_butler`` default are handled
+    identically (the equivalence must not depend on populated fields)."""
+    source_dto = row_to_source(_make_record(_source_dict(source_metadata=None)), db_butler="")
+    workspace_dto = row_to_workspace(
+        _make_record(
+            _workspace_dict(instance_metadata=None, event_metadata=None, source_metadata=None)
+        ),
+        db_butler="",
+    )
+    assert shallow_asdict(source_dto) == _stdlib_asdict(source_dto)
+    assert shallow_asdict(workspace_dto) == _stdlib_asdict(workspace_dto)
+
+
+def test_shallow_asdict_shares_metadata_reference_where_stdlib_deep_copies():
+    """Documents the intentional semantic difference bu-xqidy relies on: the
+    shallow copy shares the metadata dict by reference (cheap), while
+    dataclasses.asdict deep-copies it. Structural equality still holds (above);
+    sharing is safe because no caller mutates the nested metadata in place."""
+    dto = row_to_source(
+        _make_record(_source_dict(source_metadata={"account_email": "a@b.com"})),
+        db_butler="assistant",
+    )
+    shallow = shallow_asdict(dto)
+    deep = _stdlib_asdict(dto)
+    # Shallow shares the exact field object; asdict produces a distinct copy.
+    assert shallow["source_metadata"] is dto.source_metadata
+    assert deep["source_metadata"] is not dto.source_metadata
+    assert deep["source_metadata"] == dto.source_metadata

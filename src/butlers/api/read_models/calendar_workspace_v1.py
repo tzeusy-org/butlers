@@ -34,7 +34,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -556,6 +556,26 @@ class CalendarWorkspaceRow:
     full_sync_required: bool
     #: The butler schema this row was fetched from (set by the query function).
     db_butler: str = ""
+
+
+def shallow_asdict(row: Any) -> dict[str, Any]:
+    """Flatten a FLAT dataclass DTO to a dict via a shallow field copy.
+
+    Drop-in replacement for ``dataclasses.asdict`` on the calendar DTOs
+    (``CalendarSourceRow`` / ``CalendarWorkspaceRow``), which are flat -- every
+    field is a scalar or a raw asyncpg ``*_metadata`` value (dict or None), with
+    no nested dataclasses. ``asdict`` recursively type-walks and deep-copies
+    every field (including those metadata dicts); this just copies field values
+    by reference, producing an identical dict structure far more cheaply.
+
+    Safe because no caller mutates a nested value (e.g. a metadata dict) of the
+    returned row in place -- the two metadata consumers (``_normalize_json_object``
+    and, through it, ``_normalize_entry``/``_to_source_freshness``) each copy via
+    ``dict(value)`` before use, and the dedup/sort paths only read. Verified
+    repo-wide for bu-xqidy. If a future caller needs to mutate nested metadata,
+    copy that one field explicitly rather than reaching for ``asdict`` again.
+    """
+    return {f.name: getattr(row, f.name) for f in fields(row)}
 
 
 @dataclass
@@ -1290,7 +1310,7 @@ async def query_calendar_conflicts(
     # keeps the lowest-keyset copy of each cluster, so this must match the same
     # order the workspace grid read collapses on (_fetch_flattened_workspace_rows)
     # for the radar and the grid to agree on which copy survives.
-    flattened = [asdict(row) for row in rows]
+    flattened = [shallow_asdict(row) for row in rows]
     flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
 
     dedup_rules = await load_dedup_rules(db)
