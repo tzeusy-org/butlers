@@ -590,7 +590,10 @@ async def test_deliver_transport_failure_records_failed_outcome():
 # ---------------------------------------------------------------------------
 
 
-async def test_run_digest_unavailable_records_deferred_ledger_event_and_sends_nothing(tmp_path):
+async def test_run_digest_unavailable_records_failed_ledger_event_and_sends_nothing(tmp_path):
+    # bu-xnusv: a beads-export-unavailable skip is a terminal FAILED run, not a
+    # "deferred" hold — "deferred" is reserved for a notification queued for
+    # redelivery. The distinct cause lives in the queryable ``reason`` column.
     pool = AsyncMock()
     missing = tmp_path / "missing.jsonl"
 
@@ -604,7 +607,7 @@ async def test_run_digest_unavailable_records_deferred_ledger_event_and_sends_no
 
     assert result == {"available": False, "reason": "export_missing"}
     record_mock.assert_awaited_once()
-    assert record_mock.await_args.kwargs["outcome"] == "deferred"
+    assert record_mock.await_args.kwargs["outcome"] == "failed"
     assert record_mock.await_args.kwargs["reason"] == "data_unavailable:export_missing"
 
 

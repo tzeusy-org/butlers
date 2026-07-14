@@ -49,8 +49,9 @@ Never fabricate an all-clear
 If the export file is missing, unreadable, or older than
 :data:`_STALE_EXPORT_AGE` (bd hasn't run in this checkout in a long time, or
 a fresh clone hasn't populated the mount yet), :func:`compute_decision_digest`
-returns ``available=False`` and the weekly job records a ``deferred``
-attention-ledger row instead of silently reporting "0 decisions waiting" --
+returns ``available=False`` and the weekly job records a ``failed``
+attention-ledger row (reason ``data_unavailable:*``) instead of silently
+reporting "0 decisions waiting" --
 that would be exactly the fabricated-calm failure mode this codebase has
 repeatedly hardened against (see ``src/butlers/api/degraded.py`` and its
 callers). A *genuine* zero (file readable, zero beads matched) is a real
@@ -638,7 +639,17 @@ async def run_decision_review_digest(
             pool,
             origin_butler=_ACTOR,
             source="notify",
-            outcome="deferred",
+            # A beads-export-unavailable skip is a terminal FAILED run, not a
+            # "deferred" hold: "deferred" means THIS notification is queued for
+            # redelivery (a deferred envelope with a deliver_at exists — the
+            # quiet-hours pattern). Here there is no envelope and no redelivery
+            # of this attempt; the weekly cron's next run is a brand-new attempt.
+            # A run that could not do its job because a source was down is a
+            # failed run (bu-xnusv; same all-terminal-failure-paths convention as
+            # bu-hmdqz.3's no_recipient/delivery_error). The distinct cause lives
+            # in the queryable ``reason`` column, so no new outcome value is
+            # needed.
+            outcome="failed",
             channel="telegram",
             intent="send",
             priority="low",
