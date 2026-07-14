@@ -131,3 +131,67 @@ async def test_query_uses_entity_facts_not_contact_info() -> None:
     sql: str = call_args[0][0]
     assert "relationship.entity_facts" in sql
     assert "contact_info" not in sql
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp phone-fallback (bu-jns8k) — a sender known only via has-phone
+# (e.g. a Google Contacts import, no has-handle=<JID> triple) still gets its
+# real weight instead of unknown(0.3) forever.
+# ---------------------------------------------------------------------------
+
+_JID = "15551234567@s.whatsapp.net"
+
+
+def _make_seq_pool(rows: list[MagicMock | None]) -> AsyncMock:
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=rows)
+    return pool
+
+
+async def test_whatsapp_phone_fallback_resolves_known_via_has_phone() -> None:
+    # has-handle miss, then has-phone hit on the extracted E.164 number.
+    pool = _make_seq_pool([None, _make_row(["colleague"])])
+    resolver = ContactWeightResolver(pool)
+    weight = await resolver.resolve("whatsapp_jid", _JID)
+    assert weight == WeightTier().known
+    assert pool.fetchrow.call_count == 2
+    assert pool.fetchrow.call_args_list[0].args[1] == "has-handle"
+    assert pool.fetchrow.call_args_list[0].args[2] == _JID
+    assert pool.fetchrow.call_args_list[1].args[1] == "has-phone"
+    assert pool.fetchrow.call_args_list[1].args[2] == "15551234567"
+
+
+async def test_whatsapp_phone_fallback_inner_circle() -> None:
+    pool = _make_seq_pool([None, _make_row(["family"])])
+    resolver = ContactWeightResolver(pool)
+    weight = await resolver.resolve("whatsapp_jid", _JID)
+    assert weight == WeightTier().inner_circle
+
+
+async def test_whatsapp_group_jid_does_not_fabricate_phone_fallback() -> None:
+    """A group JID has no phone → the extractor returns None → no has-phone
+    query is issued (no fabricated candidate)."""
+    pool = _make_seq_pool([None])
+    resolver = ContactWeightResolver(pool)
+    weight = await resolver.resolve("whatsapp_jid", "1203630-1622640@g.us")
+    assert weight == WeightTier().unknown
+    assert pool.fetchrow.call_count == 1
+
+
+async def test_whatsapp_has_handle_hit_skips_phone_fallback() -> None:
+    """A sender WITH a has-handle triple resolves directly — the fallback is
+    never reached, so the weight is unchanged from before bu-jns8k."""
+    pool = _make_seq_pool([_make_row(["colleague"]), _make_row(["owner"])])
+    resolver = ContactWeightResolver(pool)
+    weight = await resolver.resolve("whatsapp_jid", _JID)
+    assert weight == WeightTier().known  # from has-handle, not the unused owner row
+    assert pool.fetchrow.call_count == 1
+
+
+async def test_non_whatsapp_channel_never_triggers_phone_fallback() -> None:
+    """The phone fallback is whatsapp_jid-only: a telegram miss stays one query."""
+    pool = _make_seq_pool([None])
+    resolver = ContactWeightResolver(pool)
+    weight = await resolver.resolve("telegram", "999")
+    assert weight == WeightTier().unknown
+    assert pool.fetchrow.call_count == 1

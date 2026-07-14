@@ -539,6 +539,7 @@ The discretion layer SHALL support sender-relationship weighting that controls b
 - **THEN** it uses `ContactWeightResolver(db_pool)` to resolve sender identity to a weight
 - **AND** results are cached in-memory with a configurable TTL (default 5 minutes)
 - **AND** DB errors return the `unknown` tier weight (fail-safe)
+- **AND** for a WhatsApp sender with no direct handle match, the resolver cross-references the E.164 phone extracted from the individual JID against a `has-phone` fact — so a contact known only by phone (e.g. a Google Contacts import, with no `has-handle=<JID>` triple) still resolves to its true weight rather than `unknown`; a group or non-phone JID yields no phone candidate and no cross-reference query
 
 #### Scenario: Voice connectors without identity
 - **WHEN** a connector has no sender identity (e.g. live-listener with ambient audio)

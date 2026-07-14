@@ -24,7 +24,11 @@ from prometheus_client import Counter
 
 from butlers.core.attention_ledger import record_attention_event
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
-from butlers.identity import _CHANNEL_TYPE_TO_PREDICATE, _resolve_entity_by_triple
+from butlers.identity import (
+    _CHANNEL_TYPE_TO_PREDICATE,
+    _extract_whatsapp_jid_phone,
+    _resolve_entity_by_triple,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +276,17 @@ class ContactWeightResolver:
         predicate for the given channel type, then reads roles from
         public.entities.  Falls back to ``tiers.unknown`` on DB error or when
         no matching triple is found.
+
+        WhatsApp phone-fallback (bu-jns8k): a WhatsApp contact known only via a
+        ``has-phone`` fact (e.g. a Google Contacts import) has no
+        ``has-handle=<JID>`` triple, so the direct handle lookup misses and the
+        sender would weigh ``unknown`` forever. Mirroring
+        ``identity.resolve_contact_by_channel``'s cross-reference, extract the
+        E.164 phone from the individual JID and retry against ``has-phone``.
+        Group JIDs and non-phone JIDs yield ``None`` from the extractor, so no
+        phone candidate is fabricated for them. Senders that DO have a
+        ``has-handle`` triple never reach the fallback — their weight is
+        unchanged.
         """
         predicate = _CHANNEL_TYPE_TO_PREDICATE.get(channel_type)
         if predicate is None:
@@ -286,6 +301,18 @@ class ContactWeightResolver:
                 channel_value,
             )
             return self._tiers.unknown
+
+        if row is None and channel_type == "whatsapp_jid":
+            phone = _extract_whatsapp_jid_phone(channel_value)
+            if phone is not None:
+                try:
+                    row = await _resolve_entity_by_triple(self._pool, "has-phone", phone)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "ContactWeightResolver phone-fallback DB error for %s — defaulting unknown",
+                        channel_value,
+                    )
+                    return self._tiers.unknown
 
         if row is None:
             return self._tiers.unknown
