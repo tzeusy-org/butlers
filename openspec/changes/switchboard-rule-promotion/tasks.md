@@ -3,10 +3,15 @@
 The tasks below are the sequenced implementation beads proposed in
 `docs/plans/2026-07-06-switchboard-rule-promotion-design.md`. Beads 1-3 and 5
 (tasks 1, 2, 3, 5 below) shipped 2026-07-05/06 (bu-aga08 -> PR #2975,
-bu-h26o9 -> PR #2992, bu-wuwy9 -> PR #2999, bu-x55k3 -> PR #3015). Beads 4 and
-6 (tasks 4, 6) remain open (bu-o62bc, bu-hb61f/bu-3ezbm), gated on the owner
-decision in bu-4pq0s. Bead 7 (task 7, low priority) remains open
-(bu-jxsew/bu-urgi1). Do not archive this change until tasks 4, 6, and 7 close.
+bu-h26o9 -> PR #2992, bu-wuwy9 -> PR #2999, bu-x55k3 -> PR #3015). Bead 4
+(section 4, the approvals surface) SHIPPED 2026-07-13 (bu-o62bc -> PR #3213);
+the owner auto-apply-vs-confirm decision (bu-4pq0s) resolved to auto-apply, so
+the batched "bulk-confirm" endpoint (task 4.3) was superseded by auto-mint +
+reversible toggle rather than built. Beads 6 (metrics tile, task 6.1) and 7
+(sender-normalization de-dup, task 7.1) remain UNBUILT in code as of the
+2026-07-14 true-up (verified: no rule-promotion-stats endpoint; verdict_log.py
+still carries the local sender regex). DO NOT archive this change until tasks
+6.1 and 7.1 close.
 
 ## 1. Verdict mining substrate
 
@@ -52,19 +57,27 @@ decision in bu-4pq0s. Bead 7 (task 7, low priority) remains open
 
 ## 4. Approvals-surface integration
 
-- [ ] 4.0 Owner confirms or overrides the auto-apply-vs-owner-confirm decision
-      (design doc §3 / design.md D4) before this task starts — open as
-      bu-4pq0s
-- [ ] 4.1 `GET /api/switchboard/rule-promotion-suggestions` (status/type
-      filters, pagination)
-- [ ] 4.2 `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm`
-- [ ] 4.3 `POST /api/switchboard/rule-promotion-suggestions/bulk-confirm`
-      (batched skip/metadata_only path)
-- [ ] 4.4 `POST /api/switchboard/rule-promotion-suggestions/{id}/dismiss`
-- [ ] 4.5 Dashboard banner: individual `route_to` suggestion cards with scope
-      description; batched "Confirm all N automated senders" affordance for
-      skip/metadata_only
-- [ ] 4.6 Audit events for suggestion lifecycle transitions
+- [x] 4.0 Owner confirms or overrides the auto-apply-vs-owner-confirm decision
+      (design doc §3 / design.md D4) before this task starts (bu-4pq0s resolved
+      to auto-apply; `rule_promotion_apply.AUTO_APPLY_ACTIONS`/`AUTO_APPLY_ACTOR`
+      at `roster/switchboard/api/router.py:3626-3643`)
+- [x] 4.1 `GET /api/switchboard/rule-promotion-suggestions` (status/type
+      filters, pagination) (`router.py:3605`)
+- [x] 4.2 `POST /api/switchboard/rule-promotion-suggestions/{id}/confirm`
+      (`router.py:3687`)
+- [x] 4.3 `POST /api/switchboard/rule-promotion-suggestions/bulk-confirm`
+      (batched skip/metadata_only path). SUPERSEDED by the auto-apply decision:
+      clearly-automated skip/metadata_only rules auto-mint and surface as
+      reversible `auto_applied` cards (`.../{id}/rule-enabled` toggle,
+      `router.py:3784`); no bulk-confirm endpoint is built by design
+- [x] 4.4 `POST /api/switchboard/rule-promotion-suggestions/{id}/dismiss`
+      (`router.py:3728`)
+- [x] 4.5 Dashboard banner: individual `route_to` suggestion cards with scope
+      description (`rule-promotion-banner.tsx` `PendingCard`); the batched
+      "Confirm all N automated senders" affordance was replaced by informational
+      `AutoAppliedCard`s per the 4.3 auto-apply pivot
+- [x] 4.6 Audit events for suggestion lifecycle transitions (`emit_dashboard_audit`
+      at `router.py:3715`/`3771`/`3822`)
 
 ## 5. Demotion via spot-check
 

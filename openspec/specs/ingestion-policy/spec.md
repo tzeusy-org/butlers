@@ -19,7 +19,8 @@ The table schema:
 - `enabled` BOOLEAN NOT NULL DEFAULT TRUE
 - `name` TEXT -- optional human-readable label
 - `description` TEXT -- optional
-- `created_by` TEXT NOT NULL DEFAULT `'dashboard'`
+- `created_by` TEXT NOT NULL DEFAULT `'dashboard'` -- conventional values include `'dashboard'`, `'api'`, `'seed'`, `'migration'`, and `'promotion'` (rules minted via the switchboard rule-promotion suggestion-confirmation flow); the column remains unconstrained TEXT, this is a documented convention, not a DB CHECK
+- `promoted_from_suggestion_id` UUID, nullable -- FK to `switchboard.rule_promotion_suggestions(id)`, set only on rules created via promotion-suggestion confirmation; NULL for all other creation paths
 - `created_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
 - `updated_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
 - `deleted_at` TIMESTAMPTZ -- soft-delete marker

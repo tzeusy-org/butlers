@@ -60,15 +60,27 @@ the target DB per the `butlers-db-host-topology` memory before any migration.
 
 ## 4. Remove orphaned compat surface (spec: contacts-identity) — bu-g0y3m
 
-- [ ] 4.1 Data migration: `contacts.preferred_channel` → `prefers-channel` facts
+- [x] 4.1 Data migration: `contacts.preferred_channel` → `prefers-channel` facts
   (`src='migration'`, `verified=true`); log+skip rows with no resolvable `entity_id`; assert backfill parity
-- [ ] 4.2 Remove `preferred_channel` from `ContactPatchRequest` + `patch_contact` handling;
-  remove the endpoint if it serves no other field (`roster/relationship/api/{router,models}.py`)
-- [ ] 4.3 Delete `usePatchContact` hook + its tests once no other field needs it (`frontend/src/hooks/use-contacts.ts`)
-- [ ] 4.4 Migration: `DROP COLUMN public.contacts.preferred_channel` (core chain; guard cross-chain refs per `cross-chain-migration-drop-hazard` memory)
-- [ ] 4.5 Full quality gate: ruff + frontend eslint/tsc/vitest + relevant pytest
+  (`alembic/versions/core/core_123_drop_contacts_preferred_channel.py` step 3: snapshot + assert-as-fact + parity guard)
+- [x] 4.2 Remove `preferred_channel` from `ContactPatchRequest` + `patch_contact` handling;
+  remove the endpoint if it serves no other field (no `ContactPatchRequest`/`patch_contact` remain in
+  `roster/relationship/api/{router,models}.py`; frontend `ContactPatchRequest` no longer carries the field,
+  `frontend/src/api/types.ts:1986` "preferred_channel is NOT writable here")
+- [x] 4.3 Delete `usePatchContact` hook + its tests once no other field needs it. N/A: the orphaned
+  preferred-channel write path was removed (moved to `useSetPreferredChannel`/`useClearPreferredChannel`,
+  `use-entities.ts`); the `usePatchContact` hook is correctly RETAINED because it still serves other
+  contact fields (full_name/first_name/company/roles), which is exactly the task's "once no other field
+  needs it" gate
+- [x] 4.4 Migration: `DROP COLUMN public.contacts.preferred_channel` (core chain; guard cross-chain refs per `cross-chain-migration-drop-hazard` memory)
+  (`core_123` step 5; doubly mooted since `core_134_drop_public_contacts` later dropped the whole table)
+- [x] 4.5 Full quality gate: ruff + frontend eslint/tsc/vitest + relevant pytest (shipped through the section-4 beads)
 
 ## 5. Close-out
 
-- [ ] 5.1 `openspec validate entity-keyed-preferred-channel`
-- [ ] 5.2 Update `relationship-facts` / `core-notify` / `contacts-identity` main specs on archive
+- [x] 5.1 `openspec validate entity-keyed-preferred-channel` (passes `--strict`)
+- [x] 5.2 Update `relationship-facts` / `core-notify` / `contacts-identity` main specs on archive
+  (main specs ALREADY carry these deltas from the feature's implementation PRs: relationship-facts
+  `prefers-channel predicate`, core-notify `Preferred-Channel Resolution on Omitted Channel`,
+  dashboard-relationship `Contact channel preference is entity-keyed`, and the contacts CRM column is
+  removed via core_123/core_134, so archive is a move-only, `--skip-specs`)
