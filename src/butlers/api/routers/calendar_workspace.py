@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import icalendar
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
+from fastmcp.exceptions import ToolError
 
 from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
@@ -106,12 +107,35 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     update_dedup_rules,
 )
 from butlers.api.routers.audit import log_audit_entry
+from butlers.config import list_butlers
 from butlers.google_account_registry import list_google_accounts
 from butlers.modules.calendar import (
     CalendarModule,
     _cron_occurrences_in_window,
     classify_sync_error_kind,
 )
+
+
+def _calendar_core_enabled_butlers() -> set[str]:
+    """Butler names whose calendar module exposes the ``core`` tool group.
+
+    ``calendar_force_sync`` is registered under the ``core`` group, so a butler
+    whose calendar module is group-restricted without ``core`` (e.g. finance:
+    ``groups = ["butler_events"]``) never registers the tool and a call would
+    raise ``ToolError``. Such butlers are excluded from the ``all`` fan-out so
+    they do not surface as a failed target on every workspace sync. Reads the
+    module config the same way ``group_enabled`` does.
+    """
+    enabled: set[str] = set()
+    for cfg in list_butlers():
+        cal = cfg.modules.get("calendar")
+        if cal is None:
+            continue
+        groups = cal.get("groups")
+        if not groups or "core" in groups:
+            enabled.add(cfg.name)
+    return enabled
+
 
 router = APIRouter(prefix="/api/calendar/workspace", tags=["calendar", "workspace"])
 logger = logging.getLogger(__name__)
@@ -1853,11 +1877,17 @@ async def sync_workspace(
         )
         if request.butler and request.butler not in db.butler_names:
             raise HTTPException(status_code=404, detail=f"Unknown butler: {request.butler}")
+        # Butlers whose calendar module does not expose the 'core' tool group do
+        # not register calendar_force_sync; syncing them would only ever produce
+        # a failed target, so drop them from the fan-out entirely.
+        core_calendar_butlers = _calendar_core_enabled_butlers()
         # Keep only provider_event sources with a calendar_id; deduplicate by
         # (butler, calendar_id) so we don't hit the same Google API twice.
         seen: set[tuple[str, str]] = set()
         for row in source_rows:
             if row.get("source_kind") != "provider_event" or not row.get("calendar_id"):
+                continue
+            if str(row["db_butler"]) not in core_calendar_butlers:
                 continue
             # Skip sources disabled via POST /api/calendar/sources — a disabled
             # source is off and must not be polled by the sync loop. An explicit
@@ -1900,6 +1930,27 @@ async def sync_workspace(
                 recovery=recovery,
             )
         except ButlerUnreachableError as exc:
+            return CalendarWorkspaceSyncTarget(
+                butler_name=butler_name,
+                source_key=source_key,
+                calendar_id=calendar_id,
+                status="failed",
+                error=str(exc),
+            )
+        except ToolError as exc:
+            # calendar_force_sync is not registered on this butler (its calendar
+            # module does not expose the 'core' tool group). Degrade to a failed
+            # target instead of 500-ing the entire fan-out.
+            return CalendarWorkspaceSyncTarget(
+                butler_name=butler_name,
+                source_key=source_key,
+                calendar_id=calendar_id,
+                status="failed",
+                error=f"calendar_force_sync unavailable: {exc}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            # One failing target must never blow up the aggregate sync response.
+            logger.warning("calendar sync target failed for butler %s", butler_name, exc_info=True)
             return CalendarWorkspaceSyncTarget(
                 butler_name=butler_name,
                 source_key=source_key,

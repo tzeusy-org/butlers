@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastmcp.exceptions import ToolError
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
@@ -1136,6 +1137,123 @@ async def test_sync_all_triggers_each_target_butler(app):
     data = resp.json()["data"]
     assert data["scope"] == "all"
     assert data["triggered_count"] == 2
+
+
+async def test_sync_all_skips_butler_without_calendar_core_group(app):
+    """A butler whose calendar module omits the 'core' tool group (e.g. finance,
+    ``groups = ["butler_events"]``) never registers ``calendar_force_sync``.
+
+    The 'all' fan-out must drop such butlers entirely rather than call the
+    missing tool: finance is absent from the response targets, its MCP client is
+    never even requested, and the healthy target still fires. (bu-4xdno fix 2)
+    """
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:primary",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="primary",
+                writable=True,
+            )
+        ],
+        "finance": [
+            _workspace_source_row(
+                source_key="provider:google:finance",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="finance-cal",
+                writable=True,
+            )
+        ],
+    }
+    general_client = AsyncMock()
+    general_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "sync_triggered"})
+    )
+    app, _, mock_mgr = _build_app(
+        app,
+        source_rows=source_rows,
+        mcp_clients={"general": general_client},
+        # Both schemas hold provider sources; only finance is group-gated.
+        calendar_butlers=["general", "finance"],
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/calendar/workspace/sync", json={"all": True})
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    target_butlers = {t["butler_name"] for t in data["targets"]}
+    assert "finance" not in target_butlers
+    assert "general" in target_butlers
+    assert data["triggered_count"] == 1
+    # The gated butler's client is never constructed — it is filtered out
+    # before the fan-out, not called-and-caught.
+    requested = {call.args[0] for call in mock_mgr.get_client.await_args_list}
+    assert "finance" not in requested
+
+
+async def test_sync_all_target_toolerror_degrades_to_failed(app):
+    """If a target raises ``ToolError`` (e.g. the tool is unregistered), that
+    single target degrades to ``status='failed'`` and the endpoint stays 200 —
+    one failing source never blows up the aggregate. (bu-4xdno fix 1)
+    """
+    source_rows = {
+        "general": [
+            _workspace_source_row(
+                source_key="provider:google:primary",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="primary",
+                writable=True,
+            )
+        ],
+        "relationship": [
+            _workspace_source_row(
+                source_key="provider:google:butlers",
+                source_kind="provider_event",
+                lane="user",
+                butler_name=None,
+                provider="google",
+                calendar_id="butlers-cal",
+                writable=True,
+            )
+        ],
+    }
+    general_client = AsyncMock()
+    general_client.call_tool = AsyncMock(side_effect=ToolError("Unknown tool: calendar_force_sync"))
+    relationship_client = AsyncMock()
+    relationship_client.call_tool = AsyncMock(
+        return_value=_mock_mcp_result({"status": "sync_triggered"})
+    )
+    app, _, _ = _build_app(
+        app,
+        source_rows=source_rows,
+        mcp_clients={"general": general_client, "relationship": relationship_client},
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/calendar/workspace/sync", json={"all": True})
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    by_butler = {t["butler_name"]: t for t in data["targets"]}
+    assert by_butler["general"]["status"] == "failed"
+    assert "calendar_force_sync unavailable" in (by_butler["general"]["error"] or "")
+    assert by_butler["relationship"]["status"] == "sync_triggered"
+    # Only the healthy target counts as triggered.
+    assert data["triggered_count"] == 1
 
 
 # ---------------------------------------------------------------------------
