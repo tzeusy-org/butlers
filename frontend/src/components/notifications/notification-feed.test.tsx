@@ -158,3 +158,63 @@ describe("NotificationFeed degraded-source honesty", () => {
     expect(screen.queryByTestId("notification-feed-source-unavailable")).toBeNull();
   });
 });
+
+describe("NotificationFeed truncated-cell detail affordance (bu-x7z84)", () => {
+  afterEach(() => cleanup());
+
+  const LONG_MESSAGE =
+    "This is a very long notification message that comfortably exceeds the sixty " +
+    "character collapsed preview clamp and must be reachable by keyboard.";
+
+  it("offers no detail toggle for a short (unclipped) message", () => {
+    renderFeed({ notifications: [makeNotification({ message: "short and sweet" })] });
+    expect(screen.queryByTestId("notification-detail-toggle")).toBeNull();
+  });
+
+  it("offers a keyboard-reachable detail toggle when the message is clipped", () => {
+    renderFeed({ notifications: [makeNotification({ message: LONG_MESSAGE })] });
+    const toggle = screen.getByTestId("notification-detail-toggle");
+    expect(toggle.tagName).toBe("BUTTON");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // Full message is not present until disclosed.
+    expect(screen.queryByTestId("notification-detail-message")).toBeNull();
+  });
+
+  it("discloses the full message text on activation", () => {
+    renderFeed({ notifications: [makeNotification({ message: LONG_MESSAGE })] });
+    fireEvent.click(screen.getByTestId("notification-detail-toggle"));
+    const full = screen.getByTestId("notification-detail-message");
+    expect(full.textContent).toBe(LONG_MESSAGE);
+    expect(screen.getByTestId("notification-detail-toggle").getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+  });
+
+  it("offers the toggle and discloses the full error on a failed row with a long error", () => {
+    const LONG_ERROR =
+      "Delivery failed: upstream channel returned a 502 after three retries with an " +
+      "extended diagnostic payload that overflows the eighty character error clamp.";
+    renderFeed({
+      notifications: [
+        makeNotification({
+          id: "f",
+          status: "failed",
+          effective_status: "failed",
+          message: "short",
+          error: LONG_ERROR,
+        }),
+      ],
+    });
+    fireEvent.click(screen.getByTestId("notification-detail-toggle"));
+    expect(screen.getByTestId("notification-detail-error").textContent).toBe(LONG_ERROR);
+  });
+
+  it("offers no toggle for a short message with no error", () => {
+    renderFeed({
+      notifications: [
+        makeNotification({ status: "failed", effective_status: "failed", message: "boom", error: null }),
+      ],
+    });
+    expect(screen.queryByTestId("notification-detail-toggle")).toBeNull();
+  });
+});

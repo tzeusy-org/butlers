@@ -7,6 +7,7 @@ import type { NotificationSummary } from "@/api/types";
 import { NotificationTableSkeleton } from "@/components/skeletons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ExpandableDetail } from "@/components/ui/expandable-detail";
 import {
   Table,
   TableBody,
@@ -95,8 +96,13 @@ function channelBadge(channel: string) {
   );
 }
 
+// Collapsed-preview clamp lengths for the message and error lines. A cell is
+// "expandable" (offers the detail toggle) only when its content exceeds these.
+const MESSAGE_CLAMP = 60;
+const ERROR_CLAMP = 80;
+
 /** Truncate a message to a maximum character length. */
-function truncate(text: string, max = 60): string {
+function truncate(text: string, max = MESSAGE_CLAMP): string {
   if (text.length <= max) return text;
   return text.slice(0, max) + "\u2026";
 }
@@ -179,6 +185,13 @@ export function NotificationFeed({
         {notifications.map((n) => {
           const displayStatus = n.effective_status ?? n.status;
           const isPending = pendingAckIds?.has(n.id) ?? false;
+          const showError = displayStatus === "failed" && Boolean(n.error);
+          // The message/error is clipped in the collapsed preview and exposed in
+          // full only via mouse-hover title= today; offer the keyboard-reachable
+          // detail toggle when either line actually overflows its clamp (bu-x7z84).
+          const messageClipped = n.message.length > MESSAGE_CLAMP;
+          const errorClipped = showError && (n.error?.length ?? 0) > ERROR_CLAMP;
+          const expandable = messageClipped || errorClipped;
           return (
           <TableRow
             key={n.id}
@@ -196,16 +209,39 @@ export function NotificationFeed({
               {n.recipient ? n.recipient : "—"}
             </TableCell>
             <TableCell>{channelBadge(n.channel)}</TableCell>
-            <TableCell
-              className="max-w-xs"
-              title={n.message}
-            >
-              <p className="truncate text-muted-foreground">{truncate(n.message)}</p>
-              {displayStatus === "failed" && n.error && (
-                <p className="mt-1 text-xs text-destructive" title={n.error}>
-                  {truncate(n.error, 80)}
+            <TableCell className="max-w-xs">
+              <ExpandableDetail
+                label="message"
+                expandable={expandable}
+                testId="notification-detail-toggle"
+                preview={
+                  <>
+                    <p className="truncate text-muted-foreground" title={n.message}>
+                      {truncate(n.message)}
+                    </p>
+                    {showError && n.error && (
+                      <p className="mt-1 truncate text-xs text-destructive" title={n.error}>
+                        {truncate(n.error, ERROR_CLAMP)}
+                      </p>
+                    )}
+                  </>
+                }
+              >
+                <p
+                  className="whitespace-pre-wrap break-words text-sm text-muted-foreground"
+                  data-testid="notification-detail-message"
+                >
+                  {n.message}
                 </p>
-              )}
+                {showError && n.error && (
+                  <p
+                    className="mt-1 whitespace-pre-wrap break-words text-xs text-destructive"
+                    data-testid="notification-detail-error"
+                  >
+                    {n.error}
+                  </p>
+                )}
+              </ExpandableDetail>
               {(n.session_id || n.trace_id) && (
                 <div className="mt-1 flex items-center gap-3 text-xs">
                   {n.session_id && (
