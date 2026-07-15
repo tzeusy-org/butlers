@@ -245,7 +245,8 @@ dense roster, not as a card grid.
 
 It SHALL include:
 
-- attention strip when any connector has auth or health issues;
+- attention strip when any connector has auth issues, health issues, or an
+  additive operational warning;
 - rows with health dot, channel glyph/name/kind, function gloss, last-event
   meta, 24h sparkline, auth pill, event/session/cost totals, and disclosure;
 - dormant or available connector section with connect actions;
@@ -280,6 +281,19 @@ independently clickable above the row's navigation target.
   credential entry instead of the bare `/secrets` page
 - **AND** no per-row description line restates the section eyebrow (the
   discovery catalog carries no per-connector one-liner to show instead)
+
+#### Scenario: Operational warning does not rewrite connector health
+
+- **WHEN** a connector summary carries an `operational_warnings` entry while
+  its transport state and liveness remain healthy/online
+- **THEN** the connector appears in the attention strip with an operational
+  warning label
+- **AND** the full warning is readable on the roster row
+- **AND** the row's health verdict remains online rather than being rewritten
+  as degraded or error
+- **AND** if the diagnostic source's additive availability flag is explicitly
+  `false`, the roster names that degraded source instead of treating missing
+  warnings as an all-clear
 
 ### Requirement: Connector Detail
 

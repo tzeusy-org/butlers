@@ -3372,6 +3372,12 @@ export interface ConnectorSummary {
    * Optional/additive: absent on older cached responses — treat as `false`.
    */
   archive_candidate?: boolean;
+  /**
+   * Additive, read-only operational diagnostics that do not alter connector
+   * state, liveness, or fleet-health rollups. The OwnTracks cadence warning is
+   * sourced from durable location points rather than generic ingestion counts.
+   */
+  operational_warnings?: string[];
 }
 
 /** One OAuth scope entry from connector-oauth-scope-surface backend. */
@@ -3503,8 +3509,9 @@ export interface PipelineStats {
  *
  * Every field on this response is DB-sourced — this endpoint has no Prometheus
  * dependency and therefore carries no `aggregates_available` flag. Its only
- * degraded-mode flags gate the two DB queries that can independently fail
- * (`hourly_events_available`, `device_liveness_available`).
+ * degraded-mode flags gate the DB queries that can independently fail
+ * (`hourly_events_available`, `device_liveness_available`, and
+ * `owntracks_cadence_available`).
  */
 export interface ConnectorSummariesResponse {
   connectors: ConnectorSummary[];
@@ -3519,6 +3526,11 @@ export interface ConnectorSummariesResponse {
    * (bu-scyro; mirrors `device_liveness_available`). Optional/additive.
    */
   hourly_events_available?: boolean;
+  /**
+   * False only if the OwnTracks durable-point cadence query itself failed.
+   * Optional/additive; absent on older cached responses is treated as available.
+   */
+  owntracks_cadence_available?: boolean;
 }
 
 /**

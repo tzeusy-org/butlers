@@ -101,6 +101,23 @@ const STALE_CONNECTOR: ConnectorSummary = {
   hourly_events: Array(24).fill(0),
 }
 
+const SPARSE_OWNTRACKS_CONNECTOR: ConnectorSummary = {
+  connector_type: 'owntracks',
+  endpoint_identity: 'owntracks:phone',
+  liveness: 'online',
+  state: 'healthy',
+  error_message: null,
+  version: '1.0',
+  uptime_s: 3600,
+  last_heartbeat_at: new Date(Date.now() - 60_000).toISOString(),
+  first_seen_at: '2026-01-01T00:00:00Z',
+  today: { messages_ingested: 3, messages_failed: 0, uptime_pct: 99.9 },
+  hourly_events: Array(24).fill(0),
+  operational_warnings: [
+    'Only 3 OwnTracks location points were recorded in the last 24 hours. The operational baseline is 24; use Move mode during waking hours.',
+  ],
+}
+
 const DORMANT_PROFILE: ConnectorProfile = {
   connector_type: 'home_assistant',
   channel: 'long-poll',
@@ -132,6 +149,7 @@ function mockHooks(
   responseOverrides: {
     hourly_events_available?: boolean
     device_liveness_available?: boolean
+    owntracks_cadence_available?: boolean
   } = {},
 ) {
   // The endpoint returns { connectors: [...] } (all fields DB-sourced),
@@ -274,6 +292,29 @@ describe('AC2: auth issues appear consistently in attention strip and row', () =
     // Both should contain 'reauth' (the consistent label for needs_reauth status)
     expect(rowText).toContain('reauth')
     expect(stripText).toContain('reauth')
+  })
+
+  it('surfaces a sparse OwnTracks cadence warning without changing transport health', () => {
+    mockHooks([SPARSE_OWNTRACKS_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(
+      container.querySelector('[data-testid="attention-item-owntracks"]')?.textContent,
+    ).toContain('cadence sparse')
+    expect(
+      container.querySelector('[data-testid="connector-warning-owntracks"]')?.textContent,
+    ).toContain('The operational baseline is 24')
+    expect(
+      container.querySelector('[data-testid="connector-warning-owntracks"]')?.className,
+    ).toContain('text-[var(--amber-text)]')
+    expect(
+      container.querySelector('[data-testid="health-verdict-owntracks"]')?.textContent?.trim(),
+    ).toBe('online')
+
+    const attentionKpiLabel = Array.from(container.querySelectorAll('div')).find(
+      (element) => element.textContent?.trim() === 'needs attention',
+    )
+    expect(attentionKpiLabel?.parentElement?.lastElementChild?.textContent?.trim()).toBe('1')
   })
 })
 
@@ -729,6 +770,33 @@ describe('device_liveness_available degraded note (bu-fm3my)', () => {
 
     expect(container.textContent).toMatch(/device liveness/)
     expect(container.textContent).toMatch(/per-device liveness source unavailable/)
+  })
+})
+
+describe('owntracks_cadence_available degraded note', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('does not render a degraded note when the flag is absent (older cached response)', () => {
+    mockHooks([HEALTHY_CONNECTOR])
+    renderRoster(container, root)
+
+    expect(container.textContent).not.toMatch(/durable location-point cadence unavailable/)
+  })
+
+  it('renders a degraded note when the cadence query failed', () => {
+    mockHooks([HEALTHY_CONNECTOR], [], {
+      owntracks_cadence_available: false,
+    })
+    renderRoster(container, root)
+
+    expect(container.textContent).toMatch(/OwnTracks cadence/)
+    expect(container.textContent).toMatch(/durable location-point cadence unavailable/)
   })
 })
 

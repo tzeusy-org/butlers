@@ -26,7 +26,7 @@ endpoints. ``cross-summary`` adds an ``aggregates_available`` flag derived from
 whether the Prometheus backend is reachable (via the pipeline stats cache);
 ``summaries`` does not — every field it returns is DB-sourced, so it carries
 its own genuine-failure-only flags (``hourly_events_available``,
-``device_liveness_available``) instead.
+``device_liveness_available``, ``owntracks_cadence_available``) instead.
 
 Spec: openspec/changes/redesign-ingestion-dispatch-console/specs/
       connector-lifecycle-ceremony/spec.md
@@ -82,6 +82,24 @@ _DEVICE_LOOKBACK_WINDOW = _dt.timedelta(days=90)
 # quiet live connector). The comparison is strict (`> 30d`), so an identity that
 # last heartbeated exactly 30 days ago is not yet a candidate.
 _ARCHIVE_CANDIDATE_MIN_OFFLINE = _dt.timedelta(days=30)
+
+# OwnTracks movement inference consumes durable points from
+# connectors.owntracks_points, not generic ingestion counters. Fewer than one
+# point per hour over the trailing day is an operationally sparse signal: it is
+# enough to prove the evidence stream is below the supported baseline, but it
+# is deliberately NOT folded into connector health because the webhook
+# transport can be healthy while the phone reports too infrequently.
+_OWNTRACKS_CADENCE_WINDOW = _dt.timedelta(hours=24)
+_OWNTRACKS_MIN_POINTS_PER_WINDOW = 24
+
+
+def _owntracks_cadence_warning(point_count: int) -> str:
+    """Describe a sparse OwnTracks evidence stream without changing health."""
+    return (
+        f"Only {point_count} OwnTracks location points were recorded in the last 24 hours. "
+        f"The operational baseline is {_OWNTRACKS_MIN_POINTS_PER_WINDOW}; "
+        "use Move mode during waking hours."
+    )
 
 
 def _online_identities_by_type(
@@ -261,6 +279,8 @@ async def list_connector_summaries_with_aggregates(
     Hourly timeseries errors fall back to all-zero ``hourly_events`` arrays per connector.
     Per-device liveness query errors fall back to ``devices: null`` for every connector
     and ``device_liveness_available: false``.
+    OwnTracks cadence query errors keep operational warnings empty and set
+    ``owntracks_cadence_available: false``.
     """
     pool = _pool(db)
 
@@ -480,6 +500,45 @@ async def list_connector_summaries_with_aggregates(
             device_liveness_available = False
             device_map = {}
 
+    # OwnTracks cadence diagnostic. Chronicler's movement inference reads the
+    # durable point evidence table directly, so generic ingestion_events counts
+    # are not a trustworthy proxy. Query only active OwnTracks identities;
+    # archived endpoints remain reachable for history but must not create new
+    # operational attention. A query failure has its own explicit availability
+    # flag and produces no warnings, avoiding both a fabricated all-clear and a
+    # false transport-health failure.
+    owntracks_cadence_available = True
+    owntracks_point_counts: dict[str, int] = {}
+    active_owntracks_identities = [
+        r["endpoint_identity"]
+        for r in rows
+        if r["connector_type"] == "owntracks" and r["archived_at"] is None
+    ]
+    if active_owntracks_identities:
+        try:
+            cadence_window_start = _dt.datetime.now(_dt.UTC) - _OWNTRACKS_CADENCE_WINDOW
+            cadence_rows = await pool.fetch(
+                """
+                SELECT endpoint_identity, count(*) AS point_count
+                FROM connectors.owntracks_points
+                WHERE endpoint_identity = ANY($1::text[])
+                  AND ts >= $2
+                GROUP BY endpoint_identity
+                """,
+                active_owntracks_identities,
+                cadence_window_start,
+            )
+            owntracks_point_counts = {
+                cadence_row["endpoint_identity"]: int(cadence_row["point_count"])
+                for cadence_row in cadence_rows
+            }
+        except Exception:
+            logger.warning(
+                "connector summaries: failed to fetch OwnTracks point cadence",
+                exc_info=True,
+            )
+            owntracks_cadence_available = False
+
     # Precompute the "newer online sibling" lookup once for the archive review
     # queue (bu-u19yv), then evaluate each row against it below. Read-only and
     # derived entirely from the rows already fetched — no extra query, no
@@ -497,6 +556,15 @@ async def list_connector_summaries_with_aggregates(
         # to produce a true last-24h ingestion count.  The raw counter_messages_ingested is
         # cumulative since process start and must NOT be used as a "today" figure.
         messages_ingested_24h = sum(hourly)
+        operational_warnings: list[str] = []
+        if (
+            owntracks_cadence_available
+            and r["connector_type"] == "owntracks"
+            and r["archived_at"] is None
+        ):
+            point_count = owntracks_point_counts.get(r["endpoint_identity"], 0)
+            if point_count < _OWNTRACKS_MIN_POINTS_PER_WINDOW:
+                operational_warnings.append(_owntracks_cadence_warning(point_count))
         connectors.append(
             {
                 "connector_type": r["connector_type"],
@@ -535,6 +603,10 @@ async def list_connector_summaries_with_aggregates(
                     online_identities_by_type=online_by_type,
                     now=now_for_candidates,
                 ),
+                # Additive, read-only operational diagnostics. These warnings
+                # surface evidence quality without mutating the connector's
+                # transport state/liveness or fleet-health rollups.
+                "operational_warnings": operational_warnings,
                 "today": {
                     "messages_ingested": messages_ingested_24h,
                     "messages_failed": r["counter_messages_failed"] or 0,
@@ -569,6 +641,10 @@ async def list_connector_summaries_with_aggregates(
             # raised — mirrors device_liveness_available
             # (genuine-failure-only degraded flag; never fabricated zeros).
             "hourly_events_available": hourly_events_available,
+            # False only if the OwnTracks durable-point cadence query itself
+            # raised. The connector warnings stay empty in that case and the
+            # frontend names the degraded source explicitly.
+            "owntracks_cadence_available": owntracks_cadence_available,
         }
     )
 

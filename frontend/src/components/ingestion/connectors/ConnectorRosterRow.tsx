@@ -250,6 +250,18 @@ export function ConnectorRosterRow({
           (e.g. OwnTracks). Wraps to its own implicit grid row below the main
           content, aligned under the channel/function columns. */}
       {c.devices && c.devices.length > 0 && <ConnectorDeviceBadges devices={c.devices} />}
+
+      {/* Evidence-quality warnings are additive operational context. They do
+          not replace or downgrade the transport health verdict above. */}
+      {c.operational_warnings?.map((warning) => (
+        <p
+          key={warning}
+          className="col-start-2 col-end-[-1] mt-1 font-serif text-[12px] leading-[1.45] text-[var(--amber-text)]"
+          data-testid={`connector-warning-${c.connector_type}`}
+        >
+          {warning}
+        </p>
+      ))}
     </div>
   )
 }

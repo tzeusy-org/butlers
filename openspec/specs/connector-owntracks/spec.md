@@ -187,7 +187,9 @@ Location data is privacy-sensitive. The connector enforces conservative defaults
 - **WHEN** the connector starts without `CONNECTOR_INGESTION_TIER` set
 - **THEN** the default ingestion tier is `"metadata"` (Tier 2)
 - **AND** `payload.raw` is None for all submitted envelopes
-- **AND** only the human-readable `normalized_text` summary is persisted
+- **AND** the Switchboard ingestion path persists only the human-readable
+  `normalized_text` summary; the restricted durable point evidence described
+  below remains a separate Chronicler read surface
 
 #### Scenario: Full ingestion tier opt-in
 - **WHEN** `CONNECTOR_INGESTION_TIER=full` is explicitly set
@@ -198,6 +200,90 @@ Location data is privacy-sensitive. The connector enforces conservative defaults
 #### Scenario: SSID stripping in metadata tier
 - **WHEN** the ingestion tier is `"metadata"`
 - **THEN** the SSID field is NOT included in `normalized_text` (WiFi network names can reveal location)
+
+### Requirement: Durable Location Evidence Fidelity
+
+Every successfully persisted OwnTracks location evidence write SHALL preserve
+the accepted webhook payload in `connectors.owntracks_points` without deleting,
+renaming, normalizing, or synthesizing optional fields. Evidence persistence is
+a non-fatal side write after successful ingestion, so a failed evidence write
+is logged without changing webhook success. This evidence store is distinct
+from the `ingest.v1` envelope's privacy tier: metadata-tier envelopes still omit
+`payload.raw`, while the restricted durable evidence row retains the accepted
+location payload required by deterministic adapters.
+
+#### Scenario: SSID and region membership survive evidence persistence
+
+- **WHEN** an accepted location payload contains uppercase `SSID` and an
+  `inregions` list
+- **THEN** `connectors.owntracks_points.raw_payload` contains those fields with
+  the same names, values, list ordering, and element values received from the
+  phone
+- **AND** the persistence path does not mutate the caller's payload object
+
+#### Scenario: Optional evidence fields stay absent when not reported
+
+- **WHEN** the phone omits `SSID` or `inregions`
+- **THEN** evidence persistence does not fabricate that field
+
+### Requirement: Operator-Owned Phone Reporting Configuration
+
+Butlers SHALL document the phone-side configuration needed for useful
+OwnTracks evidence. The operator, not the connector, owns these app changes:
+enable available extended location data, verify Wi-Fi SSID reporting on
+platforms that support it, create stable `Home` and `Office` regions, and
+consider Move monitoring mode during waking hours when cadence is sparse. The
+guidance SHALL explain that OwnTracks currently documents `SSID` as an optional
+iOS field, that Move mode improves reporting cadence at a battery cost, and that
+platform/version labels can differ.
+
+#### Scenario: Operator follows the OwnTracks runbook
+
+- **WHEN** an operator needs to improve movement and place evidence
+- **THEN** the connector documentation identifies the phone settings for SSID
+  reporting and `Home`/`Office` regions
+- **AND** it describes how to verify that location payloads carry `SSID` and
+  `inregions`
+- **AND** it presents waking-hours Move mode as an explicit battery/cadence
+  tradeoff rather than silently changing phone behavior
+
+### Requirement: Sparse Durable-Point Cadence Diagnostic
+
+`GET /api/ingestion/connectors/summaries` SHALL compute a read-only OwnTracks
+cadence diagnostic from `connectors.owntracks_points`, the durable evidence
+surface consumed by movement inference. Each active OwnTracks identity with
+fewer than 24 points in the trailing 24 hours SHALL receive an additive
+`operational_warnings` entry that names the observed count, the 24-point
+minimum, and the waking-hours Move-mode remediation. The threshold is a minimum
+operational baseline, not a sufficiency guarantee.
+
+The warning SHALL NOT change connector `state`, `liveness`, fleet-health
+rollups, or transport-health semantics. Archived OwnTracks identities SHALL NOT
+receive new cadence warnings. The response SHALL include additive
+`owntracks_cadence_available`; it is `false` only when the durable-point query
+fails, in which case warnings remain empty and the dashboard SHALL name the
+degraded source rather than present an all-clear.
+
+#### Scenario: Healthy transport has sparse movement evidence
+
+- **WHEN** an active, healthy OwnTracks identity has 3 durable location points
+  in the trailing 24 hours
+- **THEN** its summary keeps the existing healthy state and online liveness
+- **AND** its operational warning reports the 3-point observation, 24-point
+  minimum, and waking-hours Move-mode remediation
+
+#### Scenario: Cadence meets the minimum
+
+- **WHEN** an active OwnTracks identity has at least 24 durable location points
+  in the trailing 24 hours
+- **THEN** no sparse-cadence operational warning is added
+
+#### Scenario: Cadence source is unavailable
+
+- **WHEN** the durable-point cadence query fails
+- **THEN** `owntracks_cadence_available` is `false`
+- **AND** no sparse-cadence warning is fabricated from missing evidence
+- **AND** connector health and liveness remain unchanged
 
 ### Requirement: Data Retention
 Location events are automatically purged after a configurable retention period.

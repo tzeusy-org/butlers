@@ -29,7 +29,8 @@
  * `devices` list is indistinguishable from "no multi-device connectors"
  * (bu-fm3my; same shape as bu-scyro's hourly note). Both flags are
  * genuine-failure-only — absent (older cached response) must NOT trigger
- * the note, only an explicit `false`.
+ * the note, only an explicit `false`. OwnTracks durable-point cadence has the
+ * same explicit degraded-source treatment via `owntracks_cadence_available`.
  *
  * NOTE: useConnectorDetail MUST NOT be mounted from this roster (spec §6.2).
  * Only summary-level data is shown here.
@@ -77,8 +78,14 @@ function sortConnectors(connectors: ConnectorSummary[]): ConnectorSummary[] {
     const bInfo = deriveConnectorDispatchInfo(b)
 
     // Auth-needed or error first
-    const aScore = needsAttentionScore(aInfo.needsAttention, aInfo.health)
-    const bScore = needsAttentionScore(bInfo.needsAttention, bInfo.health)
+    const aScore = needsAttentionScore(
+      aInfo.needsAttention || Boolean(a.operational_warnings?.length),
+      aInfo.health,
+    )
+    const bScore = needsAttentionScore(
+      bInfo.needsAttention || Boolean(b.operational_warnings?.length),
+      bInfo.health,
+    )
     if (aScore !== bScore) return bScore - aScore
 
     // Then by connector_type alphabetically
@@ -145,6 +152,13 @@ export function ConnectorsRoster() {
   // (older cached response) must NOT be treated as false.
   const deviceLivenessAvailable = connectorsResp?.data?.device_liveness_available !== false
 
+  // The OwnTracks cadence query reads connectors.owntracks_points, the same
+  // durable evidence surface consumed by movement inference. An explicit false
+  // means cadence warnings could not be computed and must not look like an
+  // all-clear; absence remains compatible with older cached responses.
+  const owntracksCadenceAvailable =
+    connectorsResp?.data?.owntracks_cadence_available !== false
+
   // Available dormant profiles (catalog entries not yet registered)
   const catalogProfiles = availableResp?.data ?? []
   const registeredTypes = new Set(allConnectors.map((c) => c.connector_type))
@@ -165,6 +179,11 @@ export function ConnectorsRoster() {
   const totalConnectors = allConnectors.length
   const healthyCount = allConnectors.filter(
     (c) => !deriveConnectorDispatchInfo(c).needsAttention,
+  ).length
+  const attentionNeededCount = allConnectors.filter(
+    (c) =>
+      deriveConnectorDispatchInfo(c).needsAttention ||
+      Boolean(c.operational_warnings?.length),
   ).length
   const authNeededCount = allConnectors.filter(
     (c) => deriveConnectorDispatchInfo(c).authStatus === 'needs_reauth',
@@ -247,7 +266,7 @@ export function ConnectorsRoster() {
         {[
           { label: 'connectors · live', value: formatNum(totalConnectors) },
           { label: 'healthy', value: formatNum(healthyCount) },
-          { label: 'needs attention', value: formatNum(totalConnectors - healthyCount) },
+          { label: 'needs attention', value: formatNum(attentionNeededCount) },
           { label: 'auth · error', value: formatNum(authNeededCount) },
           { label: 'events · 24h', value: formatNum(totalEvents24h) },
         ].map(({ label, value }) => (
@@ -280,6 +299,14 @@ export function ConnectorsRoster() {
         <SourceDegradedNote
           label="device liveness"
           detail="per-device liveness source unavailable, multi-device connectors may be missing sibling device badges"
+          className="mt-4"
+        />
+      )}
+
+      {!owntracksCadenceAvailable && (
+        <SourceDegradedNote
+          label="OwnTracks cadence"
+          detail="durable location-point cadence unavailable, movement evidence warnings may be incomplete"
           className="mt-4"
         />
       )}

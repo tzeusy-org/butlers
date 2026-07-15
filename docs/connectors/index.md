@@ -13,5 +13,6 @@
 - [Gmail Ingestion Policy](gmail-ingestion-policy.md) — email ingestion filtering rules
 - [Heartbeat](heartbeat.md) — connector health monitoring
 - [Live Listener](live-listener.md) — audio live listener connector
+- [OwnTracks](owntracks.md) — phone location setup, evidence cadence, and privacy notes
 - [Attachment Handling](attachment-handling.md) — file/media attachment processing
 - [Metrics](metrics.md) — connector metrics and statistics

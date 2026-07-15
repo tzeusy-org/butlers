@@ -15,6 +15,7 @@ Verifies:
 from __future__ import annotations
 
 import base64
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -24,6 +25,7 @@ from butlers.connectors.owntracks import (
     build_location_normalized_text,
     build_transition_envelope,
     build_waypoints_envelope,
+    persist_location_point,
 )
 
 _ENDPOINT = "owntracks:device:phone1"
@@ -59,17 +61,48 @@ def test_location_envelope_schema_version() -> None:
 
 
 def test_location_envelope_metadata_tier_raw_is_null() -> None:
-    """metadata tier must set payload.raw=None (no GPS coordinates at rest)."""
+    """Metadata-tier Switchboard envelopes must omit the raw GPS payload."""
     env = build_location_envelope(_LOCATION_PAYLOAD, _ENDPOINT, _OBSERVED, "metadata")
     assert env["payload"]["raw"] is None
     assert env["control"]["ingestion_tier"] == "metadata"
 
 
 def test_location_envelope_full_tier_has_raw() -> None:
-    """full tier must set payload.raw to the complete payload."""
+    """Full-tier Switchboard envelopes must carry the complete raw payload."""
     env = build_location_envelope(_LOCATION_PAYLOAD, _ENDPOINT, _OBSERVED, "full")
     assert env["payload"]["raw"] is not None
     assert env["control"]["ingestion_tier"] == "full"
+
+
+async def test_persist_location_point_keeps_ssid_and_inregions_untouched() -> None:
+    """The connector's durable JSONB evidence keeps app-provided context verbatim."""
+    pool = AsyncMock()
+    pool.fetchval.return_value = "point-id"
+    raw_payload = {
+        **_LOCATION_PAYLOAD,
+        "SSID": "Office WiFi",
+        "inregions": ["Office", "Downtown"],
+    }
+
+    inserted = await persist_location_point(
+        pool,
+        endpoint_identity=_ENDPOINT,
+        tst=_LOCATION_PAYLOAD["tst"],
+        lat=_LOCATION_PAYLOAD["lat"],
+        lon=_LOCATION_PAYLOAD["lon"],
+        accuracy=_LOCATION_PAYLOAD["acc"],
+        trigger="p",
+        raw_payload=raw_payload,
+    )
+
+    assert inserted is True
+    sql, *args = pool.fetchval.await_args.args
+    assert "connectors.owntracks_points" in sql
+    assert "raw_payload" in sql
+    persisted_payload = args[7]
+    assert persisted_payload is raw_payload
+    assert persisted_payload["SSID"] == "Office WiFi"
+    assert persisted_payload["inregions"] == ["Office", "Downtown"]
 
 
 def test_location_envelope_event_id_format() -> None:

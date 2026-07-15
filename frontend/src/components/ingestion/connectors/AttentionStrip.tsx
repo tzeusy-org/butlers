@@ -2,9 +2,9 @@
  * AttentionStrip — compact strip surfacing connectors that need operator attention.
  *
  * Appears above the connector roster table only when one or more connectors
- * have auth issues, degraded health, or are offline. Each entry is a clickable
- * link to the affected connector detail page. The count badge shows the total
- * number of connectors needing attention.
+ * have auth issues, degraded health, are offline, or carry an operational
+ * warning. Each entry is a clickable link to the affected connector detail
+ * page. The count badge shows the total number of connectors needing attention.
  *
  * Design: hairline top/bottom borders, no card chrome. Links use underline with
  * border color, not heavy color fills. Auth tone shown as mono uppercase label
@@ -38,7 +38,11 @@ interface AttentionStripProps {
  * connector row and detail page (consistent per spec AC2).
  */
 export function AttentionStrip({ connectors }: AttentionStripProps) {
-  const issues = connectors.filter((c) => deriveConnectorDispatchInfo(c).needsAttention)
+  const issues = connectors.filter(
+    (c) =>
+      deriveConnectorDispatchInfo(c).needsAttention ||
+      Boolean(c.operational_warnings?.length),
+  )
 
   if (issues.length === 0) return null
 
@@ -64,8 +68,16 @@ export function AttentionStrip({ connectors }: AttentionStripProps) {
       <div className="flex flex-wrap gap-x-4 gap-y-1.5">
         {issues.map((c) => {
           const info = deriveConnectorDispatchInfo(c)
-          const label = authStatusLabel(info.authStatus)
-          const colorClass = authStatusColor(info.authStatus)
+          // Preserve an actionable auth/health label when both signals exist;
+          // the full operational warning remains visible on the roster row.
+          const hasOperationalWarning =
+            !info.needsAttention && Boolean(c.operational_warnings?.length)
+          const label = hasOperationalWarning
+            ? 'cadence sparse'
+            : authStatusLabel(info.authStatus)
+          const colorClass = hasOperationalWarning
+            ? 'text-[var(--amber-text)]'
+            : authStatusColor(info.authStatus)
           const displayName = formatConnectorName(c)
 
           return (

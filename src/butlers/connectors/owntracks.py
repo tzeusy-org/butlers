@@ -42,7 +42,9 @@ Environment variables:
 Security requirements:
 - Bearer and Basic-auth tokens validated with constant-time hmac.compare_digest
 - Connector refuses to start if no token is configured (fail-closed)
-- Raw GPS coordinates are NOT stored at rest in metadata tier (default)
+- Metadata-tier Switchboard envelopes omit raw GPS payloads; successful durable
+  evidence writes retain accepted location payloads in the restricted
+  connectors.owntracks_points.raw_payload read surface for Chronicler
 - SSID is not included in normalized text in metadata tier
 """
 
