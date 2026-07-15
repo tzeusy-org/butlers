@@ -109,6 +109,7 @@ import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 import { cn } from "@/lib/utils";
 import {
+  AVATAR_MIN_BLOCK_HEIGHT_PX,
   dateTimeLocalToIso,
   formatEventTime,
   HOUR_HEIGHT_PX,
@@ -1700,6 +1701,29 @@ interface CalendarEntryDetailPanelProps {
   timezone: string;
 }
 
+/** Map an entry's read-model linked_people to the picker's SelectedPerson shape. */
+function linkedPeopleToSelected(
+  people: UnifiedCalendarEntry["linked_people"],
+): SelectedPerson[] {
+  return (people ?? []).map((p) => ({
+    entity_id: p.entity_id,
+    canonical_name: p.display_label,
+  }));
+}
+
+/**
+ * Set-identity key for a people list, for untouched-detection. Order-insensitive
+ * (entity_ids are a SET — order carries no meaning to the backend), so a fresh
+ * server copy that returns the same people in a different order is not mistaken
+ * for a user edit.
+ */
+function peopleKey(people: SelectedPerson[]): string {
+  return people
+    .map((p) => p.entity_id)
+    .sort()
+    .join(",");
+}
+
 function CalendarEntryDetailPanel({
   entry: gridEntry,
   onClose,
@@ -1744,6 +1768,12 @@ function CalendarEntryDetailPanel({
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
     "idle",
   );
+  // Editable linked-people (bu-ya8uv): seed the picker from the event's existing
+  // links so editing round-trips them instead of starting empty. linked_people
+  // is {entity_id, display_label}; the picker speaks {entity_id, canonical_name}.
+  const [peopleDraft, setPeopleDraft] = useState<SelectedPerson[]>(() =>
+    linkedPeopleToSelected(entry.linked_people),
+  );
 
   // Upgrade the editable drafts in place when the fresh server copy arrives,
   // but only for fields the user has not touched (draft still equals the last
@@ -1759,6 +1789,7 @@ function CalendarEntryDetailPanel({
       typeof gridEntry.metadata?.location === "string"
         ? gridEntry.metadata.location
         : "",
+    people: peopleKey(linkedPeopleToSelected(gridEntry.linked_people)),
   });
   const freshEntry = detailQuery.data?.data;
   useEffect(() => {
@@ -1772,6 +1803,7 @@ function CalendarEntryDetailPanel({
       typeof freshEntry.metadata?.location === "string"
         ? freshEntry.metadata.location
         : "";
+    const freshPeople = linkedPeopleToSelected(freshEntry.linked_people);
     setTitleDraft((d) =>
       d === lastSeededRef.current.title ? freshTitle : d,
     );
@@ -1781,10 +1813,15 @@ function CalendarEntryDetailPanel({
     setLocationDraft((d) =>
       d === lastSeededRef.current.location ? freshLocation : d,
     );
+    // Upgrade the people draft in place only if the user hasn't touched it.
+    setPeopleDraft((d) =>
+      peopleKey(d) === lastSeededRef.current.people ? freshPeople : d,
+    );
     lastSeededRef.current = {
       title: freshTitle,
       description: freshDescription,
       location: freshLocation,
+      people: peopleKey(freshPeople),
     };
   }, [freshEntry]);
 
@@ -1899,6 +1936,19 @@ function CalendarEntryDetailPanel({
         : "";
     if (trimmed === current) return;
     if (isUserEvent) fireUserUpdate({ location: trimmed }, "location");
+  }
+
+  function handlePeopleChange(next: SelectedPerson[]) {
+    setPeopleDraft(next);
+    if (!isUserEvent) return;
+    // Round-trip the full set as entity_ids so existing links are preserved and
+    // new ones added (the update path is REPLACE on a non-empty list).
+    // KNOWN LIMITATION (bu-ya8uv): an empty entity_ids is a backend no-op that
+    // PRESERVES the current links (there is no explicit-clear signal yet), so
+    // removing the last person cannot clear the event. The picker enforces this
+    // honestly via preserveLast (last-remove disabled), so `next` is never empty
+    // here once any link exists. A follow-up will add the explicit-clear path.
+    fireUserUpdate({ entity_ids: next.map((p) => p.entity_id) }, "people");
   }
 
   const startFmt = entry.all_day
@@ -2092,8 +2142,20 @@ function CalendarEntryDetailPanel({
 
       {/* Linked people (bu-qs64f): identity-layer contacts linked to this event
           via calendar_event_entities, hydrated on the read so existing events
-          show the same people chips the create dialog captured. */}
-      {entry.linked_people && entry.linked_people.length > 0 ? (
+          show the same people chips the create dialog captured.
+          bu-ya8uv: for editable user events, this is now a live ContactPeoplePicker
+          seeded from linked_people (edits round-trip through entity_ids); other
+          entry kinds keep the read-only chips. */}
+      {isUserEvent ? (
+        <div className="flex flex-col gap-1" data-testid="detail-linked-people">
+          <ContactPeoplePicker
+            value={peopleDraft}
+            onChange={handlePeopleChange}
+            disabled={isPending}
+            preserveLast
+          />
+        </div>
+      ) : entry.linked_people && entry.linked_people.length > 0 ? (
         <div className="flex flex-col gap-1" data-testid="detail-linked-people">
           <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
             People
@@ -5657,6 +5719,18 @@ export default function CalendarWorkspacePage() {
                                   {formatEventTime(s, defaultTimezone, "HH:mm")}–
                                   {formatEventTime(e, defaultTimezone, "HH:mm")}
                                 </span>
+                              ) : null}
+                              {/* Linked-people avatars (bu-01qmd) — reuse the agenda/detail
+                                  cluster, gated by block height so short blocks don't overflow.
+                                  pointer-events-none keeps it transparent to the block's drag
+                                  handlers (no interactive elements inside the draggable block). */}
+                              {heightPx >= AVATAR_MIN_BLOCK_HEIGHT_PX &&
+                              entry.linked_people &&
+                              entry.linked_people.length > 0 ? (
+                                <LinkedPeopleAvatars
+                                  people={entry.linked_people}
+                                  className="pointer-events-none mt-0.5"
+                                />
                               ) : null}
                               {draggable ? (
                                 <span

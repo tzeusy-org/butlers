@@ -23,6 +23,14 @@ import { formatInTimeZone, fromZonedTime, toZonedTime } from "date-fns-tz";
 
 /** Height of each hour row in the time-axis grid (px). */
 export const HOUR_HEIGHT_PX = 60;
+/**
+ * Minimum time-grid block height (px) at which the linked-people avatar cluster
+ * is shown on a week/day event block (bu-01qmd). Mirrors the block's existing
+ * height-gated content (the time label appears at >= 32px): a block must be tall
+ * enough to seat the title plus the extra ~16px avatar row without overflowing
+ * the clipped block, so the cluster is hidden below this height for short events.
+ */
+export const AVATAR_MIN_BLOCK_HEIGHT_PX = 48;
 /** Snap granularity for grid drag interactions (minutes). */
 export const SNAP_MINUTES = 30;
 /** Minutes in a full day, used to clamp grid drag math. */

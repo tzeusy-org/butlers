@@ -136,4 +136,58 @@ describe("ContactPeoplePicker", () => {
     // Never a silently-empty selectable list.
     expect(screen.queryByTestId("people-search-result")).toBeNull();
   });
+
+  // preserveLast (bu-ya8uv): the edit surface can't clear to zero (empty
+  // entity_ids is backend no-op-preserve), so the sole remaining person's
+  // remove control is disabled with an honest note.
+  it("disables last-remove and shows a note when preserveLast is set (single person)", () => {
+    const onChange = vi.fn();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <ContactPeoplePicker
+          value={[{ entity_id: "e1", canonical_name: "Ada Lovelace" }]}
+          onChange={onChange}
+          preserveLast
+          debounceMs={0}
+        />
+      </QueryClientProvider>,
+    );
+
+    const removeBtn = screen.getByTestId("people-remove-chip") as HTMLButtonElement;
+    expect(removeBtn.disabled).toBe(true);
+    expect(screen.getByTestId("people-preserve-last-note")).toBeTruthy();
+    fireEvent.click(removeBtn);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("allows removing a person with preserveLast when more than one remains", () => {
+    const onChange = vi.fn();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <ContactPeoplePicker
+          value={[
+            { entity_id: "e1", canonical_name: "Ada Lovelace" },
+            { entity_id: "e2", canonical_name: "Alan Turing" },
+          ]}
+          onChange={onChange}
+          preserveLast
+          debounceMs={0}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.queryByTestId("people-preserve-last-note")).toBeNull();
+    const removeButtons = screen.getAllByTestId("people-remove-chip");
+    expect((removeButtons[0] as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(removeButtons[0]);
+    expect(onChange).toHaveBeenCalledWith([
+      { entity_id: "e2", canonical_name: "Alan Turing" },
+    ]);
+  });
 });

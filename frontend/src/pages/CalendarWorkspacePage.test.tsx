@@ -874,6 +874,120 @@ describe("CalendarWorkspacePage", () => {
     expect(eventButton.getAttribute("title")).not.toContain("09:00");
   });
 
+  // -------------------------------------------------------------------------
+  // Linked-people avatars on time-grid blocks (bu-01qmd): reuse the agenda/
+  // detail cluster on week/day blocks, gated by block height so short events
+  // don't overflow.
+  // -------------------------------------------------------------------------
+
+  function gridEntryWith(overrides: Record<string, unknown>) {
+    return {
+      entry_id: "entry-grid",
+      event_id: "evt-grid",
+      view: "user",
+      source_type: "provider_event",
+      source_key: "google:primary",
+      title: "Long meeting",
+      start_at: "2026-03-01T09:00:00Z",
+      end_at: "2026-03-01T11:00:00Z",
+      timezone: "UTC",
+      all_day: false,
+      calendar_id: "primary",
+      provider_event_id: "evt-grid-1",
+      butler_name: "general",
+      schedule_id: null,
+      reminder_id: null,
+      rrule: null,
+      cron: null,
+      until_at: null,
+      status: "active",
+      sync_state: "fresh",
+      editable: true,
+      metadata: {},
+      ...overrides,
+    };
+  }
+
+  function renderGridWith(entry: Record<string, unknown>) {
+    setWorkspaceState({
+      data: {
+        data: {
+          entries: [entry],
+          source_freshness: [],
+          lanes: [],
+          projection_version: null,
+          staleness_ms: null,
+          projection_freshness: null,
+        },
+        meta: {},
+      },
+    } as unknown as Parameters<typeof setWorkspaceState>[0]);
+    setWorkspaceMetaState(undefined, { defaultTimezone: "Asia/Singapore" });
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+  }
+
+  it("renders linked-people avatars on a tall time-grid block", async () => {
+    // 2h block (120px, >= AVATAR_MIN_BLOCK_HEIGHT_PX) with two linked people.
+    renderGridWith(
+      gridEntryWith({
+        linked_people: [
+          { entity_id: "e1", display_label: "Ada Lovelace" },
+          { entity_id: "e2", display_label: "Alan Turing" },
+        ],
+      }),
+    );
+    await act(async () => {
+      await flush();
+    });
+
+    const block = document.querySelector(
+      '[data-calendar-entry-id="entry-grid"]',
+    ) as HTMLElement;
+    expect(block).toBeTruthy();
+    const avatars = block.querySelector('[data-testid="linked-people-avatars"]');
+    expect(avatars).toBeTruthy();
+    // Non-interactive + pointer-transparent so it never intercepts the block's drag.
+    expect(avatars?.className).toContain("pointer-events-none");
+    expect(block.querySelectorAll('[data-testid="linked-person-avatar"]').length).toBe(2);
+  });
+
+  it("hides the avatar cluster on a short time-grid block (below the height gate)", async () => {
+    // 30-minute block (30px, < AVATAR_MIN_BLOCK_HEIGHT_PX) — avatars would overflow.
+    renderGridWith(
+      gridEntryWith({
+        end_at: "2026-03-01T09:30:00Z",
+        linked_people: [{ entity_id: "e1", display_label: "Ada Lovelace" }],
+      }),
+    );
+    await act(async () => {
+      await flush();
+    });
+
+    const block = document.querySelector(
+      '[data-calendar-entry-id="entry-grid"]',
+    ) as HTMLElement;
+    expect(block).toBeTruthy();
+    expect(
+      block.querySelector('[data-testid="linked-people-avatars"]'),
+    ).toBeNull();
+  });
+
+  it("does not render avatars on a grid block with no linked people", async () => {
+    // linked_people omitted entirely (stale-fixture shape) must not crash or render.
+    renderGridWith(gridEntryWith({}));
+    await act(async () => {
+      await flush();
+    });
+
+    const block = document.querySelector(
+      '[data-calendar-entry-id="entry-grid"]',
+    ) as HTMLElement;
+    expect(block).toBeTruthy();
+    expect(
+      block.querySelector('[data-testid="linked-people-avatars"]'),
+    ).toBeNull();
+  });
+
   it("updates query state when toggling to butler view", async () => {
     renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
     const butlerButton = findButton("Butler");
@@ -1124,6 +1238,125 @@ describe("CalendarWorkspacePage", () => {
         onError: expect.any(Function),
       }),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Editable linked people on the detail-panel editor (bu-ya8uv): the picker
+  // is prefilled from the event's linked_people so edits round-trip the links
+  // (never silently drop them), and a title-only edit leaves them untouched.
+  // -------------------------------------------------------------------------
+
+  function openDetailForEntryWithPeople(
+    people: Array<{ entity_id: string; display_label: string }>,
+  ) {
+    setEntryDetailState({
+      data: {
+        data: {
+          entry_id: "entry-1",
+          event_id: "evt-entry-1",
+          view: "user",
+          source_type: "provider_event",
+          source_key: "google:primary",
+          title: "Morning planning",
+          start_at: "2026-03-01T09:00:00Z",
+          end_at: "2026-03-01T09:30:00Z",
+          timezone: "UTC",
+          all_day: false,
+          calendar_id: "primary",
+          provider_event_id: "evt-1",
+          butler_name: "general",
+          schedule_id: null,
+          reminder_id: null,
+          rrule: null,
+          cron: null,
+          until_at: null,
+          status: "active",
+          sync_state: "fresh",
+          editable: true,
+          metadata: {},
+          linked_people: people,
+        },
+        meta: {},
+      },
+    } as unknown as Partial<UseEntryDetailResult>);
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+  }
+
+  it("prefills the detail-panel people picker from the event's linked_people", async () => {
+    openDetailForEntryWithPeople([
+      { entity_id: "e1", display_label: "Ada Lovelace" },
+      { entity_id: "e2", display_label: "Alan Turing" },
+    ]);
+    await openDetailPanel();
+
+    const picker = container.querySelector(
+      '[data-testid="detail-linked-people"] [data-testid="event-people-picker"]',
+    );
+    expect(picker).not.toBeNull();
+    const chips = picker?.querySelectorAll('[data-testid="people-selected-chip"]');
+    expect(chips?.length).toBe(2);
+    expect(picker?.textContent).toContain("Ada Lovelace");
+    expect(picker?.textContent).toContain("Alan Turing");
+  });
+
+  it("preserves linked people when only the title is edited (bu-ya8uv regression)", async () => {
+    openDetailForEntryWithPeople([
+      { entity_id: "e1", display_label: "Ada Lovelace" },
+    ]);
+    await openDetailPanel();
+
+    const titleInput = container.querySelector(
+      '[data-testid="detail-title-input"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      setInputValue(titleInput, "Morning review");
+      await flush();
+    });
+    await act(async () => {
+      titleInput.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await flush();
+    });
+
+    // The title patch must NOT carry entity_ids — links are left untouched, and
+    // the backend's no-op-on-empty guard preserves them.
+    const titleCall = mutateUserEvent.mock.calls.find(
+      (c) => (c[0] as { payload?: Record<string, unknown> }).payload?.title === "Morning review",
+    );
+    expect(titleCall).toBeDefined();
+    expect(
+      (titleCall?.[0] as { payload: Record<string, unknown> }).payload,
+    ).not.toHaveProperty("entity_ids");
+  });
+
+  it("round-trips entity_ids when a linked person is removed from the picker", async () => {
+    openDetailForEntryWithPeople([
+      { entity_id: "e1", display_label: "Ada Lovelace" },
+      { entity_id: "e2", display_label: "Alan Turing" },
+    ]);
+    await openDetailPanel();
+
+    const picker = container.querySelector(
+      '[data-testid="detail-linked-people"] [data-testid="event-people-picker"]',
+    ) as HTMLElement;
+    // Remove the first person; the remaining set must be sent as entity_ids.
+    const removeButtons = picker.querySelectorAll(
+      '[data-testid="people-remove-chip"]',
+    );
+    await act(async () => {
+      removeButtons[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const peopleCall = mutateUserEvent.mock.calls.find((c) =>
+      Object.prototype.hasOwnProperty.call(
+        (c[0] as { payload?: Record<string, unknown> }).payload ?? {},
+        "entity_ids",
+      ),
+    );
+    expect(peopleCall).toBeDefined();
+    expect(
+      (peopleCall?.[0] as { payload: { entity_ids: string[] } }).payload.entity_ids,
+    ).toEqual(["e2"]);
   });
 
   // -------------------------------------------------------------------------
