@@ -7,6 +7,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from butlers.tools.switchboard.insight.broker import create_insight_tables
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
@@ -211,55 +213,6 @@ CREATE TABLE IF NOT EXISTS finance.budgets (
 )
 """
 
-CREATE_INSIGHT_TABLES_SQL = [
-    """
-    CREATE TABLE IF NOT EXISTS insight_settings (
-        id INTEGER PRIMARY KEY DEFAULT 1,
-        verbosity TEXT NOT NULL DEFAULT 'minimal',
-        custom_budget INTEGER,
-        quiet_start INTEGER,
-        quiet_end INTEGER,
-        quiet_timezone TEXT,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS insight_candidates (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        origin_butler TEXT NOT NULL,
-        priority INTEGER NOT NULL CHECK (priority >= 1 AND priority <= 100),
-        category TEXT NOT NULL,
-        dedup_key TEXT NOT NULL,
-        cooldown_days INTEGER,
-        expires_at TIMESTAMPTZ NOT NULL,
-        message TEXT NOT NULL,
-        channel TEXT,
-        metadata JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        status TEXT NOT NULL DEFAULT 'pending',
-        delivered_at TIMESTAMPTZ,
-        delivery_attempt_count INTEGER NOT NULL DEFAULT 0
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS insight_cooldowns (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        dedup_key TEXT NOT NULL,
-        cooldown_until TIMESTAMPTZ NOT NULL,
-        reason TEXT NOT NULL DEFAULT 'delivered',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS insight_engagement (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        insight_id UUID NOT NULL,
-        delivered_at TIMESTAMPTZ NOT NULL,
-        engaged BOOLEAN NOT NULL DEFAULT FALSE
-    )
-    """,
-]
-
 
 async def _setup_insight_schema(pool) -> None:
     """Create finance schema + insight tables for insight-scan tests."""
@@ -268,8 +221,11 @@ async def _setup_insight_schema(pool) -> None:
     await pool.execute(CREATE_SUBSCRIPTIONS_SQL)
     await pool.execute(CREATE_TRANSACTIONS_SQL)
     await pool.execute(CREATE_BUDGETS_SQL)
-    for ddl in CREATE_INSIGHT_TABLES_SQL:
-        await pool.execute(ddl)
+    # Reuse the canonical shared helper instead of a hand-copied inline DDL, so
+    # the insight_cooldowns schema (dedup_key TEXT PRIMARY KEY, mirroring
+    # alembic core_010) can never drift here into the synthetic-id divergence
+    # that masked the bu-tdd4k.1 production crash (bu-jgrn8).
+    await create_insight_tables(pool)
     # Seed insight_settings with default verbosity (not 'off')
     await pool.execute(
         "INSERT INTO insight_settings (id, verbosity) "
