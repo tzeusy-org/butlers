@@ -1,7 +1,8 @@
 """Dependency-inversion hooks for memory module operations.
 
 ``core`` and ``core_tools`` need to invoke memory operations (forget a memory,
-fetch context, store an episode) without importing the memory module directly.
+fetch context, store an episode, run scheduled consolidation) without importing
+the memory module directly.
 
 This module provides:
 
@@ -52,6 +53,11 @@ _memory_store_episode_hook: Callable[..., Coroutine[Any, Any, bool]] | None = No
 #: ``async (pool, query, *, limit, mode) -> list[dict]``
 #: Registered by modules.memory on startup.
 _catalog_search_hook: Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]] | None = None
+
+#: ``async (*, spawner, batch_size, enable_shared_catalog) -> dict``
+#: Registered by modules.memory on startup.  The module-owned closure resolves
+#: its configured pool and embedding engine at dispatch time.
+_memory_consolidation_hook: Callable[..., Coroutine[Any, Any, dict[str, Any]]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +115,24 @@ def register_catalog_search(
     """
     global _catalog_search_hook
     _catalog_search_hook = fn
+
+
+def register_memory_consolidation(
+    fn: Callable[..., Coroutine[Any, Any, dict[str, Any]]],
+) -> None:
+    """Register scheduled consolidation against the started memory module.
+
+    The concrete hook owns the module-specific pool and embedding-engine
+    lifecycle.  Core supplies only the daemon Spawner and bounded batch size.
+    """
+    global _memory_consolidation_hook
+    _memory_consolidation_hook = fn
+
+
+def clear_memory_consolidation() -> None:
+    """Clear the scheduled-consolidation hook during module shutdown."""
+    global _memory_consolidation_hook
+    _memory_consolidation_hook = None
 
 
 # ---------------------------------------------------------------------------
@@ -183,3 +207,27 @@ async def search_memory_catalog(
     if _catalog_search_hook is None:
         return []
     return await _catalog_search_hook(pool, query, limit=limit, mode=mode)
+
+
+async def consolidate_memory(
+    *,
+    spawner: Any,
+    batch_size: int,
+    enable_shared_catalog: bool,
+) -> dict[str, Any]:
+    """Run consolidation through the active memory module runtime.
+
+    Unlike best-effort memory context/search hooks, scheduled consolidation is
+    durable work.  Missing runtime wiring therefore fails closed so the
+    scheduler records a diagnostic error instead of claiming the wrong schema
+    or silently leaving episodes pending.
+    """
+    if _memory_consolidation_hook is None:
+        raise RuntimeError(
+            "memory_consolidation requires the memory module runtime hook to be registered"
+        )
+    return await _memory_consolidation_hook(
+        spawner=spawner,
+        batch_size=batch_size,
+        enable_shared_catalog=enable_shared_catalog,
+    )

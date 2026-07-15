@@ -189,7 +189,13 @@ class _FakeSpawnerResult:
 
 
 class _FakeSpawner:
+    def __init__(self):
+        self.calls = 0
+        self.trigger_sources: list[str] = []
+
     async def trigger(self, *, prompt: str, trigger_source: str):
+        self.calls += 1
+        self.trigger_sources.append(trigger_source)
         return _FakeSpawnerResult()
 
 
@@ -250,6 +256,20 @@ class TestRecordConsolidationRun:
 
 @pytest.mark.unit
 class TestRunConsolidationWritesAuditRow:
+    async def test_empty_backlog_does_not_spawn(self):
+        pool = _FakePool(claim_rows=[])
+        spawner = _FakeSpawner()
+
+        stats = await consolidation_module.run_consolidation(
+            pool,
+            embedding_engine=object(),
+            cc_spawner=spawner,
+        )
+
+        assert stats["episodes_processed"] == 0
+        assert stats["groups"] == {}
+        assert spawner.calls == 0
+
     async def test_one_audit_row_per_successful_group_with_counts(self, monkeypatch):
         claim_rows = [
             {
@@ -290,10 +310,11 @@ class TestRunConsolidationWritesAuditRow:
             consolidation_module, "build_consolidation_prompt", lambda **kwargs: "prompt"
         )
 
+        spawner = _FakeSpawner()
         stats = await consolidation_module.run_consolidation(
             pool,
             embedding_engine=None,
-            cc_spawner=_FakeSpawner(),
+            cc_spawner=spawner,
         )
 
         inserts = pool.consolidation_run_inserts()
@@ -305,6 +326,7 @@ class TestRunConsolidationWritesAuditRow:
         # Aggregate stats still returned as before.
         assert stats["facts_created"] == 3
         assert stats["groups_consolidated"] == 1
+        assert spawner.trigger_sources == ["schedule:consolidation"]
 
     async def test_no_audit_row_when_no_spawner(self, monkeypatch):
         # Without a spawner, no group is consolidated → no audit row written.

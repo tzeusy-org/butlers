@@ -300,7 +300,8 @@ The `butler.toml` file SHALL declare butler identity, runtime, database, modules
 - **WHEN** `[[butler.schedule]]` entries are present
 - **THEN** each entry declares a scheduled task with `name`, `cron` expression, and dispatch mode
 - **AND** `dispatch_mode = "prompt"` with `prompt` string triggers a runtime session with that prompt
-- **AND** `dispatch_mode = "job"` with `job_name` string executes a native Python job function without spawning a runtime
+- **AND** `dispatch_mode = "job"` with `job_name` string executes a native Python job function without the scheduler automatically spawning a runtime
+- **AND** a job function MAY explicitly use the daemon Spawner when its governing capability spec requires LLM-backed processing (for example, memory consolidation)
 
 #### Scenario: Switchboard registration (non-switchboard agents)
 - **WHEN** `[butler.switchboard]` section is present with `advertise = true`
@@ -329,7 +330,8 @@ Scheduled tasks declared in `butler.toml` with `dispatch_mode = "prompt"` SHALL 
 
 #### Scenario: Job-dispatched scheduled tasks are exempt
 - **WHEN** a `[[butler.schedule]]` entry uses `dispatch_mode = "job"`
-- **THEN** no companion skill is required because the job executes native Python code without spawning a runtime session
+- **THEN** no companion skill is required because the scheduler dispatches a native Python job rather than a prompt payload
+- **AND** a capability-specific job that explicitly invokes the daemon Spawner owns any runtime skill/prompt contract in that capability (for example, module-memory consolidation)
 
 ### Requirement: MANIFESTO.md as Public Identity
 Each butler SHALL have a `MANIFESTO.md` that defines its value proposition, target user persona, and feature scope. Staffers SHALL have a `MANIFESTO.md` with infrastructure-contract framing (SLAs, responsibilities, failure modes). The manifesto/contract SHALL be the governing document for scope decisions.

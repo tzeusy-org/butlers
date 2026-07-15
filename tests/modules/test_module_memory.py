@@ -125,6 +125,68 @@ class TestLifecycle:
         _, kwargs = context_mock.call_args
         assert kwargs.get("include_fleet_knowledge") is True
 
+    async def test_consolidation_hook_uses_module_pool_and_configured_engine(
+        self, monkeypatch
+    ) -> None:
+        """Scheduled consolidation reuses the started module's pool and engine lifecycle."""
+        mod = MemoryModule()
+        daemon_pool = MagicMock(name="daemon_pool")
+        memory_pool = MagicMock(name="memory_pool")
+        fake_db = MagicMock()
+        fake_db.pool = daemon_pool
+        configured_engine = MagicMock(name="configured_engine")
+        spawner = MagicMock(name="spawner")
+        captured_hook: dict[str, Any] = {}
+
+        monkeypatch.setattr(mod, "_get_pool", lambda: memory_pool)
+        monkeypatch.setattr(mod, "_get_embedding_engine", lambda: configured_engine)
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.register_memory_consolidation",
+            lambda fn: captured_hook.setdefault("hook", fn),
+            raising=False,
+        )
+        run_consolidation = AsyncMock(return_value={"episodes_consolidated": 2})
+        monkeypatch.setattr(
+            "butlers.modules.memory.consolidation.run_consolidation", run_consolidation
+        )
+
+        await mod.on_startup(
+            config=MemoryModuleConfig(
+                embedding_model="custom-embedding-model",
+                catalog_source_schema="private_memory",
+            ),
+            db=fake_db,
+        )
+
+        result = await captured_hook["hook"](
+            spawner=spawner,
+            batch_size=7,
+            enable_shared_catalog=True,
+        )
+
+        assert result == {"episodes_consolidated": 2}
+        run_consolidation.assert_awaited_once_with(
+            pool=memory_pool,
+            embedding_engine=configured_engine,
+            cc_spawner=spawner,
+            batch_size=7,
+            enable_shared_catalog=True,
+            source_schema="private_memory",
+        )
+
+    async def test_on_shutdown_clears_consolidation_hook(self, monkeypatch) -> None:
+        mod = MemoryModule()
+        clear_hook = MagicMock()
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.clear_memory_consolidation",
+            clear_hook,
+            raising=False,
+        )
+
+        await mod.on_shutdown()
+
+        clear_hook.assert_called_once_with()
+
 
 # ---------------------------------------------------------------------------
 # Tool registration

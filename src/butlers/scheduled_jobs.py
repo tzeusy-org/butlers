@@ -291,7 +291,7 @@ async def _run_memory_consolidation_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Run memory consolidation directly without spawning an LLM runtime session.
+    """Run memory consolidation through the daemon's live runtime spawner.
 
     ``job_args.batch_size`` optionally overrides ``run_consolidation``'s
     default batch size (``DEFAULT_BATCH_SIZE``). This lets a single handler
@@ -300,25 +300,27 @@ async def _run_memory_consolidation_job(
     schedule (larger batch size, tighter cadence) registered against the same
     ``job_name`` — see ``MemoryModule.on_startup``'s default schedules.
 
-    NOTE: ``cc_spawner=None`` means this only claims/groups pending episodes
-    (via ``FOR UPDATE SKIP LOCKED``) — it does **not** spawn an LLM session to
-    actually parse and promote episodes to facts/rules (see
-    ``run_consolidation``'s ``cc_spawner`` branch). Both this job and the
-    backfill schedule therefore only report grouping stats
-    (``episodes_processed``, ``groups``); ``episodes_consolidated``,
-    ``facts_created``, etc. stay at 0 until a real ``Spawner`` is wired into
-    this deterministic path (tracked as a separate follow-up).
+    The daemon registers its fully configured ``Spawner`` in ``spawn_hooks``
+    during startup. Reusing that instance keeps model selection, spend routing,
+    quotas, failover, and session timeouts under the authoritative model-catalog
+    path. ``run_consolidation`` only invokes it when the bounded claim produced
+    at least one ``(tenant_id, butler)`` group, so an empty backlog is a no-op.
 
     ``enable_shared_catalog=True`` is passed through regardless — it matches
     the memory module's own default (see the memory-discovery-catalog spec's
     "Catalog write-behind defaults to enabled" requirement; no butler.toml
     currently overrides it) and keeps the ``store_fact``/``store_rule``
     catalog pass-through correct for whenever a real ``Spawner`` lands here.
-    ``source_schema`` is intentionally left unresolved — this handler has no
-    access to a butler's toml config, so ``execute_consolidation`` falls back
-    to the pool's own ``current_schema()`` (see its docstring).
+    Pool, embedding-model, and source-schema resolution remain owned by the
+    started memory module through ``core.memory_hooks``.  This preserves custom
+    embedding configuration and private memory schemas such as
+    ``chronicler_mem`` rather than accidentally using the daemon's domain pool.
     """
-    from butlers.modules.memory.consolidation import DEFAULT_BATCH_SIZE, run_consolidation
+    del pool
+
+    from butlers.core.memory_hooks import consolidate_memory
+    from butlers.core.spawn_hooks import get_spawner
+    from butlers.modules.memory.consolidation import DEFAULT_BATCH_SIZE
 
     batch_size = DEFAULT_BATCH_SIZE
     if job_args is not None:
@@ -340,10 +342,14 @@ async def _run_memory_consolidation_job(
                 )
             batch_size = raw_batch_size
 
-    return await run_consolidation(
-        pool=pool,
-        embedding_engine=None,
-        cc_spawner=None,
+    spawner = get_spawner()
+    if spawner is None:
+        raise RuntimeError(
+            "memory_consolidation requires the daemon Spawner to be registered before dispatch"
+        )
+
+    return await consolidate_memory(
+        spawner=spawner,
         batch_size=batch_size,
         enable_shared_catalog=True,
     )

@@ -271,6 +271,9 @@ No page uses a Tier-2 hero (PulseStrip) unless the record has an associated enti
 ### Runtime timeout propagation contract
 - `Spawner._run()` must forward the effective `session_timeout_s` into `runtime.invoke(timeout=...)`, not just wrap the call in outer `asyncio.wait_for(...)`; otherwise adapter-specific inner timeouts can drift from session records and produce misleading mixed timeout behavior (observed in QA self-healing Codex runs).
 
+### Scheduled memory consolidation runtime contract
+- The deterministic `memory_consolidation` handler must supply the daemon's registered live `Spawner` but resolve its database pool and embedding engine through the active MemoryModule hook. Calling the embedding helper directly loses custom model/cache lifecycle; using the daemon pool breaks private memory schemas such as Chronicler's `chronicler_mem`. Missing module or Spawner wiring fails closed so the scheduler records the error.
+
 ### OpenCode empty-response failover contract
 - OpenCode exit 0 with no result text, no tool calls, no token usage, and empty stderr is a failed pre-tool-call runtime attempt; `OpenCodeAdapter` must raise a classifier-eligible `RuntimeError` so same-tier model failover can run instead of persisting a successful null session.
 

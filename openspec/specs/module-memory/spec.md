@@ -132,6 +132,15 @@ The consolidation pipeline SHALL transform unconsolidated episodes into durable 
 - **AND** the runtime output MUST be parsed for a JSON block containing `new_facts`, `updated_facts`, `new_rules`, and `confirmations`
 - **AND** partial failures in one group MUST NOT block other groups from processing
 
+#### Scenario: Scheduled consolidation uses the catalog-backed daemon spawner
+
+- **WHEN** the deterministic `memory_consolidation` scheduled-job handler runs
+- **THEN** it MUST pass the daemon's live `Spawner` to `run_consolidation` rather than using the `cc_spawner=None` dry-run path
+- **AND** an empty pending-episode claim MUST spawn no runtime session
+- **AND** each non-empty `(tenant_id, butler)` group MUST use `trigger_source='schedule:consolidation'` without overriding model, runtime, or session timeout, so model selection, spend-routing policy, quotas, failover, and timeout remain authoritative in the model catalog and `Spawner`
+- **AND** database and embedding resolution MUST use the active memory module's runtime pool and configured embedding-engine lifecycle, including any private `memory_schema`, rather than the daemon's domain pool or the embedding helper's default model
+- **AND** the handler's returned consolidation statistics or raised error MUST remain the scheduled task result recorded by the scheduler
+
 #### Scenario: Consolidation without spawner (dry run)
 
 - **WHEN** `run_consolidation` is called with `cc_spawner=None`
@@ -263,4 +272,3 @@ This requirement composes with the cross-cutting "MCP Tools Raise on Invalid Inp
 - Visual reference: the `MemoryExpanded` redesign prototype (graduated; now shipped in `frontend/`).
 - Reuses `audit.append()` from dashboard-audit-log on policy mutations.
 - Existing module-memory requirements (correction-driven retraction, etc.) are unchanged by this delta.
-

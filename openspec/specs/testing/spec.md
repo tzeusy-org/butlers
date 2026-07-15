@@ -527,7 +527,8 @@ E2E scheduling tests SHALL validate the TOML schedule sync, tick dispatch, cron 
 
 #### Scenario: Dual-mode dispatch
 - **WHEN** a scheduled task fires
-- **THEN** native-mode tasks (with `dispatch_mode = "job"` and `job_name`) execute deterministic Python jobs directly without spawning a runtime instance
+- **THEN** native-mode tasks (with `dispatch_mode = "job"` and `job_name`) execute deterministic Python job handlers directly without the scheduler automatically spawning a runtime instance
+- **AND** a native handler MAY explicitly invoke the daemon Spawner when required by its capability spec, while preserving the Spawner's model-catalog and timeout contracts
 - **AND** runtime-mode tasks (with `prompt`) dispatch through `spawner.trigger()` with `trigger_source="schedule:<task-name>"`
 
 #### Scenario: Timer and external trigger interleaving

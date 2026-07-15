@@ -97,6 +97,11 @@ sequenceDiagram
         CLI-->>Spawner: Session result
     else dispatch_mode = "job"
         Loop->>Loop: Execute job function directly
+        opt Job algorithm requires an LLM (memory consolidation)
+            Loop->>Spawner: trigger via live daemon Spawner
+            Spawner->>CLI: Invoke catalog-selected LLM CLI
+            CLI-->>Spawner: Structured result
+        end
     end
 
     Note over Loop: Sleep tick_interval_seconds
@@ -107,9 +112,17 @@ The scheduler loop runs as an asyncio task within each butler daemon. The
 default tick interval is 60 seconds. Schedule definitions in `butler.toml` are
 synced to the database on startup.
 
-Job-mode tasks (`dispatch_mode = "job"`) execute Python functions directly
-without spawning an LLM session. Examples: `memory_consolidation`,
-`memory_episode_cleanup`, `eligibility_sweep`.
+Job-mode tasks (`dispatch_mode = "job"`) execute Python functions directly;
+the scheduler does not automatically turn their payload into an LLM prompt.
+Most jobs, including `memory_episode_cleanup` and `eligibility_sweep`, are
+zero-LLM. `memory_consolidation` is the explicit exception: its deterministic
+Python handler claims and groups episodes, then uses the daemon's live Spawner
+once per non-empty `(tenant_id, butler)` group so model selection and timeouts
+remain governed by the model catalog. A core-owned memory runtime hook resolves
+the started module's pool and configured embedding engine at dispatch time;
+this keeps private memory schemas such as `chronicler_mem` and the module's
+per-model engine cache authoritative instead of falling back to the daemon's
+domain pool or the default embedding model.
 
 ---
 

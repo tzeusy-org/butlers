@@ -46,9 +46,8 @@ logger = logging.getLogger(__name__)
 # `memory_consolidation_backfill` reuses the `memory_consolidation` job_name
 # with a larger `job_args.batch_size` on a tighter cadence — a bounded,
 # incremental catch-up pass for the pending-episode backlog (see
-# `_run_memory_consolidation_job` for the batch_size override and the
-# cc_spawner=None caveat: this claims/groups episodes but does not yet spawn
-# an LLM session to promote them to facts/rules).
+# `_run_memory_consolidation_job` for the batch_size override and live-Spawner
+# wiring that promotes each claimed (tenant_id, butler) group to facts/rules).
 _DEFAULT_MAINTENANCE_SCHEDULES: tuple[dict[str, Any], ...] = (
     {
         "name": "memory_decay_sweep",
@@ -315,6 +314,7 @@ class MemoryModule(Module):
         # (dependency inversion: core owns the interface, modules supply the impl).
         from butlers.core.memory_hooks import (
             register_catalog_search,
+            register_memory_consolidation,
             register_memory_context,
             register_memory_forget,
             register_memory_store_episode,
@@ -393,10 +393,37 @@ class MemoryModule(Module):
             embedding_engine = await asyncio.to_thread(module._get_embedding_engine)
             return await _search_catalog(pool, query, embedding_engine, limit=limit, mode=mode)
 
+        async def _consolidation_hook(
+            *,
+            spawner: Any,
+            batch_size: int,
+            enable_shared_catalog: bool,
+        ) -> dict[str, Any]:
+            import asyncio
+            import importlib
+
+            # Keep the LLM-backed consolidation implementation outside the
+            # deterministic Finder's transitive import graph.  MemoryModule is
+            # reachable from relationship tools, while consolidation imports
+            # Spawner and runtime adapters; load it only when this scheduled
+            # hook actually dispatches.
+            consolidation = importlib.import_module("butlers.modules.memory.consolidation")
+
+            embedding_engine = await asyncio.to_thread(module._get_embedding_engine)
+            return await consolidation.run_consolidation(
+                pool=module._get_pool(),
+                embedding_engine=embedding_engine,
+                cc_spawner=spawner,
+                batch_size=batch_size,
+                enable_shared_catalog=enable_shared_catalog,
+                source_schema=module._config.catalog_source_schema or None,
+            )
+
         register_memory_context(_context_hook)
         register_memory_store_episode(_store_episode_hook)
         register_memory_forget(_memory_forget)
         register_catalog_search(_catalog_search_hook)
+        register_memory_consolidation(_consolidation_hook)
 
         await self._register_default_maintenance_schedules(db)
 
@@ -444,6 +471,9 @@ class MemoryModule(Module):
 
     async def on_shutdown(self) -> None:
         """Clear state references."""
+        from butlers.core.memory_hooks import clear_memory_consolidation
+
+        clear_memory_consolidation()
         self._db = None
         self._embedding_engine = None
         if self._memory_db is not None:

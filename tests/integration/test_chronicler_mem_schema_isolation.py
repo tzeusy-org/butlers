@@ -22,13 +22,18 @@ with the memory chain targeted at ``chronicler_mem`` (exactly what
 from __future__ import annotations
 
 import shutil
+from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 
-from butlers.db import register_jsonb_codec
+from butlers.core.spawn_hooks import clear_spawner, register_spawner
+from butlers.db import Database, register_jsonb_codec
+from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.memory.storage import store_fact
+from butlers.scheduled_jobs import _run_memory_consolidation_job
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.modules.memory._test_helpers import make_embedding_engine_mock
 
@@ -151,3 +156,79 @@ async def test_fact_write_lands_in_chronicler_mem(isolated_db_url: str) -> None:
         assert chronicler_facts is None
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_scheduled_consolidation_uses_chronicler_memory_runtime(
+    isolated_db_url: str,
+    monkeypatch,
+) -> None:
+    """The scheduled job uses chronicler_mem plus the configured module engine."""
+
+    class _SuccessfulSpawner:
+        def __init__(self) -> None:
+            self.trigger_sources: list[str] = []
+
+        async def trigger(self, *, prompt: str, trigger_source: str):
+            self.trigger_sources.append(trigger_source)
+            return SimpleNamespace(success=True, output="{}", error=None)
+
+    parsed = urlparse(isolated_db_url)
+    domain_db = Database(
+        db_name=parsed.path.lstrip("/"),
+        schema="chronicler",
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 5432,
+        user=parsed.username or "postgres",
+        password=parsed.password or "postgres",
+        min_pool_size=1,
+        max_pool_size=3,
+        strict_role_enforcement=False,
+    )
+    await domain_db.connect()
+    module = MemoryModule()
+    engine = make_embedding_engine_mock()
+    requested_models: list[str | None] = []
+
+    def _configured_engine(model_name: str | None = None):
+        requested_models.append(model_name)
+        return engine
+
+    monkeypatch.setattr(
+        "butlers.modules.memory.tools.get_embedding_engine",
+        _configured_engine,
+    )
+    spawner = _SuccessfulSpawner()
+    register_spawner(spawner)
+    try:
+        await module.on_startup(
+            MemoryModuleConfig(
+                memory_schema="chronicler_mem",
+                embedding_model="custom-embedding-model",
+            ),
+            domain_db,
+        )
+        memory_pool = module._get_pool()
+        await memory_pool.execute(
+            "INSERT INTO episodes (butler, content) VALUES ('chronicler', 'pending memory')"
+        )
+
+        result = await _run_memory_consolidation_job(
+            pool=domain_db.pool,
+            job_args={"batch_size": 1},
+        )
+
+        assert result["episodes_processed"] == 1
+        assert result["episodes_consolidated"] == 1
+        assert requested_models == ["custom-embedding-model"]
+        assert spawner.trigger_sources == ["schedule:consolidation"]
+        assert (
+            await memory_pool.fetchval(
+                "SELECT consolidation_status FROM episodes WHERE content = 'pending memory'"
+            )
+            == "consolidated"
+        )
+    finally:
+        clear_spawner()
+        await module.on_shutdown()
+        await domain_db.close()
