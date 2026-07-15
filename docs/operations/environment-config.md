@@ -110,13 +110,13 @@ roster/{butler}/
 | Messenger | 41104 |
 | Dashboard API | 41200 |
 | Frontend (dev) | 41173 |
-| PostgreSQL | 5432 (54320 in Docker) |
+| PostgreSQL | 5432 (external host, `POSTGRES_HOST`/`POSTGRES_PORT` from `.env.dev` / `.env.prod`) |
 
 ## Development vs Production
 
 | Concern | Development | Production |
 |---------|-------------|------------|
-| Database | `docker compose up -d postgres` | Managed PostgreSQL or compose |
+| Database | External PostgreSQL via `.env.dev` (the default `scripts/compose.sh` target) | External PostgreSQL via `.env.prod` |
 | Secrets | `secrets/` files + `.env` | Dashboard UI + credential store |
 | Telemetry | Optional (no-op if unset) | OTLP endpoint configured |
 | Frontend | Vite dev server on `:41173` | Static files via `DASHBOARD_STATIC_DIR` |

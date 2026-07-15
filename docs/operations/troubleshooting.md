@@ -12,28 +12,29 @@ This page covers the most common failure modes encountered when running Butlers,
 
 ### Symptom: "connection refused" or "could not connect to server"
 
-**Cause:** PostgreSQL is not running or not reachable at the configured host/port.
+**Cause:** the external PostgreSQL is unreachable at the configured host/port.
+The database is **not** a Compose service; it lives on a remote host set by
+`POSTGRES_HOST` / `POSTGRES_PORT` in the `.env.<mode>` file that
+`scripts/compose.sh` sources (`.env.dev` by default, `.env.prod` with `--prod`).
 
 **Diagnosis:**
 ```bash
-# Check if Postgres container is running
-docker compose ps postgres
+# Load the target DB config, then probe the real host directly.
+set -a && . ./.env.dev && set +a         # or ./.env.prod
+pg_isready -h "$POSTGRES_HOST" -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER:-butlers}"
 
-# Test connectivity directly
-pg_isready -h localhost -p 54320 -U butlers
-
-# Check container logs
-docker compose logs postgres --tail=50
+# If the host is on the tailnet (e.g. butlers-db-dev), confirm it resolves/pings.
+tailscale ping "$POSTGRES_HOST"
 ```
 
 **Resolution:**
-```bash
-# Start the database
-docker compose up -d postgres
-
-# Wait for healthcheck to pass
-docker compose ps  # Should show "healthy"
-```
+- Confirm `POSTGRES_HOST` / `POSTGRES_PASSWORD` are set correctly in the active
+  `.env.<mode>` file, and that the remote database host is up and reachable
+  (on the tailnet, and in `ALLOWED_TAILNET_HOSTS` if the egress firewall is on).
+- **Naming caution:** `butlers-db-dev` (`.env.dev`, the default target) is the
+  **LIVE** system with real data; `butlers-db` (`.env.prod`) is the other host.
+  The mode label tracks the env file, not which host is live, so confirm the
+  target before any destructive step.
 
 ### Symptom: "database does not exist" or migration errors
 
@@ -41,11 +42,11 @@ docker compose ps  # Should show "healthy"
 
 **Resolution:**
 ```bash
-# Run all migrations
-butlers migrate
+# Run migrations for all butler schemas
+butlers db migrate
 
-# Or for a specific butler
-butlers migrate --butler switchboard
+# Or for a specific butler schema
+butlers db migrate --only switchboard
 ```
 
 ### Symptom: Slow queries or high latency

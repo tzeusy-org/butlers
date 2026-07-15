@@ -316,8 +316,8 @@ if [ -z "${ALLOWED_TAILNET_HOSTS:-}" ] && command -v tailscale &>/dev/null; then
   # identifiers in tailscale) to resolve current IPs.
   TAILNET_SERVICES=(
     otel               # OpenTelemetry collector (tracing)
-    butlers-db-dev     # PostgreSQL dev
-    butlers-db         # PostgreSQL prod
+    butlers-db-dev     # PostgreSQL for .env.dev (default target; despite "dev", the LIVE host with real data)
+    butlers-db         # PostgreSQL for .env.prod (despite "prod", NOT the live host)
     ollama             # Local LLM inference
     tzehouse-synology  # Garage S3 storage
     homeassistant      # Home Assistant (home + health butler modules)
