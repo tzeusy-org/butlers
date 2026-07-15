@@ -1,93 +1,143 @@
 # Docker Deployment
 
-> **Purpose:** Document the Docker Compose setup for running Butlers in development and production modes.
+> **Purpose:** Document the Docker Compose setup for running Butlers.
 > **Audience:** Operators, DevOps engineers, anyone deploying Butlers.
 > **Prerequisites:** [Environment Config](environment-config.md), Docker and Docker Compose installed.
 
 ## Overview
 
-![Docker Deployment Topology](./docker-deployment.svg)
+Butlers runs as a set of containers defined in the repository-root
+`docker-compose.yml` and launched through `scripts/compose.sh`. There is **one
+shared PostgreSQL database** (external to Compose, reached over the network) in
+which every butler owns its own schema; the butler daemon, the dashboard API,
+and the external-connector services all connect to it. There are **no per-butler
+containers** and **no local containerized Postgres** -- a single `butlers-up`
+container runs every butler in the roster, and the database lives on a remote
+host configured via `.env.dev` / `.env.prod`.
 
-Butlers provides a `docker-compose.yml` at the repository root that defines all services needed for a complete deployment. The setup supports two modes: development (local butler processes with containerized DB and observability) and production (all services containerized). The `Dockerfile` builds a Python 3.12 image with Node.js 22, the `claude-code` CLI, and `uv` for dependency management.
+The application image (`butlers-app`) is built on `butlers-base` (Python 3.12 +
+Node.js 22 + the LLM runtime CLIs + `uv`).
 
 ## Quick Start
 
-**Development mode** (local butler processes, containerized database):
+Use the launcher; it selects the database target, sources the matching env file,
+sets the per-mode host ports, and configures Tailscale serve:
 
 ```bash
-docker compose up -d postgres
-butlers up
+./scripts/compose.sh              # dev database + hotreload (default)
+./scripts/compose.sh --prod       # production database, baked image
+./scripts/compose.sh --no-hotreload   # dev DB, prod-style baked image (no source mount)
 ```
 
-**Production mode** (everything containerized):
+`--prod` and the default `dev` run under different Compose project names
+(`butlers` vs `butlers-dev`) and different host ports (see
+[Environment Variables](#environment-variables)), so both stacks can run on the
+same machine at once. For production **redeploys**, prefer `butlers deploy` over
+a bare `docker compose up -d` -- see [Production Deploys](#production-deploys-butlers-deploy).
 
-```bash
-cp .env.example .env
-# Edit .env with your configuration
-docker compose up -d
-```
+## Images
 
-**Recommended for production redeploys:** use `butlers deploy` instead of a
-bare `docker compose up -d` — see [Production Deploys](#production-deploys-butlers-deploy)
-below.
+Two images, both pinned by digest where practical:
 
-## Dockerfile
+**`butlers-base`** (`Dockerfile.base`) -- the shared runtime:
 
-The production image is built on `python:3.12-slim`:
+1. **`python:3.12-slim`** base (digest-pinned).
+2. System deps: curl, ca-certificates, gnupg, `git`, `gh`, `postgresql-client`, ripgrep.
+3. **Node.js 22** via NodeSource -- required by the LLM runtime CLIs.
+4. **LLM runtime CLIs**, pinned to exact versions: `@anthropic-ai/claude-code`,
+   `@google/gemini-cli`, `@openai/codex`, `opencode-ai`.
+5. **uv** package manager.
 
-1. **System dependencies**: curl, ca-certificates, gnupg.
-2. **Node.js 22** via NodeSource -- required by the `claude-code` CLI.
-3. **claude-code** installed globally via `npm install -g claude-code`.
-4. **uv** package manager via the official install script.
-5. **Project files**: `pyproject.toml`, `src/`, `alembic.ini`, `alembic/`.
-6. **Production dependencies** via `uv sync --no-dev`.
+**`butlers-app`** (`Dockerfile`) -- the application, `FROM butlers-base`:
 
-Entrypoint: `uv run butlers`. Default command: `run --config /etc/butler`.
+1. A Go builder stage compiles the bundled helper binaries.
+2. Source (`pyproject.toml`, `src/`, `alembic.ini`, `alembic/`, …) is copied in
+   and installed with `uv sync --frozen --no-dev` (plus the `whatsapp` extra).
+3. Entrypoint `uv run --frozen --no-dev butlers`; default command
+   `run --config /etc/butler`.
 
 ## Services
 
-### PostgreSQL (`postgres`)
+All application containers use the `butlers-app` image and read the shared
+database env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file.
+
+### Database (external)
+
+There is **no `postgres` service** in `docker-compose.yml`. The database is a
+remote PostgreSQL reached via `POSTGRES_HOST` / `POSTGRES_PORT` (defaults to
+`5432`), which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One
+database holds every butler's schema plus the shared `public` schema; there is
+no local data volume to manage.
+
+### `butlers-up` (the butler daemon)
 
 | Setting | Value |
 |---------|-------|
-| Image | `pgvector/pgvector:pg17` |
-| Port (host) | `54320` |
-| Port (container) | `5432` |
-| Default user | `butlers` |
-| Auth method | `trust` |
-| Max connections | `200` |
-| Volume | `butlers_postgres_data` (external) |
+| Image | `butlers-app` |
+| Command | `uv run butlers up` (runs **all** roster butlers in one process) |
+| Health port | `41100` (prod) / `42100` (dev) -- Switchboard `/health` |
+| Config mount | `./roster` -> `/app/roster:ro` |
+| Runtime volumes | `runtime_claude`, `runtime_codex`, `runtime_opencode`, `runtime_gemini` (per-CLI state) |
 
-Healthcheck: `pg_isready -U butlers` every 5 seconds, 5 retries. All butler services depend on Postgres being healthy.
+Depends on `migrations`, `oauth-gate`, and `log-init` completing successfully.
+Runs `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user
+namespaces. A `--hotreload` run substitutes `butlers-up-hotreload`, which
+volume-mounts `src/` for live edits.
 
-### Butler Services
-
-| Service | Port | Config Mount |
-|---------|------|-------------|
-| `switchboard` | 41100 | `roster/switchboard` -> `/etc/butler:ro` |
-| `general` | 41101 | `roster/general` -> `/etc/butler:ro` |
-| `relationship` | 41102 | `roster/relationship` -> `/etc/butler:ro` |
-| `health` | 41103 | `roster/health` -> `/etc/butler:ro` |
-
-All butler containers use the same Docker image, mount their roster directory as read-only, and run `butlers run --config /etc/butler`.
-
-### Dashboard API (`dashboard-api`)
+### `dashboard-api`
 
 | Setting | Value |
 |---------|-------|
-| Port | `41200` |
-| Config mount | `roster/` -> `/app/roster:ro` |
+| Image | `butlers-app` |
 | Command | `dashboard --host 0.0.0.0 --port 41200` |
+| Port | `41200` (prod) / `42200` (dev) |
+| Config mount | `./roster` -> `/app/roster:ro` |
 
-### Frontend Dev Server (`frontend-dev`)
+Serves the dashboard API and `/health`. The `--hotreload` variant is
+`dashboard-api-hotreload`.
+
+### `frontend-dev`
 
 | Setting | Value |
 |---------|-------|
-| Profile | `dev` (must be explicitly activated) |
-| Port | `41173` |
-| Image | `node:22.16.0-slim` |
+| Profile | `dev` (activated by `scripts/compose.sh`) |
+| Image | `node:24-slim` (matches CI's Node 24) |
+| Startup | `npm ci && npm run dev` |
+| Port | `41173` (prod) / `42173` (dev) |
 
-Start with: `docker compose --profile dev up`
+Vite dev server serving the dashboard `frontend/` via a host bind-mount for
+hotreload. It uses `npm ci` (never `npm install`) so startup installs strictly
+from `frontend/package-lock.json` and never rewrites the tracked lockfile
+(bu-0zvsd); a static guard in `tests/scripts/test_compose_frontend_dev_lockfile_guard.py`
+holds that invariant.
+
+### `migrations`
+
+One-shot `butlers-app` container running `db migrate` (exits 0). Every other
+app service depends on it via `service_completed_successfully`. See
+[Production Deploys](#production-deploys-butlers-deploy) for why redeploys run it
+with `run --rm` rather than relying on `up -d`.
+
+### Connector services
+
+Each external ingress/egress connector runs in its own container (image
+`butlers-app`, connector env from the `x-connector-env` anchor):
+`connector-telegram-bot`, `connector-telegram-user`, `connector-whatsapp-user`,
+`connector-gmail`, `connector-google-calendar`, `connector-google-drive`,
+`connector-google-health`, `connector-spotify`, `connector-steam`,
+`connector-owntracks`, `connector-activitywatch`, `connector-home-assistant`,
+and `connector-live-listener` (behind the `audio` profile). The
+`connector-whatsapp-user` service owns the single authenticated WhatsApp bridge
+socket (`wa_bridge_socket`), shared with the Messenger butler.
+
+### Supporting services
+
+| Service | Role |
+|---------|------|
+| `minio` + `minio-setup` | S3-compatible object storage + bucket bootstrap |
+| `oauth-gate` | Preflight OAuth-credential check (blocks startup on missing tokens; `--skip-oauth-check` to bypass) |
+| `log-init` / `log-cleanup` | Log volume permissions + retention pruning |
+| `backup-cron` | Scheduled database backups to `butlers_backups` |
 
 ## Production Deploys (`butlers deploy`)
 
@@ -125,28 +175,50 @@ config or image actually changed.
 
 ## Environment Variables
 
-All butler containers share:
+The database target is **not** hard-coded in Compose; `scripts/compose.sh`
+sources `.env.<mode>` and exports the per-mode ports before invoking
+`docker compose`. The shared DB env (`x-postgres-env`) requires:
 
 ```yaml
-POSTGRES_HOST: postgres
-POSTGRES_PORT: 5432
-POSTGRES_USER: butlers
-POSTGRES_PASSWORD: butlers
-OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.parrot-hen.ts.net:4318
+POSTGRES_HOST: <from .env.dev | .env.prod>   # required
+POSTGRES_PORT: 5432                          # default
+POSTGRES_USER: butlers                       # default
+POSTGRES_PASSWORD: <from .env.dev | .env.prod>   # required
+POSTGRES_SSLMODE: <optional>
 ```
+
+Per-mode host ports and project names (both can run at once):
+
+| | prod (`--prod`) | dev (default) |
+|---|---|---|
+| Compose project | `butlers` | `butlers-dev` |
+| Switchboard | `41100` | `42100` |
+| Dashboard API | `41200` | `42200` |
+| Frontend | `41173` | `42173` |
+| OwnTracks | `40086` | `42086` |
+| URL base path | `/butlers/` | `/butlers-dev/` |
+
+> **Naming caution for operators:** the two database targets are named
+> **counter-intuitively**. `butlers-db-dev` (selected by `.env.dev`, the default
+> `scripts/compose.sh` target) is the **LIVE** system holding real data;
+> `butlers-db` (`.env.prod`) is the other target. `scripts/compose.sh`'s own
+> `dev` / `prod` mode labels track the env file, **not** which host is live, so
+> do not trust the word "dev" here. Confirm which host an `.env.<mode>` file
+> actually points at before running migrations or destructive operations.
 
 ## Volumes
 
 | Volume | Type | Purpose |
 |--------|------|---------|
-| `butlers_postgres_data` | External | Persistent PostgreSQL data (must pre-exist) |
-| `frontend_node_modules` | Anonymous | Node.js dependencies for frontend dev |
+| `minio_data` | Named | MinIO object storage |
+| `frontend_node_modules` | Named | Frontend dev `node_modules` |
+| `uv_cache` | Named | Shared `uv` package cache |
+| `runtime_claude` / `runtime_codex` / `runtime_opencode` / `runtime_gemini` | Named | Per-CLI runtime state for `butlers-up` |
+| `wa_bridge_socket` | Named | Shared WhatsApp bridge socket |
+| `butlers_backups` | Named | Database backup output |
 
-Create the external volume before first use: `docker volume create butlers_postgres_data`
-
-## Aspirational Services
-
-Butlers in the roster not yet in `docker-compose.yml`: education, finance, home, messenger, travel.
+There is no PostgreSQL data volume: the database is external (see
+[Database](#database-external)).
 
 ## Related Pages
 
