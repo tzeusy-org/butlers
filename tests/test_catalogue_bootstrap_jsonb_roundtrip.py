@@ -93,3 +93,51 @@ async def test_upsert_required_scopes_roundtrips_as_list_not_double_encoded_stri
         await upsert_provider_feature_catalogue(pool)
         count = await pool.fetchval("SELECT COUNT(*) FROM public.provider_feature_catalogue")
         assert count == len(_CATALOGUE_SEED)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_email_and_general_system_categories_have_catalogue_rows(
+    provisioned_postgres_pool,
+) -> None:
+    """bu-pza41: the ``email`` (BUTLER_EMAIL_*) and ``general`` (BLOB_S3_*) system
+    categories must have catalogue rows so WhatBreaks / ConfirmImpact render real
+    impact instead of the 'usage not tracked' coverage-gap state.
+
+    The passport queries ``GET /api/secrets/breaks-catalogue?provider=<category>``,
+    which filters ``provider_feature_catalogue`` by ``provider``; a system secret's
+    category (frontend/src/lib/secret-templates.ts) is that provider slug
+    (BUTLER_EMAIL_* -> 'email', BLOB_S3_* -> 'general').
+    """
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_PROVIDER_FEATURE_CATALOGUE_DDL)
+        await upsert_provider_feature_catalogue(pool)
+
+        for provider in ("email", "general"):
+            # Mirrors the breaks-catalogue endpoint's per-provider filter.
+            rows = await pool.fetch(
+                "SELECT butler, feature, severity FROM public.provider_feature_catalogue "
+                "WHERE provider = $1",
+                provider,
+            )
+            assert rows, (
+                f"provider_feature_catalogue has no rows for the {provider!r} system "
+                "category — WhatBreaks/ConfirmImpact would render 'usage not tracked'."
+            )
+            for r in rows:
+                assert r["butler"], f"{provider} row has empty butler"
+                assert r["feature"], f"{provider} row has empty feature"
+                assert r["severity"] in {"high", "medium", "low"}, (
+                    f"{provider} row has bad severity {r['severity']!r}"
+                )
+
+        # Email is enabled by the messenger and travel butlers; both must be
+        # represented so the operator sees which butlers lose email.
+        email_butlers = {
+            r["butler"]
+            for r in await pool.fetch(
+                "SELECT butler FROM public.provider_feature_catalogue WHERE provider = 'email'"
+            )
+        }
+        assert {"messenger", "travel"} <= email_butlers, (
+            f"email catalogue rows should cover messenger + travel; got {email_butlers}"
+        )

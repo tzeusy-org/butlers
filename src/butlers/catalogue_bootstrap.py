@@ -34,10 +34,15 @@ logger = logging.getLogger(__name__)
 # the defensive `isinstance(scopes, str)` guards in api/routers/secrets_v2.py
 # (_fetch_scopes_required_by_provider, breaks-catalogue) already work around.
 #
-# Mirrors the seed in alembic/versions/core/core_107_provider_feature_catalogue.py
-# (that seed is a raw SQL literal executed via Alembic's op.execute(), so it is
-# parsed server-side and is NOT subject to this bug). Keep these two in sync
-# when adding new providers or features.
+# Extends the initial seed in
+# alembic/versions/core/core_107_provider_feature_catalogue.py (that seed is a
+# raw SQL literal executed via Alembic's op.execute(), so it is parsed
+# server-side and is NOT subject to this bug). This bootstrap is the living
+# source of truth: it UPSERTs on every boot, so rows added here (e.g. the
+# ``email`` / ``general`` system-category rows for BUTLER_EMAIL_* / BLOB_S3_*,
+# bu-pza41) land in the live catalogue on the next daemon start without a
+# migration. core_107 is the historical initial seed and is intentionally not
+# edited; the two need not be byte-identical.
 # ---------------------------------------------------------------------------
 
 _CATALOGUE_SEED: tuple[tuple[str, str, str, str, list[str]], ...] = (
@@ -138,6 +143,35 @@ _CATALOGUE_SEED: tuple[tuple[str, str, str, str, list[str]], ...] = (
         "lifestyle",
         "Steam game library",
         "low",
+        [],
+    ),
+    # email × messenger / travel (BUTLER_EMAIL_* system creds, category 'email').
+    # The email module (modules/email.py) is enabled by the messenger and travel
+    # butlers; without the mailbox credentials, email send + IMAP inbox polling
+    # stop for those butlers. Not OAuth-scoped, so required_scopes is empty.
+    (
+        "email",
+        "messenger",
+        "Email send + IMAP inbox polling",
+        "high",
+        [],
+    ),
+    (
+        "email",
+        "travel",
+        "Email send + IMAP inbox polling",
+        "medium",
+        [],
+    ),
+    # general × * (BLOB_S3_* system creds, category 'general'). The S3-compatible
+    # blob store is core cross-butler infra wired at daemon startup (lifecycle.py);
+    # without it, blob operations fail fleet-wide — message-attachment persistence
+    # and document rendering (modules/document_renderer) among them.
+    (
+        "general",
+        "*",
+        "Blob storage (message attachments, rendered documents)",
+        "high",
         [],
     ),
 )
