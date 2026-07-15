@@ -395,6 +395,48 @@ async def test_resolve_tool_roundtrip(full_pool) -> None:
     assert again["status"] == "already_answered"
 
 
+async def test_concurrent_resolve_applies_once(full_pool) -> None:
+    """Two concurrent taps for the same interview must apply exactly once.
+
+    The resolve path reads pending -> applies the answer -> marks answered.
+    Before bu-6nwa1 those steps ran on the pool with no transaction or row
+    lock, so two overlapping callbacks (telegram retries, a double-tap) could
+    both read ``answered=False`` and double-apply: two override rows and a
+    doubled routine nudge. The fix wraps the steps in one connection plus a
+    transaction and locks the pending row ``FOR UPDATE`` -- the loser blocks
+    until the winner commits, then sees ``already_answered``.
+    """
+    import asyncio
+
+    routine = await _make_routine(full_pool, confidence=0.5, support=10)
+    episode = await _make_occupation_episode(full_pool, routine_id=routine.id)
+    await _seed_pending(
+        full_pool,
+        interview_id=_LOCAL_DATE,
+        occupation_episode_id=episode.id,
+        routine_id=routine.id,
+    )
+    resolve = (await _register(full_pool))["chronicler_resolve_gap_interview"]
+
+    first, second = await asyncio.gather(
+        resolve(interview_id=_LOCAL_DATE, answer="confirm"),
+        resolve(interview_id=_LOCAL_DATE, answer="confirm"),
+    )
+
+    # Exactly one tap wins; the other is a graceful no-op (not an exception).
+    assert sorted([first["status"], second["status"]]) == ["already_answered", "applied"]
+
+    # Applied exactly once: a single override row and a single reinforce
+    # (0.5 -> 0.60, support 10 -> 11), never the doubled 0.70 / two rows.
+    overrides = await list_overrides_for(
+        full_pool, target_kind=OverrideTarget.EPISODE, target_id=episode.id
+    )
+    assert len(overrides) == 1
+    refreshed = await get_routine(full_pool, routine.id)
+    assert refreshed.confidence == pytest.approx(0.60)
+    assert refreshed.support_count == 11
+
+
 async def test_resolve_unknown_interview_errors(full_pool) -> None:
     resolve = (await _register(full_pool))["chronicler_resolve_gap_interview"]
     result = await resolve(interview_id="2026-01-01", answer="confirm")

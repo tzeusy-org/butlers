@@ -446,17 +446,31 @@ async def resolve_gap_interview_callback(
     chronicler-scoped pool. Never raises for owner-facing conditions: an unknown
     or already-answered interview and an unparseable answer all return a
     ``status`` the caller can surface as a graceful toast.
+
+    The read-apply-mark steps run on one acquired connection inside a single
+    transaction, and the pending row is read ``FOR UPDATE`` (see
+    :func:`_resolve_on_conn`), so two concurrent taps for the same interview
+    serialize: the first applies the answer, the second blocks until it commits
+    and then sees ``answered`` -- returning ``already_answered`` instead of
+    double-applying the override/routine nudge (bu-6nwa1).
     """
-    return await _resolve_on_conn(pool, interview_id, answer, now)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            return await _resolve_on_conn(conn, interview_id, answer, now)
 
 
 async def _resolve_on_conn(
     conn: Any, interview_id: str, answer: str, now: datetime
 ) -> dict[str, Any]:
-    from butlers.core.state import state_get, state_set
+    from butlers.core.state import decode_jsonb, state_set
 
     pending_key = f"gap_interview:pending:{interview_id}"
-    pending = await state_get(conn, pending_key)
+    # Lock the pending row FOR UPDATE (not a plain state_get): a transaction
+    # alone would not stop two concurrent resolves from both reading
+    # ``answered=False`` under READ COMMITTED. With the row lock, the second tap
+    # blocks until the first commits, then re-reads the now-answered row.
+    row = await conn.fetchval("SELECT value FROM state WHERE key = $1 FOR UPDATE", pending_key)
+    pending = decode_jsonb(row) if row is not None else None
     if pending is None:
         return {
             "status": "error",
