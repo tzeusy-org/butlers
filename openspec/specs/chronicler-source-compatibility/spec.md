@@ -128,6 +128,34 @@ The OwnTracks Wi-Fi presence source SHALL use this compatibility declaration:
 - **AND** its projection checkpoint SHALL be maintained in
   `chronicler.projection_checkpoints`
 
+#### Scenario: Equal-timestamp OwnTracks rows cross a batch boundary
+
+- **WHEN** more OwnTracks SSID evidence rows share one `ts` value than fit in
+  a projection batch
+- **THEN** the adapter SHALL order them by `(ts, id)` and checkpoint both the
+  timestamp and stable source UUID
+- **AND** every source row SHALL be incorporated exactly once across
+  successful batch runs
+- **AND** replay SHALL remain idempotent through the stable
+  `(source_name, source_ref)` projection key
+
+#### Scenario: Timestamp-only checkpoint upgrades safely
+
+- **WHEN** an existing `owntracks.ssid_presence` checkpoint has a timestamp
+  watermark but no UUID tie-breaker
+- **THEN** the adapter SHALL perform one deterministic replay from the retained
+  source evidence and rebuild its open-span carryover from scratch
+- **AND** that replay SHALL remain batch-limited and persist the composite
+  cursor after each successful page; presence of the composite cursor marks
+  the timestamp-only upgrade complete
+- **AND** it SHALL persist a timestamp-plus-UUID checkpoint for subsequent
+  deterministic tuple-ordered runs
+- **AND** the replay SHALL update canonical episodes through stable source refs
+  rather than create duplicates or double-count legacy carryover
+- **AND** a mismatched or malformed composite cursor SHALL fail safe by
+  restarting the bounded replay rather than skipping evidence
+- **AND** no migration of existing checkpoint rows SHALL be required
+
 ## Source References
 
 - Non-Negotiable Rule 1 (single-owner data sovereignty)

@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -149,12 +149,16 @@ def test_json_string_raw_payload_is_decoded_for_grouping() -> None:
 
 async def test_empty_poll_preserves_endpoint_carryover() -> None:
     prior_carryover = {
+        "_source_cursor": {
+            "watermark": _NOW.isoformat(),
+            "uuid": "00000000-0000-0000-0000-000000000001",
+        },
         _ENDPOINT: {
             "ssid": "Corp WiFi",
             "start_at": _NOW.isoformat(),
             "end_at": _NOW.isoformat(),
             "point_count": 1,
-        }
+        },
     }
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
 
@@ -177,12 +181,16 @@ async def test_empty_poll_preserves_endpoint_carryover() -> None:
 
 async def test_all_malformed_batch_preserves_endpoint_carryover() -> None:
     prior_carryover = {
+        "_source_cursor": {
+            "watermark": _NOW.isoformat(),
+            "uuid": "00000000-0000-0000-0000-000000000001",
+        },
         _ENDPOINT: {
             "ssid": "Corp WiFi",
             "start_at": _NOW.isoformat(),
             "end_at": _NOW.isoformat(),
             "point_count": 1,
-        }
+        },
     }
     malformed_row = _row(10, endpoint_identity="")
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
@@ -202,7 +210,75 @@ async def test_all_malformed_batch_preserves_endpoint_carryover() -> None:
 
     saved = save.await_args.args[2]
     assert saved[_ENDPOINT] == prior_carryover[_ENDPOINT]
+    assert saved["_source_cursor"] == {
+        "watermark": malformed_row["ts"].isoformat(),
+        "uuid": str(malformed_row["id"]),
+    }
     assert result.watermark == _NOW + timedelta(minutes=10)
+
+
+async def test_legacy_timestamp_checkpoint_replays_from_start() -> None:
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetch = AsyncMock(return_value=[])
+    pool = MagicMock()
+    pool.acquire.return_value = _AsyncCtx(conn)
+
+    await adapter._fetch_points(pool, _NOW, since_uuid=None)
+
+    sql, *args = conn.fetch.await_args.args
+    assert "WHERE" not in sql
+    assert args == [adapter.batch_limit]
+
+
+async def test_uuid_checkpoint_uses_deterministic_tuple_boundary() -> None:
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetch = AsyncMock(return_value=[])
+    pool = MagicMock()
+    pool.acquire.return_value = _AsyncCtx(conn)
+    since_uuid = UUID("00000000-0000-0000-0000-000000000002")
+
+    await adapter._fetch_points(pool, _NOW, since_uuid=since_uuid)
+
+    sql, *args = conn.fetch.await_args.args
+    assert "WHERE (ts, id) > ($1, $2)" in sql
+    assert args == [_NOW, since_uuid, adapter.batch_limit]
+
+
+def test_matching_uuid_cursor_decodes_tiebreaker() -> None:
+    expected = UUID("00000000-0000-0000-0000-000000000002")
+    carryover = {
+        "_source_cursor": {
+            "watermark": _NOW.isoformat(),
+            "uuid": str(expected),
+        }
+    }
+
+    assert OwnTracksSsidPresenceAdapter._uuid_tiebreaker(carryover, _NOW) == expected
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        {"watermark": "not-a-timestamp", "uuid": "not-a-uuid"},
+        {
+            "watermark": (_NOW - timedelta(minutes=1)).isoformat(),
+            "uuid": "00000000-0000-0000-0000-000000000002",
+        },
+    ],
+    ids=["malformed", "watermark-mismatch"],
+)
+def test_invalid_uuid_cursor_requests_fail_safe_replay(cursor: dict[str, str]) -> None:
+    assert (
+        OwnTracksSsidPresenceAdapter._uuid_tiebreaker(
+            {"_source_cursor": cursor},
+            _NOW,
+        )
+        is None
+    )
 
 
 async def test_upsert_work_presence_stamps_minute_activity_and_medium_confidence() -> None:

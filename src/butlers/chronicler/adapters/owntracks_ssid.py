@@ -66,6 +66,7 @@ DEFAULT_MAX_GAP_MINUTES = 60
 CLOCK_SKEW_THRESHOLD_HOURS = 4
 _VALID_PLACES = frozenset({"home", "work"})
 _MAPPING_DIGEST_KEY = "_mapping_digest"
+_SOURCE_CURSOR_KEY = "_source_cursor"
 
 
 def parse_ssid_places(value: Any) -> dict[str, str]:
@@ -137,7 +138,7 @@ def group_ssid_points(
     new_carryover: dict[str, Any] = {
         endpoint: value
         for endpoint, value in prior_carryover.items()
-        if endpoint != _MAPPING_DIGEST_KEY
+        if endpoint not in {_MAPPING_DIGEST_KEY, _SOURCE_CURSOR_KEY}
     }
 
     for endpoint, endpoint_rows in by_endpoint.items():
@@ -303,7 +304,14 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             await self._tombstone_stale_mapping_episodes(chronicler_pool)
             prior_carryover = {}
 
-        rows = await self._fetch_points(pool, effective_since)
+        since_uuid = self._uuid_tiebreaker(prior_carryover, effective_since)
+        if effective_since is not None and since_uuid is None:
+            result.warnings.append(
+                "SSID source cursor missing or invalid; rebuilding from source evidence"
+            )
+            effective_since = None
+            prior_carryover = {}
+        rows = await self._fetch_points(pool, effective_since, since_uuid=since_uuid)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -347,9 +355,51 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             new_carryover = dict(prior_carryover)
 
         new_carryover[_MAPPING_DIGEST_KEY] = digest
+        last_row = rows[-1]
+        new_carryover[_SOURCE_CURSOR_KEY] = {
+            "watermark": last_row["ts"].isoformat(),
+            "uuid": str(last_row["id"]),
+        }
         await save_carryover(chronicler_pool, self.source_name, new_carryover)
         result.watermark = latest_watermark
         return result
+
+    @staticmethod
+    def _uuid_tiebreaker(
+        carryover: dict[str, Any],
+        watermark: datetime | None,
+    ) -> UUID | None:
+        """Decode the UUID half of a source-local composite checkpoint.
+
+        Timestamp-only checkpoints predate the UUID cursor. They intentionally
+        return ``None`` so the caller performs one deterministic full replay
+        with carryover rebuilt from source evidence before switching to tuple
+        comparisons. Replaying only the timestamp boundary would double-count
+        rows already represented by legacy open-span carryover.
+
+        The replay remains batch-limited. Its first successful page writes the
+        composite cursor, which is also the upgrade-completion marker. If the
+        cursor and relational watermark ever disagree (for example after an
+        interrupted write), returning ``None`` restarts the bounded replay
+        instead of risking a skip. Atomic mapping-replay state is tracked
+        separately by bu-whhll.16.
+        """
+        raw = carryover.get(_SOURCE_CURSOR_KEY)
+        if not isinstance(raw, dict) or watermark is None:
+            return None
+        try:
+            cursor_watermark = datetime.fromisoformat(raw["watermark"])
+            cursor_uuid = UUID(raw["uuid"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Ignoring malformed UUID source cursor for %s", SOURCE_NAME)
+            return None
+        if cursor_watermark != watermark:
+            logger.warning(
+                "Ignoring UUID source cursor for %s because its watermark does not match",
+                SOURCE_NAME,
+            )
+            return None
+        return cursor_uuid
 
     def _normalize_row(self, row: asyncpg.Record) -> tuple[dict[str, Any] | None, str | None]:
         ts = row["ts"]
@@ -386,7 +436,11 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         }, None
 
     async def _fetch_points(
-        self, pool: asyncpg.Pool, since: datetime | None
+        self,
+        pool: asyncpg.Pool,
+        since: datetime | None,
+        *,
+        since_uuid: UUID | None,
     ) -> list[asyncpg.Record] | None:
         try:
             async with pool.acquire() as conn:
@@ -401,7 +455,7 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
                 )
                 if not exists:
                     return None
-                if since is None:
+                if since is None or since_uuid is None:
                     rows = await conn.fetch(
                         f"""
                         SELECT id, ts, endpoint_identity, raw_payload, recorded_at
@@ -416,11 +470,12 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
                         f"""
                         SELECT id, ts, endpoint_identity, raw_payload, recorded_at
                         FROM {_EVIDENCE_TABLE}
-                        WHERE ts > $1
+                        WHERE (ts, id) > ($1, $2)
                         ORDER BY ts ASC, id ASC
-                        LIMIT $2
+                        LIMIT $3
                         """,
                         since,
+                        since_uuid,
                         self.batch_limit,
                     )
         except asyncpg.PostgresError:

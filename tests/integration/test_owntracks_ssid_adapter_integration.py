@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -14,6 +15,7 @@ from butlers.chronicler.adapters.owntracks_ssid import (
     EPISODE_TYPE_WORK_PRESENCE,
     SOURCE_NAME,
     SSID_PLACE_STATE_KEY,
+    OwnTracksSsidPresenceAdapter,
 )
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.jobs import run_project_owntracks_ssid
@@ -54,7 +56,14 @@ async def pool(migrated_db_url: str):
     await p.close()
 
 
-async def _insert_point(pool: asyncpg.Pool, minute: int, ssid: str | None) -> None:
+async def _insert_point(
+    pool: asyncpg.Pool,
+    minute: int,
+    ssid: str | None,
+    *,
+    point_id: UUID | None = None,
+    idempotency_key: str | None = None,
+) -> None:
     ts = _NOW + timedelta(minutes=minute)
     raw_payload: dict[str, object] = {"_type": "location", "lat": 1.3, "lon": 103.8}
     if ssid is not None:
@@ -62,11 +71,12 @@ async def _insert_point(pool: asyncpg.Pool, minute: int, ssid: str | None) -> No
     await pool.execute(
         """
         INSERT INTO connectors.owntracks_points
-            (idempotency_key, ts, lat, lon, accuracy, trigger, event,
+            (id, idempotency_key, ts, lat, lon, accuracy, trigger, event,
              endpoint_identity, raw_payload, recorded_at)
-        VALUES ($1, $2, 1.3, 103.8, 10.0, 'p', NULL, $3, $4, $2)
+        VALUES (COALESCE($1, gen_random_uuid()), $2, $3, 1.3, 103.8, 10.0, 'p', NULL, $4, $5, $3)
         """,
-        f"ssid-test:{minute}",
+        point_id,
+        idempotency_key or f"ssid-test:{minute}",
         ts,
         _ENDPOINT,
         raw_payload,
@@ -192,3 +202,114 @@ async def test_state_mapping_projects_gapped_runs_and_skips_unlabelled_ssid(
     assert all(row["episode_type"] == EPISODE_TYPE_HOME_PRESENCE for row in relabelled_rows)
     assert all(row["payload"]["place"] == "home" for row in relabelled_rows)
     assert all(row["tombstone_at"] is None for row in relabelled_rows)
+
+
+async def test_equal_timestamp_rows_cross_batches_without_loss_or_duplicates(
+    pool: asyncpg.Pool,
+) -> None:
+    await state_set(pool, SSID_PLACE_STATE_KEY, {"Corp WiFi": "work"})
+    boundary_ids = [UUID(int=value) for value in range(1, 6)]
+    for index, point_id in enumerate(boundary_ids):
+        await _insert_point(
+            pool,
+            0,
+            "Corp WiFi",
+            point_id=point_id,
+            idempotency_key=f"equal-ts:{index}",
+        )
+    final_id = UUID(int=6)
+    await _insert_point(
+        pool,
+        10,
+        "Corp WiFi",
+        point_id=final_id,
+        idempotency_key="equal-ts:final",
+    )
+
+    # Simulate a pre-upgrade timestamp-only checkpoint after the first two rows
+    # were already incorporated into the open span. The safe upgrade must not
+    # count those boundary observations twice while it establishes a UUID
+    # tie-breaker and pages through all five rows sharing the same timestamp.
+    await pool.execute(
+        """
+        INSERT INTO projection_checkpoints (source_name, subsource, watermark, carryover)
+        VALUES ($1, '', $2, $3)
+        """,
+        SOURCE_NAME,
+        _NOW,
+        {
+            _ENDPOINT: {
+                "ssid": "Corp WiFi",
+                "start_at": _NOW.isoformat(),
+                "end_at": _NOW.isoformat(),
+                "point_count": 2,
+            }
+        },
+    )
+
+    adapter = OwnTracksSsidPresenceAdapter(
+        ssid_places={"Corp WiFi": "work"},
+        batch_limit=2,
+    )
+    first = await adapter.run(pool=pool, chronicler_pool=pool)
+    second = await adapter.run(pool=pool, chronicler_pool=pool)
+    third = await adapter.run(pool=pool, chronicler_pool=pool)
+    repeated = await adapter.run(pool=pool, chronicler_pool=pool)
+
+    assert [first.episodes_closed, second.episodes_closed, third.episodes_closed] == [0, 0, 1]
+    assert repeated.episodes_closed == 0
+
+    rows = await pool.fetch(
+        "SELECT * FROM episodes WHERE source_name = $1 ORDER BY start_at",
+        SOURCE_NAME,
+    )
+    assert len(rows) == 1
+    assert rows[0]["start_at"] == _NOW
+    assert rows[0]["end_at"] == _NOW + timedelta(minutes=10)
+    assert rows[0]["payload"]["point_count"] == 6
+
+    checkpoint = await pool.fetchrow(
+        """
+        SELECT watermark, carryover
+        FROM projection_checkpoints
+        WHERE source_name = $1 AND subsource = ''
+        """,
+        SOURCE_NAME,
+    )
+    assert checkpoint["watermark"] == _NOW + timedelta(minutes=10)
+    assert checkpoint["carryover"]["_source_cursor"] == {
+        "watermark": (_NOW + timedelta(minutes=10)).isoformat(),
+        "uuid": str(final_id),
+    }
+    assert checkpoint["carryover"][_ENDPOINT]["point_count"] == 6
+
+    # Simulate an interruption that persisted the UUID cursor but not its
+    # matching relational watermark. Recovery must replay bounded pages and
+    # converge through the stable source ref rather than duplicate the episode.
+    interrupted_carryover = dict(checkpoint["carryover"])
+    interrupted_carryover["_source_cursor"] = {
+        "watermark": _NOW.isoformat(),
+        "uuid": str(final_id),
+    }
+    await pool.execute(
+        """
+        UPDATE projection_checkpoints
+        SET carryover = $2
+        WHERE source_name = $1 AND subsource = ''
+        """,
+        SOURCE_NAME,
+        interrupted_carryover,
+    )
+
+    recovered = [await adapter.run(pool=pool, chronicler_pool=pool) for _ in range(3)]
+    assert any(
+        "SSID source cursor missing or invalid" in warning for warning in recovered[0].warnings
+    )
+    assert [result.episodes_closed for result in recovered] == [0, 0, 1]
+
+    recovered_rows = await pool.fetch(
+        "SELECT * FROM episodes WHERE source_name = $1 ORDER BY start_at",
+        SOURCE_NAME,
+    )
+    assert len(recovered_rows) == 1
+    assert recovered_rows[0]["payload"]["point_count"] == 6
