@@ -92,6 +92,8 @@ describe("categoryForSource", () => {
     ["google_health.measurements", "workout_episode", "exercise"],
     ["health.meals", "eating_event", "eat"],
     ["home_assistant.history", "presence_episode", "rest"],
+    ["owntracks.ssid_presence", "presence_episode", "rest"],
+    ["owntracks.ssid_presence", "occupation_presence_episode", "work"],
     // Owner focus/reading/occupation/screen → Work lane.
     ["chronicler.focus_inferred", "focus_block", "work"],
     ["chronicler.reading_inferred", "reading_block", "work"],

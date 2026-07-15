@@ -1337,6 +1337,16 @@ async def _run_chronicler_project_owntracks_place_cluster_job(
     return await run_project_owntracks_place_cluster(pool, job_args)
 
 
+async def _run_chronicler_project_owntracks_ssid_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's OwnTracks Wi-Fi SSID presence projection job."""
+    from butlers.chronicler.jobs import run_project_owntracks_ssid
+
+    return await run_project_owntracks_ssid(pool, job_args)
+
+
 async def _run_chronicler_project_activitywatch_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1734,6 +1744,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_owntracks_place_cluster": (
                 _run_chronicler_project_owntracks_place_cluster_job
             ),
+            "chronicler_project_owntracks_ssid": _run_chronicler_project_owntracks_ssid_job,
             "chronicler_project_activitywatch": _run_chronicler_project_activitywatch_job,
             "chronicler_project_owner_outbound": _run_chronicler_project_owner_outbound_job,
             "chronicler_project_steam": _run_chronicler_project_steam_job,

@@ -191,6 +191,8 @@ const SOURCE_CATEGORY_MAP: Record<string, Category> = {
   "spotify.session_summary|listening_episode": "play",
   "steam.play_history|play_episode": "play",
   "owntracks.points|movement_episode": "travel",
+  "owntracks.ssid_presence|presence_episode": "rest",
+  "owntracks.ssid_presence|occupation_presence_episode": "work",
   "google_health.measurements|sleep_episode": "sleep",
   "google_health.measurements|workout_episode": "exercise",
   "health.meals|eating_event": "eat",

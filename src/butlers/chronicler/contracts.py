@@ -136,6 +136,18 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         optional_schema=True,
     ),
     SourceAdapterState(
+        source_name="owntracks.ssid_presence",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.owntracks_points (raw_payload.SSID)",
+        boundary_semantics=(
+            "two or more contiguous points with the same owner-mapped SSID -> "
+            "home/work presence episode; gaps over 60 minutes, SSID changes, "
+            "missing SSIDs, and unmapped SSIDs close the run; "
+            "first/last point bound the episode with precision=minute"
+        ),
+        optional_schema=True,
+    ),
+    SourceAdapterState(
         source_name="home_assistant.history",
         chronicler_compatibility=Compatibility.SUPPORTED,
         read_surface="connectors.home_assistant_history",

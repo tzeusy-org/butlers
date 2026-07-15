@@ -485,6 +485,44 @@ independent activity corroborates it, attributed to that activity's lane.
   it
 - **AND** corroborated time is attributed to the activity's lane, not "calendar"
 
+### Requirement: Owner-Mapped Wi-Fi SSID Presence Projection
+
+Chronicler SHALL deterministically project OwnTracks Wi-Fi observations into
+owner-place presence episodes using the existing butler state store. The
+owner-editable state key `chronicler/owntracks/ssid_places` SHALL contain an
+exact, case-sensitive JSON object mapping SSID names to the canonical places
+`home` or `work`. This projection SHALL NOT call an LLM.
+
+#### Scenario: Contiguous mapped SSID observations produce presence
+
+- **WHEN** two or more points from the same OwnTracks endpoint carry the same
+  mapped SSID no more than 60 minutes apart
+- **THEN** the first and last observations bound one activity-layer episode
+  with minute precision and medium confidence
+- **AND** the episode payload includes the owner-labelled `place`
+- **AND** a home mapping produces `presence_episode` in the Rest lane
+- **AND** a work mapping produces `occupation_presence_episode` in the Work
+  lane and MAY corroborate an approved occupation routine
+
+#### Scenario: Unknown evidence is an explicit boundary
+
+- **WHEN** an observation omits `SSID`, carries an unlabelled SSID, changes to
+  a different SSID, or follows the prior observation by more than 60 minutes
+- **THEN** that observation closes the preceding contiguous run
+- **AND** no episode is emitted for a missing or unlabelled SSID
+- **AND** observations on either side SHALL NOT be bridged into one episode
+
+#### Scenario: Mapping edits need no schema migration
+
+- **WHEN** the owner writes a new valid SSID mapping through the Chronicler
+  state API or MCP state tool
+- **THEN** the scheduled projector reads the new mapping on its next run
+- **AND** existing OwnTracks evidence is replayed idempotently when the mapping
+  value changes
+- **AND** projections made invalid by a removed or relabelled mapping SHALL be
+  tombstoned before valid retained evidence is re-projected
+- **AND** raw SSID names SHALL NOT appear in episode payloads or source refs
+
 ## Source References
 
 - Non-Negotiable Rule 1 (single-owner data sovereignty)

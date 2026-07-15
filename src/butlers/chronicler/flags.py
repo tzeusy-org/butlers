@@ -107,6 +107,7 @@ SOURCE_CRON_MINUTES: dict[str, int] = {
     "steam.play_history": 30,
     "owntracks.points": 30,
     "owntracks.place_cluster": 30,
+    "owntracks.ssid_presence": 30,
     "google_health.measurements": 30,
     "health.meals": 30,
     "home_assistant.history": 30,

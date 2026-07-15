@@ -48,6 +48,7 @@ def test_chronicler_jobs_registered_callable_and_resolvable() -> None:
         "chronicler_project_google_health_heart_rate",
         "chronicler_project_focus_inferred",
         "chronicler_project_reading_inferred",
+        "chronicler_project_owntracks_ssid",
     }
     assert expected <= jobs.keys()
     assert all(callable(jobs[name]) for name in expected)

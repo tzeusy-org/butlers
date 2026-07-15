@@ -29,13 +29,16 @@ from butlers.chronicler.adapters import (
     OwnerOutboundMessageAdapter,
     OwnTracksPlaceClusterAdapter,
     OwnTracksPointAdapter,
+    OwnTracksSsidPresenceAdapter,
     ReadingInferredAdapter,
     SpotifySessionAdapter,
     SteamPlayAdapter,
 )
 from butlers.chronicler.adapters.owntracks_place_cluster import parse_place_references
+from butlers.chronicler.adapters.owntracks_ssid import SSID_PLACE_STATE_KEY, parse_ssid_places
 from butlers.chronicler.contracts import seed_source_registry
 from butlers.config import list_butlers
+from butlers.core.state import state_get
 
 if TYPE_CHECKING:
     from butlers.chronicler.adapters import ProjectionAdapter
@@ -256,6 +259,30 @@ async def run_project_owntracks_place_cluster(
         )
         reference_points = ()
     adapter = OwnTracksPlaceClusterAdapter(reference_points=reference_points, **options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
+async def run_project_owntracks_ssid(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project owner-mapped OwnTracks Wi-Fi SSID presence episodes."""
+    options = _parse_job_args(
+        "chronicler_project_owntracks_ssid",
+        job_args,
+        supported_fields=("batch_limit", "max_gap_minutes"),
+    )
+    raw_mapping = await state_get(db_pool, SSID_PLACE_STATE_KEY)
+    try:
+        ssid_places = parse_ssid_places(raw_mapping)
+    except ValueError:
+        logger.warning(
+            "Malformed %s; projecting no SSID presence until the owner fixes it",
+            SSID_PLACE_STATE_KEY,
+            exc_info=True,
+        )
+        ssid_places = {}
+    adapter = OwnTracksSsidPresenceAdapter(ssid_places=ssid_places, **options)
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
@@ -653,6 +680,7 @@ __all__ = [
     "run_project_owner_outbound",
     "run_project_owntracks",
     "run_project_owntracks_place_cluster",
+    "run_project_owntracks_ssid",
     "run_project_reading_inferred",
     "run_project_sessions",
     "run_project_spotify",

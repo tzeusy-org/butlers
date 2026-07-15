@@ -516,6 +516,7 @@ _FLAG_DEPENDENT_JOB_TO_SOURCE: dict[str, str] = {
     "chronicler_project_steam": "steam.play_history",
     "chronicler_project_owntracks": "owntracks.points",
     "chronicler_project_owntracks_place_cluster": "owntracks.place_cluster",
+    "chronicler_project_owntracks_ssid": "owntracks.ssid_presence",
     "chronicler_project_google_health_sleep": "google_health.measurements",
     "chronicler_project_meals": "health.meals",
     "chronicler_project_home_assistant": "home_assistant.history",

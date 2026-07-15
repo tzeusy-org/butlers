@@ -40,6 +40,14 @@ def test_google_health_is_supported() -> None:
     assert state.read_surface == "health.facts (predicate=sleep_session|workout_session)"
 
 
+def test_owntracks_ssid_presence_is_supported() -> None:
+    state = find_source("owntracks.ssid_presence")
+    assert state is not None
+    assert state.chronicler_compatibility == Compatibility.SUPPORTED
+    assert state.read_surface == "connectors.owntracks_points (raw_payload.SSID)"
+    assert "minute" in (state.boundary_semantics or "")
+
+
 @pytest.mark.parametrize("source_name", ["health.steps", "health.heart_rate"])
 def test_google_health_point_event_sources_are_supported(source_name: str) -> None:
     state = find_source(source_name)

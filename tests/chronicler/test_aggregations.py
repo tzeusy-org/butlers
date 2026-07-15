@@ -50,6 +50,8 @@ _D1_PAIRS: list[tuple[str, str, str | None, str]] = [
     ("owntracks.points", "movement_episode", None, "travel"),
     # GPS place-cluster dwells (bu-ac2pg) → 'home' -> 'rest', never work.
     ("owntracks.place_cluster", "place_episode", None, "home"),
+    ("owntracks.ssid_presence", "presence_episode", None, "home"),
+    ("owntracks.ssid_presence", "occupation_presence_episode", None, "occupation"),
     ("google_health.measurements", "sleep_episode", None, "sleep"),
     ("google_health.measurements", "workout_episode", None, "workout"),
     ("health.meals", "eating_event", None, "meal"),

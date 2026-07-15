@@ -148,6 +148,58 @@ async def test_project_owntracks_rejects_unsupported_job_args() -> None:
         await run_project_owntracks(object(), {"oops": 1})
 
 
+async def test_project_owntracks_ssid_reads_owner_mapping_from_state() -> None:
+    pool = object()
+    adapter = AsyncMock()
+    adapter.run.return_value = AdapterResult(
+        source_name="owntracks.ssid_presence", rows_projected=2
+    )
+    seed_registry = AsyncMock()
+
+    with (
+        patch("butlers.chronicler.jobs.seed_source_registry", seed_registry),
+        patch(
+            "butlers.chronicler.jobs.state_get",
+            new=AsyncMock(return_value={"Corp WiFi": "work", "Home WiFi": "home"}),
+        ) as get_state,
+        patch(
+            "butlers.chronicler.jobs.OwnTracksSsidPresenceAdapter", return_value=adapter
+        ) as adapter_cls,
+    ):
+        from butlers.chronicler.jobs import run_project_owntracks_ssid
+
+        result = await run_project_owntracks_ssid(pool, {"max_gap_minutes": 45})
+
+    get_state.assert_awaited_once_with(pool, "chronicler/owntracks/ssid_places")
+    adapter_cls.assert_called_once_with(
+        ssid_places={"Corp WiFi": "work", "Home WiFi": "home"},
+        max_gap_minutes=45,
+    )
+    assert result["rows_projected"] == 2
+
+
+async def test_project_owntracks_ssid_malformed_state_degrades_to_empty_mapping() -> None:
+    pool = object()
+    adapter = AsyncMock()
+    adapter.run.return_value = AdapterResult(source_name="owntracks.ssid_presence")
+
+    with (
+        patch("butlers.chronicler.jobs.seed_source_registry", new=AsyncMock()),
+        patch(
+            "butlers.chronicler.jobs.state_get",
+            new=AsyncMock(return_value={"Corp WiFi": "office"}),
+        ),
+        patch(
+            "butlers.chronicler.jobs.OwnTracksSsidPresenceAdapter", return_value=adapter
+        ) as adapter_cls,
+    ):
+        from butlers.chronicler.jobs import run_project_owntracks_ssid
+
+        await run_project_owntracks_ssid(pool, None)
+
+    adapter_cls.assert_called_once_with(ssid_places={})
+
+
 async def test_project_owntracks_place_cluster_malformed_env_degrades_gracefully(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

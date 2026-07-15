@@ -89,7 +89,7 @@ def _routine(
 
 @pytest.mark.asyncio
 async def test_maybe_project_no_corroborator_emits_nothing() -> None:
-    conn = _FakeConn(fetch_results=[[], []])  # spotify: none, owner-outbound: none
+    conn = _FakeConn(fetch_results=[[], [], []])  # spotify, SSID, owner-outbound: none
     pool = _chronicler_pool(conn)
     adapter = OccupationInferredAdapter()
     routine = _routine()
@@ -111,7 +111,7 @@ async def test_maybe_project_no_corroborator_emits_nothing() -> None:
 async def test_maybe_project_corroborated_no_contradictor_emits_episode() -> None:
     spotify_id = uuid4()
     conn = _FakeConn(
-        fetch_results=[[{"id": spotify_id}], []],  # spotify hit, owner-outbound none
+        fetch_results=[[{"id": spotify_id}], [], []],  # spotify hit, SSID/outbound none
         fetchval_results=[False, False, False],  # movement, gaming, all-day calendar
     )
     pool = _chronicler_pool(conn)
@@ -154,7 +154,7 @@ async def test_maybe_project_corroborated_no_contradictor_emits_episode() -> Non
 async def test_maybe_project_movement_contradictor_suppresses_episode() -> None:
     spotify_id = uuid4()
     conn = _FakeConn(
-        fetch_results=[[{"id": spotify_id}], []],
+        fetch_results=[[{"id": spotify_id}], [], []],
         fetchval_results=[True],  # movement contradictor present
     )
     pool = _chronicler_pool(conn)
@@ -177,7 +177,7 @@ async def test_maybe_project_movement_contradictor_suppresses_episode() -> None:
 async def test_maybe_project_gaming_contradictor_suppresses_episode() -> None:
     spotify_id = uuid4()
     conn = _FakeConn(
-        fetch_results=[[{"id": spotify_id}], []],
+        fetch_results=[[{"id": spotify_id}], [], []],
         fetchval_results=[False, True],  # movement clear, gaming contradictor present
     )
     pool = _chronicler_pool(conn)
@@ -200,7 +200,7 @@ async def test_maybe_project_gaming_contradictor_suppresses_episode() -> None:
 async def test_maybe_project_all_day_calendar_contradictor_suppresses_episode() -> None:
     spotify_id = uuid4()
     conn = _FakeConn(
-        fetch_results=[[{"id": spotify_id}], []],
+        fetch_results=[[{"id": spotify_id}], [], []],
         fetchval_results=[False, False, True],  # only the all-day calendar check trips
     )
     pool = _chronicler_pool(conn)
@@ -227,7 +227,7 @@ async def test_maybe_project_owner_outbound_alone_corroborates() -> None:
     """Owner-outbound point events alone (no Spotify) are a sufficient corroborator."""
     outbound_id = uuid4()
     conn = _FakeConn(
-        fetch_results=[[], [{"id": outbound_id}]],  # spotify none, owner-outbound hit
+        fetch_results=[[], [], [{"id": outbound_id}]],  # spotify/SSID none, outbound hit
         fetchval_results=[False, False, False],
     )
     pool = _chronicler_pool(conn)
@@ -256,6 +256,38 @@ async def test_maybe_project_owner_outbound_alone_corroborates() -> None:
 
     assert episode is not None
     assert upserted[0].evidence_refs == [str(outbound_id)]
+
+
+@pytest.mark.asyncio
+async def test_maybe_project_office_ssid_presence_alone_corroborates() -> None:
+    ssid_episode_id = uuid4()
+    conn = _FakeConn(
+        fetch_results=[[], [{"id": ssid_episode_id}], []],
+        fetchval_results=[False, False, False],
+    )
+    pool = _chronicler_pool(conn)
+    adapter = OccupationInferredAdapter()
+    routine = _routine()
+    start_at = datetime(2026, 7, 6, 1, 30, tzinfo=UTC)
+    end_at = datetime(2026, 7, 6, 11, 30, tzinfo=UTC)
+
+    async def _fake_upsert(conn_arg: object, episode: object) -> object:
+        episode.id = uuid4()
+        return episode
+
+    with (
+        patch("butlers.chronicler.adapters.occupation.upsert_episode", side_effect=_fake_upsert),
+        patch(
+            "butlers.chronicler.adapters.occupation.upsert_owner_episode_entity",
+            new=AsyncMock(),
+        ),
+    ):
+        episode = await adapter._maybe_project(
+            pool, routine, date(2026, 7, 6), start_at, end_at, entity_id=None
+        )
+
+    assert episode is not None
+    assert episode.evidence_refs == [str(ssid_episode_id)]
 
 
 # ── project() orchestration ─────────────────────────────────────────────────

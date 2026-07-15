@@ -16,11 +16,8 @@ desk-Spotify sessions alone would have yielded ~9h of recognized occupation):
   ``chronicler.point_events`` for this source naturally degrades to zero
   matches until that adapter is deployed and has run, no missing-table guard
   needed).
-- **Office-SSID presence** — not yet wired: bu-whhll.5 (Wi-Fi SSID presence
-  adapter) has not landed and has not settled on a ``source_name``/
-  ``episode_type`` yet. Add its pair to ``_CORROBORATOR_EPISODE_SOURCES`` (or
-  ``_CORROBORATOR_POINT_EVENT_SOURCES``, whichever kind it emits) once it
-  ships; no other change to this module is required.
+- **Office-SSID presence** — an ``owntracks.ssid_presence``
+  ``occupation_presence_episode`` overlapping the window (bu-whhll.5).
 
 Contradictors (any one present suppresses the block outright, regardless of
 corroborator count):
@@ -96,6 +93,7 @@ DEFAULT_LOOKBACK_DAYS = 14
 # Weak corroborator sources — episode-shaped. (source_name, episode_type).
 _CORROBORATOR_EPISODE_SOURCES: tuple[tuple[str, str], ...] = (
     ("spotify.session_summary", "listening_episode"),
+    ("owntracks.ssid_presence", "occupation_presence_episode"),
 )
 # Weak corroborator sources — point-event-shaped. (source_name, event_type).
 # owner_outbound.messages is in flight (bu-whhll.8); querying it before that

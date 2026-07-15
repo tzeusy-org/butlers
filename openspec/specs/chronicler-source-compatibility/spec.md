@@ -94,6 +94,40 @@ projection without LLM interpretation.
 - **THEN** it SHALL NOT be marked Chronicler-compatible
 - **AND** any future Chronicler support SHALL require a separate source contract change
 
+### Requirement: OwnTracks SSID Presence Compatibility Declaration
+
+The OwnTracks Wi-Fi presence source SHALL use this compatibility declaration:
+
+- `source_name`: `owntracks.ssid_presence`
+- `source_kind`: structured OwnTracks location evidence
+- `supported_outputs`: episodes
+- `time_fields`: `connectors.owntracks_points.ts`, with `recorded_at` as the
+  existing clock-skew fallback
+- `boundary_semantics`: first and last observations in a two-or-more-point,
+  same-endpoint, same-owner-mapped-SSID run; SSID changes, missing or unlabelled
+  SSIDs, and gaps over 60 minutes close the run
+- `source_ref_format`:
+  `connectors.owntracks_points:ssid:{endpoint}:{ssid_sha256_prefix}:{start_epoch}`
+- `taxonomy_mapping`: home `presence_episode` to Rest; work
+  `occupation_presence_episode` to Work
+- `confidence_semantics`: medium from one strong owner-labelled structured
+  signal
+- `privacy_tier`: normal for the derived episode; the sensitive raw SSID stays
+  in source evidence and owner state, not the projected payload or source ref
+- `idempotency_key`: `(source_name, source_ref)`
+- `projection_path`: `chronicler_adapter`
+
+#### Scenario: Declaration is reflected in the source registry
+
+- **WHEN** the Chronicler source registry is seeded
+- **THEN** `owntracks.ssid_presence` SHALL be `supported`
+- **AND** its read surface SHALL be
+  `connectors.owntracks_points (raw_payload.SSID)`
+- **AND** its source registration SHALL be maintained in
+  `chronicler.source_adapter_state`
+- **AND** its projection checkpoint SHALL be maintained in
+  `chronicler.projection_checkpoints`
+
 ## Source References
 
 - Non-Negotiable Rule 1 (single-owner data sovereignty)

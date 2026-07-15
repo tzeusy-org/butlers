@@ -47,6 +47,31 @@ stream is definitely sparse; it does not mean the webhook transport is down.
 If the cadence source itself is unavailable, the roster displays a degraded
 source note instead of treating the missing diagnostic as an all-clear.
 
+## Label Wi-Fi networks for presence
+
+Chronicler only interprets networks the owner labels explicitly. Store the
+mapping in the Chronicler state key `chronicler/owntracks/ssid_places` through
+the existing state API:
+
+```bash
+curl --request PUT \
+  --header 'Content-Type: application/json' \
+  --data '{"value":{"Home WiFi":"home","Corp WiFi":"work"}}' \
+  http://localhost:41200/api/butlers/chronicler/state/chronicler/owntracks/ssid_places
+```
+
+SSID keys are exact and case-sensitive. Place values are limited to `home` and
+`work`; malformed mappings safely produce no SSID presence until corrected.
+Missing and unlabelled SSIDs are explicit gaps rather than inferred places.
+
+The scheduled projector reads this state on every run. Changing the mapping
+causes retained OwnTracks evidence to be replayed idempotently, so an SSID can
+be labelled after observations arrive. Removing or relabelling a mapping
+tombstones stale derived episodes before replay, so old place claims do not
+remain active. The mapping uses the existing JSONB state store and requires no
+migration. Projected episodes contain only the canonical `payload.place`; raw
+network names remain in the private source evidence and state value.
+
 ## Privacy note
 
 OwnTracks location payloads contain precise coordinates and may include the
