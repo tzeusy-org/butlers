@@ -24,7 +24,6 @@ import {
   getEntityActivityBins,
   getEntityConcentration,
   getEntityCoreDates,
-  getEntityDates,
   getEntityDeltaFacts,
   getEntityFacts,
   getEntityGifts,
@@ -99,15 +98,6 @@ export function useEntityMessageThreads(entityId: string | undefined) {
   return useQuery({
     queryKey: ["entity-message-threads", entityId],
     queryFn: () => getEntityMessageThreads(entityId!),
-    enabled: !!entityId,
-  });
-}
-
-/** Fetch important dates (birthdays, anniversaries) scoped to one entity. */
-export function useEntityDates(entityId: string | undefined) {
-  return useQuery({
-    queryKey: ["entity-dates", entityId],
-    queryFn: () => getEntityDates(entityId!),
     enabled: !!entityId,
   });
 }

@@ -47,6 +47,6 @@ export type {
   Identity,
   InventoryResponse,
 } from "./types.ts";
-export { STATE_CATALOG, NEEDS_HAND_STATES, UNVERIFIED_STATES, needsHand, isUnverified, severityRank, encodeFocus, parseFocus } from "./constants.ts";
+export { STATE_CATALOG, NEEDS_HAND_STATES, UNVERIFIED_STATES, needsHand, isUnverified, severityRank, parseFocus } from "./constants.ts";
 export { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
 export { MOCK_INVENTORY, MOCK_PROVIDERS, MOCK_IDENTITIES, MOCK_USER_CREDENTIALS, MOCK_SYSTEM_CREDENTIALS, MOCK_CLI_CREDENTIALS } from "./mock-data.ts";

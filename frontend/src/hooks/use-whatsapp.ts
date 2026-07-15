@@ -9,7 +9,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   disconnectWhatsApp,
-  getWhatsAppHealth,
   getWhatsAppStatus,
   pollWhatsAppPairing,
   startWhatsAppPairing,
@@ -40,22 +39,6 @@ export function useWhatsAppStatus() {
   return useQuery({
     queryKey: whatsappKeys.status(),
     queryFn: () => getWhatsAppStatus(),
-    retry: false,
-  });
-}
-
-/**
- * Fetch WhatsApp session health, auto-polling every 30 seconds.
- *
- * Used to keep the health badge current while the settings page is open.
- * Only active when `enabled` is true (default); pass `enabled: false` when
- * the user is in the middle of a pairing flow to reduce noise.
- */
-export function useWhatsAppHealth({ enabled = true }: { enabled?: boolean } = {}) {
-  return useQuery({
-    queryKey: whatsappKeys.health(),
-    queryFn: () => getWhatsAppHealth(),
-    refetchInterval: enabled ? 30_000 : false,
     retry: false,
   });
 }

@@ -496,4 +496,3 @@ export function DirectionPassport({
 export type { InventoryResponse } from "./types.ts";
 
 // Default export for the page route integration.
-export default DirectionPassport;

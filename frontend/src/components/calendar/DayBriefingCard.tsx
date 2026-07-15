@@ -199,4 +199,3 @@ export function DayBriefingCard({
   );
 }
 
-export default DayBriefingCard;

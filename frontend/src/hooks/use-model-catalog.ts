@@ -8,8 +8,6 @@ import {
   createModelCatalogEntry,
   deleteModelCatalogEntry,
   deleteButlerModelOverride,
-  fetchPricingMap,
-  getModelFailures,
   listModelCatalog,
   listButlerModelOverrides,
   resolveButlerModel,
@@ -145,15 +143,6 @@ export function useResolveModel(butlerName: string, complexity: string) {
 // Pricing map
 // ---------------------------------------------------------------------------
 
-/** Fetch the pricing map (rarely changes, long stale time). */
-export function usePricingMap() {
-  return useQuery({
-    queryKey: ["pricing-map"],
-    queryFn: fetchPricingMap,
-    staleTime: 5 * 60 * 1000, // 5 minutes
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Token limits and usage
 // ---------------------------------------------------------------------------
@@ -222,15 +211,5 @@ export function useVerifyAllModels() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["model-catalog"] });
     },
-  });
-}
-
-/** Query recent failure entries for a single model catalog entry. */
-export function useModelFailures(entryId: string, since = "24h", enabled = false) {
-  return useQuery({
-    queryKey: ["model-failures", entryId, since],
-    queryFn: () => getModelFailures(entryId, since),
-    enabled: !!entryId && enabled,
-    staleTime: 30_000,
   });
 }

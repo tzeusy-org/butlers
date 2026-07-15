@@ -95,7 +95,7 @@ function TopologyTile() {
 // Page
 // ---------------------------------------------------------------------------
 
-export function SystemPage() {
+function SystemPage() {
   return (
     <Page
       archetype="overview"

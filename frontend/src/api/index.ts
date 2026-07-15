@@ -5,7 +5,6 @@
 export {
   ApiError,
   apiFetch,
-  deleteGoogleCredentials,
   disconnectAccount,
   disconnectGoogleHealth,
   getAccountStatus,
@@ -13,8 +12,6 @@ export {
   getGoogleCredentialStatus,
   getGoogleHealthStatus,
   getGoogleOAuthStartUrl,
-  getOAuthStartUrl,
-  getOAuthStatus,
   GOOGLE_HEALTH_SCOPES,
   setPrimaryAccount,
   upsertGoogleCredentials,
@@ -62,20 +59,14 @@ export {
   getCostSummary,
   getDailyCosts,
   createEntityInfo,
-  deleteEntityInfo,
   getEntities,
   getEntity,
-  getOwnerEntityInfo,
   archiveEntity,
-  deleteEntity,
   promoteEntity,
-  unarchiveEntity,
   revealEntitySecret,
   setEntityLinkedContact,
   unlinkEntityContact,
   updateEntity,
-  updateEntityInfo,
-  getRelationshipEntity,
   listRelationshipEntities,
   getRelationshipEntityQueue,
   archiveRelationshipEntity,
@@ -86,7 +77,6 @@ export {
   promoteRelationshipEntity,
   createRelationshipEntity,
   getEntityLinkedContacts,
-  listEntityContacts,
   addEntityContact,
   deleteEntityContact,
   markEntityContactVerified,
@@ -97,7 +87,6 @@ export {
   getEntityLoans,
   getEntityTimeline,
   getEntityMessageThreads,
-  getEntityDates,
   getEntityActivityBins,
   getEntityDeltaFacts,
   markEntityView,
@@ -153,7 +142,6 @@ export {
   getNotificationStats,
   markNotificationRead,
   acknowledgeAllFailed,
-  getAttentionLedger,
   getAttentionLedgerSummary,
   getResearch,
   createResearch,
@@ -164,7 +152,6 @@ export {
   getRegistry,
   getRoutingLog,
   setButlerEligibility,
-  getEligibilityHistory,
   getSession,
   getSessions,
   getSessionAggregate,
@@ -180,19 +167,12 @@ export {
   getContact,
   getContacts,
   patchContact,
-  createContactInfo,
-  archiveContact,
-  unarchiveContact,
-  deleteContact,
-  deleteContactInfo,
-  patchContactInfo,
   getOwnerSetupStatus,
   getGroup,
   getGroupMembers,
   getGroups,
   getLabels,
   createLabel,
-  getGroupLabels,
   assignGroupLabel,
   removeGroupLabel,
   getUpcomingDates,
@@ -230,7 +210,6 @@ export {
   revokeApprovalRule,
   setPrimaryCalendar,
   syncCalendarWorkspace,
-  updateGeneralSettings,
   getHomeSnapshotStatus,
   getHomeDevices,
   getHomeMaintenance,
@@ -247,7 +226,6 @@ export type { GeneralCollectionsParams, GeneralEntitiesParams } from "./client.t
 export type {
   ApiMeta,
   ApiResponse,
-  AuditEntry,
   AuditLogEntry,
   AuditLogParams,
   BoardAggregates,
@@ -314,15 +292,12 @@ export type {
   EntityInfoEntry,
   EntityParams,
   EntitySummary,
-  OwnerEntityInfoResponse,
-  UpdateEntityInfoRequest,
   UpdateEntityRequest,
   EntityGift,
   EntityLoan,
   EntityTimelineItem,
   LinkedContactSummary,
   ContactFact,
-  EntityContactsResponse,
   AddEntityContactRequest,
   AddEntityContactResponse,
   DeleteEntityContactResponse,
@@ -342,7 +317,6 @@ export type {
   EntityFactsParams,
   ActivityBin,
   ActivityBinsResponse,
-  ActivityBinsParams,
   ViewMarkResponse,
   DeltaFactStore,
   DeltaFactEntry,
@@ -432,9 +406,6 @@ export type {
   NotificationStats,
   NotificationStatsParams,
   NotificationSummary,
-  AttentionLedgerEntry,
-  AttentionLedgerListResponse,
-  AttentionLedgerParams,
   AttentionLedgerSummaryParams,
   AttentionLedgerSummaryResponse,
   AttentionSourceSummary,
@@ -446,14 +417,11 @@ export type {
   RuleParams,
   RegistryEntry,
   RoutingEntry,
-  EligibilityHistoryResponse,
-  EligibilitySegment,
   SetEligibilityResponse,
   RoutingLogParams,
   Schedule,
   ScheduleCreate,
   ScheduleUpdate,
-  SearchParams,
   SearchResult,
   SearchResults,
   SessionAggregate,
@@ -482,9 +450,6 @@ export type {
   ContactInfoEntry,
   ContactListResponse,
   ContactPatchRequest,
-  CreateContactInfoRequest,
-  CreateContactInfoResponse,
-  PatchContactInfoRequest,
   ContactParams,
   ContactSummary,
   OwnerSetupStatus,
@@ -521,7 +486,6 @@ export type {
   RulePromotionSurface,
   RulePromotionStats,
   RulePromotionDismissRequest,
-  DeleteCredentialsResponse,
   DisconnectAccountResponse,
   GoogleAccount,
   GoogleAccountStatus,
@@ -531,14 +495,11 @@ export type {
   GoogleHealthDisconnectResponse,
   GoogleHealthStatusResponse,
   GeneralSettings,
-  GeneralSettingsUpdate,
   GeneralCollection,
   GeneralEntity,
   GeneralStats,
   GeneralSizeHistogramBucket,
   OAuthCredentialState,
-  OAuthCredentialStatus,
-  OAuthStatusResponse,
   SetPrimaryAccountResponse,
   UpsertAppCredentialsRequest,
   UpsertAppCredentialsResponse,
@@ -562,61 +523,32 @@ export {
 } from "./client.ts";
 
 export {
-  deleteSecret,
-  getSecretMeta,
-  listSecrets,
-  upsertSecret,
 } from "./client.ts";
 
 export type {
   SecretCategory,
   SecretEntry,
   SecretTemplate,
-  SecretUpsertRequest,
 } from "./types.ts";
 
 export {
-  cancelBackfillJob,
-  createBackfillJob,
-  getBackfillJob,
-  getBackfillJobProgress,
   listAvailableConnectors,
-  listBackfillJobs,
-  listConnectors,
-  pauseBackfillJob,
-  resumeBackfillJob,
 } from "./client.ts";
 
 export type {
-  BackfillJobEntry,
-  BackfillJobParams,
-  BackfillJobStatus,
-  BackfillJobSummary,
-  BackfillLifecycleResponse,
   ConnectorEntry,
   ConnectorProfile,
-  CreateBackfillJobRequest,
 } from "./types.ts";
 
 export {
-  deleteThreadAffinityOverride,
-  getThreadAffinitySettings,
-  listThreadAffinityOverrides,
-  updateThreadAffinitySettings,
-  upsertThreadAffinityOverride,
 } from "./client.ts";
 
 export type {
-  ThreadAffinitySettings,
-  ThreadAffinitySettingsUpdate,
-  ThreadOverrideEntry,
-  ThreadOverrideUpsert,
 } from "./types.ts";
 
 export {
   archiveConnector,
   bulkRetryEvents,
-  getCrossConnectorSummaryWithAggregates,
   getConnectorDetail,
   getConnectorEvents,
   getConnectorIncidents,
@@ -625,7 +557,6 @@ export {
   getConnectorSummariesWithAggregates,
   getPipelineStats,
   listConnectorSummaries,
-  updateConnectorCursor,
   updateConnectorSettings,
 } from "./client.ts";
 
@@ -746,7 +677,6 @@ export {
   getModelUsageDetail,
   updateModelPriority,
   verifyAllModels,
-  getModelFailures,
 } from "./client.ts";
 
 export type {
@@ -758,7 +688,6 @@ export type {
   ModelCatalogUpdate,
   ModelPriorityDelta,
   VerifyAllResult,
-  FailureEntry,
   ModelTestResult,
   ButlerModelOverride,
   ButlerModelOverrideUpsert,
@@ -771,33 +700,19 @@ export type {
 } from "./types.ts";
 
 export {
-  listProviders,
-  createProvider,
-  updateProvider,
-  deleteProvider,
-  testProviderConnectivity,
 } from "./client.ts";
 
 export type {
-  ProviderConfig,
-  ProviderConfigCreate,
-  ProviderConfigUpdate,
-  ProviderConnectivityResult,
 } from "./types.ts";
 
 export {
-  getBlobStorageStatus,
-  testBlobStorage,
 } from "./client.ts";
 
 export type {
-  BlobStorageStatus,
-  BlobStorageTestResult,
 } from "./types.ts";
 
 export {
   disconnectWhatsApp,
-  getWhatsAppHealth,
   getWhatsAppStatus,
   pollWhatsAppPairing,
   startWhatsAppPairing,
@@ -805,7 +720,6 @@ export {
 
 export type {
   WhatsAppDisconnectResponse,
-  WhatsAppHealthResponse,
   WhatsAppPairPollResponse,
   WhatsAppPairStartResponse,
   WhatsAppState,
@@ -857,13 +771,11 @@ export type {
 
 export {
   getEducationCrossTopicAnalytics,
-  getEducationFlows,
   getEducationMasterySummary,
   getEducationMindMap,
   getEducationMindMapAnalytics,
   getEducationMindMapAnalyticsTrend,
   getEducationMindMapFrontier,
-  getEducationMindMapStrugglingNodes,
   getEducationMindMaps,
   getEducationPendingReviews,
   getEducationQuizResponses,
@@ -871,7 +783,6 @@ export {
   updateEducationMindMapStatus,
   getDunbarRanking,
   listConversations,
-  getConversation,
   getConversationMessages,
   searchConversations,
   createConversation,
@@ -895,9 +806,6 @@ export type {
   PendingReviewNode,
   QuizResponse,
   QuizResponseParams,
-  StrugglingNodeEntry,
-  StrugglingNodesResponse,
-  TeachingFlow,
   DunbarEntry,
   DunbarRankingResponse,
   ContactInteraction,
@@ -931,7 +839,6 @@ export type {
 export {
   connectSteamAccount,
   disconnectSteamAccount,
-  getSteamPlaytime,
   listSteamAccounts,
 } from "./client.ts";
 
@@ -942,8 +849,6 @@ export type {
   SteamConnectRequest,
   SteamConnectResponse,
   SteamDisconnectResponse,
-  SteamGamePlaytime,
-  SteamPlaytimeAnalytics,
 } from "./types.ts";
 
 export {
@@ -981,18 +886,11 @@ export {
   getQaCase,
   getQaCaseJournal,
   getQaCases,
-  getQaFindingByAttempt,
   getQaInvestigations,
-  getQaKnownIssues,
   getQaPatrol,
-  getQaPatrolFindings,
   getQaPatrols,
   getQaSummary,
-  getQaTrends,
   removeQaDismissal,
-  undismissQaKnownIssue,
-  getHealingAttempt,
-  listHealingAttempts,
   retryHealingAttempt,
   type RetryHealingAttemptResponse,
   getQaCircuitBreaker,
@@ -1038,18 +936,12 @@ export type {
   QaJournalEvent,
   QaKpiBlock,
   QaKnownIssue,
-  QaKnownIssuesParams,
   QaPatrolDetail,
   QaPatrolsParams,
   QaPatrolSummary,
   QaPrSummary,
-  QaSourceBreakdown,
   QaStats24h,
   QaSummary,
-  QaTrends,
-  QaTrendsDay,
-  HealingAttempt,
-  HealingAttemptsParams,
   RuntimeConfigResponse,
   RuntimeConfigPatch,
   RuntimeConfigPatchResponse,
@@ -1082,8 +974,6 @@ export type {
 
 export {
   getFinanceAccounts,
-  getFinanceBills,
-  getFinanceDistinctMerchants,
   getFinanceSpendingSummary,
   getFinanceSubscriptions,
   getFinanceTransactions,
@@ -1095,15 +985,12 @@ export type {
   FinanceAccount,
   FinanceAccountListParams,
   FinanceBill,
-  FinanceBillListParams,
   FinanceBulkUpdateMatch,
   FinanceBulkUpdateOp,
   FinanceBulkUpdateOpResult,
   FinanceBulkUpdateRequest,
   FinanceBulkUpdateResponse,
   FinanceBulkUpdateSet,
-  FinanceDistinctMerchant,
-  FinanceDistinctMerchantsParams,
   FinanceSpendingGroup,
   FinanceSpendingSummary,
   FinanceSpendingSummaryParams,
@@ -1237,7 +1124,6 @@ export {
   updateButlerPrompt,
   getButlerPromptHistory,
   getButlerTools,
-  updateButlerTool,
   getButlerMemoryAccess,
   killButler,
 } from "./client.ts";
@@ -1246,7 +1132,6 @@ export type {
   PromptVersion,
   PromptUpdateRequest,
   ButlerTool,
-  ToolUpdateRequest,
   MemoryAccess,
   KillRequest,
   KillResponse,
@@ -1262,7 +1147,6 @@ export type {
   EntityFinderMatchKind,
   EntityFinderSearchResult,
   EntityFinderSearchResponse,
-  EntityFinderSearchParams,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------

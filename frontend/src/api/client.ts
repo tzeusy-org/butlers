@@ -140,7 +140,6 @@ import type {
   RegistryEntry,
   RoutingEntry,
   SetEligibilityResponse,
-  EligibilityHistoryResponse,
   RoutingLogParams,
   UpcomingDate,
   Episode,
@@ -151,7 +150,6 @@ import type {
   EntityInfoEntry,
   EntityParams,
   EntitySummary,
-  UpdateEntityInfoRequest,
   UpdateEntityRequest,
   EpisodeParams,
   Fact,
@@ -168,17 +166,8 @@ import type {
   ReembedRunResult,
   UpdateRetentionPoliciesRequest,
   RuleParams,
-  ThreadAffinitySettings,
-  ThreadAffinitySettingsUpdate,
-  ThreadOverrideEntry,
-  ThreadOverrideUpsert,
-  ContactInfoEntry,
   ContactPatchRequest,
-  CreateContactInfoRequest,
-  CreateContactInfoResponse,
-  PatchContactInfoRequest,
   OwnerSetupStatus,
-  OwnerEntityInfoResponse,
   IngestionEventSummary,
   IngestionEventSession,
   IngestionEventRollup,
@@ -215,7 +204,6 @@ import type {
   ModelCatalogUpdate,
   ModelPriorityDelta,
   VerifyAllResult,
-  FailureEntry,
   ModelTestResult,
   ButlerModelOverride,
   ButlerModelOverrideUpsert,
@@ -224,12 +212,7 @@ import type {
   TokenLimitsResponse,
   ResetUsageRequest,
   TokenUsageDetail,
-  ProviderConfig,
-  ProviderConfigCreate,
-  ProviderConfigUpdate,
-  ProviderConnectivityResult,
   WhatsAppDisconnectResponse,
-  WhatsAppHealthResponse,
   WhatsAppPairPollResponse,
   WhatsAppPairStartResponse,
   WhatsAppStatusResponse,
@@ -257,31 +240,23 @@ import type {
   TelegramVerifyCodeResponse,
   TelegramSessionStatusResponse,
   GeneralSettings,
-  GeneralSettingsUpdate,
-  BlobStorageStatus,
-  BlobStorageTestResult,
   SteamAccountListResponse,
   SteamConnectRequest,
   SteamConnectResponse,
   SteamDisconnectResponse,
-  SteamPlaytimeAnalytics,
   QaPatrolSummary,
   QaPatrolDetail,
   QaCaseDossier,
   QaCaseJournalParams,
   QaCasesParams,
   QaCaseSummary,
-  QaFindingRecord,
   QaJournalEvent,
-  QaKnownIssue,
   QaSummary,
   QaDismissal,
   QaDismissRequest,
   QaPatrolsParams,
-  QaKnownIssuesParams,
   QaInvestigation,
   QaInvestigationsParams,
-  QaTrends,
   ForcePatrolResponse,
   CircuitBreakerStatus,
   CircuitBreakerResetResponse,
@@ -296,16 +271,12 @@ import type {
   RuntimeConfigResponse,
   RuntimeConfigPatch,
   RuntimeConfigPatchResponse,
-  HealingAttempt,
-  HealingAttemptsParams,
   ChroniclerAggregateByCategoryParams,
   ChroniclerAggregateByDayParams,
   ChroniclerAggregateByDayRow,
   ChroniclerCategoryBuckets,
   ChroniclerCreateRoutineRequest,
   ChroniclerDayCloseParams,
-  ChroniclerDayCloseRefreshRequest,
-  ChroniclerDayCloseRefreshResponse,
   ChroniclerDayCloseResponse,
   ChroniclerEpisode,
   ChroniclerEpisodeExplainResponse,
@@ -330,7 +301,6 @@ import type {
   SubmitCorrectionRequest,
   EntityGift,
   EntityLoan,
-  EntityImportantDate,
   ActivityBinsResponse,
   DeltaFactsResponse,
   ViewMarkResponse,
@@ -368,15 +338,12 @@ import type {
   ModuleStatus,
   Briefing,
   ChroniclesBriefing,
-  ChroniclesAttentionItem,
   ChroniclesKpi,
   FinanceTransaction,
   FinanceSubscription,
-  FinanceBill,
   FinanceAccount,
   FinanceSpendingSummary,
   FinanceUpcomingBillsResponse,
-  FinanceBillListParams,
   FinanceTransactionListParams,
   FinanceSubscriptionListParams,
   FinanceAccountListParams,
@@ -384,8 +351,6 @@ import type {
   FinanceUpcomingBillsParams,
   FinanceBulkUpdateRequest,
   FinanceBulkUpdateResponse,
-  FinanceDistinctMerchant,
-  FinanceDistinctMerchantsParams,
   TravelTrip,
   TravelTripSummary,
   TravelUpcomingModel,
@@ -424,7 +389,6 @@ import type {
   PromptVersion,
   PromptUpdateRequest,
   ButlerTool,
-  ToolUpdateRequest,
   MemoryAccess,
   KillRequest,
   KillResponse,
@@ -439,14 +403,12 @@ import type {
   SetPreferredChannelRequest,
   SetPreferredChannelResponse,
   ClearPreferredChannelResponse,
-  EntityContactsResponse,
   TimelineSavedViewEntry,
   TimelineSavedViewCreateRequest,
   TimelineSavedViewUpdateRequest,
   CreateLabelResponse,
   AssignGroupLabelResponse,
   RemoveGroupLabelResponse,
-  GroupLabelsResponse,
   GroupMembersResponse,
 } from "./types.ts";
 
@@ -889,30 +851,9 @@ export function acknowledgeAllFailed(): Promise<ApiResponse<AckFailedResult>> {
 // ---------------------------------------------------------------------------
 
 import type {
-  AttentionLedgerListResponse,
-  AttentionLedgerParams,
   AttentionLedgerSummaryParams,
   AttentionLedgerSummaryResponse,
 } from "./types.ts";
-
-/** Fetch a windowed, filterable page of attention-ledger rows, newest first. */
-export function getAttentionLedger(
-  params?: AttentionLedgerParams,
-): Promise<AttentionLedgerListResponse> {
-  const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.since != null && params.since !== "") sp.set("since", params.since);
-  if (params?.until != null && params.until !== "") sp.set("until", params.until);
-  if (params?.intent != null && params.intent !== "") sp.set("intent", params.intent);
-  if (params?.source != null && params.source !== "") sp.set("source", params.source);
-  if (params?.outcome != null && params.outcome !== "") sp.set("outcome", params.outcome);
-  if (params?.origin_butler != null && params.origin_butler !== "")
-    sp.set("origin_butler", params.origin_butler);
-  const qs = sp.toString();
-  const path = qs ? `/attention/ledger?${qs}` : "/attention/ledger";
-  return apiFetch<AttentionLedgerListResponse>(path);
-}
 
 /**
  * Fetch the per-source (per-`origin_butler`) delivery-vs-suppression summary
@@ -1891,64 +1832,6 @@ export function getOwnerSetupStatus(): Promise<OwnerSetupStatus> {
   return apiFetch<OwnerSetupStatus>("/relationship/owner/setup-status");
 }
 
-/** Add a contact_info entry (email, telegram, etc.) to a contact. */
-export function createContactInfo(
-  contactId: string,
-  request: CreateContactInfoRequest,
-): Promise<CreateContactInfoResponse> {
-  return apiFetch<CreateContactInfoResponse>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/contact-info`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
-}
-
-/** Delete a contact (hard-delete). */
-export function deleteContact(contactId: string): Promise<void> {
-  return apiFetch<void>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}`,
-    { method: "DELETE" },
-  );
-}
-
-/** Archive a contact (soft-delete, preserves source links so sync won't re-create). */
-export function archiveContact(contactId: string): Promise<void> {
-  return apiFetch<void>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/archive`,
-    { method: "POST" },
-  );
-}
-
-/** Unarchive a previously archived contact. */
-export function unarchiveContact(contactId: string): Promise<void> {
-  return apiFetch<void>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/unarchive`,
-    { method: "POST" },
-  );
-}
-
-/** Delete a contact_info entry. */
-export function deleteContactInfo(
-  contactId: string,
-  infoId: string,
-): Promise<void> {
-  return apiFetch<void>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/contact-info/${encodeURIComponent(infoId)}`,
-    { method: "DELETE" },
-  );
-}
-
-/** Update a contact_info entry (type, value, is_primary). */
-export function patchContactInfo(
-  contactId: string,
-  infoId: string,
-  request: PatchContactInfoRequest,
-): Promise<ContactInfoEntry> {
-  return apiFetch<ContactInfoEntry>(
-    `/relationship/contacts/${encodeURIComponent(contactId)}/contact-info/${encodeURIComponent(infoId)}`,
-    { method: "PATCH", body: JSON.stringify(request) },
-  );
-}
-
 /** Fetch chronological interaction thread for a contact (bu-iuol4.22). */
 export function getContactInteractions(
   contactId: string,
@@ -2013,13 +1896,6 @@ export function createLabel(body: { name: string; color?: string | null }): Prom
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-}
-
-/** Fetch labels assigned to a group. */
-export function getGroupLabels(groupId: string): Promise<GroupLabelsResponse> {
-  return apiFetch<GroupLabelsResponse>(
-    `/relationship/groups/${encodeURIComponent(groupId)}/labels`,
-  );
 }
 
 /** Assign a label to a group. */
@@ -2498,16 +2374,6 @@ export function setButlerEligibility(
 }
 
 
-/** Fetch eligibility history for a butler over a given window. */
-export function getEligibilityHistory(
-  name: string,
-  hours = 24,
-): Promise<ApiResponse<EligibilityHistoryResponse>> {
-  return apiFetch<ApiResponse<EligibilityHistoryResponse>>(
-    `/switchboard/registry/${encodeURIComponent(name)}/eligibility-history?hours=${hours}`,
-  );
-}
-
 // ---------------------------------------------------------------------------
 // General butler — collections API (bu-iuol4.30)
 // ---------------------------------------------------------------------------
@@ -2819,18 +2685,6 @@ export function updateEntity(
   );
 }
 
-/** Delete (soft-delete) an entity. Pass retireFacts to auto-retire active facts. */
-export function deleteEntity(
-  entityId: string,
-  opts?: { retireFacts?: boolean },
-): Promise<void> {
-  const qs = opts?.retireFacts ? "?retire_facts=true" : "";
-  return apiFetch<void>(
-    `/memory/entities/${encodeURIComponent(entityId)}${qs}`,
-    { method: "DELETE" },
-  );
-}
-
 /** Promote a transitory (unidentified) entity by clearing the unidentified flag. */
 export function promoteEntity(
   entityId: string,
@@ -2842,24 +2696,12 @@ export function promoteEntity(
 }
 
 /** Archive an entity (hide from default views, preserves all data). */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function archiveEntity(entityId: string): Promise<void> {
   return apiFetch<void>(
     `/memory/entities/${encodeURIComponent(entityId)}/archive`,
     { method: "POST" },
   );
-}
-
-/** Unarchive a previously archived entity. */
-export function unarchiveEntity(entityId: string): Promise<void> {
-  return apiFetch<void>(
-    `/memory/entities/${encodeURIComponent(entityId)}/unarchive`,
-    { method: "POST" },
-  );
-}
-
-/** Get all entity_info entries for the owner entity. */
-export function getOwnerEntityInfo(): Promise<OwnerEntityInfoResponse> {
-  return apiFetch<OwnerEntityInfoResponse>("/relationship/owner/entity-info");
 }
 
 /** Create an entity_info entry for an entity. */
@@ -2870,29 +2712,6 @@ export function createEntityInfo(
   return apiFetch<CreateEntityInfoResponse>(
     `/relationship/entities/${encodeURIComponent(entityId)}/info`,
     { method: "POST", body: JSON.stringify(request) },
-  );
-}
-
-/** Update an entity_info entry. */
-export function updateEntityInfo(
-  entityId: string,
-  infoId: string,
-  request: UpdateEntityInfoRequest,
-): Promise<EntityInfoEntry> {
-  return apiFetch<EntityInfoEntry>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/info/${encodeURIComponent(infoId)}`,
-    { method: "PATCH", body: JSON.stringify(request) },
-  );
-}
-
-/** Delete an entity_info entry. */
-export function deleteEntityInfo(
-  entityId: string,
-  infoId: string,
-): Promise<void> {
-  return apiFetch<void>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/info/${encodeURIComponent(infoId)}`,
-    { method: "DELETE" },
   );
 }
 
@@ -2911,13 +2730,6 @@ export function revealEntitySecret(
 // Writes channel-fact triples in relationship.entity_facts (has-* predicates).
 // Used by ContactChannelCard after the write-path cut-over (bu-k9ylx).
 // ---------------------------------------------------------------------------
-
-/** List active contact-fact triples for an entity (has-* predicates). */
-export function listEntityContacts(entityId: string): Promise<EntityContactsResponse> {
-  return apiFetch<EntityContactsResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/contacts`,
-  );
-}
 
 /**
  * Add (or upsert) a contact-fact triple for an entity.
@@ -3028,13 +2840,6 @@ export function clearEntityPreferredChannel(
 // Relationship butler: entity-level fetch and tab endpoints
 // ---------------------------------------------------------------------------
 
-/** Fetch a relationship entity by ID (relationship-scoped; includes aliases, roles, metadata). */
-export function getRelationshipEntity(entityId: string): Promise<RelationshipEntityDetail> {
-  return apiFetch<RelationshipEntityDetail>(
-    `/relationship/entities/${encodeURIComponent(entityId)}`,
-  );
-}
-
 /** Fetch all contacts linked to a relationship entity. */
 export function getEntityLinkedContacts(entityId: string): Promise<LinkedContactSummary[]> {
   return apiFetch<LinkedContactSummary[]>(
@@ -3095,13 +2900,6 @@ export function getEntityMessageThreads(
     ? `/relationship/entities/${encodeURIComponent(entityId)}/message-threads?${qs}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/message-threads`;
   return apiFetch<MessageThreadSummary[]>(path);
-}
-
-/** Fetch important dates (birthdays, anniversaries, etc.) for an entity. */
-export function getEntityDates(entityId: string): Promise<EntityImportantDate[]> {
-  return apiFetch<EntityImportantDate[]>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/dates`,
-  );
 }
 
 /**
@@ -3733,21 +3531,14 @@ export function setRulePromotionRuleEnabled(
 // ---------------------------------------------------------------------------
 
 import type {
-  DeleteCredentialsResponse,
   DisconnectAccountResponse,
   GoogleAccount,
   GoogleAccountStatus,
   GoogleCredentialStatusResponse,
-  OAuthStatusResponse,
   SetPrimaryAccountResponse,
   UpsertAppCredentialsRequest,
   UpsertAppCredentialsResponse,
 } from "./types.ts";
-
-/** Fetch the current OAuth status (probes Google token validity). */
-export function getOAuthStatus(): Promise<OAuthStatusResponse> {
-  return apiFetch<OAuthStatusResponse>("/oauth/status");
-}
 
 /** Fetch the masked credential status (presence only, no secret values). */
 export function getGoogleCredentialStatus(): Promise<GoogleCredentialStatusResponse> {
@@ -3762,18 +3553,6 @@ export function upsertGoogleCredentials(
     method: "PUT",
     body: JSON.stringify(request),
   });
-}
-
-/** Delete all stored Google OAuth credentials. */
-export function deleteGoogleCredentials(): Promise<DeleteCredentialsResponse> {
-  return apiFetch<DeleteCredentialsResponse>("/oauth/google/credentials", {
-    method: "DELETE",
-  });
-}
-
-/** Trigger the Google OAuth flow (returns the authorization URL). */
-export function getOAuthStartUrl(): string {
-  return `${API_BASE_URL}/oauth/google/start`;
 }
 
 /** Build the URL to start an OAuth flow for a new or existing Google account.
@@ -4025,148 +3804,14 @@ export function testCLIAuthApiKey(provider: string): Promise<CLIAuthTestResponse
 // Generic secrets CRUD API functions
 // ---------------------------------------------------------------------------
 
-import type {
-  SecretEntry,
-  SecretUpsertRequest,
-} from "./types.ts";
-
-/** List all secrets for a butler (metadata only — values never returned). */
-export function listSecrets(
-  butlerName: string,
-  category?: string,
-): Promise<ApiResponse<SecretEntry[]>> {
-  const qs = category ? `?category=${encodeURIComponent(category)}` : "";
-  return apiFetch<ApiResponse<SecretEntry[]>>(
-    `/butlers/${encodeURIComponent(butlerName)}/secrets${qs}`,
-  );
-}
-
-/** Fetch a single secret's metadata. */
-export function getSecretMeta(
-  butlerName: string,
-  key: string,
-): Promise<ApiResponse<SecretEntry>> {
-  return apiFetch<ApiResponse<SecretEntry>>(
-    `/butlers/${encodeURIComponent(butlerName)}/secrets/${encodeURIComponent(key)}`,
-  );
-}
-
-/** Create or update a secret. Value is write-only and never echoed back. */
-export function upsertSecret(
-  butlerName: string,
-  key: string,
-  request: SecretUpsertRequest,
-): Promise<ApiResponse<SecretEntry>> {
-  return apiFetch<ApiResponse<SecretEntry>>(
-    `/butlers/${encodeURIComponent(butlerName)}/secrets/${encodeURIComponent(key)}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    },
-  );
-}
-
-/** Delete a secret from a butler's secret store. */
-export function deleteSecret(
-  butlerName: string,
-  key: string,
-): Promise<ApiResponse<{ key: string; status: string }>> {
-  return apiFetch<ApiResponse<{ key: string; status: string }>>(
-    `/butlers/${encodeURIComponent(butlerName)}/secrets/${encodeURIComponent(key)}`,
-    { method: "DELETE" },
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Backfill job API
 // ---------------------------------------------------------------------------
 
 import type {
-  BackfillJobEntry,
-  BackfillJobParams,
-  BackfillJobSummary,
-  BackfillLifecycleResponse,
-  ConnectorEntry,
   ConnectorProfile,
-  CreateBackfillJobRequest,
 } from "./types.ts";
-
-/** List backfill jobs with optional filters. */
-export function listBackfillJobs(
-  params?: BackfillJobParams,
-): Promise<PaginatedResponse<BackfillJobSummary>> {
-  const sp = new URLSearchParams();
-  if (params?.status) sp.set("status", params.status);
-  if (params?.connector_type) sp.set("connector_type", params.connector_type);
-  if (params?.endpoint_identity) sp.set("endpoint_identity", params.endpoint_identity);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<BackfillJobSummary>>(
-    qs ? `/switchboard/backfill?${qs}` : "/switchboard/backfill",
-  );
-}
-
-/** Create a new backfill job. */
-export function createBackfillJob(
-  body: CreateBackfillJobRequest,
-): Promise<ApiResponse<BackfillJobEntry>> {
-  return apiFetch<ApiResponse<BackfillJobEntry>>("/switchboard/backfill", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-/** Fetch a single backfill job by id. */
-export function getBackfillJob(jobId: string): Promise<ApiResponse<BackfillJobEntry>> {
-  return apiFetch<ApiResponse<BackfillJobEntry>>(
-    `/switchboard/backfill/${encodeURIComponent(jobId)}`,
-  );
-}
-
-/** Poll backfill job progress (alias for getBackfillJob). */
-export function getBackfillJobProgress(jobId: string): Promise<ApiResponse<BackfillJobEntry>> {
-  return apiFetch<ApiResponse<BackfillJobEntry>>(
-    `/switchboard/backfill/${encodeURIComponent(jobId)}/progress`,
-  );
-}
-
-/** Pause a backfill job. */
-export function pauseBackfillJob(
-  jobId: string,
-): Promise<ApiResponse<BackfillLifecycleResponse>> {
-  return apiFetch<ApiResponse<BackfillLifecycleResponse>>(
-    `/switchboard/backfill/${encodeURIComponent(jobId)}/pause`,
-    { method: "PATCH" },
-  );
-}
-
-/** Cancel a backfill job. */
-export function cancelBackfillJob(
-  jobId: string,
-): Promise<ApiResponse<BackfillLifecycleResponse>> {
-  return apiFetch<ApiResponse<BackfillLifecycleResponse>>(
-    `/switchboard/backfill/${encodeURIComponent(jobId)}/cancel`,
-    { method: "PATCH" },
-  );
-}
-
-/** Resume a paused backfill job. */
-export function resumeBackfillJob(
-  jobId: string,
-): Promise<ApiResponse<BackfillLifecycleResponse>> {
-  return apiFetch<ApiResponse<BackfillLifecycleResponse>>(
-    `/switchboard/backfill/${encodeURIComponent(jobId)}/resume`,
-    { method: "PATCH" },
-  );
-}
-
-/** List registered connectors. */
-export function listConnectors(): Promise<ApiResponse<ConnectorEntry[]>> {
-  return apiFetch<ApiResponse<ConnectorEntry[]>>("/switchboard/connectors");
-}
 
 /** Fetch available connector profiles (independent of connector_registry).
  *
@@ -4180,50 +3825,6 @@ export function listAvailableConnectors(): Promise<{ data: ConnectorProfile[] }>
 // ---------------------------------------------------------------------------
 // Thread affinity API
 // ---------------------------------------------------------------------------
-
-/** Get global thread-affinity settings. */
-export function getThreadAffinitySettings(): Promise<ThreadAffinitySettings> {
-  return apiFetch<ThreadAffinitySettings>("/switchboard/thread-affinity/settings");
-}
-
-/** Update global thread-affinity settings. */
-export function updateThreadAffinitySettings(
-  body: ThreadAffinitySettingsUpdate,
-): Promise<ThreadAffinitySettings> {
-  return apiFetch<ThreadAffinitySettings>("/switchboard/thread-affinity/settings", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-/** List per-thread affinity overrides. */
-export function listThreadAffinityOverrides(): Promise<ThreadOverrideEntry[]> {
-  return apiFetch<ThreadOverrideEntry[]>("/switchboard/thread-affinity/overrides");
-}
-
-/** Upsert a per-thread affinity override. */
-export function upsertThreadAffinityOverride(
-  threadId: string,
-  body: ThreadOverrideUpsert,
-): Promise<ThreadAffinitySettings> {
-  return apiFetch<ThreadAffinitySettings>(
-    `/switchboard/thread-affinity/overrides/${encodeURIComponent(threadId)}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
-}
-
-/** Delete a per-thread affinity override. */
-export function deleteThreadAffinityOverride(threadId: string): Promise<void> {
-  return apiFetch<void>(
-    `/switchboard/thread-affinity/overrides/${encodeURIComponent(threadId)}`,
-    { method: "DELETE" },
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Education
@@ -4242,8 +3843,6 @@ import type {
   PendingReviewNode,
   QuizResponse,
   QuizResponseParams,
-  StrugglingNodesResponse,
-  TeachingFlow,
 } from "./types.ts";
 
 /** List mind maps with optional status filter and pagination. */
@@ -4330,18 +3929,6 @@ export function getEducationQuizResponses(
   );
 }
 
-/** List teaching flows with optional status filter. */
-export function getEducationFlows(
-  status?: string,
-): Promise<TeachingFlow[]> {
-  const sp = new URLSearchParams();
-  if (status) sp.set("status", status);
-  const qs = sp.toString();
-  return apiFetch<TeachingFlow[]>(
-    qs ? `/education/flows?${qs}` : "/education/flows",
-  );
-}
-
 /** Get cross-topic comparative analytics. */
 export function getEducationCrossTopicAnalytics(): Promise<CrossTopicAnalytics> {
   return apiFetch<CrossTopicAnalytics>("/education/analytics/cross-topic");
@@ -4379,18 +3966,6 @@ export function getEducationMindMapAnalyticsTrend(
 ): Promise<AnalyticsTrendResponse> {
   return apiFetch<AnalyticsTrendResponse>(
     `/education/mind-maps/${encodeURIComponent(mindMapId)}/analytics/trend?days=${days}`,
-  );
-}
-
-/** Get struggling nodes for a mind map (nodes with declining or low mastery).
- *
- * Wraps GET /api/education/mind-maps/{id}/struggling-nodes.
- */
-export function getEducationMindMapStrugglingNodes(
-  mindMapId: string,
-): Promise<StrugglingNodesResponse> {
-  return apiFetch<StrugglingNodesResponse>(
-    `/education/mind-maps/${encodeURIComponent(mindMapId)}/struggling-nodes`,
   );
 }
 
@@ -4651,18 +4226,6 @@ export async function getConnectorSummariesWithAggregates(): Promise<
 }
 
 /**
- * GET /api/ingestion/connectors/cross-summary
- * Returns cross-connector aggregate summary with aggregates_available flag.
- */
-export async function getCrossConnectorSummaryWithAggregates(): Promise<
-  ApiResponse<ConnectorCrossSummaryResponse>
-> {
-  return apiFetch<ApiResponse<ConnectorCrossSummaryResponse>>(
-    `/ingestion/connectors/cross-summary`,
-  );
-}
-
-/**
  * GET /api/ingestion/pipeline?window=24h
  * Returns pipeline funnel stats from Prometheus (60s TTL cache).
  * Always returns 200; aggregates_available=false when Prometheus is unreachable.
@@ -4730,26 +4293,6 @@ export async function getConnectorRoutingRules(
   return apiFetch<ConnectorRoutingRulesResponse>(
     `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/routing-rules`,
   );
-}
-
-/** Update a connector's checkpoint cursor (PATCH /connectors/{type}/{identity}/cursor). */
-export async function updateConnectorCursor(
-  connectorType: string,
-  endpointIdentity: string,
-  cursor: string,
-): Promise<ApiResponse<ConnectorDetail>> {
-  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
-    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/cursor`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cursor }),
-    },
-  );
-  return {
-    ...resp,
-    data: _toConnectorDetail(resp.data),
-  };
 }
 
 /** Update connector settings (shallow merge). */
@@ -5266,68 +4809,9 @@ export function verifyAllModels(): Promise<ApiResponse<VerifyAllResult>> {
   });
 }
 
-/** GET /api/settings/models/{id}/failures — recent failure tail */
-export function getModelFailures(
-  id: string,
-  since = "24h",
-): Promise<PaginatedResponse<FailureEntry>> {
-  return apiFetch<PaginatedResponse<FailureEntry>>(
-    `/settings/models/${encodeURIComponent(id)}/failures?since=${encodeURIComponent(since)}`,
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Provider configuration
 // ---------------------------------------------------------------------------
-
-/** GET /api/settings/providers — list all configured providers */
-export function listProviders(): Promise<ApiResponse<ProviderConfig[]>> {
-  return apiFetch<ApiResponse<ProviderConfig[]>>("/settings/providers");
-}
-
-/** POST /api/settings/providers — register a new provider */
-export function createProvider(
-  body: ProviderConfigCreate,
-): Promise<ApiResponse<ProviderConfig>> {
-  return apiFetch<ApiResponse<ProviderConfig>>("/settings/providers", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-/** PUT /api/settings/providers/{providerType} — update provider config */
-export function updateProvider(
-  providerType: string,
-  body: ProviderConfigUpdate,
-): Promise<ApiResponse<ProviderConfig>> {
-  return apiFetch<ApiResponse<ProviderConfig>>(
-    `/settings/providers/${encodeURIComponent(providerType)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify(body),
-    },
-  );
-}
-
-/** DELETE /api/settings/providers/{providerType} — remove provider */
-export function deleteProvider(
-  providerType: string,
-): Promise<ApiResponse<{ deleted: boolean; provider_type: string }>> {
-  return apiFetch<ApiResponse<{ deleted: boolean; provider_type: string }>>(
-    `/settings/providers/${encodeURIComponent(providerType)}`,
-    { method: "DELETE" },
-  );
-}
-
-/** POST /api/settings/providers/{providerType}/test-connectivity — probe base URL */
-export function testProviderConnectivity(
-  providerType: string,
-): Promise<ApiResponse<ProviderConnectivityResult>> {
-  return apiFetch<ApiResponse<ProviderConnectivityResult>>(
-    `/settings/providers/${encodeURIComponent(providerType)}/test-connectivity`,
-    { method: "POST" },
-  );
-}
 
 // ---------------------------------------------------------------------------
 // WhatsApp connector API
@@ -5355,11 +4839,6 @@ export function disconnectWhatsApp(): Promise<WhatsAppDisconnectResponse> {
   return apiFetch<WhatsAppDisconnectResponse>("/connectors/whatsapp/disconnect", {
     method: "POST",
   });
-}
-
-/** GET /api/connectors/whatsapp/health — session health for badge */
-export function getWhatsAppHealth(): Promise<WhatsAppHealthResponse> {
-  return apiFetch<WhatsAppHealthResponse>("/connectors/whatsapp/health");
 }
 
 /** GET /api/relationship/dunbar/ranking — Dunbar tier ranking for the Plex and contacts views. */
@@ -5462,16 +4941,6 @@ export function listConversations(
   );
 }
 
-/** GET /api/butlers/{name}/conversations/{id} — single conversation summary. */
-export function getConversation(
-  butlerName: string,
-  conversationId: string,
-): Promise<ApiResponse<ConversationSummary>> {
-  return apiFetch<ApiResponse<ConversationSummary>>(
-    `/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}`,
-  );
-}
-
 /** GET /api/butlers/{name}/conversations/{id}/messages — message list for a conversation. */
 export function getConversationMessages(
   butlerName: string,
@@ -5570,32 +5039,9 @@ export function getGeneralSettings(): Promise<ApiResponse<GeneralSettings>> {
   return apiFetch<ApiResponse<GeneralSettings>>("/settings/general");
 }
 
-/** PUT /api/settings/general — update shared prompt defaults */
-export function updateGeneralSettings(
-  body: GeneralSettingsUpdate,
-): Promise<ApiResponse<GeneralSettings>> {
-  return apiFetch<ApiResponse<GeneralSettings>>("/settings/general", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Blob storage settings
 // ---------------------------------------------------------------------------
-
-/** GET /api/settings/blob-storage — current configuration status */
-export function getBlobStorageStatus(): Promise<ApiResponse<BlobStorageStatus>> {
-  return apiFetch<ApiResponse<BlobStorageStatus>>("/settings/blob-storage");
-}
-
-/** POST /api/settings/blob-storage/test — test S3 connectivity */
-export function testBlobStorage(): Promise<ApiResponse<BlobStorageTestResult>> {
-  return apiFetch<ApiResponse<BlobStorageTestResult>>("/settings/blob-storage/test", {
-    method: "POST",
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Steam connector API
@@ -5622,38 +5068,9 @@ export function disconnectSteamAccount(accountId: string): Promise<SteamDisconne
   });
 }
 
-/** GET /api/steam/playtime — playtime analytics for a Steam account */
-export function getSteamPlaytime(params?: {
-  account_id?: string;
-  top_n?: number;
-}): Promise<SteamPlaytimeAnalytics> {
-  const query = new URLSearchParams();
-  if (params?.account_id) query.set("account_id", params.account_id);
-  if (params?.top_n !== undefined) query.set("top_n", String(params.top_n));
-  const qs = query.toString();
-  return apiFetch<SteamPlaytimeAnalytics>(`/steam/playtime${qs ? `?${qs}` : ""}`);
-}
-
 // ---------------------------------------------------------------------------
 // Healing attempts API (used by QA investigation detail page)
 // ---------------------------------------------------------------------------
-
-/** GET /api/healing/attempts — paginated list */
-export function listHealingAttempts(
-  params?: HealingAttemptsParams,
-): Promise<PaginatedResponse<HealingAttempt>> {
-  const query = new URLSearchParams();
-  if (params?.offset !== undefined) query.set("offset", String(params.offset));
-  if (params?.limit !== undefined) query.set("limit", String(params.limit));
-  if (params?.status) query.set("status", params.status);
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<HealingAttempt>>(`/healing/attempts${qs ? `?${qs}` : ""}`);
-}
-
-/** GET /api/healing/attempts/:id — single attempt detail */
-export function getHealingAttempt(attemptId: string): Promise<HealingAttempt> {
-  return apiFetch<HealingAttempt>(`/healing/attempts/${encodeURIComponent(attemptId)}`);
-}
 
 export interface RetryHealingAttemptResponse {
   attempt_id: string;
@@ -5743,45 +5160,6 @@ export function getQaPatrol(patrolId: string): Promise<ApiResponse<QaPatrolDetai
   return apiFetch<ApiResponse<QaPatrolDetail>>(`/qa/patrols/${encodeURIComponent(patrolId)}`);
 }
 
-/** GET /api/qa/patrols/:patrolId/findings — paginated findings for a patrol */
-export function getQaPatrolFindings(
-  patrolId: string,
-  params?: { source_type?: string; novel_only?: boolean; offset?: number; limit?: number },
-): Promise<PaginatedResponse<QaFindingRecord>> {
-  const query = new URLSearchParams();
-  if (params?.source_type) query.set("source_type", params.source_type);
-  if (params?.novel_only !== undefined) query.set("novel_only", String(params.novel_only));
-  if (params?.offset !== undefined) query.set("offset", String(params.offset));
-  if (params?.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<QaFindingRecord>>(
-    `/qa/patrols/${encodeURIComponent(patrolId)}/findings${qs ? `?${qs}` : ""}`,
-  );
-}
-
-/** GET /api/qa/findings/by-attempt/:attemptId — finding that dispatched an attempt */
-export function getQaFindingByAttempt(
-  attemptId: string,
-): Promise<ApiResponse<QaFindingRecord>> {
-  return apiFetch<ApiResponse<QaFindingRecord>>(
-    `/qa/findings/by-attempt/${encodeURIComponent(attemptId)}`,
-  );
-}
-
-/** GET /api/qa/known-issues — known issues grouped by fingerprint */
-export function getQaKnownIssues(
-  params?: QaKnownIssuesParams,
-): Promise<PaginatedResponse<QaKnownIssue>> {
-  const query = new URLSearchParams();
-  if (params?.source_butler) query.set("source_butler", params.source_butler);
-  if (params?.severity !== undefined) query.set("severity", String(params.severity));
-  if (params?.dismissed !== undefined) query.set("dismissed", String(params.dismissed));
-  if (params?.offset !== undefined) query.set("offset", String(params.offset));
-  if (params?.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<QaKnownIssue>>(`/qa/known-issues${qs ? `?${qs}` : ""}`);
-}
-
 /** POST /api/qa/known-issues/:fingerprint/dismiss — dismiss a known issue */
 export function dismissQaKnownIssue(
   fingerprint: string,
@@ -5793,16 +5171,6 @@ export function dismissQaKnownIssue(
       method: "POST",
       body: body ? JSON.stringify(body) : "{}",
     },
-  );
-}
-
-/** DELETE /api/qa/known-issues/:fingerprint/dismiss — un-dismiss a known issue */
-export function undismissQaKnownIssue(
-  fingerprint: string,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
-    `/qa/known-issues/${encodeURIComponent(fingerprint)}/dismiss`,
-    { method: "DELETE" },
   );
 }
 
@@ -5826,11 +5194,6 @@ export function getQaInvestigations(
   if (params?.limit !== undefined) query.set("limit", String(params.limit));
   const qs = query.toString();
   return apiFetch<PaginatedResponse<QaInvestigation>>(`/qa/investigations${qs ? `?${qs}` : ""}`);
-}
-
-/** GET /api/qa/trends — 7-day daily patrol success rate + source breakdown */
-export function getQaTrends(days = 7): Promise<ApiResponse<QaTrends>> {
-  return apiFetch<ApiResponse<QaTrends>>(`/qa/trends?days=${days}`);
 }
 
 /** POST /api/qa/force-patrol — request an immediate patrol cycle */
@@ -6138,24 +5501,6 @@ export function submitChroniclerEpisodeCorrection(
 }
 
 /**
- * Trigger a day-close Tier-2 refresh (rate-limited: once per 24 h per date).
- *
- * Returns 429 with code "day_close_rate_limited" when called too soon after
- * the last refresh. The caller should check `error.status === 429` and disable
- * the Explain button accordingly.
- *
- * Returns 503 when the in-process spawner is not wired (standalone/test mode).
- */
-export function postChroniclerDayCloseRefresh(
-  body: ChroniclerDayCloseRefreshRequest,
-): Promise<ChroniclerDayCloseRefreshResponse> {
-  return apiFetch("/chronicler/aggregate/day-close/refresh", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
-
-/**
  * Trigger a per-episode Tier-2 LLM drilldown (rate-limited: once per 24 h per episode).
  *
  * Returns 403 when the episode is sensitive/restricted (excluded from LLM paths).
@@ -6345,12 +5690,6 @@ export function getChroniclesBriefing(
   return apiFetch<ChroniclesBriefing>(`/chronicler/briefing${_chroniclesQs(params)}`);
 }
 
-export function getChroniclesAttention(
-  params?: ChroniclesEditorialParams,
-): Promise<{ data: ChroniclesAttentionItem[]; meta?: Record<string, unknown> }> {
-  return apiFetch(`/chronicler/attention${_chroniclesQs(params)}`);
-}
-
 export function getChroniclesKpi(
   params?: ChroniclesEditorialParams,
 ): Promise<{ data: ChroniclesKpi; meta?: Record<string, unknown> }> {
@@ -6419,21 +5758,6 @@ export function getFinanceSpendingSummary(
   );
 }
 
-/** List bills with optional status and payee filters. */
-export function getFinanceBills(
-  params?: FinanceBillListParams,
-): Promise<PaginatedResponse<FinanceBill>> {
-  const sp = new URLSearchParams();
-  if (params?.status) sp.set("status", params.status);
-  if (params?.payee) sp.set("payee", params.payee);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<FinanceBill>>(
-    qs ? `/finance/bills?${qs}` : "/finance/bills",
-  );
-}
-
 /** List financial accounts with an optional type filter. */
 export function getFinanceAccounts(
   params?: FinanceAccountListParams,
@@ -6445,27 +5769,6 @@ export function getFinanceAccounts(
   const qs = sp.toString();
   return apiFetch<PaginatedResponse<FinanceAccount>>(
     qs ? `/finance/accounts?${qs}` : "/finance/accounts",
-  );
-}
-
-/**
- * List distinct raw merchants with aggregate stats and any existing
- * normalization. GET /api/finance/merchants/distinct.
- */
-export function getFinanceDistinctMerchants(
-  params?: FinanceDistinctMerchantsParams,
-): Promise<PaginatedResponse<FinanceDistinctMerchant>> {
-  const sp = new URLSearchParams();
-  if (params?.start_date) sp.set("start_date", params.start_date);
-  if (params?.end_date) sp.set("end_date", params.end_date);
-  if (params?.min_count != null) sp.set("min_count", String(params.min_count));
-  if (params?.unnormalized_only != null)
-    sp.set("unnormalized_only", String(params.unnormalized_only));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<FinanceDistinctMerchant>>(
-    qs ? `/finance/merchants/distinct?${qs}` : "/finance/merchants/distinct",
   );
 }
 
@@ -6666,19 +5969,6 @@ export function getButlerPromptHistory(
 /** GET /api/butlers/{name}/tools — list tool grants. */
 export function getButlerTools(name: string): Promise<ApiResponse<ButlerTool[]>> {
   return apiFetch<ApiResponse<ButlerTool[]>>(`/butlers/${name}/tools`);
-}
-
-/** PUT /api/butlers/{name}/tools/{tool} — upsert tool grant/scope. */
-export function updateButlerTool(
-  name: string,
-  tool: string,
-  body: ToolUpdateRequest,
-): Promise<ApiResponse<ButlerTool>> {
-  return apiFetch<ApiResponse<ButlerTool>>(`/butlers/${name}/tools/${tool}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
 }
 
 /** GET /api/butlers/{name}/memory-access — memory tier access metadata. */

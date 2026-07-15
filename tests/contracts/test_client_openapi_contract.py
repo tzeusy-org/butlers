@@ -96,12 +96,13 @@ _WILDCARD = "\x00"
 
 # Guards the scanner itself: if fewer than this many apiFetch call sites
 # resolve, the parser has regressed (silently) and every assertion below
-# would be vacuous. At the time of writing, 443/443 resolve. Kept close to
-# that count (not a round number like 400) so a single newly-unparseable
-# call site — one function silently dropped by a future authoring pattern —
-# trips this guard instead of hiding inside slack (PR #3173 review: a wide
-# buffer here would let coverage rot without failing).
-_MIN_RESOLVED_FUNCTIONS = 430
+# would be vacuous. After the bu-wgniv dead-export sweep (which deleted ~48
+# unused api/client.ts functions) 385/385 resolve. Kept close to that count
+# (not a round number like 350) so a single newly-unparseable call site — one
+# function silently dropped by a future authoring pattern — trips this guard
+# instead of hiding inside slack (PR #3173 review: a wide buffer here would let
+# coverage rot without failing).
+_MIN_RESOLVED_FUNCTIONS = 380
 
 # ---------------------------------------------------------------------------
 # Known, tracked contract exceptions
@@ -111,15 +112,13 @@ _MIN_RESOLVED_FUNCTIONS = 430
 # cluster). Keyed by client.ts export name -> the OpenAPI-normalized path
 # template it resolves to (informational; asserted against below).
 KNOWN_DEAD_PATH_FUNCTIONS: dict[str, str] = {
+    # The bu-wgniv dead-export sweep deleted the six unused members of this
+    # dead-path family from client.ts (deleteContact, archiveContact,
+    # unarchiveContact, createContactInfo, deleteContactInfo, patchContactInfo);
+    # only the still-referenced dead-path readers remain listed here.
     "getContacts": "/relationship/contacts",
     "getContact": f"/relationship/contacts/{_WILDCARD}",
     "patchContact": f"/relationship/contacts/{_WILDCARD}",
-    "deleteContact": f"/relationship/contacts/{_WILDCARD}",
-    "archiveContact": f"/relationship/contacts/{_WILDCARD}/archive",
-    "unarchiveContact": f"/relationship/contacts/{_WILDCARD}/unarchive",
-    "createContactInfo": f"/relationship/contacts/{_WILDCARD}/contact-info",
-    "deleteContactInfo": f"/relationship/contacts/{_WILDCARD}/contact-info/{_WILDCARD}",
-    "patchContactInfo": f"/relationship/contacts/{_WILDCARD}/contact-info/{_WILDCARD}",
     "getContactInteractions": f"/relationship/contacts/{_WILDCARD}/interactions{_WILDCARD}",
     "getOverdueContacts": f"/relationship/contacts/overdue{_WILDCARD}",
 }

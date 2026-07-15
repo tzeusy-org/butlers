@@ -1,5 +1,3 @@
-export const RECENT_SEARCHES_KEY = "butlers:recent-searches";
-
 function hasWindow() {
   return typeof window !== "undefined";
 }

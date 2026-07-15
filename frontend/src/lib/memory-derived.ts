@@ -224,10 +224,6 @@ export function formatEpisodeTime(iso: string, tz: string): string {
   return `${lookup.hour}:${lookup.minute}`
 }
 
-/** Consolidation status values that map to a glyph. */
-export type ConsolidationStatus = 'pending' | 'consolidated' | 'dead_letter' | 'failed'
-
-/** The {◦ • ✕} glyph set used in the daybook and elsewhere. */
 export const CONSOLIDATION_GLYPHS = {
   pending: '◦',
   consolidated: '•',

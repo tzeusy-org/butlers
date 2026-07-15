@@ -55,11 +55,3 @@ function getServerSnapshot(): string {
 export function useShellAnnouncement(): string {
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
-
-/**
- * Test-only reset — the module-level store otherwise leaks the last
- * announcement across test files that import it transitively.
- */
-export function _resetShellAnnouncerForTests(): void {
-  message = "";
-}

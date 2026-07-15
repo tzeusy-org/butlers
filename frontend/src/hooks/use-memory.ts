@@ -5,11 +5,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-  archiveEntity,
   confirmFact,
   createEntityInfo,
-  deleteEntity,
-  deleteEntityInfo,
   getEntities,
   getEntity,
   getEpisode,
@@ -27,10 +24,8 @@ import {
   retractFact,
   revealEntitySecret,
   setEntityLinkedContact,
-  unarchiveEntity,
   unlinkEntityContact,
   updateEntity,
-  updateEntityInfo,
   updateMemoryRetentionPolicies,
   getDunbarRanking,
   forgetRelationshipEntity,
@@ -44,7 +39,6 @@ import type {
   FactParams,
   MemoryInspectParams,
   RuleParams,
-  UpdateEntityInfoRequest,
   UpdateEntityRequest,
   UpdateRetentionPoliciesRequest,
 } from "@/api/types.ts";
@@ -187,6 +181,7 @@ export function useMemoryActivity(limit?: number) {
 }
 
 /** Fetch a paginated list of entities. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useEntities(params?: EntityParams) {
   return useQuery({
     queryKey: ["memory-entities", params],
@@ -226,18 +221,6 @@ export function useUpdateEntity() {
   });
 }
 
-/** Soft-delete an entity. Pass retireFacts to auto-retire active facts. */
-export function useDeleteEntity() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (opts: { entityId: string; retireFacts?: boolean }) =>
-      deleteEntity(opts.entityId, { retireFacts: opts.retireFacts }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
-    },
-  });
-}
-
 /** Hard-delete (forget with tombstone) a relationship entity.
  *
  * Calls DELETE /api/butlers/relationship/entities/{id}.
@@ -251,28 +234,6 @@ export function useForgetRelationshipEntity() {
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
       void queryClient.invalidateQueries({ queryKey: ["relationship-entities"] });
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
-    },
-  });
-}
-
-/** Archive an entity (hide from default views). */
-export function useArchiveEntity() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (entityId: string) => archiveEntity(entityId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
-    },
-  });
-}
-
-/** Restore an archived entity. */
-export function useUnarchiveEntity() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (entityId: string) => unarchiveEntity(entityId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
     },
   });
 }
@@ -304,39 +265,6 @@ export function useCreateEntityInfo() {
       entityId: string;
       request: CreateEntityInfoRequest;
     }) => createEntityInfo(entityId, request),
-    onSuccess: (_, { entityId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
-      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
-    },
-  });
-}
-
-/** Update an entity_info entry. */
-export function useUpdateEntityInfo() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      entityId,
-      infoId,
-      request,
-    }: {
-      entityId: string;
-      infoId: string;
-      request: UpdateEntityInfoRequest;
-    }) => updateEntityInfo(entityId, infoId, request),
-    onSuccess: (_, { entityId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
-      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
-    },
-  });
-}
-
-/** Delete an entity_info entry. */
-export function useDeleteEntityInfo() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ entityId, infoId }: { entityId: string; infoId: string }) =>
-      deleteEntityInfo(entityId, infoId),
     onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });

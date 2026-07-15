@@ -476,4 +476,3 @@ export function CalendarProposalsPanel({
   );
 }
 
-export default CalendarProposalsPanel;

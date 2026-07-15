@@ -17,7 +17,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   archiveConnector,
-  getCrossConnectorSummaryWithAggregates,
   getConnectorDetail,
   getConnectorEvents,
   getConnectorIncidents,
@@ -27,7 +26,6 @@ import {
   getPipelineStats,
   listAvailableConnectors,
   listConnectorSummaries,
-  updateConnectorCursor,
   updateConnectorSettings,
 } from "@/api/index.ts";
 import type { IngestionPeriod } from "@/api/index.ts";
@@ -142,26 +140,6 @@ export function useConnectorStats(
 }
 
 /**
- * Mutation to update a connector's checkpoint cursor.
- * Invalidates the connector-detail query on success so the UI refreshes.
- */
-export function useUpdateConnectorCursor(
-  connectorType: string,
-  endpointIdentity: string,
-) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (cursor: string) =>
-      updateConnectorCursor(connectorType, endpointIdentity, cursor),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ingestionKeys.connectorDetail(connectorType, endpointIdentity),
-      });
-    },
-  });
-}
-
-/**
  * Mutation to update connector settings (shallow merge).
  * Invalidates the connector detail so the page refreshes.
  */
@@ -236,19 +214,6 @@ export function useConnectorSummariesWithAggregates(options?: { enabled?: boolea
   return useQuery({
     queryKey: ingestionKeys.connectorSummariesWithAggregates(),
     queryFn: () => getConnectorSummariesWithAggregates(),
-    refetchInterval: 60_000,
-    enabled: options?.enabled !== false,
-  });
-}
-
-/**
- * Cross-connector aggregate summary with aggregates_available flag.
- * Uses the new /api/ingestion/connectors/cross-summary endpoint.
- */
-export function useCrossConnectorSummaryWithAggregates(options?: { enabled?: boolean }) {
-  return useQuery({
-    queryKey: ingestionKeys.crossSummaryWithAggregates(),
-    queryFn: () => getCrossConnectorSummaryWithAggregates(),
     refetchInterval: 60_000,
     enabled: options?.enabled !== false,
   });

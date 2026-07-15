@@ -18,9 +18,6 @@ import type { UnifiedCalendarEntry } from "@/api/types.ts";
 /** Overlay priority as written by the contribution jobs. */
 export type OverlayPriority = "high" | "medium" | "low";
 
-/** Domain butler that authored an overlay contribution. */
-export type OverlaySourceButler = "finance" | "travel" | "relationship" | "health";
-
 /**
  * Narrowed view of an overlay entry's `metadata`. The backend projection always
  * sets `source_type="overlay_contribution"` plus `kind`/`priority`/

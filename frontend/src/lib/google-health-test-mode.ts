@@ -15,10 +15,6 @@
  */
 export const TEST_MODE_RED_THRESHOLD_MS = (5 * 24 + 6) * 60 * 60 * 1000;
 
-/** Deployment-guide anchor for the orange banner's "Learn more" link. */
-export const TEST_MODE_LEARN_MORE_URL =
-  "https://developers.google.com/identity/protocols/oauth2#expiration";
-
 /**
  * Decide which test-mode banner variant to render given the account's
  * ``last_token_refresh_at`` timestamp. Returns ``"orange"`` when the

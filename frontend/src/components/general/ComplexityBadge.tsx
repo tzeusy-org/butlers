@@ -58,4 +58,3 @@ export function ComplexityBadge({ tier }: ComplexityBadgeProps) {
   );
 }
 
-export default ComplexityBadge;

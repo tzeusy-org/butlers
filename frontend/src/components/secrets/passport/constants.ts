@@ -59,11 +59,6 @@ export function severityRank(state: CredentialState): number {
 
 // ── Focus key helpers ────────────────────────────────────────────────────────
 
-/** Encode a focus key from family + id. */
-export function encodeFocus(family: "u" | "s" | "c", id: string): string {
-  return `${family}:${id}`;
-}
-
 /** Parse a focus key: `u:google` → { family: 'u', id: 'google' } */
 export function parseFocus(key: string): { family: "u" | "s" | "c"; id: string } | null {
   const idx = key.indexOf(":");
@@ -91,9 +86,3 @@ export const STAMP_GLYPHS: Record<string, { glyph: string; tone: string }> = {
 };
 
 // ── Severity metadata ────────────────────────────────────────────────────────
-
-export const SEVERITY_META: Record<string, { glyph: string; label: string; tone: string }> = {
-  high:   { glyph: "▰", label: "breaks",   tone: "red"   },
-  medium: { glyph: "▰", label: "degrades", tone: "amber" },
-  low:    { glyph: "▱", label: "minor",    tone: "dim"   },
-};

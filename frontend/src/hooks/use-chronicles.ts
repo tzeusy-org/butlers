@@ -23,11 +23,8 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import {
   createChroniclerRoutine,
   deleteChroniclerRoutine,
-  getChroniclerAggregateByCategory,
-  getChroniclerAggregateByDay,
   getChroniclerBalance,
   getChroniclerCorrectionPrompts,
-  getChroniclerDayClose,
   getChroniclerEpisode,
   getChroniclerEpisodeCorrections,
   getChroniclerEpisodeEvents,
@@ -152,56 +149,6 @@ export function useChroniclesEpisodesInfinite(
     refetchInterval: options?.refetchInterval ?? 30_000,
     enabled: options?.enabled !== false,
   });
-}
-
-/**
- * Fetch category aggregates only for a time window.
- *
- * Use this when you only need the by-category breakdown and do not need
- * the by-day series. Avoids the extra /aggregate/by-day request.
- */
-export function useChroniclesByCategory(
-  params: ChroniclerAggregateByCategoryParams,
-  options?: ChroniclesHookOptions,
-) {
-  return useQuery({
-    queryKey: chroniclesKeys.byCategory(params),
-    queryFn: () => getChroniclerAggregateByCategory(params),
-    refetchInterval: options?.refetchInterval ?? 30_000,
-    enabled: options?.enabled !== false,
-  });
-}
-
-/**
- * Fetch category and day aggregates for a time window.
- *
- * Issues two queries in one hook:
- * - GET /api/chronicler/aggregate/by-category
- * - GET /api/chronicler/aggregate/by-day
- *
- * Both use the same time window params. Day params may add a category filter.
- * Restricted episodes are excluded by default at the server layer.
- */
-export function useChroniclesAggregates(
-  categoryParams: ChroniclerAggregateByCategoryParams,
-  dayParams: ChroniclerAggregateByDayParams,
-  options?: ChroniclesHookOptions,
-) {
-  const byCategory = useQuery({
-    queryKey: chroniclesKeys.byCategory(categoryParams),
-    queryFn: () => getChroniclerAggregateByCategory(categoryParams),
-    refetchInterval: options?.refetchInterval ?? 30_000,
-    enabled: options?.enabled !== false,
-  });
-
-  const byDay = useQuery({
-    queryKey: chroniclesKeys.byDay(dayParams),
-    queryFn: () => getChroniclerAggregateByDay(dayParams),
-    refetchInterval: options?.refetchInterval ?? 30_000,
-    enabled: options?.enabled !== false,
-  });
-
-  return { byCategory, byDay };
 }
 
 /**
@@ -330,27 +277,6 @@ export function useChroniclesCorrectionPrompts(
   return useQuery({
     queryKey: chroniclesKeys.correctionPrompts(params),
     queryFn: () => getChroniclerCorrectionPrompts(params),
-    refetchInterval: options?.refetchInterval ?? false,
-    enabled: options?.enabled !== false,
-  });
-}
-
-/**
- * Fetch the day-close cache entry for a window.
- *
- * Returns either a fresh prose response or a stale marker.
- * Throws ApiError with status 404 if no cache entry exists for the window.
- *
- * Covers both response shapes (DayCloseFreshResponse / DayCloseStaleResponse)
- * via the ChroniclerDayCloseResponse discriminated union.
- */
-export function useChroniclesDayClose(
-  params: ChroniclerDayCloseParams,
-  options?: ChroniclesHookOptions,
-) {
-  return useQuery({
-    queryKey: chroniclesKeys.dayClose(params),
-    queryFn: () => getChroniclerDayClose(params),
     refetchInterval: options?.refetchInterval ?? false,
     enabled: options?.enabled !== false,
   });

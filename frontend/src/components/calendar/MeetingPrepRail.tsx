@@ -251,4 +251,3 @@ export function MeetingPrepRailContainer({
   );
 }
 
-export default MeetingPrepRail;

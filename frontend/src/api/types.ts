@@ -430,44 +430,6 @@ export interface AckFailedResult {
 // Mirrors src/butlers/api/models/attention_ledger.py.
 // ---------------------------------------------------------------------------
 
-/** One row of `public.attention_ledger`. */
-export interface AttentionLedgerEntry {
-  id: string;
-  occurred_at: string;
-  origin_butler: string;
-  source: string;
-  channel: string | null;
-  intent: string | null;
-  priority_label: string | null;
-  priority_score: number | null;
-  dedup_key: string | null;
-  outcome: string;
-  reason: string | null;
-  notification_ref: string | null;
-  metadata: Record<string, unknown> | null;
-}
-
-/**
- * Paginated ledger list, plus a source-availability flag.
- * `source_available === false` means the ledger's DB pool was unreachable --
- * an empty/short page in that case is NOT a truthful "no matching rows".
- */
-export interface AttentionLedgerListResponse extends PaginatedResponse<AttentionLedgerEntry> {
-  source_available?: boolean;
-}
-
-/** Query parameters for GET /api/attention/ledger. */
-export interface AttentionLedgerParams {
-  offset?: number;
-  limit?: number;
-  since?: string;
-  until?: string;
-  intent?: string;
-  source?: string;
-  outcome?: string;
-  origin_butler?: string;
-}
-
 /**
  * Delivery-vs-suppression counts for one `origin_butler` over a window.
  * `suppressed_never_delivered` is the marquee signal: true when this source
@@ -569,16 +531,6 @@ export interface UndismissIssueResult {
 // ---------------------------------------------------------------------------
 // Activity / Timeline
 // ---------------------------------------------------------------------------
-
-/** A timeline event from the activity feed. */
-export interface ActivityEvent {
-  id: string;
-  butler: string;
-  type: string; // "session", "schedule", "notification", "startup", etc.
-  summary: string;
-  timestamp: string; // ISO 8601
-  task_name?: string;
-}
 
 /** A unified timeline event from GET /api/timeline. */
 export interface TimelineEvent {
@@ -1787,31 +1739,9 @@ export interface SearchResults {
   [key: string]: SearchResult[];
 }
 
-/** Query parameters for the search endpoint. */
-export interface SearchParams {
-  q: string;
-  limit?: number;
-}
-
 // ---------------------------------------------------------------------------
 // Audit Log
 // ---------------------------------------------------------------------------
-
-/**
- * Legacy audit entry from the ``dashboard_audit_log`` table.
- * Kept for any existing code that still references the old schema.
- * @deprecated Use AuditLogEntry for the current public.audit_log schema.
- */
-export interface AuditEntry {
-  id: string;
-  butler: string;
-  operation: string;
-  request_summary: Record<string, unknown>;
-  result: string; // "success" | "error"
-  error: string | null;
-  user_context: Record<string, unknown>;
-  created_at: string; // ISO 8601
-}
 
 /**
  * A single entry from the ``public.audit_log`` primitive table (core_092).
@@ -2011,33 +1941,6 @@ export interface OwnerSetupStatus {
   has_email: boolean;
 }
 
-/** Request body for POST /contacts/{id}/contact-info. */
-export interface CreateContactInfoRequest {
-  type: string;
-  value: string;
-  is_primary?: boolean;
-  secured?: boolean;
-  parent_id?: string | null;
-}
-
-/** Response for POST /contacts/{id}/contact-info. */
-export interface CreateContactInfoResponse {
-  id: string;
-  contact_id: string;
-  type: string;
-  value: string;
-  is_primary: boolean;
-  secured: boolean;
-  parent_id: string | null;
-}
-
-/** Request body for PATCH /contacts/{id}/contact-info/{info_id}. */
-export interface PatchContactInfoRequest {
-  type?: string | null;
-  value?: string | null;
-  is_primary?: boolean | null;
-}
-
 /** A contact group. */
 export interface Group {
   id: string;
@@ -2068,12 +1971,6 @@ export interface RemoveGroupLabelResponse {
   group_id: string;
   label_id: string;
   removed: boolean;
-}
-
-/** Response for GET /groups/{group_id}/labels. */
-export interface GroupLabelsResponse {
-  group_id: string;
-  labels: Label[];
 }
 
 /** One member entity of a group, for the Circles lens roster (bu-5umz4). */
@@ -2294,6 +2191,7 @@ export interface LatestMeasurementEntry {
  * Response shape for GET /api/health/measurements/latest?types=X,Y,Z.
  * Keys are measurement type slugs; values are the latest entry or null.
  */
+/** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
 export interface MeasurementsLatestResponse {
   measurements: Record<string, LatestMeasurementEntry | null>;
 }
@@ -2321,11 +2219,6 @@ export interface MeasurementSource {
   name: string;
   last_sample_at: string | null;
   sample_count: number;
-}
-
-/** Response envelope for GET /api/health/measurements/sources. */
-export interface MeasurementSourcesResponse {
-  sources: MeasurementSource[];
 }
 
 /** Query parameters for measurement endpoints. */
@@ -2365,6 +2258,12 @@ export interface MeasurementTrendBucket {
 }
 
 /** Response shape for GET /health/measurements/trend. */
+
+/** @public knip mis-traces this type's inline import() usage (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
+export interface MeasurementSourcesResponse {
+  sources: MeasurementSource[];
+}
+/** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
 export interface MeasurementTrendResponse {
   type: string;
   window_days: number;
@@ -2561,6 +2460,7 @@ export interface NutritionDailyAverage {
  * Meals without nutrition data are excluded. days is the inclusive span used
  * to compute daily averages (minimum 1).
  */
+/** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
 export interface NutritionSummary {
   total_calories: number;
   total_protein_g: number;
@@ -2636,21 +2536,6 @@ export interface SetEligibilityResponse {
   name: string;
   previous_state: string;
   new_state: string;
-}
-
-/** A single segment in the eligibility timeline. */
-export interface EligibilitySegment {
-  state: string;
-  start_at: string;
-  end_at: string;
-}
-
-/** 24h eligibility timeline for a butler. */
-export interface EligibilityHistoryResponse {
-  butler_name: string;
-  segments: EligibilitySegment[];
-  window_start: string;
-  window_end: string;
 }
 
 /** Query parameters for routing log. */
@@ -2971,14 +2856,6 @@ export interface CreateEntityInfoResponse {
   secured: boolean;
 }
 
-/** Request body for updating an entity_info entry. */
-export interface UpdateEntityInfoRequest {
-  type?: string;
-  value?: string;
-  label?: string | null;
-  is_primary?: boolean;
-}
-
 /** Request body for updating entity core fields. */
 export interface UpdateEntityRequest {
   canonical_name?: string;
@@ -3004,13 +2881,6 @@ export interface EntityDetail extends EntitySummary {
 export interface EntityDetailParams {
   facts_offset?: number;
   facts_limit?: number;
-}
-
-/** Response from GET /relationship/owner/entity-info. */
-export interface OwnerEntityInfoResponse {
-  entity_id: string;
-  entity_name: string;
-  entries: EntityInfoEntry[];
 }
 
 /** Query parameters for entity list endpoints. */
@@ -3255,15 +3125,6 @@ export type OAuthCredentialState =
   | "unapproved_tester"
   | "unknown_error";
 
-export interface OAuthCredentialStatus {
-  provider: string;
-  state: OAuthCredentialState;
-  connected: boolean;
-  scopes_granted: string[] | null;
-  remediation: string | null;
-  detail: string | null;
-}
-
 export interface GoogleAccount {
   id: string;
   email: string | null;
@@ -3295,11 +3156,6 @@ export interface DisconnectAccountResponse {
   auto_promoted_id: string | null;
 }
 
-export interface OAuthStatusResponse {
-  google: OAuthCredentialStatus;
-  accounts: GoogleAccount[] | null;
-}
-
 export interface GoogleCredentialStatusResponse {
   client_id_configured: boolean;
   client_secret_configured: boolean;
@@ -3317,12 +3173,6 @@ export interface UpsertAppCredentialsRequest {
 
 export interface UpsertAppCredentialsResponse {
   success: boolean;
-  message: string;
-}
-
-export interface DeleteCredentialsResponse {
-  success: boolean;
-  deleted: boolean;
   message: string;
 }
 
@@ -3401,15 +3251,6 @@ export interface SecretEntry {
   source: string;
 }
 
-/** Request body for creating or updating a secret (PUT). */
-export interface SecretUpsertRequest {
-  value: string;
-  category?: string | null;
-  description?: string | null;
-  is_sensitive?: boolean | null;
-  expires_at?: string | null;
-}
-
 /** Known secret categories for grouping. */
 export type SecretCategory =
   | "core"
@@ -3420,6 +3261,7 @@ export type SecretCategory =
   | "general";
 
 /** Predefined secret key templates with descriptions and auto-detected categories. */
+/** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
 export interface SecretTemplate {
   key: string;
   description: string;
@@ -3430,68 +3272,8 @@ export interface SecretTemplate {
 // Backfill job types (switchboard ingestion history)
 // ---------------------------------------------------------------------------
 
-export type BackfillJobStatus =
-  | "pending"
-  | "active"
-  | "paused"
-  | "completed"
-  | "cancelled"
-  | "cost_capped"
-  | "error";
-
-/** A summarised backfill job for list endpoints (cursor omitted). */
-export interface BackfillJobSummary {
-  id: string;
-  connector_type: string;
-  endpoint_identity: string;
-  target_categories: string[];
-  date_from: string;
-  date_to: string;
-  rate_limit_per_hour: number;
-  daily_cost_cap_cents: number;
-  status: BackfillJobStatus;
-  rows_processed: number;
-  rows_skipped: number;
-  cost_spent_cents: number;
-  error: string | null;
-  created_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-  updated_at: string;
-}
-
-/** Full backfill job entry including cursor. */
-export interface BackfillJobEntry extends BackfillJobSummary {
-  cursor: Record<string, unknown> | null;
-}
-
-/** Request body for creating a backfill job. */
-export interface CreateBackfillJobRequest {
-  connector_type: string;
-  endpoint_identity: string;
-  target_categories?: string[];
-  date_from: string;
-  date_to: string;
-  rate_limit_per_hour?: number;
-  daily_cost_cap_cents?: number;
-}
-
-/** Response body for lifecycle actions (pause/cancel/resume). */
-export interface BackfillLifecycleResponse {
-  job_id: string;
-  status: string;
-}
-
-/** Query parameters for backfill job list. */
-export interface BackfillJobParams {
-  status?: BackfillJobStatus;
-  connector_type?: string;
-  endpoint_identity?: string;
-  offset?: number;
-  limit?: number;
-}
-
 /** A connector entry from the connector_registry table. */
+/** @public knip mis-traces this type's import (used by a live consumer); remove when bu-9jvhm fixes the tracing gap. */
 export interface ConnectorEntry {
   connector_type: string;
   endpoint_identity: string;
@@ -3515,31 +3297,6 @@ export interface ConnectorEntry {
 // ---------------------------------------------------------------------------
 // Thread affinity types
 // ---------------------------------------------------------------------------
-
-/** Global thread affinity settings. */
-export interface ThreadAffinitySettings {
-  enabled: boolean;
-  ttl_days: number;
-  thread_overrides: Record<string, string>;
-  updated_at: string | null;
-}
-
-/** Request body for PATCH /api/switchboard/thread-affinity/settings. */
-export interface ThreadAffinitySettingsUpdate {
-  enabled?: boolean;
-  ttl_days?: number;
-}
-
-/** A single per-thread override entry. */
-export interface ThreadOverrideEntry {
-  thread_id: string;
-  mode: string;
-}
-
-/** Request body for PUT /api/switchboard/thread-affinity/overrides/:thread_id. */
-export interface ThreadOverrideUpsert {
-  mode: string;
-}
 
 // ---------------------------------------------------------------------------
 // Connector statistics and analytics types (docs/connectors/statistics.md)
@@ -4209,17 +3966,6 @@ export interface AnalyticsSnapshotTrendEntry {
   created_at: string;
 }
 
-/** A teaching flow entry with mastery summary. */
-export interface TeachingFlow {
-  mind_map_id: string;
-  title: string;
-  status: string;
-  session_count: number;
-  started_at: string | null;
-  last_session_at: string | null;
-  mastery_pct: number;
-}
-
 /** Per-topic entry in cross-topic analytics. */
 export interface CrossTopicEntry {
   mind_map_id: string;
@@ -4276,21 +4022,6 @@ export interface AnalyticsTrendResponse {
   mind_map_id: string;
   days: number;
   trend: AnalyticsTrendEntry[];
-}
-
-/** A concept node identified as struggling (from /struggling-nodes). */
-export interface StrugglingNodeEntry {
-  node_id: string;
-  node_label: string;
-  mastery_score: number;
-  mastery_status: string;
-  reason: string;
-}
-
-/** List of struggling nodes for a mind map (from /struggling-nodes). */
-export interface StrugglingNodesResponse {
-  mind_map_id: string;
-  nodes: StrugglingNodeEntry[];
 }
 
 /** Request body for submitting a new curriculum request. */
@@ -4660,15 +4391,6 @@ export interface VerifyAllResult {
   failed: number;
 }
 
-/** A single failure record from GET /api/settings/models/{id}/failures. */
-export interface FailureEntry {
-  ts: string;
-  error_code: string | null;
-  error_message: string | null;
-  butler: string | null;
-  session_id: string | null;
-}
-
 /** Request body for creating a catalog entry. */
 export interface ModelCatalogCreate {
   alias: string;
@@ -4776,39 +4498,6 @@ export interface TokenUsageDetail {
 // Provider configuration
 // ---------------------------------------------------------------------------
 
-/** A single provider configuration entry. */
-export interface ProviderConfig {
-  provider_type: string;
-  display_name: string;
-  config: Record<string, unknown>;
-  enabled: boolean;
-}
-
-/** Request body for creating a provider. */
-export interface ProviderConfigCreate {
-  provider_type: string;
-  display_name: string;
-  config?: Record<string, unknown>;
-  enabled?: boolean;
-}
-
-/** Request body for updating a provider (all fields optional). */
-export interface ProviderConfigUpdate {
-  display_name?: string;
-  config?: Record<string, unknown>;
-  enabled?: boolean;
-}
-
-/** Response from the provider test-connectivity endpoint. */
-export interface ProviderConnectivityResult {
-  success: boolean;
-  provider_type: string;
-  url: string | null;
-  status_code: number | null;
-  error: string | null;
-  latency_ms: number;
-}
-
 // ---------------------------------------------------------------------------
 // WhatsApp connector types
 // ---------------------------------------------------------------------------
@@ -4849,14 +4538,6 @@ export interface WhatsAppPairPollResponse {
   status: WhatsAppPairStatus;
   /** Phone number when status === 'paired', otherwise null. */
   phone: string | null;
-}
-
-/** Response from GET /api/connectors/whatsapp/health */
-export interface WhatsAppHealthResponse {
-  state: WhatsAppState;
-  bridge_running: boolean;
-  uptime_seconds: number | null;
-  last_event_at: string | null;
 }
 
 /** Response from POST /api/connectors/whatsapp/disconnect */
@@ -5224,38 +4905,9 @@ export interface GeneralSettings {
   measurement_system: "metric";
 }
 
-/** Request body for PUT /api/settings/general. */
-export interface GeneralSettingsUpdate {
-  timezone: string;
-  language: string;
-  date_format: string;
-  time_format: string;
-  week_starts_on: string;
-  currency: string;
-}
-
 // ---------------------------------------------------------------------------
 // Blob storage (S3-compatible)
 // ---------------------------------------------------------------------------
-
-/** Response from GET /api/settings/blob-storage — configuration status. */
-export interface BlobStorageStatus {
-  endpoint_url: string | null;
-  bucket: string | null;
-  region: string | null;
-  has_access_key: boolean;
-  has_secret_key: boolean;
-  configured: boolean;
-}
-
-/** Response from POST /api/settings/blob-storage/test — connectivity probe. */
-export interface BlobStorageTestResult {
-  success: boolean;
-  error: string | null;
-  latency_ms: number;
-  endpoint_url: string | null;
-  bucket: string | null;
-}
 
 // ---------------------------------------------------------------------------
 // Steam connector types
@@ -5302,57 +4954,9 @@ export interface SteamDisconnectResponse {
   message: string;
 }
 
-/** Playtime record for a single game. */
-export interface SteamGamePlaytime {
-  app_id: number;
-  app_name: string | null;
-  total_minutes: number;
-}
-
-/** Response from GET /api/steam/playtime */
-export interface SteamPlaytimeAnalytics {
-  account_id: string;
-  steam_id: number;
-  display_name: string | null;
-  days: number | null;
-  total_games: number;
-  total_minutes: number;
-  games: SteamGamePlaytime[];
-  queried_at: string;
-}
-
 // ---------------------------------------------------------------------------
 // Healing attempts (self-healing + QA-originated investigations)
 // ---------------------------------------------------------------------------
-
-/** A single healing attempt record — GET /api/healing/attempts/:id */
-export interface HealingAttempt {
-  id: string;
-  fingerprint: string;
-  butler_name: string;
-  status: string;
-  severity: number;
-  exception_type: string;
-  call_site: string;
-  sanitized_msg: string | null;
-  branch_name: string | null;
-  worktree_path: string | null;
-  pr_url: string | null;
-  pr_number: number | null;
-  session_ids: string[];
-  healing_session_id: string | null;
-  created_at: string;
-  updated_at: string;
-  closed_at: string | null;
-  error_detail: string | null;
-}
-
-/** Params for listing healing attempts */
-export interface HealingAttemptsParams {
-  offset?: number;
-  limit?: number;
-  status?: string;
-}
 
 // ---------------------------------------------------------------------------
 // QA Staffer
@@ -5637,15 +5241,6 @@ export interface QaPatrolsParams {
   status?: string;
 }
 
-/** Params for listing known issues */
-export interface QaKnownIssuesParams {
-  source_butler?: string;
-  severity?: number;
-  dismissed?: boolean;
-  offset?: number;
-  limit?: number;
-}
-
 /** A single investigation record — GET /api/qa/investigations */
 export interface QaInvestigation {
   id: string;
@@ -5668,28 +5263,6 @@ export interface QaInvestigationsParams {
   status?: string;
   offset?: number;
   limit?: number;
-}
-
-/** A single day's patrol aggregates — GET /api/qa/trends */
-export interface QaTrendsDay {
-  date: string;
-  patrols_completed: number;
-  total_findings: number;
-  novel_findings: number;
-  dispatched_count: number;
-  success_rate: number;
-}
-
-/** Per-source finding count — GET /api/qa/trends */
-export interface QaSourceBreakdown {
-  source_type: string;
-  count: number;
-}
-
-/** 7-day trend data — GET /api/qa/trends */
-export interface QaTrends {
-  days: QaTrendsDay[];
-  source_breakdown: QaSourceBreakdown[];
 }
 
 /** Response from POST /api/qa/force-patrol */
@@ -6441,23 +6014,6 @@ export interface SubmitCorrectionRequest {
   submitted_by?: string;
 }
 
-/**
- * Response from POST /api/chronicler/aggregate/day-close/refresh.
- * Returned when dispatch succeeds and a fresh cache row is written.
- */
-export interface ChroniclerDayCloseRefreshResponse {
-  cache_key: string;
-  cache_built_at: string;
-}
-
-/** Request body for POST /api/chronicler/aggregate/day-close/refresh. */
-export interface ChroniclerDayCloseRefreshRequest {
-  /** ISO-8601 date (YYYY-MM-DD). */
-  date: string;
-  /** IANA timezone. Default "UTC". */
-  tz?: string;
-}
-
 /** Query parameters for GET /api/chronicler/events. */
 export interface ChroniclerEventsParams {
   source_name?: string;
@@ -6606,23 +6162,6 @@ export interface MessageThreadSummary {
   last_received_at: string | null;
   last_direction: string | null;
   last_snippet: string | null;
-}
-
-/** An important date for one of an entity's contacts (birthday, anniversary, etc). */
-export interface EntityImportantDate {
-  contact_id: string;
-  contact_name: string;
-  label: string;
-  month: number;
-  day: number;
-  year: number | null;
-  /** ISO date (YYYY-MM-DD) of the next future occurrence of (month, day). */
-  upcoming_date: string;
-}
-
-/** Body for PATCH /entities/{id}/dunbar-tier — null clears the pin. */
-export interface DunbarTierOverrideRequest {
-  tier: number | null;
 }
 
 /** Response envelope for PATCH /entities/{id}/dunbar-tier. */
@@ -7229,13 +6768,6 @@ export interface FinanceUpcomingBillsResponse {
   include_overdue: boolean;
 }
 
-export interface FinanceBillListParams {
-  status?: string;
-  payee?: string;
-  offset?: number;
-  limit?: number;
-}
-
 export interface FinanceTransactionListParams {
   category?: string;
   merchant?: string;
@@ -7311,25 +6843,6 @@ export interface FinanceBulkUpdateOpResult {
 export interface FinanceBulkUpdateResponse {
   updated_total: number;
   results: FinanceBulkUpdateOpResult[];
-}
-
-/** Aggregate row from GET /api/finance/merchants/distinct. */
-export interface FinanceDistinctMerchant {
-  merchant: string;
-  normalized_merchant: string | null;
-  count: number;
-  /** Numeric total as string to preserve precision. */
-  total_amount: string;
-}
-
-/** Query params for GET /api/finance/merchants/distinct. */
-export interface FinanceDistinctMerchantsParams {
-  start_date?: string;
-  end_date?: string;
-  min_count?: number;
-  unnormalized_only?: boolean;
-  offset?: number;
-  limit?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -7806,13 +7319,6 @@ export interface ButlerTool {
   scope: string | null;
 }
 
-/** Request body for PUT /api/butlers/{name}/tools/{tool}. */
-export interface ToolUpdateRequest {
-  allowed: boolean;
-  scope?: string | null;
-  actor?: string;
-}
-
 /** Memory tier access metadata for a butler. */
 export interface MemoryAccess {
   read: ("short" | "mid" | "long")[];
@@ -7997,12 +7503,6 @@ export interface EntityFinderSearchResponse {
   total: number;
   q: string;
   limit: number;
-}
-
-/** Query parameters for the relationship entity search endpoint. */
-export interface EntityFinderSearchParams {
-  q: string;
-  limit?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -8194,16 +7694,6 @@ export interface ActivityBin {
  */
 export interface ActivityBinsResponse {
   bins: ActivityBin[];
-}
-
-/** Query parameters for the binned-activity (sparkline) endpoint. */
-export interface ActivityBinsParams {
-  /** ``"daily"`` requests the per-day series (the sparkline source). */
-  bins: "daily";
-  /** Binning window as ``"<N>d"`` (e.g. ``"90d"``). Defaults to 90d server-side. */
-  window?: string;
-  /** When true, return only ``{bins:[...]}`` and omit the merged stream. */
-  bins_only?: boolean;
 }
 
 /** Response for POST /api/butlers/relationship/entities/{id}/view-mark. */
@@ -8837,11 +8327,6 @@ export interface ContactFact {
   weight: number | null;
   verified: boolean;
   primary: boolean | null;
-}
-
-/** Response for GET /entities/{id}/contacts. */
-export interface EntityContactsResponse {
-  facts: ContactFact[];
 }
 
 /** Request body for POST /entities/{id}/contacts. */

@@ -12,33 +12,25 @@ import {
   deleteQaAllowedRepo,
   dismissQaKnownIssue,
   forceQaPatrol,
-  getHealingAttempt,
   getQaAllowedRepos,
   getQaCase,
   getQaCaseJournal,
   getQaCases,
   getQaCircuitBreaker,
-  getQaFindingByAttempt,
   getQaInvestigations,
   getQaRepoConfig,
-  getQaKnownIssues,
   getQaPatrol,
-  getQaPatrolFindings,
   getQaPatrols,
   getQaSummary,
-  getQaTrends,
-  listHealingAttempts,
   patchQaAllowedRepo,
   removeQaDismissal,
   resetQaCircuitBreaker,
   retryHealingAttempt,
   syncQaRepo,
-  undismissQaKnownIssue,
   updateQaGitAuthor,
   updateQaRepoConfig,
 } from "@/api/index.ts";
 import type {
-  HealingAttemptsParams,
   QaAllowedRepoCreate,
   QaCaseJournalParams,
   QaCasesParams,
@@ -46,7 +38,6 @@ import type {
   QaGitAuthorUpdate,
   QaInvestigationsParams,
   QaKnownIssue,
-  QaKnownIssuesParams,
   QaPatrolsParams,
   QaRepoConfigUpdate,
 } from "@/api/index.ts";
@@ -134,37 +125,9 @@ export function useQaPatrol(patrolId: string | undefined) {
   });
 }
 
-/** Fetch paginated findings for a specific patrol. */
-export function useQaPatrolFindings(
-  patrolId: string | undefined,
-  params?: { source_type?: string; novel_only?: boolean; offset?: number; limit?: number },
-) {
-  return useQuery({
-    queryKey: ["qa-patrol-findings", patrolId, params],
-    queryFn: () => getQaPatrolFindings(patrolId!, params),
-    enabled: !!patrolId,
-    staleTime: STALE_TIME,
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Known Issues
 // ---------------------------------------------------------------------------
-
-/** Fetch known issues grouped by fingerprint. */
-export function useQaKnownIssues(
-  params?: QaKnownIssuesParams,
-  options?: { enabled?: boolean },
-) {
-  return useQuery({
-    queryKey: ["qa-known-issues", params],
-    queryFn: () => getQaKnownIssues(params),
-    staleTime: STALE_TIME,
-    refetchInterval: STALE_TIME,
-    enabled: options?.enabled ?? true,
-    placeholderData: (prev) => prev,
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Dismiss / Undismiss mutations
@@ -185,17 +148,6 @@ export function useDismissQaIssue() {
     mutationFn: ({ fingerprint, body }) => dismissQaKnownIssue(fingerprint, body),
     listKeyPrefix: ["qa-known-issues"],
     updateItems: (issues, { fingerprint }) =>
-      issues.filter((issue) => issue.fingerprint !== fingerprint),
-    invalidateQueryKeys: [["qa-known-issues"], ["qa-summary"]],
-  });
-}
-
-/** Un-dismiss a known issue fingerprint (mirrors {@link useDismissQaIssue}). */
-export function useUndismissQaIssue() {
-  return useOptimisticListMutation<unknown, string, QaKnownIssue>({
-    mutationFn: (fingerprint: string) => undismissQaKnownIssue(fingerprint),
-    listKeyPrefix: ["qa-known-issues"],
-    updateItems: (issues, fingerprint) =>
       issues.filter((issue) => issue.fingerprint !== fingerprint),
     invalidateQueryKeys: [["qa-known-issues"], ["qa-summary"]],
   });
@@ -237,38 +189,6 @@ export function useRetryHealingAttempt() {
 // Healing attempts (used for QA investigation detail)
 // ---------------------------------------------------------------------------
 
-/** Fetch a single healing attempt (QA investigation or self-healing). */
-export function useHealingAttempt(attemptId: string | undefined) {
-  return useQuery({
-    queryKey: ["healing-attempt", attemptId],
-    queryFn: () => getHealingAttempt(attemptId!),
-    enabled: !!attemptId,
-    staleTime: STALE_TIME,
-  });
-}
-
-/** Fetch the QA finding that dispatched a given healing attempt (404 → no finding). */
-export function useQaFindingByAttempt(attemptId: string | undefined) {
-  return useQuery({
-    queryKey: ["qa-finding-by-attempt", attemptId],
-    queryFn: () => getQaFindingByAttempt(attemptId!),
-    enabled: !!attemptId,
-    staleTime: STALE_TIME,
-    retry: false,
-  });
-}
-
-/** Fetch paginated healing attempts. */
-export function useHealingAttempts(params?: HealingAttemptsParams) {
-  return useQuery({
-    queryKey: ["healing-attempts", params],
-    queryFn: () => listHealingAttempts(params),
-    staleTime: STALE_TIME,
-    refetchInterval: STALE_TIME,
-    placeholderData: (prev) => prev,
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Investigation pipeline
 // ---------------------------------------------------------------------------
@@ -287,16 +207,6 @@ export function useQaInvestigations(params?: QaInvestigationsParams) {
 // ---------------------------------------------------------------------------
 // Trends
 // ---------------------------------------------------------------------------
-
-/** Fetch 7-day QA trend data (success rate + source breakdown). */
-export function useQaTrends(days = 7) {
-  return useQuery({
-    queryKey: ["qa-trends", days],
-    queryFn: () => getQaTrends(days),
-    staleTime: STALE_TIME,
-    refetchInterval: STALE_TIME,
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Circuit breaker
@@ -330,6 +240,7 @@ export function useResetQaCircuitBreaker() {
 // ---------------------------------------------------------------------------
 
 /** Fetch QA repo configuration. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useQaRepoConfig() {
   return useQuery({
     queryKey: ["qa-repo-config"],
@@ -340,6 +251,7 @@ export function useQaRepoConfig() {
 }
 
 /** Update QA repo URL. Invalidates repo-config cache on success. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useUpdateQaRepoConfig() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -351,6 +263,7 @@ export function useUpdateQaRepoConfig() {
 }
 
 /** Trigger immediate repo sync. Invalidates repo-config cache on success. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useSyncQaRepo() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -365,6 +278,7 @@ export function useSyncQaRepo() {
  * Store the QA git author identity (name + email). Invalidates the QA summary
  * cache on success so the card's credentials status badges refresh.
  */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useUpdateQaGitAuthor() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -398,6 +312,7 @@ export function useForceQaPatrol() {
 // ---------------------------------------------------------------------------
 
 /** Fetch the QA allowed-repos whitelist. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useQaAllowedRepos() {
   return useQuery({
     queryKey: ["qa-allowed-repos"],
@@ -407,6 +322,7 @@ export function useQaAllowedRepos() {
 }
 
 /** Add a repository to the QA whitelist. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useAddQaAllowedRepo() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -418,6 +334,7 @@ export function useAddQaAllowedRepo() {
 }
 
 /** Toggle enabled on a whitelisted repository. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function usePatchQaAllowedRepo() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -430,6 +347,7 @@ export function usePatchQaAllowedRepo() {
 }
 
 /** Remove a repository from the QA whitelist. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useDeleteQaAllowedRepo() {
   const queryClient = useQueryClient();
   return useMutation({

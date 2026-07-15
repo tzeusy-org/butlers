@@ -196,6 +196,7 @@ export function Voice({
 }
 
 /** Display headline: 44px / sans 500 / tight tracking. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function Display({
   children,
   color,

@@ -6,11 +6,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import {
-  archiveContact,
-  unarchiveContact,
-  createContactInfo,
-  deleteContact,
-  deleteContactInfo,
   getContact,
   getContacts,
   getContactInteractions,
@@ -22,17 +17,13 @@ import {
   removeGroupLabel,
   getOverdueContacts,
   patchContact,
-  patchContactInfo,
   getUpcomingDates,
 } from "@/api/index.ts";
 import type {
   ApiResponse,
   ContactPatchRequest,
-  ContactSummary,
-  CreateContactInfoRequest,
   Group,
   Label,
-  PatchContactInfoRequest,
   ContactParams,
   GroupParams,
 } from "@/api/index.ts";
@@ -153,6 +144,7 @@ export function useRemoveGroupLabel() {
 }
 
 /** Fetch upcoming dates within a given number of days. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function useUpcomingDates(days?: number) {
   return useQuery({
     queryKey: ["upcoming-dates", days],
@@ -161,97 +153,12 @@ export function useUpcomingDates(days?: number) {
 }
 
 /** Patch a contact's fields. */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function usePatchContact() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ contactId, request }: { contactId: string; request: ContactPatchRequest }) =>
       patchContact(contactId, request),
-    onSuccess: (_, { contactId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-    },
-  });
-}
-
-/** Add a contact_info entry to a contact. */
-export function useCreateContactInfo() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      contactId,
-      request,
-    }: {
-      contactId: string;
-      request: CreateContactInfoRequest;
-    }) => createContactInfo(contactId, request),
-    onSuccess: (_, { contactId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-    },
-  });
-}
-
-/** Hard-delete a contact. */
-export function useDeleteContact() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (contactId: string) => deleteContact(contactId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-    },
-  });
-}
-
-/**
- * Archive a contact (soft-delete, sync won't re-create — toggle-like and
- * reversible via {@link useUnarchiveContact}, so OPTIMISTIC: drops it from
- * every cached `["contacts", params]` view immediately; a view scoped to
- * `archived: true` picks it back up on the invalidate-driven refetch).
- */
-export function useArchiveContact() {
-  return useOptimisticListMutation<unknown, string, ContactSummary>({
-    mutationFn: (contactId: string) => archiveContact(contactId),
-    listKeyPrefix: ["contacts"],
-    updateItems: (contacts, contactId) => contacts.filter((c) => c.id !== contactId),
-    invalidateQueryKeys: [["contacts"]],
-  });
-}
-
-/** Restore an archived contact (mirrors {@link useArchiveContact}). */
-export function useUnarchiveContact() {
-  return useOptimisticListMutation<unknown, string, ContactSummary>({
-    mutationFn: (contactId: string) => unarchiveContact(contactId),
-    listKeyPrefix: ["contacts"],
-    updateItems: (contacts, contactId) => contacts.filter((c) => c.id !== contactId),
-  });
-}
-
-/** Delete a contact_info entry. */
-export function useDeleteContactInfo() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ contactId, infoId }: { contactId: string; infoId: string }) =>
-      deleteContactInfo(contactId, infoId),
-    onSuccess: (_, { contactId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
-      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-    },
-  });
-}
-
-/** Update a contact_info entry. */
-export function usePatchContactInfo() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      contactId,
-      infoId,
-      request,
-    }: {
-      contactId: string;
-      infoId: string;
-      request: PatchContactInfoRequest;
-    }) => patchContactInfo(contactId, infoId, request),
     onSuccess: (_, { contactId }) => {
       void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });

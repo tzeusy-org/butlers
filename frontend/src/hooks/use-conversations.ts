@@ -2,11 +2,10 @@
  * TanStack Query hooks for the conversations (chat UI) API.
  */
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   listConversations,
   getConversationMessages,
-  getConversation,
   searchConversations,
 } from "@/api/index.ts";
 import type { ConversationListParams } from "@/api/index.ts";
@@ -56,22 +55,6 @@ export function useConversations(
 }
 
 /**
- * Fetch full detail for a single conversation (includes messages).
- * staleTime = 0: always refetch when switching conversations.
- */
-export function useConversation(
-  butlerName: string,
-  conversationId: string | null,
-) {
-  return useQuery({
-    queryKey: conversationKeys.detail(butlerName, conversationId ?? ""),
-    queryFn: () => getConversation(butlerName, conversationId!),
-    enabled: !!butlerName && !!conversationId,
-    staleTime: 0,
-  });
-}
-
-/**
  * Fetch messages for a specific conversation.
  * staleTime = 0: always refetch when switching conversations.
  */
@@ -103,29 +86,3 @@ export function useConversationSearch(butlerName: string, query: string) {
 // ---------------------------------------------------------------------------
 // Invalidation helpers (used after SSE stream completes)
 // ---------------------------------------------------------------------------
-
-/** Returns a callback that invalidates conversation list + message queries after a send/create. */
-export function useInvalidateConversations() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({
-      butlerName,
-      conversationId,
-    }: {
-      butlerName: string;
-      conversationId?: string;
-    }) => {
-      await queryClient.invalidateQueries({
-        queryKey: conversationKeys.all(butlerName),
-      });
-      if (conversationId) {
-        await queryClient.invalidateQueries({
-          queryKey: conversationKeys.messages(butlerName, conversationId),
-        });
-        await queryClient.invalidateQueries({
-          queryKey: conversationKeys.detail(butlerName, conversationId),
-        });
-      }
-    },
-  });
-}

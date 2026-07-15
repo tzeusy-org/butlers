@@ -2,8 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getFinanceAccounts,
-  getFinanceBills,
-  getFinanceDistinctMerchants,
   getFinanceSpendingSummary,
   getFinanceSubscriptions,
   getFinanceTransactions,
@@ -12,9 +10,7 @@ import {
 } from "@/api/index.ts";
 import type {
   FinanceAccountListParams,
-  FinanceBillListParams,
   FinanceBulkUpdateRequest,
-  FinanceDistinctMerchantsParams,
   FinanceSpendingSummaryParams,
   FinanceSubscriptionListParams,
   FinanceTransactionListParams,
@@ -46,16 +42,6 @@ export function useFinanceSubscriptions(params?: FinanceSubscriptionListParams) 
   });
 }
 
-/** List bills with optional filters. Refreshes every 60s. */
-export function useFinanceBills(params?: FinanceBillListParams) {
-  return useQuery({
-    queryKey: ["finance", "bills", params],
-    queryFn: () => getFinanceBills(params),
-    refetchInterval: 60_000,
-    placeholderData: (previousData) => previousData,
-  });
-}
-
 /** Get upcoming bills with urgency classification. Refreshes every 60s. */
 export function useFinanceUpcomingBills(params?: FinanceUpcomingBillsParams) {
   return useQuery({
@@ -81,16 +67,6 @@ export function useFinanceAccounts(params?: FinanceAccountListParams) {
   return useQuery({
     queryKey: ["finance", "accounts", params],
     queryFn: () => getFinanceAccounts(params),
-    refetchInterval: 60_000,
-    placeholderData: (previousData) => previousData,
-  });
-}
-
-/** List distinct raw merchants with aggregate stats. Used to seed normalize affordances. */
-export function useFinanceDistinctMerchants(params?: FinanceDistinctMerchantsParams) {
-  return useQuery({
-    queryKey: ["finance", "distinct-merchants", params],
-    queryFn: () => getFinanceDistinctMerchants(params),
     refetchInterval: 60_000,
     placeholderData: (previousData) => previousData,
   });

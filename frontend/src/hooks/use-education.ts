@@ -3,13 +3,11 @@ import { toast } from "sonner";
 
 import {
   getEducationCrossTopicAnalytics,
-  getEducationFlows,
   getEducationMasterySummary,
   getEducationMindMap,
   getEducationMindMapAnalytics,
   getEducationMindMapAnalyticsTrend,
   getEducationMindMapFrontier,
-  getEducationMindMapStrugglingNodes,
   getEducationMindMaps,
   getEducationPendingReviews,
   getEducationQuizResponses,
@@ -58,21 +56,6 @@ export function useMindMapAnalytics(mindMapId: string | null, trendDays?: number
     queryFn: () => getEducationMindMapAnalytics(mindMapId!, trendDays),
     enabled: !!mindMapId,
     refetchInterval: 30_000,
-  });
-}
-
-/** Get nodes pending (and upcoming) spaced-repetition review.
- *
- * Requests a 14-day horizon so the dashboard timeline can group entries into
- * Overdue / Today / This Week / Later buckets. The backend endpoint filters
- * by next_review_at <= now() + 14 days.
- */
-export function usePendingReviews(mindMapId: string | null) {
-  return useQuery({
-    queryKey: ["education", "pending-reviews", mindMapId],
-    queryFn: () => getEducationPendingReviews(mindMapId!, 14),
-    enabled: !!mindMapId,
-    refetchInterval: 15_000,
   });
 }
 
@@ -212,15 +195,6 @@ export function useQuizResponses(params?: QuizResponseParams) {
   });
 }
 
-/** List teaching flows with optional status filter. */
-export function useTeachingFlows(status?: string) {
-  return useQuery({
-    queryKey: ["education", "flows", status],
-    queryFn: () => getEducationFlows(status),
-    refetchInterval: 30_000,
-  });
-}
-
 /** Get cross-topic comparative analytics. */
 export function useCrossTopicAnalytics() {
   return useQuery({
@@ -269,25 +243,6 @@ export function useMindMapAnalyticsTrend(mindMapId: string | null, days: number 
     // Align staleTime with the polling interval so window-focus/mount refetches
     // don't fire extra requests between poll cycles (same rationale as
     // useAllPendingReviews / useAllMasterySummaries).
-    staleTime: 60_000,
-  });
-}
-
-/**
- * Fetch struggling nodes for a single mind map.
- *
- * Wraps GET /api/education/mind-maps/{id}/struggling-nodes.
- * Returns nodes with declining or consistently low mastery scores.
- *
- * The query is disabled when mindMapId is null or empty.
- */
-export function useMindMapStrugglingNodes(mindMapId: string | null) {
-  return useQuery({
-    queryKey: ["education", "struggling-nodes", mindMapId],
-    queryFn: () => getEducationMindMapStrugglingNodes(mindMapId!),
-    enabled: !!mindMapId,
-    refetchInterval: 60_000,
-    // Align staleTime with the polling interval (see useMindMapAnalyticsTrend).
     staleTime: 60_000,
   });
 }

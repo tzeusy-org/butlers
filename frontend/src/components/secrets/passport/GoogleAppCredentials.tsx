@@ -263,4 +263,3 @@ export function GoogleAppCredentials() {
   );
 }
 
-export default GoogleAppCredentials;

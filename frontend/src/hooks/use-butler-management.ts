@@ -13,9 +13,8 @@ import {
   getButlerTools,
   killButler,
   updateButlerPrompt,
-  updateButlerTool,
 } from "@/api/index.ts";
-import type { KillRequest, PromptUpdateRequest, ToolUpdateRequest } from "@/api/index.ts";
+import type { KillRequest, PromptUpdateRequest } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
 // System prompt
@@ -61,18 +60,6 @@ export function useButlerTools(name: string) {
     queryKey: ["butlers", name, "tools"],
     queryFn: () => getButlerTools(name),
     enabled: !!name,
-  });
-}
-
-/** Mutation hook for updating a butler's tool grant. */
-export function useUpdateButlerTool(name: string) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ tool, body }: { tool: string; body: ToolUpdateRequest }) =>
-      updateButlerTool(name, tool, body),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["butlers", name, "tools"] });
-    },
   });
 }
 

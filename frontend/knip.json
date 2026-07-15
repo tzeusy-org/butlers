@@ -8,11 +8,11 @@
     "unlisted": "error",
     "unresolved": "error",
     "binaries": "error",
-    "exports": "off",
-    "types": "off",
-    "nsExports": "off",
-    "nsTypes": "off",
-    "duplicates": "off",
+    "exports": "error",
+    "types": "error",
+    "nsExports": "error",
+    "nsTypes": "error",
+    "duplicates": "error",
     "enumMembers": "off"
   }
 }

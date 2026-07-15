@@ -10,7 +10,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   connectSteamAccount,
   disconnectSteamAccount,
-  getSteamPlaytime,
   listSteamAccounts,
 } from "@/api/index.ts";
 import type { SteamConnectRequest } from "@/api/index.ts";
@@ -39,21 +38,6 @@ export function useSteamAccounts() {
   return useQuery({
     queryKey: steamKeys.accounts(),
     queryFn: () => listSteamAccounts(),
-    retry: false,
-  });
-}
-
-/**
- * Fetch playtime analytics for a Steam account.
- *
- * If `accountId` is omitted, uses the primary account.
- * Only runs when at least one account is present (enabled flag).
- */
-export function useSteamPlaytime(accountId?: string, enabled = true) {
-  return useQuery({
-    queryKey: steamKeys.playtime(accountId),
-    queryFn: () => getSteamPlaytime({ account_id: accountId, top_n: 10 }),
-    enabled,
     retry: false,
   });
 }

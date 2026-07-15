@@ -226,4 +226,3 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
   );
 }
 
-export default QuickAddBar;

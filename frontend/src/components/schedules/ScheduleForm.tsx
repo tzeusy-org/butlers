@@ -319,4 +319,3 @@ export function ScheduleForm({
   );
 }
 
-export default ScheduleForm;

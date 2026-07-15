@@ -47,23 +47,6 @@ export const USER_SECRET_TEMPLATES: UserSecretTemplate[] = [
   { type: "email_password", label: "Email Password", description: "Owner email password or app password", category: "email", secured: true },
 ];
 
-export const USER_SECRET_CATEGORIES: UserSecretCategory[] = [
-  "telegram",
-  "home_assistant",
-  "email",
-  "whatsapp",
-  "general",
-];
-
-/** Types that should always be masked in the UI. */
-export const SECURED_USER_TYPES = new Set<string>([
-  "telegram_api_hash",
-  "telegram_user_session",
-  "home_assistant_token",
-  "email_password",
-  "google_oauth_refresh",
-]);
-
 /** Entity_info types shown in the type dropdown (excludes session — managed interactively).
  *
  * Non-secret CHANNEL handles (telegram, telegram_chat_id, email, whatsapp_phone)
@@ -92,26 +75,3 @@ export function entityInfoTypeLabel(type: string): string {
   }
 }
 
-export function userCategoryFromType(type: string): UserSecretCategory {
-  const template = USER_SECRET_TEMPLATES.find((t) => t.type === type);
-  if (template) return template.category;
-  return "general";
-}
-
-const USER_CATEGORY_ORDER = ["telegram", "home_assistant", "email", "whatsapp", "general"];
-
-export function userCategoryIndex(category: string): number {
-  const idx = USER_CATEGORY_ORDER.indexOf(category);
-  return idx >= 0 ? idx : USER_CATEGORY_ORDER.length;
-}
-
-export function userCategoryLabel(category: string): string {
-  const labels: Record<string, string> = {
-    telegram: "Telegram",
-    home_assistant: "Home Assistant",
-    email: "Email",
-    whatsapp: "WhatsApp",
-    general: "General",
-  };
-  return labels[category] ?? category.charAt(0).toUpperCase() + category.slice(1);
-}

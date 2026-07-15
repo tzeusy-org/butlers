@@ -242,6 +242,7 @@ export function MetadataBlock({
  * order. Renders a serif-italic loading/empty line rather than a skeleton pulse
  * (MEMORY_LANGUAGE.md §8: no skeleton pulse).
  */
+/** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
 export function DetailSkeleton({
   backHref,
   backLabel,

@@ -351,4 +351,3 @@ export function CalendarDuplicatesPanel({
   );
 }
 
-export default CalendarDuplicatesPanel;

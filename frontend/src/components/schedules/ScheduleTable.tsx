@@ -249,4 +249,3 @@ export function ScheduleTable({
   );
 }
 
-export default ScheduleTable;
