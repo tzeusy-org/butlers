@@ -250,11 +250,11 @@ def _is_p1_bug(issue: dict[str, Any]) -> bool:
 def _is_deploy_bead(issue: dict[str, Any]) -> bool:
     if issue.get("status") not in _OPEN_STATUSES:
         return False
-    # Same rationale as _is_decision_bead's epic exclusion: a container epic
-    # whose title happens to mention "deploy" is not itself a deploy blocked
-    # on a decision.
-    if issue.get("issue_type") == "epic":
-        return False
+    # Unlike _is_decision_bead, epics are intentionally NOT excluded here: the
+    # deploy-blocked side of a blocks-edge legitimately can be a container epic
+    # ("Epic: ship v2 [deploy pending decision]"), and silently dropping a >48h
+    # deploy-blocked escalation is strictly worse than an occasional extra
+    # escalation on a container (bu-pnofc).
     return bool(_DEPLOY_TITLE_MARKER.search(issue.get("title") or ""))
 
 

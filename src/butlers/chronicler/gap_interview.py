@@ -405,9 +405,10 @@ CALLBACK_PREFIX = "cgi:"
 def build_callback_data(interview_id: str, answer: GapInterviewAnswer | str) -> str:
     """Encode one inline button's ``callback_data`` (``cgi:<interview_id>:<answer>``).
 
-    Telegram caps ``callback_data`` at 64 bytes; ``interview_id`` is
-    ``<YYYY-MM-DD>:<uuid|gap>`` (≤47 chars) so the longest payload
-    (``cgi:2026-07-02:<uuid>:confirm`` ≈ 59 bytes) stays under the cap.
+    Telegram caps ``callback_data`` at 64 bytes; ``interview_id`` is the closed
+    day's ``date_label`` (``<YYYY-MM-DD>``, 10 chars; the ask tool sets
+    ``interview_id == date_label``, one prompt per day), so the longest payload
+    (``cgi:2026-07-02:confirm`` = 22 bytes) stays well under the cap.
     """
     return f"{CALLBACK_PREFIX}{interview_id}:{GapInterviewAnswer(answer).value}"
 
@@ -434,7 +435,6 @@ async def resolve_gap_interview_callback(
     interview_id: str,
     answer: str,
     now: datetime,
-    scoped_search_path: bool = False,
 ) -> dict[str, Any]:
     """Apply a one-tap answer identified by ``interview_id`` (idempotent).
 
@@ -442,21 +442,11 @@ async def resolve_gap_interview_callback(
     store, applies the answer via :func:`apply_gap_interview_answer`, and marks
     the interview answered so a duplicate tap (telegram re-delivers callbacks on
     retry) is a no-op. Shared by the ``chronicler_resolve_gap_interview`` MCP
-    tool and the telegram_bot connector's ``cgi:`` handler.
-
-    ``scoped_search_path`` wraps the whole read-apply-mark sequence in one
-    transaction with ``SET LOCAL search_path TO chronicler, public`` — the
-    connector's pool is the shared butlers DB with no chronicler search path,
-    so it needs this; the MCP tool's pool is already chronicler-scoped and
-    passes ``False``. Never raises for owner-facing conditions: an unknown or
-    already-answered interview and an unparseable answer all return a
+    tool and the telegram_bot connector's ``cgi:`` handler; both callers pass a
+    chronicler-scoped pool. Never raises for owner-facing conditions: an unknown
+    or already-answered interview and an unparseable answer all return a
     ``status`` the caller can surface as a graceful toast.
     """
-    if scoped_search_path:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("SET LOCAL search_path TO chronicler, public")
-                return await _resolve_on_conn(conn, interview_id, answer, now)
     return await _resolve_on_conn(pool, interview_id, answer, now)
 
 

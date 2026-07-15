@@ -338,8 +338,13 @@ def test_is_decision_bead_excludes_epics_even_with_label():
     )
 
 
-def test_is_deploy_bead_excludes_epics():
-    assert not _is_deploy_bead(
+def test_is_deploy_bead_includes_epics():
+    # bu-pnofc: unlike _is_decision_bead, a deploy-blocked epic ("Epic: ship v2
+    # [deploy pending decision]") IS a valid deploy bead. Silently dropping a
+    # >48h deploy-blocked escalation is strictly worse than an occasional extra
+    # escalation on a container, so the epic exclusion was reverted here (only
+    # here — _is_decision_bead still excludes epics, guarded by the test above).
+    assert _is_deploy_bead(
         {
             "status": "open",
             "issue_type": "epic",
@@ -350,6 +355,14 @@ def test_is_deploy_bead_excludes_epics():
         {
             "status": "open",
             "issue_type": "task",
+            "title": "Deploy readiness epic",
+        }
+    )
+    # The status gate is unchanged: a closed epic is still not a deploy bead.
+    assert not _is_deploy_bead(
+        {
+            "status": "closed",
+            "issue_type": "epic",
             "title": "Deploy readiness epic",
         }
     )
@@ -406,6 +419,31 @@ def test_digest_escalates_deploy_bead_blocked_over_48h(tmp_path):
                 title="Deploy pending core migrations",
                 issue_type="task",
                 priority=1,
+                blocks_id="bu-v4ipc",
+                edge_age_hours=72,
+            ),
+        ],
+    )
+    digest = compute_decision_digest(export, now=_NOW)
+    assert len(digest.escalations) == 1
+    assert digest.escalations[0].blocked_kind == "deploy"
+
+
+def test_digest_escalates_deploy_blocked_epic_over_48h(tmp_path):
+    # bu-pnofc: a container epic on the deploy-blocked side of a blocks edge now
+    # escalates like any other deploy bead (the epic exclusion was reverted in
+    # _is_deploy_bead). Before, this >48h deploy-blocked escalation was silently
+    # dropped.
+    export = tmp_path / "issues.export.jsonl"
+    _write_export(
+        export,
+        [
+            _decision("bu-v4ipc", created_days_ago=6),
+            _blocker(
+                "bu-epicdeploy",
+                title="Epic: ship v2 [deploy pending decision]",
+                issue_type="epic",
+                priority=2,  # deploy detection is title-based, not P1-priority-based
                 blocks_id="bu-v4ipc",
                 edge_age_hours=72,
             ),
