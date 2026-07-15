@@ -963,9 +963,35 @@ class ButlerDaemon:
 
         Thin wrapper — implementation lives in :func:`butlers.background.dispatch_scheduled_task`.
         """
+        from butlers.scheduled_jobs import (
+            _MEMORY_MAINTENANCE_JOB_HANDLERS,
+            _resolve_deterministic_schedule_job_name,
+        )
+
+        resolved_job_name = _resolve_deterministic_schedule_job_name(
+            butler_name=self.config.name,
+            trigger_source=trigger_source,
+            job_name=job_name,
+        )
+        dispatch_pool = self.db.pool if self.db is not None else None
+        if resolved_job_name in _MEMORY_MAINTENANCE_JOB_HANDLERS:
+            memory_module = self._resolve_memory_module()
+            if memory_module is not None:
+                # MemoryModule may own a dedicated schema-scoped pool (currently
+                # chronicler_mem). Maintenance jobs must use the same pool as the
+                # module's tools; the daemon pool can point at a distinct domain
+                # schema with incompatible same-named tables.
+                dispatch_pool = memory_module._get_pool()
+                logger.debug(
+                    "Dispatching memory maintenance job with module runtime pool "
+                    "(butler=%s, job_name=%s)",
+                    self.config.name,
+                    resolved_job_name,
+                )
+
         return await _background.dispatch_scheduled_task(
             butler_name=self.config.name,
-            pool=self.db.pool if self.db is not None else None,
+            pool=dispatch_pool,
             spawner=self.spawner,
             trigger_source=trigger_source,
             prompt=prompt,
@@ -1073,11 +1099,10 @@ class ButlerDaemon:
     def _resolve_memory_module(self) -> Any | None:
         """Return the started memory module instance, or ``None``.
 
-        Used to wire the chronicler day-close memory write-back (bu-93y4rt):
-        the caller reads the module's embedding engine and its runtime pool
-        (which targets the dedicated ``chronicler_mem`` schema). Returns
-        ``None`` when the memory module is absent or failed to start, so the
-        day-close hook falls back to cache-only behaviour.
+        Used by memory maintenance dispatch and the chronicler day-close
+        write-back. The caller may read the module's runtime pool, which targets
+        a dedicated schema when ``memory_schema`` is configured. Returns ``None``
+        when the memory module is absent or failed to start.
         """
         for mod in self._modules:
             if mod.name != "memory":

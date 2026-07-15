@@ -132,3 +132,29 @@ class TestNativeScheduleDispatch:
             prompt="routine task", trigger_source="schedule:routine"
         )
         assert mock_spawner.trigger.call_args.kwargs["complexity"] is Complexity.WORKHORSE
+
+    async def test_memory_job_uses_memory_module_runtime_pool(self, tmp_path):
+        """Private-schema memory maintenance must not run on the daemon pool."""
+        daemon, mock_spawner = self._make_daemon(tmp_path, "chronicler", 41111)
+        memory_pool = AsyncMock()
+        memory_module = MagicMock()
+        memory_module.name = "memory"
+        memory_module._get_pool.return_value = memory_pool
+        daemon._modules = [memory_module]
+
+        expected = {"episodes_processed": 0}
+        mock_handler = AsyncMock(return_value=expected)
+        with patch.dict(
+            "butlers.scheduled_jobs._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
+            {"chronicler": {"memory_consolidation": mock_handler}},
+            clear=True,
+        ):
+            result = await daemon._dispatch_scheduled_task(
+                trigger_source="schedule:memory_consolidation",
+                job_name="memory_consolidation",
+            )
+
+        assert result == expected
+        memory_module._get_pool.assert_called_once_with()
+        mock_handler.assert_awaited_once_with(memory_pool, None)
+        mock_spawner.trigger.assert_not_awaited()

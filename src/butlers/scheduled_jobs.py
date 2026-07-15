@@ -314,9 +314,11 @@ async def _run_memory_consolidation_job(
     "Catalog write-behind defaults to enabled" requirement; no butler.toml
     currently overrides it) and keeps the ``store_fact``/``store_rule``
     catalog pass-through correct for whenever a real ``Spawner`` lands here.
-    ``source_schema`` is intentionally left unresolved — this handler has no
-    access to a butler's toml config, so ``execute_consolidation`` falls back
-    to the pool's own ``current_schema()`` (see its docstring).
+    ``source_schema`` is intentionally left unresolved. The daemon dispatches
+    memory maintenance jobs with the memory module's runtime pool, including a
+    dedicated ``memory_schema`` pool when configured, so
+    ``execute_consolidation`` can safely fall back to that pool's
+    ``current_schema()`` (see its docstring).
     """
     from butlers.modules.memory.consolidation import DEFAULT_BATCH_SIZE, run_consolidation
 
