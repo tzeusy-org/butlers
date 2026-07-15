@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   addDays,
@@ -924,13 +924,15 @@ const PILL_BASE =
   "disabled:pointer-events-none disabled:opacity-40";
 
 /** Pill button (§4c). `active` inverts bg/fg for the selected state. Never colored. */
-function PillButton({
-  active = false,
-  className,
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }) {
+// forwardRef so `Tip`'s `asChild` (radix Slot) can attach its trigger ref and
+// hover/focus handlers to the underlying <button> (bu-w40wg).
+const PillButton = forwardRef<
+  HTMLButtonElement,
+  React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }
+>(function PillButton({ active = false, className, ...props }, ref) {
   return (
     <button
+      ref={ref}
       type="button"
       className={cn(
         PILL_BASE,
@@ -942,7 +944,7 @@ function PillButton({
       {...props}
     />
   );
-}
+});
 
 /** Commit button (§4c) — fg background, bg text. At most one per surface. */
 function CommitButton({
@@ -6052,18 +6054,21 @@ export default function CalendarWorkspacePage() {
                       }
                       meta={
                         <div className="flex items-center gap-1.5">
-                          <PillButton
-                            onClick={() => toggleSourceHidden(source)}
-                            aria-label={`${isHidden ? "Show" : "Hide"} ${sourceName(source)} in view`}
-                            aria-pressed={isHidden}
-                            title={
+                          <Tip
+                            content={
                               isHidden
                                 ? "Hidden from the grid (view-only; sync unaffected)"
                                 : "Hide from the grid (view-only; sync unaffected)"
                             }
                           >
-                            {isHidden ? "Show" : "Hide"}
-                          </PillButton>
+                            <PillButton
+                              onClick={() => toggleSourceHidden(source)}
+                              aria-label={`${isHidden ? "Show" : "Hide"} ${sourceName(source)} in view`}
+                              aria-pressed={isHidden}
+                            >
+                              {isHidden ? "Show" : "Hide"}
+                            </PillButton>
+                          </Tip>
                           {canSetPrimary ? (
                             <PillButton
                               onClick={() => {

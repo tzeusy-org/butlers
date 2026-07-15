@@ -426,6 +426,16 @@ export function Time({
 
   const isoString = date.toISOString()
 
+  // a11y (bu-w40wg): the `title={iso}` is a mouse-hover-only affordance — a
+  // non-interactive <time> is not keyboard-reachable, so screen-reader users
+  // never got the full timestamp behind a relative label like "4 minutes ago".
+  // Expose the full absolute time as an aria-label (no new tab stop, no
+  // app-wide tooltip fan-out) while keeping `title` for sighted hover. Only
+  // when the timestamp is the load-bearing content (showTitle) and the visible
+  // text is not already the absolute form.
+  const absoluteAria =
+    showTitle && mode !== "absolute" ? formatAbsolute(date, precision, tz, false) : undefined
+
   // clock-24h-mono: live ticking 24-hour clock in the owner timezone.
   // Text is derived from tz at render time (not from stale state) so it is
   // always in sync with both the current minute and the current tz.
@@ -440,6 +450,7 @@ export function Time({
       <time
         dateTime={isoString}
         title={showTitle ? isoString : undefined}
+        aria-label={absoluteAria}
         className={clockClass}
       >
         {text}
@@ -468,6 +479,7 @@ export function Time({
     <time
       dateTime={isoString}
       title={showTitle ? isoString : undefined}
+      aria-label={absoluteAria}
       className={className}
     >
       {text}
