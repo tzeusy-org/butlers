@@ -963,9 +963,18 @@ class ButlerDaemon:
 
         Thin wrapper — implementation lives in :func:`butlers.background.dispatch_scheduled_task`.
         """
+        dispatch_pool = self.db.pool if self.db is not None else None
+        if job_name is not None:
+            from butlers.scheduled_jobs import MEMORY_MAINTENANCE_JOB_NAMES
+
+            if job_name.strip() in MEMORY_MAINTENANCE_JOB_NAMES:
+                memory_module = self._resolve_memory_module()
+                if memory_module is not None:
+                    dispatch_pool = memory_module._get_pool()
+
         return await _background.dispatch_scheduled_task(
             butler_name=self.config.name,
-            pool=self.db.pool if self.db is not None else None,
+            pool=dispatch_pool,
             spawner=self.spawner,
             trigger_source=trigger_source,
             prompt=prompt,

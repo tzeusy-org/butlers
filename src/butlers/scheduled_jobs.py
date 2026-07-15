@@ -627,6 +627,12 @@ _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "memory_catalog_backfill": _run_memory_catalog_backfill_job,
 }
 
+# Public routing contract for daemon dispatch: these handlers must receive the
+# memory module's runtime pool. Most butlers share their daemon and memory pool,
+# but a module-level ``memory_schema`` override (currently Chronicler) gives the
+# module a dedicated pool with a different search_path.
+MEMORY_MAINTENANCE_JOB_NAMES = frozenset(_MEMORY_MAINTENANCE_JOB_HANDLERS)
+
 
 # ---------------------------------------------------------------------------
 # Chronicler projection jobs

@@ -70,3 +70,36 @@ async def test_chronicler_dispatch_recovers_when_registry_entry_is_missing(tmp_p
     assert result == expected
     mock_handler.assert_awaited_once_with(daemon.db.pool, None)
     daemon.spawner.trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chronicler_memory_dispatch_uses_module_schema_pool(tmp_path) -> None:
+    daemon = ButlerDaemon(tmp_path)
+    daemon.config = ButlerConfig(name="chronicler", port=41111)
+    daemon.db = MagicMock()
+    daemon.db.pool = object()
+    daemon.spawner = MagicMock()
+    daemon.spawner.trigger = AsyncMock()
+
+    memory_pool = object()
+    memory_module = MagicMock()
+    memory_module.name = "memory"
+    memory_module._get_pool.return_value = memory_pool
+    daemon._modules = [memory_module]
+
+    expected = {"expired_deleted": 2, "capacity_deleted": 0}
+    cleanup_handler = AsyncMock(return_value=expected)
+
+    with patch.dict(
+        "butlers.background._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
+        {"chronicler": {"memory_episode_cleanup": cleanup_handler}},
+        clear=True,
+    ):
+        result = await daemon._dispatch_scheduled_task(
+            trigger_source="schedule:memory_episode_cleanup",
+            job_name="memory_episode_cleanup",
+        )
+
+    assert result == expected
+    cleanup_handler.assert_awaited_once_with(memory_pool, None)
+    daemon.spawner.trigger.assert_not_awaited()
