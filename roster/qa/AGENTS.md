@@ -22,31 +22,10 @@ codebase healthy.
 
 ## Your Primary Responsibilities
 
-### 1. Patrol Loop Execution
-When your scheduled patrol tick fires:
-1. Create a `qa_patrols` record in the DB
-2. Poll all enabled discovery sources (log_scanner, session_records, butler_reports)
-3. Triage findings: deduplicate against active investigations, dismissals, cooldown
-4. Dispatch novel findings for investigation (up to `max_concurrent_investigations`)
-5. Update the patrol record with outcomes
-
-### 2. Reactive Finding Reception
-When `report_finding` is called (via Switchboard routing from a butler):
-1. Accept the finding immediately into the `butler_reports` buffer
-2. Return `{"accepted": true}` synchronously
-3. If severity == 0 (critical), trigger an immediate mini-patrol
-
-### 3. Investigation Management
-Each investigation:
-1. Creates a worktree with `qa/` prefix
-2. Spawns an isolated agent with sandboxed environment (no butler secrets)
-3. Monitors outcome via watchdog timeout
-4. Reports result (PR created, unfixable, failed, timeout)
-
-### 4. PR Status Tracking
-On each patrol cycle, check `pr_open` investigations:
-1. Query GitHub for current PR status
-2. Transition to `pr_merged` or `failed` as appropriate
+You own four core operations: the **patrol loop** (discover, triage, dispatch),
+**reactive finding reception** (`report_finding` buffering), **investigation
+management** (sandboxed fix agents), and **PR status tracking**. For the concrete
+step sequence of each, consult the `patrol-operations` skill.
 
 ---
 
@@ -110,33 +89,9 @@ When you are spawned as an LLM session (e.g., for a `force_patrol` dispatch):
 
 When you are running as an **investigation agent** and reach a terminal step
 (commit ready, or unfixable verdict), you MUST emit a structured artifact
-before signalling completion.
-
-Load and follow the skill at `.agents/skills/investigation-notes/SKILL.md`
-(also accessible as `.claude/skills/investigation-notes/SKILL.md`).
-
-**In brief:** write `./.qa/investigation_notes.json` in your worktree. The
-Pydantic model is `InvestigationNotes` in `src/butlers/core/qa/notes.py`.
-Required fields:
-
-| Field | Purpose |
-|---|---|
-| `schema_version` | Always `1` |
-| `headline` | One-line anonymized case title (renders in the dossier rail) |
-| `hypothesis` | Root-cause claim, 1–2 sentences |
-| `blurb_segments` | Mixed list: plain strings or `{claim, text}` objects anchored to claim ids |
-| `claims` | Dict of claim ids → `{evidence_ids, note}` |
-| `evidence_lines` | Raw log lines: `{id, ts, lvl, butler, msg}`, operator-only, never sent to GitHub |
-| `counter_evidence` | Ruled-out hypotheses: `{hypothesis, verdict, reason}` |
-| `why_this_fix` | One sentence explaining why this fix resolves the root cause |
-| `diff_snapshot` | Leave as `[]`; the dispatcher populates it from `git diff HEAD~1..HEAD` |
-
-Anonymization rule: `headline`, `hypothesis`, and other narrative fields must
-not contain PII. `evidence_lines[].msg` is operator-only and should contain
-the raw log line as observed.
-
-The dispatcher will best-effort-parse a partial emission rather than failing
-the investigation. An empty object `{}` is better than no file.
+(`./.qa/investigation_notes.json`) before signalling completion. For the full
+JSON schema, field contract, emission steps, and anonymization rules, load and
+follow the `investigation-notes` skill (`.agents/skills/investigation-notes/SKILL.md`).
 
 ---
 
