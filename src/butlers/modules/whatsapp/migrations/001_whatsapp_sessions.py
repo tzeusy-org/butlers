@@ -5,8 +5,8 @@ Revises:
 Create Date: 2026-03-25 00:00:00.000000
 
 Creates the ``whatsapp_sessions`` table used by the WhatsApp module to persist
-device pairing state across restarts.  One row per paired phone number; the
-session_data JSONB column holds whatsmeow's serialized session blob.
+device pairing bookkeeping across restarts.  Historical rows are retained when
+a phone is re-paired, with at most one active row per phone number.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE TABLE IF NOT EXISTS whatsapp_sessions (
             id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            phone_number  TEXT        NOT NULL UNIQUE,
+            phone_number  TEXT        NOT NULL,
             device_id     TEXT,
             session_data  JSONB,
             paired_at     TIMESTAMPTZ,
@@ -38,7 +38,14 @@ def upgrade() -> None:
             ON whatsapp_sessions (active)
     """)
 
+    op.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_whatsapp_sessions_active_phone
+            ON whatsapp_sessions (phone_number)
+            WHERE active = true
+    """)
+
 
 def downgrade() -> None:
+    op.execute("DROP INDEX IF EXISTS uq_whatsapp_sessions_active_phone")
     op.execute("DROP INDEX IF EXISTS idx_whatsapp_sessions_active")
     op.execute("DROP TABLE IF EXISTS whatsapp_sessions")

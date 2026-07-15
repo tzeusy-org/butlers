@@ -65,8 +65,10 @@ The dashboard provides a guided pairing flow at **Settings → WhatsApp**.
 Each refresh generates a fresh code by calling `POST /api/connectors/whatsapp/pair/start` on
 the bridge.
 
-**Session persistence:** The bridge writes session keys to the `whatsapp_sessions` table in
-PostgreSQL. Subsequent restarts resume the session without re-pairing.
+**Session persistence:** Whatsmeow stores the resumable protocol session in its own
+`public.whatsmeow_*` tables. The bridge separately records pair history and active-session
+bookkeeping in `messenger.whatsapp_sessions`; the protocol store is what lets subsequent
+restarts resume without re-pairing.
 
 ### 1.2 CLI Fallback (Headless)
 
@@ -381,7 +383,7 @@ docker compose build --build-arg EXTRAS=whatsapp connector-whatsapp-user
 **Connector says "pair_required" after restart:**
 
 - The session in PostgreSQL may have been cleared or is stale. Re-pair via the dashboard.
-- Check `whatsapp_sessions` table: `SELECT phone_number, active, paired_at FROM whatsapp_sessions;`
+- Check `messenger.whatsapp_sessions`: `SELECT phone_number, active, paired_at FROM messenger.whatsapp_sessions;`
 
 **Messages not appearing in butler context:**
 

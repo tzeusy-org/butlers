@@ -28,7 +28,7 @@ type Session struct {
 	Active      bool            `json:"active"`
 }
 
-// Store manages whatsapp_sessions in PostgreSQL.
+// Store manages messenger.whatsapp_sessions in PostgreSQL.
 type Store struct {
 	db *sql.DB
 }
@@ -59,31 +59,12 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// EnsureTable creates the whatsapp_sessions table if it does not exist.
-// This is a fallback; migrations are normally handled by Alembic.
-func (s *Store) EnsureTable(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS whatsapp_sessions (
-			id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			phone_number TEXT NOT NULL,
-			device_id    TEXT NOT NULL DEFAULT '',
-			session_data JSONB NOT NULL DEFAULT '{}',
-			paired_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			active       BOOLEAN NOT NULL DEFAULT TRUE
-		);
-		CREATE UNIQUE INDEX IF NOT EXISTS uq_whatsapp_sessions_active_phone
-			ON whatsapp_sessions (phone_number) WHERE active = TRUE;
-	`)
-	return err
-}
-
 // GetActive returns the active session for the given phone number.
 // Returns ErrNoSession if no active session exists.
 func (s *Store) GetActive(ctx context.Context, phone string) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, phone_number, device_id, session_data, paired_at, last_seen_at, active
-		  FROM whatsapp_sessions
+		  FROM messenger.whatsapp_sessions
 		 WHERE phone_number = $1 AND active = TRUE
 		 LIMIT 1
 	`, phone)
@@ -94,7 +75,7 @@ func (s *Store) GetActive(ctx context.Context, phone string) (*Session, error) {
 func (s *Store) GetAnyActive(ctx context.Context) (*Session, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, phone_number, device_id, session_data, paired_at, last_seen_at, active
-		  FROM whatsapp_sessions
+		  FROM messenger.whatsapp_sessions
 		 WHERE active = TRUE
 		 ORDER BY last_seen_at DESC
 		 LIMIT 1
@@ -113,7 +94,7 @@ func (s *Store) SaveNew(ctx context.Context, phone, deviceID string, sessionData
 
 	// Deactivate existing sessions for this phone number.
 	_, err = tx.ExecContext(ctx, `
-		UPDATE whatsapp_sessions
+		UPDATE messenger.whatsapp_sessions
 		   SET active = FALSE
 		 WHERE phone_number = $1 AND active = TRUE
 	`, phone)
@@ -123,7 +104,7 @@ func (s *Store) SaveNew(ctx context.Context, phone, deviceID string, sessionData
 
 	var sess Session
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO whatsapp_sessions (phone_number, device_id, session_data, paired_at, last_seen_at, active)
+		INSERT INTO messenger.whatsapp_sessions (phone_number, device_id, session_data, paired_at, last_seen_at, active)
 		VALUES ($1, $2, $3, NOW(), NOW(), TRUE)
 		RETURNING id, phone_number, device_id, session_data, paired_at, last_seen_at, active
 	`, phone, deviceID, sessionData).Scan(
@@ -142,7 +123,7 @@ func (s *Store) SaveNew(ctx context.Context, phone, deviceID string, sessionData
 // UpdateSessionData updates the session_data and last_seen_at for an active session.
 func (s *Store) UpdateSessionData(ctx context.Context, id string, sessionData json.RawMessage) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE whatsapp_sessions
+		UPDATE messenger.whatsapp_sessions
 		   SET session_data = $1, last_seen_at = NOW()
 		 WHERE id = $2 AND active = TRUE
 	`, sessionData, id)
@@ -152,7 +133,7 @@ func (s *Store) UpdateSessionData(ctx context.Context, id string, sessionData js
 // MarkInactive marks the session with the given ID as inactive.
 func (s *Store) MarkInactive(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE whatsapp_sessions
+		UPDATE messenger.whatsapp_sessions
 		   SET active = FALSE, last_seen_at = NOW()
 		 WHERE id = $1
 	`, id)
@@ -162,7 +143,7 @@ func (s *Store) MarkInactive(ctx context.Context, id string) error {
 // TouchLastSeen updates last_seen_at to NOW() for the given session ID.
 func (s *Store) TouchLastSeen(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE whatsapp_sessions
+		UPDATE messenger.whatsapp_sessions
 		   SET last_seen_at = NOW()
 		 WHERE id = $1
 	`, id)
@@ -173,7 +154,7 @@ func (s *Store) TouchLastSeen(ctx context.Context, id string) error {
 func (s *Store) GetStatus(ctx context.Context) ([]Session, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, phone_number, device_id, session_data, paired_at, last_seen_at, active
-		  FROM whatsapp_sessions
+		  FROM messenger.whatsapp_sessions
 		 ORDER BY last_seen_at DESC
 		 LIMIT 10
 	`)

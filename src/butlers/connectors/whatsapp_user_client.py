@@ -42,7 +42,8 @@ Environment variables:
 Security requirements:
 - Never commit credentials or session artifacts to version control
 - whatsapp_phone resolved from owner entity_info (DB) or bridge /status after pairing
-- The Go bridge manages its own session keys from whatsapp_sessions table
+- Whatsmeow owns protocol session keys in its public tables; the Go bridge records
+  pair-history bookkeeping in messenger.whatsapp_sessions
 - Explicit user consent required (QR pairing ceremony = physical consent)
 """
 
