@@ -70,3 +70,35 @@ async def test_chronicler_dispatch_recovers_when_registry_entry_is_missing(tmp_p
     assert result == expected
     mock_handler.assert_awaited_once_with(daemon.db.pool, None)
     daemon.spawner.trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chronicler_memory_job_uses_memory_module_pool(tmp_path) -> None:
+    """Memory maintenance must target chronicler_mem, not chronicler domain tables."""
+    daemon = ButlerDaemon(tmp_path)
+    daemon.config = ButlerConfig(name="chronicler", port=41111)
+    daemon.db = MagicMock()
+    daemon.db.pool = AsyncMock(name="chronicler_pool")
+    daemon.spawner = MagicMock()
+    daemon.spawner.trigger = AsyncMock()
+
+    memory_pool = AsyncMock(name="chronicler_mem_pool")
+    memory_module = MagicMock()
+    memory_module.name = "memory"
+    memory_module._get_pool.return_value = memory_pool
+    daemon._modules = [memory_module]
+
+    mock_handler = AsyncMock(return_value={"facts_backfilled": 0})
+    with patch.dict(
+        "butlers.background._DETERMINISTIC_SCHEDULE_JOB_REGISTRY",
+        {"chronicler": {"memory_catalog_backfill": mock_handler}},
+        clear=True,
+    ):
+        result = await daemon._dispatch_scheduled_task(
+            trigger_source="schedule:memory_catalog_backfill",
+            job_name="memory_catalog_backfill",
+        )
+
+    assert result == {"facts_backfilled": 0}
+    mock_handler.assert_awaited_once_with(memory_pool, None)
+    daemon.spawner.trigger.assert_not_awaited()

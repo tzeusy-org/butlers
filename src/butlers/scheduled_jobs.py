@@ -628,6 +628,11 @@ _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
 }
 
 
+def is_memory_maintenance_job(job_name: str | None) -> bool:
+    """Return whether ``job_name`` must run against the memory module's pool."""
+    return job_name in _MEMORY_MAINTENANCE_JOB_HANDLERS
+
+
 # ---------------------------------------------------------------------------
 # Chronicler projection jobs
 # ---------------------------------------------------------------------------
