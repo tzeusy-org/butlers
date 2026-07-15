@@ -77,6 +77,7 @@ class TestMemoryChainRegistration:
             "006_drop_rule_applications.py",
             "007_hnsw_embedding_indexes.py",
             "008_backfill_fading_validity.py",
+            "009_widen_facts_unique_indexes_fading.py",
         ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
@@ -90,6 +91,7 @@ class TestMemoryChainRegistration:
             ("006_drop_rule_applications.py", "mem_006", "mem_005"),
             ("007_hnsw_embedding_indexes.py", "mem_007", "mem_006"),
             ("008_backfill_fading_validity.py", "mem_008", "mem_007"),
+            ("009_widen_facts_unique_indexes_fading.py", "mem_009", "mem_008"),
         ]
 
         def _load_migration(filename: str):

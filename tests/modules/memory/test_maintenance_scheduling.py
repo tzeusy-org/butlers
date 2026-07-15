@@ -630,10 +630,14 @@ async def test_run_decay_sweep_recovers_fading_fact_to_active(core_memory_db_url
 
     pool = await _pool_for(core_memory_db_url)
     try:
+        # Distinct (scope, subject, predicate) from the earlier fade test's
+        # ('owner','prefers') row, which persists as 'fading' in this module-scoped
+        # shared DB. The widened partial unique index (mem_009, bu-agj5a) covers
+        # validity IN ('active','fading'), so reusing that key would collide.
         fact_id = await pool.fetchval(
             "INSERT INTO facts (subject, predicate, content, confidence, decay_rate, "
             "last_confirmed_at, retention_class) "
-            "VALUES ('owner', 'prefers', 'oolong', 0.3, 0.5, now() - interval '1 day', "
+            "VALUES ('owner', 'prefers_recovery', 'oolong', 0.3, 0.5, now() - interval '1 day', "
             "'operational') RETURNING id"
         )
 

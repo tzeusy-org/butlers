@@ -1228,3 +1228,115 @@ def test_consolidation_creates_episode_links_with_uuid_source_id(
         assert link["target_type"] == "episode"
         assert link["relation"] == "derived_from"
     assert {link["target_id"] for link in links} == set(out["episode_ids"])
+
+
+# ---------------------------------------------------------------------------
+# mem_009: widen facts unique indexes to cover validity='fading' (bu-agj5a)
+# ---------------------------------------------------------------------------
+
+
+async def _raw_copy_active_over_fading_raises(db_url: str) -> None:
+    """Teeth: with the widened index, a fresh ACTIVE fact cannot coexist with a
+    FADING fact for the same key when supersession is bypassed (the race)."""
+    from butlers.modules.memory.storage import store_fact
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        # 1. Real active property fact (no entity_id => (scope, subject, predicate) key).
+        res = await store_fact(
+            pool,
+            subject="teeth_race_subj",
+            predicate="teeth_race_pred",
+            content="v1",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+        )
+        fact_id = res["id"]
+        # 2. Decay it to fading -- still the live/current value for its key.
+        await pool.execute("UPDATE facts SET validity = 'fading' WHERE id = $1", fact_id)
+
+        # 3. Simulate the concurrent-write race: land a NEW active fact for the
+        #    SAME key WITHOUT going through store_fact's supersession, by copying
+        #    the fading row verbatim (new id, validity='active'). The widened
+        #    unique index must reject it. (Copy non-generated columns so the
+        #    row is schema-complete regardless of future column additions.)
+        cols = [
+            r["column_name"]
+            for r in await pool.fetch(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'facts' "
+                "AND is_generated = 'NEVER' ORDER BY ordinal_position"
+            )
+        ]
+        select_list = ", ".join(
+            "gen_random_uuid()" if c == "id" else "'active'" if c == "validity" else c for c in cols
+        )
+        insert_sql = (
+            f"INSERT INTO facts ({', '.join(cols)}) SELECT {select_list} FROM facts WHERE id = $1"
+        )
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await pool.execute(insert_sql, fact_id)
+    finally:
+        await pool.close()
+
+
+def test_widened_index_rejects_fading_plus_active_coexistence(memory_migrated_db: str) -> None:
+    """mem_009: the widened partial unique index forbids a fading fact and a new
+    active fact coexisting for the same key -- the concurrent-write race bu-agj5a
+    closes. Before mem_009 (validity='active'-only predicate) the raw insert
+    succeeds; after, it raises UniqueViolation."""
+    asyncio.run(_raw_copy_active_over_fading_raises(memory_migrated_db))
+
+
+async def _supersede_over_fading_ok(db_url: str) -> dict:
+    """The legitimate flow: a fresh write over a FADING fact supersedes it (marks
+    old 'superseded' BEFORE inserting new 'active'), so it never trips the widened
+    index -- proving the widening does not regress supersession-over-fading."""
+    from butlers.modules.memory.storage import store_fact
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=register_jsonb_codec)
+    try:
+        engine = _fake_embedding_engine()
+        r1 = await store_fact(
+            pool,
+            subject="teeth_sup_subj",
+            predicate="teeth_sup_pred",
+            content="v1",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+        )
+        old_id = r1["id"]
+        await pool.execute("UPDATE facts SET validity = 'fading' WHERE id = $1", old_id)
+
+        r2 = await store_fact(
+            pool,
+            subject="teeth_sup_subj",
+            predicate="teeth_sup_pred",
+            content="v2",
+            embedding_engine=engine,
+            scope="global",
+            tenant_id="shared",
+        )
+        return {
+            "old_id": str(old_id),
+            "supersedes_id": str(r2["supersedes_id"]) if r2["supersedes_id"] else None,
+            "old_validity": await pool.fetchval("SELECT validity FROM facts WHERE id = $1", old_id),
+            "new_validity": await pool.fetchval(
+                "SELECT validity FROM facts WHERE id = $1", r2["id"]
+            ),
+        }
+    finally:
+        await pool.close()
+
+
+def test_supersession_over_fading_fact_still_works(memory_migrated_db: str) -> None:
+    """mem_009 regression guard: writing a fresh fact for a key whose current fact
+    is FADING supersedes the fading fact (does not raise), leaving exactly one
+    live active fact -- the legitimate path the widened index must not break."""
+    res = asyncio.run(_supersede_over_fading_ok(memory_migrated_db))
+    assert res["old_validity"] == "superseded", "fading fact should be superseded, not left live"
+    assert res["new_validity"] == "active"
+    assert res["supersedes_id"] == res["old_id"], "new fact must link to the superseded fading fact"
