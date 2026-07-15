@@ -206,6 +206,68 @@ describe("getConnectorStats timeseries transformation", () => {
     expect(resp.data.summary.messages_ingested).toBe(0);
     expect(resp.data.summary.error_rate_pct).toBe(0);
   });
+
+  // Skip-aware filtered series + degraded flag (bu-c48im)
+
+  it("maps messages_filtered per bucket (distinct from ingested)", async () => {
+    mockResponse({
+      data: [
+        {
+          connector_type: "home_assistant",
+          endpoint_identity: "default",
+          hour: "2026-02-23T10:00:00Z",
+          messages_ingested: 0,
+          messages_failed: 0,
+          messages_filtered: 7,
+          source_api_calls: 0,
+          dedupe_accepted: 0,
+          heartbeat_count: 0,
+          healthy_count: 0,
+          degraded_count: 0,
+          error_count: 0,
+        },
+      ],
+    });
+    const resp = await getConnectorStats("home_assistant", "default", "24h");
+    expect(resp.data.timeseries[0].messages_filtered).toBe(7);
+    // The filtered series is DISTINCT — never folded into ingested.
+    expect(resp.data.timeseries[0].messages_ingested).toBe(0);
+    expect(resp.data.summary.messages_ingested).toBe(0);
+  });
+
+  it("defaults messages_filtered to 0 for older rows missing the field", async () => {
+    mockResponse({
+      data: [
+        {
+          connector_type: "gmail",
+          endpoint_identity: "u@x.com",
+          hour: "2026-02-23T10:00:00Z",
+          messages_ingested: 5,
+          messages_failed: 0,
+          source_api_calls: 0,
+          dedupe_accepted: 0,
+          heartbeat_count: 0,
+          healthy_count: 0,
+          degraded_count: 0,
+          error_count: 0,
+        },
+      ],
+    });
+    const resp = await getConnectorStats("gmail", "u@x.com", "24h");
+    expect(resp.data.timeseries[0].messages_filtered).toBe(0);
+  });
+
+  it("threads hourly_events_available from response meta", async () => {
+    mockResponse({ data: [], meta: { hourly_events_available: false } });
+    const resp = await getConnectorStats("gmail", "u@x.com", "24h");
+    expect(resp.data.hourly_events_available).toBe(false);
+  });
+
+  it("treats absent hourly_events_available as available (true)", async () => {
+    mockResponse({ data: [] });
+    const resp = await getConnectorStats("gmail", "u@x.com", "24h");
+    expect(resp.data.hourly_events_available).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ import { ReauthCallout } from './ReauthCallout'
 import { ScopeList, type OAuthScope } from './ScopeList'
 import { ConnectorHistogram } from './ConnectorHistogram'
 import { deriveConnectorDispatchInfo } from './connector-auth'
+import { SourceDegradedNote } from '@/components/ui/query-boundary'
 
 // ---------------------------------------------------------------------------
 // KV row helper
@@ -153,6 +154,13 @@ export function ConnectorDetailView({
 
   // Derive spark data from timeseries (24h hourly buckets)
   const spark24h = deriveSparkline(stats)
+  // DISTINCT skip/filtered-volume overlay (bu-c48im), rendered as a quiet tick
+  // over the ingested bars — never summed into spark24h.
+  const spark24hFiltered = deriveFilteredSparkline(stats)
+  // hourly_events_available is false only on a genuine backend DB-query failure;
+  // in that case both series fall back to all-zero and the histogram would read
+  // as an honest quiet window — surface the degraded source inline instead.
+  const hourlyEventsAvailable = stats?.hourly_events_available !== false
 
   return (
     <div className="space-y-0">
@@ -281,10 +289,19 @@ export function ConnectorDetailView({
                 throughput · 24h
               </span>
               <span className="font-mono text-[10px] text-muted-foreground/50">
-                messages per hour
+                ingested per hour · filtered overlay
               </span>
             </div>
-            <ConnectorHistogram data={spark24h} height={96} />
+            <ConnectorHistogram data={spark24h} secondaryData={spark24hFiltered} height={96} />
+            {/* Never let a failed hourly query hide behind a quiet histogram (bu-c48im). */}
+            {!hourlyEventsAvailable && (
+              <SourceDegradedNote
+                label="24h throughput"
+                detail="hourly event source unavailable, the histogram above is incomplete"
+                className="mt-3"
+                testId="histogram-degraded-note"
+              />
+            )}
           </div>
 
           {/* Lifetime counters */}
@@ -632,6 +649,23 @@ function deriveSparkline(stats: ConnectorStats | undefined): number[] {
   buckets.forEach((b, i) => {
     const idx = 24 - buckets.length + i
     padded[idx] = b.messages_ingested
+  })
+  return padded
+}
+
+/**
+ * DISTINCT skip/filtered-volume sparkline (bu-c48im), aligned bucket-for-bucket
+ * with {@link deriveSparkline}. Sourced from `messages_filtered` — never summed
+ * into the ingested series. `?? 0` guards older cached rows missing the field.
+ */
+function deriveFilteredSparkline(stats: ConnectorStats | undefined): number[] {
+  if (!stats?.timeseries?.length) return Array(24).fill(0)
+
+  const buckets = stats.timeseries.slice(-24)
+  const padded = Array(24).fill(0)
+  buckets.forEach((b, i) => {
+    const idx = 24 - buckets.length + i
+    padded[idx] = b.messages_filtered ?? 0
   })
   return padded
 }

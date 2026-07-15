@@ -3438,6 +3438,13 @@ export interface ConnectorStatsBucket {
   bucket: string;
   messages_ingested: number;
   messages_failed: number;
+  /**
+   * Skip-routed volume for this bucket (bu-c48im), sourced from
+   * connectors.filtered_events. A DISTINCT series — never summed into
+   * messages_ingested — so a self-persisting connector's skip volume is visible
+   * on the detail histogram. 0 when the connector self-persists no skips.
+   */
+  messages_filtered: number;
   healthy_count: number;
   degraded_count: number;
   error_count: number;
@@ -3458,6 +3465,14 @@ export interface ConnectorStats {
   period: IngestionPeriod;
   summary: ConnectorStatsSummary;
   timeseries: ConnectorStatsBucket[];
+  /**
+   * DB-source health flag (bu-c48im), threaded from the response
+   * `meta.hourly_events_available`. `false` only when the backend's combined
+   * ingested+filtered query genuinely failed — in that case the histogram falls
+   * back to all-zero and must surface a degraded note rather than render as an
+   * honest quiet window. Absent/`true` means the series is trustworthy.
+   */
+  hourly_events_available: boolean;
 }
 
 /**

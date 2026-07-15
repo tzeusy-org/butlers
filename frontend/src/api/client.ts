@@ -4060,6 +4060,8 @@ interface _BackendStatsRow {
   day?: string;
   messages_ingested: number;
   messages_failed: number;
+  /** Skip-routed volume for this bucket (bu-c48im), from connectors.filtered_events. */
+  messages_filtered: number;
   source_api_calls: number;
   dedupe_accepted: number;
   heartbeat_count: number;
@@ -4140,11 +4142,14 @@ function _toConnectorStats(
   connectorType: string,
   endpointIdentity: string,
   period: IngestionPeriod,
+  hourlyEventsAvailable: boolean,
 ): ConnectorStats {
   const timeseries: ConnectorStatsBucket[] = rows.map((r) => ({
     bucket: (r.hour ?? r.day ?? ""),
     messages_ingested: r.messages_ingested,
     messages_failed: r.messages_failed,
+    // ?? 0 guards older cached backend rows that predate the filtered series.
+    messages_filtered: r.messages_filtered ?? 0,
     healthy_count: r.healthy_count,
     degraded_count: r.degraded_count,
     error_count: r.error_count,
@@ -4166,7 +4171,14 @@ function _toConnectorStats(
     avg_messages_per_hour: avgPerHour,
   };
 
-  return { connector_type: connectorType, endpoint_identity: endpointIdentity, period, summary, timeseries };
+  return {
+    connector_type: connectorType,
+    endpoint_identity: endpointIdentity,
+    period,
+    summary,
+    timeseries,
+    hourly_events_available: hourlyEventsAvailable,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4205,9 +4217,18 @@ export async function getConnectorStats(
   const resp = await apiFetch<ApiResponse<_BackendStatsRow[]>>(
     `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
   );
+  // meta.hourly_events_available is false only on a genuine backend DB-query
+  // failure (bu-c48im). Absent (older cached response) must NOT read as false.
+  const hourlyEventsAvailable = resp.meta?.hourly_events_available !== false;
   return {
     ...resp,
-    data: _toConnectorStats(resp.data ?? [], connectorType, endpointIdentity, period),
+    data: _toConnectorStats(
+      resp.data ?? [],
+      connectorType,
+      endpointIdentity,
+      period,
+      hourlyEventsAvailable,
+    ),
   };
 }
 

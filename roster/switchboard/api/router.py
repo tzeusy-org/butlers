@@ -7,10 +7,12 @@ database via asyncpg.
 
 Ingestion has moved to the Switchboard MCP server's ``ingest`` tool.
 
-Connector stats and fanout endpoints query Prometheus via PromQL when
-``PROMETHEUS_URL`` is set (e.g. ``http://lgtm:9090``).  When the env var
-is absent or Prometheus is unavailable, those endpoints return empty lists
-gracefully.
+The connector/ingestion fanout endpoints query Prometheus via PromQL when
+``PROMETHEUS_URL`` is set (e.g. ``http://lgtm:9090``); when the env var is
+absent or Prometheus is unavailable they fall back gracefully (empty list for
+per-connector fanout, DB rollup for the cross-connector matrix).  The connector
+stats time-series endpoint is sourced entirely from the database (bu-c48im) —
+it does not consult Prometheus.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
-from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.models import ApiMeta, ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.connector import derive_liveness as _liveness
 from butlers.api.oauth_scope_registry import (
     build_scope_rows,
@@ -41,7 +43,7 @@ from butlers.api.oauth_scope_registry import (
 )
 from butlers.config import load_config
 from butlers.core.mcp_urls import runtime_mcp_url
-from butlers.modules.metrics.prometheus import async_query, async_query_range
+from butlers.modules.metrics.prometheus import async_query
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -108,10 +110,6 @@ logger = logging.getLogger(__name__)
 PeriodLiteral = Literal["24h", "7d", "30d"]
 _PERIOD_HOURS: dict[str, int] = {"24h": 24, "7d": 168, "30d": 720}
 
-# Step sizes for Prometheus range queries, keyed by period.
-# Hourly step for 24h gives 24 buckets; daily step for 7d/30d gives 7 or 30 buckets.
-_PERIOD_PROM_STEP: dict[str, str] = {"24h": "1h", "7d": "1d", "30d": "1d"}
-
 
 def _get_prometheus_url() -> str | None:
     """Return the configured Prometheus base URL, or None if not set.
@@ -144,22 +142,49 @@ async def _connector_stats_from_db(
     trunc = _DB_TRUNC[period]
     interval = _DB_INTERVAL[period]
     try:
+        # Skip-aware (bu-c48im): UNION public.ingestion_events (ingested/failed)
+        # with connectors.filtered_events (the skip volume) so the detail
+        # histogram sees the same DISTINCT filtered series as the overview
+        # (bu-scyro). filtered_events is never folded into messages_ingested.
         rows = await pool.fetch(
-            f"SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')"
-            f" AT TIME ZONE 'UTC' AS bucket,"
-            f" COUNT(*) FILTER (WHERE status = 'ingested') AS messages_ingested,"
-            f" COUNT(*) FILTER (WHERE status = 'failed') AS messages_failed"
-            f" FROM public.ingestion_events"
-            f" WHERE COALESCE(source_provider, source_channel) = $1"
-            f"   AND source_endpoint_identity = $2"
-            f"   AND received_at >= NOW() - INTERVAL '{interval}'"
-            f" GROUP BY bucket ORDER BY bucket",
+            f"""
+            SELECT bucket,
+                   SUM(ingested)::bigint  AS messages_ingested,
+                   SUM(failed)::bigint    AS messages_failed,
+                   SUM(filtered)::bigint  AS messages_filtered
+            FROM (
+                SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
+                           AT TIME ZONE 'UTC' AS bucket,
+                       COUNT(*) FILTER (WHERE status = 'ingested') AS ingested,
+                       COUNT(*) FILTER (WHERE status = 'failed')   AS failed,
+                       0 AS filtered
+                FROM public.ingestion_events
+                WHERE COALESCE(source_provider, source_channel) = $1
+                  AND source_endpoint_identity = $2
+                  AND received_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY 1
+                UNION ALL
+                SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
+                           AT TIME ZONE 'UTC' AS bucket,
+                       0 AS ingested, 0 AS failed,
+                       COUNT(*) AS filtered
+                FROM connectors.filtered_events
+                WHERE connector_type = $1
+                  AND endpoint_identity = $2
+                  AND received_at >= NOW() - INTERVAL '{interval}'
+                GROUP BY 1
+            ) combined
+            GROUP BY bucket ORDER BY bucket
+            """,
             connector_type,
             endpoint_identity,
         )
     except Exception:
-        logger.warning("ingestion_events fallback query failed", exc_info=True)
-        return ApiResponse(data=[])
+        # Genuine failure of the DB series (not an empty result). Degrade
+        # honestly per the fleet convention rather than fabricating a clean
+        # zero series (mirrors the overview's hourly_events_available).
+        logger.warning("connector stats DB query failed", exc_info=True)
+        return ApiResponse(data=[], meta=ApiMeta(hourly_events_available=False))
 
     if period == "24h":
         data: list = [
@@ -169,6 +194,7 @@ async def _connector_stats_from_db(
                 hour=r["bucket"].isoformat(),
                 messages_ingested=int(r["messages_ingested"]),
                 messages_failed=int(r["messages_failed"]),
+                messages_filtered=int(r["messages_filtered"]),
             )
             for r in rows
         ]
@@ -180,10 +206,11 @@ async def _connector_stats_from_db(
                 day=r["bucket"].date().isoformat(),
                 messages_ingested=int(r["messages_ingested"]),
                 messages_failed=int(r["messages_failed"]),
+                messages_filtered=int(r["messages_filtered"]),
             )
             for r in rows
         ]
-    return ApiResponse(data=data)
+    return ApiResponse(data=data, meta=ApiMeta(hourly_events_available=True))
 
 
 def _normalize_jsonb_string_list(raw: Any) -> list[str]:
@@ -1461,99 +1488,31 @@ async def get_connector_stats(
     period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
-    """Return time-series connector stats sourced from Prometheus.
+    """Return time-series connector stats sourced from the DB.
 
-    Queries Prometheus range metrics for messages ingested and failed,
-    bucketed by the requested period:
+    The hourly/daily volume series is sourced entirely from the database
+    (``public.ingestion_events`` UNIONed with ``connectors.filtered_events``)
+    via :func:`_connector_stats_from_db`, bucketed by the requested period:
     - ``period=24h``: hourly buckets for the last 24 hours → ConnectorStatsHourly
     - ``period=7d``: daily buckets for the last 7 days → ConnectorStatsDaily
     - ``period=30d``: daily buckets for the last 30 days → ConnectorStatsDaily
 
-    Requires ``PROMETHEUS_URL`` env var (e.g. ``http://lgtm:9090``).
-    Returns an empty list when Prometheus is not configured or unavailable.
+    Each bucket carries a DISTINCT ``messages_filtered`` skip-volume series
+    (bu-c48im) so self-persisting connectors' skip decisions are visible on the
+    detail histogram, mirroring the connector-summaries overview (bu-scyro).
+    The response envelope carries ``meta.hourly_events_available`` — ``false``
+    only on a genuine DB-query failure — so a failed read is never rendered as an
+    honest all-quiet chart.
 
-    Prometheus metric names expected:
-    - ``connector_messages_ingested_total`` (labels: connector_type, endpoint_identity)
-    - ``connector_messages_failed_total``   (labels: connector_type, endpoint_identity)
-    - ``connector_source_api_calls_total``  (labels: connector_type, endpoint_identity)
-    - ``connector_dedupe_accepted_total``   (labels: connector_type, endpoint_identity)
+    Prometheus is intentionally NOT consulted here (bu-c48im): it has no
+    per-connector filtered/skip metric, and this endpoint's former Prometheus-only
+    ``source_api_calls``/``dedupe_accepted`` counters were never rendered by any
+    surface (the detail view's lifetime counters read ``connector.counters`` from
+    the registry, not this series). Per cruft doctrine the Prometheus source is
+    dropped for this endpoint entirely; the per-connector fanout endpoint still
+    uses Prometheus.
     """
-    prom_url = _get_prometheus_url()
-    if not prom_url:
-        return await _connector_stats_from_db(connector_type, endpoint_identity, period, db)
-
-    hours = _PERIOD_HOURS[period]
-    step = _PERIOD_PROM_STEP[period]
-    now = datetime.datetime.now(datetime.UTC)
-    start = (now - datetime.timedelta(hours=hours)).isoformat()
-    end = now.isoformat()
-
-    label_filter = f'{{connector_type="{connector_type}",endpoint_identity="{endpoint_identity}"}}'
-
-    async def _prom_range(metric: str) -> dict[str, float]:
-        """Query a counter's per-bucket increase; return {timestamp_iso: value}."""
-        q = f"increase({metric}{label_filter}[{step}])"
-        results = await async_query_range(prom_url, q, start, end, step)
-        if results and isinstance(results[0], dict) and "error" in results[0]:
-            logger.warning(
-                "Prometheus range query error for %s/%s %s: %s",
-                connector_type,
-                endpoint_identity,
-                metric,
-                results[0]["error"],
-            )
-            return {}
-        out: dict[str, float] = {}
-        for series in results:
-            for ts, val in series.get("values", []):
-                try:
-                    out[str(ts)] = float(val)
-                except (TypeError, ValueError):
-                    pass
-        return out
-
-    ingested = await _prom_range("connector_messages_ingested_total")
-    failed = await _prom_range("connector_messages_failed_total")
-    api_calls = await _prom_range("connector_source_api_calls_total")
-    dedupe = await _prom_range("connector_dedupe_accepted_total")
-
-    # Union all timestamps from all metrics
-    all_ts = sorted(
-        set(ingested) | set(failed) | set(api_calls) | set(dedupe),
-        key=lambda x: float(x),
-    )
-
-    if not all_ts:
-        return ApiResponse(data=[])
-
-    if period == "24h":
-        data: list = [
-            ConnectorStatsHourly(
-                connector_type=connector_type,
-                endpoint_identity=endpoint_identity,
-                hour=datetime.datetime.fromtimestamp(float(ts), tz=datetime.UTC).isoformat(),
-                messages_ingested=int(ingested.get(ts, 0)),
-                messages_failed=int(failed.get(ts, 0)),
-                source_api_calls=int(api_calls.get(ts, 0)),
-                dedupe_accepted=int(dedupe.get(ts, 0)),
-            )
-            for ts in all_ts
-        ]
-    else:
-        data = [
-            ConnectorStatsDaily(
-                connector_type=connector_type,
-                endpoint_identity=endpoint_identity,
-                day=datetime.datetime.fromtimestamp(float(ts), tz=datetime.UTC).date().isoformat(),
-                messages_ingested=int(ingested.get(ts, 0)),
-                messages_failed=int(failed.get(ts, 0)),
-                source_api_calls=int(api_calls.get(ts, 0)),
-                dedupe_accepted=int(dedupe.get(ts, 0)),
-            )
-            for ts in all_ts
-        ]
-
-    return ApiResponse(data=data)
+    return await _connector_stats_from_db(connector_type, endpoint_identity, period, db)
 
 
 # ---------------------------------------------------------------------------

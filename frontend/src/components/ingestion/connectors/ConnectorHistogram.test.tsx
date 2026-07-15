@@ -55,4 +55,43 @@ describe('ConnectorHistogram', () => {
     expect(html).toContain('data-testid="histogram-bars"')
     expect(html).not.toContain('histogram-empty')
   })
+
+  // Skip-aware filtered overlay (bu-c48im)
+
+  it('renders a filtered overlay tick when secondaryData has volume', () => {
+    const filtered = Array(24)
+      .fill(0)
+      .map((_, i) => (i === 12 ? 8 : 0))
+    const html = renderToStaticMarkup(
+      <ConnectorHistogram data={WITH_DATA} secondaryData={filtered} />,
+    )
+    // The quiet overlay uses the muted-foreground/25 fill, distinct from the
+    // ingested bars' foreground fills.
+    expect(html).toContain('fill-muted-foreground/25')
+    expect(html).toContain('data-has-filtered="true"')
+  })
+
+  it('does not render an overlay when secondaryData is all zero', () => {
+    const html = renderToStaticMarkup(
+      <ConnectorHistogram data={WITH_DATA} secondaryData={ZEROS} />,
+    )
+    expect(html).not.toContain('fill-muted-foreground/25')
+    expect(html).not.toContain('data-has-filtered')
+  })
+
+  it('surfaces filtered volume even when ingested is all zero (100% skip-routed)', () => {
+    // A fully skip-routed connector has zero ingested but real filtered volume —
+    // it must NOT collapse to the "no throughput recorded" empty state, or the
+    // skip volume the histogram exists to surface would be hidden.
+    const filtered = Array(24)
+      .fill(0)
+      .map((_, i) => (i === 5 ? 3 : 0))
+    const html = renderToStaticMarkup(
+      <ConnectorHistogram data={ZEROS} secondaryData={filtered} />,
+    )
+    expect(html).not.toContain('histogram-empty')
+    expect(html).not.toContain('no throughput recorded')
+    expect(html).toContain('data-testid="histogram-bars"')
+    expect(html).toContain('fill-muted-foreground/25')
+  })
 })

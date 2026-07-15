@@ -1,20 +1,25 @@
-"""Tests for connector stats and fanout endpoints (OTel/Prometheus pipeline).
+"""Tests for connector stats and fanout endpoints.
 
-These tests verify the Prometheus-backed connector stats and fanout API
-endpoints that replaced the deprecated SQL rollup pipeline (butlers-ufzc).
+The FANOUT endpoints remain Prometheus-backed (butlers-ufzc); the connector
+STATS time-series endpoint is now sourced entirely from the database (bu-c48im)
+— it no longer consults Prometheus at all (Prometheus has no per-connector
+skip/filtered metric, and its former source_api_calls/dedupe counters were
+unrendered). The real-schema behaviour of the stats UNION (ingestion_events +
+partitioned connectors.filtered_events) is covered by the integration test
+tests/integration/test_connector_stats_filtered_events_db.py; the mocked-pool
+tests here pin the Python-side mapping and SQL shape.
 
 Tested behaviors:
-- get_connector_stats: queries Prometheus range API, returns ConnectorStatsHourly
-  (period=24h) or ConnectorStatsDaily (period=7d/30d).
-- get_connector_fanout: queries Prometheus instant API for per-connector fanout.
+- get_connector_stats: DB-sourced hourly/daily series from public.ingestion_events
+  UNIONed with connectors.filtered_events, carrying a DISTINCT messages_filtered
+  series and a meta.hourly_events_available degraded flag. Websocket connectors
+  (e.g. home_assistant) that never write heartbeat counter-deltas still show
+  non-zero volume via this DB path.
+- get_connector_fanout: queries Prometheus instant API for per-connector fanout;
+  returns empty list when PROMETHEUS_URL is not set (no DB fallback for fanout).
 - get_ingestion_fanout: queries Prometheus instant API for cross-connector matrix.
   Falls back to DB-backed fan-out when PROMETHEUS_URL is not set or Prometheus
   returns an error.
-- get_connector_stats falls back to public.ingestion_events when PROMETHEUS_URL is
-  not set. Websocket connectors (e.g. home_assistant) that never write heartbeat
-  counter-deltas correctly show non-zero volume via this fallback.
-- get_connector_fanout returns empty list when PROMETHEUS_URL is not set (no DB
-  fallback for fanout).
 """
 
 from __future__ import annotations
@@ -46,8 +51,9 @@ def _load_router():
 class _FakePool:
     """Minimal pool stub — returns empty list for fetch, raises for fetchrow/fetchval.
 
-    The no-Prometheus path now calls pool.fetch() to query public.ingestion_events.
-    Returning [] simulates a connector with no events (empty timeseries).
+    The connector-stats DB path calls pool.fetch() to query the ingestion_events
+    + filtered_events UNION. Returning [] simulates a connector with no events
+    (empty timeseries).
     """
 
     async def fetchrow(self, *args, **kwargs):
@@ -61,19 +67,20 @@ class _FakePool:
 
 
 class _FakePoolWithRows:
-    """Pool stub that returns synthetic ingestion_events rows for websocket connector tests."""
+    """Pool stub returning synthetic UNION rows (ingested/failed/filtered) for
+    connector-stats DB-path tests."""
 
     def __init__(self, rows: list[dict]):
         self._rows = rows
 
     async def fetchrow(self, *args, **kwargs):
-        raise RuntimeError("Not used in connector stats fallback")
+        raise RuntimeError("Not used in connector stats DB path")
 
     async def fetch(self, *args, **kwargs):
         return self._rows
 
     async def fetchval(self, *args, **kwargs):
-        raise RuntimeError("Not used in connector stats fallback")
+        raise RuntimeError("Not used in connector stats DB path")
 
 
 class _FakeDBWithRows:
@@ -108,18 +115,15 @@ class _FakeDB:
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_connector_stats endpoint — no Prometheus URL → DB fallback
+# Tests: get_connector_stats endpoint — DB-sourced series (bu-c48im)
 # ---------------------------------------------------------------------------
 
 
-async def test_get_connector_stats_no_prometheus_url_empty_db():
-    """When PROMETHEUS_URL is not set, get_connector_stats falls back to
-    public.ingestion_events. An empty pool (no events) returns an empty list."""
+async def test_get_connector_stats_empty_db_returns_empty():
+    """get_connector_stats sources the series from the DB UNION. An empty pool
+    (no events) returns an empty list with the degraded flag left honestly True."""
     import importlib
-    import os
     from pathlib import Path
-
-    os.environ.pop("PROMETHEUS_URL", None)
 
     sys.modules.pop("switchboard_api_models", None)
     router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
@@ -133,21 +137,20 @@ async def test_get_connector_stats_no_prometheus_url_empty_db():
         period="24h",
         db=_FakeDB(),
     )
-    # DB fallback returns empty list when pool.fetch() returns no rows
+    # Empty pool → empty series; a no-rows result is not a failure, so the
+    # degraded flag stays True (only a genuine query error flips it false).
     assert result.data == []
+    assert result.meta.hourly_events_available is True
 
 
-async def test_get_connector_stats_no_prometheus_url_websocket_connector():
+async def test_get_connector_stats_websocket_connector_db_sourced():
     """Websocket connectors (e.g. home_assistant) that never write heartbeat
-    counter-deltas correctly show non-zero volume via the ingestion_events fallback."""
+    counter-deltas correctly show non-zero volume via the DB UNION path."""
     import importlib
-    import os
     from datetime import UTC, datetime
     from pathlib import Path
 
-    os.environ.pop("PROMETHEUS_URL", None)
-
-    # Simulate two hours of ingestion_events rows for a websocket connector
+    # Simulate two hours of UNION rows for a websocket connector
     bucket1 = datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC)
     bucket2 = datetime(2024, 1, 15, 11, 0, 0, tzinfo=UTC)
 
@@ -155,9 +158,26 @@ async def test_get_connector_stats_no_prometheus_url_websocket_connector():
     class _FakeRecord(dict):
         pass
 
+    # bu-c48im: the DB series is now skip-aware — the UNION query returns a
+    # messages_filtered column (connectors.filtered_events volume) alongside
+    # ingested/failed.
     fake_rows = [
-        _FakeRecord({"bucket": bucket1, "messages_ingested": 120, "messages_failed": 2}),
-        _FakeRecord({"bucket": bucket2, "messages_ingested": 87, "messages_failed": 0}),
+        _FakeRecord(
+            {
+                "bucket": bucket1,
+                "messages_ingested": 120,
+                "messages_failed": 2,
+                "messages_filtered": 9,
+            }
+        ),
+        _FakeRecord(
+            {
+                "bucket": bucket2,
+                "messages_ingested": 87,
+                "messages_failed": 0,
+                "messages_filtered": 0,
+            }
+        ),
     ]
 
     sys.modules.pop("switchboard_api_models", None)
@@ -179,136 +199,111 @@ async def test_get_connector_stats_no_prometheus_url_websocket_connector():
     assert row0.endpoint_identity == "ws://homeassistant.local:8123"
     assert row0.messages_ingested == 120
     assert row0.messages_failed == 2
+    assert row0.messages_filtered == 9  # skip-aware DB series (bu-c48im)
     assert hasattr(row0, "hour")
+    # Skip series is DISTINCT — never folded into messages_ingested.
+    assert row0.messages_ingested == 120
     row1 = result.data[1]
     assert row1.messages_ingested == 87
     assert row1.messages_failed == 0
+    assert row1.messages_filtered == 0
+    # Degraded flag rides the meta bag, honestly True on a successful query.
+    assert result.meta is not None
+    assert result.meta.hourly_events_available is True
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_connector_stats — Prometheus returns data → ConnectorStatsHourly
+# Tests: get_connector_stats period → daily rows (DB-sourced, bu-c48im)
 # ---------------------------------------------------------------------------
-
-
-async def test_get_connector_stats_24h_returns_hourly_rows():
-    """get_connector_stats with period=24h returns ConnectorStatsHourly list from Prometheus."""
-    # Fake Prometheus range query results
-    fake_range_result = [
-        {
-            "metric": {
-                "connector_type": "telegram_bot",
-                "endpoint_identity": "bot@123",
-            },
-            "values": [
-                [1740000000, "42"],
-                [1740003600, "17"],
-            ],
-        }
-    ]
-
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query_range",
-        new=AsyncMock(return_value=fake_range_result),
-    ):
-        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            import importlib
-            from pathlib import Path
-
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-            spec = importlib.util.spec_from_file_location("_sw_router_24h_test", router_path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-
-            # Call the endpoint function directly
-            class _FakeRequest:
-                pass
-
-            result = await mod.get_connector_stats(
-                connector_type="telegram_bot",
-                endpoint_identity="bot@123",
-                period="24h",
-                db=_FakeDB(),
-            )
-
-    assert result.data is not None
-    assert len(result.data) > 0
-    row = result.data[0]
-    # ConnectorStatsHourly has .hour attribute
-    assert hasattr(row, "hour")
-    assert row.connector_type == "telegram_bot"
-    assert row.endpoint_identity == "bot@123"
-    assert row.messages_ingested == 42
-
-
-async def test_get_connector_stats_prometheus_error_returns_empty():
-    """When Prometheus returns an error dict, get_connector_stats returns empty list."""
-    fake_error_result = [{"error": "connection refused"}]
-
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query_range",
-        new=AsyncMock(return_value=fake_error_result),
-    ):
-        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            import importlib
-            from pathlib import Path
-
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-            spec = importlib.util.spec_from_file_location("_sw_router_err_test", router_path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-
-            result = await mod.get_connector_stats(
-                connector_type="telegram_bot",
-                endpoint_identity="bot@123",
-                period="24h",
-                db=_FakeDB(),
-            )
-
-    assert result.data == []
 
 
 async def test_get_connector_stats_7d_returns_daily_rows():
-    """get_connector_stats with period=7d returns ConnectorStatsDaily list from Prometheus."""
-    fake_range_result = [
-        {
-            "metric": {},
-            "values": [
-                [1740000000, "100"],
-                [1740086400, "200"],
-            ],
-        }
+    """period=7d returns ConnectorStatsDaily rows from the DB path, with the
+    DISTINCT messages_filtered series preserved per bucket."""
+    from datetime import UTC, datetime
+
+    class _FakeRecord(dict):
+        pass
+
+    day1 = datetime(2024, 1, 15, 0, 0, 0, tzinfo=UTC)
+    fake_rows = [
+        _FakeRecord(
+            {
+                "bucket": day1,
+                "messages_ingested": 100,
+                "messages_failed": 4,
+                "messages_filtered": 12,
+            }
+        ),
     ]
 
-    with patch(
-        "butlers.modules.metrics.prometheus.async_query_range",
-        new=AsyncMock(return_value=fake_range_result),
-    ):
-        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            import importlib
-            from pathlib import Path
+    sys.modules.pop("switchboard_api_models", None)
+    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location("_sw_router_7d_test", router_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
 
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-            spec = importlib.util.spec_from_file_location("_sw_router_7d_test", router_path)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+    result = await mod.get_connector_stats(
+        connector_type="email",
+        endpoint_identity="user@example.com",
+        period="7d",
+        db=_FakeDBWithRows(fake_rows),
+    )
 
-            result = await mod.get_connector_stats(
-                connector_type="email",
-                endpoint_identity="user@example.com",
-                period="7d",
-                db=_FakeDB(),
-            )
-
-    assert result.data is not None
-    assert len(result.data) > 0
+    assert len(result.data) == 1
     row = result.data[0]
     # ConnectorStatsDaily has .day attribute
     assert hasattr(row, "day")
     assert row.connector_type == "email"
     assert row.endpoint_identity == "user@example.com"
+    assert row.messages_ingested == 100
+    assert row.messages_filtered == 12
+    assert result.meta.hourly_events_available is True
+
+
+async def test_get_connector_stats_db_failure_degrades_honestly():
+    """A genuine DB-query failure returns an empty series with the
+    meta.hourly_events_available flag flipped false — never a fabricated
+    clean-zero chart (bu-c48im)."""
+
+    class _RaisingPool:
+        async def fetch(self, *args, **kwargs):
+            raise RuntimeError("connection reset")
+
+        async def fetchrow(self, *args, **kwargs):
+            raise RuntimeError("not expected")
+
+        async def fetchval(self, *args, **kwargs):
+            raise RuntimeError("not expected")
+
+    class _RaisingDB:
+        def pool(self, name: str):
+            return _RaisingPool()
+
+        @property
+        def butler_names(self) -> list[str]:
+            return []
+
+        async def fan_out_with_status(
+            self, query: str, args: tuple = (), butler_names=None
+        ) -> tuple[dict, list[str]]:
+            return {}, []
+
+    sys.modules.pop("switchboard_api_models", None)
+    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location("_sw_router_degrade_test", router_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    result = await mod.get_connector_stats(
+        connector_type="telegram_bot",
+        endpoint_identity="bot@123",
+        period="24h",
+        db=_RaisingDB(),
+    )
+
+    assert result.data == []
+    assert result.meta.hourly_events_available is False
 
 
 # ---------------------------------------------------------------------------
@@ -576,15 +571,14 @@ async def test_connector_stats_db_query_uses_coalesce_and_tz_aware_bucket():
     - filter on COALESCE(source_provider, source_channel) so websocket connectors
       stored under source_provider are not excluded,
     - produce a timezone-aware bucket by appending AT TIME ZONE 'UTC' after date_trunc
-      so asyncpg decodes a tz-aware datetime (not naive).
+      so asyncpg decodes a tz-aware datetime (not naive),
+    - UNION connectors.filtered_events so the skip series is skip-aware (bu-c48im),
+      all in a SINGLE fetch() call.
 
-    This test captures the actual SQL sent to the pool and asserts both properties.
+    This test captures the actual SQL sent to the pool and asserts these properties.
     """
     import importlib
-    import os
     from pathlib import Path
-
-    os.environ.pop("PROMETHEUS_URL", None)
 
     captured_sql: list[str] = []
 
@@ -633,9 +627,17 @@ async def test_connector_stats_db_query_uses_coalesce_and_tz_aware_bucket():
         "Query must use COALESCE(source_provider, source_channel) to match websocket connectors "
         "where connector type is stored in source_provider, not source_channel"
     )
-    # Two AT TIME ZONE 'UTC' occurrences: one inside date_trunc arg, one after date_trunc
+    # AT TIME ZONE 'UTC' appears (inside + after date_trunc) on each UNION branch,
+    # so at least two occurrences overall.
     tz_count = sql.count("AT TIME ZONE 'UTC'")
     assert tz_count >= 2, (
         f"Query must apply AT TIME ZONE 'UTC' twice (inside and after date_trunc) to produce "
         f"a tz-aware bucket; found {tz_count} occurrence(s) in: {sql!r}"
     )
+    # Skip-aware (bu-c48im): the series UNIONs connectors.filtered_events so a
+    # self-persisting connector's skip volume is not invisible on the histogram.
+    assert "connectors.filtered_events" in sql, (
+        "Query must UNION connectors.filtered_events to source the DISTINCT "
+        "messages_filtered skip series"
+    )
+    assert "UNION ALL" in sql

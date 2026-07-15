@@ -26,6 +26,7 @@ import type {
   ConnectorEventsResponse,
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
+  ConnectorStats,
 } from '@/api/types'
 import { ConnectorDetailView } from './ConnectorDetailView'
 import type { OAuthScope } from './ScopeList'
@@ -101,6 +102,7 @@ function renderDetail(
     recentEvents?: ConnectorEventsResponse | null
     incidents?: ConnectorIncidentsResponse | null
     routingRules?: ConnectorRoutingRulesResponse | null
+    stats?: ConnectorStats
   } = {},
 ) {
   act(() => {
@@ -108,7 +110,7 @@ function renderDetail(
       <MemoryRouter>
         <ConnectorDetailView
           connector={connector}
-          stats={undefined}
+          stats={opts.stats}
           oauthScopes={opts.scopes}
           onReauth={opts.onReauth}
           recentEvents={opts.recentEvents}
@@ -118,6 +120,25 @@ function renderDetail(
       </MemoryRouter>,
     )
   })
+}
+
+/** Build a ConnectorStats fixture with the given filtered series + degraded flag. */
+function makeStats(overrides: Partial<ConnectorStats> = {}): ConnectorStats {
+  return {
+    connector_type: 'spotify',
+    endpoint_identity: 'me',
+    period: '24h',
+    summary: {
+      messages_ingested: 0,
+      messages_failed: 0,
+      error_rate_pct: 0,
+      uptime_pct: null,
+      avg_messages_per_hour: 0,
+    },
+    timeseries: [],
+    hourly_events_available: true,
+    ...overrides,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -536,5 +557,33 @@ describe('[bu-5ywn2] Routing rules section', () => {
     const link = list?.querySelector('a')
     expect(link).not.toBeNull()
     expect(link?.getAttribute('href')).toBe('/ingestion/filters')
+  })
+
+  // Skip-aware histogram: degraded note (bu-c48im)
+
+  it('shows the degraded note when hourly_events_available is false', () => {
+    renderDetail(root, BASE_CONNECTOR, {
+      stats: makeStats({ hourly_events_available: false }),
+    })
+    const note = container.querySelector('[data-testid="histogram-degraded-note"]')
+    expect(note).not.toBeNull()
+    expect(note?.textContent).toContain('24h throughput')
+  })
+
+  it('hides the degraded note when the hourly source is available', () => {
+    renderDetail(root, BASE_CONNECTOR, {
+      stats: makeStats({ hourly_events_available: true }),
+    })
+    expect(
+      container.querySelector('[data-testid="histogram-degraded-note"]'),
+    ).toBeNull()
+  })
+
+  it('does not show the degraded note while stats are still loading', () => {
+    // stats undefined (loading) must not read as a degraded source.
+    renderDetail(root, BASE_CONNECTOR)
+    expect(
+      container.querySelector('[data-testid="histogram-degraded-note"]'),
+    ).toBeNull()
   })
 })
