@@ -500,7 +500,7 @@ async def get_whatsapp_health(
     if state == WhatsAppState.disconnected and _looks_like_invalidated_session(data):
         state = WhatsAppState.pair_required
 
-    uptime: float | None = data.get("uptime_seconds")
+    uptime: float | None = data.get("uptime_s")
 
     last_event_at: datetime | None = None
     raw_last = data.get("last_event_at")

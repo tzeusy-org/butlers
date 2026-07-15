@@ -705,6 +705,81 @@ class TestDashboardPairAPI:
         assert response.status_code == 200
         assert response.json()["state"] == "disconnected"
 
+    @pytest.mark.parametrize(
+        ("bridge_status", "expected_state", "expected_running", "expected_uptime"),
+        [
+            pytest.param(
+                {
+                    "state": "connected",
+                    "phone": "+12025550123",
+                    "uptime_s": 3600,
+                    "last_event_at": "2026-07-15T20:00:00Z",
+                    "connected": True,
+                    "logged_in": True,
+                },
+                "connected",
+                True,
+                3600,
+                id="connected",
+            ),
+            pytest.param(
+                {
+                    "state": "disconnected",
+                    "phone": "+12025550123",
+                    "uptime_s": 9999,
+                    "last_event_at": None,
+                    "connected": False,
+                    "logged_in": False,
+                },
+                "pair_required",
+                True,
+                9999,
+                id="invalidated-session",
+            ),
+            pytest.param(None, "not_configured", False, None, id="bridge-unreachable"),
+        ],
+    )
+    async def test_health_maps_real_bridge_status_payload(
+        self,
+        client,
+        bridge_status,
+        expected_state,
+        expected_running,
+        expected_uptime,
+    ):
+        """The public health response preserves bridge uptime across its state paths."""
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_get",
+            new=AsyncMock(return_value=bridge_status),
+        ):
+            response = await client.get("/api/connectors/whatsapp/health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["state"] == expected_state
+        assert data["bridge_running"] is expected_running
+        assert data["uptime_seconds"] == expected_uptime
+
+    async def test_health_does_not_treat_public_uptime_name_as_bridge_contract(self, client):
+        """``uptime_seconds`` is the FastAPI response name, not a Go bridge field."""
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_get",
+            new=AsyncMock(
+                return_value={
+                    "state": "connected",
+                    "phone": "+12025550123",
+                    "uptime_seconds": 3600,
+                    "last_event_at": None,
+                    "connected": True,
+                    "logged_in": True,
+                }
+            ),
+        ):
+            response = await client.get("/api/connectors/whatsapp/health")
+
+        assert response.status_code == 200
+        assert response.json()["uptime_seconds"] is None
+
     async def test_pair_poll_states(self, client):
         """GET /pair/poll returns correct state for waiting/paired/expired/bridge-down."""
         # Waiting
