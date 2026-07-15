@@ -261,7 +261,15 @@ services:
     restart: unless-stopped
 
   frontend-dev:
-    image: node:22.16.0-slim
+    # Node pinned to 24 to match CI (.github/workflows/ci.yml node-version: "24").
+    # ``./frontend`` is a host bind-mount, so the startup install writes through to
+    # the tracked frontend/package-lock.json. ``npm ci`` (not ``npm install``)
+    # installs strictly FROM the lockfile and never rewrites it -- it fails loud on
+    # a lock/package.json mismatch instead of silently re-resolving. On Node 22
+    # ``npm ci`` rejected this Node-24-generated lockfile (exit 1); Node 24 + npm ci
+    # matches CI's own ``npm ci`` step exactly, so the lockfile stays the single
+    # source of truth and startup can no longer dirty the worktree (bu-0zvsd).
+    image: node:24-slim
     profiles: [dev]
     working_dir: /app
     volumes:
@@ -273,7 +281,7 @@ services:
       - VITE_API_URL=${VITE_API_URL:-/butlers-api/api}
       - VITE_PROXY_TARGET=http://dashboard-api:41200
     command: >-
-      sh -c "npm install &&
+      sh -c "npm ci &&
       npm run dev -- --host 0.0.0.0 --port 41173 --strictPort
       --base ${FRONTEND_BASE_PATH:-/butlers/}"
     depends_on:
