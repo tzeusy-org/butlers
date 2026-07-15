@@ -166,7 +166,15 @@ function qaSummary(overrides: Partial<QaSummary> = {}): QaSummary {
 }
 
 describe("deriveOverviewTriageModel", () => {
-  it("sorts needs-attention rows by actionability", () => {
+  it("sorts needs-attention rows by severity, equal-severity kinds keeping stable concatenation order", () => {
+    // What this actually proves: the critical issue sorts to the top and the
+    // medium issue to the bottom (severity ordering). The middle rows
+    // [runtime, approval, notification, qa] are ALL severity "medium", so their
+    // relative order is the stable-sort tiebreak (the source concatenation
+    // order deriveOverviewTriageModel builds them in), NOT an inherent
+    // kind-priority ranking. The genuine critical-first / actionability case is
+    // proven by the severity assertions here and elsewhere (post-PR #3158,
+    // bu-fwnmg).
     const model = deriveOverviewTriageModel(
       {
         boardRows: [boardRow({ name: "general", activity: "overdue" })],

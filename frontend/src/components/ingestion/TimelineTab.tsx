@@ -1126,9 +1126,12 @@ function HourGroup({
     for (const b of histogramBuckets) {
       const c = b.counts;
       // "failed" (routing failure after ingestion, bu-lkzsf.1) counts as an
-      // error for this honest-total header — same severity class as "error",
-      // just a later pipeline stage (mirrors the backend's incident grouping
-      // in ingestion_connectors.py::_INCIDENT_STATUSES).
+      // error for this honest-total header, same severity class as "error",
+      // just a later pipeline stage. This is a deliberate SUBSET of the
+      // backend's incident grouping (ingestion_connectors.py::_INCIDENT_STATUSES
+      // = {error, failed, replay_failed}), not a full mirror: replay_failed
+      // stays in the separate replay lane (counted below as a replay), never
+      // folded into the error total.
       total +=
         c.ingested +
         c.skipped +
