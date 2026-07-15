@@ -42,7 +42,7 @@
  *   Esc          — close
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Command } from "cmdk";
 import { useNavigate } from "react-router";
 import { useQuery } from "@tanstack/react-query";
@@ -62,9 +62,14 @@ import { fuzzyFilter } from "@/lib/fuzzy-match";
 import { addRecent, getRecents, type RecentEntry } from "@/lib/recents-store";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
-import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
 import { EntityMark } from "@/components/ui/EntityMark";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { KbMono } from "@/components/ui/KbMono";
@@ -250,17 +255,8 @@ export default function EntityFinder() {
   const [query, setQuery] = useState("");
   // cmdk's currently-highlighted item value (drives the preview pane).
   const [activeValue, setActiveValue] = useState("");
+  const openerRef = useRef<HTMLElement | null>(null);
   const navigate = useNavigate();
-
-  // One overlay contract (bu-qvnce.10): focus-in, Tab trap, Escape, and
-  // focus-restore. EntityFinder stays mounted and toggles its own visibility
-  // (returns `null` while closed) rather than being conditionally mounted by
-  // a parent, so `active: open` is required — see the hook's doc comment.
-  const { rootRef, initialFocusRef: inputRef, onKeyDown: choreographyKeyDown } =
-    useModalChoreography<HTMLInputElement>({
-      onClose: () => setOpen(false),
-      active: open,
-    });
 
   const {
     data: searchData,
@@ -301,17 +297,23 @@ export default function EntityFinder() {
   // -------------------------------------------------------------------------
   useEffect(() => {
     function handleOpen() {
+      // A repeated Cmd/Ctrl+K while the Dialog already owns focus resets the
+      // query, but must not replace the original outside opener with the
+      // command input. The latter is removed on close and cannot receive
+      // restored focus.
+      if (!open) {
+        openerRef.current = document.activeElement as HTMLElement | null;
+      }
       setOpen(true);
       setQuery("");
       setActiveValue("");
-      // Focus-in is handled by useModalChoreography's `active: open` effect
-      // once this state flip commits — no rAF needed, useEffect already
-      // defers to after the DOM update.
+      // The shared Dialog focus scope moves focus to the first focusable
+      // element (the command input) once this state flip commits.
     }
     window.addEventListener(OPEN_ENTITY_FINDER_EVENT, handleOpen);
     return () =>
       window.removeEventListener(OPEN_ENTITY_FINDER_EVENT, handleOpen);
-  }, []);
+  }, [open]);
 
   // -------------------------------------------------------------------------
   // Navigation
@@ -533,52 +535,47 @@ export default function EntityFinder() {
   // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------
-  if (!open) return null;
-
   return (
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- backdrop-dismiss is a mouse-only convenience; Escape (handled on the Command panel below) is the real keyboard equivalent, and the overlay is not a focusable target.
-    <div
-      // eslint-disable-next-line no-restricted-syntax -- the scrim itself; the actual dialog (Command below) is wired through useModalChoreography (rootRef/onKeyDown) — one overlay contract, not a hand-rolled one (bu-qvnce.10).
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[15vh]"
-      onClick={() => setOpen(false)}
-      data-testid="entity-finder-backdrop"
-    >
-      <Command
-        ref={rootRef}
-        role="dialog"
-        aria-modal="true"
-        label="Command Menu"
-        aria-label="Command Menu"
-        onValueChange={setActiveValue}
-        className="relative mx-auto flex w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => {
-          // Tab = hop into the active result when a real entity row is
-          // active (cmdk does not consume Tab, so we claim it here first).
-          // Only when there is NO active result does Tab fall through to the
-          // choreography's generic trap — this is what fixes the
-          // activeResult-null Tab leak (Pages/Butlers/Sessions/State/Actions
-          // rows, or a truly empty result set, used to let Tab escape to
-          // whatever rendered after the overlay in the DOM, e.g. the
-          // floating chat widget button).
-          if (e.key === "Tab" && activeResult) {
-            e.preventDefault();
-            hopEntity(activeResult.entity_id);
-            return;
-          }
-          choreographyKeyDown(e);
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent
+        showCloseButton={false}
+        className="top-[15vh] translate-y-0 gap-0 border-0 bg-transparent p-0 shadow-none sm:max-w-3xl"
+        onCloseAutoFocus={(event) => {
+          // EntityFinder opens via a cross-component custom event, so there
+          // is no colocated DialogTrigger for Radix to restore automatically.
+          event.preventDefault();
+          const opener = openerRef.current;
+          if (opener && document.contains(opener)) opener.focus();
         }}
-        shouldFilter={false}
       >
+        <DialogTitle className="sr-only">Command menu</DialogTitle>
+        <DialogDescription className="sr-only">
+          Search entities, pages, butlers, and actions, then choose a result.
+        </DialogDescription>
+        <Command
+          label="Command menu"
+          onValueChange={setActiveValue}
+          className="relative mx-auto flex w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl"
+          onKeyDown={(e) => {
+            // Tab = hop into the active result when a real entity row is
+            // active (cmdk does not consume Tab, so we claim it here first).
+            // Shift+Tab and Tab with no active entity fall through to the shared
+            // Dialog focus scope, which keeps focus inside the modal.
+            if (e.key === "Tab" && !e.shiftKey && activeResult) {
+              e.preventDefault();
+              hopEntity(activeResult.entity_id);
+            }
+          }}
+          shouldFilter={false}
+        >
         {/* Left column: input + list + footer */}
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Input row */}
-          <div className="flex items-center border-b border-border px-4">
+          <div className="flex items-center border-b border-border px-4 focus-within:ring-2 focus-within:ring-inset focus-within:ring-foreground">
             <span className="mr-2 shrink-0 font-mono text-xs text-muted-foreground">
               /
             </span>
             <Command.Input
-              ref={inputRef}
               value={query}
               onValueChange={setQuery}
               placeholder="Search entities, pages, butlers, actions…"
@@ -957,7 +954,8 @@ export default function EntityFinder() {
 
         {/* Right column: inert preview pane for the active result */}
         <PreviewPane active={activeResult} />
-      </Command>
-    </div>
+        </Command>
+      </DialogContent>
+    </Dialog>
   );
 }

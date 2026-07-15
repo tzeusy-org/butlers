@@ -13,7 +13,8 @@
  *   3. Workbench toggle → three rails render; provenance grid sortable;
  *      duplicate panel → compare.
  *   4. Finder: Cmd-K → type → preview pane populates; Tab lands on
- *      /entities?center=... (the Plex); empty-query owner-pinned set renders.
+ *      /entities?center=... (the Plex); empty-query owner-pinned set renders;
+ *      shared-Dialog focus/dismissal behavior works in a real browser.
  *   5. Closeout gaps (PR #2239): concentration provenance marks
  *      (data-testid=concentration-provenance), Index keyboard cursor focus
  *      (tr[data-cursor]), delta-since-last-visit fact-row highlight
@@ -860,6 +861,170 @@ test.describe("entity-v3: Cmd-K finder", () => {
     await expect(
       page.getByTestId("entity-finder-preview-relation").first(),
     ).toBeVisible({ timeout: TIMEOUT_MS });
+  });
+
+  test("shared Dialog traps and restores focus and dismisses by Escape or outside pointer", async ({
+    page,
+  }) => {
+    await installFinderStubs(page);
+    // Keep the active result null after typing so Tab exercises the Dialog's
+    // focus scope instead of EntityFinder's intentional entity Tab-to-hop.
+    await page.route("**/api/relationship/entities/search**", (route) =>
+      json(route, { results: [], total: 0, q: "contacts", limit: 8 }),
+    );
+    await page.goto("/", { timeout: TIMEOUT_MS });
+
+    const trigger = page.getByRole("button", { name: "Open command menu" });
+    const initialH1Count = await page.locator("h1").count();
+    expect(initialH1Count).toBeLessThanOrEqual(1);
+
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "Command menu" });
+    const input = page.getByTestId("entity-finder-input");
+    await expect(dialog).toHaveCount(1);
+    await expect(dialog).toHaveAttribute("data-slot", "dialog-content");
+    await expect(input).toBeFocused();
+    await expect(dialog).toHaveAccessibleDescription(
+      "Search entities, pages, butlers, and actions, then choose a result.",
+    );
+    await expect(dialog.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator("h1")).toHaveCount(initialH1Count);
+
+    const dialogIdsAreUnique = await dialog.evaluate((element) => {
+      const ids = [...element.querySelectorAll("[id]")].map((child) => child.id);
+      return (
+        new Set(ids).size === ids.length &&
+        ids.every(
+          (id) => document.querySelectorAll(`[id="${CSS.escape(id)}"]`).length === 1,
+        )
+      );
+    });
+    expect(dialogIdsAreUnique).toBe(true);
+
+    const stacking = await page.evaluate(() => {
+      const overlay = document.querySelector<HTMLElement>('[data-slot="dialog-overlay"]');
+      const content = document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
+      return {
+        overlayZ: Number.parseInt(getComputedStyle(overlay!).zIndex, 10),
+        contentZ: Number.parseInt(getComputedStyle(content!).zIndex, 10),
+        overlayBeforeContent: Boolean(
+          overlay!.compareDocumentPosition(content!) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      };
+    });
+    expect(stacking.contentZ).toBeGreaterThanOrEqual(stacking.overlayZ);
+    expect(stacking.overlayBeforeContent).toBe(true);
+
+    await input.fill("contacts");
+    await expect(page.getByTestId("entity-finder-page-item").first()).toBeVisible({
+      timeout: TIMEOUT_MS,
+    });
+    await input.press("Tab");
+    await expect(input).toBeFocused();
+    await input.press("Shift+Tab");
+    await expect(input).toBeFocused();
+
+    await input.press("Escape");
+    await expect(dialog).not.toBeVisible();
+    await expect(trigger).toBeFocused();
+
+    // A keyboard opener produces a visible 2px focus indicator on the initial
+    // command input and restores focus to the keyboard's prior target.
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(input).toBeFocused();
+    const searchFieldRing = await input.evaluate(
+      (element) => getComputedStyle(element.parentElement!).boxShadow,
+    );
+    expect(searchFieldRing).not.toBe("none");
+    await input.press("Escape");
+    await expect(trigger).toBeFocused();
+
+    // A non-header component can dispatch the shared custom event and still
+    // receive focus back when the dialog closes.
+    await page.evaluate(() => {
+      const opener = document.createElement("button");
+      opener.id = "entity-finder-review-opener";
+      opener.textContent = "Review opener";
+      document.body.append(opener);
+      opener.focus();
+      window.dispatchEvent(new CustomEvent("open-entity-finder"));
+    });
+    await expect(input).toBeFocused();
+    await input.press("Escape");
+    await expect(page.locator("#entity-finder-review-opener")).toBeFocused();
+
+    await trigger.click();
+    await expect(input).toBeFocused();
+    await page.mouse.click(4, 4);
+    await expect(dialog).not.toBeVisible();
+    await expect(trigger).toBeFocused();
+    await expect(page.locator("h1")).toHaveCount(initialH1Count);
+
+    // Repeating the global shortcut while the already-open dialog owns focus
+    // must not replace the original opener with an element inside the portal.
+    // Closing still returns focus to the header trigger.
+    await trigger.click();
+    await expect(input).toBeFocused();
+    await page.keyboard.press("ControlOrMeta+k");
+    await input.press("Escape");
+    await expect(trigger).toBeFocused();
+  });
+
+  test("shared Dialog fits a 320px mobile viewport and honors reduced motion", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 320, height: 568 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await installFinderStubs(page);
+    await page.goto("/", { timeout: TIMEOUT_MS });
+
+    await page.getByRole("button", { name: "Open command menu" }).click();
+    const dialog = page.getByRole("dialog", { name: "Command menu" });
+    await expect(dialog).toBeVisible();
+    await expect(page.getByTestId("entity-finder-input")).toBeFocused();
+
+    const geometry = await page.evaluate(() => {
+      const rect = (selector: string) => {
+        const bounds = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+        return {
+          top: bounds.top,
+          right: bounds.right,
+          bottom: bounds.bottom,
+          left: bounds.left,
+        };
+      };
+      const durationMs = (value: string) =>
+        Math.max(
+          ...value.split(",").map((part) => {
+            const duration = part.trim();
+            return duration.endsWith("ms")
+              ? Number.parseFloat(duration)
+              : Number.parseFloat(duration) * 1000;
+          }),
+        );
+      const overlay = document.querySelector<HTMLElement>('[data-slot="dialog-overlay"]')!;
+      const content = document.querySelector<HTMLElement>('[data-slot="dialog-content"]')!;
+      return {
+        overlay: rect('[data-slot="dialog-overlay"]'),
+        content: rect('[data-slot="dialog-content"]'),
+        bodyScrollWidth: document.body.scrollWidth,
+        overlayAnimationMs: durationMs(getComputedStyle(overlay).animationDuration),
+        overlayTransitionMs: durationMs(getComputedStyle(overlay).transitionDuration),
+        contentAnimationMs: durationMs(getComputedStyle(content).animationDuration),
+        contentTransitionMs: durationMs(getComputedStyle(content).transitionDuration),
+      };
+    });
+
+    expect(geometry.overlay).toEqual({ top: 0, right: 320, bottom: 568, left: 0 });
+    expect(geometry.content.left).toBeGreaterThanOrEqual(0);
+    expect(geometry.content.right).toBeLessThanOrEqual(320);
+    expect(geometry.content.top).toBeGreaterThanOrEqual(0);
+    expect(geometry.content.bottom).toBeLessThanOrEqual(568);
+    expect(geometry.bodyScrollWidth).toBeLessThanOrEqual(320);
+    expect(geometry.overlayAnimationMs).toBeLessThanOrEqual(0.01);
+    expect(geometry.overlayTransitionMs).toBeLessThanOrEqual(0.01);
+    expect(geometry.contentAnimationMs).toBeLessThanOrEqual(0.01);
+    expect(geometry.contentTransitionMs).toBeLessThanOrEqual(0.01);
   });
 
   test("Tab on the active result lands on /entities?center=<id>", async ({
