@@ -317,6 +317,7 @@ class MemoryModule(Module):
             register_memory_consolidation,
             register_memory_context,
             register_memory_forget,
+            register_memory_runtime_pool,
             register_memory_store_episode,
         )
         from butlers.modules.memory.tools import context as _context
@@ -424,6 +425,7 @@ class MemoryModule(Module):
         register_memory_forget(_memory_forget)
         register_catalog_search(_catalog_search_hook)
         register_memory_consolidation(_consolidation_hook)
+        register_memory_runtime_pool(module._get_pool)
 
         await self._register_default_maintenance_schedules(db)
 
@@ -471,9 +473,13 @@ class MemoryModule(Module):
 
     async def on_shutdown(self) -> None:
         """Clear state references."""
-        from butlers.core.memory_hooks import clear_memory_consolidation
+        from butlers.core.memory_hooks import (
+            clear_memory_consolidation,
+            clear_memory_runtime_pool,
+        )
 
         clear_memory_consolidation()
+        clear_memory_runtime_pool()
         self._db = None
         self._embedding_engine = None
         if self._memory_db is not None:

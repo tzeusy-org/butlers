@@ -8,9 +8,9 @@ This module provides:
 
 1. A hook-registration API that ``modules.memory`` calls during startup to wire
    up its concrete implementations.
-2. Thin async stubs that ``core`` calls; each stub delegates to the registered
-   hook when available, or no-ops (returning a safe default) when the memory
-   module is not loaded.
+2. Thin stubs that ``core`` calls; each stub delegates to the registered hook
+   when available, or no-ops (returning a safe default) when the memory module
+   is not loaded.
 
 Design rationale
 ----------------
@@ -58,6 +58,12 @@ _catalog_search_hook: Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]] |
 #: Registered by modules.memory on startup.  The module-owned closure resolves
 #: its configured pool and embedding engine at dispatch time.
 _memory_consolidation_hook: Callable[..., Coroutine[Any, Any, dict[str, Any]]] | None = None
+
+#: ``() -> asyncpg.Pool``
+#: Registered by modules.memory on startup.  Deterministic maintenance jobs use
+#: this resolver so a private ``memory_schema`` does not fall back to the
+#: daemon's domain pool.
+_memory_runtime_pool_hook: Callable[[], Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -129,10 +135,22 @@ def register_memory_consolidation(
     _memory_consolidation_hook = fn
 
 
+def register_memory_runtime_pool(fn: Callable[[], Any]) -> None:
+    """Register the active memory module's runtime-pool resolver."""
+    global _memory_runtime_pool_hook
+    _memory_runtime_pool_hook = fn
+
+
 def clear_memory_consolidation() -> None:
     """Clear the scheduled-consolidation hook during module shutdown."""
     global _memory_consolidation_hook
     _memory_consolidation_hook = None
+
+
+def clear_memory_runtime_pool() -> None:
+    """Clear the memory runtime-pool resolver during module shutdown."""
+    global _memory_runtime_pool_hook
+    _memory_runtime_pool_hook = None
 
 
 # ---------------------------------------------------------------------------
@@ -231,3 +249,19 @@ async def consolidate_memory(
         batch_size=batch_size,
         enable_shared_catalog=enable_shared_catalog,
     )
+
+
+def resolve_memory_runtime_pool(fallback_pool: Any) -> Any:
+    """Resolve the pool used by deterministic memory maintenance jobs.
+
+    The daemon pool is correct for the normal topology where memory tables live
+    in the butler schema.  A started memory module may instead register a pool
+    scoped to a private ``memory_schema``; when present, that pool is
+    authoritative for every memory-table read and write.
+    """
+    if _memory_runtime_pool_hook is None:
+        return fallback_pool
+    pool = _memory_runtime_pool_hook()
+    if pool is None:
+        raise RuntimeError("memory module runtime pool resolver returned no pool")
+    return pool

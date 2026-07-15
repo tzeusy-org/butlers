@@ -174,18 +174,48 @@ class TestLifecycle:
             source_schema="private_memory",
         )
 
+    async def test_runtime_pool_hook_uses_module_pool(self, monkeypatch) -> None:
+        """Deterministic maintenance resolves the started module's private pool."""
+        mod = MemoryModule()
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock(name="daemon_pool")
+        memory_pool = MagicMock(name="memory_pool")
+        captured_hook: dict[str, Any] = {}
+
+        monkeypatch.setattr(mod, "_get_pool", lambda: memory_pool)
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.register_memory_runtime_pool",
+            lambda fn: captured_hook.setdefault("hook", fn),
+        )
+        monkeypatch.setattr(
+            mod,
+            "_register_default_maintenance_schedules",
+            AsyncMock(),
+        )
+
+        await mod.on_startup(config=None, db=fake_db)
+
+        assert captured_hook["hook"]() is memory_pool
+
     async def test_on_shutdown_clears_consolidation_hook(self, monkeypatch) -> None:
         mod = MemoryModule()
-        clear_hook = MagicMock()
+        clear_consolidation_hook = MagicMock()
+        clear_runtime_pool_hook = MagicMock()
         monkeypatch.setattr(
             "butlers.core.memory_hooks.clear_memory_consolidation",
-            clear_hook,
+            clear_consolidation_hook,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.clear_memory_runtime_pool",
+            clear_runtime_pool_hook,
             raising=False,
         )
 
         await mod.on_shutdown()
 
-        clear_hook.assert_called_once_with()
+        clear_consolidation_hook.assert_called_once_with()
+        clear_runtime_pool_hook.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------

@@ -33,7 +33,10 @@ from butlers.core.spawn_hooks import clear_spawner, register_spawner
 from butlers.db import Database, register_jsonb_codec
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.memory.storage import store_fact
-from butlers.scheduled_jobs import _run_memory_consolidation_job
+from butlers.scheduled_jobs import (
+    _run_memory_consolidation_job,
+    _run_memory_decay_sweep_job,
+)
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.modules.memory._test_helpers import make_embedding_engine_mock
 
@@ -156,6 +159,44 @@ async def test_fact_write_lands_in_chronicler_mem(isolated_db_url: str) -> None:
         assert chronicler_facts is None
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_scheduled_decay_sweep_uses_chronicler_memory_runtime(
+    isolated_db_url: str,
+) -> None:
+    """Decay reads memory policies from chronicler_mem, not the domain schema."""
+    parsed = urlparse(isolated_db_url)
+    domain_db = Database(
+        db_name=parsed.path.lstrip("/"),
+        schema="chronicler",
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 5432,
+        user=parsed.username or "postgres",
+        password=parsed.password or "postgres",
+        min_pool_size=1,
+        max_pool_size=3,
+        strict_role_enforcement=False,
+    )
+    await domain_db.connect()
+    module = MemoryModule()
+    try:
+        await module.on_startup(
+            MemoryModuleConfig(memory_schema="chronicler_mem"),
+            domain_db,
+        )
+
+        result = await _run_memory_decay_sweep_job(
+            pool=domain_db.pool,
+            job_args=None,
+        )
+
+        assert result["facts_checked"] >= 0
+        assert result["rules_checked"] >= 0
+        assert await module._get_pool().fetchval("SELECT current_schema()") == "chronicler_mem"
+    finally:
+        await module.on_shutdown()
+        await domain_db.close()
 
 
 @pytest.mark.asyncio(loop_scope="session")
