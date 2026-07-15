@@ -11,10 +11,10 @@
 # --- Optional: Go builder (whatsapp-bridge) --------------------------------
 # Only runs when whatsapp-bridge/ exists in context. The binary is small (~15MB)
 # so we always include it rather than maintaining a separate Dockerfile.
-# Digest-pinned for full reproducibility (resolves to 1.25.11-bookworm).
-# To update: run `docker buildx imagetools inspect golang:1.25-bookworm` and
+# Digest-pinned for full reproducibility (Go 1.25.11).
+# To update: run `docker buildx imagetools inspect golang:1.25.11-bookworm` and
 # replace the sha256 below.
-FROM golang:1.25-bookworm@sha256:bbb255b0e131db500cf0520adc97441d2260cf629c7fa7e39e025ddf53995a24 AS go-builder
+FROM golang:1.25.11-bookworm@sha256:bbb255b0e131db500cf0520adc97441d2260cf629c7fa7e39e025ddf53995a24 AS go-builder
 
 WORKDIR /build
 
