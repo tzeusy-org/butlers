@@ -21,11 +21,13 @@ the historical ``dashboard_audit_log`` rows into the canonical table.
 The unit tests in ``test_audit_log.py`` mock the DB pools and therefore cannot
 catch read-topology regressions: they never exercise the real two-table layout.
 This module runs the *actual* read endpoint against a migrated Postgres (core +
-switchboard chains) and asserts the canonical-only read contract:
+switchboard chains) and asserts the canonical-only read contract: a row written
+via ``log_audit_entry`` lands in (and is read from) ``public.audit_log``.
 
-  * a row written via ``log_audit_entry`` lands in (and is read from)
-    ``public.audit_log``;
-  * a row living ONLY in the legacy ``dashboard_audit_log`` is NOT read live.
+The legacy ``dashboard_audit_log`` table is dropped by switchboard migration
+sw_026 (bu-o699b), so the earlier "a legacy-only row is NOT read live" negative
+case is now guaranteed structurally by the table's non-existence rather than by
+a live-UNION-absent assertion — those negative tests were removed with the drop.
 """
 
 from __future__ import annotations
@@ -59,9 +61,12 @@ BASE_URL = "http://test"
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain (public.audit_log) and the switchboard chain
-    (dashboard_audit_log).  Both land in ``public`` (flat topology), mirroring
-    the schemas the read endpoint queries."""
+    """Provision the core chain (public.audit_log) and the switchboard chain.
+
+    Flat topology (both chains land in ``public``), mirroring the single-DB
+    deployment the read endpoint queries. The switchboard chain creates the
+    legacy ``dashboard_audit_log`` (migration 001) and then drops it (sw_026),
+    so the migrated DB exposes only ``public.audit_log`` — matching production."""
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
@@ -78,7 +83,6 @@ async def pool(postgres_container, migrated_db_url: str):
         init=register_jsonb_codec,
     )
     await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
-    await p.execute("TRUNCATE TABLE dashboard_audit_log CASCADE")
     yield p
     await p.close()
 
@@ -123,11 +127,9 @@ async def test_log_audit_entry_lands_in_canonical_audit_log(
         request_summary={"method": "POST", "path": "/api/qa/schedules"},
     )
 
-    # The writer now lands the row in the canonical table, NOT the legacy one.
+    # The writer lands the row in the canonical table.
     canonical_count = await pool.fetchval("SELECT count(*) FROM public.audit_log")
     assert canonical_count == 1
-    legacy_count = await pool.fetchval("SELECT count(*) FROM dashboard_audit_log")
-    assert legacy_count == 0
 
     resp = await _get(audit_app, AUDIT_PATH)
     assert resp.status_code == 200
@@ -142,43 +144,11 @@ async def test_log_audit_entry_lands_in_canonical_audit_log(
     assert entry["target"] == "/api/qa/schedules"  # target <- request_summary.path
 
 
-async def test_genuinely_legacy_dashboard_row_not_read_live(
-    pool: asyncpg.Pool, audit_app: FastAPI
-) -> None:
-    """Read-side contract (bu-j26e8): a row living ONLY in the legacy
-    ``dashboard_audit_log`` must NOT surface on /audit-log — the live UNION arm
-    was removed.  Such pre-cutover history becomes visible only after the
-    core_124 backfill copies it into ``public.audit_log`` (covered by the
-    migration test), not via a live cross-table read here."""
-    # The pool registers the JSONB codec, so hand request_summary / user_context
-    # as plain dicts (matching how the legacy log_audit_entry writer wrote them).
-    await pool.execute(
-        "INSERT INTO dashboard_audit_log "
-        "(butler, operation, request_summary, result, error, user_context) "
-        "VALUES ($1, $2, $3, $4, $5, $6)",
-        "qa",
-        "schedule.create",
-        {"method": "POST", "path": "/api/qa/schedules"},
-        "success",
-        None,
-        {},
-    )
-
-    canonical_count = await pool.fetchval("SELECT count(*) FROM public.audit_log")
-    assert canonical_count == 0
-    legacy_count = await pool.fetchval("SELECT count(*) FROM dashboard_audit_log")
-    assert legacy_count == 1
-
-    resp = await _get(audit_app, AUDIT_PATH)
-    assert resp.status_code == 200
-    body = resp.json()
-
-    actions = [e["action"] for e in body["data"]]
-    assert "schedule.create" not in actions, (
-        "legacy-only dashboard_audit_log row leaked onto /audit-log — the live "
-        f"UNION arm should be gone. Got actions={actions}"
-    )
-    assert body["meta"]["total"] == 0
+# NOTE: the pre-sw_026 "genuinely legacy dashboard_audit_log row not read live"
+# negative-contract test was removed by bu-o699b: the legacy table is dropped by
+# switchboard migration sw_026, so a legacy-only row can no longer be
+# constructed — the canonical-only read contract is now guaranteed structurally
+# by the table's non-existence rather than by a live-UNION-absent assertion.
 
 
 async def test_canonical_and_legacy_rows_merged_ts_desc(

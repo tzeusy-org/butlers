@@ -147,7 +147,9 @@ class Module(abc.ABC):
 
         Called by the daemon lifecycle after the audit pool is created (step
         10a), giving modules that emit egress audit entries access to the
-        switchboard ``dashboard_audit_log`` table.
+        switchboard-scoped audit pool (egress entries land in the canonical
+        ``public.audit_log`` via the audit append writer; the legacy
+        ``dashboard_audit_log`` table was retired by switchboard sw_026).
 
         The default implementation is a no-op.  Modules that emit egress
         audit entries (e.g. telegram, email, calendar) should override this

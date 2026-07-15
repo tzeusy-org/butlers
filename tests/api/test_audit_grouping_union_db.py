@@ -81,7 +81,6 @@ async def pool(postgres_container, migrated_db_url: str):
         init=register_jsonb_codec,
     )
     await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
-    await p.execute("TRUNCATE TABLE dashboard_audit_log CASCADE")
     # The owner-singleton partial unique index on public.entities persists across
     # tests; clear identity rows so each test can seed a fresh owner.
     await p.execute("TRUNCATE TABLE public.entities CASCADE")
@@ -92,32 +91,6 @@ async def pool(postgres_container, migrated_db_url: str):
 # ---------------------------------------------------------------------------
 # Insert helpers (exact column shapes for each table)
 # ---------------------------------------------------------------------------
-
-
-async def _insert_legacy(
-    pool: asyncpg.Pool,
-    *,
-    butler: str,
-    operation: str,
-    result: str,
-    error: str | None = None,
-    request_summary: dict | None = None,
-    created_at: datetime | None = None,
-) -> None:
-    await pool.execute(
-        """
-        INSERT INTO dashboard_audit_log
-            (butler, operation, result, error, request_summary, created_at)
-        VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb),
-                COALESCE($6, now()))
-        """,
-        butler,
-        operation,
-        result,
-        error,
-        request_summary,
-        created_at,
-    )
 
 
 async def _insert_canonical(
@@ -160,9 +133,6 @@ async def test_canonical_only_error_appears_in_grouping(pool: asyncpg.Pool) -> N
         error="DB connection timeout",
     )
 
-    legacy_count = await pool.fetchval("SELECT count(*) FROM dashboard_audit_log")
-    assert legacy_count == 0  # proves the row is canonical-only
-
     rows = await pool.fetch(build_audit_group_query())
     issues = [issue_from_audit_group_row(r) for r in rows]
     assert any("DB connection timeout" in i.error_message for i in issues), (
@@ -170,32 +140,19 @@ async def test_canonical_only_error_appears_in_grouping(pool: asyncpg.Pool) -> N
     )
 
 
-async def test_legacy_only_error_not_read_live(pool: asyncpg.Pool) -> None:
-    """A row living ONLY in the legacy dashboard_audit_log must NOT surface in the
-    grouping — the live UNION arm was removed (bu-j26e8).  Such rows become
-    visible only after the core_124 backfill copies them into public.audit_log
-    (covered by the migration test), not via a live cross-table read here."""
-    await _insert_legacy(
-        pool,
-        butler="qa",
-        operation="session",
-        result="error",
-        error="Legacy connection refused",
-    )
-    rows = await pool.fetch(build_audit_group_query())
-    summaries = [r["error_summary"] for r in rows]
-    assert "Legacy connection refused" not in summaries, (
-        "legacy-only row leaked into the canonical-only grouping — the live "
-        "UNION arm should be gone"
-    )
-    assert rows == []
+# NOTE: the pre-sw_026 "legacy-only error not read live" negative-contract test
+# was removed by bu-o699b together with the ``_insert_legacy`` helper: switchboard
+# migration sw_026 drops the legacy dashboard_audit_log table, so a legacy-only
+# row can no longer be written — the canonical-only grouping contract is now
+# guaranteed structurally by the table's non-existence.
 
 
 async def test_grouping_reads_canonical_only(pool: asyncpg.Pool) -> None:
-    """Only public.audit_log error rows are returned; legacy rows are invisible
-    live and success rows are filtered."""
-    # Legacy rows must be ignored entirely (no live UNION).
-    await _insert_legacy(pool, butler="qa", operation="session", result="error", error="legacy-err")
+    """Only public.audit_log error rows are returned; success rows are filtered.
+
+    (The legacy dashboard_audit_log table was dropped by sw_026, so there is no
+    live UNION to leak legacy rows — the canonical-only contract is structural.)
+    """
     await _insert_canonical(
         pool, actor="health", action="session", result="error", error="canonical-err"
     )
@@ -204,7 +161,6 @@ async def test_grouping_reads_canonical_only(pool: asyncpg.Pool) -> None:
     rows = await pool.fetch(build_audit_group_query())
     summaries = {r["error_summary"] for r in rows}
     assert "canonical-err" in summaries
-    assert "legacy-err" not in summaries  # legacy is not read live
     # success rows contribute no group
     assert all(s not in {"", None} for s in summaries)
     assert len(rows) == 1
@@ -291,12 +247,10 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
 
 async def test_egress_counts_canonical_only(pool: asyncpg.Pool, egress_app: FastAPI) -> None:
     """The egress catalog aggregates llm_api_call counts from public.audit_log
-    ONLY (action -> operation); legacy dashboard_audit_log rows are not counted
-    live (bu-j26e8 — the UNION arm was removed)."""
+    ONLY (action -> operation).  The legacy dashboard_audit_log table was dropped
+    by sw_026, so there is no live UNION arm to over-count (bu-j26e8 removed the
+    read arm; bu-o699b dropped the table)."""
     await _seed_owner(pool)
-    # 5 legacy llm_api_call rows — must be IGNORED (no live UNION).
-    for _ in range(5):
-        await _insert_legacy(pool, butler="x", operation="llm_api_call", result="success")
     # 3 canonical rows whose action maps onto the operation grouping key.
     for _ in range(3):
         await _insert_canonical(pool, actor="x", action="llm_api_call", result="success")
@@ -317,8 +271,6 @@ async def test_egress_canonical_only_operation_visible(
     """An operation present only in public.audit_log appears in the catalog."""
     await _seed_owner(pool)
     await _insert_canonical(pool, actor="x", action="llm_api_call", result="success")
-    legacy_count = await pool.fetchval("SELECT count(*) FROM dashboard_audit_log")
-    assert legacy_count == 0
 
     resp = await _get(egress_app, EGRESS_PATH)
     assert resp.status_code == 200

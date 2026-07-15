@@ -1,9 +1,14 @@
 """Dashboard audit emit helper.
 
-Provides :func:`emit_dashboard_audit` for writing rows to
-``switchboard.dashboard_audit_log`` from the API layer.  This is the HTTP
-request-side counterpart of :func:`butlers.core.audit.write_audit_entry` (which
-runs inside butler daemons).
+Provides :func:`emit_dashboard_audit` for recording dashboard API mutations to
+the canonical ``public.audit_log`` (via :func:`butlers.api.routers.audit.append`)
+from the API layer.  This is the HTTP request-side counterpart of
+:func:`butlers.core.audit.write_audit_entry` (which runs inside butler daemons).
+
+The ``dashboard_audit`` name is historical: the legacy
+``switchboard.dashboard_audit_log`` table was retired (writers re-routed to
+``public.audit_log`` by bu-h47nm; the table dropped by switchboard sw_026), but
+the helper name is kept to avoid churn across its many call sites.
 
 Design notes
 ------------
@@ -162,7 +167,11 @@ async def emit_dashboard_audit(
     request: Request | None = None,
     user_context: dict[str, Any] | None = None,
 ) -> None:
-    """Insert one row into ``switchboard.dashboard_audit_log``.
+    """Record one dashboard API mutation into the canonical ``public.audit_log``.
+
+    (Historically wrote ``switchboard.dashboard_audit_log``; re-routed to
+    ``public.audit_log`` via :func:`~butlers.api.routers.audit.append` by
+    bu-h47nm.)
 
     Parameters
     ----------

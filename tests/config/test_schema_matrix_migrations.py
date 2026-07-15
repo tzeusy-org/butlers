@@ -79,7 +79,8 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "butler_registry_eligibility_log",
         "connector_heartbeat_log",
         "connector_registry",
-        "dashboard_audit_log",
+        # dashboard_audit_log dropped by sw_026 (legacy audit table fully
+        # backfilled into public.audit_log by core_124; bu-o699b)
         "dead_letter_queue",
         "extraction_log",
         "extraction_queue",
