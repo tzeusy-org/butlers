@@ -16,7 +16,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
 import { MemoryRouter } from "react-router";
@@ -297,6 +297,30 @@ describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", ()
     expect(mockReauth).not.toHaveBeenCalled();
   });
 
+  it("routes spotify through the OAuth connect dance, not a stub drawer (bu-5gliy)", () => {
+    mockReauth.mockResolvedValue({
+      data: { redirect_url: "/api/oauth/spotify/start" },
+      meta: {},
+    } as never);
+    renderAddPanel("entity-uuid-123");
+    fireEvent.click(screen.getByText("connect provider"));
+
+    // Spotify is a first-class OAuth provider — offered as a "connect now" pill
+    // (like Google), and clicking it drives the reauthorize dance for "spotify".
+    const spotifyBtn = screen
+      .getByText(/connect spotify/i)
+      .closest("button") as HTMLButtonElement;
+    expect(spotifyBtn).toBeTruthy();
+    expect(spotifyBtn.disabled).toBe(false);
+    fireEvent.click(spotifyBtn);
+    expect(mockReauth).toHaveBeenCalledWith("spotify", "entity-uuid-123");
+
+    // It never opens the stub provider-config drawer.
+    expect(
+      document.querySelector('[data-provider-connect-drawer="spotify"]'),
+    ).toBeNull();
+  });
+
   it("connect Google button is enabled when ownerEntityId is provided", () => {
     renderAddPanel("entity-uuid-123");
     fireEvent.click(screen.getByText("connect provider"));
@@ -371,6 +395,40 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
     renderUserFamily("entity-uuid-123");
     fireEvent.click(screen.getByText(/connect google/i));
     expect(mockReauth).toHaveBeenCalledWith("google", "entity-uuid-123");
+  });
+
+  // handleOAuthConnect catch branch (bu-umk50): the reauthorize call can reject
+  // (network / backend error) or resolve without a redirect_url — both surface a
+  // red oauthError and re-enable the button (no 501 special-case here, unlike
+  // PageUser.reauth; every failure is a generic error line).
+  it("surfaces the error and re-enables the button when reauthorize rejects (bu-umk50)", async () => {
+    mockReauth.mockRejectedValue(new Error("network timeout"));
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/connect google/i));
+
+    await waitFor(() => expect(screen.getByText("network timeout")).toBeTruthy());
+    const btn = document.querySelector(
+      '[data-user-connect-google="true"]',
+    ) as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+  });
+
+  it("shows the fallback message when reauthorize rejects with a non-Error (bu-umk50)", async () => {
+    mockReauth.mockRejectedValue("boom" as never);
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/connect google/i));
+
+    await waitFor(() => expect(screen.getByText("Connection failed.")).toBeTruthy());
+  });
+
+  it("surfaces an error when reauthorize resolves without a redirect_url (bu-umk50)", async () => {
+    mockReauth.mockResolvedValue({ data: {}, meta: {} } as never);
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/connect google/i));
+
+    await waitFor(() =>
+      expect(screen.getByText("No redirect URL returned.")).toBeTruthy(),
+    );
   });
 
   // Note: unlike the "connect provider" family (reachable without an owner

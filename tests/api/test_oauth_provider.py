@@ -370,7 +370,7 @@ async def test_spotify_start_json_mode_scope_base(app):
 
 
 async def test_spotify_callback_happy_path(app):
-    """Spotify callback exchanges code, stores refresh token, redirects to /secrets."""
+    """Spotify callback stores the canonical runtime tokens and redirects to /secrets."""
     app_with_pool, pool = _make_app(app)
 
     state = _generate_state()
@@ -398,6 +398,32 @@ async def test_spotify_callback_happy_path(app):
     location = resp.headers.get("location", "")
     assert "/secrets" in location
     assert "u:spotify" in location
+
+    stored = {
+        call.args[0]: {
+            "value": call.args[1],
+            "category": call.kwargs["category"],
+            "is_sensitive": call.kwargs["is_sensitive"],
+        }
+        for call in mock_cred_store.store.await_args_list
+    }
+    assert stored["SPOTIFY_ACCESS_TOKEN"] == {
+        "value": _SPOTIFY_TOKEN["access_token"],
+        "category": "spotify",
+        "is_sensitive": True,
+    }
+    assert stored["SPOTIFY_REFRESH_TOKEN"] == {
+        "value": _SPOTIFY_TOKEN["refresh_token"],
+        "category": "spotify",
+        "is_sensitive": True,
+    }
+    assert stored["SPOTIFY_TOKEN_EXPIRES_AT"]["category"] == "spotify"
+    assert stored["SPOTIFY_TOKEN_EXPIRES_AT"]["is_sensitive"] is False
+    assert stored["SPOTIFY_GRANTED_SCOPES"] == {
+        "value": _SPOTIFY_TOKEN["scope"],
+        "category": "spotify",
+        "is_sensitive": False,
+    }
 
     # connected audit row emitted
     audit_calls = mock_audit.call_args_list

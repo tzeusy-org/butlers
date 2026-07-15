@@ -81,6 +81,9 @@ export function buildSpineEntries(
     family: "user" as const,
     label: inventory.providers[s.provider]?.label ?? s.provider,
     provider: s.provider,
+    // Carried so the React key can disambiguate two identities sharing a
+    // provider (bu-ffjig); `key` stays provider-level for focus deep-links.
+    identity: s.identity,
     state: s.state,
     mono: false,
     lastTouchOrder: s.lastUsed ? i : 800,

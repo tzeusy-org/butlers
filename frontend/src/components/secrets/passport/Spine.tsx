@@ -266,7 +266,11 @@ export function SpineGroup({
         const providerInfo = entry.provider ? providers?.[entry.provider] : undefined;
         return (
           <SpineRow
-            key={entry.key}
+            // `entry.key` (`u:<provider>`) is the focus/selection key and is NOT
+            // unique when two identities share a provider — qualify the React
+            // reconciliation key with the identity to avoid a duplicate-key
+            // warning, without changing the focus deep-link contract (bu-ffjig).
+            key={entry.identity ? `${entry.key}:${entry.identity}` : entry.key}
             entry={entry}
             n={n0 + i + 1}
             active={activeKey === entry.key}

@@ -83,6 +83,7 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -127,6 +128,12 @@ from butlers.google_credentials import (
     store_google_credentials,
 )
 from butlers.secrets_provider_catalog import PROVIDER_CATALOG
+from butlers.spotify_credentials import (
+    SPOTIFY_ACCESS_TOKEN,
+    SPOTIFY_CATEGORY,
+    SPOTIFY_REFRESH_TOKEN,
+    SPOTIFY_TOKEN_EXPIRES_AT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3060,8 +3067,51 @@ async def oauth_provider_callback(
             detail="Shared credential DB unavailable; cannot persist OAuth credentials.",
         )
 
-    if refresh_token:
-        # Store the refresh token using the provider-namespaced key.
+    if provider == "spotify":
+        # Spotify's connector, module, status, and disconnect paths all consume
+        # the canonical SPOTIFY_* keys. Persist the generalized callback result
+        # to that established authority instead of inventing a parallel key that
+        # no runtime consumer reads.
+        if not access_token:
+            raise HTTPException(
+                status_code=502,
+                detail="Spotify token response did not include an access token.",
+            )
+        expires_in = int(token_data.get("expires_in", 3600))
+        expires_at = (datetime.now(UTC) + timedelta(seconds=expires_in)).isoformat()
+        await cred_store.store(
+            SPOTIFY_ACCESS_TOKEN,
+            access_token,
+            category=SPOTIFY_CATEGORY,
+            description="Spotify OAuth access token",
+            is_sensitive=True,
+        )
+        if refresh_token:
+            await cred_store.store(
+                SPOTIFY_REFRESH_TOKEN,
+                refresh_token,
+                category=SPOTIFY_CATEGORY,
+                description="Spotify OAuth refresh token",
+                is_sensitive=True,
+            )
+        await cred_store.store(
+            SPOTIFY_TOKEN_EXPIRES_AT,
+            expires_at,
+            category=SPOTIFY_CATEGORY,
+            description="Spotify access token expiry (ISO 8601 UTC)",
+            is_sensitive=False,
+        )
+        if scope:
+            await cred_store.store(
+                "SPOTIFY_GRANTED_SCOPES",
+                scope,
+                category=SPOTIFY_CATEGORY,
+                description="Spotify OAuth granted scopes (space-separated)",
+                is_sensitive=False,
+            )
+    elif refresh_token:
+        # Other generalized providers retain the provider-namespaced key until
+        # they define a more specific runtime credential contract.
         await cred_store.store(
             f"oauth_{provider}_refresh_token",
             refresh_token,

@@ -28,6 +28,14 @@ export interface SpineEntry {
   label: string;
   /** For user entries: provider slug */
   provider?: string;
+  /**
+   * For user entries: the owning identity id. Two identities can hold a
+   * credential on the same provider (owner-default projection), so `key`
+   * (`u:<provider>`, a provider-level focus deep-link target) is NOT unique on
+   * its own — `identity` disambiguates the React key for those siblings
+   * (bu-ffjig) without changing the focus/selection contract.
+   */
+  identity?: string;
   state: CredentialState;
   /** Render label in mono (system keys). */
   mono: boolean;

@@ -3104,6 +3104,30 @@ export function PassportEmptyState() {
  * Template suggestions sourced from SECRET_TEMPLATES (system) and
  * USER_SECRET_TEMPLATES / ENTITY_INFO_TYPES (user).
  */
+
+// Static provider collections — module-scope so they are not re-allocated on
+// every PassportAddPanel render.
+// Providers served by real provider-config drawers (bu-ayp6v.8/.9).
+const DRAWER_PROVIDER_SLUGS = new Set(["homeassistant", "owntracks", "steam", "whatsapp"]);
+
+// Providers connected via the generalized OAuth dance (reauthorizeUserCredential
+// → /api/oauth/<provider>/start). spotify is a first-class OAuth provider
+// (secrets_provider_catalog kind=oauth; oauth.py _PROVIDER_REGISTRY has its real
+// auth/token URLs), so the add panel connects it like google rather than the
+// stub drawer (bu-5gliy). The connected-Spotify reconfigure/disconnect surface
+// (SpotifyDrawer) still lives on PageUser.
+const OAUTH_PROVIDERS = [
+  { slug: "google", label: "Google" },
+  { slug: "spotify", label: "Spotify" },
+];
+
+const STUB_PROVIDERS = [
+  { slug: "homeassistant", label: "Home Assistant" },
+  { slug: "owntracks", label: "OwnTracks" },
+  { slug: "steam", label: "Steam" },
+  { slug: "whatsapp", label: "WhatsApp" },
+];
+
 export function PassportAddPanel({
   ownerEntityId,
   onClose,
@@ -3237,21 +3261,6 @@ export function PassportAddPanel({
   const [providerSlug, setProviderSlug] = React.useState<string | null>(null);
   const [oauthPending, setOauthPending] = React.useState(false);
   const [oauthError, setOauthError] = React.useState<string | null>(null);
-
-  // Providers served by real provider-config drawers (bu-ayp6v.8/.9)
-  const DRAWER_PROVIDER_SLUGS = new Set(["homeassistant", "owntracks", "steam", "spotify", "whatsapp"]);
-
-  const OAUTH_PROVIDERS = [
-    { slug: "google", label: "Google" },
-  ];
-
-  const STUB_PROVIDERS = [
-    { slug: "homeassistant", label: "Home Assistant" },
-    { slug: "owntracks",     label: "OwnTracks"      },
-    { slug: "steam",         label: "Steam"           },
-    { slug: "spotify",       label: "Spotify"         },
-    { slug: "whatsapp",      label: "WhatsApp"        },
-  ];
 
   async function handleOAuthConnect(slug: string, identity?: string) {
     if (!ownerEntityId) return;
@@ -3685,7 +3694,9 @@ export function PassportAddPanel({
               ))}
             </div>
 
-            {/* Real provider-config drawers for HA / OwnTracks / Steam / Spotify / WhatsApp */}
+            {/* Real provider-config drawers for HA / OwnTracks / Steam / WhatsApp.
+                Spotify is no longer here — it connects via the OAuth dance above
+                (bu-5gliy); its reconfigure/disconnect drawer lives on PageUser. */}
             {providerSlug !== null && DRAWER_PROVIDER_SLUGS.has(providerSlug) && (
               <div className="mt-3" data-provider-connect-drawer={providerSlug}>
                 {providerSlug === "homeassistant" && (
@@ -3696,9 +3707,6 @@ export function PassportAddPanel({
                 )}
                 {providerSlug === "steam" && (
                   <SteamDrawer onClose={() => setProviderSlug(null)} />
-                )}
-                {providerSlug === "spotify" && (
-                  <SpotifyDrawer onClose={() => setProviderSlug(null)} />
                 )}
                 {providerSlug === "whatsapp" && (
                   <WhatsAppDrawer onClose={() => setProviderSlug(null)} />
