@@ -8,7 +8,7 @@ The Google Health connector is a standalone polling process that reads the owner
 
 ### Requirement: Owner Account Discovery and Scope Verification
 
-The connector SHALL operate against **every** `public.google_accounts` row whose `status = 'active'` and whose `granted_scopes` contains all three Google Health scopes (`https://www.googleapis.com/auth/googlehealth.sleep`, `https://www.googleapis.com/auth/googlehealth.activity_and_fitness`, `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements`). It SHALL maintain independent per-account polling state and emit a heartbeat per account.
+The connector SHALL operate against **every** `public.google_accounts` row whose `status = 'active'` and whose `granted_scopes` covers all three Google Health scope families. The canonical requested scopes are `https://www.googleapis.com/auth/googlehealth.sleep.readonly`, `https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly`, and `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`. Eligibility checks SHALL treat Google's unsuffixed token-response variants as equivalent members of the same scope families. The connector SHALL maintain independent per-account polling state and emit a heartbeat per account.
 
 #### Scenario: Startup with one or more accounts granting Health scopes
 
@@ -60,10 +60,14 @@ Because a wellness envelope's `sender.identity` is the account email (canonicall
 
 The connector SHALL NOT implement its own OAuth refresh logic. It SHALL delegate to the shared Google credential pipeline, resolving OAuth app credentials (client_id, client_secret) via `load_google_credentials()` and each account's refresh token via `google_credentials._resolve_entity_refresh_token()` (keyed by the account's companion entity_id). It SHALL NOT read `GOOGLE_OAUTH_REFRESH_TOKEN` from `CredentialStore.resolve()` or `os.environ`.
 
+The account's stored grant MAY contain scopes shared with Gmail, Drive, Calendar, and Contacts. Each Google Health access-token refresh MUST nevertheless request only the three canonical Google Health `.readonly` scopes. Unrelated Google scopes MUST NOT be included in the minted access token because the Google Health API rejects mixed-scope access tokens.
+
 #### Scenario: Access token acquisition
 
 - **WHEN** the connector needs to make a Google Health API call
 - **THEN** it SHALL request a fresh access token from the shared Google credential helper
+- **AND** the refresh-token grant's `scope` parameter SHALL contain exactly the three canonical Google Health `.readonly` scopes
+- **AND** the minted access token SHALL NOT include unrelated Google scopes from the account's stored union grant
 - **AND** the connector SHALL NOT read `GOOGLE_OAUTH_REFRESH_TOKEN` from `CredentialStore` or environment directly
 
 #### Scenario: 401 response handling
