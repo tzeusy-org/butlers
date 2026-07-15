@@ -143,7 +143,7 @@ export function CalendarPortabilityDialog({
         <div className="flex flex-col gap-6 py-2">
           {/* Export */}
           <section className="flex flex-col gap-2">
-            <h3 className="text-sm font-semibold text-[var(--fg)]">
+            <h3 className="text-sm font-semibold text-fg">
               Export .ics
             </h3>
             <p className="text-xs text-[var(--dim)]">
@@ -164,7 +164,7 @@ export function CalendarPortabilityDialog({
 
           {/* Subscribe */}
           <section className="flex flex-col gap-2 border-t border-[var(--border)] pt-4">
-            <h3 className="text-sm font-semibold text-[var(--fg)]">
+            <h3 className="text-sm font-semibold text-fg">
               Subscribe (live feed)
             </h3>
             <p className="text-xs text-[var(--dim)]">
@@ -190,7 +190,7 @@ export function CalendarPortabilityDialog({
             </div>
             <a
               href={webcalUrl}
-              className="text-xs text-[var(--fg)] underline underline-offset-2 hover:text-[var(--dim)]"
+              className="text-xs text-fg underline underline-offset-2 hover:text-[var(--dim)]"
             >
               Open in calendar app (webcal://)
             </a>
@@ -198,7 +198,7 @@ export function CalendarPortabilityDialog({
 
           {/* Import */}
           <section className="flex flex-col gap-2 border-t border-[var(--border)] pt-4">
-            <h3 className="text-sm font-semibold text-[var(--fg)]">
+            <h3 className="text-sm font-semibold text-fg">
               Import .ics
             </h3>
             <p className="text-xs text-[var(--dim)]">
@@ -225,7 +225,7 @@ export function CalendarPortabilityDialog({
                       setFile(event.target.files?.[0] ?? null);
                       setResult(null);
                     }}
-                    className="text-xs text-[var(--fg)] file:mr-3 file:rounded file:border file:border-[var(--border)] file:bg-[var(--surface)] file:px-3 file:py-1.5 file:text-xs file:text-[var(--fg)]"
+                    className="text-xs text-fg file:mr-3 file:rounded file:border file:border-[var(--border)] file:bg-[var(--surface)] file:px-3 file:py-1.5 file:text-xs file:text-fg"
                   />
                 </div>
                 <div className="flex flex-col gap-1">
@@ -237,7 +237,7 @@ export function CalendarPortabilityDialog({
                     aria-label="Import target calendar"
                     value={targetKey}
                     onChange={(event) => setTargetKey(event.target.value)}
-                    className="rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-xs text-[var(--fg)]"
+                    className="rounded border border-[var(--border)] bg-bg px-2 py-1.5 text-xs text-fg"
                   >
                     {importTargets.map((target) => (
                       <option key={target.source_key} value={target.source_key}>
@@ -259,7 +259,7 @@ export function CalendarPortabilityDialog({
                 {result ? (
                   <dl
                     aria-label="Import result"
-                    className="mt-1 flex gap-4 text-xs text-[var(--fg)]"
+                    className="mt-1 flex gap-4 text-xs text-fg"
                   >
                     <div>
                       <dt className="text-[var(--dim)]">Parsed</dt>

@@ -107,11 +107,11 @@ export function ContactPeoplePicker({
             <span
               key={person.entity_id}
               data-testid="people-selected-chip"
-              className="inline-flex items-center gap-1.5 rounded-[3px] border border-[var(--border-strong)] py-0.5 pl-1 pr-1.5 font-mono text-[11px] text-[var(--fg)]"
+              className="inline-flex items-center gap-1.5 rounded-[3px] border border-[var(--border-strong)] py-0.5 pl-1 pr-1.5 font-mono text-[11px] text-fg"
             >
               <span
                 aria-hidden="true"
-                className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)]/15 text-[9px] font-semibold text-[var(--fg)]"
+                className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)]/15 text-[9px] font-semibold text-fg"
               >
                 {initials(person.canonical_name)}
               </span>
@@ -122,7 +122,7 @@ export function ContactPeoplePicker({
                 data-testid="people-remove-chip"
                 disabled={disabled || lockLastRemove}
                 onClick={() => removePerson(person.entity_id)}
-                className="text-[var(--mfg)] hover:text-[var(--fg)] disabled:opacity-50"
+                className="text-[var(--mfg)] hover:text-fg disabled:opacity-50"
               >
                 ×
               </button>
@@ -162,7 +162,7 @@ export function ContactPeoplePicker({
         ) : results.length > 0 ? (
           <ul
             data-testid="people-search-results"
-            className="max-h-44 overflow-y-auto rounded-[4px] border border-[var(--border)] bg-[var(--bg)] py-1"
+            className="max-h-44 overflow-y-auto rounded-[4px] border border-[var(--border)] bg-bg py-1"
           >
             {results.map((result) => (
               <li key={result.entity_id}>
@@ -172,7 +172,7 @@ export function ContactPeoplePicker({
                   disabled={disabled}
                   onClick={() => addPerson(result)}
                   className={cn(
-                    "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm text-[var(--fg)]",
+                    "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm text-fg",
                     "hover:bg-[var(--accent)]/10 disabled:opacity-50",
                   )}
                 >

@@ -50,7 +50,7 @@ export function SpineSearch({
         onChange={(e) => onChange(e.target.value)}
         placeholder="search"
         aria-label="Search credentials"
-        className="w-full py-1.5 pl-4 pr-6 bg-transparent border-none outline-none font-mono text-[11px] tracking-[0.04em] text-[var(--fg)] placeholder:text-[var(--dim)]"
+        className="w-full py-1.5 pl-4 pr-6 bg-transparent border-none outline-none font-mono text-[11px] tracking-[0.04em] text-fg placeholder:text-[var(--dim)]"
         data-spine-search="true"
       />
       <span
@@ -109,7 +109,7 @@ export function SortPicker({
             className={cn(
               "bg-transparent border-none cursor-pointer p-0 font-mono text-[9.5px] uppercase tracking-[0.08em] pb-px",
               mode === o.id
-                ? "text-[var(--fg)] border-b border-[var(--fg)]"
+                ? "text-fg border-b border-fg"
                 : "text-[var(--dim)]",
             )}
           >
@@ -307,7 +307,7 @@ export function SpineAddButton({
       className={cn(
         "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight",
         "disabled:pointer-events-none disabled:opacity-40",
-        "bg-[var(--fg)] text-[var(--bg)] border-[var(--fg)]",
+        "bg-fg text-bg border-fg",
       )}
     >
       + add

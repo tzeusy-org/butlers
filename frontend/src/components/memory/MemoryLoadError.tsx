@@ -42,7 +42,7 @@ export function MemoryLoadError({ label, onRetry, className, testId }: MemoryLoa
           onClick={onRetry}
           className={cn(
             "font-mono text-[11px] leading-[1.4] text-[var(--red-text)]",
-            "underline [text-underline-offset:4px] transition-colors hover:text-[var(--fg)]",
+            "underline [text-underline-offset:4px] transition-colors hover:text-fg",
           )}
         >
           retry

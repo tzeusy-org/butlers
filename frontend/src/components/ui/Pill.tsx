@@ -73,11 +73,11 @@ export function Pill({ selected = false, count, children, className, ...props }:
         // Base (unselected)
         "text-[var(--mfg,oklch(0.708_0_0))] border-[var(--border,oklch(1_0_0/0.10))] bg-transparent",
         // Selected override
-        selected && "text-[var(--fg)] border-[var(--fg)] bg-transparent",
+        selected && "text-fg border-fg bg-transparent",
         // Hover (unselected only)
-        !selected && "hover:text-[var(--fg)] hover:border-[var(--border-strong,oklch(1_0_0/0.18))]",
+        !selected && "hover:text-fg hover:border-[var(--border-strong,oklch(1_0_0/0.18))]",
         // Focus
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
         // Disabled
         "disabled:pointer-events-none disabled:opacity-40",
         className,

@@ -43,7 +43,7 @@ import { cn } from "@/lib/utils.ts";
 const PILL =
   "inline-flex items-center justify-center gap-1.5 h-7 rounded-[3px] border px-2.5 " +
   "font-mono text-[11px] leading-none transition-colors " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
   "disabled:pointer-events-none disabled:opacity-40";
 
 const MATCH_STRATEGIES: { value: CalendarDedupMatchStrategy; label: string; hint: string }[] = [
@@ -172,7 +172,7 @@ export function CalendarDuplicatesPanel({
     return (
       <div data-testid="duplicates-panel" role="alert" className="flex items-start gap-2 py-1">
         <span className="mt-[2px] font-mono text-[11px] text-[var(--red-text)]">●</span>
-        <p className="text-sm text-[var(--fg)]">
+        <p className="text-sm text-fg">
           Failed to load duplicate review.{" "}
           <span className="text-[var(--mfg)]">
             {error instanceof Error ? error.message : "Unknown error"}
@@ -221,8 +221,8 @@ export function CalendarDuplicatesPanel({
                       className={cn(
                         PILL,
                         active
-                          ? "border-[var(--fg)] bg-[var(--fg)] text-[var(--bg)]"
-                          : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-[var(--fg)]",
+                          ? "border-fg bg-fg text-bg"
+                          : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
                       )}
                     >
                       {option.label}
@@ -254,7 +254,7 @@ export function CalendarDuplicatesPanel({
                   void commitThreshold();
                 }
               }}
-              className="h-7 w-20 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 font-mono text-[12px] tabular-nums text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+              className="h-7 w-20 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 font-mono text-[12px] tabular-nums text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
             />
           </label>
         </div>
@@ -284,7 +284,7 @@ export function CalendarDuplicatesPanel({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 flex-col gap-1">
-                    <span className="truncate text-sm font-medium text-[var(--fg)]">
+                    <span className="truncate text-sm font-medium text-fg">
                       {kept.title}
                     </span>
                     {when ? (
@@ -330,8 +330,8 @@ export function CalendarDuplicatesPanel({
                     className={cn(
                       PILL,
                       cluster.keep_separate
-                        ? "border-[var(--fg)] bg-[var(--fg)] text-[var(--bg)] hover:opacity-90"
-                        : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-[var(--fg)]",
+                        ? "border-fg bg-fg text-bg hover:opacity-90"
+                        : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
                     )}
                   >
                     {cluster.keep_separate ? "Kept separate" : "Keep separate"}

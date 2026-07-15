@@ -83,7 +83,7 @@ function MonoCellInput({
         onChange(n);
       }}
       className={cn(
-        "w-20 bg-transparent font-mono text-[11px] tabular-nums leading-[1.4] text-[var(--fg)]",
+        "w-20 bg-transparent font-mono text-[11px] tabular-nums leading-[1.4] text-fg",
         "border-0 border-b border-transparent px-0 py-0.5",
         "placeholder:text-[var(--mfg)]",
         "focus:border-[var(--border-strong)] focus:outline-none",
@@ -212,9 +212,9 @@ function RetentionPolicies() {
             className={cn(
               "inline-flex h-6 items-center rounded-full px-2.5",
               "font-mono text-[10px] font-medium uppercase tracking-wide leading-none",
-              "border border-[var(--fg)] text-[var(--fg)] bg-transparent",
-              "transition-colors hover:bg-[var(--fg)] hover:text-[var(--bg)]",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+              "border border-fg text-fg bg-transparent",
+              "transition-colors hover:bg-fg hover:text-bg",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
               "disabled:pointer-events-none disabled:opacity-40",
             )}
           >
@@ -499,7 +499,7 @@ function Embeddings() {
         ) : driftSentence == null ? (
           <Voice variant="italic">All embeddings current.</Voice>
         ) : (
-          <span className="text-[13px] leading-snug text-[var(--fg)]">
+          <span className="text-[13px] leading-snug text-fg">
             {driftSentence}
           </span>
         )}
@@ -513,7 +513,7 @@ function Embeddings() {
             className={cn(
               "font-mono text-[11px] leading-[1.4] text-[var(--mfg)]",
               "underline [text-underline-offset:4px]",
-              "transition-colors hover:text-[var(--fg)]",
+              "transition-colors hover:text-fg",
               "disabled:pointer-events-none disabled:opacity-40",
             )}
           >
@@ -529,8 +529,8 @@ function Embeddings() {
               "underline [text-underline-offset:4px]",
               "transition-colors",
               armed
-                ? "text-[var(--fg)]"
-                : "text-[var(--mfg)] hover:text-[var(--fg)]",
+                ? "text-fg"
+                : "text-[var(--mfg)] hover:text-fg",
               "disabled:pointer-events-none disabled:opacity-40",
             )}
           >

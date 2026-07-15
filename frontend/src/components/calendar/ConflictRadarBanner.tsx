@@ -96,7 +96,7 @@ function IssueCard({
       data-severity={issue.severity}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-medium text-[var(--fg)]">
+        <span className="font-medium text-fg">
           {formatDay(issue.date)} · {KIND_LABEL[issue.kind]}
         </span>
         <span className="shrink-0 text-xs uppercase tracking-wide text-muted-foreground">
@@ -109,7 +109,7 @@ function IssueCard({
           {issue.events.map((event) => (
             <li
               key={event.entry_id}
-              className="rounded bg-[var(--bg)] px-1.5 py-0.5 text-xs text-[var(--fg)]"
+              className="rounded bg-bg px-1.5 py-0.5 text-xs text-fg"
             >
               {event.title}
             </li>
@@ -130,7 +130,7 @@ function IssueCard({
               </button>
               <button
                 type="button"
-                className="rounded border border-border px-2 py-0.5 text-xs text-[var(--fg)] hover:bg-muted"
+                className="rounded border border-border px-2 py-0.5 text-xs text-fg hover:bg-muted"
                 onClick={() => onDismissProposal?.(proposalId)}
               >
                 Decline
@@ -181,7 +181,7 @@ export function ConflictRadarBanner({
         </span>
         <button
           type="button"
-          className="flex-1 text-left font-medium text-[var(--fg)]"
+          className="flex-1 text-left font-medium text-fg"
           aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
         >

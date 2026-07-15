@@ -150,8 +150,8 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
         "grid grid-cols-[50px_24px_1fr_16px] items-baseline gap-x-2",
         "border-b border-[var(--border-soft)] px-1 py-2.5",
         "cursor-pointer transition-colors hover:bg-[var(--bg-elev,transparent)]",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/20",
-        "text-[var(--fg)]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/20",
+        "text-fg",
       )}
       role="button"
       tabIndex={0}
@@ -203,7 +203,7 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
                 e.stopPropagation();
                 openEpisode();
               }}
-              className="mt-1.5 inline-block font-mono text-[11px] text-[var(--mfg)] underline [text-underline-offset:3px] hover:text-[var(--fg)]"
+              className="mt-1.5 inline-block font-mono text-[11px] text-[var(--mfg)] underline [text-underline-offset:3px] hover:text-fg"
             >
               open ↗
             </a>

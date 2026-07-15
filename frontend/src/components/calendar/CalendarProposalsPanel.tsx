@@ -88,7 +88,7 @@ export interface CalendarProposalsPanelProps {
 const PILL =
   "inline-flex items-center justify-center gap-1.5 h-7 rounded-[3px] border px-2.5 " +
   "font-mono text-[11px] leading-none transition-colors " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
   "disabled:pointer-events-none disabled:opacity-40";
 
 export function CalendarProposalsPanel({
@@ -240,7 +240,7 @@ export function CalendarProposalsPanel({
         className="flex items-start gap-2 py-1"
       >
         <span className="mt-[2px] font-mono text-[11px] text-[var(--red-text)]">●</span>
-        <p className="text-sm text-[var(--fg)]">
+        <p className="text-sm text-fg">
           Failed to load proposals.{" "}
           <span className="text-[var(--mfg)]">
             {error instanceof Error ? error.message : "Unknown error"}
@@ -307,7 +307,7 @@ export function CalendarProposalsPanel({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 flex-col gap-1">
-                    <span className="truncate text-sm font-medium text-[var(--fg)]">
+                    <span className="truncate text-sm font-medium text-fg">
                       {entry.title}
                     </span>
                     {whenLabel ? (
@@ -363,7 +363,7 @@ export function CalendarProposalsPanel({
                         onChange={(e) =>
                           setEditDraft((prev) => (prev ? { ...prev, title: e.target.value } : prev))
                         }
-                        className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                        className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
                       />
                     </label>
                     <div className="flex flex-wrap gap-2">
@@ -380,7 +380,7 @@ export function CalendarProposalsPanel({
                               prev ? { ...prev, startLocal: e.target.value } : prev,
                             )
                           }
-                          className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 font-mono text-[12px] text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                          className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 font-mono text-[12px] text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
                         />
                       </label>
                       <label className="flex flex-1 flex-col gap-1">
@@ -396,7 +396,7 @@ export function CalendarProposalsPanel({
                               prev ? { ...prev, endLocal: e.target.value } : prev,
                             )
                           }
-                          className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 font-mono text-[12px] text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                          className="rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 font-mono text-[12px] text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
                         />
                       </label>
                     </div>
@@ -408,7 +408,7 @@ export function CalendarProposalsPanel({
                         onClick={() => submitEdit(entry)}
                         className={cn(
                           PILL,
-                          "border-[var(--fg)] bg-[var(--fg)] text-[var(--bg)] hover:opacity-90",
+                          "border-fg bg-fg text-bg hover:opacity-90",
                         )}
                       >
                         Save &amp; accept
@@ -420,7 +420,7 @@ export function CalendarProposalsPanel({
                         onClick={cancelEdit}
                         className={cn(
                           PILL,
-                          "border-[var(--border-strong)] text-[var(--mfg)] hover:text-[var(--fg)]",
+                          "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
                         )}
                       >
                         Cancel
@@ -436,7 +436,7 @@ export function CalendarProposalsPanel({
                       onClick={() => handleAccept(entry)}
                       className={cn(
                         PILL,
-                        "border-[var(--fg)] bg-[var(--fg)] text-[var(--bg)] hover:opacity-90",
+                        "border-fg bg-fg text-bg hover:opacity-90",
                       )}
                     >
                       Accept
@@ -448,7 +448,7 @@ export function CalendarProposalsPanel({
                       onClick={() => handleDismiss(entry)}
                       className={cn(
                         PILL,
-                        "border-[var(--border-strong)] text-[var(--mfg)] hover:text-[var(--fg)]",
+                        "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
                       )}
                     >
                       Dismiss
@@ -460,7 +460,7 @@ export function CalendarProposalsPanel({
                       onClick={() => beginEdit(entry)}
                       className={cn(
                         PILL,
-                        "border-[var(--border-strong)] text-[var(--mfg)] hover:text-[var(--fg)]",
+                        "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
                       )}
                     >
                       Edit

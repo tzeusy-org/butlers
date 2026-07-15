@@ -49,7 +49,7 @@ export function LinkedPeopleAvatars({
           aria-hidden="true"
           className={cn(
             "inline-flex h-4 w-4 items-center justify-center rounded-full",
-            "border border-[var(--bg)] bg-[var(--accent)]/15 text-[8px] font-semibold text-[var(--fg)]",
+            "border border-bg bg-[var(--accent)]/15 text-[8px] font-semibold text-fg",
             idx > 0 && "-ml-1",
           )}
         >
@@ -60,7 +60,7 @@ export function LinkedPeopleAvatars({
         <span
           data-testid="linked-people-overflow"
           aria-hidden="true"
-          className="-ml-1 inline-flex h-4 items-center justify-center rounded-full border border-[var(--bg)] bg-[var(--muted)] px-1 text-[8px] font-semibold text-[var(--mfg)]"
+          className="-ml-1 inline-flex h-4 items-center justify-center rounded-full border border-bg bg-[var(--muted)] px-1 text-[8px] font-semibold text-[var(--mfg)]"
         >
           +{overflow}
         </span>
@@ -89,11 +89,11 @@ export function LinkedPeopleChips({ people }: LinkedPeopleChipsProps) {
         <span
           key={person.entity_id}
           data-testid="linked-person-chip"
-          className="inline-flex items-center gap-1.5 rounded-[3px] border border-[var(--border-strong)] py-0.5 pl-1 pr-1.5 font-mono text-[11px] text-[var(--fg)]"
+          className="inline-flex items-center gap-1.5 rounded-[3px] border border-[var(--border-strong)] py-0.5 pl-1 pr-1.5 font-mono text-[11px] text-fg"
         >
           <span
             aria-hidden="true"
-            className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)]/15 text-[9px] font-semibold text-[var(--fg)]"
+            className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)]/15 text-[9px] font-semibold text-fg"
           >
             {initials(person.display_label)}
           </span>

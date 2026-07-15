@@ -921,7 +921,7 @@ function capLaneEntriesByDay(
 const PILL_BASE =
   "inline-flex items-center justify-center gap-1.5 h-7 rounded-[3px] border px-2.5 " +
   "font-mono text-[11px] leading-none transition-colors " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
   "disabled:pointer-events-none disabled:opacity-40";
 
 /** Pill button (§4c). `active` inverts bg/fg for the selected state. Never colored. */
@@ -938,8 +938,8 @@ const PillButton = forwardRef<
       className={cn(
         PILL_BASE,
         active
-          ? "bg-[var(--fg)] text-[var(--bg)] border-[var(--fg)]"
-          : "bg-transparent text-[var(--mfg)] border-[var(--border-strong)] hover:text-[var(--fg)]",
+          ? "bg-fg text-bg border-fg"
+          : "bg-transparent text-[var(--mfg)] border-[var(--border-strong)] hover:text-fg",
         className,
       )}
       {...props}
@@ -957,7 +957,7 @@ function CommitButton({
       type="button"
       className={cn(
         PILL_BASE,
-        "bg-[var(--fg)] text-[var(--bg)] border-[var(--fg)] hover:opacity-90",
+        "bg-fg text-bg border-fg hover:opacity-90",
         className,
       )}
       {...props}
@@ -1019,7 +1019,7 @@ function SnoozeMenu({
       {open ? (
         <div
           data-testid="butler-snooze-menu"
-          className="absolute right-0 z-20 mt-1 flex w-56 flex-col gap-2 rounded-[4px] border border-[var(--border-strong)] bg-[var(--bg)] p-2 shadow-md"
+          className="absolute right-0 z-20 mt-1 flex w-56 flex-col gap-2 rounded-[4px] border border-[var(--border-strong)] bg-bg p-2 shadow-md"
         >
           <div className="flex flex-wrap gap-1.5">
             {presets.map((preset) => (
@@ -1040,7 +1040,7 @@ function SnoozeMenu({
               value={custom}
               onChange={(e) => setCustom(e.target.value)}
               disabled={disabled}
-              className="min-w-0 flex-1 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-1.5 py-1 text-xs text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
+              className="min-w-0 flex-1 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-1.5 py-1 text-xs text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
             />
             <CommitButton
               data-testid="butler-snooze-custom-confirm"
@@ -1104,7 +1104,7 @@ function OverlayPill({ entry }: { entry: UnifiedCalendarEntry }) {
       <span aria-hidden className="shrink-0 font-mono">
         {overlayKindGlyph(md.kind)}
       </span>
-      <span className="truncate text-[var(--fg)]">{entry.title}</span>
+      <span className="truncate text-fg">{entry.title}</span>
       {badge ? (
         <span className="ml-auto shrink-0 font-mono tabular-nums text-[var(--mfg)]">
           {badge}
@@ -1140,13 +1140,13 @@ const SOURCE_TYPE_FACET_OPTIONS: Array<{
 /** Native <select> in the toolbar's hairline-pill register. */
 const SELECT_CLASS =
   "h-7 rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2 " +
-  "font-mono text-[11px] text-[var(--fg)] " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30";
+  "font-mono text-[11px] text-fg " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30";
 
 /** Form <select> (taller, full-width) used inside dialogs. */
 const FIELD_SELECT_CLASS =
   "flex h-9 w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 " +
-  "text-sm text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 " +
+  "text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
   "disabled:cursor-not-allowed disabled:opacity-50";
 
 /** Map a source sync_state to a Dispatch StateDot state. Benign in-progress reads as waiting. */
@@ -1429,7 +1429,7 @@ function CalendarFindTimePanel({
       {findMutation.isError ? (
         <div role="alert" className="flex items-start gap-2">
           <StateDot state="error" className="mt-[7px]" />
-          <p className="text-sm text-[var(--fg)]">
+          <p className="text-sm text-fg">
             Failed to find open time slots.
           </p>
         </div>
@@ -1444,7 +1444,7 @@ function CalendarFindTimePanel({
           data-testid="find-time-unavailable"
         >
           <StateDot state="degraded" className="mt-[7px]" />
-          <p className="text-sm text-[var(--fg)]">
+          <p className="text-sm text-fg">
             Free/busy is unavailable right now, so open time couldn&rsquo;t be
             checked.{" "}
             <span className="text-[var(--mfg)]">
@@ -1471,11 +1471,11 @@ function CalendarFindTimePanel({
                   className={cn(
                     "flex w-full items-center justify-between rounded-[3px] border border-[var(--border-strong)]",
                     "px-3 py-2 text-left transition-colors hover:bg-foreground/[0.06]",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
                   )}
                   onClick={() => onSelectSlot(slot)}
                 >
-                  <span className="text-sm text-[var(--fg)]">
+                  <span className="text-sm text-fg">
                     {formatEventTime(slot.start_at, timezone, "EEE, MMM d")}
                   </span>
                   <Mono muted className="tabular-nums">
@@ -1522,7 +1522,7 @@ export function CalendarActivityPanel({
     return (
       <div role="alert" className="flex items-start gap-2 py-1">
         <StateDot state="error" className="mt-[7px]" />
-        <p className="text-sm text-[var(--fg)]">
+        <p className="text-sm text-fg">
           Failed to load activity log.{" "}
           <span className="text-[var(--mfg)]">
             {auditQuery.error instanceof Error
@@ -1609,7 +1609,7 @@ export function CalendarActivityPanel({
                     <Tip content={`Session ${entry.source_session_id}`}>
                       <Link
                         to={`/sessions/${entry.source_session_id}`}
-                        className="font-mono text-[10px] text-[var(--mfg)] underline decoration-dotted hover:text-[var(--fg)]"
+                        className="font-mono text-[10px] text-[var(--mfg)] underline decoration-dotted hover:text-fg"
                       >
                         session ›
                       </Link>
@@ -1640,7 +1640,7 @@ export function CalendarActivityPanel({
             >
               <div className="flex min-w-0 flex-col gap-0.5">
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate text-sm font-medium text-[var(--fg)]">
+                  <span className="truncate text-sm font-medium text-fg">
                     {entry.action_type}
                     {summaryTitle ? `: ${summaryTitle}` : ""}
                   </span>
@@ -2017,7 +2017,7 @@ function CalendarEntryDetailPanel({
           type="button"
           aria-label="Close detail panel"
           onClick={onClose}
-          className="font-mono text-[11px] text-[var(--mfg)] hover:text-[var(--fg)]"
+          className="font-mono text-[11px] text-[var(--mfg)] hover:text-fg"
         >
           ✕
         </button>
@@ -2054,10 +2054,10 @@ function CalendarEntryDetailPanel({
             }}
             onBlur={handleTitleBlur}
             disabled={isPending}
-            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm font-medium text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
+            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm font-medium text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
           />
         ) : (
-          <span className="text-sm font-medium text-[var(--fg)]">
+          <span className="text-sm font-medium text-fg">
             {entry.title}
           </span>
         )}
@@ -2068,7 +2068,7 @@ function CalendarEntryDetailPanel({
         <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
           When
         </span>
-        <Mono className="text-[var(--fg)]">
+        <Mono className="text-fg">
           {startFmt}
           {!entry.all_day && ` – ${endFmt}`}
         </Mono>
@@ -2111,7 +2111,7 @@ function CalendarEntryDetailPanel({
               <Link
                 to={`/sessions/${entry.source_session_id}`}
                 data-testid="detail-session-link"
-                className="font-mono text-[11px] text-[var(--mfg)] underline decoration-dotted hover:text-[var(--fg)]"
+                className="font-mono text-[11px] text-[var(--mfg)] underline decoration-dotted hover:text-fg"
               >
                 session ›
               </Link>
@@ -2197,7 +2197,7 @@ function CalendarEntryDetailPanel({
             onBlur={handleDescriptionBlur}
             disabled={isPending || !canMutateUser}
             rows={3}
-            className="w-full resize-none rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
+            className="w-full resize-none rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
           />
         </div>
       ) : null}
@@ -2221,7 +2221,7 @@ function CalendarEntryDetailPanel({
             }}
             onBlur={handleLocationBlur}
             disabled={isPending || !canMutateUser}
-            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30 disabled:opacity-50"
+            className="w-full rounded-[3px] border border-[var(--border-strong)] bg-transparent px-2.5 py-1.5 text-sm text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
           />
         </div>
       ) : null}
@@ -2364,7 +2364,7 @@ function CalendarSearchPalette({
               data-testid="search-unavailable"
             >
               <StateDot state="degraded" className="mt-[7px]" />
-              <p className="text-sm text-[var(--fg)]">
+              <p className="text-sm text-fg">
                 Search is unavailable right now.{" "}
                 <span className="text-[var(--mfg)]">
                   The calendar index couldn&rsquo;t be reached. Results may be
@@ -2394,7 +2394,7 @@ function CalendarSearchPalette({
                       key={entry.entry_id}
                       type="button"
                       onClick={() => onJump(entry)}
-                      className="flex w-full items-center gap-2 rounded-[3px] px-2 py-1.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                      className="flex w-full items-center gap-2 rounded-[3px] px-2 py-1.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
                     >
                       <Mono muted className="w-14 shrink-0 tabular-nums">
                         {entry.all_day
@@ -2405,7 +2405,7 @@ function CalendarSearchPalette({
                               "HH:mm",
                             )}
                       </Mono>
-                      <span className="truncate text-sm text-[var(--fg)]">
+                      <span className="truncate text-sm text-fg">
                         {entry.title}
                       </span>
                       {entry.butler_name ? (
@@ -4856,10 +4856,10 @@ export default function CalendarWorkspacePage() {
             title="Domain overlays: finance bills/renewals, travel, relationship dates, health appointments"
             onClick={() => updateQuery({ overlays: !overlaysEnabled })}
             className={cn(
-              "flex h-7 items-center gap-1.5 rounded-[3px] border px-2 font-mono text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+              "flex h-7 items-center gap-1.5 rounded-[3px] border px-2 font-mono text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
               overlaysEnabled
-                ? "border-[var(--fg)] bg-foreground/[0.06] text-[var(--fg)]"
-                : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-[var(--fg)]",
+                ? "border-fg bg-foreground/[0.06] text-fg"
+                : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
             )}
           >
             <StateDot state={overlaysEnabled ? "ok" : "waiting"} />
@@ -5070,7 +5070,7 @@ export default function CalendarWorkspacePage() {
           ) : workspaceQuery.isError ? (
             <div role="alert" className="flex items-start gap-2 py-1">
               <StateDot state="error" className="mt-[7px]" />
-              <p className="text-sm text-[var(--fg)]">
+              <p className="text-sm text-fg">
                 The calendar workspace failed to load.{" "}
                 <span className="text-[var(--mfg)]">
                   {workspaceQuery.error instanceof Error
@@ -5098,7 +5098,7 @@ export default function CalendarWorkspacePage() {
                     <div className="mb-1 flex items-center justify-between gap-3 border-b border-[var(--border)] pb-2">
                       <div className="flex min-w-0 items-center gap-2.5">
                         <ButlerMark name={lane.butlerName} tone="fill" />
-                        <span className="truncate text-[15px] font-medium text-[var(--fg)]">
+                        <span className="truncate text-[15px] font-medium text-fg">
                           {lane.title}
                         </span>
                         <Mono muted className="tabular-nums">
@@ -5199,7 +5199,7 @@ export default function CalendarWorkspacePage() {
                               }
                             >
                               <div className="flex min-w-0 items-center gap-2">
-                                <span className="truncate text-sm text-[var(--fg)]">
+                                <span className="truncate text-sm text-fg">
                                   {item.title}
                                 </span>
                                 <KindTag>
@@ -5256,13 +5256,13 @@ export default function CalendarWorkspacePage() {
                           type="button"
                           aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
                           onClick={() => openUserCreateDialog(day)}
-                          className="absolute inset-0 z-0 cursor-pointer transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
+                          className="absolute inset-0 z-0 cursor-pointer transition-colors hover:bg-foreground/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-fg/30"
                         />
                       ) : null}
                       <div className="pointer-events-none relative z-10">
                         <div className="mb-1 flex items-center justify-between">
                           {today ? (
-                            <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-[4px] bg-[var(--fg)] px-1 font-mono text-[11px] tabular-nums text-[var(--bg)]">
+                            <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-[4px] bg-fg px-1 font-mono text-[11px] tabular-nums text-bg">
                               {format(day, "d")}
                             </span>
                           ) : (
@@ -5270,7 +5270,7 @@ export default function CalendarWorkspacePage() {
                               className={cn(
                                 "font-mono text-[11px] tabular-nums",
                                 inMonth
-                                  ? "text-[var(--fg)]"
+                                  ? "text-fg"
                                   : "text-[var(--dim)]",
                               )}
                             >
@@ -5285,7 +5285,7 @@ export default function CalendarWorkspacePage() {
                                 type="button"
                                 data-calendar-entry-id={entry.entry_id}
                                 onClick={() => openDetailPanel(entry)}
-                                className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                                className="pointer-events-auto flex w-full items-center gap-1 truncate rounded-[2px] px-1 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
                               >
                               {!entry.all_day ? (
                                 <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--mfg)]">
@@ -5307,7 +5307,7 @@ export default function CalendarWorkspacePage() {
                               onClick={() =>
                                 updateQuery({ range: "day", anchor: day })
                               }
-                              className="pointer-events-auto block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)] transition-colors hover:text-[var(--fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30"
+                              className="pointer-events-auto block px-1 font-mono text-[10px] tabular-nums text-[var(--mfg)] transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
                             >
                               +{dayEntries.length - 3} more
                             </button>
@@ -5377,13 +5377,13 @@ export default function CalendarWorkspacePage() {
                     key={format(day, "yyyy-MM-dd")}
                     className="px-2 text-center"
                   >
-                    <Eyebrow className={cn(isToday(day) && "text-[var(--fg)]")}>
+                    <Eyebrow className={cn(isToday(day) && "text-fg")}>
                       {format(day, "EEE")}
                     </Eyebrow>{" "}
                     <span
                       className={cn(
                         "font-mono text-[12px] tabular-nums",
-                        isToday(day) ? "text-[var(--fg)]" : "text-[var(--mfg)]",
+                        isToday(day) ? "text-fg" : "text-[var(--mfg)]",
                       )}
                     >
                       {format(day, "d")}
@@ -5439,7 +5439,7 @@ export default function CalendarWorkspacePage() {
                                   evt.stopPropagation();
                                   openDetailPanel(entry);
                                 }}
-                                className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-[var(--fg)] transition-colors hover:bg-foreground/[0.06]"
+                                className="block w-full truncate rounded-[3px] border border-[var(--border)] px-1.5 py-0.5 text-left text-[11px] text-fg transition-colors hover:bg-foreground/[0.06]"
                               >
                                 {entry.title}
                               </button>
@@ -5505,7 +5505,7 @@ export default function CalendarWorkspacePage() {
                           <button
                             type="button"
                             aria-label={`Create event on ${format(day, "EEE, MMM d")}`}
-                            className="absolute inset-0 z-0 cursor-pointer touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--fg)]/30"
+                            className="absolute inset-0 z-0 cursor-pointer touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-fg/30"
                             onPointerDown={(evt) =>
                               beginCreateDrag(evt, dayIndex)
                             }
@@ -5547,7 +5547,7 @@ export default function CalendarWorkspacePage() {
                           <div
                             aria-hidden
                             data-testid="calendar-drag-preview"
-                            className="pointer-events-none absolute inset-x-0.5 z-20 rounded-[3px] border border-dashed border-[var(--fg)]/60 bg-[var(--fg)]/10"
+                            className="pointer-events-none absolute inset-x-0.5 z-20 rounded-[3px] border border-dashed border-fg/60 bg-fg/10"
                             style={{
                               top: (gridDrag.startMin / 60) * HOUR_HEIGHT_PX,
                               height:
@@ -5556,7 +5556,7 @@ export default function CalendarWorkspacePage() {
                               minHeight: 16,
                             }}
                           >
-                            <span className="block px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-[var(--fg)]">
+                            <span className="block px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-fg">
                               {formatMinuteLabel(gridDrag.startMin)}–
                               {formatMinuteLabel(gridDrag.endMin)}
                             </span>
@@ -5597,9 +5597,9 @@ export default function CalendarWorkspacePage() {
                               }}
                               className={cn(
                                 "absolute inset-x-0.5 z-20 flex flex-col overflow-hidden rounded-[3px]",
-                                "border border-dashed border-[var(--fg)]/50 bg-[var(--fg)]/[0.08]",
-                                "px-1.5 py-0.5 text-left transition-colors hover:bg-[var(--fg)]/[0.16]",
-                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+                                "border border-dashed border-fg/50 bg-fg/[0.08]",
+                                "px-1.5 py-0.5 text-left transition-colors hover:bg-fg/[0.16]",
+                                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
                               )}
                               style={{
                                 top: (topMin / 60) * HOUR_HEIGHT_PX,
@@ -5607,7 +5607,7 @@ export default function CalendarWorkspacePage() {
                                 minHeight: 16,
                               }}
                             >
-                              <span className="font-mono text-[10px] leading-none tabular-nums text-[var(--fg)]">
+                              <span className="font-mono text-[10px] leading-none tabular-nums text-fg">
                                 #{slotIndex + 1} · {slotLabel}
                               </span>
                             </button>
@@ -5623,7 +5623,7 @@ export default function CalendarWorkspacePage() {
                               evt.stopPropagation();
                               undoMove();
                             }}
-                            className="absolute inset-x-0.5 z-20 flex items-center justify-center rounded-[3px] border border-dashed border-[var(--fg)]/40 bg-[var(--bg)]/70 text-[10px] font-medium text-[var(--mfg)] transition-colors hover:text-[var(--fg)]"
+                            className="absolute inset-x-0.5 z-20 flex items-center justify-center rounded-[3px] border border-dashed border-fg/40 bg-bg/70 text-[10px] font-medium text-[var(--mfg)] transition-colors hover:text-fg"
                             style={{
                               top:
                                 (minuteOfDayInTz(
@@ -5673,7 +5673,7 @@ export default function CalendarWorkspacePage() {
                                   : undefined
                               }
                               className={cn(
-                                "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-[var(--bg)] px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+                                "absolute inset-x-0.5 z-10 overflow-hidden rounded-[3px] border border-[var(--border)] bg-bg px-1.5 py-0.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
                                 // Amber left edge marks an event caught in an overlap.
                                 overlapEntryIds.has(entry.entry_id) &&
                                   "border-l-2 border-l-amber-500",
@@ -5711,7 +5711,7 @@ export default function CalendarWorkspacePage() {
                                 openDetailPanel(entry);
                               }}
                             >
-                              <span className="block truncate text-[11px] font-medium leading-tight text-[var(--fg)]">
+                              <span className="block truncate text-[11px] font-medium leading-tight text-fg">
                                 {entry.title}
                               </span>
                               {heightPx >= 32 ? (
@@ -5795,7 +5795,7 @@ export default function CalendarWorkspacePage() {
                     <div className="mb-1 flex items-baseline gap-2 border-b border-[var(--border)] pb-1.5">
                       <Eyebrow
                         className={cn(
-                          group.day === todayKey && "text-[var(--fg)]",
+                          group.day === todayKey && "text-fg",
                         )}
                       >
                         {formatEventTime(
@@ -5865,7 +5865,7 @@ export default function CalendarWorkspacePage() {
                               ) : null}
                               <span
                                 className={cn(
-                                  "truncate text-sm text-[var(--fg)]",
+                                  "truncate text-sm text-fg",
                                   isCancelledEntry(entry) &&
                                     "text-[var(--mfg)] line-through",
                                 )}
@@ -6013,7 +6013,7 @@ export default function CalendarWorkspacePage() {
                   >
                     <div className="flex min-w-0 items-center gap-2">
                       <span
-                        className="truncate text-sm font-medium text-[var(--fg)]"
+                        className="truncate text-sm font-medium text-fg"
                         title={
                           account.email ??
                           account.display_name ??
@@ -6025,7 +6025,7 @@ export default function CalendarWorkspacePage() {
                           account.account_id}
                       </span>
                       {account.is_primary ? (
-                        <KindTag className="text-[var(--fg)]">primary</KindTag>
+                        <KindTag className="text-fg">primary</KindTag>
                       ) : null}
                       <KindTag>{account.status}</KindTag>
                       {account.health.error_message ? (
@@ -6213,13 +6213,13 @@ export default function CalendarWorkspacePage() {
                             <ButlerMark name={source.butler_name} />
                           ) : null}
                           <span
-                            className="truncate text-sm font-medium text-[var(--fg)]"
+                            className="truncate text-sm font-medium text-fg"
                             title={sourceName(source)}
                           >
                             {sourceName(source)}
                           </span>
                           {isPrimary ? (
-                            <KindTag className="text-[var(--fg)]">
+                            <KindTag className="text-fg">
                               primary
                             </KindTag>
                           ) : null}
@@ -6886,7 +6886,7 @@ export default function CalendarWorkspacePage() {
                       </p>
                     ) : (
                       <>
-                        <ul className="space-y-0.5 text-sm tabular-nums text-[var(--fg)]">
+                        <ul className="space-y-0.5 text-sm tabular-nums text-fg">
                           {recurrencePreviewData.occurrences.map((iso) => (
                             <li key={iso}>
                               {formatEventTime(

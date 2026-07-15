@@ -385,7 +385,7 @@ export function IdentityChip({
         style={{ backgroundColor: hue ?? "var(--fg)" }}
       />
       <span
-        className="font-sans text-[var(--fg)] font-medium"
+        className="font-sans text-fg font-medium"
         style={{ fontSize: compact ? 12 : 13, letterSpacing: "-0.005em" }}
       >
         {label}
@@ -754,7 +754,7 @@ export function ProbeResult({
             type="button"
             onClick={onProbe}
             disabled={pending}
-            className="font-mono text-[11px] px-2.5 py-1 border border-[var(--border-strong)] rounded-sm bg-transparent text-[var(--fg)] cursor-pointer"
+            className="font-mono text-[11px] px-2.5 py-1 border border-[var(--border-strong)] rounded-sm bg-transparent text-fg cursor-pointer"
           >
             {pending ? "testing…" : "run probe"}
           </button>
@@ -802,7 +802,7 @@ export function ProbeResult({
           type="button"
           onClick={onProbe}
           disabled={pending}
-          className="font-mono text-[11px] px-2.5 py-1 border border-[var(--border-strong)] rounded-sm bg-transparent text-[var(--fg)] cursor-pointer"
+          className="font-mono text-[11px] px-2.5 py-1 border border-[var(--border-strong)] rounded-sm bg-transparent text-fg cursor-pointer"
         >
           {pending ? "testing…" : "probe again"}
         </button>
@@ -839,7 +839,7 @@ export function PillBtn({
         type="button"
         onClick={onClick}
         disabled={disabled}
-        className={cn(base, "bg-[var(--fg)] text-[var(--bg)] border-[var(--fg)]")}
+        className={cn(base, "bg-fg text-bg border-fg")}
         {...rest}
       >
         {children}
@@ -864,7 +864,7 @@ export function PillBtn({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={cn(base, "bg-transparent text-[var(--fg)] border-[var(--border-strong)]")}
+      className={cn(base, "bg-transparent text-fg border-[var(--border-strong)]")}
       {...rest}
     >
       {children}

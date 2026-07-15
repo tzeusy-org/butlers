@@ -57,7 +57,7 @@ function MessageContextItem({ item }: { item: CalendarPrepMessageContext }) {
       data-testid="prep-message-item"
       className="flex flex-col gap-0.5 rounded-[2px] border border-dashed border-[var(--border)] bg-foreground/[0.02] px-1.5 py-1"
     >
-      <span className="truncate text-[11px] leading-none text-[var(--fg)]">
+      <span className="truncate text-[11px] leading-none text-fg">
         {primary ?? "Message context"}
       </span>
       {secondary ? (
@@ -79,7 +79,7 @@ function PrepAttendeeCard({ attendee }: { attendee: CalendarPrepAttendee }) {
       className="flex flex-col gap-1.5 rounded-[3px] border border-[var(--border)] bg-foreground/[0.015] p-2"
     >
       <div className="flex items-center gap-1.5">
-        <span className="truncate text-sm font-medium text-[var(--fg)]">{attendee.name}</span>
+        <span className="truncate text-sm font-medium text-fg">{attendee.name}</span>
         {hasTier ? (
           <TierBadge
             tier={attendee.dunbar_tier as number}
@@ -112,7 +112,7 @@ function PrepAttendeeCard({ attendee }: { attendee: CalendarPrepAttendee }) {
             <li
               key={`${note.kind}-${idx}`}
               data-prep-note-kind={note.kind}
-              className="flex gap-1 text-[11px] leading-snug text-[var(--fg)]"
+              className="flex gap-1 text-[11px] leading-snug text-fg"
             >
               <span className="shrink-0 font-mono text-[10px] uppercase text-[var(--dim)]">
                 {note.kind}
@@ -176,7 +176,7 @@ export function MeetingPrepRail({
           Meeting prep
         </h2>
         {heading ? (
-          <span className="truncate font-mono text-[11px] text-[var(--fg)]">{heading}</span>
+          <span className="truncate font-mono text-[11px] text-fg">{heading}</span>
         ) : null}
       </header>
 

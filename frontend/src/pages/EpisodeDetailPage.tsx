@@ -131,7 +131,7 @@ export default function EpisodeDetailPage() {
                 value: episode.session_id ? (
                   <Link
                     to={`/sessions/${episode.session_id}`}
-                    className="font-mono text-[11px] underline [text-underline-offset:3px] hover:text-[var(--fg)]"
+                    className="font-mono text-[11px] underline [text-underline-offset:3px] hover:text-fg"
                   >
                     {episode.session_id}
                   </Link>

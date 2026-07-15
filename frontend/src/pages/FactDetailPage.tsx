@@ -56,7 +56,7 @@ function EntityAnchor({
   return (
     <Link
       to={`/entities/${id}`}
-      className="underline [text-underline-offset:3px] hover:text-[var(--fg)]"
+      className="underline [text-underline-offset:3px] hover:text-fg"
     >
       {label}
     </Link>
@@ -102,9 +102,9 @@ function CommitFooter({ fact }: { fact: Fact }) {
           className={cn(
             "inline-flex h-7 items-center rounded-full px-3.5",
             "font-mono text-[11px] font-medium",
-            "bg-[var(--fg)] text-[var(--bg)]",
+            "bg-fg text-bg",
             "transition-opacity hover:opacity-90",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
             "disabled:pointer-events-none disabled:opacity-40",
           )}
         >
@@ -124,9 +124,9 @@ function CommitFooter({ fact }: { fact: Fact }) {
           className={cn(
             "inline-flex h-7 items-center rounded-full px-3.5",
             "font-mono text-[11px] font-medium",
-            "border border-[var(--border)] bg-transparent text-[var(--fg)]",
-            "transition-colors hover:border-[var(--fg)]",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+            "border border-[var(--border)] bg-transparent text-fg",
+            "transition-colors hover:border-fg",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
             "disabled:pointer-events-none disabled:opacity-40",
           )}
         >

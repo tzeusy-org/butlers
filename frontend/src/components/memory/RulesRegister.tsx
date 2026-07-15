@@ -159,7 +159,7 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
         // the grid geometry never shifts between row kinds.
         "border-l-2",
         isAntiPattern ? "border-l-[var(--red)]" : "border-l-transparent",
-        "text-[var(--fg)]",
+        "text-fg",
       )}
     >
       {/* §NN gutter — mono 11px muted, zero-padded */}

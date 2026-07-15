@@ -199,12 +199,12 @@ describe("SpineAddButton", () => {
     expect(html).toContain("disabled");
   });
 
-  it("has commit-pill styling (bg-[var(--fg)] text-[var(--bg)])", () => {
+  it("has commit-pill styling (bg-fg text-bg)", () => {
     const html = renderToStaticMarkup(
       <SpineAddButton onClick={() => {}} active={false} />,
     );
-    expect(html).toContain("bg-[var(--fg)]");
-    expect(html).toContain("text-[var(--bg)]");
+    expect(html).toContain("bg-fg");
+    expect(html).toContain("text-bg");
   });
 
   it("has aria-label for accessibility", () => {

@@ -47,9 +47,9 @@ describe("DetailHeading", () => {
     expect(out).toContain("var(--dim)");
   });
 
-  it("uses --fg foreground when not fading", () => {
+  it("uses the canonical foreground utility when not fading", () => {
     const out = html(<DetailHeading>active</DetailHeading>);
-    expect(out).toContain("var(--fg)");
+    expect(out).toContain("text-fg");
     expect(out).not.toContain("var(--dim)");
   });
 });

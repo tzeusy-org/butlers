@@ -97,7 +97,7 @@ function AttentionRow({ item }: { item: AttentionItem }) {
       </span>
 
       <div className="flex min-w-0 flex-col gap-1">
-        <span className="text-[13px] leading-snug text-[var(--fg)]">
+        <span className="text-[13px] leading-snug text-fg">
           {item.title}
         </span>
         <Voice as="span" className="text-[13px] leading-snug text-[var(--mfg)]">
@@ -111,7 +111,7 @@ function AttentionRow({ item }: { item: AttentionItem }) {
           className={cn(
             "whitespace-nowrap text-[13px] underline [text-underline-offset:4px]",
             severityColor(item.severity),
-            "hover:text-[var(--fg)]",
+            "hover:text-fg",
           )}
         >
           {item.action.label} →
@@ -143,7 +143,7 @@ function ActivityRow({
       <span className="flex items-center">
         <ButlerMark name={butler ?? "general"} tone="neutral" />
       </span>
-      <span className="min-w-0 truncate text-[13px] leading-snug text-[var(--fg)]">
+      <span className="min-w-0 truncate text-[13px] leading-snug text-fg">
         {summary}
       </span>
     </div>

@@ -1426,7 +1426,7 @@ export function PageUser({
                     >
                       {f[0].toUpperCase()}
                     </span>
-                    <span className="font-sans text-[12.5px] text-[var(--fg)]">{f}</span>
+                    <span className="font-sans text-[12.5px] text-fg">{f}</span>
                   </span>
                 ))}
               </div>
@@ -1994,7 +1994,7 @@ export function PageSystem({
                   <span key={b} className="inline-flex items-center gap-1.5">
                     <span
                       data-testid="used-by-consumer"
-                      className="font-sans text-[12.5px] text-[var(--fg)]"
+                      className="font-sans text-[12.5px] text-fg"
                     >
                       {humanizeUsedByConsumer(b)}
                     </span>

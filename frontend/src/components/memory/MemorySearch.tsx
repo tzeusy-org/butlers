@@ -132,14 +132,14 @@ export default function MemorySearch() {
               inputRef.current?.blur();
             }
           }}
-          className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-[var(--fg)] placeholder:text-[var(--mfg)] focus:outline-none"
+          className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-fg placeholder:text-[var(--mfg)] focus:outline-none"
         />
         {hasQuery && (
           <button
             type="button"
             aria-label="Clear search"
             onClick={clear}
-            className="font-mono text-[11px] text-[var(--mfg)] transition-colors hover:text-[var(--fg)]"
+            className="font-mono text-[11px] text-[var(--mfg)] transition-colors hover:text-fg"
           >
             ×
           </button>

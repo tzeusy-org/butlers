@@ -81,7 +81,7 @@ export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
   // (and every other filtered validity) render at full --fg foreground. The
   // server owns the fading threshold; we read fact.validity, not the numeral.
   const dimmed = fact.validity === "fading";
-  const rowColor = dimmed ? "text-[var(--dim)]" : "text-[var(--fg)]";
+  const rowColor = dimmed ? "text-[var(--dim)]" : "text-fg";
 
   const confidence = formatConfidence(fact, now);
   const tag = permanenceTag(fact.permanence);
@@ -119,7 +119,7 @@ export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
             // open the fact (stop propagation), and it inherits the row color
             // so a dimmed row dims its anchor too.
             onClick={(e) => e.stopPropagation()}
-            className="underline [text-underline-offset:4px] hover:text-[var(--fg)]"
+            className="underline [text-underline-offset:4px] hover:text-fg"
           >
             {fact.entity_name ?? fact.subject}
           </Link>

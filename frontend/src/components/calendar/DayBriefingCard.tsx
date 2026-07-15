@@ -57,7 +57,7 @@ function DayBriefingChip({
       <span aria-hidden className="shrink-0 font-mono">
         {overlayKindGlyph(md.kind)}
       </span>
-      <span className="truncate text-[var(--fg)]">{entry.title}</span>
+      <span className="truncate text-fg">{entry.title}</span>
       {badge ? (
         <span className="ml-auto shrink-0 font-mono tabular-nums text-[var(--mfg)]">{badge}</span>
       ) : null}
@@ -68,7 +68,7 @@ function DayBriefingChip({
     "flex max-w-full items-center gap-1 truncate rounded-[2px] border border-dashed bg-foreground/[0.02] px-1.5 py-0.5 text-left text-[11px] leading-none",
     accent,
     interactive &&
-      "cursor-pointer transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--fg)]/30",
+      "cursor-pointer transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30",
   );
 
   if (!interactive) {
@@ -139,7 +139,7 @@ export function DayBriefingCard({
         <h2 className="font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mfg)]">
           At a glance
         </h2>
-        <span className="truncate font-mono text-[11px] text-[var(--fg)]">{heading}</span>
+        <span className="truncate font-mono text-[11px] text-fg">{heading}</span>
       </header>
 
       {isLoading ? (

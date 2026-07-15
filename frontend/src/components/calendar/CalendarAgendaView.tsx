@@ -58,13 +58,13 @@ export function CalendarAgendaView({
       aria-modal="true"
       aria-label="Printable agenda"
       // eslint-disable-next-line no-restricted-syntax -- wired through useModalChoreography above (rootRef/initialFocusRef/onKeyDown) — this is the one overlay contract, not a hand-rolled one (bu-qvnce.10).
-      className="fixed inset-0 z-50 overflow-y-auto bg-[var(--bg)] p-8"
+      className="fixed inset-0 z-50 overflow-y-auto bg-bg p-8"
       onKeyDown={onKeyDown}
     >
       <div className="mx-auto max-w-3xl">
         <div className="mb-6 flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 ref={initialFocusRef} tabIndex={-1} className="text-2xl font-semibold text-[var(--fg)] focus:outline-none">
+            <h1 ref={initialFocusRef} tabIndex={-1} className="text-2xl font-semibold text-fg focus:outline-none">
               Agenda · {rangeLabel}
             </h1>
             <p className="mt-1 text-sm text-[var(--dim)]">
@@ -76,7 +76,7 @@ export function CalendarAgendaView({
             <button
               type="button"
               onClick={() => window.print()}
-              className="rounded border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--fg)] hover:bg-[var(--surface)]"
+              className="rounded border border-[var(--border)] px-3 py-1.5 text-sm text-fg hover:bg-[var(--surface)]"
             >
               Print
             </button>
@@ -84,7 +84,7 @@ export function CalendarAgendaView({
               type="button"
               onClick={onClose}
               aria-label="Close agenda"
-              className="rounded border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--fg)] hover:bg-[var(--surface)]"
+              className="rounded border border-[var(--border)] px-3 py-1.5 text-sm text-fg hover:bg-[var(--surface)]"
             >
               Close
             </button>
@@ -97,7 +97,7 @@ export function CalendarAgendaView({
           <div className="flex flex-col gap-6">
             {days.map((day) => (
               <section key={day.key}>
-                <h2 className="mb-2 border-b border-[var(--border)] pb-1 text-sm font-semibold uppercase tracking-wide text-[var(--fg)]">
+                <h2 className="mb-2 border-b border-[var(--border)] pb-1 text-sm font-semibold uppercase tracking-wide text-fg">
                   {day.heading}
                 </h2>
                 <ul className="flex flex-col gap-1.5">
@@ -109,7 +109,7 @@ export function CalendarAgendaView({
                     return (
                       <li
                         key={entry.entry_id}
-                        className="flex items-baseline gap-3 text-sm text-[var(--fg)]"
+                        className="flex items-baseline gap-3 text-sm text-fg"
                       >
                         <span className="w-32 shrink-0 tabular-nums text-[var(--dim)]">
                           {timeLabel(entry)}

@@ -191,7 +191,7 @@ describe("FactsRegister — the ledger", () => {
 
     // The single decay affordance: fading row foreground is --dim; active --fg.
     expect(fading!.className).toContain("text-[var(--dim)]");
-    expect(active!.className).toContain("text-[var(--fg)]");
+    expect(active!.className).toContain("text-fg");
     // No italic / opacity transition difference on the fading row.
     expect(fading!.className).not.toContain("italic");
     expect(fading!.className).not.toContain("opacity");

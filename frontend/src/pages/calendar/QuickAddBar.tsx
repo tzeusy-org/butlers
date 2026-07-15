@@ -115,7 +115,7 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
           disabled={disabled || syncing || text.trim().length === 0}
           className={cn(
             PILL,
-            "bg-transparent text-[var(--mfg)] border-[var(--border-strong)] hover:text-[var(--fg)]",
+            "bg-transparent text-[var(--mfg)] border-[var(--border-strong)] hover:text-fg",
           )}
         >
           {syncing ? "Parsing…" : "Parse"}
@@ -131,7 +131,7 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
           <button
             type="button"
             onClick={reset}
-            className="shrink-0 underline decoration-dotted hover:text-[var(--fg)]"
+            className="shrink-0 underline decoration-dotted hover:text-fg"
           >
             Dismiss
           </button>
@@ -142,7 +142,7 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
         <div
           role="group"
           aria-label="Parsed event preview"
-          className="flex flex-col gap-2 rounded-[4px] border border-[var(--border-strong)] bg-[var(--bg)] px-2.5 py-2"
+          className="flex flex-col gap-2 rounded-[4px] border border-[var(--border-strong)] bg-bg px-2.5 py-2"
         >
           <label htmlFor="quick-add-draft-title" className="flex flex-col gap-1">
             <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]">
@@ -203,7 +203,7 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
               disabled={confirming}
               className={cn(
                 PILL,
-                "bg-transparent text-[var(--mfg)] border-[var(--border-strong)] hover:text-[var(--fg)]",
+                "bg-transparent text-[var(--mfg)] border-[var(--border-strong)] hover:text-fg",
               )}
             >
               Discard
@@ -214,7 +214,7 @@ export function QuickAddBar({ timezone, butlerName, disabled, onConfirm }: Quick
               disabled={disabled || confirming || draft.title.trim().length === 0}
               className={cn(
                 PILL,
-                "bg-[var(--fg)] text-[var(--bg)] border-[var(--fg)] hover:opacity-90",
+                "bg-fg text-bg border-fg hover:opacity-90",
               )}
             >
               {confirming ? "Adding…" : "Confirm & add"}

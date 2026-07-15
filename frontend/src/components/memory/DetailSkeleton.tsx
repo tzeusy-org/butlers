@@ -84,7 +84,7 @@ export function DetailHeading({
         className={cn(
           "text-[24px] font-medium leading-snug tracking-tight",
           "whitespace-pre-wrap break-words",
-          dimmed ? "text-[var(--dim)]" : "text-[var(--fg)]",
+          dimmed ? "text-[var(--dim)]" : "text-fg",
         )}
       >
         {children}
@@ -162,7 +162,7 @@ export function KVBand({ entries }: { entries: KVEntry[] }) {
           <dt className="py-2 font-mono text-[11px] text-[var(--mfg)] tabular-nums">
             {row.key}
           </dt>
-          <dd className="py-2 text-[13px] leading-snug text-[var(--fg)]">
+          <dd className="py-2 text-[13px] leading-snug text-fg">
             {row.value}
           </dd>
         </div>
@@ -198,7 +198,7 @@ export function ProvenanceLink({ to, label }: { to: string; label: string }) {
   return (
     <Link
       to={to}
-      className="inline-flex w-fit items-baseline gap-1.5 font-mono text-[11px] text-[var(--mfg)] hover:text-[var(--fg)]"
+      className="inline-flex w-fit items-baseline gap-1.5 font-mono text-[11px] text-[var(--mfg)] hover:text-fg"
     >
       <span aria-hidden>↳</span>
       <span className="underline [text-underline-offset:3px]">{label}</span>
@@ -256,7 +256,7 @@ export function DetailSkeleton({
     <article className="mx-auto flex max-w-[680px] flex-col gap-6">
       <Link
         to={backHref}
-        className="w-fit font-mono text-[11px] text-[var(--mfg)] hover:text-[var(--fg)]"
+        className="w-fit font-mono text-[11px] text-[var(--mfg)] hover:text-fg"
       >
         ← {backLabel}
       </Link>

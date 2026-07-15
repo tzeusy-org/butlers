@@ -60,7 +60,7 @@ function KpiCell({
 /** Mega-number: 32px sans 500, tabular numerals. Never animates on load. */
 function Mega({ children }: { children: React.ReactNode }) {
   return (
-    <span className="font-sans text-[32px] font-medium leading-none tracking-[-0.02em] tabular-nums text-[var(--fg)]">
+    <span className="font-sans text-[32px] font-medium leading-none tracking-[-0.02em] tabular-nums text-fg">
       {children}
     </span>
   );
@@ -84,7 +84,7 @@ function KpiStrip({ stats, tz }: { stats: MemoryStats; tz: string }) {
           <Mega>—</Mega>
         ) : (
           <span className="flex items-baseline gap-2">
-            <span className="font-sans text-[20px] font-medium leading-none tabular-nums text-[var(--fg)]">
+            <span className="font-sans text-[20px] font-medium leading-none tabular-nums text-fg">
               {writeup.time}
             </span>
             <Mono muted>{writeup.factsSub}</Mono>
@@ -104,7 +104,7 @@ function PipeStat({ label, value }: { label: string; value: number }) {
   return (
     <span className="whitespace-nowrap">
       <span className="text-[var(--mfg)]">{label} </span>
-      <span className="text-[var(--fg)] tabular-nums">{formatNumeral(value)}</span>
+      <span className="text-fg tabular-nums">{formatNumeral(value)}</span>
     </span>
   );
 }

@@ -384,6 +384,10 @@ body {
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
+  /* Dispatch surface palette */
+  --color-bg: var(--bg);
+  --color-fg: var(--fg);
+
   /* Severity */
   --color-severity-low:    var(--severity-low);
   --color-severity-medium: var(--severity-medium);
