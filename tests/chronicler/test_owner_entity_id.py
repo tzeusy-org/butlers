@@ -75,7 +75,7 @@ def _make_pool_with_fetchrow(row_value: object) -> AsyncMock:
     conn.fetchrow = AsyncMock(return_value=row_value)
     conn.fetchval = AsyncMock(return_value=True)  # table-exists checks
     conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
@@ -98,7 +98,7 @@ def _chronicler_pool_tracked() -> tuple[AsyncMock, AsyncMock]:
     conn.executemany = AsyncMock(return_value=None)
     conn.transaction = MagicMock(return_value=_AsyncCtx(None))
     conn.fetchrow = AsyncMock(return_value=None)
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool, conn
 
@@ -109,7 +109,7 @@ def _chronicler_pool_simple() -> AsyncMock:
     conn.execute = AsyncMock(return_value=None)
     conn.transaction = MagicMock(return_value=_AsyncCtx(None))
     conn.fetchrow = AsyncMock(return_value=None)
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 

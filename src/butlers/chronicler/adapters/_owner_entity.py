@@ -31,7 +31,9 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 
-async def resolve_owner_entity_id(pool: asyncpg.Pool) -> UUID | None:
+async def resolve_owner_entity_id(
+    db: asyncpg.Pool | asyncpg.Connection,
+) -> UUID | None:
     """Return the owner ``entity_id`` from ``public.entities``, or ``None``.
 
     Queries ``public.entities WHERE 'owner' = ANY(roles)`` and returns the
@@ -42,15 +44,11 @@ async def resolve_owner_entity_id(pool: asyncpg.Pool) -> UUID | None:
     to avoid N+1 DB round-trips.
     """
     try:
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT id
-                FROM public.entities
-                WHERE 'owner' = ANY(roles)
-                LIMIT 1
-                """
-            )
+        if isinstance(db, asyncpg.Pool):
+            async with db.acquire() as conn:
+                row = await _fetch_owner_row(conn)
+        else:
+            row = await _fetch_owner_row(db)
     except asyncpg.PostgresError:
         logger.debug(
             "resolve_owner_entity_id: query failed (table absent or DB error) "
@@ -86,6 +84,17 @@ async def resolve_owner_entity_id(pool: asyncpg.Pool) -> UUID | None:
         type(raw).__name__,
     )
     return None
+
+
+async def _fetch_owner_row(conn: asyncpg.Connection) -> asyncpg.Record | None:
+    return await conn.fetchrow(
+        """
+        SELECT id
+        FROM public.entities
+        WHERE 'owner' = ANY(roles)
+        LIMIT 1
+        """
+    )
 
 
 async def upsert_owner_episode_entity(

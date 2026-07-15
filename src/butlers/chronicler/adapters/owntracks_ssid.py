@@ -49,7 +49,14 @@ from butlers.chronicler.confidence import (
     evidence_refs_from_event_ids,
 )
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
-from butlers.chronicler.storage import get_carryover, save_carryover, upsert_episode
+from butlers.chronicler.storage import (
+    get_carryover,
+    get_checkpoint,
+    mark_source_active,
+    save_carryover,
+    upsert_checkpoint,
+    upsert_episode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -284,25 +291,114 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         self.max_gap = timedelta(minutes=max_gap_minutes)
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
 
+    async def run(
+        self,
+        *,
+        pool: asyncpg.Pool,
+        chronicler_pool: asyncpg.Pool,
+    ) -> AdapterResult:
+        """Project and advance replay state in one Chronicler transaction."""
+        self._llm_probe()
+
+        try:
+            async with chronicler_pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        SELECT pg_advisory_xact_lock(
+                            hashtextextended('chronicler.projection:' || $1, 0)
+                        )
+                        """,
+                        self.source_name,
+                    )
+                    checkpoint = await get_checkpoint(conn, self.source_name)
+                    since = checkpoint.watermark if checkpoint is not None else None
+                    since_id = checkpoint.watermark_id if checkpoint is not None else None
+                    source_db = conn if pool is chronicler_pool else pool
+                    result = await self.project(
+                        source_db,
+                        chronicler_pool=conn,
+                        since=since,
+                        since_id=since_id,
+                    )
+
+                    if result.skipped:
+                        await mark_source_active(
+                            conn,
+                            self.source_name,
+                            active=False,
+                            inactive_reason=result.skipped_reason or "adapter skipped",
+                        )
+                        return result
+
+                    if not result.success:
+                        raise RuntimeError(result.error or "SSID presence projection failed")
+
+                    await mark_source_active(conn, self.source_name, active=True)
+                    await upsert_checkpoint(
+                        conn,
+                        self.source_name,
+                        watermark=result.watermark,
+                        watermark_id=result.watermark_id,
+                        success=result.success,
+                        rows_projected=result.rows_projected,
+                        error=result.error,
+                    )
+            return result
+        except Exception as exc:  # pragma: no cover - exercised by failure injection
+            logger.exception("Adapter %s failed", self.source_name)
+            try:
+                await upsert_checkpoint(
+                    chronicler_pool,
+                    self.source_name,
+                    success=False,
+                    error=str(exc),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed recording failure checkpoint for adapter %s",
+                    self.source_name,
+                )
+            return AdapterResult(source_name=self.source_name, error=str(exc))
+
     async def project(
         self,
-        pool: asyncpg.Pool,
+        pool: asyncpg.Pool | asyncpg.Connection,
         *,
-        chronicler_pool: asyncpg.Pool,
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection,
         since: datetime | None,
         since_id: int | None = None,
     ) -> AdapterResult:
+        if isinstance(chronicler_pool, asyncpg.Pool):
+            async with chronicler_pool.acquire() as conn:
+                return await self._project_with_connection(
+                    pool,
+                    chronicler_conn=conn,
+                    since=since,
+                    since_id=since_id,
+                )
+        return await self._project_with_connection(
+            pool,
+            chronicler_conn=chronicler_pool,
+            since=since,
+            since_id=since_id,
+        )
+
+    async def _project_with_connection(
+        self,
+        pool: asyncpg.Pool | asyncpg.Connection,
+        *,
+        chronicler_conn: asyncpg.Connection,
+        since: datetime | None,
+        since_id: int | None,
+    ) -> AdapterResult:
         del since_id  # owntracks_points.id is UUID; watermark on ts only.
         result = AdapterResult(source_name=self.source_name)
-        prior_carryover = await get_carryover(chronicler_pool, self.source_name)
+        prior_carryover = await get_carryover(chronicler_conn, self.source_name)
         digest = _mapping_digest(self.ssid_places)
         previous_digest = prior_carryover.get(_MAPPING_DIGEST_KEY)
         mapping_changed = previous_digest is not None and previous_digest != digest
         effective_since = None if mapping_changed else since
-        if mapping_changed:
-            result.warnings.append("SSID place mapping changed; replaying source evidence")
-            await self._tombstone_stale_mapping_episodes(chronicler_pool)
-            prior_carryover = {}
 
         since_uuid = self._uuid_tiebreaker(prior_carryover, effective_since)
         if effective_since is not None and since_uuid is None:
@@ -319,9 +415,14 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             )
             return result
 
+        if mapping_changed:
+            result.warnings.append("SSID place mapping changed; replaying source evidence")
+            await self._tombstone_stale_mapping_episodes(chronicler_conn)
+            prior_carryover = {}
+
         if not rows:
             unchanged_carryover = {**prior_carryover, _MAPPING_DIGEST_KEY: digest}
-            await save_carryover(chronicler_pool, self.source_name, unchanged_carryover)
+            await save_carryover(chronicler_conn, self.source_name, unchanged_carryover)
             result.watermark = effective_since
             return result
 
@@ -348,7 +449,7 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
                 prior_carryover=prior_carryover,
             )
             for span in spans:
-                await self._upsert_presence_episode(chronicler_pool, span, entity_id=entity_id)
+                await self._upsert_presence_episode(chronicler_conn, span, entity_id=entity_id)
                 result.rows_projected += 1
                 result.episodes_closed += 1
         else:
@@ -360,7 +461,7 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             "watermark": last_row["ts"].isoformat(),
             "uuid": str(last_row["id"]),
         }
-        await save_carryover(chronicler_pool, self.source_name, new_carryover)
+        await save_carryover(chronicler_conn, self.source_name, new_carryover)
         result.watermark = latest_watermark
         return result
 
@@ -380,9 +481,10 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         The replay remains batch-limited. Its first successful page writes the
         composite cursor, which is also the upgrade-completion marker. If the
         cursor and relational watermark ever disagree (for example after an
-        interrupted write), returning ``None`` restarts the bounded replay
-        instead of risking a skip. Atomic mapping-replay state is tracked
-        separately by bu-whhll.16.
+        interrupted legacy write), returning ``None`` restarts the bounded
+        replay instead of risking a skip. New writes commit the cursor,
+        carryover, projection rows, and relational watermark together in
+        :meth:`run`.
         """
         raw = carryover.get(_SOURCE_CURSOR_KEY)
         if not isinstance(raw, dict) or watermark is None:
@@ -437,80 +539,100 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
 
     async def _fetch_points(
         self,
-        pool: asyncpg.Pool,
+        pool: asyncpg.Pool | asyncpg.Connection,
         since: datetime | None,
         *,
         since_uuid: UUID | None,
     ) -> list[asyncpg.Record] | None:
         try:
-            async with pool.acquire() as conn:
-                exists = await conn.fetchval(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_schema = 'connectors'
-                          AND table_name = 'owntracks_points'
-                    )
-                    """
-                )
-                if not exists:
-                    return None
-                if since is None or since_uuid is None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, ts, endpoint_identity, raw_payload, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        ORDER BY ts ASC, id ASC
-                        LIMIT $1
-                        """,
-                        self.batch_limit,
-                    )
-                else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, ts, endpoint_identity, raw_payload, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE (ts, id) > ($1, $2)
-                        ORDER BY ts ASC, id ASC
-                        LIMIT $3
-                        """,
+            if isinstance(pool, asyncpg.Pool):
+                async with pool.acquire() as conn:
+                    rows = await self._fetch_points_on_connection(
+                        conn,
                         since,
-                        since_uuid,
-                        self.batch_limit,
+                        since_uuid=since_uuid,
                     )
+            else:
+                rows = await self._fetch_points_on_connection(
+                    pool,
+                    since,
+                    since_uuid=since_uuid,
+                )
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s for SSID presence", _EVIDENCE_TABLE)
             return None
+        return rows
+
+    async def _fetch_points_on_connection(
+        self,
+        conn: asyncpg.Connection,
+        since: datetime | None,
+        *,
+        since_uuid: UUID | None,
+    ) -> list[asyncpg.Record] | None:
+        exists = await conn.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'connectors'
+                  AND table_name = 'owntracks_points'
+            )
+            """
+        )
+        if not exists:
+            return None
+        if since is None or since_uuid is None:
+            rows = await conn.fetch(
+                f"""
+                SELECT id, ts, endpoint_identity, raw_payload, recorded_at
+                FROM {_EVIDENCE_TABLE}
+                ORDER BY ts ASC, id ASC
+                LIMIT $1
+                """,
+                self.batch_limit,
+            )
+        else:
+            rows = await conn.fetch(
+                f"""
+                SELECT id, ts, endpoint_identity, raw_payload, recorded_at
+                FROM {_EVIDENCE_TABLE}
+                WHERE (ts, id) > ($1, $2)
+                ORDER BY ts ASC, id ASC
+                LIMIT $3
+                """,
+                since,
+                since_uuid,
+                self.batch_limit,
+            )
         return list(rows)
 
-    async def _tombstone_stale_mapping_episodes(self, chronicler_pool: asyncpg.Pool) -> None:
+    async def _tombstone_stale_mapping_episodes(self, conn: asyncpg.Connection) -> None:
         """Retire projections that are no longer valid under the owner mapping."""
         digests = [_ssid_ref_digest(ssid) for ssid in self.ssid_places]
         places = list(self.ssid_places.values())
-        async with chronicler_pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE episodes AS episode
-                SET tombstone_at = now(),
-                    tombstone_reason = 'owner SSID mapping changed',
-                    updated_at = now()
-                WHERE episode.source_name = $1
-                  AND episode.tombstone_at IS NULL
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM unnest($2::text[], $3::text[]) AS valid(ssid_digest, place)
-                      WHERE episode.source_ref ~ (':' || valid.ssid_digest || ':[0-9]+$')
-                        AND episode.payload ->> 'place' = valid.place
-                  )
-                """,
-                self.source_name,
-                digests,
-                places,
-            )
+        await conn.execute(
+            """
+            UPDATE episodes AS episode
+            SET tombstone_at = now(),
+                tombstone_reason = 'owner SSID mapping changed',
+                updated_at = now()
+            WHERE episode.source_name = $1
+              AND episode.tombstone_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM unnest($2::text[], $3::text[]) AS valid(ssid_digest, place)
+                  WHERE episode.source_ref ~ (':' || valid.ssid_digest || ':[0-9]+$')
+                    AND episode.payload ->> 'place' = valid.place
+              )
+            """,
+            self.source_name,
+            digests,
+            places,
+        )
 
     async def _upsert_presence_episode(
         self,
-        chronicler_pool: asyncpg.Pool,
+        conn: asyncpg.Connection,
         span: SsidPresenceSpan,
         *,
         entity_id: UUID | None,
@@ -518,32 +640,31 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         episode_type = (
             EPISODE_TYPE_WORK_PRESENCE if span.place == "work" else EPISODE_TYPE_HOME_PRESENCE
         )
-        async with chronicler_pool.acquire() as conn:
-            evidence_ids = await self._fetch_location_point_event_ids(conn, span)
-            episode = await upsert_episode(
-                conn,
-                Episode(
-                    source_name=self.source_name,
-                    source_ref=span.source_ref(),
-                    episode_type=episode_type,
-                    start_at=span.start_at,
-                    end_at=span.end_at,
-                    precision=Precision.MINUTE,
-                    title=f"At {span.place}",
-                    payload={
-                        "place": span.place,
-                        "point_count": span.point_count,
-                        "endpoint_identity": span.endpoint_identity,
-                    },
-                    privacy=Privacy.NORMAL,
-                    layer=Layer.ACTIVITY,
-                    confidence=derive_confidence(
-                        [EvidenceKind(name="owner_mapped_wifi_ssid", strong=True)]
-                    ),
-                    evidence_refs=evidence_refs_from_event_ids(evidence_ids),
+        evidence_ids = await self._fetch_location_point_event_ids(conn, span)
+        episode = await upsert_episode(
+            conn,
+            Episode(
+                source_name=self.source_name,
+                source_ref=span.source_ref(),
+                episode_type=episode_type,
+                start_at=span.start_at,
+                end_at=span.end_at,
+                precision=Precision.MINUTE,
+                title=f"At {span.place}",
+                payload={
+                    "place": span.place,
+                    "point_count": span.point_count,
+                    "endpoint_identity": span.endpoint_identity,
+                },
+                privacy=Privacy.NORMAL,
+                layer=Layer.ACTIVITY,
+                confidence=derive_confidence(
+                    [EvidenceKind(name="owner_mapped_wifi_ssid", strong=True)]
                 ),
-            )
-            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
+                evidence_refs=evidence_refs_from_event_ids(evidence_ids),
+            ),
+        )
+        await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
         return episode
 
     @staticmethod
