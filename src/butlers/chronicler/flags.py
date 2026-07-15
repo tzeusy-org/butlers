@@ -161,6 +161,20 @@ MIN_TRAILING_DAYS_FOR_MEDIAN = 5
 # excluded.
 MIN_EVIDENCE_FLOOR_SECONDS = 3600
 
+# [decision] Minimum per-lane share (fraction of the day's total) a lane must
+# reach in at least ONE of the two windows compared (today OR trailing median)
+# before it can qualify as a lane_share_outlier. Kills sub-floor ratio noise:
+# the symmetric 2x test alone fires on a ~1%-median lane swinging to ~2-3%,
+# where the ratio clears 2x but the absolute change is trivial (bu-pcm4t, from
+# PR #3005 review). Calibrated against the live lane-share distribution
+# (2026-07-15): the flappy lanes (travel ~0.9% median / ~2.7% p75, social
+# ~0.4% / ~2.5%) sit entirely below this floor, while the smallest legitimate
+# lanes (work / butler_ops, ~5.5% median) clear it comfortably; 4% is above the
+# ~3% top of the flap band and below those legitimate lanes. A lane trivial in
+# BOTH windows is never flagged; symmetric ratio behavior is unchanged above
+# the floor.
+MIN_LANE_SHARE_FLOOR = 0.04
+
 
 def _now() -> datetime:
     """Wall-clock now, isolated for test patching."""
@@ -254,6 +268,7 @@ def compute_lane_share_outliers(
     min_evidence_seconds: float = MIN_EVIDENCE_FLOOR_SECONDS,
     min_trailing_days: int = MIN_TRAILING_DAYS_FOR_MEDIAN,
     outlier_multiple: float = LANE_SHARE_OUTLIER_MULTIPLE,
+    min_lane_share: float = MIN_LANE_SHARE_FLOOR,
 ) -> dict[str, dict[str, float]]:
     """Return every lane whose share of the day deviates from its trailing
     median beyond ``outlier_multiple``, keyed by lane.
@@ -267,7 +282,12 @@ def compute_lane_share_outliers(
       outage) is never evaluated — classify-before-flagging;
     - a lane needs at least ``min_trailing_days`` of trailing history with
       nonzero total tracked seconds before its median share means anything;
-      otherwise it is skipped.
+      otherwise it is skipped;
+    - a lane whose share is below ``min_lane_share`` in *both* windows (today
+      and the trailing median) is never flagged — the symmetric 2x ratio on a
+      trivially-small lane is noise (a ~1%-median lane swinging to ~2-3% clears
+      2x on a tiny absolute change). Symmetric behavior is unchanged above the
+      floor.
 
     Each returned entry carries ``{"share_today": float, "median_share":
     float}`` for the flag's ``detail`` payload.
@@ -298,6 +318,13 @@ def compute_lane_share_outliers(
             continue
 
         median_share = statistics.median(trailing_shares)
+
+        # Minimum-share floor: a lane trivial in BOTH windows can only ever move
+        # by a tiny absolute amount, so the 2x ratio on it is noise (a ~1%-median
+        # lane swinging to ~2-3%). Require a meaningful share in at least one
+        # window before it can qualify. See MIN_LANE_SHARE_FLOOR.
+        if share_today < min_lane_share and median_share < min_lane_share:
+            continue
 
         if median_share <= 0:
             if share_today > 0:

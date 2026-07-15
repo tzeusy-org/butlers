@@ -29,6 +29,7 @@ from butlers.chronicler.flags import (
     LANE_SHARE_OUTLIER_MULTIPLE,
     LANE_SHARE_TRAILING_DAYS,
     MIN_EVIDENCE_FLOOR_SECONDS,
+    MIN_LANE_SHARE_FLOOR,
     MIN_TRAILING_DAYS_FOR_MEDIAN,
     SOURCE_CRON_MINUTES,
     compute_lane_share_outliers,
@@ -233,6 +234,55 @@ def test_lane_with_zero_historical_median_but_nonzero_today_flags() -> None:
     outliers = compute_lane_share_outliers(today, trailing)
     assert "travel" in outliers
     assert outliers["travel"]["median_share"] == 0
+
+
+def test_low_share_lane_flap_does_not_flag_after_floor() -> None:
+    """bu-pcm4t: a ~1%-median lane swinging to ~2.5% clears the symmetric 2x
+    ratio but is below the min-share floor in BOTH windows, so it must not flag.
+
+    Fail-before/pass-after in one assertion pair: with ``min_lane_share=0`` (the
+    pre-floor behavior) the flap fires; with the floor it is suppressed. The
+    ratio genuinely clears 2x, so the floor -- not the ratio -- is what kills it.
+    """
+    median_share = 0.01  # ~1%
+    today_share = 0.025  # ~2.5% -> ratio 2.5x, clears 2x, but both windows sub-floor
+    assert today_share / median_share >= LANE_SHARE_OUTLIER_MULTIPLE
+    trailing = _trailing_uniform("travel", median_share, days=LANE_SHARE_TRAILING_DAYS)
+    today = {"travel": 10_000.0 * today_share, "rest": 10_000.0 * (1 - today_share)}
+
+    # Pre-floor (the bug): the flap fires.
+    assert "travel" in compute_lane_share_outliers(today, trailing, min_lane_share=0.0)
+    # With the floor: it does not.
+    assert "travel" not in compute_lane_share_outliers(today, trailing)
+
+
+def test_legitimate_high_share_swing_still_flags() -> None:
+    """A meaningful lane (10% median) doubling to 25% is above the floor in both
+    windows, so the floor leaves it untouched and it still fires."""
+    median_share = 0.10
+    today_share = 0.25  # ratio 2.5x
+    trailing = _trailing_uniform("work", median_share, days=LANE_SHARE_TRAILING_DAYS)
+    today = {"work": 10_000.0 * today_share, "rest": 10_000.0 * (1 - today_share)}
+    assert "work" in compute_lane_share_outliers(today, trailing)
+
+
+def test_min_share_floor_only_skips_when_both_windows_sub_floor() -> None:
+    """The floor skips a lane only when it is trivial in BOTH windows. A lane
+    below the floor in one window but at/above it in the other -- a genuine
+    spike or crash -- is still evaluated (symmetric)."""
+    # Sub-floor median, spikes to above the floor today (ratio > 2x) -> fires.
+    low_median = MIN_LANE_SHARE_FLOOR / 2  # 2%, below floor
+    spike_today = MIN_LANE_SHARE_FLOOR + 0.02  # 6%, above floor; ratio 3x
+    trailing_spike = _trailing_uniform("travel", low_median, days=LANE_SHARE_TRAILING_DAYS)
+    today_spike = {"travel": 10_000.0 * spike_today, "rest": 10_000.0 * (1 - spike_today)}
+    assert "travel" in compute_lane_share_outliers(today_spike, trailing_spike)
+
+    # Above-floor median, crashes to sub-floor today (ratio < 1/2x) -> fires.
+    high_median = MIN_LANE_SHARE_FLOOR + 0.06  # 10%, above floor
+    crash_today = high_median / 3  # ~3.3%, below floor; ratio 1/3
+    trailing_crash = _trailing_uniform("work", high_median, days=LANE_SHARE_TRAILING_DAYS)
+    today_crash = {"work": 10_000.0 * crash_today, "rest": 10_000.0 * (1 - crash_today)}
+    assert "work" in compute_lane_share_outliers(today_crash, trailing_crash)
 
 
 # ---------------------------------------------------------------------------
