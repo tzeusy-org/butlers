@@ -19,6 +19,7 @@ def register_tools(mcp: Any, module: Any) -> None:
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.travel import bookings as _bookings
     from butlers.tools.travel import documents as _documents
+    from butlers.tools.travel import health as _health
     from butlers.tools.travel import trips as _trips
 
     # =================================================================
@@ -67,6 +68,14 @@ def register_tools(mcp: Any, module: Any) -> None:
             trip_id,
             include_documents=include_documents,
             include_timeline=include_timeline,
+        )
+
+    @mcp.tool()
+    async def health_medication_snapshot() -> dict[str, Any]:
+        """Get active medication preparation fields from Health through Switchboard MCP."""
+        return await _health.request_health_medication_snapshot(
+            module._get_pool(),
+            module._switchboard_client,
         )
 
     # =================================================================

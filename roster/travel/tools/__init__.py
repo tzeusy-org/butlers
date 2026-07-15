@@ -18,6 +18,7 @@ from .bookings import (
 from .documents import (
     add_document,
 )
+from .health import request_health_medication_snapshot
 
 try:
     from .trips import (  # type: ignore[attr-defined]
@@ -40,4 +41,5 @@ __all__ = [
     "list_trips",
     "trip_summary",
     "upcoming_travel",
+    "request_health_medication_snapshot",
 ]

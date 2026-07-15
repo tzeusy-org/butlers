@@ -1,6 +1,6 @@
 """Travel module — wires travel domain tools into the butler's MCP server.
 
-Registers 6 MCP tools that delegate to the existing implementations in
+Registers 7 MCP tools that delegate to the existing implementations in
 ``butlers.tools.travel``. The tool closures strip ``pool`` from the
 MCP-visible signature and inject it from module state at call time.
 """
@@ -22,10 +22,11 @@ class TravelModuleConfig(BaseModel):
 
 
 class TravelModule(Module):
-    """Travel module providing 6 MCP tools for trips, bookings, and documents."""
+    """Travel module providing tools for trips, bookings, and preparation."""
 
     def __init__(self) -> None:
         self._db: Any = None
+        self._switchboard_client: Any = None
 
     @property
     def name(self) -> str:
@@ -51,6 +52,17 @@ class TravelModule(Module):
     async def on_shutdown(self) -> None:
         """Clear state references."""
         self._db = None
+        self._switchboard_client = None
+
+    def wire_runtime(
+        self,
+        spawner: Any,
+        repo_root: Any,
+        switchboard_client: Any = None,
+    ) -> None:
+        """Receive the daemon's Switchboard MCP client for cross-butler reads."""
+        del spawner, repo_root
+        self._switchboard_client = switchboard_client
 
     def _get_pool(self):
         """Return the asyncpg pool, raising if not initialised."""

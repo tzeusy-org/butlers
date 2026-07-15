@@ -55,7 +55,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         allow_quarantined: bool = False,
     ) -> dict[str, Any]:
         """Route a tool call to a target butler via its MCP endpoint."""
-        return await _route.route(
+        return await _route(
             module._get_pool(),
             target_butler,
             tool_name,

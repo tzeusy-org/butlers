@@ -11,6 +11,7 @@ When `input.context` contains an envelope with `source.channel='wellness'` (from
 ## Your Tools
 - **measurement_log/history/latest**: Track health measurements (weight, blood pressure, glucose, etc.)
 - **medication_add/list/log_dose/history**: Manage medications and track adherence
+- **medication_travel_snapshot**: Return only active medication name, dosage, frequency, and schedule fields for authorized travel preparation; never expose health notes or raw records
 - **condition_add/list/update**: Track health conditions and their status
 - **symptom_log/history/search**: Log and search symptoms with severity ratings
 - **meal_log/history**: Track meals and nutrition

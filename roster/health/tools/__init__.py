@@ -39,6 +39,7 @@ from butlers.tools.health.medications import (
     medication_history,
     medication_list,
     medication_log_dose,
+    medication_travel_snapshot,
     medication_update,
 )
 from butlers.tools.health.reports import (
@@ -79,6 +80,7 @@ __all__ = [
     "medication_history",
     "medication_list",
     "medication_log_dose",
+    "medication_travel_snapshot",
     "medication_update",
     "nutrition_summary",
     "research_delete",

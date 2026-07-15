@@ -122,6 +122,14 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         return await _meds.medication_list(module._get_pool(), active_only=active_only)
 
     @_tool("medications")
+    async def medication_travel_snapshot(
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Return active medication preparation fields for routed Travel requests."""
+        del trace_context
+        return await _meds.medication_travel_snapshot(module._get_pool())
+
+    @_tool("medications")
     async def medication_log_dose(
         medication_id: str,
         taken_at: datetime | None = None,

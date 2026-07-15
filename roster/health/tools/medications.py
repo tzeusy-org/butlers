@@ -256,6 +256,56 @@ async def medication_list(
     return [_fact_to_medication(dict(r)) for r in rows]
 
 
+def _normalize_travel_schedule(value: Any) -> list[str]:
+    """Normalize legacy scalar schedules without stringifying private metadata."""
+    if isinstance(value, str):
+        candidates = [value]
+    elif isinstance(value, list):
+        candidates = value
+    else:
+        candidates = []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        item = candidate.strip()
+        if item and item not in seen:
+            normalized.append(item)
+            seen.add(item)
+    return normalized
+
+
+async def medication_travel_snapshot(pool: asyncpg.Pool) -> dict[str, Any]:
+    """Return the minimum active-medication view needed for travel preparation."""
+    from butlers.health_medication_contract import (
+        MedicationTravelEntry,
+        MedicationTravelSnapshot,
+    )
+
+    medications = await medication_list(pool, active_only=True)
+    entries = [
+        MedicationTravelEntry(
+            name=medication["name"],
+            dosage=medication["dosage"],
+            frequency=medication["frequency"],
+            schedule=_normalize_travel_schedule(medication.get("schedule")),
+        )
+        for medication in medications
+        if medication.get("active", True)
+    ]
+    entries.sort(
+        key=lambda entry: (
+            entry.name.casefold(),
+            entry.name,
+            entry.dosage.casefold(),
+            entry.frequency.casefold(),
+            tuple(item.casefold() for item in entry.schedule),
+        )
+    )
+    return MedicationTravelSnapshot.success(entries).model_dump(mode="json")
+
+
 async def medication_log_dose(
     pool: asyncpg.Pool,
     medication_id: str,

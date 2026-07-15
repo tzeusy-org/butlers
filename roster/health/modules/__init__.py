@@ -18,7 +18,8 @@ class HealthModuleConfig(ToolGroupMixin, BaseModel):
     Tool groups
     -----------
     measurements : measurement_log, measurement_history, measurement_latest
-    medications  : medication_add, medication_list, medication_log_dose, medication_history
+    medications  : medication_add, medication_list, medication_log_dose, medication_history,
+                   medication_travel_snapshot
     conditions   : condition_add, condition_list, condition_update
     symptoms     : symptom_log, symptom_history, symptom_search
     nutrition    : meal_log, meal_history, nutrition_summary
@@ -28,8 +29,8 @@ class HealthModuleConfig(ToolGroupMixin, BaseModel):
 
 
 class HealthModule(Module):
-    """Health module providing 20 MCP tools for measurements, medications,
-    conditions, symptoms, diet/nutrition, reports, and research.
+    """Health module providing tools for measurements, medications, conditions,
+    symptoms, diet/nutrition, reports, and research.
     """
 
     def __init__(self) -> None:
