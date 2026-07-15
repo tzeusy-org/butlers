@@ -41,6 +41,7 @@ import { differenceInCalendarDays, subDays } from "date-fns"
 
 import { Page } from "@/components/ui/page"
 import { Button } from "@/components/ui/button"
+import { SpendUnavailableFootnote } from "@/components/spend/SpendUnavailableFootnote"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Eyebrow } from "@/components/ui/Eyebrow"
@@ -662,9 +663,10 @@ function BreakdownSection() {
           // Empty because butlers dropped out of the fan-out, not a genuine $0
           // month — name them rather than the calm "nothing recorded" line
           // (bu-jad4j.3).
-          <SourceDegradedNote
+          <SpendUnavailableFootnote
             label="Spend breakdown"
-            detail={`no data, cost source unavailable: ${unavailableButlers.join(", ")}`}
+            butlers={unavailableButlers}
+            variant="empty"
             testId="breakdown-unavailable"
           />
         ) : entries.length === 0 ? (
@@ -684,9 +686,10 @@ function BreakdownSection() {
             ))}
             {unavailableButlers.length > 0 && (
               // Populated but partial: some butlers are absent from the bars.
-              <SourceDegradedNote
+              <SpendUnavailableFootnote
                 label="Spend breakdown"
-                detail={`excluded, cost source unavailable: ${unavailableButlers.join(", ")}`}
+                butlers={unavailableButlers}
+                variant="partial"
                 testId="breakdown-unavailable"
               />
             )}
@@ -733,9 +736,10 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
         ) : sessions.length === 0 && unavailableButlers.length > 0 ? (
           // Empty because butlers dropped out of the fan-out, not a genuine
           // absence of expensive sessions — name them (bu-jad4j.3).
-          <SourceDegradedNote
+          <SpendUnavailableFootnote
             label="Top sessions"
-            detail={`no data, cost source unavailable: ${unavailableButlers.join(", ")}`}
+            butlers={unavailableButlers}
+            variant="empty"
             testId="top-sessions-unavailable"
           />
         ) : sessions.length === 0 ? (
@@ -786,9 +790,10 @@ function TopSessionsSection({ from, to }: { from: Date; to: Date }) {
             {unavailableButlers.length > 0 && (
               // Populated but partial: some butlers' sessions are absent from
               // the ranking.
-              <SourceDegradedNote
+              <SpendUnavailableFootnote
                 label="Top sessions"
-                detail={`excluded, cost source unavailable: ${unavailableButlers.join(", ")}`}
+                butlers={unavailableButlers}
+                variant="partial"
                 testId="top-sessions-unavailable"
               />
             )}
@@ -829,9 +834,10 @@ function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
         ) : schedules.length === 0 && unavailableButlers.length > 0 ? (
           // Empty because butlers dropped out of the fan-out, not a genuine
           // absence of scheduled-task cost data — name them (bu-h3ej9).
-          <SourceDegradedNote
+          <SpendUnavailableFootnote
             label="Schedule costs"
-            detail={`no data, cost source unavailable: ${unavailableButlers.join(", ")}`}
+            butlers={unavailableButlers}
+            variant="empty"
             testId="by-schedule-unavailable"
           />
         ) : schedules.length === 0 ? (
@@ -878,9 +884,10 @@ function ByScheduleSection({ from, to }: { from: Date; to: Date }) {
             {unavailableButlers.length > 0 && (
               // Populated but partial: some butlers' schedules are absent from
               // the ranking (bu-h3ej9).
-              <SourceDegradedNote
+              <SpendUnavailableFootnote
                 label="Schedule costs"
-                detail={`excluded, cost source unavailable: ${unavailableButlers.join(", ")}`}
+                butlers={unavailableButlers}
+                variant="partial"
                 testId="by-schedule-unavailable"
               />
             )}

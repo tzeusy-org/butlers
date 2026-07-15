@@ -632,13 +632,15 @@ export interface TopSession {
 
 /**
  * Metadata for the spend fan-out endpoints (GET /api/spend/daily,
- * /api/spend/top-sessions). Extends the base bag with the degraded-envelope
- * flag the backend emits when a butler's cost source fails and is dropped from
- * the fan-out (spend.py -> `ApiMeta(unavailable_butlers=...)`). Mirrors the
- * fleet-wide degraded convention (see CLAUDE.md API Conventions). Absent or
- * empty means every butler answered; a non-empty list means the series/totals
- * undercount — a failed butler silently vanishes from the stacked chart — and
- * must NOT read as a complete all-clear.
+ * /api/spend/top-sessions, /api/spend/by-schedule). Extends the base bag with
+ * the degraded-envelope flag the backend emits when a butler's cost source
+ * fails and is dropped from the fan-out (spend.py ->
+ * `ApiMeta(unavailable_butlers=...)`). Mirrors the fleet-wide degraded
+ * convention (see CLAUDE.md API Conventions). Absent or empty means every
+ * butler answered; a non-empty list means the series/totals/ranking undercount
+ * — a failed butler silently vanishes — and must NOT read as a complete
+ * all-clear. This is the single shared meta type for every spend fan-out
+ * surface (bu-zseqx unified the former ScheduleCostsMeta into it).
  */
 export interface SpendFanoutMeta extends ApiMeta {
   /** Names of butlers whose cost source failed and were dropped from the fan-out. */
@@ -669,24 +671,10 @@ export interface ScheduleCost {
   projected_monthly_usd: number;
 }
 
-/**
- * Metadata for GET /api/spend/by-schedule. Extends the base bag with the
- * degraded-envelope flag the backend emits when a butler's schedule_costs
- * source fails and its schedules are dropped from the merged ranking
- * (spend.py -> `ApiMeta(unavailable_butlers=...)`). Mirrors the fleet-wide
- * degraded convention (see CLAUDE.md API Conventions). Absent or empty means
- * every butler answered; a non-empty list means the ranking undercounts — a
- * failed butler's schedules silently vanish — and must NOT read as complete.
- */
-export interface ScheduleCostsMeta extends ApiMeta {
-  /** Names of butlers whose schedule_costs source failed and were dropped from the fan-out. */
-  unavailable_butlers?: string[];
-}
-
 /** GET /api/spend/by-schedule response: per-schedule ranking + degraded-butler meta. */
 export interface ScheduleCostsResponse {
   data: ScheduleCost[];
-  meta: ScheduleCostsMeta;
+  meta: SpendFanoutMeta;
 }
 
 // ---------------------------------------------------------------------------
