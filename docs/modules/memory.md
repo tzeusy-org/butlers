@@ -160,6 +160,35 @@ Anti-pattern detection: rules with repeated harmful, low-effectiveness outcomes 
 
 Episode cleanup removes expired rows and enforces capacity limits starting with the oldest consolidated rows.
 
+### HNSW recall and churn observability
+
+`memory_ann_observability` is a daily, module-default deterministic job for
+the local HNSW indexes on `episodes`, `facts`, and `rules`. Its aggregate
+result is recorded in the scheduled task's `last_result`; it does not add an
+MCP tool or send a proactive notification.
+
+The monitor deliberately trades coverage for live safety. It uses a tiny,
+bounded physical-page sample only when PostgreSQL estimates that the complete
+searchable corpus is at or below 2,000 rows and its heap has at most 1,024
+pages. The physical-page cap prevents a stale row estimate from admitting a
+broad exact scan. It then compares forced-HNSW
+top-k results with exact top-k results under short read-only, lock, and
+statement-timeout guards. Larger tables report `recall.status = degraded` and
+`reason = corpus_exceeds_exact_row_cap` (or
+`corpus_exceeds_exact_page_cap`) rather than issuing a production-wide exact
+scan. A table with too few live rows reports `no_data`.
+
+Every local table still reports non-sensitive churn and statistics freshness:
+estimated rows, dead-tuple ratio, modified-since-analyze ratio, cumulative
+write counters, and analyze/vacuum timestamps. Recall below 0.90 is a warning;
+below 0.85 is critical. Dead-tuple or modified-since-analyze ratios of 10% and
+25% are warning and critical thresholds respectively. Operators should inspect
+query configuration or plan offline maintenance from those signals; the job
+never runs `VACUUM`, `REINDEX`, or any write.
+
+`public.memory_catalog` is intentionally excluded: it is the separate,
+IVFFlat-backed discovery index rather than a local production memory table.
+
 ## Shared Discovery Catalog
 
 When `enable_shared_catalog = true` (the module default), `store_fact`/`store_rule` write a searchable summary row to `public.memory_catalog` — a cross-butler discovery index (see `openspec/specs/memory-discovery-catalog/spec.md`). The catalog is a discovery index, not a canonical store: full retrieval always routes back to the owning butler's schema via the row's `(source_schema, source_table, source_id)` provenance pointer.

@@ -46,6 +46,7 @@ from butlers.db import register_jsonb_codec
 from butlers.modules.memory import MemoryModule
 from butlers.scheduled_jobs import (
     _MEMORY_MAINTENANCE_JOB_HANDLERS,
+    _run_memory_ann_observability_job,
     _run_memory_catalog_backfill_job,
     _run_memory_consolidation_job,
     _run_memory_decay_sweep_job,
@@ -79,6 +80,7 @@ _EXPECTED_MEMORY_JOB_NAMES = {
     "memory_purge_superseded",
     "memory_decay_sweep",
     "memory_catalog_backfill",
+    "memory_ann_observability",
 }
 
 
@@ -109,9 +111,17 @@ def test_memory_catalog_backfill_is_a_registered_handler() -> None:
     )
 
 
+def test_memory_ann_observability_is_a_registered_handler() -> None:
+    """The local-HNSW monitor must dispatch through the module-owned pool hook."""
+    assert (
+        _MEMORY_MAINTENANCE_JOB_HANDLERS["memory_ann_observability"]
+        is _run_memory_ann_observability_job
+    )
+
+
 @pytest.mark.parametrize("butler_name", _MEMORY_ENABLED_BUTLERS)
-def test_every_memory_enabled_butler_has_all_four_maintenance_jobs(butler_name: str) -> None:
-    """Every butler with [modules.memory] must resolve all four job names.
+def test_every_memory_enabled_butler_has_all_memory_maintenance_jobs(butler_name: str) -> None:
+    """Every butler with [modules.memory] must resolve every maintenance job.
 
     Regression guard for the original gap: finance/travel/education had the
     memory module enabled in butler.toml but no memory maintenance handlers
@@ -179,6 +189,7 @@ class TestMemoryMaintenanceRuntimePool:
         run_episode_cleanup = AsyncMock(return_value={"expired_deleted": 0, "capacity_deleted": 0})
         purge_superseded_facts = AsyncMock(return_value={"deleted": 0, "deleted_ha_state": 0})
         run_catalog_backfill = AsyncMock(return_value={"facts_backfilled": 0})
+        run_ann_observability = AsyncMock(return_value={"health": "healthy"})
 
         monkeypatch.setattr(
             "butlers.core.memory_hooks.resolve_memory_runtime_pool",
@@ -198,13 +209,17 @@ class TestMemoryMaintenanceRuntimePool:
         monkeypatch.setattr(
             "butlers.modules.memory.storage.run_memory_catalog_backfill", run_catalog_backfill
         )
+        monkeypatch.setattr(
+            "butlers.modules.memory.ann_observability.run_ann_observability", run_ann_observability
+        )
 
         await _run_memory_decay_sweep_job(pool=daemon_pool, job_args=None)
         await _run_memory_episode_cleanup_job(pool=daemon_pool, job_args=None)
         await _run_memory_purge_superseded_job(pool=daemon_pool, job_args=None)
         await _run_memory_catalog_backfill_job(pool=daemon_pool, job_args=None)
+        await _run_memory_ann_observability_job(pool=daemon_pool, job_args=None)
 
-        assert resolve_runtime_pool.call_args_list == [call(), call(), call(), call()]
+        assert resolve_runtime_pool.call_args_list == [call(), call(), call(), call(), call()]
         run_decay_sweep.assert_awaited_once_with(memory_pool)
         run_episode_cleanup.assert_awaited_once_with(pool=memory_pool, max_entries=10000)
         purge_superseded_facts.assert_awaited_once_with(memory_pool, older_than_days=7)
@@ -214,6 +229,7 @@ class TestMemoryMaintenanceRuntimePool:
             source_schema="chronicler_mem",
             batch_size=200,
         )
+        run_ann_observability.assert_awaited_once_with(memory_pool)
 
     async def test_direct_maintenance_fails_closed_without_a_runtime_pool_hook(
         self, monkeypatch
@@ -232,6 +248,31 @@ class TestMemoryMaintenanceRuntimePool:
 
 
 class TestJobArgsValidation:
+    async def test_ann_observability_rejects_job_args_and_requires_runtime_pool(
+        self, monkeypatch
+    ) -> None:
+        import butlers.core.memory_hooks as memory_hooks
+
+        with pytest.raises(RuntimeError, match="does not accept job_args"):
+            await _run_memory_ann_observability_job(pool=object(), job_args={"sample_queries": 1})
+
+        monkeypatch.setattr(memory_hooks, "_memory_runtime_pool_hook", None)
+        with pytest.raises(RuntimeError, match="memory module runtime pool hook"):
+            await _run_memory_ann_observability_job(pool=object(), job_args=None)
+
+    async def test_ann_observability_uses_registered_runtime_pool(self, monkeypatch) -> None:
+        runtime_pool = object()
+        run_ann_observability = AsyncMock(return_value={"health": "healthy"})
+        _register_runtime_pool(monkeypatch, runtime_pool)
+        monkeypatch.setattr(
+            "butlers.modules.memory.ann_observability.run_ann_observability", run_ann_observability
+        )
+
+        result = await _run_memory_ann_observability_job(pool=object(), job_args=None)
+
+        assert result == {"health": "healthy"}
+        run_ann_observability.assert_awaited_once_with(runtime_pool)
+
     async def test_decay_sweep_rejects_any_job_args(self) -> None:
         with pytest.raises(RuntimeError, match="does not accept job_args"):
             await _run_memory_decay_sweep_job(pool=AsyncMock(), job_args={"foo": "bar"})

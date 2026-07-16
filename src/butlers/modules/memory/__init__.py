@@ -69,6 +69,14 @@ _DEFAULT_MAINTENANCE_SCHEDULES: tuple[dict[str, Any], ...] = (
         "cron": "10 4 * * *",
         "job_name": "memory_purge_superseded",
     },
+    # Read-only production health evidence for the local HNSW indexes.  This
+    # runs after decay/cleanup/purge so the result captures their churn without
+    # performing any vacuum, reindex, or unbounded exact-recall scan itself.
+    {
+        "name": "memory_ann_observability",
+        "cron": "25 4 * * *",
+        "job_name": "memory_ann_observability",
+    },
     {
         "name": "memory_consolidation_backfill",
         "cron": "*/10 * * * *",
