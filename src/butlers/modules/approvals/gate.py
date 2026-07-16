@@ -523,9 +523,6 @@ def _make_gate_wrapper(
                         item_str = item_str[:_EVIDENCE_ITEM_MAX_CHARS]
                     evidence.append(item_str)
 
-        # Generate agent summary
-        agent_summary = f"Tool '{tool_name}' called with args: {json.dumps(tool_args)}"
-
         # Sanitize tool_args into a fully JSON-safe dict (UUID/datetime -> str)
         # via a json.dumps/loads round-trip, mirroring audit.append()'s pattern
         # (api/routers/audit.py). Bind the resulting DICT directly at every
@@ -539,6 +536,10 @@ def _make_gate_wrapper(
         # `evidence` (built above) is already a list[str] — JSON-safe as-is —
         # so it is bound directly too, with no round-trip needed.
         safe_tool_args = json.loads(json.dumps(tool_args, default=str))
+
+        # Build the display summary from the same JSON-safe representation so
+        # non-native arguments cannot crash the gate before the action is stored.
+        agent_summary = f"Tool '{tool_name}' called with args: {json.dumps(safe_tool_args)}"
 
         # --- Role-based target resolution ---
         resolved_contact = await _resolve_target_contact(pool, tool_args)

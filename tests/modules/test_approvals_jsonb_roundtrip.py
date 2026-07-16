@@ -52,14 +52,6 @@ class TestGateParkPathJsonbRoundtrip:
         tool_args carries a nested dict/list to prove structured values
         survive the round-trip untouched (not flattened to a JSON string).
 
-        NOTE: this deliberately avoids a raw UUID/datetime value in tool_args.
-        gate_wrapper's pre-existing ``agent_summary = f"... {json.dumps(tool_args)}"``
-        (a display-string build, unrelated to the jsonb bind this bead fixes)
-        already calls plain ``json.dumps()`` with no ``default=str`` BEFORE the
-        sanitizing round-trip runs, so any non-JSON-native value in tool_args
-        crashes gate_wrapper today regardless of this fix. Filed as a
-        discovered follow-up (bu-cymc4) rather than fixed here (out of scope:
-        it is not a jsonb double-encoding bug).
         """
         wrapper = _make_gate_wrapper(
             tool_name="test_tool",

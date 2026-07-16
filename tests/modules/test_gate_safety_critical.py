@@ -16,6 +16,7 @@ mock of ``tool_metadata()``.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -202,6 +203,40 @@ class TestGateHonorsSafetyCriticalArgs:
             tool_args={"to": RECIPIENT, "subject": "Hi", "body": "x"},
         )
         assert result == {"status": "sent"}
+
+
+class TestGateArgumentSerialization:
+    async def test_non_json_native_args_are_serialized_before_pending_summary_and_storage(
+        self,
+    ) -> None:
+        """Datetime and UUID arguments must park instead of crashing the gate."""
+        scheduled_for = datetime(2026, 7, 16, 9, 30, tzinfo=UTC)
+        request_id = uuid.uuid4()
+        pool = _make_pool([])
+        wrapper = _make_gate_wrapper(
+            tool_name=TOOL,
+            original_fn=_original_fn(),
+            pool=pool,
+            expiry_hours=72,
+            risk_tier=MagicMock(value="medium"),
+            rule_precedence=("contact_role", "standing_rule"),
+        )
+
+        with patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()):
+            result = await wrapper(scheduled_for=scheduled_for, request_id=request_id)
+
+        assert result["status"] == "pending_approval"
+        pending_insert = next(
+            call
+            for call in pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        )
+        assert pending_insert.args[3] == {
+            "scheduled_for": str(scheduled_for),
+            "request_id": str(request_id),
+        }
+        assert str(scheduled_for) in pending_insert.args[4]
+        assert str(request_id) in pending_insert.args[4]
 
 
 # ---------------------------------------------------------------------------
