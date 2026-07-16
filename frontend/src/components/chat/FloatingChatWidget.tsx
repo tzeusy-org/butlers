@@ -50,13 +50,11 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { createConversation, sendMessage } from "@/api/index.ts";
-import { fetchPricingMap } from "@/api/client.ts";
 import type {
   ConversationSummary,
   CreateConversationRequest,
   Message,
   PageContext,
-  PricingMap,
 } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
@@ -72,6 +70,7 @@ import {
   useConversations,
   useConversationMessages,
 } from "@/hooks/use-conversations.ts";
+import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useChatUnreadBadge } from "@/hooks/use-chat-unread.ts";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { usePageContextCapture } from "@/lib/page-context.tsx";
@@ -129,7 +128,8 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   const [streaming, setStreaming] = useState<StreamingState | null>(null);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [sendError, setSendError] = useState<SendError | null>(null);
-  const [pricingMap, setPricingMap] = useState<PricingMap | null>(null);
+  const { data: pricingMapData } = usePricingMap();
+  const pricingMap = pricingMapData ?? null;
 
   const abortRef = useRef<AbortController | null>(null);
   const interruptedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -143,14 +143,6 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
         interruptedTimeoutRef.current = null;
       }
     };
-  }, []);
-
-  useEffect(() => {
-    fetchPricingMap()
-      .then((pm) => setPricingMap(pm.data))
-      .catch(() => {
-        /* pricing is optional */
-      });
   }, []);
 
   // Fetch the conversation list once so we can resume the most recently
