@@ -22,6 +22,7 @@ import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import DashboardPage from "@/pages/DashboardPage";
+import * as overviewModel from "@/components/overview/model";
 
 // ---------------------------------------------------------------------------
 // Mock all hooks used by DashboardPage (and RuntimeSummaryKpi)
@@ -295,6 +296,58 @@ function renderPage({ basename = "" }: { basename?: string } = {}): string {
     </QueryClientProvider>,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Derived-model stability
+// ---------------------------------------------------------------------------
+
+describe("DashboardPage -- derived triage model stability", () => {
+  let container: HTMLDivElement | undefined;
+  let root: Root | undefined;
+  let queryClient: QueryClient | undefined;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setDefaultData();
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    queryClient = new QueryClient();
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root!.unmount();
+      });
+    }
+    container?.remove();
+    container = undefined;
+    root = undefined;
+    queryClient = undefined;
+  });
+
+  function renderLive() {
+    act(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient!}>
+          <MemoryRouter>
+            <DashboardPage />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("keeps the derived attention rows stable across renders without source changes", () => {
+    const derive = vi.spyOn(overviewModel, "deriveOverviewTriageModel");
+
+    renderLive();
+    renderLive();
+
+    expect(derive).toHaveBeenCalledTimes(1);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Briefing surface
