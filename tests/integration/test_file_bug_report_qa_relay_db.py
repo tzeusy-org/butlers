@@ -73,9 +73,6 @@ CREATE TABLE IF NOT EXISTS public.dashboard_conversations (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     message_count INTEGER NOT NULL DEFAULT 0,
-    total_input_tokens BIGINT NOT NULL DEFAULT 0,
-    total_output_tokens BIGINT NOT NULL DEFAULT 0,
-    total_duration_ms BIGINT NOT NULL DEFAULT 0,
     routed_butler TEXT NULL
 );
 

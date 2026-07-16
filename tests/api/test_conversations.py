@@ -62,9 +62,6 @@ def _make_conversation_row(**kw):
         "created_at": _NOW,
         "updated_at": _NOW,
         "message_count": 2,
-        "total_input_tokens": 100,
-        "total_output_tokens": 200,
-        "total_duration_ms": 1500,
         "routed_butler": None,
     }
     defaults.update(kw)
@@ -112,6 +109,14 @@ async def test_list_conversations_200_and_503(app):
     body = resp.json()
     assert "data" in body and "meta" in body
     assert body["data"][0]["title"] == "Hello world"
+    assert (
+        not {
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_duration_ms",
+        }
+        & body["data"][0].keys()
+    )
 
     # 503 when db unavailable
     _app_with_mock_db(app, db_raises=RuntimeError("no shared pool"))
@@ -159,9 +164,6 @@ async def test_conversation_summary_returns_stats(app):
         "total_conversations": 5,
         "active_conversations": 3,
         "total_messages": 12,
-        "total_input_tokens": 1000,
-        "total_output_tokens": 500,
-        "total_duration_ms": 3000,
     }
     _app_with_mock_db(app, fetchrow_result=row)
     async with httpx.AsyncClient(
@@ -169,6 +171,11 @@ async def test_conversation_summary_returns_stats(app):
     ) as client:
         resp = await client.get(f"/api/butlers/{_BUTLER}/conversations/summary")
     assert resp.status_code == 200
+    assert set(resp.json()) == {
+        "total_conversations",
+        "active_conversations",
+        "total_messages",
+    }
 
 
 # ---------------------------------------------------------------------------

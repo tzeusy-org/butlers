@@ -163,6 +163,23 @@ async def pool(migrated_db_url: str):
         await p.close()
 
 
+async def test_migrated_dashboard_conversation_schema_omits_dead_aggregates(
+    pool: asyncpg.Pool,
+) -> None:
+    rows = await pool.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'dashboard_conversations'
+          AND column_name = ANY($1::text[])
+        """,
+        ["total_input_tokens", "total_output_tokens", "total_duration_ms"],
+    )
+
+    assert rows == []
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

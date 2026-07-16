@@ -9,15 +9,9 @@
  * `src/butlers/api/conversations.py`) — sending a user message alone never
  * changes it — so this can never badge on the owner's own outgoing messages.
  *
- * bu-qesw0: this previously watermarked on `total_output_tokens`, which
- * NEVER increments for a confirm-loop reply — `conversation_reply_create`
- * persists it mid-session with `output_tokens = NULL` because the routed
- * session's own token accounting isn't known yet (by design, see the SSE
- * `message_complete` event). That made the badge permanently dead in
- * production even though it looked correct under tests that fed synthetic,
- * monotonically-increasing token counts. `latest_assistant_reply_at` is a
- * timestamp derived from `MAX(dashboard_messages.created_at) WHERE role =
- * 'assistant'`, so it moves the instant a reply — of any kind — is written.
+ * `latest_assistant_reply_at` is a timestamp derived from
+ * `MAX(dashboard_messages.created_at) WHERE role = 'assistant'`, so it moves
+ * the instant a reply — of any kind — is written.
  *
  * `panelOpen` drives watermark advancement: while the panel is open the
  * owner is considered caught up, so the watermark tracks the live value and
@@ -40,9 +34,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useConversations } from "./use-conversations.ts";
 import type { ConversationSummary } from "@/api/types.ts";
 
-// v2: the watermark value changed from a `total_output_tokens` number to a
-// `latest_assistant_reply_at` ISO timestamp (or null). Bumping the storage
-// key avoids comparing a stale numeric watermark against a timestamp string.
+// The watermark is a `latest_assistant_reply_at` ISO timestamp (or null).
 const WATERMARK_STORAGE_KEY = "butlers:chat-widget-last-seen-v2";
 const POLL_INTERVAL_MS = 60_000;
 

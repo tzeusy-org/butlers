@@ -113,10 +113,7 @@ def upgrade() -> None:
             status TEXT NOT NULL DEFAULT 'active',
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            message_count INTEGER NOT NULL DEFAULT 0,
-            total_input_tokens BIGINT NOT NULL DEFAULT 0,
-            total_output_tokens BIGINT NOT NULL DEFAULT 0,
-            total_duration_ms BIGINT NOT NULL DEFAULT 0
+            message_count INTEGER NOT NULL DEFAULT 0
         )
     """)
 

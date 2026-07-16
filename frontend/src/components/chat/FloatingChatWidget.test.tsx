@@ -84,9 +84,6 @@ const CONVERSATIONS: ConversationSummary[] = [
     created_at: "2026-07-04T12:00:00.000Z",
     updated_at: "2026-07-05T09:00:00.000Z",
     message_count: 2,
-    total_input_tokens: 10,
-    total_output_tokens: 20,
-    total_duration_ms: 500,
     routed_butler: "relationship",
   },
   {
@@ -97,9 +94,6 @@ const CONVERSATIONS: ConversationSummary[] = [
     created_at: "2026-07-03T12:00:00.000Z",
     updated_at: "2026-07-03T12:05:00.000Z",
     message_count: 1,
-    total_input_tokens: 5,
-    total_output_tokens: 5,
-    total_duration_ms: 200,
     routed_butler: null,
   },
 ];
@@ -380,11 +374,7 @@ describe("FloatingChatWidget — page-context capture", () => {
 // ---------------------------------------------------------------------------
 
 describe("FloatingChatWidget — unread badge", () => {
-  // bu-qesw0: watermarked on latest_assistant_reply_at, not
-  // total_output_tokens — conversation_reply_create always persists its
-  // message with output_tokens = NULL (mid-session, before the routed
-  // session's own accounting is known), so total_output_tokens can never
-  // move for a confirm-loop reply and is not a usable freshness signal.
+  // The watermark follows the latest persisted assistant reply.
   function conversationsWithLatestReplyAt(latestReplyAt: string | null): ConversationSummary[] {
     return [
       { ...CONVERSATIONS[0], latest_assistant_reply_at: latestReplyAt },
