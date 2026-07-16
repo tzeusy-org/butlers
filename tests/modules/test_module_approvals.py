@@ -428,6 +428,43 @@ class TestApproveLifecycle:
         assert result["expired_count"] == 1
         assert str(action_id) in result["expired_ids"]
 
+    async def test_approve_expired_pending_action_expires_instead_of_approving(
+        self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="email_send",
+            status="pending",
+            expires_at=datetime.now(UTC) - timedelta(minutes=30),
+        )
+
+        result = await module._approve_action(str(action_id), actor=human_actor)
+
+        assert "error" in result
+        assert "expired" in result["error"]
+        assert mock_db.pending_actions[action_id]["status"] == "expired"
+        event_types = [call["args"][0] for call in mock_db.approval_events]
+        assert "action_expired" in event_types
+
+    async def test_rest_approve_expired_pending_action_expires_instead_of_approving(
+        self, mock_db: MockDB
+    ):
+        from butlers.modules.approvals import operations
+
+        action_id = mock_db._insert_action(
+            tool_name="email_send",
+            status="pending",
+            expires_at=datetime.now(UTC) - timedelta(minutes=30),
+        )
+
+        result = await operations.approve_action(mock_db, str(action_id))
+
+        assert "error" in result
+        assert "expired" in result["error"]
+        assert mock_db.pending_actions[action_id]["status"] == "expired"
+        event_types = [call["args"][0] for call in mock_db.approval_events]
+        assert "action_expired" in event_types
+
     async def test_approve_invalid_uuid_returns_error(
         self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
     ):

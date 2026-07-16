@@ -10,7 +10,7 @@ Extended (bu-5xiu9): defer bounds, policy round-trip, audit.append on verbs.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -705,6 +705,77 @@ async def test_defer_hours_bounds(app, hours, expected_status):
         )
 
     assert resp.status_code == expected_status, f"hours={hours}: {resp.text}"
+
+
+async def test_defer_expired_pending_action_expires_instead_of_extending(app):
+    """POST /api/approvals/{id}/defer cannot revive an expired pending approval."""
+    from butlers.api.routers.approvals import _get_db_manager
+
+    action_id = uuid4()
+    pending_row = _make_pending_row(status="pending")
+    pending_row["id"] = action_id
+    pending_row["expires_at"] = _NOW - timedelta(minutes=30)
+    expired_row = dict(pending_row)
+    expired_row["status"] = "expired"
+    expired_row["decided_by"] = "system:expiry"
+    expired_row["decided_at"] = _NOW
+
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock()
+
+    def fetchval_side(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "to_regclass" in sql or "EXISTS" in sql:
+            return True
+        return 1
+
+    async def fetchrow_side(query, *args, **kwargs):
+        if "UPDATE pending_actions SET expires_at" in query:
+            pytest.fail("expired approvals must not be extended")
+        if "UPDATE pending_actions SET status" in query:
+            return expired_row
+        if "SELECT * FROM pending_actions" in query:
+            return pending_row
+        return pending_row
+
+    mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
+    mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_side)
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+
+    class _MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_MockAcquire())
+    mock_pool.fetchrow = AsyncMock(return_value=pending_row)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            f"/api/approvals/{action_id}/defer",
+            json={"hours": 24},
+        )
+
+    assert resp.status_code == 409
+    assert "expired" in resp.json()["detail"]
+    assert any(
+        "INSERT INTO approval_events" in call.args[0] for call in mock_conn.execute.await_args_list
+    )
 
 
 async def test_policy_round_trip(app):

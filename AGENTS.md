@@ -555,6 +555,7 @@ make test-qg
 
 ### Approvals CAS/idempotency contract
 - `src/butlers/modules/approvals/module.py` decision paths (`_approve_action`, `_reject_action`, `_expire_stale_actions`) must use compare-and-set SQL writes (`... WHERE status='pending'`) so concurrent decision attempts cannot overwrite each other.
+- Approval expiry is a decision boundary, not just background cleanup: approve and defer/extension paths must reject and mark a still-`pending` action expired when `expires_at < now`, so a missed sweep cannot make an expired action executable or extendable.
 - `src/butlers/modules/approvals/executor.py::execute_approved_action` is idempotent per `action_id`: it serializes execution with a process-local per-action lock, replays stored `execution_result` when status is already `executed`, and only performs the terminal write when status is still `approved`.
 
 ### Calendar recurrence normalization contract

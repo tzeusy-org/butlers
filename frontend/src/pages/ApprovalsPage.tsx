@@ -186,7 +186,7 @@ function expiryUrgency(expiresAt: string | null | undefined): number {
   const expiresDate = new Date(expiresAt);
   if (Number.isNaN(expiresDate.getTime())) return 0;
   const msLeft = expiresDate.getTime() - Date.now();
-  if (msLeft <= 0) return 4; // already past expiry — most urgent
+  if (msLeft <= 0) return -1; // stale sweep missed it; do not bury live decisions
   if (msLeft <= HOUR_MS) return 3;
   if (msLeft <= 6 * HOUR_MS) return 2;
   if (msLeft <= 24 * HOUR_MS) return 1;

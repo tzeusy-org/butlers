@@ -203,6 +203,9 @@ describe("ApprovalsPage — load-more", () => {
       makeApiResponse([]) as AnyMock,
     );
     vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
 
     qc = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -443,6 +446,9 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
       makeApiResponse([]) as AnyMock,
     );
     vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
 
     qc = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -800,6 +806,9 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
       makeApiResponse([]) as AnyMock,
     );
     vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
 
     qc = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -907,6 +916,9 @@ describe("ApprovalsPage — expiry + blast-radius ranking (bu-86c4c.12)", () => 
       makeApiResponse([]) as AnyMock,
     );
     vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
 
     qc = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -958,6 +970,35 @@ describe("ApprovalsPage — expiry + blast-radius ranking (bu-86c4c.12)", () => 
     // The expiring item ranks first despite arriving second.
     expect(items[0].getAttribute("data-approval-id")).toBe("late-arrival");
     expect(items[1].getAttribute("data-approval-id")).toBe("first-arrival");
+  });
+
+  it("does not let already-expired pending rows outrank active outbound approvals", async () => {
+    const expired = {
+      ...makeSummary("stale-expired", "relationship_assert_fact"),
+      expires_at: new Date(Date.now() - 60 * 60_000).toISOString(),
+    };
+    const activeOutbound = {
+      ...makeSummary("active-email", "email_reply_to_thread"),
+      expires_at: new Date(Date.now() + 36 * 60 * 60_000).toISOString(),
+    };
+
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([expired, activeOutbound]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("active-email") as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelectorAll('[data-testid="rail-item"]').length === 2,
+    );
+
+    const items = container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="rail-item"]',
+    );
+    expect(items[0].getAttribute("data-approval-id")).toBe("active-email");
+    expect(items[1].getAttribute("data-approval-id")).toBe("stale-expired");
   });
 
   it("shows a warning-colored countdown chip for an item expiring within the hour", async () => {
@@ -1423,6 +1464,9 @@ describe("ApprovalsPage — rail item focus outline (bu-86c4c.14)", () => {
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
     vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
     vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+    vi.mocked(getApprovalDetail).mockImplementation(
+      ((id: string) => makePendingDetail(id)) as AnyMock,
+    );
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("a1")]) as AnyMock,
     );

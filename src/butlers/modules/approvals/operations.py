@@ -42,6 +42,63 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+async def expire_pending_action_if_stale(
+    pool: Any,
+    action: PendingAction,
+    *,
+    now: datetime | None = None,
+    target_action: str = "approved",
+) -> dict[str, Any] | None:
+    """Expire a still-pending action whose approval window has elapsed.
+
+    Approval expiry is a denial boundary, not just a background cleanup concern.
+    Decision paths call this before allowing any pending -> approved transition
+    so a missed sweep cannot make an expired action executable.
+    """
+    if action.status != ActionStatus.PENDING or action.expires_at is None:
+        return None
+
+    effective_now = now or datetime.now(UTC)
+    expires_at = action.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at >= effective_now:
+        return None
+
+    expired_row = await pool.fetchrow(
+        "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
+        "WHERE id = $4 AND status = $5 "
+        "RETURNING *",
+        ActionStatus.EXPIRED.value,
+        "system:expiry",
+        effective_now,
+        action.id,
+        ActionStatus.PENDING.value,
+    )
+    if expired_row is not None:
+        await record_approval_event(
+            pool,
+            ApprovalEventType.ACTION_EXPIRED,
+            actor="system:expiry",
+            action_id=action.id,
+            reason="approval window elapsed",
+            metadata={"tool_name": action.tool_name},
+            occurred_at=effective_now,
+        )
+        return {
+            "error": (
+                f"Action {action.id} expired at {expires_at.isoformat()} "
+                f"and cannot be {target_action}"
+            )
+        }
+
+    latest_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", action.id)
+    if latest_row is None:
+        return {"error": f"Action not found: {action.id}"}
+    latest_action = PendingAction.from_row(latest_row)
+    return {"error": f"Cannot transition from '{latest_action.status.value}' to '{target_action}'"}
+
+
 async def approve_action(
     pool: Any,
     action_id: str,
@@ -86,6 +143,10 @@ async def approve_action(
         return {"error": f"Cannot transition from '{action.status.value}' to 'approved'"}
 
     now = datetime.now(UTC)
+    expired_result = await expire_pending_action_if_stale(pool, action, now=now)
+    if expired_result is not None:
+        return expired_result
+
     decided_by = f"human:{actor_id}"
 
     # CAS update: pending → approved

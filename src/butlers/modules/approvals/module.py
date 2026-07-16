@@ -63,6 +63,7 @@ from butlers.modules.approvals.executor import (
     list_executed_actions as _list_executed_actions_query,
 )
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
+from butlers.modules.approvals.operations import expire_pending_action_if_stale
 from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.base import Module, ToolGroupMixin, group_enabled
 
@@ -667,6 +668,9 @@ class ApprovalsModule(Module):
             return {"error": str(exc)}
 
         now = datetime.now(UTC)
+        expired_result = await expire_pending_action_if_stale(self._db, action, now=now)
+        if expired_result is not None:
+            return expired_result
 
         # Transition to approved with compare-and-set on pending state.
         approved_row = await self._db.fetchrow(

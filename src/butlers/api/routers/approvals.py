@@ -2216,6 +2216,8 @@ async def defer_approval(
     # propagates to the app-level handler, which returns 503
     # {"error": "audit_unavailable"} (dashboard-audit-log spec), rolling the
     # expiry-extension UPDATE back with it.
+    expired_error: str | None = None
+    updated: Any = None
     async with target_pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
         if row is None:
@@ -2230,14 +2232,28 @@ async def defer_approval(
                 ),
             )
 
-        updated = await conn.fetchrow(
-            "UPDATE pending_actions SET expires_at = $1 WHERE id = $2 RETURNING *",
-            new_expires_at,
-            parsed_id,
+        expired_result = await approvals_ops.expire_pending_action_if_stale(
+            conn,
+            PendingAction.from_row(row),
+            now=now,
+            target_action="deferred",
         )
-        await audit_router.append(
-            conn, _ACTOR_DASHBOARD, "approval.defer", target=action_id, note=str(request.hours)
-        )
+        if expired_result is not None:
+            expired_error = str(expired_result["error"])
+        else:
+            updated = await conn.fetchrow(
+                "UPDATE pending_actions SET expires_at = $1 WHERE id = $2 RETURNING *",
+                new_expires_at,
+                parsed_id,
+            )
+            await audit_router.append(
+                conn, _ACTOR_DASHBOARD, "approval.defer", target=action_id, note=str(request.hours)
+            )
+
+    if expired_error is not None:
+        if "not found" in expired_error.lower():
+            raise HTTPException(status_code=404, detail=expired_error)
+        raise HTTPException(status_code=409, detail=expired_error)
 
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to defer approval")
