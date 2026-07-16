@@ -473,7 +473,7 @@ function Dossier({
   const expiryChip = expiryCountdown(detail.expires_at);
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 relative">
+    <div className="flex-1 min-w-0 min-h-[20rem] md:min-h-0 overflow-y-auto p-6 relative">
       {/* Floating decision cluster — a zero-height sticky overlay so it floats
           over the top-right corner without reserving flow space (the body is
           not pushed down). Stays pinned on scroll; the wrapper is click-through
@@ -1533,9 +1533,12 @@ export default function ApprovalsPage() {
       <RulePromotionStatsSection />
 
       {/* Two-pane body */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div
+        className="flex flex-col md:flex-row shrink-0 min-h-[32rem] border-b border-border overflow-hidden"
+        data-testid="approvals-workspace"
+      >
         {/* Left rail */}
-        <div className="w-72 shrink-0 border-r border-border flex flex-col min-h-0">
+        <div className="w-full md:w-72 shrink-0 border-b md:border-b-0 md:border-r border-border flex flex-col min-h-0 max-h-64 md:max-h-none">
           <div className="flex-1 overflow-y-auto">
             <QueryBoundary
               isLoading={isLoading}

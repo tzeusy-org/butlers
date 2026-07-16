@@ -856,6 +856,23 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
     expect(getApprovalDetail).not.toHaveBeenCalledWith("a1");
   });
 
+  it("keeps the direct-link workspace from collapsing behind policy/history", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1"), makeSummary("a2")]) as AnyMock,
+    );
+
+    renderAt("/approvals/a2");
+    await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
+
+    const workspace = container.querySelector(
+      '[data-testid="approvals-workspace"]',
+    );
+    expect(workspace).not.toBeNull();
+    expect(workspace?.className).toContain("min-h-[32rem]");
+    expect(workspace?.className).toContain("flex-col");
+    expect(workspace?.className).toContain("md:flex-row");
+  });
+
   it("clicking a rail item navigates to that approval's URL and fetches its dossier", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("a1"), makeSummary("a2")]) as AnyMock,
