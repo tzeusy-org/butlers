@@ -40,6 +40,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ALL_ROUTES } from "@/lib/route-registry";
+import { ROUTE_AXE_PATHS } from "./route-page-cases";
 import { AXE_SKIP_MANIFEST } from "./skip-manifest";
 
 // ---------------------------------------------------------------------------
@@ -56,35 +57,6 @@ const COVERED_ELSEWHERE: Record<string, string> = {
   // covered, just not via this exact route path.
   "/ingestion": "src/components/ingestion/TimelineTab.a11y.test.tsx (component-level, not routed)",
   "/decisions": "src/pages/DecisionsPage.a11y.test.tsx",
-  "/": "src/test/axe/route-pages.a11y.test.tsx",
-  "/qa": "src/test/axe/route-pages.a11y.test.tsx",
-  "/approvals": "src/test/axe/route-pages.a11y.test.tsx",
-  "/memory": "src/test/axe/route-pages.a11y.test.tsx",
-  "/entities": "src/test/axe/route-pages.a11y.test.tsx",
-  "/secrets": "src/test/axe/route-pages.a11y.test.tsx",
-  "/settings": "src/test/axe/route-pages.a11y.test.tsx",
-  "/education": "src/test/axe/route-pages.a11y.test.tsx",
-  "/health": "src/test/axe/route-pages.a11y.test.tsx",
-  "/calendar": "src/test/axe/route-pages.a11y.test.tsx",
-  "/chronicles": "src/test/axe/route-pages.a11y.test.tsx",
-  "/notifications": "src/test/axe/route-pages.a11y.test.tsx",
-  "/issues": "src/test/axe/route-pages.a11y.test.tsx",
-  "/sessions": "src/test/axe/route-pages.a11y.test.tsx",
-  "/spend": "src/test/axe/route-pages.a11y.test.tsx",
-  "/audit-log": "src/test/axe/route-pages.a11y.test.tsx",
-  "/system": "src/test/axe/route-pages.a11y.test.tsx",
-  "/health/measurements": "src/test/axe/route-pages.a11y.test.tsx",
-  "/health/medications": "src/test/axe/route-pages.a11y.test.tsx",
-  "/health/conditions": "src/test/axe/route-pages.a11y.test.tsx",
-  "/health/symptoms": "src/test/axe/route-pages.a11y.test.tsx",
-  "/health/meals": "src/test/axe/route-pages.a11y.test.tsx",
-  "/health/research": "src/test/axe/route-pages.a11y.test.tsx",
-  "/settings/permissions": "src/test/axe/route-pages.a11y.test.tsx",
-  "/settings/models": "src/test/axe/route-pages.a11y.test.tsx",
-  "/entities/index": "src/test/axe/route-pages.a11y.test.tsx",
-  "/entities/concentration": "src/test/axe/route-pages.a11y.test.tsx",
-  "/entities/circles": "src/test/axe/route-pages.a11y.test.tsx",
-  "/entities/index?has=contact": "src/test/axe/route-pages.a11y.test.tsx",
 };
 
 // ---------------------------------------------------------------------------
@@ -94,10 +66,23 @@ const COVERED_ELSEWHERE: Record<string, string> = {
 describe("route registry axe coverage completeness (bu-qvnce.10)", () => {
   it("every ALL_ROUTES path is covered elsewhere or explicitly skipped with a reason", () => {
     const skipPaths = new Set(AXE_SKIP_MANIFEST.map((entry) => entry.path));
+    const coveredByRealRouteCase = new Set<string>(ROUTE_AXE_PATHS);
     const uncovered = ALL_ROUTES.map((route) => route.path).filter(
-      (path) => !(path in COVERED_ELSEWHERE) && !skipPaths.has(path),
+      (path) => !coveredByRealRouteCase.has(path) && !(path in COVERED_ELSEWHERE) && !skipPaths.has(path),
     );
     expect(uncovered).toEqual([]);
+  });
+
+  it("derives exact registry coverage from rendered route cases and independent axe suites", () => {
+    const routePaths = ALL_ROUTES.map((route) => route.path);
+    const skipPaths = AXE_SKIP_MANIFEST.map((entry) => entry.path);
+    const claimedPaths = new Set([
+      ...ROUTE_AXE_PATHS,
+      ...Object.keys(COVERED_ELSEWHERE),
+      ...skipPaths,
+    ]);
+
+    expect([...claimedPaths].sort()).toEqual([...routePaths].sort());
   });
 
   it("every skip-manifest entry names a real, specific reason (not a placeholder)", () => {

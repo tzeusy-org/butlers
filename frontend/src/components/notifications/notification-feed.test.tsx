@@ -46,6 +46,35 @@ function renderFeed(props: Parameters<typeof NotificationFeed>[0]) {
 describe("NotificationFeed triage controls", () => {
   afterEach(() => cleanup());
 
+  it("keeps loading headers in loaded-column order and adds Actions only for triage controls", () => {
+    const { rerender } = renderFeed({ notifications: [], isLoading: true });
+
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "Status",
+      "Butler",
+      "Recipient",
+      "Channel",
+      "Message",
+      "Time",
+    ]);
+
+    rerender(
+      <MemoryRouter>
+        <NotificationFeed notifications={[]} isLoading onMarkRead={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "Status",
+      "Butler",
+      "Recipient",
+      "Channel",
+      "Message",
+      "Time",
+      "Actions",
+    ]);
+  });
+
   it("renders mark-read on a sent row (not just failed)", () => {
     renderFeed({
       notifications: [makeNotification({ status: "sent", effective_status: "sent" })],

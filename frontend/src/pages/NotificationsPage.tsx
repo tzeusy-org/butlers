@@ -432,7 +432,7 @@ export default function NotificationsPage() {
       <Card>
         <CardContent>
           {notificationsLoading ? (
-            <NotificationTableSkeleton rows={10} />
+            <NotificationTableSkeleton rows={10} hasTriageControls />
           ) : notificationsError ? (
             <p className="text-destructive py-8 text-center text-sm">
               Failed to load notifications. Please try refreshing the page.

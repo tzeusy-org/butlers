@@ -146,7 +146,7 @@ export function NotificationFeed({
   // Triage controls render whenever a triage handler is wired.
   const hasTriageControls = Boolean(onMarkRead || onDismiss);
   if (isLoading) {
-    return <NotificationTableSkeleton />;
+    return <NotificationTableSkeleton hasTriageControls={hasTriageControls} />;
   }
 
   if (notifications.length === 0) {

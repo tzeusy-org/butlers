@@ -57,18 +57,33 @@ export function TableSkeleton({ rows = 5, columns, headers }: TableSkeletonProps
 }
 
 /** Pre-configured skeleton matching the notification feed table layout. */
-export function NotificationTableSkeleton({ rows = 5 }: { rows?: number }) {
+export function NotificationTableSkeleton({
+  rows = 5,
+  hasTriageControls = false,
+}: {
+  rows?: number;
+  hasTriageControls?: boolean;
+}) {
+  const columns = [
+    { width: "w-14" },
+    { width: "w-24" },
+    { width: "w-24" },
+    { width: "w-16" },
+    { width: "w-48" },
+    { width: "w-20", alignRight: true },
+  ];
+  const headers = ["Status", "Butler", "Recipient", "Channel", "Message", "Time"];
+
+  if (hasTriageControls) {
+    columns.push({ width: "w-20", alignRight: true });
+    headers.push("Actions");
+  }
+
   return (
     <TableSkeleton
       rows={rows}
-      columns={[
-        { width: "w-14" },
-        { width: "w-24" },
-        { width: "w-16" },
-        { width: "w-48" },
-        { width: "w-20", alignRight: true },
-      ]}
-      headers={["Time", "Channel", "Status", "Notification", "Actions"]}
+      columns={columns}
+      headers={headers}
     />
   );
 }
