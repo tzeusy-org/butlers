@@ -1122,17 +1122,31 @@ async def _fetch_google_test_mode_expiry(
 # ---------------------------------------------------------------------------
 
 
-def _is_missing_secrets_schema_error(exc: Exception) -> bool:
+def _secrets_schema_absent_at_start(db: DatabaseManager, butler_name: str) -> bool:
+    """Return whether ``butler_secrets`` was absent when the API started."""
+    relation_marker = getattr(db, "relation_observed_since_start", None)
+    if not callable(relation_marker):
+        return False
+    return relation_marker(butler_name, "butler_secrets") is False
+
+
+def _is_missing_secrets_schema_error(
+    exc: Exception,
+    *,
+    schema_absent_at_start: bool,
+) -> bool:
     """Return whether *exc* indicates the butler simply has no secrets table yet.
 
-    Mirrors ``memory.py::_is_missing_memory_schema_error``. A butler that has
-    never had ``butler_secrets`` created (no table yet) is the expected,
-    common case — NOT a degraded source. Any other failure (an unexpected
-    COLUMN error from schema drift, e.g. bu-urcwx; a dropped connection; a
-    permission error) is genuine and must be tracked via ``tracker`` in
-    ``_fetch_system_secrets`` so a real per-butler failure is never mistaken
-    for a truthful empty result (bu-38ae1).
+    Mirrors ``memory.py::_is_missing_memory_schema_error``. A butler that did
+    not have ``butler_secrets`` when the dashboard started is an expected,
+    common absence — NOT a degraded source. If the table existed at startup,
+    an ``UndefinedTableError`` is schema loss and must be tracked alongside
+    other genuine failures (column drift, dropped connection, permission
+    errors) so a real per-butler failure is never mistaken for a truthful
+    empty result (bu-38ae1).
     """
+    if not schema_absent_at_start:
+        return False
     if isinstance(exc, UndefinedTableError):
         return True
     msg = str(exc).lower()
@@ -1202,15 +1216,24 @@ async def _fetch_system_secrets(
     butler_name: str,
     *,
     read_only: bool = False,
+    schema_absent_at_start: bool = False,
     tracker: DegradedSources | None = None,
 ) -> list[SystemSecret]:
     """Fetch all butler_secrets rows from a single butler's schema pool.
 
-    Returns an empty list when the table doesn't exist or the pool errors.
+    Returns an empty list when the query fails.  A missing table is treated as
+    an expected empty result only when ``schema_absent_at_start`` records that
+    this optional schema was absent at dashboard startup; otherwise its
+    failure is available to ``tracker`` as a degraded source.
 
     ``read_only`` marks the returned rows as managed in the shared credential
     pool (see :class:`SystemSecret.read_only`); set it when scanning the shared
     pool rather than a per-butler schema.
+
+    ``schema_absent_at_start`` is the lifecycle marker captured by
+    :class:`DatabaseManager` after the schema pool was created.  Its default
+    is deliberately fail-closed for direct callers that do not have that
+    startup evidence.
 
     ``tracker``, when provided, is marked with ``butler_name`` for any failure
     that is NOT classified as "no secrets table yet" by
@@ -1239,7 +1262,10 @@ async def _fetch_system_secrets(
             """
         )
     except Exception as exc:  # noqa: BLE001
-        if _is_missing_secrets_schema_error(exc):
+        if _is_missing_secrets_schema_error(
+            exc,
+            schema_absent_at_start=schema_absent_at_start,
+        ):
             logger.debug("butler_secrets not found for butler %s", butler_name)
         else:
             # A missing COLUMN (schema drift, e.g. test-state columns absent) or
@@ -1856,7 +1882,12 @@ async def get_inventory(
             pool = db.pool(butler_name)
         except KeyError:
             continue
-        butler_rows = await _fetch_system_secrets(pool, butler_name, tracker=tracker)
+        butler_rows = await _fetch_system_secrets(
+            pool,
+            butler_name,
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
+            tracker=tracker,
+        )
         system_secrets.extend(butler_rows)
 
     # Shared application config (Google OAuth app credentials, butler email /
@@ -1874,7 +1905,11 @@ async def get_inventory(
     # read_only=False: these rows are now editable via target="shared-public".
     if shared_pool is not None:
         shared_system = await _fetch_system_secrets(
-            shared_pool, "shared-public", read_only=False, tracker=tracker
+            shared_pool,
+            "shared-public",
+            read_only=False,
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+            tracker=tracker,
         )
         system_secrets.extend(s for s in shared_system if s.category not in ("cli", "cli-auth"))
 

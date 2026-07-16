@@ -52,6 +52,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
+_MEMORY_SCHEMA_RELATIONS = ("episodes", "facts", "rules")
+
 
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
@@ -88,24 +90,33 @@ def _any_pool(db: DatabaseManager) -> object:
     raise HTTPException(status_code=503, detail="No database pools available")
 
 
+def _memory_schema_absent_at_start(db: DatabaseManager, butler_name: str) -> bool:
+    """Return whether every required memory relation was absent at startup."""
+    return all(
+        db.relation_observed_since_start(butler_name, relation) is False
+        for relation in _MEMORY_SCHEMA_RELATIONS
+    )
+
+
 def _is_missing_memory_schema_error(
     exc: Exception,
     *,
+    schema_absent_at_start: bool,
     expected_absent_columns: tuple[str, ...] = (),
 ) -> bool:
     """Return whether *exc* indicates the pool simply lacks memory tables.
 
-    This is the expected, common case for a butler that has not opted into
-    the memory module -- NOT a degraded source. Any other exception (a
-    dropped connection, a permission error, a malformed query) is a genuine
-    failure and must be tracked via *tracker* in ``_fan_out_memory_queries``,
-    never silently folded into the same "no memory tables" skip.
+    This is the expected, common case only when every required memory table
+    was absent when the dashboard started.  An ``UndefinedTableError`` after
+    a table was present at startup is schema loss and must be tracked via
+    *tracker* in ``_fan_out_memory_queries`` rather than folded into the same
+    graceful skip.
     """
     if isinstance(exc, UndefinedTableError):
-        return True
+        return schema_absent_at_start
     msg = str(exc).lower()
     if "does not exist" in msg and ("relation" in msg or "table" in msg):
-        return True
+        return schema_absent_at_start
     # Re-embedding probes columns that only memory-enabled schemas own.  Keep
     # this exemption opt-in per query so a missing column elsewhere remains a
     # genuine query fault rather than silently looking like an absent schema.
@@ -161,6 +172,7 @@ async def _fan_out_memory_queries(
         except Exception as exc:
             if not _is_missing_memory_schema_error(
                 exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
                 expected_absent_columns=expected_absent_columns,
             ):
                 tracker.mark(name, msg=f"memory query {query_name!r} failed")
@@ -261,7 +273,10 @@ async def get_memory_stats(
         try:
             schema = await pool.fetchval("SELECT current_schema()")
         except Exception as exc:
-            if _is_missing_memory_schema_error(exc):
+            if _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, butler_name),
+            ):
                 logger.debug(
                     "Skipping catalog-drift gauge for butler %s (no memory schema)",
                     butler_name,
@@ -284,7 +299,10 @@ async def get_memory_stats(
         try:
             return await _storage.get_catalog_drift_counts(pool, source_schema=schema)
         except Exception as exc:
-            if _is_missing_memory_schema_error(exc):
+            if _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, butler_name),
+            ):
                 # This butler has no facts/rules tables (memory module not
                 # enabled) — legitimately absent, not a degraded source.
                 logger.debug(

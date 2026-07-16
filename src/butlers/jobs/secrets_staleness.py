@@ -75,6 +75,7 @@ from butlers.api.routers.secrets_v2 import (
     _fetch_system_secrets,
     _fetch_user_secrets,
     _infer_provider_from_type,
+    _secrets_schema_absent_at_start,
     probe_system_credential,
     probe_user_credential,
 )
@@ -158,7 +159,12 @@ async def _collect_probe_targets(
         except KeyError:
             continue
         try:
-            rows = await _fetch_system_secrets(pool, butler_name, tracker=tracker)
+            rows = await _fetch_system_secrets(
+                pool,
+                butler_name,
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
+                tracker=tracker,
+            )
         except Exception:  # noqa: BLE001
             if tracker is not None:
                 tracker.mark(
@@ -195,7 +201,12 @@ async def _collect_probe_targets(
     # Shared application config (public.butler_secrets), excluding cli/cli-auth
     # rows — those are the CLI family, collected separately below. Mirrors
     # _collect_snapshots's exclusion so this scan never double-counts a row.
-    for row in await _fetch_system_secrets(shared_pool, "shared-public", tracker=tracker):
+    for row in await _fetch_system_secrets(
+        shared_pool,
+        "shared-public",
+        schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+        tracker=tracker,
+    ):
         if row.category in ("cli", "cli-auth"):
             continue
         if row.state in _SKIP_STATES:

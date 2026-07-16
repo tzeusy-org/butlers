@@ -469,14 +469,25 @@ class _StatsPool:
 class _StatsDB:
     """DatabaseManager stand-in returning a distinct _StatsPool per butler."""
 
-    def __init__(self, pools: dict[str, _StatsPool]) -> None:
+    def __init__(
+        self,
+        pools: dict[str, _StatsPool],
+        *,
+        memory_schema_absent: set[str] | None = None,
+    ) -> None:
         self._pools = pools
+        self._memory_schema_absent = memory_schema_absent or set()
         self.butler_names = list(pools)
 
     def pool(self, name: str) -> _StatsPool:
         if name not in self._pools:
             raise KeyError(f"No pool for butler: {name}")
         return self._pools[name]
+
+    def relation_observed_since_start(self, name: str, relation: str) -> bool | None:
+        if name in self._memory_schema_absent:
+            return False
+        return None
 
 
 async def test_stats_consolidation_fields_aggregate_across_pools(app):
@@ -677,7 +688,8 @@ async def test_stats_does_not_flag_pools_failed_for_missing_memory_schema(app):
         {
             "atlas": _StatsPool(counts={"consolidation_status = 'dead_letter'": 3}),
             "switchboard": _RaisingStatsPool(UndefinedTableError("relation does not exist")),
-        }
+        },
+        memory_schema_absent={"switchboard"},
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 
@@ -894,7 +906,8 @@ async def test_stats_catalog_drift_not_flagged_for_missing_memory_schema(app):
             "switchboard": _CatalogQueryRaisingPool(
                 schema="switchboard", exc=UndefinedTableError("relation does not exist")
             ),
-        }
+        },
+        memory_schema_absent={"switchboard"},
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 

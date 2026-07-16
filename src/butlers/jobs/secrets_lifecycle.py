@@ -130,6 +130,7 @@ from butlers.api.routers.secrets_v2 import (
     _fetch_system_secrets,
     _fetch_user_secrets,
     _infer_provider_from_type,
+    _secrets_schema_absent_at_start,
 )
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
@@ -239,7 +240,12 @@ async def _collect_snapshots(
         except KeyError:
             continue
         try:
-            rows = await _fetch_system_secrets(pool, butler_name, tracker=tracker)
+            rows = await _fetch_system_secrets(
+                pool,
+                butler_name,
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
+                tracker=tracker,
+            )
         except Exception:  # noqa: BLE001
             if tracker is not None:
                 tracker.mark(
@@ -273,7 +279,12 @@ async def _collect_snapshots(
     # Shared application config (public.butler_secrets), excluding cli/cli-auth
     # rows — those are the CLI family, fetched separately below. Mirrors
     # get_inventory()'s exclusion so this job never double-counts a row.
-    for row in await _fetch_system_secrets(shared_pool, "shared-public", tracker=tracker):
+    for row in await _fetch_system_secrets(
+        shared_pool,
+        "shared-public",
+        schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+        tracker=tracker,
+    ):
         if row.category in ("cli", "cli-auth") or (
             row.category in _LIFECYCLE_EXCLUDED_SYSTEM_CATEGORIES
         ):
