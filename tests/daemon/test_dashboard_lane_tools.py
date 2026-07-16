@@ -396,6 +396,38 @@ async def test_file_bug_report_relays_to_qa_and_replies_with_case_reference(
     assert result["case_reference"] in fake_reply.await_args.kwargs["message"]
 
 
+@pytest.mark.parametrize(
+    ("severity", "expected_severity"),
+    [
+        ("1", 1),
+        (1.0, 1),
+        ("9", 4),
+        ("-3", 0),
+        ("not-a-severity", 2),
+        (None, 2),
+    ],
+)
+async def test_file_bug_report_coerces_clamps_and_defaults_severity(
+    tmp_path: Path,
+    severity: object,
+    expected_severity: int,
+) -> None:
+    """Caller-shaped severity values reach QA as clamped integer priorities."""
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"accepted": True}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+
+    result = await tools["file_bug_report"](summary="The dashboard is broken", severity=severity)
+
+    assert result["status"] == "ok"
+    mock_route.assert_awaited_once()
+    assert mock_route.await_args.kwargs["args"]["severity"] == expected_severity
+
+
 async def test_file_bug_report_relay_failure_still_replies(tmp_path: Path, monkeypatch) -> None:
     """Even if the QA relay errors, the owner must still get an in-thread reply."""
     patches = _patch_infra()

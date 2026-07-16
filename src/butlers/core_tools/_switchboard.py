@@ -766,7 +766,11 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         if conversation_id:
             _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "bug"
 
-        clamped_severity = max(0, min(4, int(severity) if isinstance(severity, int) else 2))
+        try:
+            normalized_severity = int(severity)
+        except (TypeError, ValueError):
+            normalized_severity = 2
+        clamped_severity = max(0, min(4, normalized_severity))
         call_site = f"dashboard:{page_route or 'unknown'}"
 
         fp_result = compute_fingerprint_from_report(
