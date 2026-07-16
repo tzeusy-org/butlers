@@ -131,6 +131,7 @@ from butlers.api.routers.secrets_v2 import (
     _fetch_user_secrets,
     _infer_provider_from_type,
     _secrets_schema_absent_at_start,
+    _secrets_source_schema,
 )
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
@@ -243,6 +244,7 @@ async def _collect_snapshots(
             rows = await _fetch_system_secrets(
                 pool,
                 butler_name,
+                source_schema=_secrets_source_schema(db, butler_name),
                 schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
                 tracker=tracker,
             )

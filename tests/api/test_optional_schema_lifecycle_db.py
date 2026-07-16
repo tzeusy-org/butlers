@@ -17,7 +17,6 @@ import logging
 import shutil
 from urllib.parse import urlparse
 
-import asyncpg
 import pytest
 
 from butlers.api.db import DatabaseManager
@@ -83,7 +82,9 @@ async def test_absent_at_startup_is_an_expected_optional_schema(
     )
     manager: DatabaseManager | None = None
     try:
-        await bootstrap.pool("lifecycle").execute("DROP TABLE public.butler_secrets")
+        assert await bootstrap.pool("lifecycle").fetchval(
+            "SELECT to_regclass('public.butler_secrets') IS NOT NULL"
+        )
         await bootstrap.pool("lifecycle").execute("CREATE SCHEMA never_installed")
         manager = await _manager_for_schema(
             migrated_db_url,
@@ -91,13 +92,13 @@ async def test_absent_at_startup_is_an_expected_optional_schema(
             schema="never_installed",
         )
         await manager.snapshot_relation_presence("never_installed", _TRACKED_RELATIONS)
-        with pytest.raises(asyncpg.UndefinedTableError):
-            await manager.pool("never_installed").fetchval("SELECT count(*) FROM butler_secrets")
+        assert manager.relation_observed_since_start("never_installed", "butler_secrets") is False
 
         secrets_tracker = DegradedSources(_LOGGER)
         secret_rows = await _fetch_system_secrets(
             manager.pool("never_installed"),
             "never_installed",
+            source_schema=manager.schema_for_butler("never_installed"),
             schema_absent_at_start=(
                 manager.relation_observed_since_start("never_installed", "butler_secrets") is False
             ),
@@ -136,16 +137,15 @@ async def test_dropped_after_startup_is_a_degraded_source(
         assert manager.relation_observed_since_start("lifecycle", "facts") is True
 
         pool = manager.pool("lifecycle")
+        assert await pool.fetchval("SELECT to_regclass('public.butler_secrets') IS NOT NULL")
         await pool.execute("DROP TABLE butler_secrets")
-        await pool.execute("DROP TABLE public.butler_secrets")
         await pool.execute("DROP TABLE facts")
-        with pytest.raises(asyncpg.UndefinedTableError):
-            await pool.fetchval("SELECT count(*) FROM butler_secrets")
 
         secrets_tracker = DegradedSources(_LOGGER)
         secret_rows = await _fetch_system_secrets(
             pool,
             "lifecycle",
+            source_schema=manager.schema_for_butler("lifecycle"),
             schema_absent_at_start=(
                 manager.relation_observed_since_start("lifecycle", "butler_secrets") is False
             ),

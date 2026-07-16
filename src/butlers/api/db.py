@@ -60,6 +60,10 @@ class DatabaseManager:
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
         self._butler_modules: dict[str, frozenset[str]] = {}
+        # The explicit target schema for each butler pool.  Query paths that
+        # own per-butler tables must use this rather than falling through to
+        # ``public`` via the pool's search_path after local schema loss.
+        self._butler_schemas: dict[str, str | None] = {}
         # Relation presence captured when the dashboard pool becomes available.
         # Optional-schema readers use this lifecycle marker to distinguish a
         # deliberately uninstalled table from one that disappears later.
@@ -133,12 +137,19 @@ class DatabaseManager:
             return
 
         effective_db = db_name or butler_name
+        # ``schema_search_path`` validates and normalizes the configured
+        # schema.  Retain its first component as the explicit local target for
+        # table-owning dashboard queries; ``search_path`` itself intentionally
+        # keeps ``public`` available for cross-butler reads.
+        search_path = schema_search_path(db_schema)
+        local_schema = search_path.split(",", maxsplit=1)[0] if search_path is not None else None
         pool = await self._create_pool(
             database=effective_db,
             log_name=f"butler {butler_name}",
             schema=db_schema,
         )
         self._pools[butler_name] = pool
+        self._butler_schemas[butler_name] = local_schema
         if modules is not None:
             self._butler_modules[butler_name] = modules
         logger.info(
@@ -175,6 +186,16 @@ class DatabaseManager:
             raise KeyError(f"No pool for butler: {butler_name}")
         return self._pools[butler_name]
 
+    def schema_for_butler(self, butler_name: str) -> str | None:
+        """Return the explicit schema configured for a butler's pool.
+
+        ``None`` denotes a legacy database without a schema-scoped pool.  The
+        caller must then preserve the database's unqualified-table semantics.
+        """
+        if butler_name not in self._pools:
+            raise KeyError(f"No pool for butler: {butler_name}")
+        return self._butler_schemas.get(butler_name)
+
     async def snapshot_relation_presence(
         self,
         source_name: str,
@@ -194,12 +215,23 @@ class DatabaseManager:
             return
         try:
             target_pool = pool if pool is not None else self.pool(source_name)
-            rows = await target_pool.fetch(
-                "SELECT requested.relation_name, "
-                "to_regclass(requested.relation_name) IS NOT NULL AS present "
-                "FROM unnest($1::text[]) AS requested(relation_name)",
-                list(relation_names),
-            )
+            source_schema = self._butler_schemas.get(source_name)
+            if source_schema is None:
+                rows = await target_pool.fetch(
+                    "SELECT requested.relation_name, "
+                    "to_regclass(requested.relation_name) IS NOT NULL AS present "
+                    "FROM unnest($1::text[]) AS requested(relation_name)",
+                    list(relation_names),
+                )
+            else:
+                rows = await target_pool.fetch(
+                    "SELECT requested.relation_name, "
+                    "to_regclass(format('%I.%I', $2::text, requested.relation_name)) "
+                    "IS NOT NULL AS present "
+                    "FROM unnest($1::text[]) AS requested(relation_name)",
+                    list(relation_names),
+                    source_schema,
+                )
         except Exception:
             logger.warning(
                 "Failed to snapshot optional relation presence for %s",
@@ -327,4 +359,5 @@ class DatabaseManager:
             except Exception:
                 logger.warning("Error closing pool for butler: %s", name, exc_info=True)
         self._pools.clear()
+        self._butler_schemas.clear()
         self._relation_presence_at_start.clear()

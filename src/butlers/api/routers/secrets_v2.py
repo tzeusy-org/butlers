@@ -190,6 +190,7 @@ import json
 import logging
 import math
 import os
+import re
 import secrets as _secrets_mod
 import time
 from collections.abc import Callable
@@ -1122,6 +1123,32 @@ async def _fetch_google_test_mode_expiry(
 # ---------------------------------------------------------------------------
 
 
+_SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _qualified_relation(schema: str | None, relation: str) -> str:
+    """Return a safely quoted relation, explicit when *schema* is configured."""
+    if schema is None:
+        return relation
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(schema):
+        raise ValueError(f"Unsafe schema identifier: {schema!r}")
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(relation):
+        raise ValueError(f"Unsafe relation identifier: {relation!r}")
+    return f'"{schema}"."{relation}"'
+
+
+def _secrets_source_schema(db: DatabaseManager, butler_name: str) -> str | None:
+    """Return a butler's explicit local schema when the manager exposes one."""
+    schema_for_butler = getattr(db, "schema_for_butler", None)
+    if not callable(schema_for_butler):
+        return None
+    try:
+        schema = schema_for_butler(butler_name)
+    except KeyError:
+        return None
+    return schema if isinstance(schema, str) else None
+
+
 def _secrets_schema_absent_at_start(db: DatabaseManager, butler_name: str) -> bool:
     """Return whether ``butler_secrets`` was absent when the API started."""
     relation_marker = getattr(db, "relation_observed_since_start", None)
@@ -1216,6 +1243,7 @@ async def _fetch_system_secrets(
     butler_name: str,
     *,
     read_only: bool = False,
+    source_schema: str | None = None,
     schema_absent_at_start: bool = False,
     tracker: DegradedSources | None = None,
 ) -> list[SystemSecret]:
@@ -1230,6 +1258,11 @@ async def _fetch_system_secrets(
     pool (see :class:`SystemSecret.read_only`); set it when scanning the shared
     pool rather than a per-butler schema.
 
+    ``source_schema`` targets the owning per-butler table explicitly when the
+    dashboard is running in a schema-scoped one-database topology.  This
+    prevents a dropped local table from resolving to ``public.butler_secrets``
+    through the pool's ``search_path``.
+
     ``schema_absent_at_start`` is the lifecycle marker captured by
     :class:`DatabaseManager` after the schema pool was created.  Its default
     is deliberately fail-closed for direct callers that do not have that
@@ -1241,9 +1274,10 @@ async def _fetch_system_secrets(
     the classification rule. Callers should surface ``tracker.names`` in the
     response envelope (e.g. ``ApiMeta(sources_degraded=...)``).
     """
+    relation = _qualified_relation(source_schema, "butler_secrets")
     try:
         rows = await pool.fetch(
-            """
+            f"""
             SELECT
                 secret_key,
                 secret_value,
@@ -1257,7 +1291,7 @@ async def _fetch_system_secrets(
                 last_test_ok,
                 last_test_code,
                 last_test_message
-            FROM butler_secrets
+            FROM {relation}
             ORDER BY category, secret_key
             """
         )
@@ -1885,6 +1919,7 @@ async def get_inventory(
         butler_rows = await _fetch_system_secrets(
             pool,
             butler_name,
+            source_schema=_secrets_source_schema(db, butler_name),
             schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
             tracker=tracker,
         )
@@ -2114,14 +2149,17 @@ async def _fetch_single_system_secret(
     pool: Any,
     butler_name: str,
     key: str,
+    *,
+    source_schema: str | None = None,
 ) -> SystemSecretDetail | None:
     """Fetch a single butler_secrets row matching the given key.
 
     Returns None when no matching row exists or when the table doesn't exist.
     """
+    relation = _qualified_relation(source_schema, "butler_secrets")
     try:
         row = await pool.fetchrow(
-            """
+            f"""
             SELECT
                 secret_key,
                 secret_value,
@@ -2133,7 +2171,7 @@ async def _fetch_single_system_secret(
                 last_test_code,
                 last_test_message,
                 created_at
-            FROM butler_secrets
+            FROM {relation}
             WHERE secret_key = $1
             """,
             key,
@@ -2317,7 +2355,12 @@ async def get_system_credential(
         except KeyError:
             continue
 
-        detail = await _fetch_single_system_secret(pool, butler_name, key)
+        detail = await _fetch_single_system_secret(
+            pool,
+            butler_name,
+            key,
+            source_schema=_secrets_source_schema(db, butler_name),
+        )
         if detail is not None:
             return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
 
@@ -4762,7 +4805,12 @@ async def set_system_credential(
         await _write_system_audit(pool, action=audit_action, key=key, note=audit_note)
 
         # Re-fetch to return updated state.
-        detail = await _fetch_single_system_secret(pool, "switchboard", key)
+        detail = await _fetch_single_system_secret(
+            pool,
+            "switchboard",
+            key,
+            source_schema=_secrets_source_schema(db, "switchboard"),
+        )
         if detail is None:
             raise HTTPException(status_code=503, detail="Credential not found after write")
         return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
@@ -4902,7 +4950,12 @@ async def set_system_credential(
             note=f"Per-butler override created for {butler_name!r}",
         )
 
-        detail = await _fetch_single_system_secret(pool, butler_name, key)
+        detail = await _fetch_single_system_secret(
+            pool,
+            butler_name,
+            key,
+            source_schema=_secrets_source_schema(db, butler_name),
+        )
         if detail is None:
             raise HTTPException(status_code=503, detail="Credential not found after override write")
         # Mark the returned detail as a local (per-butler) override.
@@ -4958,16 +5011,24 @@ async def probe_system_credential(
     # Locate the credential across all registered butler schemas.
     found_pool: Any = None
     found_butler: str | None = None
+    found_schema: str | None = None
     detail: SystemSecretDetail | None = None
     for butler_name in db.butler_names:
         try:
             pool = db.pool(butler_name)
         except KeyError:
             continue
-        detail = await _fetch_single_system_secret(pool, butler_name, key)
+        source_schema = _secrets_source_schema(db, butler_name)
+        detail = await _fetch_single_system_secret(
+            pool,
+            butler_name,
+            key,
+            source_schema=source_schema,
+        )
         if detail is not None:
             found_pool = pool
             found_butler = butler_name
+            found_schema = source_schema
             break
 
     # Also search the shared credential pool (public.butler_secrets) when
@@ -5006,9 +5067,10 @@ async def probe_system_credential(
 
     if key == _OWNTRACKS_SYSTEM_KEY:
         raw_value: str | None = None
+        found_relation = _qualified_relation(found_schema, "butler_secrets")
         try:
             _raw_row = await found_pool.fetchrow(
-                "SELECT secret_value FROM butler_secrets WHERE secret_key = $1",
+                f"SELECT secret_value FROM {found_relation} WHERE secret_key = $1",
                 key,
             )
             if _raw_row is not None:
@@ -5078,9 +5140,10 @@ async def probe_system_credential(
     # Update test-state cache columns on butler_secrets (best-effort, non-transactional
     # relative to the probe_log write since it's a different pool).
     try:
+        found_relation = _qualified_relation(found_schema, "butler_secrets")
         await found_pool.execute(
-            """
-            UPDATE butler_secrets
+            f"""
+            UPDATE {found_relation}
             SET
                 last_test_ok = $1,
                 last_test_code = $2,
