@@ -79,6 +79,29 @@ def _pool_returning(*rows: dict) -> AsyncMock:
     return pool
 
 
+def _tie_boundary_pool(*rows: dict) -> AsyncMock:
+    """Build a read pool that applies the adapter's timestamp/limit SQL semantics."""
+
+    async def _fetch(query: str, *args: object) -> list[MagicMock]:
+        if "WHERE ts > $1" in query:
+            since = args[0]
+            assert isinstance(since, datetime)
+            candidates = [row for row in rows if row["ts"] > since]
+        else:
+            candidates = list(rows)
+        limit = args[-1]
+        assert isinstance(limit, int)
+        return [_make_mock_row(row) for row in candidates[:limit]]
+
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=True)
+    conn.fetch = _fetch
+    conn.fetchrow = AsyncMock(return_value=None)
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    return pool
+
+
 def _pool_table_missing() -> AsyncMock:
     """Build a pool whose table-existence check returns False."""
     conn = AsyncMock()
@@ -432,6 +455,42 @@ async def test_watermark_advances_to_latest_ts() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == t2
+
+
+@pytest.mark.asyncio
+async def test_single_column_ts_watermark_skips_equal_tie_after_split_batch() -> None:
+    """Record the accepted UUID-source checkpoint trade-off at a batch boundary.
+
+    ``owntracks_points.id`` cannot use the BIGINT ``watermark_id``
+    tiebreaker, so the adapter deliberately resumes with ``ts > watermark``.
+    When a batch limit splits equal ``ts`` values, the remaining tie is not
+    replayed. This characterization keeps that residual risk visible; a
+    composite watermark needs a separately scoped contract.
+    """
+    tied_at = _NOW
+    rows = [
+        _make_row(ts=tied_at, idempotency_key="tie-1"),
+        _make_row(ts=tied_at, idempotency_key="tie-2"),
+        _make_row(ts=tied_at, idempotency_key="tie-3"),
+    ]
+    adapter = OwnTracksPointAdapter(batch_limit=2)
+    pool = _tie_boundary_pool(*rows)
+    cp = _chronicler_pool()
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event") as mock_point_event,
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode") as mock_episode,
+    ):
+        mock_point_event.return_value = MagicMock()
+        mock_episode.return_value = MagicMock()
+        first = await adapter.project(pool, chronicler_pool=cp, since=None)
+        second = await adapter.project(pool, chronicler_pool=cp, since=first.watermark)
+
+    assert first.rows_projected == 2
+    assert first.watermark == tied_at
+    assert second.rows_projected == 0
+    assert second.watermark == tied_at
+    assert mock_point_event.await_count == 2
 
 
 # ---------------------------------------------------------------------------

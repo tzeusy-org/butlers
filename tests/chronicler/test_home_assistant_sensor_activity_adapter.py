@@ -87,6 +87,24 @@ class _FakeReadConn:
         return [_Row(r) for r in self._rows]
 
 
+class _TieBoundaryReadConn(_FakeReadConn):
+    """Read fake that applies the adapter's received_at/limit SQL semantics."""
+
+    async def fetch(self, query: str, *args: object) -> list:
+        self.fetch_calls.append((query, args))
+        if "BASE TABLE" in query:
+            return [_Row(r) for r in self._partition_names]
+        if "received_at > $2" in query:
+            since = args[1]
+            assert isinstance(since, datetime)
+            candidates = [row for row in self._rows if row["received_at"] > since]
+        else:
+            candidates = list(self._rows)
+        limit = args[-1]
+        assert isinstance(limit, int)
+        return [_Row(row) for row in candidates[:limit]]
+
+
 class _Row(dict):
     def __getitem__(self, key: str) -> object:
         return dict.__getitem__(self, key)
@@ -284,6 +302,72 @@ async def test_watermark_advances_across_unclassified_rows() -> None:
         )
     assert result.watermark == later
     assert result.rows_projected == 0  # neither row is binary_sensor
+
+
+@pytest.mark.asyncio
+async def test_single_column_received_at_watermark_skips_equal_tie_after_split_batch() -> None:
+    """Record the accepted UUID-source checkpoint trade-off at a batch boundary.
+
+    ``filtered_events.id`` has no compatible BIGINT ``watermark_id``
+    tiebreaker, so the adapter deliberately resumes with ``received_at >
+    watermark``. When a batch limit splits equal ``received_at`` values, the
+    remaining tie is not replayed. This characterization keeps that residual
+    risk visible; a composite watermark needs a separately scoped contract.
+    """
+    tied_at = _NOW
+    rows = [
+        _ha_row(
+            row_id=_UUID_1,
+            received_at=tied_at,
+            entity_id="binary_sensor.front_door",
+            domain="binary_sensor",
+            device_class="door",
+            new_state="on",
+        ),
+        _ha_row(
+            row_id=_UUID_2,
+            received_at=tied_at,
+            entity_id="binary_sensor.back_door",
+            domain="binary_sensor",
+            device_class="door",
+            new_state="on",
+        ),
+        _ha_row(
+            row_id=_UUID_3,
+            received_at=tied_at,
+            entity_id="binary_sensor.garage_door",
+            domain="binary_sensor",
+            device_class="garage_door",
+            new_state="open",
+        ),
+    ]
+    adapter = HomeAssistantSensorActivityAdapter(batch_limit=2)
+    read_conn = _TieBoundaryReadConn(table_exists=True, rows=rows)
+    chron_conn = _FakeChroniclerConn()
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.home_assistant_sensor_activity.resolve_owner_entity_id",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "butlers.chronicler.adapters.home_assistant_sensor_activity.upsert_point_event"
+        ) as mock_point_event,
+    ):
+        first = await adapter.project(
+            _read_pool(read_conn), chronicler_pool=_chronicler_pool(chron_conn), since=None
+        )
+        second = await adapter.project(
+            _read_pool(read_conn),
+            chronicler_pool=_chronicler_pool(chron_conn),
+            since=first.watermark,
+        )
+
+    assert first.rows_projected == 2
+    assert first.watermark == tied_at
+    assert second.rows_projected == 0
+    assert second.watermark == tied_at
+    assert mock_point_event.await_count == 2
 
 
 @pytest.mark.asyncio

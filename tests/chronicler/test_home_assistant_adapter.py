@@ -93,6 +93,33 @@ def _pool_returning(*rows: dict) -> AsyncMock:
     return pool
 
 
+def _tie_boundary_pool(*rows: dict) -> AsyncMock:
+    """Build a read pool that applies the adapter's timestamp/limit SQL semantics."""
+
+    async def _fetchval(query: str, *_: object) -> bool:
+        # The adapter's optional person-mapping table is absent in these tests.
+        return "home_assistant_persons" not in query
+
+    async def _fetch(query: str, *args: object) -> list[MagicMock]:
+        if "WHERE recorded_at > $1" in query:
+            since = args[0]
+            assert isinstance(since, datetime)
+            candidates = [row for row in rows if row["recorded_at"] > since]
+        else:
+            candidates = list(rows)
+        limit = args[-1]
+        assert isinstance(limit, int)
+        return [_make_mock_row(row) for row in candidates[:limit]]
+
+    conn = AsyncMock()
+    conn.fetchval = _fetchval
+    conn.fetch = _fetch
+    conn.fetchrow = AsyncMock(return_value=None)
+    pool = AsyncMock()
+    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    return pool
+
+
 def _pool_table_missing() -> AsyncMock:
     """Build a pool whose table-existence check returns False."""
     conn = AsyncMock()
@@ -365,6 +392,41 @@ async def test_watermark_advances_to_max_recorded_at() -> None:
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.watermark == t2
+
+
+@pytest.mark.asyncio
+async def test_single_column_recorded_at_watermark_skips_equal_tie_after_split_batch() -> None:
+    """Record the accepted UUID-source checkpoint trade-off at a batch boundary.
+
+    ``home_assistant_history.id`` cannot use the BIGINT ``watermark_id``
+    tiebreaker, so the adapter deliberately resumes with ``recorded_at >
+    watermark``. When a batch limit splits equal ``recorded_at`` values, the
+    remaining tie is not replayed. This characterization keeps that residual
+    risk visible; a composite watermark needs a separately scoped contract.
+    """
+    tied_at = _NOW
+    rows = [
+        _make_row(state="home", recorded_at=tied_at, row_id=_UUID_1),
+        _make_row(state="away", recorded_at=tied_at, row_id=_UUID_2),
+        _make_row(state="home", recorded_at=tied_at, row_id=_UUID_3),
+    ]
+    adapter = HomeAssistantHistoryAdapter(batch_limit=2)
+    pool = _tie_boundary_pool(*rows)
+    cp = _chronicler_pool()
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        return episode
+
+    with patch(
+        "butlers.chronicler.adapters.home_assistant.upsert_episode", side_effect=_fake_upsert
+    ):
+        first = await adapter.project(pool, chronicler_pool=cp, since=None)
+        second = await adapter.project(pool, chronicler_pool=cp, since=first.watermark)
+
+    assert first.rows_projected == 2
+    assert first.watermark == tied_at
+    assert second.rows_projected == 0
+    assert second.watermark == tied_at
 
 
 # ---------------------------------------------------------------------------
