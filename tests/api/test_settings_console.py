@@ -693,7 +693,9 @@ async def test_check_failed_webhooks_swallows_db_errors():
 # ---------------------------------------------------------------------------
 
 
-def _console_payload(*, active_butlers: int = 1, attention: list[dict] | None = None) -> dict:
+def _console_payload(
+    *, active_butlers: int | None = 1, attention: list[dict] | None = None
+) -> dict:
     return {
         "header_counts": {
             "active_butlers": active_butlers,
@@ -720,6 +722,18 @@ def test_compute_console_deltas_header_change_only():
     new = _console_payload(active_butlers=2)
     header_delta, added, removed = console_mod._compute_console_deltas(prev, new)
     assert header_delta == {"active_butlers": 2}
+    assert added == []
+    assert removed == []
+
+
+def test_compute_console_deltas_header_count_degrades_to_none():
+    prev = _console_payload(active_butlers=3)
+    new = _console_payload(active_butlers=None)
+
+    header_delta, added, removed = console_mod._compute_console_deltas(prev, new)
+
+    assert "active_butlers" in header_delta
+    assert header_delta["active_butlers"] is None
     assert added == []
     assert removed == []
 
