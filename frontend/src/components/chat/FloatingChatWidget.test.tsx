@@ -242,6 +242,30 @@ describe("FloatingChatWidget — trigger and open/close", () => {
     expect(screen.queryByTestId("floating-chat-panel")).toBeNull();
     expect(screen.getByTestId("floating-chat-trigger")).toBeDefined();
   });
+
+  it("focuses its non-modal panel and restores the trigger after Escape closes it", () => {
+    renderWidget();
+    const trigger = screen.getByTestId("floating-chat-trigger");
+    trigger.focus();
+
+    fireEvent.click(trigger);
+
+    const panel = screen.getByTestId("floating-chat-panel");
+    expect(panel.getAttribute("aria-modal")).toBeNull();
+    expect(document.activeElement).toBe(
+      within(panel).getByRole("heading", { name: "Talk to Butlers" }),
+    );
+
+    const input = within(panel).getByPlaceholderText("Type a message...");
+    input.focus();
+    expect(fireEvent.keyDown(input, { key: "Tab" })).toBe(true);
+    expect(document.activeElement).toBe(input);
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(screen.queryByTestId("floating-chat-panel")).toBeNull();
+    expect(document.activeElement).toBe(screen.getByTestId("floating-chat-trigger"));
+  });
 });
 
 // ---------------------------------------------------------------------------

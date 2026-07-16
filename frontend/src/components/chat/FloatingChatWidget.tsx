@@ -73,6 +73,7 @@ import {
   useConversationMessages,
 } from "@/hooks/use-conversations.ts";
 import { useChatUnreadBadge } from "@/hooks/use-chat-unread.ts";
+import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { usePageContextCapture } from "@/lib/page-context.tsx";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry.tsx";
 
@@ -115,6 +116,12 @@ interface WidgetPanelProps {
 function WidgetPanel({ onClose }: WidgetPanelProps) {
   const queryClient = useQueryClient();
   const capturePageContext = usePageContextCapture();
+  // This anchored popover deliberately leaves page tab order available, while
+  // still following the shared focus-in/Escape/restore choreography.
+  const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLHeadingElement>({
+    onClose,
+    trapFocus: false,
+  });
 
   const [viewMode, setViewMode] = useState<"thread" | "history">("thread");
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -353,18 +360,26 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   }
 
   return (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- role="dialog" + onKeyDown provides the shared Escape/focus choreography; the rule's static role allowlist does not recognize the WAI-ARIA dialog pattern.
     <div
+      ref={rootRef}
       className="fixed bottom-20 right-4 z-40 flex h-[min(560px,70vh)] w-[min(380px,calc(100vw-2rem))] flex-col overflow-hidden rounded-lg border bg-card shadow-lg"
       role="dialog"
-      aria-label="Talk to Butlers"
+      aria-labelledby="floating-chat-widget-title"
       data-testid="floating-chat-panel"
+      onKeyDown={onKeyDown}
     >
       {/* Header */}
       <div className="flex items-center justify-between gap-2 border-b bg-card/80 px-3 py-2 shrink-0">
-        <div className="flex items-center gap-1.5 text-sm font-medium">
+        <h2
+          ref={initialFocusRef}
+          id="floating-chat-widget-title"
+          tabIndex={-1}
+          className="flex items-center gap-1.5 rounded-sm text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
+        >
           <MessageCircleIcon className="size-4 text-muted-foreground" />
           Talk to Butlers
-        </div>
+        </h2>
         <div className="flex items-center gap-0.5">
           {viewMode === "thread" ? (
             <>
@@ -478,6 +493,22 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
 
 export function FloatingChatWidget() {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const restoreTriggerFocusRef = useRef(false);
+
+  useEffect(() => {
+    if (!open && restoreTriggerFocusRef.current) {
+      restoreTriggerFocusRef.current = false;
+      triggerRef.current?.focus();
+    }
+  }, [open]);
+
+  const closeWidget = useCallback(() => {
+    // WidgetPanel unmounts while the trigger is absent, so restore after this
+    // render mounts the trigger again rather than focusing a detached opener.
+    restoreTriggerFocusRef.current = true;
+    setOpen(false);
+  }, []);
 
   // Poll for replies that arrive while the panel is closed (bu-p6ey8.4 —
   // "Unread badge"). Always mounted (unlike WidgetPanel, which unmounts on
@@ -503,6 +534,7 @@ export function FloatingChatWidget() {
     <>
       {!open && (
         <Button
+          ref={triggerRef}
           type="button"
           variant="default"
           // bottom-20 (not bottom-4): the "?" keyboard-shortcuts trigger
@@ -527,7 +559,7 @@ export function FloatingChatWidget() {
           )}
         </Button>
       )}
-      {open && <WidgetPanel onClose={() => setOpen(false)} />}
+      {open && <WidgetPanel onClose={closeWidget} />}
     </>
   );
 }
