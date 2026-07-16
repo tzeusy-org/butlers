@@ -1694,6 +1694,8 @@ interface CalendarEntryDetailPanelProps {
     entry: UnifiedCalendarEntry,
     patch: Record<string, unknown>,
     label: string,
+    onCancel?: () => void,
+    onFailure?: () => void,
   ) => void;
   userMutation: ReturnType<typeof useMutateCalendarWorkspaceUserEvent>;
   butlerMutation: ReturnType<typeof useMutateCalendarWorkspaceButlerEvent>;
@@ -1825,13 +1827,18 @@ function CalendarEntryDetailPanel({
     };
   }, [freshEntry]);
 
-  function fireUserUpdate(patch: Record<string, unknown>, label: string) {
+  function fireUserUpdate(
+    patch: Record<string, unknown>,
+    label: string,
+    onRecurringCancel?: () => void,
+    onFailure?: () => void,
+  ) {
     const { butlerName, calendarId } = resolveOwnerFromEntry(entry);
     if (!butlerName || !entry.provider_event_id) return;
     // A recurring occurrence must first ask the user which occurrences the edit
     // applies to (this / following / series); defer to the parent scope sheet.
     if (isRecurringUserEntry(entry) && onRecurringEdit) {
-      onRecurringEdit(entry, patch, label);
+      onRecurringEdit(entry, patch, label, onRecurringCancel, onFailure);
       return;
     }
     setSaveStatus("idle");
@@ -1853,6 +1860,7 @@ function CalendarEntryDetailPanel({
             toast.error(
               `Failed to update ${label}: ${calendarMutationErrorMessage(result, "Update failed.")}`,
             );
+            onFailure?.();
             setSaveStatus("error");
             return;
           }
@@ -1865,6 +1873,7 @@ function CalendarEntryDetailPanel({
               ? error.message
               : `Failed to update ${label}.`,
           );
+          onFailure?.();
           setSaveStatus("error");
         },
       },
@@ -1939,16 +1948,22 @@ function CalendarEntryDetailPanel({
   }
 
   function handlePeopleChange(next: SelectedPerson[]) {
+    if (!canMutateUser) return;
+    const previous = peopleDraft;
     setPeopleDraft(next);
-    if (!isUserEvent) return;
-    // Round-trip the full set as entity_ids so existing links are preserved and
-    // new ones added (the update path is REPLACE on a non-empty list).
-    // KNOWN LIMITATION (bu-ya8uv): an empty entity_ids is a backend no-op that
-    // PRESERVES the current links (there is no explicit-clear signal yet), so
-    // removing the last person cannot clear the event. The picker enforces this
-    // honestly via preserveLast (last-remove disabled), so `next` is never empty
-    // here once any link exists. A follow-up will add the explicit-clear path.
-    fireUserUpdate({ entity_ids: next.map((p) => p.entity_id) }, "people");
+    // Non-empty edits replace the linked set. A zero-length replacement carries
+    // an explicit destructive signal so omitted or incidental empty values still
+    // preserve the existing links on the backend.
+    const entityIds = next.map((person) => person.entity_id);
+    const restorePeople = () => setPeopleDraft(previous);
+    fireUserUpdate(
+      entityIds.length === 0
+        ? { entity_ids: [], clear_entity_ids: true }
+        : { entity_ids: entityIds },
+      "people",
+      restorePeople,
+      restorePeople,
+    );
   }
 
   const startFmt = entry.all_day
@@ -2151,8 +2166,7 @@ function CalendarEntryDetailPanel({
           <ContactPeoplePicker
             value={peopleDraft}
             onChange={handlePeopleChange}
-            disabled={isPending}
-            preserveLast
+            disabled={isPending || !canMutateUser}
           />
         </div>
       ) : entry.linked_people && entry.linked_people.length > 0 ? (
@@ -2835,6 +2849,8 @@ export default function CalendarWorkspacePage() {
     entry: UnifiedCalendarEntry;
     patch: Record<string, unknown>;
     label: string;
+    onCancel?: () => void;
+    onFailure?: () => void;
   } | null>(null);
   const [editScope, setEditScope] = useState<RecurrenceScope>("this");
   const [userEventForm, setUserEventForm] = useState<UserEventFormState | null>(
@@ -4159,9 +4175,22 @@ export default function CalendarWorkspacePage() {
     entry: UnifiedCalendarEntry,
     patch: Record<string, unknown>,
     label: string,
+    onCancel?: () => void,
+    onFailure?: () => void,
   ) {
     setEditScope("this");
-    setRecurringEdit({ entry, patch, label });
+    setRecurringEdit({ entry, patch, label, onCancel, onFailure });
+  }
+
+  function cancelRecurringEdit() {
+    recurringEdit?.onCancel?.();
+    setRecurringEdit(null);
+  }
+
+  function failRecurringEdit() {
+    if (!recurringEdit?.onFailure) return;
+    recurringEdit.onFailure();
+    setRecurringEdit(null);
   }
 
   /**
@@ -4175,6 +4204,7 @@ export default function CalendarWorkspacePage() {
     const { butlerName, calendarId } = resolveOwnerFromEntry(entry);
     if (!butlerName || !entry.provider_event_id) {
       toast.error("Could not resolve calendar owner for this event.");
+      failRecurringEdit();
       return;
     }
 
@@ -4205,12 +4235,14 @@ export default function CalendarWorkspacePage() {
         toast.error(
           `Could not update ${label}: the new time conflicts with another event.`,
         );
+        failRecurringEdit();
         return;
       }
       if (!isCalendarMutationOk(result)) {
         toast.error(
           `Failed to update ${label}: ${calendarMutationErrorMessage(result, "Update failed.")}`,
         );
+        failRecurringEdit();
         return;
       }
       toast.success(`Event ${label} updated.`);
@@ -4219,6 +4251,7 @@ export default function CalendarWorkspacePage() {
       toast.error(
         error instanceof Error ? error.message : `Failed to update ${label}.`,
       );
+      failRecurringEdit();
     }
   }
 
@@ -7001,7 +7034,7 @@ export default function CalendarWorkspacePage() {
 
       <Dialog
         open={!!recurringEdit}
-        onOpenChange={(open) => (!open ? setRecurringEdit(null) : null)}
+        onOpenChange={(open) => (!open ? cancelRecurringEdit() : null)}
       >
         <DialogContent>
           <DialogHeader>
@@ -7031,7 +7064,7 @@ export default function CalendarWorkspacePage() {
           ) : null}
           <DialogFooter>
             <PillButton
-              onClick={() => setRecurringEdit(null)}
+              onClick={cancelRecurringEdit}
               disabled={userEventMutation.isPending}
             >
               Cancel

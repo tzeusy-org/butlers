@@ -1527,7 +1527,13 @@ export type CalendarWorkspaceButlerMutationAction =
   | "dismiss"
   | "snooze";
 
-/** Request payload for POST /api/calendar/workspace/user-events. */
+/**
+ * Request payload for POST /api/calendar/workspace/user-events.
+ *
+ * For an update, linked people use `entity_ids` as a replacement set. Sending
+ * `entity_ids: []` together with `clear_entity_ids: true` deliberately removes
+ * every link; omitted or empty IDs without that flag preserve existing links.
+ */
 export interface CalendarWorkspaceUserMutationRequest {
   butler_name: string;
   action: CalendarWorkspaceUserMutationAction;

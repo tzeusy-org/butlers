@@ -138,9 +138,17 @@ The canonical `CalendarEvent` model SHALL be provider-neutral with fields: `even
 
 #### Scenario: Entity association on create and update
 
-- **WHEN** `calendar_create_event`, `calendar_update_event`, or `calendar_update_butler_event` is called with `entity_ids`
+- **WHEN** `calendar_create_event`, `calendar_update_event`, or `calendar_update_butler_event` is called with a non-empty `entity_ids` set
 - **THEN** the junction table `calendar_event_entities` is updated via `_upsert_event_entities`
 - **AND** existing entity links for the event are replaced with the new set (full replace, not additive)
+
+#### Scenario: Explicitly clear every entity association
+
+- **WHEN** `calendar_update_event` is called with `entity_ids=[]` and `clear_entity_ids=true`
+- **THEN** `_upsert_event_entities` deletes every existing `calendar_event_entities` row for that event without attempting an empty insert
+- **AND** the eager projection write-through carries the same explicit-clear signal so the workspace reflects the removal before the next provider sync
+- **AND** `clear_entity_ids=true` with an omitted or non-empty `entity_ids` value is rejected as ambiguous
+- **AND** an omitted `entity_ids`, or an empty list without `clear_entity_ids=true`, remains a no-op that preserves existing links
 
 #### Scenario: Entity association on read
 
@@ -743,10 +751,12 @@ the dashboard undo endpoint reverse-applies.
 - **WHEN** `calendar_update_event` resolves an existing event and applies a patch
 - **THEN** the finalized `action_result` for the `workspace_user_update` row
   includes the pre-mutation event state (at least title, start_at, end_at,
-  timezone, location, description, attendees, recurrence_rule, and the resolved
-  calendar id) under a stable key, alongside the existing post-mutation outcome
-- **AND** the pre-state is captured from the `existing_event` already fetched
-  before the PATCH, adding no extra provider round-trip
+  timezone, location, description, attendees, recurrence_rule, the resolved
+  calendar id, and `entity_ids`) under a stable key, alongside the existing
+  post-mutation outcome
+- **AND** the pre-state reuses the `existing_event` already fetched before the
+  PATCH and reads local `entity_ids` from the projection when available, adding
+  no extra provider round-trip
 
 #### Scenario: Delete captures the pre-deletion event state
 
@@ -755,7 +765,8 @@ the dashboard undo endpoint reverse-applies.
   includes the pre-deletion event state (the fields needed to recreate the event)
   under the same stable key
 - **AND** the captured pre-image is sufficient for an inverse
-  `calendar_create_event` to recreate the event on its home calendar
+  `calendar_create_event` to recreate the event and its linked people on its home
+  calendar
 
 #### Scenario: Pre-state is absent for non-reversible or non-applied outcomes
 

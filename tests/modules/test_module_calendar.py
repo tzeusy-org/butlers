@@ -904,7 +904,13 @@ class TestReversibleMutationPreStateCapture:
         return None
 
     async def test_update_captures_pre_state(self) -> None:
-        existing = _make_event(event_id="evt-1", title="Original", location="Room A")
+        entity_id = uuid.uuid4()
+        existing = _make_event(
+            event_id="evt-1",
+            title="Original",
+            location="Room A",
+            entity_ids=[entity_id],
+        )
         mod, provider, mcp = await self._make_module_with_event(existing)
         with (
             patch(
@@ -924,11 +930,97 @@ class TestReversibleMutationPreStateCapture:
         assert pre["location"] == "Room A"
         assert pre["calendar_id"] == "primary"
         assert pre["start_at"] == existing.start_at.isoformat()
+        assert pre["entity_ids"] == [str(entity_id)]
         # Reuses the single pre-write get_event — no extra provider round-trip.
         assert len(provider.get_calls) == 1
 
+    async def test_update_pre_state_uses_projected_entity_ids(self) -> None:
+        """Undo captures links that exist only in the local projection."""
+        entity_id = uuid.uuid4()
+        projected_event_id = uuid.uuid4()
+        existing = _make_event(event_id="evt-1", title="Original")
+        mod, _provider, mcp = await self._make_module_with_event(existing)
+        source_id = uuid.uuid4()
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": projected_event_id})
+        pool.fetch = AsyncMock(return_value=[{"entity_id": entity_id}])
+        mod._db = SimpleNamespace(pool=pool)
+
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(
+                mod, "_resolve_action_source_id", new_callable=AsyncMock, return_value=source_id
+            ),
+            patch.object(mod, "_project_provider_mutation", new_callable=AsyncMock),
+            patch.object(mod, "_refresh_user_projection", new_callable=AsyncMock),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock) as fin,
+        ):
+            await mcp.tools["calendar_update_event"](
+                event_id="evt-1",
+                entity_ids=[],
+                clear_entity_ids=True,
+            )
+
+        result = self._result_for_status(fin, "applied")
+        assert result is not None
+        assert result["pre_state"]["entity_ids"] == [str(entity_id)]
+        assert any(
+            call.args
+            == (
+                "SELECT id FROM calendar_events WHERE source_id = $1 AND origin_ref = $2",
+                source_id,
+                "evt-1",
+            )
+            for call in pool.fetchrow.await_args_list
+        )
+        assert any(
+            call.args
+            == (
+                "SELECT entity_id FROM calendar_event_entities WHERE event_id = $1",
+                projected_event_id,
+            )
+            for call in pool.fetch.await_args_list
+        )
+
+    async def test_update_explicit_entity_clear_forwards_to_projection(self) -> None:
+        """An explicit empty replacement reaches the projection as a clear request."""
+        existing = _make_event(event_id="evt-1", title="Original")
+        mod, provider, mcp = await self._make_module_with_event(existing)
+
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(
+                mod, "_project_provider_mutation", new_callable=AsyncMock
+            ) as project_mutation,
+        ):
+            result = await mcp.tools["calendar_update_event"](
+                event_id="evt-1",
+                entity_ids=[],
+                clear_entity_ids=True,
+            )
+
+        assert result["status"] == "updated"
+        assert provider.update_calls[0]["patch"].entity_ids == []
+        project_mutation.assert_awaited_once()
+        assert project_mutation.await_args.kwargs["clear_entity_ids"] is True
+        assert project_mutation.await_args.kwargs["updated_events"][0].entity_ids == []
+
     async def test_delete_captures_pre_state(self) -> None:
-        existing = _make_event(event_id="evt-2", title="To delete", location="Hall")
+        entity_id = uuid.uuid4()
+        existing = _make_event(
+            event_id="evt-2",
+            title="To delete",
+            location="Hall",
+            entity_ids=[entity_id],
+        )
 
         class _DeleteCapableDouble(_ProviderDouble):
             async def delete_event(self, *, calendar_id, event_id, send_updates=None):
@@ -962,6 +1054,70 @@ class TestReversibleMutationPreStateCapture:
         assert pre["title"] == "To delete"
         assert pre["location"] == "Hall"
         assert pre["calendar_id"] == "primary"
+        assert pre["entity_ids"] == [str(entity_id)]
+
+    async def test_delete_pre_state_uses_projected_entity_ids(self) -> None:
+        """Delete undo retains local links that the provider cannot return."""
+        entity_id = uuid.uuid4()
+        projected_event_id = uuid.uuid4()
+        existing = _make_event(event_id="evt-2", title="To delete")
+
+        class _DeleteCapableDouble(_ProviderDouble):
+            async def delete_event(self, *, calendar_id, event_id, send_updates=None):
+                self.delete_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+
+        provider = _DeleteCapableDouble(event=existing)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+        source_id = uuid.uuid4()
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": projected_event_id})
+        pool.fetch = AsyncMock(return_value=[{"entity_id": entity_id}])
+        mod._db = SimpleNamespace(pool=pool)
+
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(
+                mod, "_resolve_action_source_id", new_callable=AsyncMock, return_value=source_id
+            ),
+            patch.object(mod, "_project_provider_mutation", new_callable=AsyncMock),
+            patch.object(mod, "_refresh_user_projection", new_callable=AsyncMock),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock) as fin,
+        ):
+            await mcp.tools["calendar_delete_event"](event_id="evt-2")
+
+        result = self._result_for_status(fin, "applied")
+        assert result is not None
+        assert result["pre_state"]["entity_ids"] == [str(entity_id)]
+        assert any(
+            call.args
+            == (
+                "SELECT id FROM calendar_events WHERE source_id = $1 AND origin_ref = $2",
+                source_id,
+                "evt-2",
+            )
+            for call in pool.fetchrow.await_args_list
+        )
+        assert any(
+            call.args
+            == (
+                "SELECT entity_id FROM calendar_event_entities WHERE event_id = $1",
+                projected_event_id,
+            )
+            for call in pool.fetch.await_args_list
+        )
 
     async def test_create_has_no_pre_state(self) -> None:
         created = _make_event(
@@ -1066,6 +1222,29 @@ class TestProjectionPersistence:
         )
 
         assert _calendar_events_fetchrow_args(pool)[-2] == "health"
+
+    async def test_project_provider_changes_applies_explicit_empty_clear(self):
+        """Only an explicit signal lets a zero-length set reach the link helper."""
+        mod = CalendarModule()
+        event_id = uuid.uuid4()
+        mod._upsert_projection_event = AsyncMock(return_value=event_id)
+        mod._upsert_projection_instance = AsyncMock(return_value=uuid.uuid4())
+        mod._upsert_event_entities = AsyncMock()
+
+        await mod._project_provider_changes(
+            source_id=uuid.uuid4(),
+            provider_name="google",
+            calendar_id="primary",
+            updated_events=[_make_event(entity_ids=[])],
+            cancelled_ids=[],
+            clear_entity_ids=True,
+        )
+
+        mod._upsert_event_entities.assert_awaited_once_with(
+            event_id=event_id,
+            entity_ids=[],
+            clear_entity_ids=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2436,6 +2615,33 @@ class TestEntityAssociationHelpers:
 
         mock_pool.acquire.assert_not_called()
 
+    async def test_upsert_event_entities_explicitly_clears_empty_list(self):
+        """An explicit clear deletes all links without attempting an empty insert."""
+        mod = CalendarModule()
+        event_id = uuid.uuid4()
+
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_tx = AsyncMock()
+        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+        mock_tx.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.transaction = MagicMock(return_value=mock_tx)
+        mock_pool = MagicMock()
+        mock_pool.acquire = MagicMock(return_value=mock_conn)
+        mod._db = SimpleNamespace(pool=mock_pool)
+
+        await mod._upsert_event_entities(
+            event_id=event_id,
+            entity_ids=[],
+            clear_entity_ids=True,
+        )
+
+        mock_conn.execute.assert_awaited_once()
+        delete_sql = mock_conn.execute.call_args[0][0]
+        assert "DELETE FROM calendar_event_entities" in delete_sql
+        mock_conn.executemany.assert_not_awaited()
+
     async def test_fetch_event_entity_ids_no_pool_returns_empty(self):
         """Gracefully returns [] when no DB pool is available."""
         mod = CalendarModule()
@@ -3576,6 +3782,70 @@ class TestRecurrenceScopedMutation:
         assert detached.start_at == datetime(2026, 3, 3, 14, 0, tzinfo=UTC)
         mark.assert_awaited_once()
         assert mark.await_args.kwargs["occurrence_start"] == datetime(2026, 3, 3, 14, 0, tzinfo=UTC)
+
+    async def test_update_occurrence_forwards_explicit_entity_clear_to_projection(self) -> None:
+        """An occurrence update preserves the explicit clear through write-through."""
+        provider = _RecurringProviderDouble(
+            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        )
+        mod, mcp = await self._make_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+            patch.object(mod, "_mark_instances_exception", new_callable=AsyncMock),
+            patch.object(mod, "_project_provider_mutation", new_callable=AsyncMock) as projection,
+        ):
+            result = await mcp.tools["calendar_update_event"](
+                event_id="evt-1",
+                recurrence_scope="this",
+                instance_start_at=datetime(2026, 3, 3, 14, 0, tzinfo=UTC),
+                entity_ids=[],
+                clear_entity_ids=True,
+            )
+
+        assert result["status"] == "updated"
+        assert projection.await_count == 2
+        master_projection, detached_projection = projection.await_args_list
+        assert master_projection.kwargs["updated_events"][0].event_id == "evt-1"
+        assert master_projection.kwargs.get("clear_entity_ids", False) is False
+        assert detached_projection.kwargs["updated_events"][0].event_id == "evt-detached"
+        assert detached_projection.kwargs["clear_entity_ids"] is True
+
+    async def test_update_following_forwards_explicit_entity_clear_to_projection(self) -> None:
+        """A remainder event receives the clear while the original series keeps links."""
+        provider = _RecurringProviderDouble(
+            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        )
+        mod, mcp = await self._make_module(provider)
+        with (
+            patch(
+                "butlers.modules.calendar.require_permission",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", new_callable=AsyncMock),
+            patch.object(mod, "_mark_instances_exception", new_callable=AsyncMock),
+            patch.object(mod, "_project_provider_mutation", new_callable=AsyncMock) as projection,
+        ):
+            result = await mcp.tools["calendar_update_event"](
+                event_id="evt-1",
+                recurrence_scope="following",
+                instance_start_at=datetime(2026, 3, 3, 14, 0, tzinfo=UTC),
+                entity_ids=[],
+                clear_entity_ids=True,
+            )
+
+        assert result["status"] == "updated"
+        assert projection.await_count == 2
+        master_projection, remainder_projection = projection.await_args_list
+        assert master_projection.kwargs["updated_events"][0].event_id == "evt-1"
+        assert master_projection.kwargs.get("clear_entity_ids", False) is False
+        assert remainder_projection.kwargs["updated_events"][0].event_id == "evt-detached"
+        assert remainder_projection.kwargs["clear_entity_ids"] is True
 
     async def test_update_following_carries_recurrence(self) -> None:
         provider = _RecurringProviderDouble(

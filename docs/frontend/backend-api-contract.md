@@ -193,7 +193,8 @@ Mutation endpoint requirements:
 
 - `POST /api/calendar/workspace/user-events` accepts `{butler_name, action, request_id?, payload}`.
 - User action values: `create|update|delete`.
-- User event update/delete payloads that touch recurring provider events must pass `recurrence_scope="series"` in v1; non-series scopes are not supported by runtime tools yet.
+- A user-event update replaces linked people with a non-empty `entity_ids` array. To deliberately remove every linked person, send `entity_ids: []` with `clear_entity_ids: true`; omitted or empty `entity_ids` without that flag preserve existing links.
+- User event update/delete payloads that touch recurring provider events support `recurrence_scope` values `this`, `following`, and `series`; `this` and `following` also require the occurrence `instance_start_at`, while `series` updates the whole series.
 - `POST /api/calendar/workspace/butler-events` accepts `{butler_name, action, request_id?, payload}`.
 - Butler action values: `create|update|delete|toggle`.
 - Butler payloads must include `event_id` for `update|delete|toggle`; `toggle` also requires `enabled`.

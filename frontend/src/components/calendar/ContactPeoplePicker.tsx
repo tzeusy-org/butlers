@@ -21,15 +21,6 @@ export interface ContactPeoplePickerProps {
   disabled?: boolean;
   /** Typeahead debounce in ms (default 200). */
   debounceMs?: number;
-  /**
-   * When true, the sole remaining person cannot be removed (the remove control
-   * is disabled with a note). Used by the edit surface (bu-ya8uv): the calendar
-   * update path treats an empty `entity_ids` as no-op-preserve (no explicit
-   * clear signal yet), so removing to zero would silently keep the last link —
-   * disabling last-remove keeps the UI honest. Omit (default false) on the
-   * create dialog, where linking zero people is legitimate.
-   */
-  preserveLast?: boolean;
 }
 
 /** Initials mark for a person chip/avatar — up to two leading name parts. */
@@ -45,7 +36,7 @@ function initials(name: string): string {
  *
  * Debounced typeahead over GET /api/contacts/search; matches render as
  * selectable chips and picked people become removable chips whose entity ids
- * the parent threads into the event-create payload (`entity_ids[]`).
+ * the parent threads into the event mutation payload (`entity_ids[]`).
  *
  * Degraded-mode: a failed search renders an honest "unavailable" note (never a
  * silently-empty list). A successful search with no matches renders a distinct
@@ -56,7 +47,6 @@ export function ContactPeoplePicker({
   onChange,
   disabled = false,
   debounceMs = 200,
-  preserveLast = false,
 }: ContactPeoplePickerProps) {
   const [query, setQuery] = useState("");
   const debounced = useDebounce(query, debounceMs);
@@ -86,12 +76,7 @@ export function ContactPeoplePicker({
     setQuery("");
   }
 
-  // Guard last-remove when preserveLast is set: the edit path can't clear to
-  // zero (empty entity_ids is no-op-preserve), so the UI must not offer it.
-  const lockLastRemove = preserveLast && value.length === 1;
-
   function removePerson(entityId: string) {
-    if (lockLastRemove) return;
     onChange(value.filter((p) => p.entity_id !== entityId));
   }
 
@@ -120,24 +105,15 @@ export function ContactPeoplePicker({
                 type="button"
                 aria-label={`Remove ${person.canonical_name}`}
                 data-testid="people-remove-chip"
-                disabled={disabled || lockLastRemove}
+                disabled={disabled}
                 onClick={() => removePerson(person.entity_id)}
-                className="text-[var(--mfg)] hover:text-fg disabled:opacity-50"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[3px] text-[var(--mfg)] transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 disabled:opacity-50"
               >
                 ×
               </button>
             </span>
           ))}
         </div>
-      ) : null}
-
-      {lockLastRemove ? (
-        <p
-          className="text-xs text-[var(--mfg)]"
-          data-testid="people-preserve-last-note"
-        >
-          At least one person stays linked. Removing the last isn't supported yet.
-        </p>
       ) : null}
 
       <Input

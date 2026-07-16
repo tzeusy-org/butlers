@@ -1593,7 +1593,11 @@ undone, or whose pre-state is unavailable.
   pre-mutation event state
 - **THEN** an inverse `calendar_update_event` is dispatched that restores the
   event's pre-state fields (title, start/end, timezone, location, description,
-  attendees, recurrence, calendar id) with a freshly generated `request_id`
+  attendees, recurrence, calendar id, and linked people) with a freshly generated
+  `request_id`
+- **AND** an empty captured people set is dispatched as `entity_ids: []` plus
+  `clear_entity_ids: true`, so undo restores an originally-unlinked event rather
+  than preserving newly added links
 - **AND** the undo dispatch is itself recorded in `calendar_action_log` (so it is
   idempotent and appears in the audit trail)
 - **AND** the response reports the undone `action_id`, the inverse tool invoked,
@@ -1604,7 +1608,8 @@ undone, or whose pre-state is unavailable.
 - **WHEN** the undone row is an `applied` `workspace_user_delete` whose
   `action_result` carries the pre-deletion event state
 - **THEN** an inverse `calendar_create_event` is dispatched from the captured
-  pre-image with a fresh `request_id`, recreating the event on its home calendar
+  pre-image with a fresh `request_id`, recreating the event and its linked people
+  on its home calendar
 
 #### Scenario: Undo a create deletes the created event
 
@@ -1761,3 +1766,9 @@ The read MUST be fail-open and honest: a resolution-query failure SHALL NOT drop
 - **WHEN** a client that predates this change reads the workspace response
 - **THEN** it observes the prior `UnifiedCalendarEntry` shape unchanged, with entry-level `linked_people` defaulting to `[]`, and the response envelope's `people_source_available` defaulting to `true` (both optional/additive)
 
+#### Scenario: User event removes its final linked person
+- **WHEN** `POST /api/calendar/workspace/user-events` receives an `action="update"` payload with `entity_ids: []` and `clear_entity_ids: true`
+- **THEN** the dashboard API forwards both values unchanged to `calendar_update_event`
+- **AND** the calendar projection removes the event's existing people links
+- **AND** the API rejects a clear signal paired with omitted or non-empty `entity_ids`
+- **AND** a title-only update, or an empty `entity_ids` value without the explicit flag, preserves existing people links

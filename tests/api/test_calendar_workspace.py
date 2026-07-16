@@ -1572,6 +1572,77 @@ async def test_mutate_user_event_success_response_has_empty_conflict_lists(app):
     assert data["suggested_slots"] == []
 
 
+async def test_mutate_user_event_forwards_explicit_entity_clear(app):
+    """The workspace API preserves the explicit clear signal for the MCP tool."""
+    mcp_result = {
+        "status": "updated",
+        "provider": "google",
+        "calendar_id": "primary",
+        "event": {"event_id": "evt-1"},
+    }
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result(mcp_result))
+
+    async def _get_client(name: str):
+        return mock_client
+
+    app, _, mock_mgr = _build_app(app)
+    mock_mgr.get_client = AsyncMock(side_effect=_get_client)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/calendar/workspace/user-events",
+            json={
+                "butler_name": "general",
+                "action": "update",
+                "request_id": "req-clear-people-1",
+                "payload": {
+                    "event_id": "evt-1",
+                    "calendar_id": "primary",
+                    "entity_ids": [],
+                    "clear_entity_ids": True,
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    tool_name, arguments = mock_client.call_tool.await_args_list[0].args
+    assert tool_name == "calendar_update_event"
+    assert arguments == {
+        "event_id": "evt-1",
+        "calendar_id": "primary",
+        "entity_ids": [],
+        "clear_entity_ids": True,
+        "request_id": "req-clear-people-1",
+    }
+
+
+async def test_mutate_user_event_rejects_ambiguous_entity_clear(app):
+    """A destructive clear must carry exactly the empty replacement it authorizes."""
+    app, _, mock_mgr = _build_app(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/calendar/workspace/user-events",
+            json={
+                "butler_name": "general",
+                "action": "update",
+                "payload": {
+                    "event_id": "evt-1",
+                    "entity_ids": ["e1"],
+                    "clear_entity_ids": True,
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    mock_mgr.get_client.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Audit trail — GET /api/calendar/workspace/audit
 # ---------------------------------------------------------------------------
@@ -1851,6 +1922,7 @@ _UNDO_PRE_STATE = {
     "attendees": ["a@example.com"],
     "recurrence_rule": None,
     "color_id": None,
+    "entity_ids": ["11111111-1111-1111-1111-111111111111"],
 }
 
 
@@ -1954,8 +2026,33 @@ async def test_undo_update_reverse_applies_pre_state(app):
     assert arguments["title"] == "Original title"
     assert arguments["start_at"] == "2026-06-20T10:00:00+00:00"
     assert arguments["calendar_id"] == "primary"
+    assert arguments["entity_ids"] == _UNDO_PRE_STATE["entity_ids"]
+    assert "clear_entity_ids" not in arguments
     # Fresh request_id flows to the dispatch (idempotent + audited).
     assert arguments["request_id"] == data["request_id"]
+
+
+async def test_undo_update_uses_explicit_clear_for_empty_people_pre_state(app):
+    """Undo must restore an empty link set rather than preserving new links."""
+    row = _undo_action_row(
+        action_type="workspace_user_update",
+        action_result={
+            "status": "updated",
+            "pre_state": {**_UNDO_PRE_STATE, "entity_ids": []},
+        },
+    )
+    app, _, mock_client = _build_undo_app(app, action_rows={"general": [row]}, mcp_status="updated")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(f"/api/calendar/workspace/undo/{row['id']}")
+
+    assert resp.status_code == 200
+    tool_name, arguments = mock_client.call_tool.await_args.args
+    assert tool_name == "calendar_update_event"
+    assert arguments["entity_ids"] == []
+    assert arguments["clear_entity_ids"] is True
 
 
 async def test_undo_delete_recreates_event(app):
@@ -1980,6 +2077,7 @@ async def test_undo_delete_recreates_event(app):
     assert tool_name == "calendar_create_event"
     assert arguments["title"] == "Original title"
     assert arguments["calendar_id"] == "primary"
+    assert arguments["entity_ids"] == _UNDO_PRE_STATE["entity_ids"]
     assert "event_id" not in arguments  # create does not target an id
     assert arguments["request_id"] == data["request_id"]
 

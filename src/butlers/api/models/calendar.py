@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CalendarWorkspaceUserMutationRequest(BaseModel):
@@ -32,6 +32,23 @@ class CalendarWorkspaceUserMutationRequest(BaseModel):
             return None
         normalized = value.strip()
         return normalized or None
+
+    @model_validator(mode="after")
+    def _validate_explicit_entity_clear(self) -> CalendarWorkspaceUserMutationRequest:
+        """Require an unambiguous empty replacement before clearing people links."""
+        if "clear_entity_ids" not in self.payload:
+            return self
+
+        clear_entity_ids = self.payload["clear_entity_ids"]
+        if not isinstance(clear_entity_ids, bool):
+            raise ValueError("payload.clear_entity_ids must be a boolean")
+        if self.action != "update":
+            raise ValueError("payload.clear_entity_ids is only supported for update actions")
+        if not clear_entity_ids:
+            return self
+        if self.payload.get("entity_ids") != []:
+            raise ValueError("payload.clear_entity_ids requires payload.entity_ids to be []")
+        return self
 
 
 class CalendarWorkspaceButlerMutationRequest(BaseModel):
