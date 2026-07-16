@@ -47,9 +47,9 @@ function setLedger(partial: Partial<UseTimelineLedgerResult>): void {
   } as unknown as UseTimelineLedgerResult);
 }
 
-function render(): string {
+function render(initialEntry = "/timeline"): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <TimelinePage />
     </MemoryRouter>,
   );
@@ -114,6 +114,18 @@ describe("TimelinePage — error vs empty state", () => {
     expect(html).toContain('data-testid="facet-session"');
     expect(html).toContain('data-testid="facet-error"');
     expect(html).toContain('data-testid="facet-notification"');
+  });
+
+  it("forwards a trace URL scope to the timeline ledger", () => {
+    setLedger({});
+
+    render("/timeline?trace=trace-001");
+
+    expect(useTimelineLedger).toHaveBeenLastCalledWith({
+      butler: undefined,
+      event_type: undefined,
+      trace: "trace-001",
+    });
   });
 
   it("renders the new-events pill only when newCount is positive", () => {

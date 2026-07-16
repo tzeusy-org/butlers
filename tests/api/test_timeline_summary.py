@@ -54,7 +54,13 @@ _ENVELOPE_PREFIX = (
 )
 
 
-def _make_session_row(*, prompt: str, trigger_source: str = "route", success: bool = True):
+def _make_session_row(
+    *,
+    prompt: str,
+    trigger_source: str = "route",
+    success: bool = True,
+    trace_id: str | None = None,
+):
     return {
         "id": uuid4(),
         "prompt": prompt,
@@ -63,6 +69,7 @@ def _make_session_row(*, prompt: str, trigger_source: str = "route", success: bo
         "started_at": _NOW,
         "completed_at": _NOW,
         "duration_ms": 1000,
+        "trace_id": trace_id,
     }
 
 
@@ -248,6 +255,36 @@ async def test_timeline_endpoint_returns_clean_summary(app):
     assert "REQUEST CONTEXT" not in events[0]["summary"]
 
 
+async def test_timeline_trace_scope_filters_sessions_and_omits_unfilterable_notifications(app):
+    """A trace-scoped timeline is limited to matching session rows.
+
+    Notifications are part of the general timeline, but this read-model slice
+    has no notification trace predicate. Skipping that source is safer than
+    returning unrelated delivery rows alongside a trace-filtered session.
+    """
+    trace_id = "trace-001"
+    row = _make_session_row(prompt="Trace this session", trace_id=trace_id)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": [row]}, []))
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/timeline", params={"trace": trace_id})
+
+    assert resp.status_code == 200
+    assert [event["summary"] for event in resp.json()["data"]] == ["Trace this session"]
+    sql, args = mock_db.fan_out_with_status.call_args.args
+    assert "trace_id = $1" in sql
+    assert args == (trace_id,)
+    mock_pool.fetch.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Fix 1 + 2 + 5 (read-model layer): SQL-level event_type/composite-cursor
 # pushdown and per-source failure reporting.
@@ -341,6 +378,25 @@ async def test_query_timeline_sessions_fan_out_pushes_event_type_filter_into_sql
     sql3, _args3, _ = db3.calls[0]
     assert "success = false" not in sql3
     assert "success IS DISTINCT FROM false" not in sql3
+
+
+async def test_query_timeline_sessions_fan_out_filters_and_projects_trace_id():
+    """The fan-out read model keeps the selected trace predicate and projection together."""
+    trace_id = "trace-001"
+    db = _FakeTimelineDB(
+        results={"atlas": [_make_session_row(prompt="Trace this session", trace_id=trace_id)]}
+    )
+
+    rows, _degraded = await query_timeline_sessions_fan_out(
+        db,
+        limit=10,
+        trace_id=trace_id,
+    )
+
+    sql, args, _ = db.calls[0]
+    assert "trace_id = $1" in sql
+    assert args == (trace_id,)
+    assert rows[0].trace_id == trace_id
 
 
 async def test_query_timeline_sessions_fan_out_reports_degraded_butlers():

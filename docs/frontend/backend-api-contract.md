@@ -63,6 +63,8 @@ Required query support:
 - repeated `butler`
 - repeated `event_type`
 - `before` (cursor token)
+- `trace` (session trace scope; matching session events only, with
+  notifications omitted rather than returned unfiltered)
 
 ## Notifications Contract
 

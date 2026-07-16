@@ -14,7 +14,9 @@ Column constants:
     NOTIFICATION_COLUMNS
 
 Query functions (all async):
-    query_timeline_sessions_fan_out(db, before, before_id, limit, butler_names, only_errors)
+    query_timeline_sessions_fan_out(
+        db, before, before_id, limit, butler_names, only_errors, trace_id
+    )
         -> tuple[list[TimelineSessionRow], list[str]]  (rows, degraded butler names)
     query_timeline_notifications_single(pool, before, before_id, limit, butler_names)
         -> list[TimelineNotificationRow]
@@ -110,7 +112,9 @@ def decode_cursor(cursor: str) -> tuple[datetime, UUID | None]:
 # ---------------------------------------------------------------------------
 
 #: Session columns projected for timeline events.
-SESSION_COLUMNS: str = "id, prompt, trigger_source, success, started_at, completed_at, duration_ms"
+SESSION_COLUMNS: str = (
+    "id, trace_id, prompt, trigger_source, success, started_at, completed_at, duration_ms"
+)
 
 #: Notification columns projected for timeline events.
 NOTIFICATION_COLUMNS: str = "id, source_butler, channel, recipient, message, status, created_at"
@@ -125,6 +129,7 @@ class TimelineSessionRow:
     """Typed DTO for a session row as used in the cross-butler timeline (v1)."""
 
     id: UUID
+    trace_id: str | None
     prompt: str | None
     trigger_source: str | None
     success: bool | None
@@ -157,6 +162,7 @@ def _row_to_session(row: asyncpg.Record, *, butler: str) -> TimelineSessionRow:
     """Convert a raw asyncpg row to a :class:`TimelineSessionRow`."""
     return TimelineSessionRow(
         id=row["id"],
+        trace_id=row["trace_id"],
         prompt=row["prompt"],
         trigger_source=row["trigger_source"],
         success=row["success"],
@@ -193,6 +199,7 @@ async def query_timeline_sessions_fan_out(
     limit: int,
     butler_names: list[str] | None = None,
     only_errors: bool | None = None,
+    trace_id: str | None = None,
 ) -> tuple[list[TimelineSessionRow], list[str]]:
     """Fan out a timeline session query across all (or a subset of) butlers.
 
@@ -224,6 +231,8 @@ async def query_timeline_sessions_fan_out(
         ``True`` → only failed sessions (``success = false``, the "error"
         event type). ``False`` → only non-failed sessions (``success`` true
         or null, the "session" event type). ``None`` → no filter (both types).
+    trace_id:
+        When set, return only sessions carrying this OpenTelemetry trace ID.
 
     Returns
     -------
@@ -252,6 +261,10 @@ async def query_timeline_sessions_fan_out(
         conditions.append("success = false")
     elif only_errors is False:
         conditions.append("success IS DISTINCT FROM false")
+
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     sql = (

@@ -72,12 +72,12 @@ describe("SessionDossier", () => {
     expect(link).toBeDefined();
   });
 
-  it("links Trace ID to the ingestion timeline pre-filtered by trace", () => {
+  it("links Trace ID to the timeline pre-filtered by trace", () => {
     renderDossier(BASE_SESSION);
     const link = Array.from(document.body.querySelectorAll("a")).find(
       (a) => a.textContent === "trace-001",
     );
-    expect(link?.getAttribute("href")).toBe("/ingestion?trace=trace-001");
+    expect(link?.getAttribute("href")).toBe("/timeline?trace=trace-001");
   });
 
   it("links Request ID to /sessions?request=", () => {

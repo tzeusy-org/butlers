@@ -1310,6 +1310,7 @@ export function getTimeline(params?: TimelineParams): Promise<TimelineResponse> 
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.before) sp.set("before", params.before);
+  if (params?.trace) sp.set("trace", params.trace);
   params?.butler?.forEach((b) => sp.append("butler", b));
   params?.event_type?.forEach((t) => sp.append("event_type", t));
   const qs = sp.toString();

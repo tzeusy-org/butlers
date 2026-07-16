@@ -31,6 +31,7 @@ const HEAD_POLL_MS = 15_000;
 export interface TimelineLedgerFilters {
   butler?: string[];
   event_type?: string[];
+  trace?: string;
 }
 
 export interface UseTimelineLedgerResult {

@@ -275,6 +275,14 @@ async def list_timeline(
     limit: int = Query(50, ge=1, le=200, description="Max events to return"),
     butler: list[str] | None = Query(None, description="Filter by butler name(s)"),
     event_type: list[str] | None = Query(None, description="Filter by event type(s)"),
+    trace: str | None = Query(
+        None,
+        description=(
+            "Filter to session events carrying this OpenTelemetry trace ID. "
+            "Trace-scoped results omit notifications because this timeline "
+            "read model cannot filter them by trace."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> TimelineResponse:
     """Return a cursor-paginated cross-butler event stream.
@@ -296,6 +304,10 @@ async def list_timeline(
     ``error`` can reach every error, not just those among the newest
     unfiltered page.
 
+    ``trace`` filters the session fan-out by OpenTelemetry trace ID. The
+    notification source is omitted for a trace-scoped request rather than
+    returning unfiltered notification rows alongside matching sessions.
+
     ``meta.degraded_sources`` lists any of ``sessions``/``notifications``
     whose query failed this request — the returned page for that source is
     then a partial, not a truthful empty, result (mirrors the
@@ -309,6 +321,8 @@ async def list_timeline(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid 'before' cursor: {exc}") from exc
 
+    trace_id = trace.strip() if trace is not None and trace.strip() else None
+
     # Determine which event sources/types to query.
     want_session_type = event_type is None or "session" in event_type
     want_error_type = event_type is None or "error" in event_type
@@ -320,6 +334,11 @@ async def list_timeline(
     # sessions (previously "error" mapped solely to sessions with success=False,
     # leaving a multi-hour bounced-alert outage invisible to the Errors view).
     want_notifications = want_notification_type or want_error_type
+    if trace_id is not None:
+        # Timeline's session read model can filter by trace_id; its
+        # notification counterpart cannot. Returning only the session source
+        # keeps a trace link truthful instead of mixing in unrelated rows.
+        want_notifications = False
     # When notifications are pulled ONLY because of the error lens (not an
     # explicit notification request), restrict them to failed deliveries so the
     # Errors view stays errors-only.
@@ -349,6 +368,7 @@ async def list_timeline(
             limit=limit + 1,
             butler_names=target_butlers,
             only_errors=only_errors,
+            trace_id=trace_id,
         )
         if degraded_butlers:
             logger.warning("Timeline session fan-out degraded for butlers: %s", degraded_butlers)
