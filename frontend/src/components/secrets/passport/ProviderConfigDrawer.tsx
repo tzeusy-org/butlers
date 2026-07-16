@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // ProviderConfigDrawer — reusable provider configuration drawer framework
-// plus five concrete provider drawers: HomeAssistant, OwnTracks, Steam,
-// Spotify, and WhatsApp.
+// plus six concrete provider drawers: HomeAssistant, Telegram, OwnTracks,
+// Steam, Spotify, and WhatsApp.
 //
 // Spec: butler-secrets §per-provider oddities
 //
@@ -37,6 +37,7 @@
 
 import * as React from "react";
 
+import { TelegramSessionSetup } from "@/components/relationship/TelegramSessionSetup";
 import { Mono, PillBtn, Eyebrow } from "./atoms.tsx";
 import {
   useHomeAssistantStatus,
@@ -107,6 +108,8 @@ export function ProviderConfigDrawer({
   inline?: boolean;
   children: React.ReactNode;
 }) {
+  const headingId = React.useId();
+
   if (inline) {
     return (
       <div data-provider-config-drawer={provider} data-provider-drawer-inline="true">
@@ -116,15 +119,17 @@ export function ProviderConfigDrawer({
   }
 
   return (
-    <div
+    <section
       className="flex flex-col gap-4.5 p-7"
       data-provider-config-drawer={provider}
+      aria-labelledby={headingId}
     >
       {/* Heading */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <Eyebrow>configure provider</Eyebrow>
-          <h1
+          <h2
+            id={headingId}
             className="m-0 mt-2"
             style={{
               fontFamily: "var(--font-sans, 'Inter Tight', sans-serif)",
@@ -136,9 +141,9 @@ export function ProviderConfigDrawer({
             }}
           >
             {label}
-          </h1>
+          </h2>
         </div>
-        <PillBtn onClick={onClose}>dismiss</PillBtn>
+        <PillBtn onClick={onClose} aria-label={`Dismiss ${label} setup`}>dismiss</PillBtn>
       </div>
 
       {/* Hairline separator */}
@@ -146,7 +151,7 @@ export function ProviderConfigDrawer({
 
       {/* Provider-specific content */}
       {children}
-    </div>
+    </section>
   );
 }
 
@@ -425,6 +430,29 @@ export function HomeAssistantDrawer({
   return (
     <ProviderConfigDrawer provider="homeassistant" label="Home Assistant" onClose={onClose} inline={inline}>
       <HomeAssistantDrawerContent />
+    </ProviderConfigDrawer>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Telegram drawer
+// ---------------------------------------------------------------------------
+
+/**
+ * TelegramDrawer begins the owner-only API ID/hash and OTP flow from Passport.
+ * The session-auth API persists the credentials only after verification, so the
+ * API hash never takes the generic raw-credential mutation path.
+ */
+export function TelegramDrawer({
+  onClose,
+  ownerEntityId,
+}: {
+  onClose: () => void;
+  ownerEntityId: string;
+}) {
+  return (
+    <ProviderConfigDrawer provider="telegram" label="Telegram" onClose={onClose}>
+      <TelegramSessionSetup entityId={ownerEntityId} entries={[]} startImmediately />
     </ProviderConfigDrawer>
   );
 }

@@ -13,7 +13,6 @@ import {
   ChevronsUpDown,
   Check,
   Layers,
-  Loader2,
   Pencil,
   Plus,
   Trash2,
@@ -22,7 +21,6 @@ import {
 import { toast } from "sonner";
 import { Time } from "@/components/ui/time";
 import { Tip } from "@/components/ui/tip";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getEntityGloss, DUNBAR_TIER_VALUES, ENTITY_TYPE_VALUES, CURATION_RAIL_GLOSSES } from "@/lib/entity-glosses";
 import type { DunbarTier, EntityState, EntityType, CurationRailAction } from "@/lib/entity-glosses";
 
@@ -31,17 +29,11 @@ import type {
   EntityFact,
   EntityFactStalenessBand,
   EntityFactsValidity,
-  EntityInfoEntry,
   EntityTimelineItem,
   Fact,
   MessageThreadSummary,
   NeighbourEntry,
 } from "@/api/types";
-import {
-  getTelegramSessionStatus,
-  telegramSendCode,
-  telegramVerifyCode,
-} from "@/api/index";
 import { ActivitySparkline } from "@/components/relationship/ActivitySparkline";
 import { ContactChannelCard } from "@/components/relationship/ContactChannelCard";
 import { CoreDatesBlock } from "@/components/relationship/CoreDatesBlock";
@@ -50,6 +42,7 @@ import { LatestInteractionsBlock } from "@/components/relationship/LatestInterac
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PracticalDrawer } from "@/components/relationship/PracticalDrawer";
 import { PulseStrip } from "@/components/relationship/PulseStrip";
+import { TelegramSessionSetup } from "@/components/relationship/TelegramSessionSetup";
 import { EntityMark } from "@/components/ui/EntityMark";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { usePageContext } from "@/lib/page-context.tsx";
@@ -80,7 +73,6 @@ import {
 } from "@/components/ui/table";
 import { Page } from "@/components/ui/page";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -110,7 +102,6 @@ import {
   useEntity,
   useForgetRelationshipEntity,
   usePromoteEntity,
-  useRevealEntitySecret,
   useSetLinkedContact,
   useUnlinkContact,
   useUpdateEntity,
@@ -167,442 +158,6 @@ const FACTS_INITIAL_LIMIT = 200;
 function sessionDetailHref(sessionId: string, butler: string | null): string {
   const query = butler ? `?butler=${encodeURIComponent(butler)}` : "";
   return `/sessions/${encodeURIComponent(sessionId)}${query}`;
-}
-
-// ---------------------------------------------------------------------------
-// Telegram session setup — interactive auth flow
-// ---------------------------------------------------------------------------
-
-type TelegramStep = "idle" | "loading_creds" | "credentials" | "phone" | "code" | "two_fa" | "success";
-
-function TelegramSessionSetup({
-  entityId,
-  entries,
-}: {
-  entityId: string;
-  entries: EntityInfoEntry[];
-}) {
-  const queryClient = useQueryClient();
-  const { data: status, isLoading } = useQuery({
-    queryKey: ["telegram-session-status"],
-    queryFn: getTelegramSessionStatus,
-    refetchInterval: 30_000,
-  });
-
-  // Check for existing entity_info entries (entries, not values — secured values are null)
-  const apiIdEntry = entries.find((e) => e.type === "telegram_api_id");
-  const apiHashEntry = entries.find((e) => e.type === "telegram_api_hash");
-
-  const revealMutation = useRevealEntitySecret();
-  const hasExistingCreds = !!apiIdEntry && !!apiHashEntry;
-
-  // Use the value directly if visible, otherwise empty (will be revealed)
-  const visibleApiId = apiIdEntry?.value ?? "";
-
-  const [step, setStep] = useState<TelegramStep>("idle");
-  const [apiId, setApiId] = useState(visibleApiId);
-  const [apiHash, setApiHash] = useState("");
-  const [phone, setPhone] = useState("");
-  const [code, setCode] = useState("");
-  const [password, setPassword] = useState("");
-  const [sessionToken, setSessionToken] = useState("");
-  const [userName, setUserName] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleStart() {
-    if (!hasExistingCreds) {
-      setStep("credentials");
-      return;
-    }
-
-    // Both entries exist — reveal their actual values, then skip to phone step
-    setStep("loading_creds");
-    setError(null);
-
-    try {
-      // Reveal API ID if secured (value is null), otherwise use visible value
-      let resolvedApiId = apiIdEntry.value;
-      if (!resolvedApiId && apiIdEntry.secured) {
-        const revealed = await new Promise<string>((resolve, reject) => {
-          revealMutation.mutate(
-            { entityId, infoId: apiIdEntry.id },
-            {
-              onSuccess: (data) => resolve(data.value ?? ""),
-              onError: reject,
-            },
-          );
-        });
-        resolvedApiId = revealed;
-      }
-
-      // Reveal API Hash (always secured)
-      const resolvedApiHash = await new Promise<string>((resolve, reject) => {
-        revealMutation.mutate(
-          { entityId, infoId: apiHashEntry.id },
-          {
-            onSuccess: (data) => resolve(data.value ?? ""),
-            onError: reject,
-          },
-        );
-      });
-
-      setApiId(resolvedApiId ?? "");
-      setApiHash(resolvedApiHash);
-      setStep("phone");
-    } catch {
-      // Fall back to manual entry if reveals fail
-      setApiId(visibleApiId);
-      setStep("credentials");
-      setError("Could not load existing credentials. Please re-enter them.");
-    }
-  }
-
-  const sendCodeMutation = useMutation({
-    mutationFn: telegramSendCode,
-    onSuccess: (data) => {
-      setSessionToken(data.session_token);
-      setStep("code");
-      setError(null);
-    },
-    onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to send code");
-    },
-  });
-
-  const verifyMutation = useMutation({
-    mutationFn: telegramVerifyCode,
-    onSuccess: (data) => {
-      if (data.success) {
-        setUserName(data.user_name);
-        setStep("success");
-        setError(null);
-        void queryClient.invalidateQueries({ queryKey: ["telegram-session-status"] });
-        void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
-        toast.success("Telegram session created successfully!");
-      } else if (data.message.includes("2FA") || data.message.includes("Two-factor")) {
-        setStep("two_fa");
-        setError(null);
-      } else {
-        setError(data.message);
-      }
-    },
-    onError: (err) => {
-      setError(err instanceof Error ? err.message : "Verification failed");
-    },
-  });
-
-  function handleSendCode() {
-    setError(null);
-    const id = parseInt(apiId.trim(), 10);
-    if (isNaN(id)) {
-      setError("API ID must be a number");
-      return;
-    }
-    if (!apiHash.trim()) {
-      setError("API Hash is required");
-      return;
-    }
-    if (!phone.trim()) {
-      setError("Phone number is required");
-      return;
-    }
-    sendCodeMutation.mutate({
-      api_id: id,
-      api_hash: apiHash.trim(),
-      phone: phone.trim(),
-    });
-  }
-
-  function handleVerifyCode() {
-    setError(null);
-    if (!code.trim()) {
-      setError("Please enter the verification code");
-      return;
-    }
-    verifyMutation.mutate({
-      session_token: sessionToken,
-      code: code.trim(),
-    });
-  }
-
-  function handleSubmit2FA() {
-    setError(null);
-    if (!password.trim()) {
-      setError("Please enter your 2FA password");
-      return;
-    }
-    verifyMutation.mutate({
-      session_token: sessionToken,
-      code: code.trim(),
-      password: password.trim(),
-    });
-  }
-
-  function handleReset() {
-    setStep("idle");
-    setApiId(visibleApiId);
-    setApiHash("");
-    setPhone("");
-    setCode("");
-    setPassword("");
-    setSessionToken("");
-    setUserName(null);
-    setError(null);
-  }
-
-  const isPending = sendCodeMutation.isPending || verifyMutation.isPending;
-
-  if (isLoading) {
-    return (
-      <section className="space-y-3">
-        <Eyebrow as="div">Telegram user session</Eyebrow>
-        <Skeleton className="h-8 w-48" />
-      </section>
-    );
-  }
-
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between">
-        <Eyebrow as="div">Telegram user session</Eyebrow>
-        {status?.ready && (
-          <Badge variant="outline" className="text-[var(--green)] border-[var(--green)]">Connected</Badge>
-        )}
-      </div>
-      <div className="space-y-3">
-        {/* Status summary */}
-        {status && step === "idle" && (
-          <div className="flex flex-col gap-1.5 text-sm">
-            <div className="flex items-center gap-2">
-              <span className={status.has_api_id ? "text-[var(--green)]" : "text-muted-foreground"}>
-                {status.has_api_id ? "+" : "-"}
-              </span>
-              <span>API ID</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={status.has_api_hash ? "text-[var(--green)]" : "text-muted-foreground"}>
-                {status.has_api_hash ? "+" : "-"}
-              </span>
-              <span>API Hash</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className={status.has_session ? "text-[var(--green)]" : "text-muted-foreground"}>
-                {status.has_session ? "+" : "-"}
-              </span>
-              <span>Session String</span>
-            </div>
-          </div>
-        )}
-
-        {/* Step: idle — show setup button */}
-        {step === "idle" && (
-          <Button
-            variant={status?.ready ? "outline" : "default"}
-            size="sm"
-            onClick={handleStart}
-          >
-            {status?.ready ? "Re-generate Session" : "Set Up Telegram Session"}
-          </Button>
-        )}
-
-        {/* Step: loading_creds — revealing existing API hash */}
-        {step === "loading_creds" && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading existing credentials...
-          </div>
-        )}
-
-        {/* Step: credentials — enter API ID + Hash + Phone */}
-        {step === "credentials" && (
-          <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              Enter your Telegram API credentials from{" "}
-              <a
-                href="https://my.telegram.org/apps"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                my.telegram.org/apps
-              </a>
-              .
-            </p>
-            <div className="grid gap-2">
-              <div className="space-y-1">
-                <Label className="text-xs">API ID</Label>
-                <Input
-                  className="h-8 text-sm"
-                  placeholder="12345678"
-                  value={apiId}
-                  onChange={(e) => setApiId(e.target.value)}
-                  disabled={isPending}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">API Hash</Label>
-                <Input
-                  className="h-8 text-sm"
-                  type="password"
-                  placeholder="a1b2c3d4e5f6..."
-                  value={apiHash}
-                  onChange={(e) => setApiHash(e.target.value)}
-                  disabled={isPending}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Phone Number</Label>
-                <Input
-                  className="h-8 text-sm"
-                  placeholder="+1234567890"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  disabled={isPending}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleSendCode(); }}
-                />
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={handleSendCode}
-                disabled={isPending}
-              >
-                {sendCodeMutation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-                Send Code
-              </Button>
-              <Button variant="ghost" size="sm" onClick={handleReset} disabled={isPending}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Step: phone — API creds pre-filled, just need phone */}
-        {step === "phone" && (
-          <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              Using existing API credentials. Enter your phone number to receive a verification code.
-            </p>
-            <div className="space-y-1">
-              <Label className="text-xs">Phone Number</Label>
-              <Input
-                className="h-8 w-56 text-sm"
-                placeholder="+1234567890"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                disabled={isPending}
-                autoFocus
-                onKeyDown={(e) => { if (e.key === "Enter") handleSendCode(); }}
-              />
-            </div>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={handleSendCode}
-                disabled={isPending}
-              >
-                {sendCodeMutation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-                Send Code
-              </Button>
-              <Button variant="ghost" size="sm" onClick={handleReset} disabled={isPending}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Step: code — enter OTP */}
-        {step === "code" && (
-          <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              A verification code has been sent to your Telegram app. Enter it below.
-            </p>
-            <div className="space-y-1">
-              <Label className="text-xs">Verification Code</Label>
-              <Input
-                className="h-8 w-48 text-sm font-mono tracking-widest"
-                placeholder="12345"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                disabled={isPending}
-                autoFocus
-                onKeyDown={(e) => { if (e.key === "Enter") handleVerifyCode(); }}
-              />
-            </div>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={handleVerifyCode}
-                disabled={isPending}
-              >
-                {verifyMutation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-                Verify
-              </Button>
-              <Button variant="ghost" size="sm" onClick={handleReset} disabled={isPending}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Step: 2FA password */}
-        {step === "two_fa" && (
-          <div className="space-y-3">
-            <p className="text-sm text-muted-foreground">
-              Two-factor authentication is enabled. Enter your 2FA password.
-            </p>
-            <div className="space-y-1">
-              <Label className="text-xs">2FA Password</Label>
-              <Input
-                className="h-8 w-64 text-sm"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={isPending}
-                autoFocus
-                onKeyDown={(e) => { if (e.key === "Enter") handleSubmit2FA(); }}
-              />
-            </div>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={handleSubmit2FA}
-                disabled={isPending}
-              >
-                {verifyMutation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-                Submit
-              </Button>
-              <Button variant="ghost" size="sm" onClick={handleReset} disabled={isPending}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {/* Step: success */}
-        {step === "success" && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-sm text-[var(--green)]">
-              <Check className="h-4 w-4" />
-              <span>
-                Session created{userName ? ` for ${userName}` : ""}.
-                All three credentials are now stored on this entity.
-              </span>
-            </div>
-            <Button variant="ghost" size="sm" onClick={handleReset}>
-              Done
-            </Button>
-          </div>
-        )}
-
-        {/* Error display */}
-        {error && (
-          <p className="text-sm text-destructive">{error}</p>
-        )}
-      </div>
-    </section>
-  );
 }
 
 // ---------------------------------------------------------------------------

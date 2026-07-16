@@ -39,6 +39,9 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     rotateCliCredential: vi.fn(),
     revokeCliCredential: vi.fn(),
     createEntityInfo: vi.fn(),
+    getTelegramSessionStatus: vi.fn(),
+    telegramSendCode: vi.fn(),
+    telegramVerifyCode: vi.fn(),
     listCLIAuthProviders: vi.fn().mockResolvedValue([]),
     testCLIAuthApiKey: vi.fn(),
     saveCLIAuthApiKey: vi.fn(),
@@ -71,8 +74,16 @@ import {
   MOCK_PROVIDERS,
 } from "./mock-data.ts";
 import { buildSpineEntries } from "./spine-builder.ts";
-import { reauthorizeUserCredential } from "@/api/client.ts";
+import {
+  createEntityInfo,
+  getTelegramSessionStatus,
+  reauthorizeUserCredential,
+  telegramSendCode,
+} from "@/api/client.ts";
+const mockCreateEntityInfo = vi.mocked(createEntityInfo);
 const mockReauth = vi.mocked(reauthorizeUserCredential);
+const mockTelegramSessionStatus = vi.mocked(getTelegramSessionStatus);
+const mockTelegramSendCode = vi.mocked(telegramSendCode);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -257,6 +268,9 @@ describe("PassportAddPanel: OAuth connect guard — undefined ownerEntityId", ()
   afterEach(() => {
     cleanup();
     mockReauth.mockReset();
+    mockCreateEntityInfo.mockReset();
+    mockTelegramSessionStatus.mockReset();
+    mockTelegramSendCode.mockReset();
   });
 
   function renderAddPanel(ownerEntityId: string | undefined) {
@@ -475,6 +489,66 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
     renderUserFamily("entity-uuid-123");
     fireEvent.click(screen.getByText(/set up home assistant/i));
     expect(document.querySelector('[data-provider-config-drawer="homeassistant"]')).toBeTruthy();
+  });
+
+  it("opens an accessible guided Telegram session drawer", async () => {
+    mockTelegramSessionStatus.mockResolvedValue({
+      has_api_id: false,
+      has_api_hash: false,
+      has_session: false,
+      ready: false,
+    });
+    renderUserFamily("entity-uuid-123");
+
+    fireEvent.click(screen.getByText(/set up telegram/i));
+
+    expect(screen.getByRole("region", { name: "Telegram" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Telegram", level: 2 })).toBeTruthy();
+    await waitFor(() => expect(screen.getByLabelText("Telegram API hash")).toBeTruthy());
+    expect(screen.getByLabelText("Telegram API hash").getAttribute("type")).toBe("password");
+    expect(screen.getByRole("link", { name: "my.telegram.org/apps" }).getAttribute("href")).toBe(
+      "https://my.telegram.org/apps",
+    );
+  });
+
+  it("sends the API hash only through Telegram session auth, not the raw credential mutation", async () => {
+    mockTelegramSessionStatus.mockResolvedValue({
+      has_api_id: false,
+      has_api_hash: false,
+      has_session: false,
+      ready: false,
+    });
+    mockTelegramSendCode.mockResolvedValue({
+      session_token: "session-token",
+      phone_code_hash: "phone-code-hash",
+    });
+    renderUserFamily("entity-uuid-123");
+
+    fireEvent.click(screen.getByText(/set up telegram/i));
+    await waitFor(() => expect(screen.getByLabelText("Telegram API hash")).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("Telegram API ID"), { target: { value: "12345" } });
+    fireEvent.change(screen.getByLabelText("Telegram API hash"), { target: { value: "test-api-hash" } });
+    fireEvent.change(screen.getByLabelText("Telegram phone number"), { target: { value: "+15551234567" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send code" }));
+
+    await waitFor(() =>
+      expect(mockTelegramSendCode.mock.calls[0]?.[0]).toEqual({
+        api_id: 12345,
+        api_hash: "test-api-hash",
+        phone: "+15551234567",
+      }),
+    );
+    expect(mockCreateEntityInfo).not.toHaveBeenCalled();
+  });
+
+  it("returns focus to the Telegram setup trigger when the inline drawer is dismissed", () => {
+    renderUserFamily("entity-uuid-123");
+    const trigger = screen.getByText(/set up telegram/i).closest("button") as HTMLButtonElement;
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss Telegram setup" }));
+
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("resets back to the guided view when re-entering the user family after visiting advanced", () => {
