@@ -707,7 +707,13 @@ class GmailConnectorRuntime:
                 "Refreshed %d recently-sent Message-IDs for reply_to_outbound rule",
                 len(self._sent_ids_cache),
             )
-        except Exception:
+        except Exception as exc:
+            self._source_api_ok = False
+            self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
+            self._metrics.record_source_api_call(api_method="messages.list.sent", status="error")
+            self._metrics.record_error(
+                error_type=get_error_type(exc), operation="refresh_sent_message_ids"
+            )
             logger.warning(
                 "Failed to refresh sent Message-IDs; retaining previous set (%d entries)",
                 len(self._sent_ids_cache),

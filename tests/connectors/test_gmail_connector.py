@@ -452,7 +452,7 @@ async def test_reply_to_outbound_fires_via_real_policy_path(
 async def test_refresh_sent_message_ids_fail_open_retains_previous(
     gmail_config: GmailConnectorConfig,
 ) -> None:
-    """A failed SENT refresh retains the previous cache instead of clearing it."""
+    """A transient SENT refresh failure retains the cache and degrades health."""
     runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
     runtime._sent_ids_cache = frozenset({"<prev@example.com>"})
     # Force a refresh attempt (expire the TTL window) that then raises.
@@ -464,6 +464,34 @@ async def test_refresh_sent_message_ids_fail_open_retains_previous(
     await runtime._refresh_sent_message_ids()
 
     assert runtime._policy_tier_assigner.sent_message_ids == frozenset({"<prev@example.com>"})
+    assert runtime._source_api_ok is False
+    assert runtime._auth_error is False
+    assert runtime._source_api_error_message is not None
+    assert "Gmail API down" in runtime._source_api_error_message
+    assert runtime._get_health_state() == ("degraded", runtime._source_api_error_message)
+
+
+async def test_refresh_sent_message_ids_auth_failure_retains_cache_and_marks_error(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """An OAuth revocation preserves the cache but records an actionable error state."""
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime._sent_ids_cache = frozenset({"<prev@example.com>"})
+    runtime._sent_ids_loaded_at = float("-inf")
+    runtime._fetch_sent_message_ids = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_http_error_with_response(
+            {"error": "invalid_grant", "error_description": "Token revoked"}, 400
+        )
+    )
+
+    await runtime._refresh_sent_message_ids()
+
+    assert runtime._policy_tier_assigner.sent_message_ids == frozenset({"<prev@example.com>"})
+    assert runtime._source_api_ok is False
+    assert runtime._auth_error is True
+    assert runtime._source_api_error_message is not None
+    assert "invalid_grant" in runtime._source_api_error_message
+    assert runtime._get_health_state() == ("error", runtime._source_api_error_message)
 
 
 # ---------------------------------------------------------------------------
