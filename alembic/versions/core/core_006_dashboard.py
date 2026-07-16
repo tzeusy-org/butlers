@@ -9,7 +9,8 @@ Collapsed from: core_039_dashboard_conversations
 Creates two tables in the public schema to support dashboard conversational input:
 
   - public.dashboard_conversations — one row per chat session between a user and a butler.
-    Tracks status, aggregate token/duration stats, and message count.
+    Tracks status and message count; per-message accounting remains in
+    ``public.dashboard_messages``.
 
   - public.dashboard_messages — individual user/assistant message rows linked to a
     conversation via FK CASCADE.  Stores model metadata, token counts, tool calls (JSONB),
