@@ -59,6 +59,10 @@ npm run dev
 
 The dashboard will be available at `http://localhost:41173` with API requests proxied to the backend at `http://localhost:41200`.
 
+Linked worktrees may reuse a shared `node_modules` directory. Vite and TypeScript write
+their generated state to this worktree's ignored `.vite/` directory, so the usual commands
+above remain safe. Run `npm run test:worktree-tooling` to check that contract.
+
 Alternatively, run the entire stack (Postgres + API + frontend) via Docker Compose from the project root:
 
 ```bash

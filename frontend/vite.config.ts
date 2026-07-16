@@ -1,11 +1,11 @@
-import path from "path"
-import { fileURLToPath } from "node:url"
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const frontendRoot = path.dirname(fileURLToPath(import.meta.url))
 
 // When the app is served under a non-root base (e.g. `--base /butlers-dev/`
 // behind the Tailscale `/butlers-dev` path mount), the Vite dev server 404s a
@@ -37,6 +37,9 @@ function baseNoSlashRedirect(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Dependencies are shared between worktrees through a node_modules symlink,
+  // so generated Vite artifacts must live in the writable worktree instead.
+  cacheDir: '.vite',
   test: {
     // Pin the runner timezone to UTC so date/time-sensitive specs are
     // deterministic on any machine. Several CalendarWorkspacePage grid-drag and
@@ -57,7 +60,7 @@ export default defineConfig({
   plugins: [tailwindcss(), react(), baseNoSlashRedirect()],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(frontendRoot, './src'),
     },
   },
   optimizeDeps: {
