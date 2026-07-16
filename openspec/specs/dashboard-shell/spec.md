@@ -102,7 +102,7 @@ The root layout SHALL be a single route wrapper that composes the shell structur
 - **WHEN** any route within the application is visited
 - **THEN** the `Shell` component renders with the `PageHeader` passed as the `header` prop
 - **AND** page content renders inside an `ErrorBoundary` within the shell's main content area
-- **AND** the `CommandPalette` dialog is mounted (initially closed) outside the shell
+- **AND** the `EntityFinder` dialog is mounted (initially closed) outside the shell
 - **AND** the `ShortcutHints` floating button and dialog are mounted
 - **AND** the `Toaster` (Sonner) is mounted for toast notifications
 - **AND** global keyboard shortcuts are registered via `useKeyboardShortcuts`
@@ -757,11 +757,11 @@ Shared utilities SHALL underpin component styling and settings persistence.
 - **THEN** it composes classes via `clsx` and merges Tailwind conflicts via `tailwind-merge`
 - **AND** this ensures that component prop-based class overrides correctly take precedence over base styles
 
-#### Scenario: Command palette event bridge
+#### Scenario: Entity finder event bridge
 
-- **WHEN** `dispatchOpenCommandPalette()` is called from any location (header button, keyboard shortcut)
-- **THEN** a `CustomEvent` named `open-search` is dispatched on the `window` object
-- **AND** the `CommandPalette` component listens for this event and opens the dialog
+- **WHEN** `dispatchOpenEntityFinder()` is called from any location (header button, keyboard shortcut)
+- **THEN** a `CustomEvent` named `open-entity-finder` is dispatched on the `window` object
+- **AND** the `EntityFinder` component listens for this event and opens the dialog
 
 #### Scenario: Local settings resilience
 
