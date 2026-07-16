@@ -21,6 +21,7 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - CONNECTOR_PROVIDER=telegram (required)
 - CONNECTOR_CHANNEL=telegram_user_client (required)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
+- CONNECTOR_HEALTH_PORT (optional, default 40080)
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
 - BUTLER_SHARED_DB_NAME (optional; shared credential DB, defaults to 'butlers')
@@ -96,6 +97,8 @@ except ImportError:
     TelethonUpdateState = None
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_HEALTH_PORT = 40080
 
 # ---------------------------------------------------------------------------
 # Addressed-mention detection for passive connectors
@@ -178,6 +181,9 @@ class TelegramUserClientConnectorConfig:
     # Concurrency control
     max_inflight: int = 8
 
+    # Local operational health endpoint
+    health_port: int = _DEFAULT_HEALTH_PORT
+
     # Buffering / flush config
     flush_interval_s: int = 1800
     history_max_messages: int = 50
@@ -238,7 +244,7 @@ class TelegramUserClientConnectorConfig:
         discretion_window_seconds = _float("TELEGRAM_USER_DISCRETION_WINDOW_SECONDS", 300.0)
         discretion_weight_bypass = _float("TELEGRAM_USER_DISCRETION_WEIGHT_BYPASS", 1.0)
         discretion_weight_fail_open = _float("TELEGRAM_USER_DISCRETION_WEIGHT_FAIL_OPEN", 0.5)
-
+        health_port = _int("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT)
         # Address keywords (comma-separated, case-insensitive)
         _raw_keywords = os.environ.get("CONNECTOR_ADDRESS_KEYWORDS", "").strip()
         address_keywords = (
@@ -259,6 +265,7 @@ class TelegramUserClientConnectorConfig:
             telegram_user_session="",
             backfill_window_h=backfill_window_h,
             max_inflight=max_inflight,
+            health_port=health_port,
             flush_interval_s=flush_interval_s,
             history_max_messages=history_max_messages,
             history_time_window_m=history_time_window_m,
@@ -2259,6 +2266,88 @@ async def _resolve_endpoint_identity(
         await client.disconnect()
 
 
+# ---------------------------------------------------------------------------
+# Local health endpoint
+# ---------------------------------------------------------------------------
+
+
+async def _run_health_server(
+    port: int,
+    connector: TelegramUserClientConnector,
+) -> None:
+    """Run the loopback-only operational health and metrics endpoints."""
+    from prometheus_client import generate_latest
+
+    async def handle_request(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            request_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            path = b"/health"
+            if request_line:
+                parts = request_line.split()
+                if len(parts) >= 2:
+                    path = parts[1]
+
+            while True:
+                line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+                if not line or line == b"\r\n":
+                    break
+
+            if path == b"/health" or path.startswith(b"/health?"):
+                state, error_message = connector._get_health_state()
+                body_dict: dict[str, Any] = {
+                    "status": state,
+                    "connector_type": "telegram_user_client",
+                    "endpoint_identity": connector._config.endpoint_identity,
+                }
+                if error_message:
+                    body_dict["error"] = error_message
+                if connector._discretion_dispatcher is not None:
+                    body_dict["discretion_auth"] = (
+                        connector._discretion_dispatcher.get_auth_health()
+                    )
+                body = json.dumps(body_dict).encode()
+                content_type = "application/json"
+                http_status = "200 OK"
+            elif path == b"/metrics" or path.startswith(b"/metrics?"):
+                body = generate_latest()
+                content_type = "text/plain; version=0.0.4"
+                http_status = "200 OK"
+            else:
+                body = json.dumps({"error": "Not Found"}).encode()
+                content_type = "application/json"
+                http_status = "404 Not Found"
+
+            response = (
+                f"HTTP/1.0 {http_status}\r\n"
+                f"Content-Type: {content_type}\r\n"
+                f"Content-Length: {len(body)}\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            ).encode() + body
+            writer.write(response)
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    from butlers.connectors.health_socket import make_health_socket
+
+    sock = make_health_socket("127.0.0.1", port)
+    server = await asyncio.start_server(handle_request, sock=sock)
+    logger.info("Telegram user-client health server listening on 127.0.0.1:%d", port)
+
+    async with server:
+        await server.serve_forever()
+
+
 async def run_telegram_user_client_connector() -> None:
     """CLI entry point for running Telegram user-client connector.
 
@@ -2322,11 +2411,21 @@ async def run_telegram_user_client_connector() -> None:
 
     await restore_connector_cli_auth(cursor_pool, context="telegram_user_client")
 
+    health_task = asyncio.create_task(
+        _run_health_server(config.health_port, connector),
+        name="tg-user-health-server",
+    )
+
     try:
         await connector.start()
     except KeyboardInterrupt:
         logger.info("Received interrupt, stopping connector")
     finally:
+        health_task.cancel()
+        try:
+            await health_task
+        except (asyncio.CancelledError, Exception):
+            pass
         await connector.stop()
         if cursor_pool is not None:
             await cursor_pool.close()

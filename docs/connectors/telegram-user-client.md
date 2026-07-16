@@ -100,6 +100,7 @@ Store all credentials in a secret manager. Never commit to version control.
 | `CONNECTOR_PROVIDER` | Yes (default: `telegram`) | Provider name |
 | `CONNECTOR_CHANNEL` | Yes (default: `telegram_user_client`) | Channel name |
 | `CONNECTOR_MAX_INFLIGHT` | No (default: 8) | Max concurrent ingest submissions |
+| `CONNECTOR_HEALTH_PORT` | No (default: 40080) | Loopback-only health and metrics server port |
 | `CONNECTOR_BACKFILL_WINDOW_H` | No | Bounded startup replay window (hours) |
 | `CONNECTOR_BUTLER_DB_NAME` | No | Local butler DB for per-butler overrides |
 | `BUTLER_SHARED_DB_NAME` | No (default: `butlers`) | Shared credential DB |
@@ -168,6 +169,7 @@ services:
       CONNECTOR_PROVIDER: telegram
       CONNECTOR_CHANNEL: telegram_user_client
       CONNECTOR_MAX_INFLIGHT: "8"
+      CONNECTOR_HEALTH_PORT: "40080"
       CONNECTOR_BACKFILL_WINDOW_H: "24"
     depends_on:
       - switchboard
@@ -201,6 +203,14 @@ Because this connector ingests personal account traffic, strict safeguards apply
 
 ## Monitoring
 
+### Local health endpoint
+
+The connector serves `GET /health` and `GET /metrics` only on
+`127.0.0.1:${CONNECTOR_HEALTH_PORT:-40080}`. The health response reports the
+connector state and identity; when discretion is configured it includes the
+dispatcher’s raw `discretion_auth` snapshot so missing or failed runtime auth
+is directly visible without exposing any credential material.
+
 Key metrics to monitor:
 
 | Metric | Description |
@@ -230,7 +240,12 @@ psql -h localhost -U butlers -d butlers -c \
 # Expected: endpoint_identity is 'telegram:user:@<username>' (user, not bot);
 #           state=online; last_heartbeat_at < 2 minutes ago
 
-# 2. Per-chat buffers flush periodically (messages grouped by chat)
+# 2. Local health endpoint exposes the raw discretion-auth snapshot
+curl -s http://127.0.0.1:40080/health | python3 -m json.tool
+# Expected: status, connector_type, endpoint_identity, and discretion_auth
+#           (when the discretion dispatcher is configured)
+
+# 3. Per-chat buffers flush periodically (messages grouped by chat)
 psql -h localhost -U butlers -d butlers -c \
   "SELECT source_thread_identity AS chat_id, COUNT(*) AS messages, MAX(received_at) AS last_seen
    FROM switchboard.ingestion_events
@@ -241,19 +256,19 @@ psql -h localhost -U butlers -d butlers -c \
 # Expected: messages grouped by chat_id; multiple messages per chat in single submissions
 #           (reflecting the per-chat buffer flush model rather than one-by-one ingestion)
 
-# 3. Discretion filter is active (some messages are intentionally NOT submitted)
+# 4. Discretion filter is active (some messages are intentionally NOT submitted)
 curl -s http://localhost:9090/api/v1/query?query=connector_user_client_discretion_ignored_total \
   | python3 -m json.tool | grep value
 # Expected: non-zero counter for messages that failed the FORWARD/IGNORE filter
 
-# 4. Session continuity: checkpoint survives connector restart
+# 5. Session continuity: checkpoint survives connector restart
 # Stop the connector, restart it, then verify it resumes from where it left off
 psql -h localhost -U butlers -d butlers -c \
   "SELECT connector_type, endpoint_identity, cursor_value, updated_at
    FROM switchboard.connector_registry WHERE connector_type='telegram_user_client';"
 # Expected: cursor_value is preserved across restarts; no messages skipped or double-processed
 
-# 5. Session expired detection is logged clearly
+# 6. Session expired detection is logged clearly
 grep -i "session.*expired\|FloodWait\|AuthKey" /var/log/butlers/telegram-user-client.log 2>/dev/null | tail -5
 # Expected: no session-expired errors in steady state; if present, remediation instructions are clear
 ```

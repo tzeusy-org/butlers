@@ -152,7 +152,7 @@ Switchboard. They are transport-only adapters: they normalize events to the
 |---|---|---|---|---|
 | **Gmail** | `connectors/gmail.py` | Gmail API (watch/history delta + optional Pub/Sub push) | 40082 | Stable |
 | **Telegram Bot** | `connectors/telegram_bot.py` | Telegram Bot API (polling or webhook) | 40081 | Stable |
-| **Telegram Userbot** | `connectors/telegram_user_client.py` | Telegram user account (Telethon) | -- | Evolving |
+| **Telegram Userbot** | `connectors/telegram_user_client.py` | Telegram user account (Telethon) | 40080 | Evolving |
 | **Discord** | `connectors/discord_user.py` | Discord Gateway WebSocket | 40084 | Draft |
 | **Live Listener** | `connectors/live_listener/` | Microphone audio -> VAD -> transcription -> ingest | 40091 | Evolving |
 | **Spotify** | `connectors/spotify.py` | Spotify Web API playback state polling | 40083 | Stable |
