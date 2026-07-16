@@ -80,13 +80,21 @@ class CatalogMeasurementRequest:
                 raise ValueError(
                     f"each query vector must have {CATALOG_EMBEDDING_DIMENSIONS} dimensions"
                 )
+            if not all(
+                isinstance(value, (int, float)) and not isinstance(value, bool) for value in vector
+            ):
+                raise ValueError("each query vector value must be numeric")
             if not all(math.isfinite(float(value)) for value in vector):
                 raise ValueError("each query vector value must be finite")
 
 
 @dataclass(frozen=True)
 class QueryObservation:
-    """Aggregate result of one approximate-versus-exact comparison."""
+    """Aggregate result of one approximate-versus-exact comparison.
+
+    Equal-distance rows at the exact limit are treated as rank-equivalent, so
+    their arbitrary database order cannot look like a recall loss.
+    """
 
     filtered_candidate_count: int
     approximate_result_count: int
@@ -194,6 +202,35 @@ def _plan_uses_ivfflat(plan: Any) -> bool:
     return False
 
 
+def _tie_aware_overlap_count(
+    approximate_rows: Sequence[Mapping[str, Any]],
+    exact_rows: Sequence[Mapping[str, Any]],
+) -> int:
+    """Count approximate rows that match the exact rank, including boundary ties.
+
+    The live query orders only by vector distance.  PostgreSQL may therefore
+    choose different IDs among equal-distance rows at the final ``LIMIT`` slot
+    without either result being less correct.  Strictly closer rows must still
+    match exactly; only the exact boundary's tie slots are interchangeable.
+    """
+
+    if not exact_rows:
+        return 0
+    boundary_distance = exact_rows[-1]["distance"]
+    if boundary_distance is None:
+        strict_exact_ids = {str(row["id"]) for row in exact_rows if row["distance"] is not None}
+    else:
+        strict_exact_ids = {
+            str(row["id"])
+            for row in exact_rows
+            if row["distance"] is not None and row["distance"] < boundary_distance
+        }
+    strict_overlap_count = len({str(row["id"]) for row in approximate_rows} & strict_exact_ids)
+    boundary_slots = len(exact_rows) - len(strict_exact_ids)
+    boundary_matches = sum(row["distance"] == boundary_distance for row in approximate_rows)
+    return strict_overlap_count + min(boundary_slots, boundary_matches)
+
+
 def _nearest_rank_p95(values: Sequence[int]) -> int | None:
     if not values:
         return None
@@ -252,7 +289,7 @@ async def _measure_one(
         embedding=vector,
     )
     approximate_sql = f"""
-        SELECT id
+        SELECT id, embedding <=> $1 AS distance
         FROM public.memory_catalog
         {_where(query_conditions)}
         ORDER BY embedding <=> $1
@@ -293,7 +330,7 @@ async def _measure_one(
             FROM public.memory_catalog
             {_where(query_conditions)}
         )
-        SELECT id
+        SELECT id, distance
         FROM candidates
         ORDER BY distance
         LIMIT ${len(query_params) + 1}
@@ -305,9 +342,7 @@ async def _measure_one(
         timeout=request.query_timeout_seconds,
     )
     exact_latency_ms = (time.perf_counter() - exact_started) * 1000
-    approximate_ids = {str(row["id"]) for row in approximate_rows}
-    exact_ids = {str(row["id"]) for row in exact_rows}
-    overlap_count = len(approximate_ids & exact_ids)
+    overlap_count = _tie_aware_overlap_count(approximate_rows, exact_rows)
     exact_result_count = len(exact_rows)
     return QueryObservation(
         filtered_candidate_count=candidate_count,
@@ -353,7 +388,7 @@ async def measure_catalog_ivfflat(
 
     observations: list[QueryObservation] = []
     async with pool.acquire() as connection:
-        async with connection.transaction(readonly=True):
+        async with connection.transaction(isolation="repeatable_read", readonly=True):
             candidate_count = await _filtered_candidate_count(connection, request)
             for vector in request.query_vectors:
                 observations.append(
@@ -374,6 +409,7 @@ async def measure_catalog_ivfflat(
         evidence=evidence,
         safety={
             "read_only_transaction": True,
+            "transaction_isolation": "repeatable_read",
             "max_query_vectors": MAX_QUERY_VECTORS,
             "query_timeout_seconds": request.query_timeout_seconds,
             "exact_candidate_cap": request.exact_candidate_cap,

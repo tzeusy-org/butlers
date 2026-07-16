@@ -41,16 +41,32 @@ class _Transaction:
 
 class _Connection:
     def __init__(
-        self, *, candidate_count: int, approximate_ids: list[str], exact_ids: list[str]
+        self,
+        *,
+        candidate_count: int,
+        approximate_ids: list[str],
+        exact_ids: list[str],
+        approximate_distances: list[float | None] | None = None,
+        exact_distances: list[float | None] | None = None,
     ) -> None:
         self.candidate_count = candidate_count
         self.approximate_ids = approximate_ids
         self.exact_ids = exact_ids
+        default_distances = {
+            item: float(index)
+            for index, item in enumerate(dict.fromkeys([*exact_ids, *approximate_ids]))
+        }
+        self.approximate_distances = approximate_distances or [
+            default_distances[item] for item in approximate_ids
+        ]
+        self.exact_distances = exact_distances or [default_distances[item] for item in exact_ids]
         self.calls: list[tuple[str, tuple[object, ...], float | None]] = []
         self.readonly: bool | None = None
+        self.transaction_kwargs: list[dict[str, object]] = []
 
-    def transaction(self, *, readonly: bool = False) -> _Transaction:
+    def transaction(self, *, isolation: str | None = None, readonly: bool = False) -> _Transaction:
         self.readonly = readonly
+        self.transaction_kwargs.append({"isolation": isolation, "readonly": readonly})
         return _Transaction()
 
     async def fetchval(self, sql: str, *args: object, timeout: float | None = None) -> Any:
@@ -72,12 +88,20 @@ class _Connection:
 
     async def fetch(
         self, sql: str, *args: object, timeout: float | None = None
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, object]]:
         self.calls.append((sql, args, timeout))
         if "WITH candidates AS MATERIALIZED" in sql:
-            return [{"id": item} for item in self.exact_ids]
+            return [
+                {"id": item, "distance": distance}
+                for item, distance in zip(self.exact_ids, self.exact_distances, strict=True)
+            ]
         if "ORDER BY embedding <=> $1" in sql:
-            return [{"id": item} for item in self.approximate_ids]
+            return [
+                {"id": item, "distance": distance}
+                for item, distance in zip(
+                    self.approximate_ids, self.approximate_distances, strict=True
+                )
+            ]
         raise AssertionError(f"unexpected fetch SQL: {sql}")
 
 
@@ -157,6 +181,7 @@ async def test_measurement_reports_overlap_without_exposing_result_ids() -> None
 
     observation = report.observations[0]
     assert connection.readonly is True
+    assert connection.transaction_kwargs == [{"isolation": "repeatable_read", "readonly": True}]
     assert observation.filtered_candidate_count == 8
     assert observation.approximate_result_count == 2
     assert observation.exact_result_count == 3
@@ -178,6 +203,33 @@ async def test_measurement_reports_overlap_without_exposing_result_ids() -> None
     assert "SET " not in sql
     assert "ANALYZE " not in sql
     assert all(call[2] is not None and call[2] <= 10 for call in connection.calls)
+
+
+@pytest.mark.asyncio
+async def test_measurement_treats_boundary_distance_ties_as_equivalent() -> None:
+    """Different equally-ranked IDs must not look like IVFFlat recall loss."""
+    connection = _Connection(
+        candidate_count=3,
+        approximate_ids=["nearest", "equally-near-alternative"],
+        approximate_distances=[0.1, 0.2],
+        exact_ids=["nearest", "equally-near-reference"],
+        exact_distances=[0.1, 0.2],
+    )
+    request = CatalogMeasurementRequest(
+        tenant_id="shared",
+        memory_type="fact",
+        allowed_sensitivities=("normal",),
+        limit=2,
+        query_vectors=(_vector(),),
+    )
+
+    report = await measure_catalog_ivfflat(_Pool(connection), request)
+
+    observation = report.observations[0]
+    assert observation.ivfflat_plan_used is True
+    assert observation.overlap_count == 2
+    assert observation.recall_at_limit == 1.0
+    assert observation.candidate_shortfall == 0
 
 
 @pytest.mark.asyncio
@@ -285,4 +337,22 @@ def test_request_rejects_oversized_or_nonfinite_vectors_before_database_access()
             allowed_sensitivities=("normal",),
             limit=1,
             query_vectors=([float("nan")] + [0.0] * 383,),
+        )
+
+
+@pytest.mark.parametrize("invalid_value", ["1.0", True])
+def test_request_rejects_non_numeric_vector_values_before_database_access(
+    invalid_value: object,
+) -> None:
+    """JSON strings and booleans must not reach the pgvector bind parameter."""
+    vector = _vector()
+    vector[0] = invalid_value  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="numeric"):
+        CatalogMeasurementRequest(
+            tenant_id="shared",
+            memory_type=None,
+            allowed_sensitivities=("normal",),
+            limit=1,
+            query_vectors=(vector,),
         )
