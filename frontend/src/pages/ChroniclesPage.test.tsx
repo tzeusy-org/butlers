@@ -354,6 +354,19 @@ describe("ChroniclesPage editorial archetype", () => {
     expect(html).toContain("opacity-60");
   });
 
+  it("does not double-dim the Voice paragraph inside the stale-content wrapper", () => {
+    _briefing = buildBriefing();
+    _isFetching = true;
+    const container = document.createElement("div");
+    container.innerHTML = renderPage();
+    const voiceParagraph = Array.from(container.querySelectorAll("p")).find((paragraph) =>
+      paragraph.textContent?.includes("The day was led by butler_ops"),
+    );
+
+    expect(voiceParagraph?.parentElement?.getAttribute("aria-busy")).toBe("false");
+    expect(voiceParagraph?.parentElement?.className).not.toContain("opacity-60");
+  });
+
   it("undims once the new day's data settles", () => {
     _briefing = buildBriefing();
     _isFetching = false;
