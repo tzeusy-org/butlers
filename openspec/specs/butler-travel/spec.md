@@ -6,7 +6,7 @@ The Travel butler (port 41106) is a travel logistics and itinerary intelligence 
 ## Requirements
 
 ### Requirement: Travel Butler Identity and Runtime
-The travel butler manages trip lifecycle and booking data with structured container models.
+The travel butler SHALL manage trip lifecycle and booking data with structured container models.
 
 #### Scenario: Identity and port
 - **WHEN** the travel butler is running
@@ -23,14 +23,14 @@ The travel butler manages trip lifecycle and booking data with structured contai
 - **THEN** it loads modules: `email`, `calendar` (Google provider, suggest conflicts policy), and `memory`
 
 ### Requirement: Travel Butler Tool Surface
-The travel butler provides booking, itinerary, and document management tools.
+The travel butler SHALL provide booking, itinerary, and document management tools.
 
 #### Scenario: Tool inventory
 - **WHEN** a runtime instance is spawned for the travel butler
 - **THEN** it has access to: `record_booking`, `update_itinerary`, `list_trips`, `trip_summary`, `upcoming_travel`, `add_document`, and calendar tools
 
 ### Requirement: Trip Container Model
-All travel data is organized under trip containers with strict status transitions.
+All travel data SHALL be organized under trip containers with strict status transitions.
 
 #### Scenario: Trip lifecycle
 - **WHEN** booking data is recorded
@@ -39,7 +39,7 @@ All travel data is organized under trip containers with strict status transition
 - **AND** status transitions follow `planned -> active -> completed` (direct cancellation allowed from `planned` or `active`, but never backward)
 
 ### Requirement: Travel Butler Schedules
-The travel butler runs upcoming travel checks, document expiry scans, and insight scans.
+The travel butler SHALL run upcoming travel checks, document expiry scans, and insight scans.
 
 #### Scenario: Scheduled task inventory
 - **WHEN** the travel butler daemon is running
@@ -47,14 +47,14 @@ The travel butler runs upcoming travel checks, document expiry scans, and insigh
 - **AND** it also runs the cross-butler contribution jobs `daily_briefing_contribution` (55 6 * * *), `calendar_overlay_contribution` (50 6 * * *), and `calendar_prep_contribution` (56 6 * * *)
 
 ### Requirement: Travel Butler Skills
-The travel butler has pre-trip checklist and trip planner skills.
+The travel butler SHALL have pre-trip checklist and trip planner skills.
 
 #### Scenario: Skill inventory
 - **WHEN** the travel butler operates
 - **THEN** it has access to `pre-trip-checklist` (comprehensive pre-departure preparation covering documents, confirmations, logistics, packing, 24h final check) and `trip-planner` (new trip planning workflow covering destination, flights, accommodation, transport, documents, gap detection), plus shared skills `butler-memory` and `butler-notifications`
 
 ### Requirement: Travel Memory Taxonomy
-The travel butler uses a travel-centric memory taxonomy with loyalty and preference predicates.
+The travel butler SHALL use a travel-centric memory taxonomy with loyalty and preference predicates.
 
 #### Scenario: Memory classification
 - **WHEN** the travel butler extracts facts
