@@ -29,7 +29,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from butlers.config import ApprovalConfig, ApprovalRiskTier
 from butlers.identity import (
@@ -46,6 +46,9 @@ from butlers.modules.approvals.rules import (
     parse_constraints,
 )
 from butlers.modules.base import ToolMeta
+
+if TYPE_CHECKING:
+    from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +323,7 @@ async def apply_approval_gates(
     pool: Any,
     butler_name: str | None = None,
     tool_metadata: dict[str, ToolMeta] | None = None,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Wrap gated tools on the FastMCP server with approval interception.
 
@@ -344,6 +348,9 @@ async def apply_approval_gates(
         module's ``tool_metadata()``.  Lets the gate consult module-declared
         safety-critical arguments so a standing rule may only auto-approve when
         it pins those arguments.  Pass ``None`` to rely on heuristics alone.
+    decision_memory_writer:
+        Optional owning-memory writer passed to auto-approved executions after
+        their terminal execution outcome has been committed.
 
     Returns
     -------
@@ -387,6 +394,7 @@ async def apply_approval_gates(
             rule_precedence=approval_config.rule_precedence,
             butler_name=butler_name,
             tool_meta=metadata.get(tool_name),
+            decision_memory_writer=decision_memory_writer,
         )
 
         # Replace the tool's handler on the MCP server
@@ -404,6 +412,7 @@ def _make_gate_wrapper(
     rule_precedence: tuple[str, ...],
     butler_name: str | None = None,
     tool_meta: ToolMeta | None = None,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> Any:
     """Create an async wrapper function that intercepts gated tool calls.
 
@@ -618,6 +627,7 @@ def _make_gate_wrapper(
                 tool_args=tool_args,
                 tool_fn=original_fn,
                 approval_rule_id=None,
+                decision_memory_writer=decision_memory_writer,
             )
 
             logger.info(
@@ -708,6 +718,7 @@ def _make_gate_wrapper(
                 tool_args=tool_args,
                 tool_fn=original_fn,
                 approval_rule_id=rule_id,
+                decision_memory_writer=decision_memory_writer,
             )
 
             logger.info(

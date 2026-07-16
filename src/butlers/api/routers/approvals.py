@@ -56,6 +56,7 @@ from butlers.api.models.approval import (
 )
 from butlers.api.routers import audit as audit_router
 from butlers.modules.approvals import operations as approvals_ops
+from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
@@ -212,6 +213,40 @@ async def _find_action_pool(
         except Exception:
             continue
     return None
+
+
+def _decision_memory_writer_for(
+    db_mgr: DatabaseManager,
+    butler_name: str,
+    pool: asyncpg.Pool,
+) -> DecisionMemoryWriter | None:
+    """Build direct same-store writeback when the owning butler has memory.
+
+    The dashboard process cannot call a daemon's MCP memory tool: these facts
+    use the owning pool directly and the deterministic embedding helper.  When
+    module metadata says memory is absent, return None silently; the decision
+    route remains fully functional without a memory module.
+    """
+    module_lookup = getattr(db_mgr, "butlers_with_module", None)
+    memory_butlers = module_lookup("memory") if callable(module_lookup) else None
+    if memory_butlers is not None and butler_name not in memory_butlers:
+        return None
+
+    def _embedding_engine_provider() -> Any:
+        from butlers.modules.memory.tools import get_embedding_engine
+
+        return get_embedding_engine()
+
+    return DecisionMemoryWriter(
+        butler_name=butler_name,
+        memory_pool_provider=lambda: pool,
+        resolution_pool_provider=lambda: pool,
+        embedding_engine_provider=_embedding_engine_provider,
+        # The dashboard process has no live daemon ToolMeta registry. The
+        # fingerprint helper safely falls back to all supplied args in that
+        # explicitly conservative case.
+        tool_meta_provider=lambda _tool_name: None,
+    )
 
 
 def _pending_action_to_api(
@@ -688,6 +723,7 @@ async def approve_action(
     if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
     action_butler, target_pool = found
+    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
 
     # Read the action before approval so we have tool_name/args for dispatch
     async with target_pool.acquire() as conn:
@@ -700,6 +736,7 @@ async def approve_action(
             conn,
             action_id=action_id,
             create_rule=request.create_rule,
+            decision_memory_writer=decision_memory_writer,
         )
 
     if "error" in result:
@@ -843,13 +880,18 @@ async def _dispatch_approved_action(
                 f"notify re-entered the approval gate (phantom={phantom}); not delivered"
             )
 
+        mark_kwargs: dict[str, Any] = {
+            "action_id": action_id,
+            "execution_result": exec_result,
+            "success": exec_result["success"],
+        }
+        if action_butler is not None:
+            decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, pool)
+            if decision_memory_writer is not None:
+                mark_kwargs["decision_memory_writer"] = decision_memory_writer
+
         async with pool.acquire() as conn:
-            return await approvals_ops.mark_executed(
-                conn,
-                action_id=action_id,
-                execution_result=exec_result,
-                success=exec_result["success"],
-            )
+            return await approvals_ops.mark_executed(conn, **mark_kwargs)
 
     # All other gated tools: run the original (un-gated) tool on the owning
     # butler via its dispatch_approved_action tool. The butler marks the action
@@ -980,12 +1022,14 @@ async def reject_action(
     if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
     action_butler, target_pool = found
+    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
 
     async with target_pool.acquire() as conn:
         result = await approvals_ops.reject_action(
             conn,
             action_id=action_id,
             reason=request.reason,
+            decision_memory_writer=decision_memory_writer,
         )
 
     if "error" in result:
@@ -1056,9 +1100,11 @@ async def create_rule(
     db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalRule]:
     """Create a new standing approval rule."""
-    target_pool = await _find_approvals_pool(db_mgr, "approval_rules")
-    if target_pool is None:
+    named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
+    if not named_pools:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+    action_butler, target_pool = named_pools[0]
+    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
 
     async with target_pool.acquire() as conn:
         result = await approvals_ops.create_approval_rule(
@@ -1068,6 +1114,7 @@ async def create_rule(
             description=request.description,
             expires_at=request.expires_at,
             max_uses=request.max_uses,
+            decision_memory_writer=decision_memory_writer,
         )
 
     if "error" in result:
@@ -1088,15 +1135,18 @@ async def create_rule_from_action(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {request.action_id}")
 
-    target_pool = await _find_action_pool(db_mgr, parsed_id)
-    if target_pool is None:
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+    action_butler, target_pool = found
+    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
 
     async with target_pool.acquire() as conn:
         result = await approvals_ops.create_rule_from_action(
             conn,
             action_id=request.action_id,
             constraint_overrides=request.constraint_overrides,
+            decision_memory_writer=decision_memory_writer,
         )
 
     if "error" in result:
@@ -1241,13 +1291,14 @@ async def revoke_rule(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
 
-    target_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
-    if not target_pools:
+    named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
+    if not named_pools:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
     # Find the pool containing this rule
     target_pool = None
-    for pool in target_pools:
+    action_butler = None
+    for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -1256,17 +1307,21 @@ async def revoke_rule(
                 )
                 if exists:
                     target_pool = pool
+                    action_butler = butler_name
                     break
         except Exception:
             continue
 
     if target_pool is None:
         raise HTTPException(status_code=404, detail=f"Rule not found: {rule_id}")
+    assert action_butler is not None
+    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
 
     async with target_pool.acquire() as conn:
         result = await approvals_ops.revoke_approval_rule(
             conn,
             rule_id=rule_id,
+            decision_memory_writer=decision_memory_writer,
         )
 
     if "error" in result:
@@ -1799,14 +1854,15 @@ async def confirm_suggestion(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}")
 
-    suggestion_pools = await _find_all_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
-    if not suggestion_pools:
+    named_pools = await _find_named_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
+    if not named_pools:
         raise HTTPException(status_code=503, detail="Autonomy suggestions subsystem unavailable")
 
     # Find the pool containing this suggestion
     target_pool = None
+    action_butler = None
     row = None
-    for pool in suggestion_pools:
+    for butler_name, pool in named_pools:
         try:
             async with pool.acquire() as conn:
                 found = await conn.fetchrow(
@@ -1815,6 +1871,7 @@ async def confirm_suggestion(
                 )
                 if found is not None:
                     target_pool = pool
+                    action_butler = butler_name
                     row = dict(found)
                     break
         except Exception:
@@ -1830,6 +1887,8 @@ async def confirm_suggestion(
         )
 
     assert target_pool is not None
+    assert action_butler is not None
+    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
 
     # representative_args arrives as a dict via asyncpg's jsonb codec — every
     # writer now binds a native dict (bu-c8b8e/bu-cymc4), and a live-data
@@ -1852,6 +1911,7 @@ async def confirm_suggestion(
                     conn,
                     rule_id=str(rule_id),
                     actor_id=actor,
+                    decision_memory_writer=decision_memory_writer,
                 )
                 if "error" in revoke_result:
                     raise HTTPException(
@@ -1889,6 +1949,7 @@ async def confirm_suggestion(
                 arg_constraints=arg_constraints,
                 description=scope_desc,
                 actor_id=actor,
+                decision_memory_writer=decision_memory_writer,
             )
             if "error" in create_result:
                 raise HTTPException(
@@ -2154,6 +2215,7 @@ async def deny_approval(
     if found is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
+    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
 
     # AuditTableNotAvailableError is intentionally NOT caught here — it
     # propagates to the app-level handler, which returns 503
@@ -2176,6 +2238,13 @@ async def deny_approval(
         if "cannot transition" in error_msg.lower():
             raise HTTPException(status_code=409, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
+
+    # The audit transaction above is the state boundary. Write memory only
+    # after it commits, otherwise an audit failure could leave a false tally.
+    if decision_memory_writer is not None:
+        await decision_memory_writer.record_terminal_decision(
+            PendingAction.from_dict(result), "rejected"
+        )
 
     result.setdefault("butler", action_butler)
     action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})

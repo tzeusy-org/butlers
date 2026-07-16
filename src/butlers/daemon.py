@@ -1407,8 +1407,21 @@ class ButlerDaemon:
 
         pool = self.db.pool
 
+        decision_memory_writer = None
+        if approvals_module is not None:
+            get_decision_memory_writer = getattr(
+                approvals_module, "get_decision_memory_writer", None
+            )
+            if callable(get_decision_memory_writer):
+                decision_memory_writer = get_decision_memory_writer()
+
         originals = await apply_approval_gates(
-            self.mcp, approval_config, pool, self.config.name, tool_metadata=tool_metadata
+            self.mcp,
+            approval_config,
+            pool,
+            self.config.name,
+            tool_metadata=tool_metadata,
+            decision_memory_writer=decision_memory_writer,
         )
 
         if approvals_module is not None and hasattr(approvals_module, "set_approval_policy"):

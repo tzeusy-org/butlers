@@ -26,9 +26,9 @@
 
 ## 4. Decision memory writeback
 
-- [ ] 4.1 Deterministic fact templates: `decision:approval_tally` upsert per (fingerprint, entity) with counts/last_action_id/version metadata; `decision:standing_rule` on rule mint/revoke
-- [ ] 4.2 Hook writeback into terminal transitions (reject; approve+execution outcome) in executor/decision routes; entity-link via existing channel-identity resolution; fail-open on memory-module absence
-- [ ] 4.3 Verify tally facts appear in spawn-time memory context recall for the owning butler
+- [x] 4.1 Deterministic fact templates: `decision:approval_tally` upsert per (fingerprint, entity) with counts/last_action_id/version metadata; `decision:standing_rule` on rule mint/revoke
+- [x] 4.2 Hook writeback into terminal transitions (reject; approve+execution outcome) in executor/decision routes; entity-link via existing channel-identity resolution; fail-open on memory-module absence
+- [x] 4.3 Verify tally facts appear in spawn-time memory context recall for the owning butler
 
 ## 5. Fingerprint v2
 
