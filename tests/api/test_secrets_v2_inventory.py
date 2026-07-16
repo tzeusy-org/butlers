@@ -46,6 +46,7 @@ from butlers.api.degraded import DegradedSources
 from butlers.api.routers.secrets_v2 import (
     _SYSTEM_KEY_USED_BY,
     DEFAULT_EXPIRING_LEAD_TIME,
+    DEFAULT_STALENESS_S,
     _dedupe_most_severe,
     _derive_state,
     _failing_count,
@@ -68,6 +69,7 @@ from butlers.api.routers.secrets_v2 import (
     _row_to_test_result,
     _unverified_count,
     _used_by_for_key,
+    resolve_staleness_window_s,
 )
 
 pytestmark = pytest.mark.unit
@@ -326,6 +328,14 @@ def test_derive_state_expiring_lead_time_is_configurable():
 
 def test_default_expiring_lead_time_is_seven_days():
     assert DEFAULT_EXPIRING_LEAD_TIME == timedelta(days=7)
+
+
+@pytest.mark.parametrize("configured_value", ["NaN", "inf", "-inf"])
+def test_resolve_staleness_window_rejects_non_finite_values(monkeypatch, configured_value):
+    """Malformed freshness config falls back before it can break age comparisons."""
+    monkeypatch.setenv("SECRETS_STALENESS_WINDOW_S", configured_value)
+
+    assert resolve_staleness_window_s() == DEFAULT_STALENESS_S
 
 
 def test_reclassify_stale_ok_state_preserves_more_severe_states():

@@ -188,6 +188,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import secrets as _secrets_mod
 import time
@@ -547,7 +548,7 @@ def resolve_staleness_window_s(*, warn_invalid: bool = False) -> float:
     raw = os.environ.get(SECRETS_STALENESS_WINDOW_ENV, str(DEFAULT_STALENESS_S))
     try:
         value = float(raw)
-        if value <= 0:
+        if not math.isfinite(value) or value <= 0:
             raise ValueError("value must be a positive number")
     except ValueError:
         if warn_invalid:
