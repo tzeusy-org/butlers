@@ -21,7 +21,7 @@ With your Finance Butler, you can:
 - **Ask about your spending**: "What did I spend this month?" "How much did I pay on subscriptions in January?" The answers come from your actual email history, not your memory.
 - **Know what is coming up**: See bills due in the next two weeks, ranked by urgency, so nothing catches you off guard.
 - **Track your subscriptions**: Know every recurring charge, when it renews, how much it costs, and whether it is still active. No more "wait, am I still paying for that?"
-- **Get a monthly overview**: On the first of each month, receive a quiet summary of where your money went: top categories, biggest changes from last month, obligations still outstanding.
+- **Get a monthly overview**: At the start of each month, we prepare a quiet summary of where your money went: top categories, biggest changes from last month, obligations still outstanding. We surface it when your chosen insight settings make room for it.
 - **Find any transaction**: Search across your recorded spending by merchant, category, date range, or amount. Your financial history is organized and searchable, not lost in a thousand email threads.
 
 ## Why It Matters
