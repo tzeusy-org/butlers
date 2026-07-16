@@ -20,6 +20,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.routers.whatsapp import _get_bridge_socket_path, _get_db_manager
+from butlers.connectors.bridge_manager import DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
 from butlers.connectors.whatsapp_user_client import (
     WhatsAppUserClientConnector,
     WhatsAppUserClientConnectorConfig,
@@ -668,6 +669,77 @@ class TestDashboardPairAPI:
         assert args[2] == "whatsapp:+12025551234"
         assert "pair_reset_requested_at" in args[3]
 
+    @pytest.mark.parametrize(
+        ("connected", "logged_in", "uptime_s", "expected_status"),
+        [
+            pytest.param(
+                False,
+                True,
+                DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
+                503,
+                id="connected-false-at-threshold",
+            ),
+            pytest.param(
+                True,
+                False,
+                DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
+                503,
+                id="logged-in-false-at-threshold",
+            ),
+            pytest.param(
+                False,
+                True,
+                DEFAULT_INVALIDATED_SESSION_THRESHOLD_S - 1,
+                502,
+                id="brief-outage",
+            ),
+        ],
+    )
+    async def test_pair_start_false_green_queues_reset_at_or_after_threshold(
+        self, whatsapp_app, client, connected, logged_in, uptime_s, expected_status
+    ):
+        """A false-green bridge state needs the same thresholded reset path.
+
+        ``state=connected`` is not healthy when either live-link flag is false;
+        it must queue recovery only at or after the invalidated-session threshold.
+        """
+        fake_pool = AsyncMock()
+        fake_pool.fetchrow = AsyncMock(return_value={"endpoint_identity": "whatsapp:+12025551234"})
+        mock_db = MagicMock()
+        mock_db.pool.return_value = fake_pool
+        whatsapp_app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        with (
+            patch(
+                "butlers.api.routers.whatsapp._bridge_post",
+                new=AsyncMock(return_value={"qr_data_uri": ""}),
+            ),
+            patch(
+                "butlers.api.routers.whatsapp._bridge_get",
+                new=AsyncMock(
+                    return_value={
+                        "state": "connected",
+                        "connected": connected,
+                        "logged_in": logged_in,
+                        "uptime_s": uptime_s,
+                    }
+                ),
+            ),
+            patch(
+                "butlers.connectors.cursor_store.save_connector_settings",
+                new=AsyncMock(return_value={}),
+            ) as mock_save,
+        ):
+            response = await client.post("/api/connectors/whatsapp/pair/start")
+
+        assert response.status_code == expected_status
+        if expected_status == 503:
+            assert "invalidated" in response.json()["detail"].lower()
+            mock_save.assert_awaited_once()
+        else:
+            assert "empty qr code" in response.json()["detail"].lower()
+            mock_save.assert_not_awaited()
+
     async def test_status_surfaces_pair_required_for_long_disconnected_bridge(self, client):
         """/status relabels a long-uptime, link-dead 'disconnected' bridge as
         pair_required (bu-5ocmh) instead of showing the same bare
@@ -684,6 +756,36 @@ class TestDashboardPairAPI:
             ),
         ):
             response = await client.get("/api/connectors/whatsapp/status")
+        assert response.status_code == 200
+        assert response.json()["state"] == "pair_required"
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            pytest.param("/api/connectors/whatsapp/status", id="status"),
+            pytest.param("/api/connectors/whatsapp/health", id="health"),
+        ],
+    )
+    async def test_false_green_invalidated_session_surfaces_pair_required(self, client, endpoint):
+        """Dashboard APIs expose a persistent false-green link as recoverable.
+
+        The bridge can leave ``state=connected`` stale after the actual link
+        dies, so status and health must show the same pair-required recovery
+        state that ``/pair/start`` uses to request connector cleanup.
+        """
+        with patch(
+            "butlers.api.routers.whatsapp._bridge_get",
+            new=AsyncMock(
+                return_value={
+                    "state": "connected",
+                    "connected": False,
+                    "logged_in": False,
+                    "uptime_s": 9999,
+                }
+            ),
+        ):
+            response = await client.get(endpoint)
+
         assert response.status_code == 200
         assert response.json()["state"] == "pair_required"
 

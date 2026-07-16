@@ -209,20 +209,21 @@ def _looks_like_invalidated_session(data: dict) -> bool:
     The bridge itself never reports this distinctly — it only ever reports
     ``pair_required`` for a brand-new, *never-paired* device (set the moment
     it boots with no stored device); a device it can't reconnect with just
-    cycles ``disconnected``/``connecting`` forever. This process (a separate
-    container from the connector, reachable only via this Unix socket — see
-    module docstring) has no memory of *when* that started, so it uses
-    ``uptime_s`` as a proxy: a bridge holding a device reconnects within
-    ~15s under normal conditions (see whatsapp-bridge spec), so one that has
-    been running far longer than that while never reaching a live
-    connected+logged-in link is almost certainly stuck on a dead device
-    rather than still legitimately retrying.
+    cycles ``disconnected``/``connecting`` forever, or can report a
+    false-green ``connected`` state while its live-link flags are false. This
+    process (a separate container from the connector, reachable only via this
+    Unix socket — see module docstring) has no memory of *when* that started,
+    so it uses ``uptime_s`` as a proxy: a bridge holding a device reconnects
+    within ~15s under normal conditions (see whatsapp-bridge spec), so one
+    that has been running far longer than that while never reaching a live
+    connected+logged-in link is almost certainly stuck on a dead device rather
+    than still legitimately retrying.
 
     Mirrors ``bridge_manager.BridgeConfig.invalidated_session_threshold_s``
     on the connector side (imported as one constant so the two stay in sync).
     """
     raw_state = data.get("state")
-    if raw_state not in ("disconnected", "connecting"):
+    if raw_state not in ("connected", "disconnected", "connecting"):
         return False
     connected = data.get("connected")
     logged_in = data.get("logged_in")
@@ -297,7 +298,7 @@ async def get_whatsapp_status(
 
     raw_state = data.get("state")
     state = _bridge_state_to_enum(raw_state)
-    if state == WhatsAppState.disconnected and _looks_like_invalidated_session(data):
+    if _looks_like_invalidated_session(data):
         # A device the bridge has been unable to reconnect for a long time
         # is functionally identical to needing a re-pair (bu-5ocmh) — showing
         # a bare "disconnected" forever hides that from the owner.
@@ -500,7 +501,7 @@ async def get_whatsapp_health(
 
     raw_state = data.get("state")
     state = _bridge_state_to_enum(raw_state)
-    if state == WhatsAppState.disconnected and _looks_like_invalidated_session(data):
+    if _looks_like_invalidated_session(data):
         state = WhatsAppState.pair_required
 
     uptime: float | None = data.get("uptime_s")
