@@ -54,7 +54,6 @@ import asyncio
 import base64
 import binascii
 import hmac
-import json
 import logging
 import math
 import os
@@ -127,72 +126,6 @@ _DB_KEY = _CRED_WEBHOOK_TOKEN
 _ENV_VAR = "OWNTRACKS_WEBHOOK_TOKEN"
 
 # ---------------------------------------------------------------------------
-# Checkpoint dataclass (task 4.1)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class OwnTracksCheckpoint:
-    """Checkpoint state for the OwnTracks connector.
-
-    Attributes:
-        last_tst: Unix timestamp (integer seconds) of the most recently
-            successfully processed OwnTracks event.  ``None`` on first run.
-    """
-
-    last_tst: int | None = None
-
-    def to_json(self) -> str:
-        """Serialise checkpoint to a JSON string for storage in cursor_store."""
-        return json.dumps({"last_tst": self.last_tst})
-
-    @classmethod
-    def from_json(cls, raw: str) -> OwnTracksCheckpoint:
-        """Deserialise checkpoint from a JSON string as stored in cursor_store.
-
-        Args:
-            raw: JSON string previously produced by :meth:`to_json`.
-
-        Returns:
-            Populated :class:`OwnTracksCheckpoint`.
-
-        Raises:
-            ValueError: If ``raw`` is not valid JSON or is missing ``last_tst``.
-        """
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"OwnTracks checkpoint is not valid JSON: {raw!r}") from exc
-
-        if not isinstance(data, dict):
-            raise ValueError(
-                f"OwnTracks checkpoint JSON must be an object, got {type(data).__name__}: {raw!r}"
-            )
-
-        if "last_tst" not in data:
-            raise ValueError(f"OwnTracks checkpoint JSON missing 'last_tst' key: {raw!r}")
-
-        last_tst = data["last_tst"]
-        # bool is a subclass of int in Python; reject it explicitly to avoid
-        # silently accepting true/false as 1/0 checkpoint values.
-        if last_tst is not None and (isinstance(last_tst, bool) or not isinstance(last_tst, int)):
-            got = type(last_tst).__name__
-            raise ValueError(f"OwnTracks checkpoint 'last_tst' must be int or null, got {got}")
-
-        return cls(last_tst=last_tst)
-
-    def advance(self, tst: int) -> None:
-        """Update the checkpoint if ``tst`` is strictly newer.
-
-        Args:
-            tst: Unix timestamp of the event that was just processed
-                successfully.
-        """
-        if self.last_tst is None or tst > self.last_tst:
-            self.last_tst = tst
-
-
-# ---------------------------------------------------------------------------
 # Idempotency key construction (task 4.3)
 # ---------------------------------------------------------------------------
 
@@ -239,119 +172,6 @@ def build_idempotency_key(
     if event_suffix:
         return f"{base}:{event_suffix}"
     return base
-
-
-# ---------------------------------------------------------------------------
-# Deduplication (task 4.4)
-# ---------------------------------------------------------------------------
-
-
-def is_duplicate_event(
-    checkpoint: OwnTracksCheckpoint,
-    tst: int,
-) -> bool:
-    """Return ``True`` if the event should be skipped as a duplicate.
-
-    An event is considered a duplicate if its ``tst`` (device timestamp) is
-    at or before the last successfully processed checkpoint timestamp.  This
-    guarantees at-least-once delivery: on connector restart the connector may
-    briefly reprocess the event at exactly ``last_tst``, but it will never miss
-    events that arrived after the checkpoint.
-
-    Args:
-        checkpoint: Current persisted checkpoint.
-        tst: Unix timestamp of the incoming OwnTracks event.
-
-    Returns:
-        ``True`` if the event should be skipped; ``False`` if it should be
-        processed.
-    """
-    if checkpoint.last_tst is None:
-        return False
-    return tst <= checkpoint.last_tst
-
-
-# ---------------------------------------------------------------------------
-# Checkpoint persistence (task 4.2)
-# ---------------------------------------------------------------------------
-
-
-async def load_checkpoint(
-    pool: asyncpg.Pool,
-    endpoint_identity: str,
-) -> OwnTracksCheckpoint:
-    """Load the persisted checkpoint from the DB for the given endpoint.
-
-    Uses :func:`butlers.connectors.cursor_store.load_cursor` under the hood.
-
-    On missing or malformed checkpoint data, logs a warning and returns a fresh
-    :class:`OwnTracksCheckpoint` (``last_tst=None``) so the connector starts
-    from scratch without crashing.
-
-    Args:
-        pool: asyncpg connection pool that can reach ``switchboard.connector_registry``.
-        endpoint_identity: Endpoint identifier for this connector instance.
-
-    Returns:
-        :class:`OwnTracksCheckpoint` — either loaded from DB or freshly initialised.
-    """
-    try:
-        raw = await load_cursor(pool, _CONNECTOR_TYPE, endpoint_identity)
-        if raw is not None:
-            checkpoint = OwnTracksCheckpoint.from_json(raw)
-            logger.info(
-                "Loaded OwnTracks checkpoint from DB: last_tst=%s",
-                checkpoint.last_tst,
-                extra={"endpoint_identity": endpoint_identity},
-            )
-            return checkpoint
-        else:
-            logger.info(
-                "No OwnTracks checkpoint in DB, starting from scratch",
-                extra={"endpoint_identity": endpoint_identity},
-            )
-    except Exception:
-        logger.exception(
-            "Failed to load OwnTracks checkpoint from DB, starting from scratch",
-            extra={"endpoint_identity": endpoint_identity},
-        )
-
-    return OwnTracksCheckpoint()
-
-
-async def save_checkpoint(
-    pool: asyncpg.Pool,
-    endpoint_identity: str,
-    checkpoint: OwnTracksCheckpoint,
-) -> None:
-    """Persist the checkpoint to the DB.
-
-    Uses :func:`butlers.connectors.cursor_store.save_cursor` under the hood.
-    Failures are logged at ERROR level but never re-raised so a transient DB
-    outage does not crash the connector.
-
-    Args:
-        pool: asyncpg connection pool that can reach ``switchboard.connector_registry``.
-        endpoint_identity: Endpoint identifier for this connector instance.
-        checkpoint: Current checkpoint to persist.
-    """
-    try:
-        await save_cursor(
-            pool,
-            _CONNECTOR_TYPE,
-            endpoint_identity,
-            checkpoint.to_json(),
-        )
-        logger.debug(
-            "Saved OwnTracks checkpoint to DB: last_tst=%s",
-            checkpoint.last_tst,
-            extra={"endpoint_identity": endpoint_identity},
-        )
-    except Exception:
-        logger.exception(
-            "Failed to save OwnTracks checkpoint to DB",
-            extra={"endpoint_identity": endpoint_identity},
-        )
 
 
 # ---------------------------------------------------------------------------
