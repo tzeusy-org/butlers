@@ -10,6 +10,17 @@ The Telegram bot connector (`src/butlers/connectors/telegram_bot.py`) is a trans
 
 The connector is implemented by the `TelegramBotConnector` class, which handles polling, normalization, checkpoint persistence, health reporting, heartbeat, and ingestion policy evaluation.
 
+## Approval Callbacks
+
+Owner approval buttons use a deterministic dashboard round trip, not Switchboard,
+LLM, or MCP routing. The connector verifies the owner channel and callback HMAC,
+then uses the shared-public Tier-1 credential `APPROVAL_CALLBACK_CONNECTOR_TOKEN`
+in `X-Butlers-Approval-Callback-Token` for only the approval-detail and
+approve/deny API routes. Store it, along with `APPROVAL_CALLBACK_SECRET`, through
+the Dashboard Secrets page; neither credential is read from connector environment
+variables. A failed callback authentication leaves the action pending and never
+claims the decision succeeded.
+
 ## Request Context Mapping
 
 Telegram updates are mapped to the `ingest.v1` envelope as follows:

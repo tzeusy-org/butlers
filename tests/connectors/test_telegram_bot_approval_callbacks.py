@@ -21,6 +21,7 @@ from butlers.core.approval_callbacks import mint_approval_callback_token
 _ACTION_ID = UUID("12345678-1234-5678-1234-567812345678")
 _REQUESTED_AT = datetime(2026, 7, 17, 8, 0, tzinfo=UTC)
 _SECRET = "test-only-approval-callback-secret"
+_CONNECTOR_TOKEN = "test-only-approval-callback-connector-token"
 
 
 def _response(*, status_code: int = 200, body: dict | None = None) -> MagicMock:
@@ -38,6 +39,7 @@ def _connector() -> TelegramBotConnector:
             telegram_token="test-token",
             internal_api_url="http://dashboard-api:41200",
             approval_callback_secret=_SECRET,
+            approval_callback_connector_token=_CONNECTOR_TOKEN,
         ),
         db_pool=MagicMock(),
         cursor_pool=MagicMock(),
@@ -105,7 +107,10 @@ async def test_owner_approve_acknowledges_then_uses_standard_decision_route(
     assert connector._http_client.post.call_args_list[0].args[0].endswith("/answerCallbackQuery")
     decision_call = connector._http_client.post.call_args_list[1]
     assert decision_call.args[0] == f"http://dashboard-api:41200/api/approvals/{_ACTION_ID}/approve"
-    assert decision_call.kwargs["headers"] == {"X-Butlers-Decision-Actor": "owner@telegram"}
+    assert decision_call.kwargs["headers"] == {
+        "X-Butlers-Decision-Actor": "owner@telegram",
+        "X-Butlers-Approval-Callback-Token": _CONNECTOR_TOKEN,
+    }
     edit.assert_awaited_once_with(_update(_token())["callback_query"], "executed")
 
 

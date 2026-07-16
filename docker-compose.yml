@@ -248,6 +248,7 @@ services:
       BUTLERS_BACKUP_DIR: /backups
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
       BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
+      DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
     depends_on:
       migrations:
         condition: service_completed_successfully
@@ -304,6 +305,8 @@ services:
       # via the chronicler dashboard API (the connector's own role cannot write
       # the chronicler schema). Override to disable the round-trip.
       CONNECTOR_INTERNAL_API_URL: ${CONNECTOR_INTERNAL_API_URL:-http://dashboard-api:41200}
+      # Approval callback credentials are Tier-1 values read from the shared
+      # credential store; do not pass them through Compose environment values.
     volumes:
       - ./logs:/app/logs
     networks: [db, backend, egress]
@@ -784,6 +787,7 @@ services:
       BUTLERS_BACKUP_DIR: /backups
       BUTLERS_API_DB_POOL_MIN_SIZE: ${BUTLERS_API_DB_POOL_MIN_SIZE:-0}
       BUTLERS_API_DB_POOL_MAX_SIZE: ${BUTLERS_API_DB_POOL_MAX_SIZE:-2}
+      DASHBOARD_API_KEY: ${DASHBOARD_API_KEY:-}
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro

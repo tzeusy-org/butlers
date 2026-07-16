@@ -49,6 +49,8 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.approval_callbacks import (
+    APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER,
+    APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY,
     APPROVAL_CALLBACK_PREFIX,
     APPROVAL_CALLBACK_SECRET_KEY,
     parse_approval_callback_token,
@@ -211,6 +213,10 @@ class TelegramBotConnectorConfig:
     # Tier-1 ``APPROVAL_CALLBACK_SECRET`` resolved at startup through
     # CredentialStore. It is intentionally never read from the environment.
     approval_callback_secret: str | None = None
+
+    # Tier-1 credential for the narrowly scoped dashboard callback routes.
+    # It is intentionally never read from the environment.
+    approval_callback_connector_token: str | None = None
 
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
@@ -968,10 +974,17 @@ class TelegramBotConnector:
                 await self._answer_callback_query(callback_query_id, "")
             return True
 
+        secret = self._config.approval_callback_secret
+        connector_token = self._config.approval_callback_connector_token
+        if not secret or not connector_token:
+            logger.warning("Rejected Telegram approval callback without verifiable action state")
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "")
+            return True
+
         detail = await self._fetch_approval_callback_detail(str(parsed.action_id))
         requested_at = self._approval_callback_requested_at(detail)
-        secret = self._config.approval_callback_secret
-        if requested_at is None or not secret:
+        if requested_at is None:
             logger.warning("Rejected Telegram approval callback without verifiable action state")
             if callback_query_id:
                 await self._answer_callback_query(callback_query_id, "")
@@ -1011,7 +1024,7 @@ class TelegramBotConnector:
             return True
 
         if callback_query_id:
-            await self._answer_callback_query(callback_query_id, "Decision received.")
+            await self._answer_callback_query(callback_query_id, "Processing decision…")
 
         resolved_status = await self._submit_approval_callback_decision(
             str(verified.action_id), verified.verb
@@ -1040,12 +1053,17 @@ class TelegramBotConnector:
 
     async def _fetch_approval_callback_detail(self, action_id: str) -> dict[str, Any] | None:
         """Read the decision dossier needed to verify an ``apr1`` token."""
-        if not self._config.internal_api_url:
-            logger.warning("Telegram approval callback received without an internal API URL")
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not connector_token:
+            logger.warning(
+                "Telegram approval callback received without an internal API URL "
+                "or connector credential"
+            )
             return None
         try:
             response = await self._http_client.get(
-                f"{self._config.internal_api_url.rstrip('/')}/api/approvals/{action_id}"
+                f"{self._config.internal_api_url.rstrip('/')}/api/approvals/{action_id}",
+                headers={APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token},
             )
             if response.status_code != 200:
                 return None
@@ -1084,14 +1102,18 @@ class TelegramBotConnector:
 
     async def _submit_approval_callback_decision(self, action_id: str, verb: str) -> str | None:
         """Call the established approve/deny REST transition with provenance."""
-        if not self._config.internal_api_url:
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not connector_token:
             return None
         endpoint = "approve" if verb == "a" else "deny"
         try:
             response = await self._http_client.post(
                 f"{self._config.internal_api_url.rstrip('/')}/api/approvals/{action_id}/{endpoint}",
                 json={},
-                headers={_APPROVAL_CALLBACK_DECISION_HEADER: _APPROVAL_CALLBACK_DECISION_ACTOR},
+                headers={
+                    _APPROVAL_CALLBACK_DECISION_HEADER: _APPROVAL_CALLBACK_DECISION_ACTOR,
+                    APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token,
+                },
             )
             if response.status_code >= 400:
                 return None
@@ -1620,6 +1642,20 @@ async def run_telegram_bot_connector() -> None:
                 "Telegram approval callbacks disabled: %s is not configured in the "
                 "credential store",
                 APPROVAL_CALLBACK_SECRET_KEY,
+            )
+        approval_callback_connector_token = await _resolve_telegram_bot_system_credential_from_db(
+            APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY
+        )
+        if approval_callback_connector_token:
+            config = replace(
+                config,
+                approval_callback_connector_token=approval_callback_connector_token,
+            )
+        else:
+            logger.warning(
+                "Telegram approval callbacks disabled: %s is not configured in the "
+                "credential store",
+                APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY,
             )
 
     # Step 3: Validate we have a token from either source.

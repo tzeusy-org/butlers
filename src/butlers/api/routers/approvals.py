@@ -22,7 +22,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -1474,10 +1474,20 @@ _ACTOR_DASHBOARD = "dashboard:rest-api"
 _TELEGRAM_CALLBACK_ACTOR = "owner@telegram"
 
 
-def _decision_actor_id(callback_actor: str | None) -> str:
-    """Accept only the connector's fixed, non-escalating provenance marker."""
-    if callback_actor == _TELEGRAM_CALLBACK_ACTOR:
+def _decision_actor_id(callback_actor: str | None, *, callback_authenticated: bool) -> str:
+    """Accept Telegram provenance only from the authenticated callback route."""
+    if callback_authenticated:
+        if callback_actor != _TELEGRAM_CALLBACK_ACTOR:
+            raise HTTPException(
+                status_code=403,
+                detail="Connector decisions require Telegram provenance.",
+            )
         return _TELEGRAM_CALLBACK_ACTOR
+    if callback_actor == _TELEGRAM_CALLBACK_ACTOR:
+        raise HTTPException(
+            status_code=401,
+            detail="Telegram decision provenance requires callback authentication.",
+        )
     return _ACTOR_DASHBOARD
 
 
@@ -2047,6 +2057,7 @@ async def get_approval_detail(
 @router.post("/{action_id}/approve")
 async def approve_approval(
     action_id: str,
+    http_request: Request,
     request: ApprovalApproveRequest = Body(default=ApprovalApproveRequest()),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
@@ -2061,11 +2072,23 @@ async def approve_approval(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
+    callback_authenticated = bool(
+        getattr(http_request.state, "approval_callback_authenticated", False)
+    )
+    actor_id = _decision_actor_id(
+        callback_actor,
+        callback_authenticated=callback_authenticated,
+    )
+    if callback_authenticated and request.edits:
+        raise HTTPException(
+            status_code=403,
+            detail="Connector decisions cannot edit approval arguments.",
+        )
+
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
-    actor_id = _decision_actor_id(callback_actor)
 
     # Use a single connection + transaction for the read, optional edits update,
     # approve, and audit so that an edits UPDATE / approve transition cannot
@@ -2160,6 +2183,7 @@ async def approve_approval(
 @router.post("/{action_id}/deny")
 async def deny_approval(
     action_id: str,
+    http_request: Request,
     request: ApprovalDenyRequest = Body(default=ApprovalDenyRequest()),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
@@ -2170,11 +2194,23 @@ async def deny_approval(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
+    callback_authenticated = bool(
+        getattr(http_request.state, "approval_callback_authenticated", False)
+    )
+    actor_id = _decision_actor_id(
+        callback_actor,
+        callback_authenticated=callback_authenticated,
+    )
+    if callback_authenticated and request.reason:
+        raise HTTPException(
+            status_code=403,
+            detail="Connector decisions cannot add a denial reason.",
+        )
+
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
-    actor_id = _decision_actor_id(callback_actor)
 
     # AuditTableNotAvailableError is intentionally NOT caught here — it
     # propagates to the app-level handler, which returns 503
