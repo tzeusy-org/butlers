@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 import pytest
 
@@ -22,8 +23,10 @@ def migrated_core_postgres_pool(provisioned_postgres_pool, postgres_container):
     async def _provision(**kwargs):
         async with provisioned_postgres_pool(**kwargs) as pool:
             db_name = await pool.fetchval("SELECT current_database()")
+            user = quote(postgres_container.username, safe="")
+            password = quote(postgres_container.password, safe="")
             db_url = (
-                f"postgresql://{postgres_container.username}:{postgres_container.password}"
+                f"postgresql://{user}:{password}"
                 f"@{postgres_container.get_container_host_ip()}:"
                 f"{postgres_container.get_exposed_port(5432)}/{db_name}"
             )
