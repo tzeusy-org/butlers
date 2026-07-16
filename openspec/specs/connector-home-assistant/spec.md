@@ -117,7 +117,9 @@ The connector implements a three-layer filtering pipeline to reduce HA event noi
 - **AND** events from domains not in the allowlist SHALL be dropped immediately and recorded as filtered with `filter_reason = "domain_excluded:<domain>"`
 - **AND** `HA_DOMAIN_ALLOWLIST` SHALL add comma-separated domains to, rather than replace, the default allowlist
 - **AND** after resolving its endpoint identity, the connector SHALL read `connector_registry.settings.domain_allowlist` for that `home_assistant` endpoint at startup
-- **AND** a valid JSON array there SHALL replace only environment-supplied additions while retaining every default domain; an absent, malformed, or unreadable value SHALL retain the environment-derived allowlist and log a warning
+- **AND** a valid JSON array there SHALL replace only environment-supplied additions while retaining every default domain
+- **AND** an absent value SHALL retain the environment-derived allowlist
+- **AND** a malformed or unreadable value SHALL retain the environment-derived allowlist and log a warning
 
 #### Scenario: Layer 2 — Significance filter
 - **WHEN** an event passes the domain allowlist

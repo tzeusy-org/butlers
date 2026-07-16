@@ -193,16 +193,44 @@ async def test_invalid_registry_domain_allowlist_retains_env_configuration(
     )
 
 
-def test_main_loads_registry_domain_allowlist_before_constructing_pipeline() -> None:
-    """The startup path must apply endpoint settings before Layer 1 is configured."""
+@pytest.mark.asyncio
+async def test_non_object_registry_settings_retain_env_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A malformed settings JSONB value must retain environment additions."""
+    from butlers.connectors import cursor_store
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("HA_DOMAIN_ALLOWLIST", "media_player")
+    monkeypatch.setattr(
+        cursor_store,
+        "load_connector_settings",
+        AsyncMock(return_value=["vacuum"]),
+    )
+    config = HAConnectorConfig.from_env()
+
+    await _load_domain_allowlist_from_store(
+        config,
+        MagicMock(),
+        "home_assistant:ha.test:8123",
+    )
+
+    assert config.domain_allowlist == _DEFAULT_DOMAIN_ALLOWLIST | {"media_player"}
+    assert any("ignoring non-object connector settings" in message for message in caplog.messages)
+
+
+def test_main_resolves_endpoint_identity_before_loading_settings_and_pipeline() -> None:
+    """Startup must use the resolved endpoint for settings before Layer 1 is built."""
     import inspect
 
     from butlers.connectors import home_assistant
 
     source = inspect.getsource(home_assistant._main)
+    identity_idx = source.index("connector._set_endpoint_identity(ha_base_url)")
     settings_idx = source.index("await _load_domain_allowlist_from_store(")
     pipeline_idx = source.index("pipeline = HAFilterPipeline(")
-    assert settings_idx < pipeline_idx
+    assert identity_idx < settings_idx < pipeline_idx
 
 
 # ---------------------------------------------------------------------------
