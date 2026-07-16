@@ -445,6 +445,7 @@ class TestDecisionDossierBoundary:
         )
 
         assert result["status"] == "error"
+        assert result["error"]["code"] == "invalid_dossier_value"
         assert result["error"]["field"] == "evidence[0]"
         pool.execute.assert_not_awaited()
 

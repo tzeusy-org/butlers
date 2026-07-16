@@ -63,13 +63,25 @@ class TestGateParkPathJsonbRoundtrip:
             butler_name=None,
             tool_meta=None,
         )
+        evidence = [
+            {
+                "type": "text",
+                "ref": "signal-one",
+                "note": "First test signal",
+            },
+            {
+                "type": "text",
+                "ref": "signal-two",
+                "note": "Second test signal",
+            },
+        ]
 
         result = await wrapper(
             message="hello world",
             correlation_id="req-12345",
             context={"nested": {"depth": 2}, "tags": ["a", "b"]},
             why="testing the gate jsonb round-trip",
-            evidence=["signal-one", "signal-two"],
+            evidence=evidence,
         )
 
         # Unresolvable target (no recognized channel key in tool_args) with no
@@ -96,7 +108,7 @@ class TestGateParkPathJsonbRoundtrip:
             f"evidence arrived as {type(stored_evidence).__name__!r}, not a list — "
             "the jsonb column was double-encoded into a string."
         )
-        assert stored_evidence == ["signal-one", "signal-two"]
+        assert stored_evidence == evidence
         assert row["status"] == "pending"
 
 
