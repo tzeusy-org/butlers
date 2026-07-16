@@ -176,14 +176,41 @@ describe("TimelineLedger — drawer", () => {
     expect(container.querySelector('[data-testid="timeline-event-drawer"]')).toBeNull();
   });
 
-  it("clicking a row opens its drawer", () => {
+  it("clicking the native row disclosure opens its drawer", () => {
     const events = [makeEvent("e1", "2026-07-04T15:10:00Z")];
     renderLedger({ events });
     const row = container.querySelector('[data-testid="timeline-row"]') as HTMLElement;
+    const disclosure = row.querySelector('button[aria-expanded="false"]') as HTMLButtonElement;
+    expect(disclosure).not.toBeNull();
     act(() => {
-      row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      disclosure.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(container.querySelector('[data-testid="timeline-event-drawer"]')).not.toBeNull();
+  });
+
+  it("keeps a non-session row's disclosure chevron inside its native button", () => {
+    const events = [makeEvent("n1", "2026-07-04T15:10:00Z", { type: "notification" })];
+    renderLedger({ events });
+    const row = container.querySelector('[data-testid="timeline-row"]') as HTMLElement;
+    const disclosure = row.querySelector('button[aria-expanded="false"]') as HTMLButtonElement;
+
+    expect(disclosure.textContent).toContain("▼");
+    act(() => {
+      disclosure.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(disclosure.textContent).toContain("▲");
+  });
+
+  it("keeps the session detail link outside the native disclosure", () => {
+    const events = [makeEvent("e1", "2026-07-04T15:10:00Z")];
+    renderLedger({ events });
+    const row = container.querySelector('[data-testid="timeline-row"]') as HTMLElement;
+    const disclosure = row.querySelector('button[aria-expanded="false"]') as HTMLButtonElement;
+    const sessionLink = row.querySelector('[data-testid="row-session-link"]') as HTMLAnchorElement;
+
+    expect(disclosure.contains(sessionLink)).toBe(false);
+    expect(sessionLink.getAttribute("href")).toBe("/sessions/e1?butler=home");
+    expect(sessionLink.getAttribute("aria-label")).toBe("View session");
   });
 
   it("clicking the drawer's close button clears the event param", () => {

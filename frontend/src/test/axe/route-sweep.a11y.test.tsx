@@ -48,6 +48,7 @@ import { AXE_SKIP_MANIFEST } from "./skip-manifest";
 
 const COVERED_ELSEWHERE: Record<string, string> = {
   "/butlers": "src/pages/ButlersPage.a11y.test.tsx",
+  "/timeline": "src/pages/TimelinePage.a11y.test.tsx",
   // "/ingestion" itself renders IngestionTabRedirect (a redirect, not a real
   // page), but the ingestion ledger UI it redirects to IS axe-tested
   // directly at the component level (mounted without going through this
