@@ -1623,13 +1623,18 @@ class SteamAccountPoller:
                     "Policy evaluation error: endpoint=%s", self._state.endpoint_identity
                 )
 
-        await self._submit_envelope(envelope)
-        steam_events_submitted_total.labels(
-            event_type=event_type,
-            endpoint_identity=self._state.endpoint_identity,
-        ).inc()
+        result = await self._submit_envelope(envelope)
+        if not (
+            isinstance(result, dict)
+            and result.get("status") == "accepted"
+            and result.get("duplicate") is True
+        ):
+            steam_events_submitted_total.labels(
+                event_type=event_type,
+                endpoint_identity=self._state.endpoint_identity,
+            ).inc()
 
-    async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
+    async def _submit_envelope(self, envelope: dict[str, Any]) -> Any:
         """Submit an ingest.v1 envelope to the Switchboard via MCP.
 
         Two bugs made every Steam ingest submission fail invisibly (bu-a38da):
@@ -1659,6 +1664,7 @@ class SteamAccountPoller:
                 raise RuntimeError(f"Ingest tool error: {error_msg}")
             self._metrics.record_ingest_submission(status="success")
             self._metrics.record_source_api_call(api_method="ingest", status="success")
+            return result
         except Exception as exc:
             self._metrics.record_ingest_submission(status="error")
             logger.warning(

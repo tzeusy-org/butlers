@@ -47,6 +47,7 @@ from butlers.connectors.steam import (
     build_game_purchase_envelope,
     build_play_session_envelope,
     build_status_change_envelope,
+    steam_events_submitted_total,
 )
 from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
@@ -444,6 +445,74 @@ async def test_submit_envelope_still_raises_on_transport_failure() -> None:
 
     with pytest.raises(ConnectionError):
         await poller._submit_envelope(envelope)
+
+
+# ---------------------------------------------------------------------------
+# _maybe_submit Steam event metric behavior
+# ---------------------------------------------------------------------------
+
+
+def _submitted_event_count(event_type: str) -> float:
+    return steam_events_submitted_total.labels(
+        event_type=event_type,
+        endpoint_identity=_ENDPOINT,
+    )._value.get()
+
+
+async def test_maybe_submit_duplicate_acceptance_does_not_increment_steam_event_metric() -> None:
+    """A deduplicated acceptance is successful but not a newly submitted Steam event."""
+    mcp_client = AsyncMock()
+    mcp_client.call_tool.return_value = {
+        "request_id": "44444444-4444-7444-8444-444444444444",
+        "status": "accepted",
+        "duplicate": True,
+    }
+    poller = _make_poller(mcp_client)
+    envelope = build_achievement_unlock_envelope(
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        app_id=730,
+        game_name="CS2",
+        achievement_api_name="FIRST_WIN",
+        achievement_display_name="First Win",
+        achievement_description="Win your first match",
+        unlock_time=1708012800,
+        poll_ts=_POLL_TS,
+    )
+
+    before = _submitted_event_count("achievement_unlock")
+
+    await poller._maybe_submit(envelope, data_type="achievements")
+
+    assert _submitted_event_count("achievement_unlock") == before
+
+
+async def test_maybe_submit_new_acceptance_increments_steam_event_metric() -> None:
+    """A non-duplicate accepted event remains counted as a Steam submission."""
+    mcp_client = AsyncMock()
+    mcp_client.call_tool.return_value = {
+        "request_id": "55555555-5555-7555-8555-555555555555",
+        "status": "accepted",
+        "duplicate": False,
+    }
+    poller = _make_poller(mcp_client)
+    envelope = build_achievement_unlock_envelope(
+        steam_id=_STEAM_ID,
+        endpoint_identity=_ENDPOINT,
+        app_id=730,
+        game_name="CS2",
+        achievement_api_name="FIRST_WIN",
+        achievement_display_name="First Win",
+        achievement_description="Win your first match",
+        unlock_time=1708012800,
+        poll_ts=_POLL_TS,
+    )
+
+    before = _submitted_event_count("achievement_unlock")
+
+    await poller._maybe_submit(envelope, data_type="achievements")
+
+    assert _submitted_event_count("achievement_unlock") == before + 1
 
 
 # ---------------------------------------------------------------------------
