@@ -433,6 +433,24 @@ describe("Health Overview page (bu-w7b18.1)", () => {
     expect(screen.getByTestId("health-attention-index")).toBeTruthy();
   });
 
+  it("renders the six-destination health ledger without inventing live status", () => {
+    renderInRouter(<HealthOverviewPage />);
+
+    const ledger = screen.getByTestId("health-ledger-index");
+    expect(ledger.getAttribute("aria-label")).toBe("Health ledger");
+
+    for (const path of [
+      "/health/measurements",
+      "/health/medications",
+      "/health/conditions",
+      "/health/symptoms",
+      "/health/meals",
+      "/health/research",
+    ]) {
+      expect(ledger.querySelector(`a[href="${path}"]`)).toBeInstanceOf(HTMLAnchorElement);
+    }
+  });
+
   it("renders the insight message in the attention list", () => {
     renderInRouter(<HealthOverviewPage />);
     expect(screen.getByText("Weight has drifted upward over the past two weeks.")).toBeTruthy();

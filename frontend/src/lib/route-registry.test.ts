@@ -3,8 +3,8 @@
  * The single command/route registry (bu-86c4c.7).
  *
  * Covers the audit's two concrete failure modes:
- * - orphaned routes: /entities/circles and the six health sub-pages must be
- *   indexed even though they're not in the sidebar.
+ * - deep routes: /entities/circles and the six health sub-pages must remain
+ *   indexed, whether they are palette-only or promoted to the sidebar.
  * - chord drift: g-h used to point at /health/measurements (pre-redesign);
  *   chords must be unique and resolvable from the same registry that builds
  *   the sidebar.
@@ -14,9 +14,9 @@ import { describe, expect, it } from "vitest";
 import { ALL_ROUTES, G_CHORD_ROUTES } from "@/lib/route-registry";
 
 describe("route-registry", () => {
-  it("indexes every previously-orphaned route", () => {
+  it("indexes every deep route", () => {
     const paths = ALL_ROUTES.map((r) => r.path);
-    for (const orphaned of [
+    for (const deepPath of [
       "/entities/circles",
       "/health/measurements",
       "/health/medications",
@@ -25,7 +25,22 @@ describe("route-registry", () => {
       "/health/meals",
       "/health/research",
     ]) {
-      expect(paths).toContain(orphaned);
+      expect(paths).toContain(deepPath);
+    }
+  });
+
+  it("keeps each sidebar-promoted Health ledger route under Health exactly once", () => {
+    for (const path of [
+      "/health/measurements",
+      "/health/medications",
+      "/health/conditions",
+      "/health/symptoms",
+      "/health/meals",
+      "/health/research",
+    ]) {
+      const matches = ALL_ROUTES.filter((route) => route.path === path);
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toMatchObject({ section: "Health", butler: "health" });
     }
   });
 

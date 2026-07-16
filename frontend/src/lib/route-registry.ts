@@ -5,15 +5,16 @@
  * g-chord switch statement in use-keyboard-shortcuts.ts, and the '?' help
  * sheet each hand-maintained their own copy of "what pages exist and how do
  * you reach them" — and they drifted (g-h pointed at the pre-redesign
- * /health/measurements route; /costs, /groups, /approvals/rules, and five of
- * six health sub-pages were never indexed anywhere but the router).
+ * /health/measurements route; /costs, /groups, /approvals/rules, and the
+ * Health sub-pages were never indexed anywhere but the router).
  *
  * This module is the one place that answers "what routes exist, and how are
  * they reached": every entrypoint (sidebar, command menu Pages group,
  * g-chords, the help sheet) reads from `ALL_ROUTES` / `G_CHORD_ROUTES` here.
  * A route that only lives in `EXTRA_ROUTES` is not orphaned — it's simply not
  * promoted to the sidebar, but the command menu and help sheet still index
- * it.
+ * it. Health's six ledger pages are sidebar children, so they are covered by
+ * `SIDEBAR_ROUTES` rather than listed here.
  */
 
 import { navSections, type NavItem, type NavFlatItem } from "@/components/layout/nav-config";
@@ -27,7 +28,13 @@ function flattenNavItems(items: NavItem[], section: string): RouteEntry[] {
   const result: RouteEntry[] = [];
   for (const item of items) {
     if (item.kind === "group") {
-      for (const child of item.children) result.push({ ...child, section });
+      for (const child of item.children) {
+        result.push({
+          ...child,
+          butler: child.butler ?? item.butler,
+          section: item.label,
+        });
+      }
     } else {
       result.push({ ...item, section });
     }
@@ -44,9 +51,8 @@ const SIDEBAR_ROUTES: RouteEntry[] = navSections.flatMap((s) =>
  * Routes that exist in the app but are intentionally NOT promoted to the
  * sidebar — sub-pages reached by drilling in from a parent, or pages whose
  * primary entry point elsewhere is a redirect. Still indexed here so the
- * command menu, g-chords, and the '?' help sheet can reach them directly;
- * this is what "so /entities/circles and the six health sub-pages can never
- * be orphaned again" means in practice. (/approvals/rules was one of these
+ * command menu, g-chords, and the '?' help sheet can reach them directly.
+ * (/approvals/rules was one of these
  * until bu-86c4c.12 merged it into /approvals as the always-visible
  * Autonomy panel and deleted the standalone route — nothing to index
  * anymore. /groups was another until bu-86c4c.19 retired it into the
@@ -58,12 +64,6 @@ const SIDEBAR_ROUTES: RouteEntry[] = navSections.flatMap((s) =>
  * so it needs no EXTRA_ROUTES entry of its own.)
  */
 const EXTRA_ROUTES: RouteEntry[] = [
-  { path: "/health/measurements", label: "Measurements", section: "Health", butler: "health" },
-  { path: "/health/medications", label: "Medications", section: "Health", butler: "health" },
-  { path: "/health/conditions", label: "Conditions", section: "Health", butler: "health" },
-  { path: "/health/symptoms", label: "Symptoms", section: "Health", butler: "health" },
-  { path: "/health/meals", label: "Meals", section: "Health", butler: "health" },
-  { path: "/health/research", label: "Research", section: "Health", butler: "health" },
   { path: "/settings/permissions", label: "Permissions", section: "Settings" },
   { path: "/settings/models", label: "Models", section: "Settings" },
   { path: "/entities/index", label: "Entities Index", section: "Entities" },

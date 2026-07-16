@@ -42,7 +42,8 @@ Sidebar sections and entries (`navSections` in `nav-config.ts`):
 
 **Dedicated Butlers**
 - Education (`/education`, only when the `education` butler is present)
-- Health (`/health`, only when the `health` butler is present)
+- Health (`/health`, only when the `health` butler is present), with Overview plus child links
+  for Measurements, Medications, Conditions, Symptoms, Meals, and Research
 - Calendar (`/calendar`)
 - Chronicles (`/chronicles`, only when the `chronicler` butler is present)
 
@@ -61,11 +62,6 @@ direct URL — never orphaned, just not promoted to the rail (`EXTRA_ROUTES` in
 `route-registry.ts`):
 
 - Costs (`/costs`)
-- Six Health sub-pages: Measurements, Medications, Conditions, Symptoms, Meals, Research
-  (`/health/measurements`, `/health/medications`, `/health/conditions`, `/health/symptoms`,
-  `/health/meals`, `/health/research`) — reached today from the `/health` overview's
-  attention list and inbound links; a ledger-index + sidebar-children treatment for these
-  six is tracked as follow-up work, not yet shipped.
 - Settings sub-pages: Spend Settings (`/settings/spend`), Permissions (`/settings/permissions`),
   Models (`/settings/models`)
 - Entities Index (`/entities/index`), Concentration (`/entities/concentration`),
@@ -89,8 +85,8 @@ direct URL — never orphaned, just not promoted to the rail (`EXTRA_ROUTES` in
 | `/approvals`, `/approvals/:id` | Approvals + Autonomy | Pending queue, decision workflows, and the always-visible Autonomy panel (per-butler × tool trust rules — absorbed the orphaned `/approvals/rules` page, bu-86c4c.12) |
 | `/calendar` | Calendar workspace | Dual-view shell with user/butler toggle and range controls |
 | `/contacts`, `/contacts/:contactId` | *(compat redirect)* | Forwards to `/entities/index?has=contact` — `public.contacts` was dropped (core_134) |
-| `/health` | Health overview | Voice briefing + vitals KPI strip + insight-driven attention list |
-| `/health/measurements` \| `/medications` \| `/conditions` \| `/symptoms` \| `/meals` \| `/research` | Health sub-pages | Six Dispatch-language CRUD surfaces over the fact store; not yet surfaced as a ledger index (follow-up) |
+| `/health` | Health overview | Voice briefing + vitals KPI strip, plus a right-column ledger index and attention list |
+| `/health/measurements` \| `/medications` \| `/conditions` \| `/symptoms` \| `/meals` \| `/research` | Health sub-pages | Six Dispatch-language CRUD surfaces over the fact store; reachable from the Health ledger index and sidebar children |
 | `/costs` | Costs and usage | Summary stats + chart + butler breakdown |
 | `/memory`, `/memory/facts/:factId`, `/memory/rules/:ruleId`, `/memory/episodes/:episodeId` | Memory system | Register pills (Facts/Rules/Episodes) + detail deep links |
 | `/entities` | Entities Plex | Force-graph relationship map |
