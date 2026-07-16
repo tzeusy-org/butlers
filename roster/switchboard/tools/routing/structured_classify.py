@@ -259,6 +259,11 @@ async def _execute_tool_call(mcp_server: Any, call: dict[str, Any]) -> dict[str,
         }
 
     try:
+        # SAFETY BOUNDARY: Direct ``.fn()`` execution skips the FastMCP HTTP/ASGI
+        # request pipeline. This server currently wraps that pipeline only for
+        # runtime-session capture and SSE disconnect handling, not auth or rate
+        # limiting. If future server middleware controls tool calls, enforce an
+        # explicit equivalent check here before this invocation.
         if inspect.iscoroutinefunction(fn):
             result = await fn(**kwargs)
         else:
