@@ -10,6 +10,7 @@
  *    mutates the already-returned snapshot
  *  - enrichment clears when the enriching page unmounts (no stale entity_ref
  *    bleeding into a later, unrelated page)
+ *  - stale cleanup from an old page cannot clear a newer page's enrichment
  */
 
 import { useEffect, useState } from "react";
@@ -132,6 +133,47 @@ describe("PageContextProvider / usePageContext — enrichment", () => {
 
     fireEvent.click(screen.getByTestId("capture-btn"));
     expect(readCaptured()).toEqual({ route: "/entities/e-123" });
+  });
+
+  it("keeps a successor page enrichment when the prior page unmounts later", () => {
+    function Wrapper() {
+      const [pageAMounted, setPageAMounted] = useState(true);
+      const [pageBMounted, setPageBMounted] = useState(false);
+
+      return (
+        <div>
+          {pageAMounted && <EnrichingPage entityRef="page-a" />}
+          {pageBMounted && <EnrichingPage entityRef="page-b" />}
+          <CaptureHarness />
+          <button data-testid="mount-page-b-btn" onClick={() => setPageBMounted(true)}>
+            mount page B
+          </button>
+          <button data-testid="unmount-page-a-btn" onClick={() => setPageAMounted(false)}>
+            unmount page A
+          </button>
+        </div>
+      );
+    }
+
+    render(
+      <MemoryRouter initialEntries={["/entities/e-123"]}>
+        <PageContextProvider>
+          <Wrapper />
+        </PageContextProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByTestId("capture-btn"));
+    expect(readCaptured().entity_ref).toBe("page-a");
+
+    // Page B claims the slot before A's cleanup runs.
+    fireEvent.click(screen.getByTestId("mount-page-b-btn"));
+    fireEvent.click(screen.getByTestId("capture-btn"));
+    expect(readCaptured().entity_ref).toBe("page-b");
+
+    fireEvent.click(screen.getByTestId("unmount-page-a-btn"));
+    fireEvent.click(screen.getByTestId("capture-btn"));
+    expect(readCaptured()).toEqual({ route: "/entities/e-123", entity_ref: "page-b" });
   });
 });
 
