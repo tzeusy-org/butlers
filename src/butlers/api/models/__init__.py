@@ -56,6 +56,8 @@ class ErrorResponse(BaseModel):
 class PaginationMeta(BaseModel):
     """Pagination metadata for list endpoints."""
 
+    model_config = {"extra": "allow"}
+
     total: int
     offset: int
     limit: int

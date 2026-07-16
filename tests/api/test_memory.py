@@ -522,6 +522,125 @@ class _RaisingStatsPool:
         raise self._exc
 
 
+class _EmptyMemoryPool:
+    """Healthy memory-capable pool whose list queries truthfully return no rows."""
+
+    async def fetchval(self, query: str, *args: object) -> int:
+        return 0
+
+    async def fetch(self, query: str, *args: object) -> list[object]:
+        return []
+
+
+class _RaisingMemoryPool:
+    """Pool whose memory reads fail with a genuine (non-schema) error."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    async def fetchval(self, query: str, *args: object) -> int:
+        raise self._exc
+
+    async def fetch(self, query: str, *args: object) -> list[object]:
+        raise self._exc
+
+
+class _MemoryFanOutDB:
+    """Minimal two-pool database fixture for degraded memory list contracts."""
+
+    def __init__(self, pools: dict[str, object]) -> None:
+        self._pools = pools
+        self.butler_names = list(pools)
+
+    def pool(self, name: str) -> object:
+        try:
+            return self._pools[name]
+        except KeyError:
+            raise KeyError(f"No pool for butler: {name}") from None
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "/api/memory/episodes",
+        "/api/memory/facts",
+        "/api/memory/rules",
+        "/api/memory/activity",
+    ],
+)
+async def test_memory_list_endpoints_report_genuine_failed_pools(endpoint: str, app) -> None:
+    """A failed memory source is named instead of masquerading as an empty list."""
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _EmptyMemoryPool(),
+            "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(endpoint)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["pools_failed"] == ["finance"]
+
+
+class _EntityListPool(_EmptyMemoryPool):
+    """Healthy pool that supplies one public entity for fact-count fan-out."""
+
+    def __init__(self, entity_id: uuid.UUID) -> None:
+        self._entity_id = entity_id
+
+    async def fetchval(self, query: str, *args: object) -> int:
+        if "FROM public.entities" in query:
+            return 1
+        return 0
+
+    async def fetch(self, query: str, *args: object) -> list[object]:
+        if "FROM public.entities" in query:
+            return [
+                {
+                    "id": self._entity_id,
+                    "canonical_name": "Atlas",
+                    "entity_type": "person",
+                    "aliases": [],
+                    "created_at": _NOW,
+                    "updated_at": _NOW,
+                    "linked_contact_roles": [],
+                    "unidentified": False,
+                    "source_butler": None,
+                    "source_scope": None,
+                    "archived": False,
+                }
+            ]
+        return []
+
+
+async def test_memory_entities_reports_genuine_failed_fact_count_pool(app) -> None:
+    """Entity fact-count failures are named instead of reporting a false zero."""
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _EntityListPool(uuid.uuid4()),
+            "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/entities")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"][0]["fact_count"] == 0
+    assert body["meta"]["pools_failed"] == ["finance"]
+
+
 async def test_stats_reports_pools_failed_for_a_genuine_query_failure(app):
     """A pool that raises for a reason OTHER than a missing memory schema
     must be named in meta.pools_failed -- its contribution is silently

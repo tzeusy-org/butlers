@@ -470,11 +470,13 @@ async def list_episodes(
         )
         return total, list(rows)
 
+    tracker = DegradedSources(logger)
     per_pool = await _fan_out_memory_queries(
         db,
         query_name="episodes",
         query_fn=_query_pool,
         butler_filter=butler,
+        tracker=tracker,
     )
     total = sum(pool_total for pool_total, _ in per_pool)
     merged_rows: list[object] = []
@@ -485,10 +487,10 @@ async def list_episodes(
 
     data = [_row_to_episode(r) for r in rows]
 
-    return PaginatedResponse[Episode](
-        data=data,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
-    )
+    meta_fields: dict[str, object] = {"total": total, "offset": offset, "limit": limit}
+    if tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
+    return PaginatedResponse[Episode](data=data, meta=PaginationMeta(**meta_fields))
 
 
 # ---------------------------------------------------------------------------
@@ -606,10 +608,12 @@ async def list_facts(
         )
         return total, list(rows)
 
+    tracker = DegradedSources(logger)
     per_pool = await _fan_out_memory_queries(
         db,
         query_name="facts",
         query_fn=_query_pool,
+        tracker=tracker,
     )
     total = sum(pool_total for pool_total, _ in per_pool)
     merged_rows: list[object] = []
@@ -621,10 +625,10 @@ async def list_facts(
     data = [_row_to_fact(r) for r in rows]
     data = await _resolve_entity_names(db, data)
 
-    return PaginatedResponse[Fact](
-        data=data,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
-    )
+    meta_fields: dict[str, object] = {"total": total, "offset": offset, "limit": limit}
+    if tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
+    return PaginatedResponse[Fact](data=data, meta=PaginationMeta(**meta_fields))
 
 
 # ---------------------------------------------------------------------------
@@ -878,10 +882,12 @@ async def list_rules(
         )
         return total, list(rows)
 
+    tracker = DegradedSources(logger)
     per_pool = await _fan_out_memory_queries(
         db,
         query_name="rules",
         query_fn=_query_pool,
+        tracker=tracker,
     )
     total = sum(pool_total for pool_total, _ in per_pool)
     merged_rows: list[object] = []
@@ -892,10 +898,10 @@ async def list_rules(
 
     data = [_row_to_rule(r) for r in rows]
 
-    return PaginatedResponse[Rule](
-        data=data,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
-    )
+    meta_fields: dict[str, object] = {"total": total, "offset": offset, "limit": limit}
+    if tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
+    return PaginatedResponse[Rule](data=data, meta=PaginationMeta(**meta_fields))
 
 
 # ---------------------------------------------------------------------------
@@ -1060,10 +1066,12 @@ async def list_activity(
         )
         return list(episode_rows), list(fact_rows), list(rule_rows)
 
+    tracker = DegradedSources(logger)
     per_pool = await _fan_out_memory_queries(
         db,
         query_name="activity",
         query_fn=_query_pool,
+        tracker=tracker,
     )
 
     items: list[MemoryActivity] = []
@@ -1107,7 +1115,10 @@ async def list_activity(
     items.sort(key=lambda a: a.created_at, reverse=True)
     items = items[:limit]
 
-    return ApiResponse[list[MemoryActivity]](data=items)
+    meta_fields: dict[str, object] = {}
+    if tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
+    return ApiResponse[list[MemoryActivity]](data=items, meta=ApiMeta(**meta_fields))
 
 
 # ---------------------------------------------------------------------------
@@ -1289,6 +1300,7 @@ async def list_entities(
     # Fact counts live in per-butler schemas — fan out across memory pools.
     entity_ids = [r["id"] for r in rows]
     fact_counts: dict[str, int] = {}
+    tracker = DegradedSources(logger)
     if entity_ids:
 
         async def _count_facts(_: str, fpool: object) -> dict[str, int]:
@@ -1301,7 +1313,10 @@ async def list_entities(
             return {str(r["entity_id"]): r["cnt"] for r in fc_rows}
 
         per_pool = await _fan_out_memory_queries(
-            db, query_name="entity_fact_counts", query_fn=_count_facts
+            db,
+            query_name="entity_fact_counts",
+            query_fn=_count_facts,
+            tracker=tracker,
         )
         for pool_counts in per_pool:
             for eid_str, cnt in pool_counts.items():
@@ -1340,10 +1355,10 @@ async def list_entities(
     sorted_items = _sort_entity_summaries(all_items)
     data = sorted_items[offset : offset + limit]
 
-    return PaginatedResponse[EntitySummary](
-        data=data,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
-    )
+    meta_fields: dict[str, object] = {"total": total, "offset": offset, "limit": limit}
+    if tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
+    return PaginatedResponse[EntitySummary](data=data, meta=PaginationMeta(**meta_fields))
 
 
 # ---------------------------------------------------------------------------

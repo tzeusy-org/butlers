@@ -109,7 +109,15 @@ from tests.api.test_calendar_workspace import (
 from tests.api.test_calendar_workspace import (
     _build_audit_app as _make_calendar_audit_app,
 )
-from tests.api.test_memory import _RaisingStatsPool, _StatsDB, _StatsPool
+from tests.api.test_memory import (
+    _EmptyMemoryPool,
+    _EntityListPool,
+    _MemoryFanOutDB,
+    _RaisingMemoryPool,
+    _RaisingStatsPool,
+    _StatsDB,
+    _StatsPool,
+)
 from tests.api.test_notifications import (
     _make_unavailable_db as _make_notifications_unavailable_db,
 )
@@ -410,6 +418,44 @@ def _case_memory_stats() -> DegradedCase:
     return DegradedCase("memory_stats", _run)
 
 
+def _case_memory_list(endpoint: str, name: str) -> DegradedCase:
+    async def _run() -> None:
+        db = _MemoryFanOutDB(
+            {
+                "atlas": _EmptyMemoryPool(),
+                "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
+            }
+        )
+        app = create_app()
+        app.dependency_overrides[_memory_get_db] = lambda: db
+        resp = await _request(app, "GET", endpoint)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == []
+        assert body["meta"]["pools_failed"] == ["finance"]
+
+    return DegradedCase(name, _run)
+
+
+def _case_memory_entities() -> DegradedCase:
+    async def _run() -> None:
+        db = _MemoryFanOutDB(
+            {
+                "atlas": _EntityListPool(uuid4()),
+                "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
+            }
+        )
+        app = create_app()
+        app.dependency_overrides[_memory_get_db] = lambda: db
+        resp = await _request(app, "GET", "/api/memory/entities")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"][0]["fact_count"] == 0
+        assert body["meta"]["pools_failed"] == ["finance"]
+
+    return DegradedCase("memory_entities", _run)
+
+
 # ---------------------------------------------------------------------------
 # approvals (bu-qvnce.1)
 # ---------------------------------------------------------------------------
@@ -567,6 +613,11 @@ REGISTRY: list[DegradedCase] = [
     _case_notifications_list(),
     _case_notifications_stats(),
     _case_memory_stats(),
+    _case_memory_list("/api/memory/episodes", "memory_episodes"),
+    _case_memory_list("/api/memory/facts", "memory_facts"),
+    _case_memory_list("/api/memory/rules", "memory_rules"),
+    _case_memory_list("/api/memory/activity", "memory_activity"),
+    _case_memory_entities(),
     _case_approvals_list(),
     _case_secrets_catalogue(),
     _case_spend_summary(),
