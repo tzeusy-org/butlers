@@ -84,6 +84,11 @@ export default function IssuesPage() {
   // empty state.
   const sourcesDegraded = data?.meta?.sources_degraded ?? [];
 
+  // The grouped audit lane is capped at 500 results. This is not a failed
+  // source, but it is still an incomplete feed: preserve the existing
+  // SourceDegradedNote vocabulary and suppress a false all-clear below.
+  const auditGroupsTruncated = data?.meta?.truncated ?? false;
+
   // Butler options are derived from the currently-loaded (windowed) feed so
   // the pill row never offers a butler with zero issues in view.
   const availableButlers = useMemo(() => {
@@ -427,6 +432,7 @@ export default function IssuesPage() {
         isLoading={isLoading}
         isError={isError}
         sourcesDegraded={sourcesDegraded}
+        truncated={auditGroupsTruncated}
         dismissedView={showDismissed}
         onDismiss={handleDismiss}
         isDismissing={dismiss.isPending}

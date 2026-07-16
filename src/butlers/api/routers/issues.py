@@ -54,6 +54,10 @@ _STATUS_TIMEOUT_S = 5.0
 # that path can never regress to a truly unbounded scan.
 _DEFAULT_ISSUES_WINDOW = "7d"
 _MAX_AUDIT_GROUP_ROWS = 500
+# Fetch one extra group solely as an overflow sentinel. The public response
+# remains capped at ``_MAX_AUDIT_GROUP_ROWS``; the sentinel makes that cap
+# honest instead of indistinguishable from an exact 500-group result.
+_AUDIT_GROUP_FETCH_ROWS = _MAX_AUDIT_GROUP_ROWS + 1
 _WINDOW_RE = re.compile(r"^(\d+)(h|d)$")
 
 # Degraded-source names for the ``meta.sources_degraded`` envelope (bu-tpudw.3).
@@ -118,15 +122,18 @@ async def _list_audit_error_issues(
     db: DatabaseManager | None,
     since: datetime | None,
     tracker: DegradedSources | None = None,
-) -> list[Issue]:
-    """Return grouped error issues derived from the audit log.
+) -> tuple[list[Issue], bool]:
+    """Return capped grouped audit issues and whether the cap overflowed.
 
     Grouping key is normalized first-line error message (with tmp-path
     normalization). Each group exposes first/last timestamps and occurrences.
 
     ``since`` (bu-qvnce.13) bounds the underlying CTE to rows at or after that
     timestamp -- ``None`` (the ``window=all`` case) skips the time bound but
-    the query is still capped at ``_MAX_AUDIT_GROUP_ROWS`` groups.
+    the public response remains capped at ``_MAX_AUDIT_GROUP_ROWS`` groups.
+    The query fetches one additional sentinel row: it is never projected into
+    an :class:`Issue`, but makes ``truncated`` true when newer history was
+    omitted.
 
     ``tracker`` (bu-tpudw.3): when the fetch fails for a *genuine* reason (a
     dropped connection, a timeout, a permission error), the ``audit-groups``
@@ -136,31 +143,32 @@ async def _list_audit_error_issues(
     degraded source and is not flagged (see :func:`_is_missing_relation_error`).
     """
     if db is None:
-        return []
+        return [], False
 
     try:
         pool = db.pool("switchboard")
     except KeyError:
-        return []
+        return [], False
 
     try:
         if since is not None:
             query = build_audit_group_query(
                 where_extra="\n                  AND created_at >= $1",
-                limit=_MAX_AUDIT_GROUP_ROWS,
+                limit=_AUDIT_GROUP_FETCH_ROWS,
             )
             rows = await pool.fetch(query, since)
         else:
-            query = build_audit_group_query(limit=_MAX_AUDIT_GROUP_ROWS)
+            query = build_audit_group_query(limit=_AUDIT_GROUP_FETCH_ROWS)
             rows = await pool.fetch(query)
     except Exception as exc:
         if tracker is not None and not _is_missing_relation_error(exc):
             tracker.mark(_SOURCE_AUDIT_GROUPS, msg="Failed to query audit-derived issues")
         else:
             logger.warning("Failed to query audit-derived issues", exc_info=True)
-        return []
+        return [], False
 
-    return [issue_from_audit_group_row(row) for row in rows]
+    truncated = len(rows) > _MAX_AUDIT_GROUP_ROWS
+    return [issue_from_audit_group_row(row) for row in rows[:_MAX_AUDIT_GROUP_ROWS]], truncated
 
 
 async def _list_dismissed_acks(
@@ -325,6 +333,12 @@ async def list_issues(
     convention. The field is absent when every source answered. The frontend
     MUST NOT render its all-clear empty state while this list is non-empty --
     an incomplete feed is not an honest "no issues".
+
+    Audit-group cap: when more than ``_MAX_AUDIT_GROUP_ROWS`` grouped audit
+    errors match the requested window, the feed retains only the newest 500
+    audit groups and includes ``meta.truncated: true``. The field is absent
+    when the result is complete (including an exact 500-group result), which
+    preserves the existing healthy response shape.
     """
     window_delta = _parse_issues_window(window)
     since = datetime.now(UTC) - window_delta if window_delta is not None else None
@@ -334,11 +348,12 @@ async def list_issues(
     # zero-filled into an all-clear empty feed. The tracker accumulates any
     # genuinely-failed source across both queries below.
     tracker = DegradedSources(logger)
-    reachability_results, audit_issues, acked_by_key = await asyncio.gather(
+    reachability_results, audit_result, acked_by_key = await asyncio.gather(
         asyncio.gather(*tasks),
         _list_audit_error_issues(db, since, tracker),
         _list_dismissed_acks(db, tracker),
     )
+    audit_issues, audit_groups_truncated = audit_result
 
     now = datetime.now(UTC)
     issues: list[Issue] = []
@@ -387,7 +402,13 @@ async def list_issues(
         )
     )
 
-    meta = ApiMeta(sources_degraded=tracker.names) if tracker.failed else ApiMeta()
+    meta_values: dict[str, list[str] | bool] = {}
+    if tracker.failed:
+        meta_values["sources_degraded"] = tracker.names
+    if audit_groups_truncated:
+        meta_values["truncated"] = True
+
+    meta = ApiMeta(**meta_values)
     return ApiResponse[list[Issue]](data=issues, meta=meta)
 
 

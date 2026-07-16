@@ -1089,6 +1089,13 @@ pattern and MUST NOT breach per-butler schema isolation.
 - **AND** scheduled task failures are classified as critical severity
 - **AND** results are sorted by recency (newest `last_seen_at` first)
 
+#### Scenario: Capped audit groups are reported honestly
+- **WHEN** more than 500 grouped audit-log errors match `GET /api/issues`'s requested window
+- **THEN** the endpoint fetches one additional group only as an overflow sentinel, returns no more than the newest 500 audit-derived groups, and includes `meta.truncated: true`
+- **AND** live reachability issues remain independently included in the composed feed
+- **AND** when 500 or fewer audit groups match, `meta.truncated` is absent so the established complete-response envelope remains unchanged
+- **AND** the frontend SHALL render a `SourceDegradedNote` that says some audit-derived issues may be missing, rather than a calm "No issues recorded." all-clear, while `meta.truncated` is true
+
 #### Scenario: Audit-derived issue group identity is window-independent and collision-resistant
 - **WHEN** an audit-derived `Issue` (`audit_error_group:*` / `scheduled_task_failure:*`) is built from a grouped audit-log row
 - **THEN** its `issue_key` is a hash of the group's full, untruncated normalized `error_summary` alone (`audit_grouping.audit_group_key`) — NOT a composite of a truncated display slug and the query's aggregated butler set

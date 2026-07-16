@@ -98,6 +98,10 @@ Required query support:
   - `last_seen_at` (latest observed timestamp)
 - Includes `butlers` (distinct butler names participating in the group).
 - Endpoint response ordering is newest-first by `last_seen_at`.
+- The audit-derived lane returns at most the newest 500 groups. If more groups
+  match, `meta.truncated` is `true` and the UI must say that some audit-derived
+  issues may be missing; the field is absent when the grouped result is
+  complete, including exactly 500 groups.
 
 ## Spend Contract
 

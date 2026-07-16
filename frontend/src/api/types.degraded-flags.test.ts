@@ -129,6 +129,12 @@ const REGISTRY: DegradedFlagEntry[] = [
     consumerFiles: ["pages/IssuesPage.tsx"],
   },
   {
+    flag: "truncated",
+    surface: "issues",
+    emittedBy: "GET /api/issues (500-group audit-result cap)",
+    consumerFiles: ["pages/IssuesPage.tsx"],
+  },
+  {
     flag: "sources_degraded",
     surface: "approvals",
     emittedBy: "GET /api/approvals + /api/approvals/history",

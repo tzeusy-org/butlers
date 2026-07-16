@@ -504,10 +504,18 @@ export interface Issue {
  * `meta.sources_degraded` convention (see CLAUDE.md API Conventions). Absent
  * or empty means every source answered; a non-empty list means the feed is
  * incomplete and MUST NOT render as an all-clear "no issues".
+ *
+ * The audit-derived lane is separately capped at 500 groups. When an
+ * overflow sentinel exists, `truncated` is true and the UI must name that
+ * incomplete history rather than treating the rendered groups as exhaustive.
+ * The field stays absent when the result is complete, including exactly 500
+ * groups.
  */
 export interface IssuesListMeta extends ApiMeta {
   /** Names of the feed sources whose query failed and were dropped. */
   sources_degraded?: string[];
+  /** More than 500 audit-derived issue groups matched this feed window. */
+  truncated?: boolean;
 }
 
 /** GET /api/issues response: grouped issues + degraded-source meta. */

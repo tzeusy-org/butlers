@@ -186,6 +186,34 @@ describe("IssuesPage — degraded feed threading (bu-tpudw.3)", () => {
   });
 });
 
+describe("IssuesPage — capped audit-group feed", () => {
+  it("names a capped result set and suppresses the all-clear", () => {
+    setupDefaults([], { truncated: true });
+    const { container, root } = renderPage("/issues");
+
+    const note = container.querySelector('[data-testid="issues-feed-truncated"]');
+    expect(note).toBeTruthy();
+    expect(note?.getAttribute("role")).toBe("alert");
+    expect(note?.textContent).toContain("500-group cap reached");
+    expect(note?.textContent).toContain("some audit-derived issues may be missing");
+    expect(container.textContent).not.toContain("No issues recorded.");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it("keeps the normal all-clear when the result set is not capped", () => {
+    setupDefaults([], {});
+    const { container, root } = renderPage("/issues");
+
+    expect(container.querySelector('[data-testid="issues-feed-truncated"]')).toBeNull();
+    expect(container.textContent).toContain("No issues recorded.");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+});
+
 describe("IssuesPage — occurrences drill-down wiring", () => {
   it("calls useIssueOccurrences with enabled=false until a row is expanded", () => {
     setupDefaults([makeIssue()]);

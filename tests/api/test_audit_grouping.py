@@ -92,6 +92,20 @@ class TestBuildAuditGroupQuery:
         assert "INTERVAL '7 days'" in sql
         assert "LIMIT 50" in sql
 
+    def test_limit_is_applied_to_the_final_recency_ordered_result(self):
+        """A sentinel caller must be able to discard only the oldest fetched group.
+
+        SQL only guarantees row order at the outermost SELECT. Keeping the
+        ORDER BY and LIMIT there ensures a 501st overflow sentinel follows
+        the 500 newest groups rather than relying on an implementation detail
+        of the grouped CTE scan order.
+        """
+        sql = build_audit_group_query(limit=501)
+        assert re.search(
+            r"SELECT \* FROM grouped_errors\s+ORDER BY last_seen_at DESC\s+LIMIT 501$",
+            sql,
+        )
+
 
 # ---------------------------------------------------------------------------
 # build_audit_group_occurrences_query
