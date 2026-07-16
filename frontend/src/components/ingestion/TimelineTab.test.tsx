@@ -1468,6 +1468,7 @@ describe("TimelineTab — BulkActionBar", () => {
 
   const EVENT_ID_1 = "aabbccdd-0000-0000-0000-000000000001";
   const EVENT_ID_2 = "aabbccdd-0000-0000-0000-000000000002";
+  const CONTENDED_BULK_BOUNDARY_TIMEOUT_MS = 15_000;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -1539,20 +1540,27 @@ describe("TimelineTab — BulkActionBar", () => {
     expect(btn.disabled).toBe(false);
   });
 
-  it("button is disabled when selected count exceeds 100", () => {
-    // Build 101 events
-    const events = Array.from({ length: 101 }, (_, i) =>
-      makeEvent({ id: `aabbccdd-0000-0000-0000-${String(i).padStart(12, "0")}` }),
-    );
-    renderAndSelectEvents(events, 101);
+  it(
+    "button is disabled when selected count exceeds 100",
+    { timeout: CONTENDED_BULK_BOUNDARY_TIMEOUT_MS },
+    () => {
+      // This must render and select 101 real rows to cross the public 100-item
+      // boundary. It completes in about two seconds alone, but full-suite CPU
+      // contention can exceed Vitest's implicit five-second default.
+      // Build 101 events
+      const events = Array.from({ length: 101 }, (_, i) =>
+        makeEvent({ id: `aabbccdd-0000-0000-0000-${String(i).padStart(12, "0")}` }),
+      );
+      renderAndSelectEvents(events, 101);
 
-    const btn = container.querySelector("[data-testid='bulk-retry-button']") as HTMLButtonElement;
-    expect(btn).not.toBeNull();
-    expect(btn.disabled).toBe(true);
-    // Over-limit message shown
-    const msg = container.querySelector("[data-testid='bulk-overlimit-msg']");
-    expect(msg).not.toBeNull();
-  });
+      const btn = container.querySelector("[data-testid='bulk-retry-button']") as HTMLButtonElement;
+      expect(btn).not.toBeNull();
+      expect(btn.disabled).toBe(true);
+      // Over-limit message shown
+      const msg = container.querySelector("[data-testid='bulk-overlimit-msg']");
+      expect(msg).not.toBeNull();
+    },
+  );
 
   it("click calls bulkRetryEvents with selected IDs", async () => {
     vi.mocked(bulkRetryEvents).mockResolvedValueOnce({

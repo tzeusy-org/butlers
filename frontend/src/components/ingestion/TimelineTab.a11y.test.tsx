@@ -75,6 +75,11 @@ import {
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { TimelineTab } from "./TimelineTab";
 
+// axe traverses the real ledger DOM. Under normal focused runs these cases
+// complete well below this bound, but full-suite worker contention can exceed
+// Vitest's implicit 5s default without indicating an accessibility regression.
+const CONTENDED_AXE_TIMEOUT_MS = 15_000;
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -212,7 +217,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("a11y (real component): Empty ledger", () => {
-  it("has zero axe violations", async () => {
+  it("has zero axe violations", { timeout: CONTENDED_AXE_TIMEOUT_MS }, async () => {
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult([]) as unknown as ReturnType<typeof useIngestionEvents>,
     );
@@ -226,7 +231,7 @@ describe("a11y (real component): Empty ledger", () => {
 // ---------------------------------------------------------------------------
 
 describe("a11y (real component): Populated ledger", () => {
-  it("has zero axe violations", async () => {
+  it("has zero axe violations", { timeout: CONTENDED_AXE_TIMEOUT_MS }, async () => {
     const events = [
       makeEvent({ id: "evt-1", status: "ingested" }),
       makeEvent({ id: "evt-2", status: "filtered", filter_reason: "low priority sender" }),
@@ -246,7 +251,7 @@ describe("a11y (real component): Populated ledger", () => {
 // ---------------------------------------------------------------------------
 
 describe("a11y (real component): Row expanded, drawer open", () => {
-  it("has zero axe violations", async () => {
+  it("has zero axe violations", { timeout: CONTENDED_AXE_TIMEOUT_MS }, async () => {
     const events = [makeEvent({ id: "evt-1", status: "ingested" })];
     vi.mocked(useIngestionEvents).mockReturnValue(
       makeInfiniteEventsResult(events) as unknown as ReturnType<typeof useIngestionEvents>,
