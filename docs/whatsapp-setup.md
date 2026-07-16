@@ -40,6 +40,11 @@ For this to work, every container that talks to the bridge (`connector-whatsapp-
 is *not reachable*, the connector service is down or the volume mount is missing; if it
 reports *not connected*, re-pair via the dashboard (§2.2).
 
+The standalone connector and `whatsapp-bridge` CLI deliberately default to the flat
+`/tmp/wa-bridge.sock` path, which needs no pre-created parent directory. That default is for
+single-host, non-compose operation only. Any separately running client must select the same
+socket explicitly; compose instead supplies the shared-volume path above to every process.
+
 ---
 
 ## 1. QR Pairing Workflow
@@ -76,15 +81,16 @@ For headless environments where you cannot access the dashboard, use the bridge 
 
 ```bash
 # Enter the running bridge container or host and trigger QR generation:
-docker compose exec connector-whatsapp-user sh -c \
-  'curl -s -X POST --unix-socket /tmp/wa-bridge.sock http://bridge/pair/start | python3 -m json.tool'
+docker compose exec -T connector-whatsapp-user sh -c \
+  'curl -s -X POST --unix-socket /tmp/wa-bridge/bridge.sock http://bridge/pair/start | python3 -m json.tool'
 ```
 
 This returns a JSON payload with `qr_data_uri` (a base64-encoded PNG). Decode and display it:
 
 ```bash
 # Extract and decode the QR image to a file:
-curl -s -X POST --unix-socket /tmp/wa-bridge.sock http://bridge/pair/start \
+docker compose exec -T connector-whatsapp-user \
+  curl -s -X POST --unix-socket /tmp/wa-bridge/bridge.sock http://bridge/pair/start \
   | python3 -c "
 import json, sys, base64
 data = json.load(sys.stdin)
@@ -109,7 +115,9 @@ Alternatively, poll pairing status:
 ```bash
 # Poll until paired:
 for i in $(seq 1 20); do
-  STATUS=$(curl -s --unix-socket /tmp/wa-bridge.sock http://bridge/pair/poll | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+  STATUS=$(docker compose exec -T connector-whatsapp-user \
+    curl -s --unix-socket /tmp/wa-bridge/bridge.sock http://bridge/pair/poll \
+    | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
   echo "$(date +%H:%M:%S) — status: $STATUS"
   [ "$STATUS" = "paired" ] && break
   sleep 3
@@ -137,7 +145,9 @@ BridgeSubprocessManager: Bridge session invalidated (rc=2) — no restart; re-pa
 **API:**
 
 ```bash
-curl -s --unix-socket /tmp/wa-bridge.sock http://bridge/status | python3 -m json.tool
+docker compose exec -T connector-whatsapp-user \
+  curl -s --unix-socket /tmp/wa-bridge/bridge.sock http://bridge/status \
+  | python3 -m json.tool
 # Expired session shows: "state": "pair_required"
 ```
 
@@ -224,7 +234,8 @@ If the session is expired or invalidated, re-pair using the same QR workflow:
 
 ```bash
 # Check bridge status after re-pair:
-curl -s --unix-socket /tmp/wa-bridge.sock http://bridge/status \
+docker compose exec -T connector-whatsapp-user \
+  curl -s --unix-socket /tmp/wa-bridge/bridge.sock http://bridge/status \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state'], d.get('phone',''))"
 # Expected: connected +1...
 
@@ -331,7 +342,7 @@ hours. A hard ban results in permanent account suspension.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SWITCHBOARD_MCP_URL` | — (required) | MCP URL for the Switchboard butler |
-| `WA_BRIDGE_SOCKET` | `/tmp/wa-bridge.sock` | Unix socket path for bridge communication |
+| `WA_BRIDGE_SOCKET` | `/tmp/wa-bridge.sock` standalone; `/tmp/wa-bridge/bridge.sock` in compose | Unix socket path for bridge communication |
 | `WA_FLUSH_INTERVAL_S` | `600` | Seconds between per-chat buffer flushes |
 | `WA_BUFFER_MAX_MESSAGES` | `50` | Max buffered messages before force-flush |
 | `CONNECTOR_HEALTH_PORT` | `40082` | Port for the connector health endpoint |

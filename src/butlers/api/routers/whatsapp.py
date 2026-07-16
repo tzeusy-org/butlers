@@ -45,7 +45,10 @@ from butlers.api.models.whatsapp import (
     WhatsAppState,
     WhatsAppStatusResponse,
 )
-from butlers.connectors.bridge_manager import DEFAULT_INVALIDATED_SESSION_THRESHOLD_S
+from butlers.connectors.bridge_manager import (
+    DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
+    DEFAULT_SHARED_BRIDGE_SOCKET,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +58,7 @@ router = APIRouter(prefix="/api/connectors/whatsapp", tags=["whatsapp"])
 # Configuration
 # ---------------------------------------------------------------------------
 
-_DEFAULT_BRIDGE_SOCKET = "/tmp/wa-bridge.sock"
+_DEFAULT_BRIDGE_SOCKET = DEFAULT_SHARED_BRIDGE_SOCKET
 _BRIDGE_TIMEOUT = 5.0  # seconds
 
 # One quick retry for /pair/start when the bridge is momentarily unreachable.
@@ -77,7 +80,7 @@ _WHATSAPP_CONNECTOR_TYPE = "whatsapp_user_client"
 def _get_bridge_socket_path() -> str:
     """Return the path to the Go bridge Unix socket.
 
-    Reads WHATSAPP_BRIDGE_SOCKET env var; falls back to /tmp/wa-bridge.sock.
+    Reads WHATSAPP_BRIDGE_SOCKET env var; falls back to /tmp/wa-bridge/bridge.sock.
     Override via app.dependency_overrides[_get_bridge_socket_path] in tests.
     """
     return os.environ.get("WHATSAPP_BRIDGE_SOCKET", _DEFAULT_BRIDGE_SOCKET)

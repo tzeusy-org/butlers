@@ -43,10 +43,11 @@ import (
 )
 
 const (
-	pairingTimeout = 120 * time.Second
-	exitOK         = 0
-	exitTimeout    = 1
-	exitInvalidated = 2
+	defaultListenAddr = "unix:///tmp/wa-bridge.sock"
+	pairingTimeout    = 120 * time.Second
+	exitOK            = 0
+	exitTimeout       = 1
+	exitInvalidated   = 2
 )
 
 func main() {
@@ -68,10 +69,17 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  WA_BRIDGE_DSN=<dsn> whatsapp-bridge [--listen unix:///tmp/wa-bridge.sock]")
+	fmt.Fprintf(os.Stderr, "  WA_BRIDGE_DSN=<dsn> whatsapp-bridge [--listen %s]\n", defaultListenAddr)
 	fmt.Fprintln(os.Stderr, "  WA_BRIDGE_DSN=<dsn> whatsapp-bridge pair")
 	fmt.Fprintln(os.Stderr, "  WA_BRIDGE_DSN=<dsn> whatsapp-bridge status")
 	fmt.Fprintln(os.Stderr, "  # --db-dsn flag still accepted as explicit override")
+}
+
+func newBridgeFlagSet(errorHandling flag.ErrorHandling) (*flag.FlagSet, *string, *string) {
+	fs := flag.NewFlagSet("bridge", errorHandling)
+	dbDSN := fs.String("db-dsn", envOrDefault("WA_BRIDGE_DSN", ""), "PostgreSQL DSN (overrides WA_BRIDGE_DSN env var)")
+	listenAddr := fs.String("listen", envOrDefault("WA_LISTEN", defaultListenAddr), "Listen address (unix:// or tcp://)")
+	return fs, dbDSN, listenAddr
 }
 
 // ------------------------------------------------------------------
@@ -79,9 +87,7 @@ func printUsage() {
 // ------------------------------------------------------------------
 
 func runBridge(args []string) {
-	fs := flag.NewFlagSet("bridge", flag.ExitOnError)
-	dbDSN := fs.String("db-dsn", envOrDefault("WA_BRIDGE_DSN", ""), "PostgreSQL DSN (overrides WA_BRIDGE_DSN env var)")
-	listenAddr := fs.String("listen", envOrDefault("WA_LISTEN", "unix:///tmp/wa-bridge.sock"), "Listen address (unix:// or tcp://)")
+	fs, dbDSN, listenAddr := newBridgeFlagSet(flag.ExitOnError)
 	_ = fs.Parse(args)
 
 	// exitCode is set by event handlers before cancelling context, so that

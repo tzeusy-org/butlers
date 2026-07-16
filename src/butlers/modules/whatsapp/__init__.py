@@ -26,6 +26,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from butlers.connectors.bridge_manager import DEFAULT_SHARED_BRIDGE_SOCKET
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ _SEND_DISABLED_ERROR = (
 # ``wa_bridge_socket`` volume mount; ``WHATSAPP_BRIDGE_SOCKET`` overrides it (the
 # same env var the dashboard WhatsApp router reads — kept in lockstep so the two
 # client surfaces always target the one bridge the connector owns).
-_DEFAULT_BRIDGE_SOCKET = "/tmp/wa-bridge/bridge.sock"
+_DEFAULT_BRIDGE_SOCKET = DEFAULT_SHARED_BRIDGE_SOCKET
 
 
 def _default_bridge_socket() -> str:

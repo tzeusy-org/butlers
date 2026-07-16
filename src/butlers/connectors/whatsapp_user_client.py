@@ -60,6 +60,7 @@ from typing import Any
 
 from butlers.connectors.bridge_manager import (
     DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
+    DEFAULT_STANDALONE_BRIDGE_SOCKET,
     BridgeConfig,
     BridgeSubprocessManager,
 )
@@ -180,7 +181,7 @@ class WhatsAppUserClientConnectorConfig:
     endpoint_identity: str = field(default="")
 
     # Bridge config
-    bridge_socket: str = "/tmp/wa-bridge.sock"
+    bridge_socket: str = DEFAULT_STANDALONE_BRIDGE_SOCKET
 
     # Backfill
     backfill_window_h: int | None = None
@@ -233,7 +234,7 @@ class WhatsAppUserClientConnectorConfig:
         provider = os.environ.get("CONNECTOR_PROVIDER", "whatsapp")
         channel = os.environ.get("CONNECTOR_CHANNEL", "whatsapp_user_client")
 
-        bridge_socket = os.environ.get("WA_BRIDGE_SOCKET", "/tmp/wa-bridge.sock")
+        bridge_socket = os.environ.get("WA_BRIDGE_SOCKET", DEFAULT_STANDALONE_BRIDGE_SOCKET)
 
         backfill_window_str = os.environ.get("CONNECTOR_BACKFILL_WINDOW_H")
         backfill_window_h = int(backfill_window_str) if backfill_window_str else None

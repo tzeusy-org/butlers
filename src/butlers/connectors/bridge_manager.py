@@ -27,6 +27,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# The bridge owner has two deliberate deployment modes:
+# - standalone processes use a flat /tmp path so no parent directory setup is required;
+# - compose clients use a named volume mounted at /tmp/wa-bridge.
+# Keep these names explicit so a client default is never mistaken for the standalone
+# listener default (bu-hrfd0).
+DEFAULT_STANDALONE_BRIDGE_SOCKET = "/tmp/wa-bridge.sock"
+DEFAULT_SHARED_BRIDGE_SOCKET = "/tmp/wa-bridge/bridge.sock"
+
 # ---------------------------------------------------------------------------
 # Exit-code classification
 # ---------------------------------------------------------------------------
@@ -86,7 +94,7 @@ class BridgeConfig:
     Values here are merged on top of the inherited process environment.
     """
 
-    bridge_socket: str = "/tmp/wa-bridge.sock"
+    bridge_socket: str = DEFAULT_STANDALONE_BRIDGE_SOCKET
     """Unix domain socket path on which the bridge listens."""
 
     health_poll_interval_s: float = 30.0
