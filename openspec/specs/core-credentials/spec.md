@@ -1,12 +1,12 @@
 # Credentials
 
 ## Purpose
-Provides credential storage, resolution, and validation for butler daemons, including a generic DB-backed secret store (`butler_secrets`), Google OAuth credential lifecycle management, environment variable validation, and inline secret detection.
+Provides credential storage, resolution, validation, expiry-state derivation, and proactive lifecycle notifications for butler daemons, including a generic DB-backed secret store (`butler_secrets`), Google OAuth credential lifecycle management, environment variable validation, and inline secret detection.
 
 ## Requirements
 
 ### Requirement: CredentialStore Interface
-The `CredentialStore` class provides async CRUD operations on the `butler_secrets` DB table: `store()`, `load()`, `resolve()`, `has()`, `delete()`, and `list_secrets()`. The store is backed by an asyncpg pool and supports fallback pools for shared credential lookup.
+The `CredentialStore` class SHALL provide async CRUD operations on the `butler_secrets` DB table: `store()`, `load()`, `resolve()`, `has()`, `delete()`, and `list_secrets()`. The store is backed by an asyncpg pool and supports fallback pools for shared credential lookup.
 
 #### Scenario: Store a secret
 - **WHEN** `store.store(key, value, category, description, is_sensitive)` is called
@@ -42,14 +42,14 @@ The `CredentialStore` class provides async CRUD operations on the `butler_secret
 - **THEN** the lookup silently returns `None` for that pool (no crash)
 
 ### Requirement: Secret Schema Provisioning
-`ensure_secrets_schema(pool)` creates the `butler_secrets` table and category index if they do not exist, using `CREATE TABLE IF NOT EXISTS`.
+`ensure_secrets_schema(pool)` SHALL create the `butler_secrets` table and category index if they do not exist, using `CREATE TABLE IF NOT EXISTS`.
 
 #### Scenario: Table provisioned on first call
 - **WHEN** `ensure_secrets_schema(pool)` is called on a fresh database
 - **THEN** the `butler_secrets` table and `ix_butler_secrets_category` index are created
 
 ### Requirement: Google OAuth Credential Lifecycle
-Google credentials are split across two stores: app credentials (client_id, client_secret, scope) in `butler_secrets` under the `google` category, and the refresh token in `public.entity_info` on the account's companion entity (resolved via `public.google_accounts`). The `GoogleCredentials` Pydantic model validates non-empty fields. Secret values (client_secret, refresh_token) are redacted in `__repr__` and `__str__`.
+Google credentials SHALL be split across two stores: app credentials (client_id, client_secret, scope) in `butler_secrets` under the `google` category, and the refresh token in `public.entity_info` on the account's companion entity (resolved via `public.google_accounts`). The `GoogleCredentials` Pydantic model validates non-empty fields. Secret values (client_secret, refresh_token) are redacted in `__repr__` and `__str__`.
 
 #### Scenario: Store full Google credentials
 - **WHEN** `store_google_credentials(store, client_id, client_secret, refresh_token, scope, account=<email_or_id>)` is called
@@ -99,7 +99,7 @@ Google credentials are split across two stores: app credentials (client_id, clie
 - **AND** all `google_accounts` rows are updated to status `'revoked'`
 
 ### Requirement: Resolve Google Credentials (DB-Only)
-`resolve_google_credentials(store, caller, account=None)` loads credentials from DB only. Raises `MissingGoogleCredentialsError` if not available. The `account` parameter selects which Google account's refresh token to use.
+`resolve_google_credentials(store, caller, account=None)` SHALL load credentials from DB only and raise `MissingGoogleCredentialsError` if they are unavailable. The `account` parameter selects which Google account's refresh token to use.
 
 #### Scenario: Credentials available for specific account
 - **WHEN** Google credentials are stored for `account = "work@gmail.com"`
@@ -141,7 +141,7 @@ New helper functions SHALL provide account-to-entity resolution for credential o
 - **THEN** a list of `(account_id, email, entity_id, is_primary)` tuples is returned for all active accounts
 
 ### Requirement: Startup Guard for Google-Dependent Components
-The `startup_guard` module provides `check_google_credentials()` (sync, returns remediation status), `check_google_credentials_with_db(conn)` (async, DB-aware), and `require_google_credentials_or_exit()` (hard-exit guard for connectors).
+The `startup_guard` module SHALL provide `check_google_credentials()` (sync, returns remediation status), `check_google_credentials_with_db(conn)` (async, DB-aware), and `require_google_credentials_or_exit()` (hard-exit guard for connectors).
 
 #### Scenario: DB-aware check passes
 - **WHEN** `check_google_credentials_with_db(conn)` is called and credentials exist in DB
@@ -152,7 +152,7 @@ The `startup_guard` module provides `check_google_credentials()` (sync, returns 
 - **THEN** a formatted error is printed to stderr and `sys.exit(1)` is called
 
 ### Requirement: Environment Variable Credential Validation
-`validate_credentials()` checks `butler.env.required` and module credential env vars at startup. Missing required vars produce an aggregated `CredentialError`. Optional vars log warnings.
+`validate_credentials()` SHALL check `butler.env.required` and module credential env vars at startup. Missing required vars produce an aggregated `CredentialError`. Optional vars log warnings.
 
 #### Scenario: Missing required env var
 - **WHEN** `validate_credentials(env_required=["MY_KEY"])` is called and `MY_KEY` is not set
@@ -163,10 +163,15 @@ The `startup_guard` module provides `check_google_credentials()` (sync, returns 
 - **THEN** a warning is logged but no exception is raised
 
 ### Requirement: Async Core Credential Validation
-Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys, depending on the provider's `auth_mode` as configured in the CLI auth registry. API-key providers (e.g. Claude with `ANTHROPIC_API_KEY`) store their keys in the credential store via the dashboard Settings → CLI Runtime Authentication card. The `validate_core_credentials_async()` function is a no-op; credential availability is checked lazily at spawn time via `CredentialStore.resolve()`.
+Runtime authentication SHALL use either CLI-level OAuth tokens (device-code flow) or API keys, depending on the provider's `auth_mode` as configured in the CLI auth registry. API-key providers (e.g. Claude with `ANTHROPIC_API_KEY`) store their keys in the credential store via the dashboard Settings → CLI Runtime Authentication card. The `validate_core_credentials_async()` function is a no-op; credential availability is checked lazily at spawn time via `CredentialStore.resolve()`.
+
+#### Scenario: Core credential validation is lazy
+- **WHEN** `validate_core_credentials_async()` is called
+- **THEN** it SHALL not reject an unavailable runtime credential
+- **AND** the runtime resolves that credential lazily when it is spawned
 
 ### Requirement: Async Module Credential Validation
-`validate_module_credentials_async(module_credentials, credential_store)` checks each module's declared credential keys via `CredentialStore.resolve()`. Returns a dict of per-module missing keys (non-fatal, does not raise).
+`validate_module_credentials_async(module_credentials, credential_store)` SHALL check each module's declared credential keys via `CredentialStore.resolve()`. It returns a dict of per-module missing keys (non-fatal, does not raise).
 
 #### Scenario: Module credential resolvable
 - **WHEN** a module's credential key is found in DB or env
@@ -177,7 +182,7 @@ Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or 
 - **THEN** the module name and missing key appear in the returned dict
 
 ### Requirement: Inline Secret Detection
-`detect_secrets(config_values)` scans config string values for suspected inline secrets using prefix patterns (sk-, ghp_, xoxb-, etc.), base64-like strings, and key name heuristics. Returns advisory warning messages.
+`detect_secrets(config_values)` SHALL scan config string values for suspected inline secrets using prefix patterns (sk-, ghp_, xoxb-, etc.), base64-like strings, and key name heuristics. It returns advisory warning messages.
 
 #### Scenario: Known prefix detected
 - **WHEN** a config value starts with `sk-` (OpenAI pattern)
@@ -321,6 +326,7 @@ The audit action enum used by `public.audit_log` (originally specified by `redes
 | `revoked` | System override removed (per-butler `butler_secrets` row removed via `DELETE /api/secrets/system/<key>?target=<butler>`) |
 | `attempted` | OAuth dance initiated (begin endpoint called) but not yet completed |
 | `set` | New System secret created (first-time `POST /api/secrets/system/<key>`) |
+| `lifecycle_state_notified` | A direct proactive lifecycle notification was delivered for an attention state |
 
 These values SHALL be added to whichever enum or check constraint enforces the action vocabulary in `public.audit_log`. If the column is `TEXT` with a check constraint, the constraint is extended; if it is an enum type, the enum is altered.
 
@@ -366,3 +372,106 @@ Rationale: persisting a fingerprint creates a side-channel for offline brute-for
 - **WHEN** `GET /api/secrets/inventory` is called
 - **THEN** the secret value returned by the read query is hashed on-read with SHA-256 and truncated to the first 8 hex characters (`hashlib.sha256(value.encode()).hexdigest()[:8]`)
 - **AND** no DB column anywhere in the schema stores the fingerprint
+
+### Requirement: Expiring Credential State Derivation
+The credential inventory SHALL derive lifecycle state deterministically from the secret value, probe result, and known expiration rather than from a separate notification-only state machine. For every current credential category and provider, the imminent-expiry lead window is seven days; no non-default window is currently registered. `expired` takes precedence when `expires_at <= now`, `failing` takes precedence over an upcoming expiry when the latest probe failed, and `expiring` applies when a known future expiration is within the seven-day window. A set credential with no probe result outside that window remains `warn`; a successful probe outside that window is `ok`.
+
+#### Scenario: A known expiry becomes expiring before it expires
+- **WHEN** a set credential has an `expires_at` later than `now` but no more than seven days away
+- **AND** its latest probe is successful or absent
+- **THEN** the inventory state is `expiring`
+- **AND** it is not reported as `warn` merely because it has never been probed
+
+#### Scenario: Expiration and failed probes keep their higher-priority states
+- **WHEN** a set credential has an `expires_at` at or before `now`
+- **THEN** the inventory state is `expired` even if the latest probe also failed
+- **WHEN** a set credential has a future `expires_at` within seven days and its latest probe failed
+- **THEN** the inventory state is `failing`, not `expiring`
+
+#### Scenario: Google test-mode expiration is derived without inventing other expirations
+- **WHEN** a Google account is marked `google_health_test_mode=true` and has `last_token_refresh_at`
+- **THEN** its expiration is derived as that timestamp plus seven days before inventory state is derived
+- **AND** a non-test-mode provider without a known expiration remains without a fabricated expiration
+
+### Requirement: Proactive Credential Lifecycle Scan
+The dashboard API SHALL run a deterministic, zero-LLM lifecycle scan over the same system, CLI, and owner-default User credential projections that power `GET /api/secrets/inventory`. The scan SHALL consider only `expiring`, `failing`, and `expired` as owner-attention states; `warn` and display-only synthetic states are not proactive-notification triggers. Provider-managed System credentials with category `spotify` SHALL be excluded because Spotify's dedicated connector refresh and status path owns their actionable health.
+
+The scan SHALL run from the dashboard API lifespan after `DatabaseManager` initialization, with a default interval of 1,800 seconds and optional positive `SECRETS_LIFECYCLE_SCAN_INTERVAL_S` override. It SHALL sleep before its first scan, keep running after an unexpected scan error, and be cancelled and awaited at application shutdown. A non-positive interval MUST fall back to the default at API startup and be rejected by the loop when supplied directly.
+
+#### Scenario: The scan uses the inventory's credential scope
+- **WHEN** the lifecycle scan runs with its shared credential pool available
+- **THEN** it collects per-butler and shared System credentials, CLI credentials, and the owner-default User projection using the inventory-family fetches
+- **AND** it excludes shared `cli` and `cli-auth` rows from the System pass so they are not double-counted with the CLI family
+- **AND** it excludes Spotify-category System rows before the attention and delivery path
+
+#### Scenario: An attention state is found outside the dashboard
+- **WHEN** the scan observes a credential in `expiring`, `failing`, or `expired`
+- **THEN** it evaluates lifecycle delivery without requiring the owner to visit `/secrets`
+- **AND** it does not attempt delivery for an `ok` or `warn` credential
+
+#### Scenario: Per-butler collection is partially degraded
+- **WHEN** collection for one butler's System credentials fails
+- **THEN** the scan continues collecting healthy butlers and shared credential families
+- **AND** its summary includes the failed butler in `sources_degraded` rather than reporting a clean scan
+
+#### Scenario: The shared credential pool is unavailable
+- **WHEN** the dashboard API has no shared credential pool
+- **THEN** the lifecycle scan returns a zero-count no-op summary
+- **AND** it does not attempt an owner delivery
+
+### Requirement: Transition-Debounced Lifecycle Delivery
+The lifecycle scan SHALL use the canonical credential key as its delivery identity and compare the current attention state with the most recent `public.audit_log` row whose `action` is `lifecycle_state_notified` for that key. If the most recently delivered state equals the current state, the scan SHALL skip the delivery path. A different current attention state SHALL be eligible for another notification; a return to a previously notified state is still skipped when that state remains the latest delivered marker.
+
+Only a confirmed direct delivery MAY advance the marker: it appends `action="lifecycle_state_notified"`, `target=<canonical credential key>`, and `note=<delivered state>`. Deferred, suppressed, failed, and marker/audit-write-error paths SHALL leave the marker unadvanced so a later scan can retry instead of silently losing the condition. If the marker lookup fails, the scan SHALL treat the credential as not yet notified rather than suppressing a potentially actionable alert.
+
+This read-then-write debounce SHALL be operated with one dashboard-API replica. It does not provide a cross-replica claim or uniqueness guarantee; horizontal dashboard-API scaling requires a new concurrency contract before this lifecycle scan can be replicated.
+
+#### Scenario: One delivered attention state does not repeat every scan
+- **WHEN** the latest lifecycle marker for `u:google` has `note="expiring"` and the current state is `expiring`
+- **THEN** the scan sends no notification and records no new attention-ledger outcome for that credential
+
+#### Scenario: A later attention state is delivered
+- **WHEN** the latest lifecycle marker for a canonical credential key is `expiring` and the current state is `expired`
+- **THEN** the scan attempts an `expired` notification
+- **AND** after confirmed direct delivery with successful ledger and audit writes it appends a new marker with `note="expired"`
+
+### Requirement: Lifecycle Notification Remediation and Delivery Honesty
+The lifecycle notification SHALL identify the credential state and include a dashboard URL ending in `/secrets?focus=<URL-encoded canonical credential key>`. For a User credential whose catalogued provider is OAuth, it SHALL additionally include the clickable reauthorization URL `/api/oauth/<provider>/start`; non-OAuth credentials SHALL not receive that reauthorization URL.
+
+Lifecycle delivery SHALL use medium-priority owner Telegram delivery and the established notify-boundary order: (1) Switchboard `delivery_preferences` quiet-hours evaluation, (2) owner quiet-hours and context-bus suppression, then (3) recipient resolution and delivery. The first gate defers by placing a `notify.v1` envelope on Switchboard's deferred-notifications queue; the next gates suppress and rely on a later lifecycle scan. Every delivery decision SHALL be written to the attention ledger as `delivered`, `deferred`, `suppressed`, or `failed` with a machine-readable reason; `failed` and `deferred` are never interchangeable.
+
+For a failed transport delivery, or an unexpected error after a complete message and recipient are known, the scan SHALL best-effort enqueue one retry envelope on Switchboard's deferred-notifications queue with a 30-minute backoff (or the already-resolved quiet-hours delivery time). Before enqueueing it SHALL cancel pending envelopes for the same credential's state-independent `/secrets?focus=` fragment, so the latest state supersedes old retries. A later confirmed direct delivery SHALL cancel any remaining pending retry envelope for that fragment. Missing-recipient and pre-resolution failures SHALL be recorded as `failed` without a malformed retry envelope.
+
+#### Scenario: The owner gets an actionable OAuth remediation message
+- **WHEN** `u:google` transitions to `expiring` and direct delivery succeeds
+- **THEN** the message includes `/secrets?focus=u%3Agoogle`
+- **AND** it includes `/api/oauth/google/start`
+- **AND** the attention ledger records `outcome="delivered"` with a `state_transition:expiring` reason
+
+#### Scenario: Quiet hours defer without pretending the transition is delivered
+- **WHEN** Switchboard delivery preferences defer the medium-priority lifecycle notification
+- **THEN** a Switchboard `notify.v1` envelope is queued for its computed batch delivery time
+- **AND** the attention ledger records `outcome="deferred"` with reason `delivery_preferences_quiet_hours`
+- **AND** no lifecycle-state marker is appended before a confirmed direct delivery
+
+#### Scenario: A suppression is visible and retriable
+- **WHEN** owner quiet hours or an active `dnd` or `sleeping` context signal suppresses the lifecycle notification
+- **THEN** the attention ledger records `outcome="suppressed"` with the applicable machine-readable reason
+- **AND** no lifecycle-state marker is appended, so the next scan remains eligible to retry
+
+#### Scenario: A transport outage records failure and keeps only the latest retry
+- **WHEN** direct lifecycle delivery returns a transport failure for a credential that already has a pending retry envelope
+- **THEN** the prior pending envelope matching that credential's `/secrets?focus=` fragment is cancelled before the new envelope is queued
+- **AND** the attention ledger records `outcome="failed"`, a `delivery_error:<detail>` reason, and the retry envelope reference when enqueueing succeeded
+- **AND** no lifecycle-state marker is appended
+
+## Source References
+
+- Non-Negotiable Rule 1 (`about/heart-and-soul/vision.md`): the single owner controls the instance and receives actionable credential remediation without exposing secret values.
+- Non-Negotiable Rule 4 (`about/heart-and-soul/vision.md`): inventory-state derivation and the background scan are deterministic infrastructure, not LLM judgment.
+- Non-Negotiable Rule 7 (`about/heart-and-soul/vision.md`): the job uses the established notification boundary instead of taking ownership of transport-specific connector behavior.
+- RFC 0011 (Proactive Insight Delivery Protocol), especially Amendment 1: proactive egress is quiet-hours/context-aware and records durable, honest delivery outcomes in the attention ledger.
+- `openspec/specs/core-notify/spec.md`: owner-notification outcome vocabulary and failure semantics.
+- `openspec/specs/time-aware-delivery/spec.md`: deferred-notification storage, retry-envelope supersession, and flush behavior.
+- `src/butlers/api/routers/secrets_v2.py`: shared inventory-state derivation and known-expiry handling.
+- `src/butlers/jobs/secrets_lifecycle.py` and `src/butlers/api/app.py`: dashboard-lifespan scan, owner delivery, debounce, and shutdown behavior.
