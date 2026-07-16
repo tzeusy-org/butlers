@@ -220,7 +220,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
       // Optimistic user message
       const userMessage: Message = {
-        id: `optimistic-user-${Date.now()}`,
+        // The backend retry identity also identifies this local optimistic
+        // bubble, so retrying one logical message cannot add another bubble.
+        id: `optimistic-user-${messageId}`,
         conversation_id: activeConversationId ?? "",
         role: "user",
         content: trimmed,
@@ -234,7 +236,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         request_id: null,
         created_at: new Date().toISOString(),
       };
-      setLocalMessages((prev) => [...prev, userMessage]);
+      setLocalMessages((prev) =>
+        prev.some((message) => message.id === userMessage.id) ? prev : [...prev, userMessage],
+      );
 
       let currentConversationId = activeConversationId;
 

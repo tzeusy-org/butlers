@@ -480,6 +480,9 @@ describe("FloatingChatWidget — send-error classification", () => {
       message_id: firstPayload.message_id,
       page_context: { route: "/" },
     });
+    // A retry is the same logical message, so it must retain the first
+    // optimistic bubble rather than append a duplicate alongside it.
+    expect(screen.getAllByText("hello switchboard")).toHaveLength(1);
   });
 
   it("shows an inspect-session banner with a session link on SESSION_TIMEOUT", async () => {
