@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import httpx
 import pytest
 
@@ -78,6 +79,62 @@ async def test_notification_stats_flags_source_unavailable_when_pool_unreachable
     body = resp.json()
     assert body["data"]["total"] == 0
     assert body["data"]["source_available"] is False
+
+
+@pytest.mark.parametrize("path", ["/api/notifications", "/api/butlers/finance/notifications"])
+@pytest.mark.parametrize("query_method", ["fetchval", "fetch"], ids=["count", "rows"])
+async def test_notification_list_query_failure_returns_degraded_envelope(app, path, query_method):
+    """A live pool can fail during either notification-list database query."""
+    mock_db, pool = _make_available_db()
+    getattr(pool, query_method).side_effect = ConnectionError("connection reset by peer")
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get(path)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"] == {"total": 0, "offset": 0, "limit": 50, "has_more": False}
+    assert body["source_available"] is False
+
+
+async def test_notification_list_missing_table_remains_available_empty_page(app):
+    """An unmigrated notifications table is legitimate absence, not degradation."""
+    mock_db, pool = _make_available_db()
+    pool.fetchval.side_effect = asyncpg.exceptions.UndefinedTableError(
+        'relation "notifications" does not exist'
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/notifications")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["source_available"] is True
+
+
+async def test_notification_list_does_not_mask_response_mapping_errors(app):
+    """Only database query failures receive the degraded page fallback."""
+    mock_db, pool = _make_available_db()
+    pool.fetch.return_value = [{}]
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/notifications")
+
+    assert resp.status_code == 500
 
 
 async def test_list_notifications_reports_source_available_on_success(app):

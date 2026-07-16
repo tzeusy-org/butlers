@@ -200,27 +200,36 @@ async def _query_notifications(
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    # Count query
-    count_sql = f"SELECT count(*) FROM notifications{where_clause}"
-    count_row = await pool.fetchval(count_sql, *args)
-    total = count_row or 0
+    try:
+        # Count query
+        count_sql = f"SELECT count(*) FROM notifications{where_clause}"
+        count_row = await pool.fetchval(count_sql, *args)
+        total = count_row or 0
 
-    # Data query — compute effective_status: a failed notification is "retried"
-    # when a later sent notification exists in the same session/channel/message.
-    data_sql = (
-        f"SELECT id, source_butler, channel, recipient, message, metadata, "
-        f"status, error, session_id, trace_id, created_at, "
-        f"CASE "
-        f"  WHEN status = 'failed' AND {_RETRIED_EXISTS_SQL} THEN 'retried' "
-        f"  ELSE status "
-        f"END AS effective_status "
-        f"FROM notifications{where_clause} "
-        f"ORDER BY created_at DESC "
-        f"OFFSET ${idx} LIMIT ${idx + 1}"
-    )
-    args.extend([offset, limit])
+        # Data query — compute effective_status: a failed notification is "retried"
+        # when a later sent notification exists in the same session/channel/message.
+        data_sql = (
+            f"SELECT id, source_butler, channel, recipient, message, metadata, "
+            f"status, error, session_id, trace_id, created_at, "
+            f"CASE "
+            f"  WHEN status = 'failed' AND {_RETRIED_EXISTS_SQL} THEN 'retried' "
+            f"  ELSE status "
+            f"END AS effective_status "
+            f"FROM notifications{where_clause} "
+            f"ORDER BY created_at DESC "
+            f"OFFSET ${idx} LIMIT ${idx + 1}"
+        )
+        args.extend([offset, limit])
 
-    rows = await pool.fetch(data_sql, *args)
+        rows = await pool.fetch(data_sql, *args)
+    except Exception as exc:
+        if _is_missing_notifications_table_error(exc):
+            raise
+        logger.warning(
+            "Switchboard notifications query failed; returning a degraded empty page",
+            exc_info=True,
+        )
+        return _empty_notification_page(offset=offset, limit=limit, source_available=False)
 
     notifications = [
         NotificationSummary(
