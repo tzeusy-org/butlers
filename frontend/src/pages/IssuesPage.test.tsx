@@ -316,6 +316,38 @@ describe("IssuesPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
     container.remove();
   });
 
+  it("a restores the selected row via undismiss.mutate in the acknowledged view", () => {
+    const issue = makeIssue({ dismissed: true });
+    const dismissMutate = vi.fn();
+    const undismissMutate = vi.fn();
+    setupDefaults([issue]);
+    vi.mocked(useDismissIssue).mockReturnValue({
+      mutate: dismissMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useDismissIssue>);
+    vi.mocked(useUndismissIssue).mockReturnValue({
+      mutate: undismissMutate,
+      isPending: false,
+    } as unknown as ReturnType<typeof useUndismissIssue>);
+    const { container, root } = renderPage("/issues");
+
+    const showAcknowledged = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Show acknowledged",
+    );
+    expect(showAcknowledged).toBeTruthy();
+    act(() => showAcknowledged!.click());
+    act(() => press("j"));
+    act(() => press("a"));
+
+    expect(undismissMutate).toHaveBeenCalledTimes(1);
+    expect(undismissMutate).toHaveBeenCalledWith(issue.issue_key);
+    expect(dismissMutate).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Restore selected");
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
   it("renders the footer hint strip advertising the exact bound keys", () => {
     setupDefaults([makeIssue()]);
     const { container, root } = renderPage("/issues");
