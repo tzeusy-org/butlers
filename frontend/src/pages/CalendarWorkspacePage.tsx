@@ -5456,6 +5456,12 @@ export default function CalendarWorkspacePage() {
                   acceptProposalMutation.mutate(
                     { proposalId },
                     {
+                      onError: (error) =>
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Failed to accept the proposed fix.",
+                        ),
                       onSettled: () =>
                         queryClient.invalidateQueries({ queryKey: ["calendar-conflicts"] }),
                     },
