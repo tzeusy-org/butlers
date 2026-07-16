@@ -60,12 +60,16 @@ import asyncpg
 
 from butlers.chronicler.aggregations import category_for
 from butlers.chronicler.models import Layer
-from butlers.chronicler.storage import upsert_mined_routine
+from butlers.chronicler.storage import record_missing_mined_routines, upsert_mined_routine
 
 # ── Tunables ────────────────────────────────────────────────────────────────
 
 DEFAULT_WEEKS = 6
 DEFAULT_TIMEZONE = "Asia/Singapore"
+# A mined routine remains reviewable through two evidence-backed misses. The
+# third consecutive miss disables it, so it cannot keep driving occupation
+# inference forever. Declared schedules never enter this policy.
+STALE_MISS_CYCLE_THRESHOLD = 3
 
 SLOT_MINUTES = 30
 SLOTS_PER_DAY = (24 * 60) // SLOT_MINUTES  # 48
@@ -338,7 +342,10 @@ async def mine_routines(
         raise ValueError(f"Unknown timezone: {timezone!r}") from exc
 
     now = now or datetime.now(UTC)
-    local_now = now.astimezone(tzinfo)
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    mined_at = now.astimezone(UTC)
+    local_now = mined_at.astimezone(tzinfo)
     mining_end_date = local_now.date()
     mining_start_date = mining_end_date - timedelta(days=weeks * 7)
 
@@ -399,8 +406,22 @@ async def mine_routines(
             support_count=candidate.support_count,
             confidence=candidate.confidence,
             evidence_summary=evidence_summary,
+            confirmed_at=mined_at,
         )
         routines_written += 1
+
+    # An empty source window is not evidence that a prior pattern disappeared;
+    # do not age routines out during a feeder outage or completely dark window.
+    # Once at least one primary activity episode was inspected, a candidate's
+    # absence is evidence-backed enough to count one bounded missed cycle.
+    staleness = None
+    if episodes:
+        staleness = await record_missing_mined_routines(
+            pool,
+            detected_dow_masks=[candidate.dow_mask for candidate in candidates],
+            missed_at=mined_at,
+            auto_disable_after_misses=STALE_MISS_CYCLE_THRESHOLD,
+        )
 
     return {
         "weeks": weeks,
@@ -411,6 +432,9 @@ async def mine_routines(
         "point_events_observed": point_event_count,
         "candidates_found": len(candidates),
         "routines_written": routines_written,
+        "staleness_evaluated": staleness is not None,
+        "routines_marked_stale": staleness.routines_marked_stale if staleness else 0,
+        "routines_auto_disabled": staleness.routines_auto_disabled if staleness else 0,
     }
 
 
@@ -425,6 +449,7 @@ __all__ = [
     "RoutineCandidate",
     "SLOTS_PER_DAY",
     "SLOT_MINUTES",
+    "STALE_MISS_CYCLE_THRESHOLD",
     "compute_routine_candidates",
     "mine_routines",
 ]

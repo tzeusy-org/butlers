@@ -58,6 +58,14 @@ function draftFromRoutine(r: ChroniclerRoutine): ScheduleDraft {
   };
 }
 
+function formatConfirmationTimestamp(value: string | null): string {
+  if (!value) return "not yet observed";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
 // ── Day-of-week toggle row ─────────────────────────────────────────────────
 
 function DayPicker({
@@ -220,6 +228,9 @@ function ScheduleForm({
 
 function RoutineRow({ routine }: { routine: ChroniclerRoutine }) {
   const isDeclared = routine.origin === "declared";
+  const missedMineLabel = `${routine.missed_mine_cycles} missed ${
+    routine.missed_mine_cycles === 1 ? "mine" : "mines"
+  }`;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ScheduleDraft>(() => draftFromRoutine(routine));
 
@@ -263,12 +274,36 @@ function RoutineRow({ routine }: { routine: ChroniclerRoutine }) {
                 disabled
               </Badge>
             )}
+            {!isDeclared && routine.stale && (
+              <Badge
+                variant="outline"
+                className="text-[10px]"
+                data-testid={`routine-staleness-${routine.id}`}
+              >
+                {missedMineLabel}
+              </Badge>
+            )}
           </div>
           <p className="text-xs text-muted-foreground">
             {formatDowMask(routine.dow_mask)} ·{" "}
             {formatWindow(routine.window_start_local, routine.window_end_local)} ·{" "}
             {routine.timezone}
           </p>
+          {!isDeclared && (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid={`routine-last-confirmed-${routine.id}`}
+            >
+              Last confirmed:{" "}
+              {routine.last_confirmed_at ? (
+                <time dateTime={routine.last_confirmed_at}>
+                  {formatConfirmationTimestamp(routine.last_confirmed_at)}
+                </time>
+              ) : (
+                "not yet observed"
+              )}
+            </p>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-2">

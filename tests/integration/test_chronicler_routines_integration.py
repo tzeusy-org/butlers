@@ -25,10 +25,11 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.models import Episode, Layer
-from butlers.chronicler.routines import mine_routines
+from butlers.chronicler.routines import STALE_MISS_CYCLE_THRESHOLD, mine_routines
 from butlers.chronicler.storage import (
     get_routine,
     list_routines,
+    record_missing_mined_routines,
     update_routine,
     upsert_episode,
     upsert_mined_routine,
@@ -163,6 +164,193 @@ async def test_upsert_mined_routine_preserves_owner_edits_on_remine(pool) -> Non
     assert remined.window_end_local == time(18, 0)
     assert remined.support_count == 29
     assert remined.confidence == pytest.approx(0.97)
+
+
+async def test_remine_reconfirms_stale_mined_routine_without_resurrecting_owner_disable(
+    pool,
+) -> None:
+    """A re-detected pattern gets fresh evidence metadata, but a prior owner
+    disable remains authoritative rather than being silently resurrected."""
+    initial_confirmation = datetime(2026, 6, 1, tzinfo=UTC)
+    routine = await upsert_mined_routine(
+        pool,
+        dow_mask=0b0011111,
+        window_start_local=time(9, 30),
+        window_end_local=time(19, 30),
+        label="Mon-Fri 09:30-19:30",
+        support_count=25,
+        confidence=0.83,
+        evidence_summary={},
+        confirmed_at=initial_confirmation,
+    )
+    assert routine.last_confirmed_at == initial_confirmation
+    await update_routine(pool, routine.id, enabled=False)
+
+    missed = await record_missing_mined_routines(
+        pool,
+        detected_dow_masks=[],
+        missed_at=datetime(2026, 6, 8, tzinfo=UTC),
+        auto_disable_after_misses=STALE_MISS_CYCLE_THRESHOLD,
+    )
+    assert missed.routines_marked_stale == 1
+
+    reconfirmed_at = datetime(2026, 6, 15, tzinfo=UTC)
+    remined = await upsert_mined_routine(
+        pool,
+        dow_mask=0b0011111,
+        window_start_local=time(9, 0),
+        window_end_local=time(18, 0),
+        label="would clobber owner label if it were not protected",
+        support_count=29,
+        confidence=0.97,
+        evidence_summary={"days_observed": 30},
+        confirmed_at=reconfirmed_at,
+    )
+
+    assert remined.id == routine.id
+    assert remined.enabled is False
+    assert remined.last_confirmed_at == reconfirmed_at
+    assert remined.missed_mine_cycles == 0
+
+
+async def test_missing_mined_pattern_auto_disables_after_three_evidence_backed_cycles(pool) -> None:
+    """Only mined rows age out, after an explicit three-cycle grace period.
+
+    A declared schedule can share its weekday mask, but reconciliation must
+    never touch its enabled state or mine-history fields.
+    """
+    mined = await upsert_mined_routine(
+        pool,
+        dow_mask=0b0011111,
+        window_start_local=time(9, 30),
+        window_end_local=time(19, 30),
+        label="Mined work pattern",
+        support_count=25,
+        confidence=0.83,
+        evidence_summary={},
+        confirmed_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    declared = await pool.fetchrow(
+        """
+        INSERT INTO routines (dow_mask, window_start_local, window_end_local, label, origin)
+        VALUES ($1, $2, $3, $4, 'declared')
+        RETURNING *
+        """,
+        0b0011111,
+        time(9, 0),
+        time(18, 0),
+        "Owner-declared work hours",
+    )
+    assert declared is not None
+
+    for cycle in range(1, STALE_MISS_CYCLE_THRESHOLD + 1):
+        result = await record_missing_mined_routines(
+            pool,
+            detected_dow_masks=[],
+            missed_at=datetime(2026, 6, 1 + cycle * 7, tzinfo=UTC),
+            auto_disable_after_misses=STALE_MISS_CYCLE_THRESHOLD,
+        )
+        assert result.routines_marked_stale == 1
+        assert result.routines_auto_disabled == (1 if cycle == STALE_MISS_CYCLE_THRESHOLD else 0)
+
+    all_routines = {routine.id: routine for routine in await list_routines(pool)}
+    assert all_routines[mined.id].enabled is False
+    assert all_routines[mined.id].missed_mine_cycles == STALE_MISS_CYCLE_THRESHOLD
+    assert all_routines[mined.id].last_confirmed_at == datetime(2026, 6, 1, tzinfo=UTC)
+
+    declared_routine = next(
+        routine for routine in all_routines.values() if routine.origin.value == "declared"
+    )
+    assert declared_routine.enabled is True
+    assert declared_routine.missed_mine_cycles == 0
+    assert declared_routine.last_confirmed_at is None
+
+
+async def test_auto_disabled_mined_pattern_is_not_returned_to_occupation_inference(pool) -> None:
+    """Occupation inference consumes the enabled-only routine read, so a
+    stale mined pattern cannot keep emitting occupation blocks indefinitely."""
+    mined = await upsert_mined_routine(
+        pool,
+        dow_mask=0b0000001,
+        window_start_local=time(9, 0),
+        window_end_local=time(17, 0),
+        label="Monday pattern",
+        support_count=6,
+        confidence=1.0,
+        evidence_summary={},
+        confirmed_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    for cycle in range(1, STALE_MISS_CYCLE_THRESHOLD + 1):
+        await record_missing_mined_routines(
+            pool,
+            detected_dow_masks=[],
+            missed_at=datetime(2026, 6, 1 + cycle * 7, tzinfo=UTC),
+            auto_disable_after_misses=STALE_MISS_CYCLE_THRESHOLD,
+        )
+
+    enabled_for_inference = await list_routines(pool, enabled_only=True)
+    assert mined.id not in {routine.id for routine in enabled_for_inference}
+
+
+async def test_miner_does_not_age_existing_routine_when_primary_evidence_is_empty(pool) -> None:
+    """A dark/empty source window cannot be treated as proof that a pattern
+    disappeared, so it leaves mine history and inference eligibility alone."""
+    routine = await upsert_mined_routine(
+        pool,
+        dow_mask=0b0000001,
+        window_start_local=time(9, 0),
+        window_end_local=time(17, 0),
+        label="Monday pattern",
+        support_count=6,
+        confidence=1.0,
+        evidence_summary={},
+        confirmed_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+
+    result = await mine_routines(
+        pool,
+        weeks=6,
+        timezone="Asia/Singapore",
+        now=datetime(2026, 7, 13, tzinfo=UTC),
+    )
+    refreshed = await get_routine(pool, routine.id)
+
+    assert result["staleness_evaluated"] is False
+    assert result["routines_marked_stale"] == 0
+    assert refreshed is not None
+    assert refreshed.enabled is True
+    assert refreshed.missed_mine_cycles == 0
+
+
+async def test_routines_api_exposes_truthful_staleness_metadata_for_review(pool) -> None:
+    confirmed_at = datetime(2026, 6, 1, tzinfo=UTC)
+    await upsert_mined_routine(
+        pool,
+        dow_mask=0b0000001,
+        window_start_local=time(9, 0),
+        window_end_local=time(17, 0),
+        label="Monday pattern",
+        support_count=6,
+        confidence=1.0,
+        evidence_summary={},
+        confirmed_at=confirmed_at,
+    )
+    await record_missing_mined_routines(
+        pool,
+        detected_dow_masks=[],
+        missed_at=datetime(2026, 6, 8, tzinfo=UTC),
+        auto_disable_after_misses=STALE_MISS_CYCLE_THRESHOLD,
+    )
+
+    transport = _build_chronicler_api(pool)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/chronicler/routines")
+
+    assert response.status_code == 200, response.text
+    row = response.json()["data"][0]
+    assert row["last_confirmed_at"] == confirmed_at.isoformat().replace("+00:00", "Z")
+    assert row["missed_mine_cycles"] == 1
+    assert row["stale"] is True
 
 
 async def test_declared_origin_not_constrained_by_mined_index(pool) -> None:

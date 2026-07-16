@@ -287,6 +287,10 @@ class Routine:
     evidence_summary: dict[str, Any] = field(default_factory=dict)
     origin: RoutineOrigin = RoutineOrigin.MINED
     enabled: bool = True
+    # Mining lifecycle metadata. Declared routines retain the migration defaults
+    # (``None`` / zero) because only mined evidence can confirm or miss them.
+    last_confirmed_at: datetime | None = None
+    missed_mine_cycles: int = 0
     id: UUID | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

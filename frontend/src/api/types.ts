@@ -6095,6 +6095,10 @@ export interface ChroniclerEpisodeExplainResponse {
  *    are refreshed by the miner (not owner-editable), but enable/label are.
  *  - `"declared"` — owner bootstrap ("I work Mon-Fri 09:30-19:30 at Acme");
  *    fully owner-editable and deletable.
+ *
+ * Mined rows expose their evidence lifecycle for owner review. A `stale` row
+ * has missed one or more evidence-backed weekly mining runs; a declared row
+ * is never made stale by the miner.
  */
 export interface ChroniclerRoutine {
   id: string;
@@ -6111,6 +6115,12 @@ export interface ChroniclerRoutine {
   evidence_summary: Record<string, unknown>;
   origin: "mined" | "declared";
   enabled: boolean;
+  /** Most recent miner re-detection; null for owner-declared routines. */
+  last_confirmed_at: string | null;
+  /** Consecutive evidence-backed mining runs that did not re-detect this row. */
+  missed_mine_cycles: number;
+  /** Whether a mined row has missed at least one mining cycle. */
+  stale: boolean;
   created_at: string;
   updated_at: string;
 }

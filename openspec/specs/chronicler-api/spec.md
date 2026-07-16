@@ -190,6 +190,28 @@ chronicler schema itself; this endpoint runs with the chronicler pool that can.
 - **AND** an unknown or expired `interview_id`, or an unparseable `answer`,
   SHALL return `200` with an `error` status rather than raising a server error
 
+### Requirement: Routine Review Lifecycle Visibility
+
+`GET /api/chronicler/routines` SHALL make the evidence lifecycle of a mined
+routine reviewable without attributing an owner choice to the system.
+
+#### Scenario: Routine response carries factual mining status
+
+- **WHEN** the API returns a routine row
+- **THEN** it SHALL include `last_confirmed_at` (nullable),
+  `missed_mine_cycles` (non-negative integer), and `stale` (boolean)
+- **AND** `stale` SHALL be true only when `origin = 'mined'` and the row has
+  one or more missed mining cycles
+- **AND** declared rows SHALL return their unchanged lifecycle defaults rather
+  than being represented as stale
+
+#### Scenario: Disabled state remains provenance-neutral
+
+- **WHEN** a stale mined routine is disabled
+- **THEN** the API SHALL expose its factual enabled state and miss count
+- **AND** it SHALL NOT claim through a separate status field that the disable
+  was automatic, because the owner may also disable a mined routine manually
+
 ### Requirement: Operational Timeline Route Preserved
 
 The Chronicler API change SHALL NOT repurpose the existing operational

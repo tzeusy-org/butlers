@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -1017,6 +1018,7 @@ async def save_carryover(
 
 
 def _row_to_routine(row: asyncpg.Record) -> Routine:
+    keys = set(row.keys())
     return Routine(
         id=row["id"],
         dow_mask=row["dow_mask"],
@@ -1029,9 +1031,19 @@ def _row_to_routine(row: asyncpg.Record) -> Routine:
         evidence_summary=_coerce_payload(row["evidence_summary"]),
         origin=RoutineOrigin(row["origin"]),
         enabled=row["enabled"],
+        last_confirmed_at=row["last_confirmed_at"] if "last_confirmed_at" in keys else None,
+        missed_mine_cycles=row["missed_mine_cycles"] if "missed_mine_cycles" in keys else 0,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+@dataclass(frozen=True)
+class RoutineStalenessResult:
+    """Outcome of one evidence-backed missed-pattern reconciliation."""
+
+    routines_marked_stale: int = 0
+    routines_auto_disabled: int = 0
 
 
 async def upsert_mined_routine(
@@ -1045,6 +1057,7 @@ async def upsert_mined_routine(
     confidence: float,
     evidence_summary: dict[str, Any],
     timezone: str = "Asia/Singapore",
+    confirmed_at: datetime | None = None,
 ) -> Routine:
     """Idempotent upsert of a mined routine, keyed on ``dow_mask``.
 
@@ -1055,15 +1068,20 @@ async def upsert_mined_routine(
     (window bounds, timezone, support_count, confidence, evidence_summary)
     but deliberately never touches ``label`` or ``enabled`` — those are the
     owner's to edit via ``PATCH /api/chronicler/routines/{id}`` and must
-    survive every subsequent re-mine.
+    survive every subsequent re-mine. Re-detection does reset the mining-owned
+    missed-cycle state and records the supplied confirmation time.
     """
+    confirmed_at = confirmed_at or _utcnow()
+    if confirmed_at.tzinfo is None:
+        raise ValueError("confirmed_at must be timezone-aware")
     row = await conn.fetchrow(
         """
         INSERT INTO routines (
             dow_mask, window_start_local, window_end_local, timezone,
-            label, support_count, confidence, evidence_summary, origin
+            label, support_count, confidence, evidence_summary, origin,
+            last_confirmed_at, missed_mine_cycles, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'mined')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'mined', $9, 0, $9)
         ON CONFLICT (dow_mask) WHERE origin = 'mined' DO UPDATE SET
             window_start_local = EXCLUDED.window_start_local,
             window_end_local = EXCLUDED.window_end_local,
@@ -1071,7 +1089,9 @@ async def upsert_mined_routine(
             support_count = EXCLUDED.support_count,
             confidence = EXCLUDED.confidence,
             evidence_summary = EXCLUDED.evidence_summary,
-            updated_at = now()
+            last_confirmed_at = EXCLUDED.last_confirmed_at,
+            missed_mine_cycles = 0,
+            updated_at = EXCLUDED.updated_at
         RETURNING *
         """,
         dow_mask,
@@ -1082,8 +1102,64 @@ async def upsert_mined_routine(
         support_count,
         confidence,
         evidence_summary,
+        confirmed_at,
     )
     return _row_to_routine(row)
+
+
+async def record_missing_mined_routines(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    *,
+    detected_dow_masks: Sequence[int],
+    missed_at: datetime,
+    auto_disable_after_misses: int,
+) -> RoutineStalenessResult:
+    """Record one evidence-backed missed mining cycle for absent mined rows.
+
+    The caller decides whether its completed miner run carried enough primary
+    evidence to justify a miss. This helper only reconciles rows with
+    ``origin='mined'``; owner-declared schedules are never selected. Existing
+    owner disables remain false, and re-detection is responsible for resetting
+    the count without ever re-enabling a row.
+    """
+    if not isinstance(auto_disable_after_misses, int) or auto_disable_after_misses <= 0:
+        raise ValueError("auto_disable_after_misses must be a positive integer")
+    if missed_at.tzinfo is None:
+        raise ValueError("missed_at must be timezone-aware")
+
+    rows = await conn.fetch(
+        """
+        WITH candidates AS (
+            SELECT id, enabled AS was_enabled
+            FROM routines
+            WHERE origin = 'mined'
+              AND dow_mask <> ALL($1::smallint[])
+            FOR UPDATE
+        )
+        UPDATE routines AS routine
+        SET missed_mine_cycles = routine.missed_mine_cycles + 1,
+            enabled = CASE
+                WHEN routine.enabled
+                     AND routine.missed_mine_cycles + 1 >= $3
+                    THEN false
+                ELSE routine.enabled
+            END,
+            updated_at = $2
+        FROM candidates
+        WHERE routine.id = candidates.id
+        RETURNING routine.*, candidates.was_enabled
+        """,
+        list(detected_dow_masks),
+        missed_at,
+        auto_disable_after_misses,
+    )
+    routines_auto_disabled = sum(
+        1 for row in rows if bool(row["was_enabled"]) and not bool(row["enabled"])
+    )
+    return RoutineStalenessResult(
+        routines_marked_stale=len(rows),
+        routines_auto_disabled=routines_auto_disabled,
+    )
 
 
 async def create_declared_routine(

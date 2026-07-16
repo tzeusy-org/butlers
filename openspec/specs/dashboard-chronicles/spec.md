@@ -645,6 +645,28 @@ corrections overlay.
 - **THEN** the owner can confirm or relabel it
 - **AND** the choice writes a non-destructive correction overlay
 
+### Requirement: Work Schedule Evidence Review
+
+The work-schedule settings surface SHALL make a mined routine's evidence state
+legible alongside its existing owner controls. It SHALL distinguish a mine
+miss from a disabled toggle in text, not colour alone.
+
+#### Scenario: Stale mined routine is reviewable
+
+- **WHEN** a mined routine has one or more missed mining cycles
+- **THEN** its row SHALL show a text label with the missed-cycle count and its
+  last-confirmed timestamp
+- **AND** the label SHALL remain understandable without its visual styling or
+  colour
+- **AND** a declared routine SHALL not show mining-lifecycle status
+
+#### Scenario: Owner disable remains separately represented
+
+- **WHEN** any routine is disabled
+- **THEN** the row SHALL retain the existing disabled state indicator
+- **AND** stale evidence, when present, SHALL be shown as a separate factual
+  signal rather than claiming why the routine was disabled
+
 ### Requirement: Zoom-Out Trends Lens
 
 The page SHALL offer a week/month zoom-out lens showing balance trends, streaks,

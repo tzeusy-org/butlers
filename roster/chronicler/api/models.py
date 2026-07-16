@@ -725,6 +725,12 @@ class RoutineRow(BaseModel):
     origin: str
     """``mined`` (weekly job) or ``declared`` (owner bootstrap, bu-whhll.11)."""
     enabled: bool
+    last_confirmed_at: datetime | None = None
+    """When the weekly miner last re-detected this pattern; null for declared rows."""
+    missed_mine_cycles: int = 0
+    """Consecutive evidence-backed mining runs that did not re-detect this mined row."""
+    stale: bool = False
+    """True only for a mined row with one or more missed mining cycles."""
     created_at: datetime
     updated_at: datetime
 
