@@ -1459,6 +1459,23 @@ class OwnTracksConnector:
                 self._config.ingestion_tier,
             )
 
+        tst = body.get("tst")
+        checkpoint_tst = device.last_checkpoint_tst
+        if (
+            checkpoint_tst is not None
+            and isinstance(tst, int)
+            and not isinstance(tst, bool)
+            and tst <= checkpoint_tst
+        ):
+            logger.debug(
+                "OwnTracksConnector: event may be a replay; submitting it",
+                extra={
+                    "endpoint_identity": device.endpoint_identity,
+                    "event_tst": tst,
+                    "checkpoint_tst": checkpoint_tst,
+                },
+            )
+
         # Submit to Switchboard
         start_t = time.perf_counter()
         status = "success"
@@ -1482,7 +1499,6 @@ class OwnTracksConnector:
             device.metrics.record_ingest_submission(status=status, latency=latency)
 
         # Update checkpoint (timestamp-based)
-        tst = body.get("tst")
         if tst is not None:
             await self._save_checkpoint(device, int(tst))
 

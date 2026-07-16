@@ -27,6 +27,7 @@ connector state.
 from __future__ import annotations
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -243,6 +244,46 @@ async def test_load_checkpoint_reads_back_only_the_matching_device() -> None:
 
         assert device_a.last_checkpoint_tst == 555
         assert device_b.last_checkpoint_tst is None
+    finally:
+        await _stop_all_heartbeats(connector)
+
+
+@pytest.mark.parametrize("event_tst", [555, 554])
+async def test_checkpoint_replays_are_logged_but_submitted(
+    caplog: pytest.LogCaptureFixture,
+    event_tst: int,
+) -> None:
+    """A scalar checkpoint is diagnostic only; Switchboard owns duplicate effects."""
+    cursor_pool = _FakeCursorPool()
+    cursor_pool.store[("owntracks", "owntracks:phone")] = "555"
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _make_connector(cursor_pool=cursor_pool, call_tool=call_tool)
+    try:
+        with caplog.at_level(logging.DEBUG, logger="butlers.connectors.owntracks"):
+            await connector._process_webhook_event(
+                {
+                    "_type": "location",
+                    "tst": event_tst,
+                    "tid": "phone",
+                    "lat": 1.0,
+                    "lon": 2.0,
+                }
+            )
+
+        ingest_calls = [call for call in call_tool.await_args_list if call.args[0] == "ingest"]
+        assert len(ingest_calls) == 1
+        assert ingest_calls[0].args[1]["event"]["external_event_id"] == f"{event_tst}:location"
+
+        replay_records = [
+            record
+            for record in caplog.records
+            if record.getMessage() == "OwnTracksConnector: event may be a replay; submitting it"
+        ]
+        assert len(replay_records) == 1
+        record = replay_records[0]
+        assert record.endpoint_identity == "owntracks:phone"
+        assert record.event_tst == event_tst
+        assert record.checkpoint_tst == 555
     finally:
         await _stop_all_heartbeats(connector)
 
