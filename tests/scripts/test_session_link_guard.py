@@ -2,10 +2,10 @@
 
 Regression guard for bu-mr5t5: a PR merged externally before its body was
 fully scrubbed of a tool-session link, leaving one permanently baked into a
-`main` merge commit. These tests cover the pattern matcher (positive and
-negative cases), the git-commit-range and review-comment-file plumbing, and
-the CLI's exit-code contract, using fast deterministic inputs — no network,
-no real GitHub PR required.
+`main` merge commit. These tests cover strict PR title/body/comment matching,
+the one allowed exact Claude session commit trailer, git-commit-range and
+review-comment-file plumbing, and the CLI's exit-code contract, using fast
+deterministic inputs — no network, no real GitHub PR required.
 """
 
 from __future__ import annotations
@@ -72,11 +72,39 @@ def test_scan_sources_labels_findings_by_source() -> None:
     findings = slg.scan_sources(
         {
             "pr_body": "clean body",
-            "commit abc123": f"fix: thing\n\nClaude-Session: {_CLAUDE_EXAMPLE_URL}\n",
+            "review comment 1": f"See {_CLAUDE_EXAMPLE_URL} for details.",
         }
     )
-    assert len(findings) == 2  # footer label + url, both attributed to the commit
-    assert {f.source for f in findings} == {"commit abc123"}
+    assert len(findings) == 1
+    assert {f.source for f in findings} == {"review comment 1"}
+
+
+def test_scan_sources_allows_exact_claude_session_commit_trailer() -> None:
+    findings = slg.scan_sources(
+        {
+            "commit abc123": (
+                f"fix: retain valid Claude Code attribution\n\n"
+                f"Claude-Session: {_CLAUDE_EXAMPLE_URL}\n"
+            )
+        }
+    )
+    assert findings == []
+
+
+def test_scan_sources_rejects_claude_session_outside_terminal_trailer_block() -> None:
+    findings = slg.scan_sources(
+        {
+            "commit abc123": (
+                f"fix: avoid session leak\n\n"
+                f"Claude-Session: {_CLAUDE_EXAMPLE_URL}\n\n"
+                "This prose keeps the line out of the terminal trailer block.\n"
+            )
+        }
+    )
+    assert {finding.pattern_name for finding in findings} == {
+        "claude-session-footer-label",
+        "claude-code-session-url",
+    }
 
 
 def test_format_findings_reports_clean_when_empty() -> None:
@@ -124,7 +152,7 @@ def _commit(path: Path, message: str, filename: str) -> str:
     ).stdout.strip()
 
 
-def test_iter_commit_messages_scans_a_revision_range(tmp_path: Path) -> None:
+def test_iter_commit_messages_allows_exact_claude_session_trailer(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     base_sha = _commit(tmp_path, "chore: base commit", "a.txt")
     _commit(tmp_path, f"fix: leak\n\nClaude-Session: {_CLAUDE_EXAMPLE_URL}\n", "b.txt")
@@ -134,7 +162,7 @@ def test_iter_commit_messages_scans_a_revision_range(tmp_path: Path) -> None:
 
     assert len(messages) == 2
     findings = slg.scan_sources(messages)
-    assert len(findings) == 2  # footer label + url
+    assert findings == []
 
 
 def test_load_review_comments_accepts_flat_list(tmp_path: Path) -> None:
@@ -177,6 +205,20 @@ def test_main_exits_nonzero_on_leaking_pr_body(
     exit_code = slg.main(["--pr-body-file", str(body_file)])
     assert exit_code == 1
     out = capsys.readouterr().out
+    assert "claude-code-session-url" in out
+
+
+def test_main_exits_nonzero_on_leaking_pr_title(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    title_file = tmp_path / "title.txt"
+    title_file.write_text(f"fix: inspect {_CLAUDE_EXAMPLE_URL}")
+
+    exit_code = slg.main(["--pr-title-file", str(title_file)])
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "pr_title" in out
     assert "claude-code-session-url" in out
 
 
