@@ -1956,6 +1956,263 @@ class TestDecompositionSignalSchema:
         MessagePipeline,
         "_load_decomp_conversation_history",
         new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nflight confirmation\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_decomposition_fanout_enriches_calendar_proposal_from_ingestion_context(
+        self, mock_route, mock_load, mock_history
+    ):
+        """A live ``events`` signal becomes a provenance-linked pending proposal call."""
+        source_event_id = "00000000-0000-0000-0000-000000000010"
+        source_entity_id = "00000000-0000-0000-0000-000000000011"
+        message = "Singapore Airlines confirms SQ12 on 2026-08-01 at 14:00 SGT."
+        signal = {
+            # The installed /signal-extraction skill emits the legacy ``type``
+            # spelling; the live fan-out must still recognize it.
+            "type": "events",
+            "target_butler": "general",
+            "tool_name": "calendar_propose_event",
+            "tool_args": {
+                "title": "SQ12 flight",
+                "start_at": "2026-08-01T14:00:00+08:00",
+                "end_at": "2026-08-01T20:00:00+08:00",
+                "timezone": "Asia/Singapore",
+                # Model-controlled provenance must never reach the producer.
+                "source_event_id": "model-controlled",
+                "source_snippet": "model-controlled",
+                "confidence": 0.01,
+                "entity_ids": ["model-controlled"],
+            },
+            "excerpts": [],
+            "confidence": "HIGH",
+        }
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output=json.dumps([signal]), success=True, tool_calls=[])
+
+        identity_result = MagicMock(
+            preamble="",
+            contact_id=None,
+            entity_id=source_entity_id,
+            is_unknown=False,
+            channel_value=None,
+        )
+        with patch(
+            "butlers.tools.switchboard.identity.inject.resolve_and_inject_identity",
+            new_callable=AsyncMock,
+            return_value=identity_result,
+        ):
+            pipeline = MessagePipeline(
+                switchboard_pool=MagicMock(),
+                dispatch_fn=mock_dispatch,
+                source_butler="switchboard",
+                enable_identity_resolution=True,
+            )
+            pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+            result = await pipeline.process(
+                message,
+                tool_args={
+                    "source_channel": "telegram_user_client",
+                    "source_id": "alice-telegram-id",
+                    "request_context": {"payload_type": "conversation_history"},
+                },
+                message_inbox_id=source_event_id,
+            )
+
+        assert result.routed_targets == ["general"]
+        route_kwargs = mock_route.await_args.kwargs
+        assert route_kwargs["target_butler"] == "general"
+        assert route_kwargs["tool_name"] == "calendar_propose_event"
+        proposal_args = route_kwargs["args"]
+        assert proposal_args["source_event_id"] == source_event_id
+        assert proposal_args["source_snippet"] == message
+        assert proposal_args["confidence"] == pytest.approx(0.9)
+        assert proposal_args["entity_ids"] == [source_entity_id]
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nflight confirmation\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_decomposition_fanout_routes_calendar_proposal_to_general_not_model_target(
+        self, mock_route, mock_load, mock_history
+    ):
+        """Calendar proposal ownership stays code-controlled at the general butler."""
+        signal = {
+            "type": "events",
+            # Signal extraction output is model controlled, so it cannot choose
+            # another calendar-owning schema for an inferred proposal.
+            "target_butler": "finance",
+            "tool_name": "calendar_propose_event",
+            "tool_args": {
+                "title": "SQ12 flight",
+                "start_at": "2026-08-01T14:00:00+08:00",
+                "end_at": "2026-08-01T20:00:00+08:00",
+                "timezone": "Asia/Singapore",
+                # This separately model-controlled field must not mislabel a
+                # proposal after the route target has been pinned to general.
+                "butler_name": "finance",
+            },
+            "excerpts": [],
+            "confidence": "HIGH",
+        }
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output=json.dumps([signal]), success=True, tool_calls=[])
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        await pipeline.process(
+            "Singapore Airlines confirms SQ12 on 2026-08-01 at 14:00 SGT.",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000012",
+        )
+
+        route_kwargs = mock_route.await_args.kwargs
+        assert route_kwargs["target_butler"] == "general"
+        assert route_kwargs["args"]["butler_name"] == "general"
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nflight confirmation\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_decomposition_fanout_cannot_turn_event_signal_into_provider_write(
+        self, mock_route, mock_load, mock_history
+    ):
+        """Model tool selection cannot bypass the proposal-only event contract."""
+        signal = {
+            "type": "events",
+            "target_butler": "general",
+            # ``calendar_create_event`` would write to the provider if routed.
+            "tool_name": "calendar_create_event",
+            "tool_args": {
+                "title": "SQ12 flight",
+                "start_at": "2026-08-01T14:00:00+08:00",
+                "end_at": "2026-08-01T20:00:00+08:00",
+                "timezone": "Asia/Singapore",
+            },
+            "excerpts": [],
+            "confidence": "HIGH",
+        }
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output=json.dumps([signal]), success=True, tool_calls=[])
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        await pipeline.process(
+            "Singapore Airlines confirms SQ12 on 2026-08-01 at 14:00 SGT.",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000013",
+        )
+
+        route_kwargs = mock_route.await_args.kwargs
+        assert route_kwargs["target_butler"] == "general"
+        assert route_kwargs["tool_name"] == "calendar_propose_event"
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
+        return_value="## Recent Conversation History\n\n```text\nmaybe dinner\n```",
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch(
+        "butlers.tools.switchboard.routing.route.route",
+        new_callable=AsyncMock,
+        return_value={"status": "ok"},
+    )
+    async def test_decomposition_fanout_drops_below_floor_calendar_signal(
+        self, mock_route, mock_load, mock_history
+    ):
+        """A MEDIUM-confidence event never reaches the calendar proposal producer."""
+        signal = {
+            "type": "events",
+            "target_butler": "general",
+            "tool_name": "calendar_propose_event",
+            "tool_args": {
+                "title": "Possible dinner",
+                "start_at": "2026-08-01T19:00:00+08:00",
+                "end_at": "2026-08-01T20:00:00+08:00",
+                "timezone": "Asia/Singapore",
+            },
+            "excerpts": [],
+            "confidence": "MEDIUM",
+        }
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(output=json.dumps([signal]), success=True, tool_calls=[])
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+        result = await pipeline.process(
+            "Maybe dinner next week?",
+            tool_args={
+                "source_channel": "telegram_user_client",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000012",
+        )
+
+        assert result.routed_targets == []
+        mock_route.assert_not_awaited()
+
+    @patch.object(
+        MessagePipeline,
+        "_load_decomp_conversation_history",
+        new_callable=AsyncMock,
         return_value="## Recent Conversation History\n\n```text\nhello\n```",
     )
     @patch(

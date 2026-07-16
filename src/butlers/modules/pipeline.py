@@ -758,6 +758,18 @@ def _infer_fallback_target_from_cc_output(
 # Allowed categorical confidence levels for a decomposition conceptual message.
 _VALID_DECOMP_CONFIDENCE = ("HIGH", "MEDIUM", "LOW")
 
+# Calendar proposals are inferred events, so the live decomposition fan-out
+# translates the categorical extraction confidence into the persisted 0.0-1.0
+# score and only dispatches sufficiently certain signals. These constants live
+# here rather than in the retired extraction path: this is the production
+# ingestion entry point that owns the Switchboard-to-calendar MCP call.
+_CALENDAR_PROPOSAL_SIGNAL_TYPE = "events"
+_CALENDAR_PROPOSAL_TOOL = "calendar_propose_event"
+_CALENDAR_PROPOSAL_TARGET_BUTLER = "general"
+_CALENDAR_PROPOSAL_CONFIDENCE_SCORES = {"HIGH": 0.9, "MEDIUM": 0.5, "LOW": 0.2}
+_CALENDAR_PROPOSAL_CONFIDENCE_FLOOR = 0.7
+_CALENDAR_PROPOSAL_SNIPPET_MAX_CHARS = 500
+
 
 def _normalize_decomp_excerpts(raw: Any) -> list[dict[str, Any]]:
     """Normalize the ``excerpts`` field of a decomposition signal.
@@ -2611,13 +2623,48 @@ class MessagePipeline:
                         _decomp_acked: list[str] = []
                         _decomp_failed: list[str] = []
                         _decomp_failed_details: list[str] = []
+                        _decomp_dropped: list[dict[str, str]] = []
 
                         for _sig in _decomp_signals:
                             # Signals are normalized to the full schema upstream, so
                             # target_butler is always present and routable here.
                             _target = _sig["target_butler"]
-                            _decomp_routed.append(_target)
                             _sig_tool = _sig["tool_name"]
+
+                            # The /signal-extraction skill emits ``events`` signals
+                            # for inferred calendar events. Preserve the normal
+                            # Switchboard-mediated MCP route, but make provenance
+                            # code-authoritative rather than trusting model tool_args.
+                            # A direct MessagePipeline caller without a persisted
+                            # ingress row cannot establish the required provenance
+                            # link, so it must not create an untraceable proposal.
+                            if _sig["signal_type"] == _CALENDAR_PROPOSAL_SIGNAL_TYPE:
+                                # Calendar proposals belong to the general butler's
+                                # shared calendar. The signal type is the
+                                # code-owned calendar contract, so neither the
+                                # target nor tool name in model output can turn an
+                                # inferred event into a provider write.
+                                _target = _CALENDAR_PROPOSAL_TARGET_BUTLER
+                                _sig_tool = _CALENDAR_PROPOSAL_TOOL
+                                _proposal_confidence = _CALENDAR_PROPOSAL_CONFIDENCE_SCORES[
+                                    _sig["confidence"]
+                                ]
+                                if _proposal_confidence < _CALENDAR_PROPOSAL_CONFIDENCE_FLOOR:
+                                    _decomp_dropped.append(
+                                        {
+                                            "target_butler": _target,
+                                            "reason": "calendar_confidence_below_floor",
+                                        }
+                                    )
+                                    continue
+                                if message_inbox_id is None:
+                                    _decomp_dropped.append(
+                                        {
+                                            "target_butler": _target,
+                                            "reason": "calendar_missing_source_event_id",
+                                        }
+                                    )
+                                    continue
 
                             _route_args: dict[str, Any] = {
                                 **_sig["tool_args"],
@@ -2637,6 +2684,24 @@ class MessagePipeline:
                                     "confidence": _sig["confidence"],
                                 },
                             }
+                            if _sig["signal_type"] == _CALENDAR_PROPOSAL_SIGNAL_TYPE:
+                                _route_args.update(
+                                    {
+                                        "butler_name": _CALENDAR_PROPOSAL_TARGET_BUTLER,
+                                        "source_event_id": str(message_inbox_id),
+                                        "source_snippet": message_text[
+                                            :_CALENDAR_PROPOSAL_SNIPPET_MAX_CHARS
+                                        ],
+                                        "confidence": _proposal_confidence,
+                                        "entity_ids": (
+                                            [source_entity_id]
+                                            if source_entity_id is not None
+                                            else []
+                                        ),
+                                    }
+                                )
+
+                            _decomp_routed.append(_target)
 
                             try:
                                 _route_result = await _fallback_route(
@@ -2659,8 +2724,14 @@ class MessagePipeline:
                                     f"{_target}: {type(_route_exc).__name__}: {_route_exc}"
                                 )
 
-                        _decomp_target = _decomp_routed[0] if len(_decomp_routed) == 1 else "multi"
-                        _decomp_lifecycle = "errored" if _decomp_failed_details else "routed"
+                        if not _decomp_routed:
+                            _decomp_target = "decomposed_empty"
+                            _decomp_lifecycle = "decomposed_empty"
+                        else:
+                            _decomp_target = (
+                                _decomp_routed[0] if len(_decomp_routed) == 1 else "multi"
+                            )
+                            _decomp_lifecycle = "errored" if _decomp_failed_details else "routed"
 
                         _decomp_output: dict[str, Any] = {
                             "signals": _decomp_signals,
@@ -2669,6 +2740,8 @@ class MessagePipeline:
                             "failed": _decomp_failed,
                             "latency_ms": int(spawn_latency_ms),
                         }
+                        if _decomp_dropped:
+                            _decomp_output["dropped"] = _decomp_dropped
                         if _spawn_model:
                             _decomp_output["model"] = _spawn_model
                         if _spawn_usage:
@@ -2683,6 +2756,7 @@ class MessagePipeline:
                                     "request_id": request_id,
                                     "acked": _decomp_acked,
                                     "failed": _decomp_failed,
+                                    "dropped": _decomp_dropped,
                                 },
                                 response_summary=cc_output[:500] if cc_output else "",
                                 lifecycle_state=_decomp_lifecycle,
