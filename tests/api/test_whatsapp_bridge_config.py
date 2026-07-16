@@ -75,3 +75,12 @@ def test_compose_operator_commands_use_shared_socket() -> None:
 
     assert "--unix-socket /tmp/wa-bridge.sock" not in setup_guide
     assert "--unix-socket /tmp/wa-bridge/bridge.sock" in setup_guide
+
+
+def test_setup_guide_uses_dashboard_invalidated_session_recovery() -> None:
+    """The setup guide must not send operators back to manual session-store edits."""
+    setup_guide = (_REPO_ROOT / "docs/whatsapp-setup.md").read_text(encoding="utf-8")
+
+    assert "POST /api/connectors/whatsapp/pair/start" in setup_guide
+    assert "Do **not** manually delete `public.whatsmeow_device`" in setup_guide
+    assert "UPDATE messenger.whatsapp_sessions SET active = false" not in setup_guide

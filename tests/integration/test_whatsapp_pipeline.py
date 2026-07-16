@@ -625,8 +625,9 @@ class TestDashboardPairAPI:
         assert response.status_code == 502
         assert "empty qr code" in response.json()["detail"].lower()
 
+    @pytest.mark.parametrize("bridge_state", ["disconnected", "connecting", "connected"])
     async def test_pair_start_invalidated_session_flags_connector_for_reset(
-        self, whatsapp_app, client
+        self, whatsapp_app, client, bridge_state: str
     ):
         """An empty-QR response on a bridge that looks like an invalidated
         session (long uptime, dead link, device already loaded — bu-5ocmh)
@@ -647,7 +648,7 @@ class TestDashboardPairAPI:
                 "butlers.api.routers.whatsapp._bridge_get",
                 new=AsyncMock(
                     return_value={
-                        "state": "disconnected",
+                        "state": bridge_state,
                         "connected": False,
                         "logged_in": False,
                         "uptime_s": 9999,
@@ -740,15 +741,16 @@ class TestDashboardPairAPI:
             assert "empty qr code" in response.json()["detail"].lower()
             mock_save.assert_not_awaited()
 
-    async def test_status_surfaces_pair_required_for_long_disconnected_bridge(self, client):
-        """/status relabels a long-uptime, link-dead 'disconnected' bridge as
-        pair_required (bu-5ocmh) instead of showing the same bare
-        'disconnected' the whole 7-week outage would otherwise have shown."""
+    @pytest.mark.parametrize("bridge_state", ["disconnected", "connecting", "connected"])
+    async def test_status_surfaces_pair_required_for_long_invalidated_bridge(
+        self, client, bridge_state: str
+    ):
+        """/status relabels every persistent link-dead bridge state as pair_required."""
         with patch(
             "butlers.api.routers.whatsapp._bridge_get",
             new=AsyncMock(
                 return_value={
-                    "state": "disconnected",
+                    "state": bridge_state,
                     "connected": False,
                     "logged_in": False,
                     "uptime_s": 9999,

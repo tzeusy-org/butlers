@@ -67,8 +67,8 @@ The dashboard provides a guided pairing flow at **Settings → WhatsApp**.
 8. The Go bridge begins streaming messages to the connector immediately after pairing.
 
 **QR refresh:** If the QR code expires before you scan it, click **Refresh QR** in the modal.
-Each refresh generates a fresh code by calling `POST /api/connectors/whatsapp/pair/start` on
-the bridge.
+Each refresh generates a fresh code through the dashboard API at
+`POST /api/connectors/whatsapp/pair/start`, which proxies to the bridge's `/pair/start` endpoint.
 
 **Session persistence:** Whatsmeow stores the resumable protocol session in its own
 `public.whatsmeow_*` tables. The bridge separately records pair history and active-session
@@ -133,7 +133,11 @@ done
 WhatsApp invalidates sessions when the account is active on too many devices, when the user
 manually unlinks a device, or after prolonged inactivity. You can detect an expired session via:
 
-**Dashboard:** The WhatsApp section status badge shows `pair_required` or `disconnected`.
+**Dashboard:** A new, never-paired device shows `pair_required`. A temporarily
+link-dead device may still show `disconnected`, but a previously paired device
+whose live link remains down is surfaced as `pair_required` after the
+invalidated-session threshold (five minutes by default), even when its stale
+event-driven state still says `connected`, so it has an actionable recovery path.
 
 **Logs:** The Go bridge logs a session-invalid exit (exit code 2):
 
@@ -148,7 +152,8 @@ BridgeSubprocessManager: Bridge session invalidated (rc=2) — no restart; re-pa
 docker compose exec -T connector-whatsapp-user \
   curl -s --unix-socket /tmp/wa-bridge/bridge.sock http://bridge/status \
   | python3 -m json.tool
-# Expired session shows: "state": "pair_required"
+# A never-paired device shows: "state": "pair_required".
+# A dead stored device can remain "disconnected" or "connecting".
 ```
 
 The `/status` payload also reports the live link state, probed directly from the
@@ -161,7 +166,22 @@ These are authoritative for liveness. The event-driven `state` field can lag
 reality if a connection event is missed (see 2.1.1), so prefer `connected` /
 `logged_in` when scripting health checks.
 
-#### 2.1.1 Session taken over by another device (StreamReplaced)
+#### 2.1.1 Persistently invalidated sessions
+
+An invalidated stored device does not always exit with code 2 or report
+`pair_required` itself. It can cycle through `disconnected`/`connecting`, or
+report `connected` while the live `connected` or `logged_in` probe is false. The
+connector treats this as a recoverable outage at first; if it persists for the
+configured `WHATSAPP_INVALIDATED_SESSION_THRESHOLD_S` (300 seconds by default),
+it classifies the outage as terminal and requires a new QR pair.
+
+For any persistent link-dead bridge, the dashboard status surfaces
+`pair_required`; the connector sends a best-effort Telegram alert once per
+invalidation episode with the recovery action. This is distinct from first-time
+setup: a new device can wait in `pair_required` without an invalidated-session
+alert.
+
+#### 2.1.2 Session taken over by another device (StreamReplaced)
 
 WhatsApp permits only one active link per device slot. If the **same** session is
 linked again elsewhere (another stack reusing the credentials, or WhatsApp Web
@@ -187,8 +207,9 @@ still self-healing a transient takeover within an hour. Set the env var to `0` t
 disable the watchdog, or lower it to re-claim faster (at higher war risk).
 
 The watchdog only fires on **recoverable** outages (a restart can re-claim the
-link). Terminal states that need a human QR re-pair — `pair_required`, session
-invalidated (rc=2), pairing timeout (rc=1) — are exempt; restarting could not
+link). Terminal states that need a human QR re-pair — `pair_required`, an
+explicit session-invalid exit (rc=2), pairing timeout (rc=1), or the persistent
+invalidated-session classification above — are exempt; restarting could not
 recover them, so they follow the re-pair flow in section 2.2 instead.
 
 If this fires repeatedly, two stacks are sharing one WhatsApp session — stop the
@@ -205,29 +226,23 @@ status or a degraded state payload.
 
 ### 2.2 Re-Pairing After Session Expiry
 
-If the session is expired or invalidated, re-pair using the same QR workflow:
+For an expired or invalidated session, use the dashboard recovery path:
 
-1. **Dashboard:** Navigate to **Settings → WhatsApp**, click **Disconnect** (if shown), then
-   **Link WhatsApp Account** to start a new QR pairing.
-
-2. **CLI:** The bridge exits and the connector enters `degraded` mode automatically on session
-   invalidation. To re-pair:
-
-   ```bash
-   # Stop the connector service (bridge will also stop):
-   docker compose stop connector-whatsapp-user
-
-   # Remove the old session from the database (use schema-qualified name):
-   docker compose exec postgres psql -U butlers -c \
-     "UPDATE messenger.whatsapp_sessions SET active = false WHERE active = true;"
-
-   # Restart the connector:
-   docker compose up -d connector-whatsapp-user
-
-   # Then follow CLI QR steps above (section 1.2)
-   ```
-
-3. After successful re-pairing, the bridge exits pairing mode and enters `connected` state.
+1. Open **Settings → WhatsApp** and click **Pair device**. This calls
+   `POST /api/connectors/whatsapp/pair/start`.
+2. If the bridge is already in QR mode, the dashboard shows a QR code immediately.
+   If it reports that an invalidated session is being cleared and restarted, wait
+   up to one minute, then click **Pair device** again to request the QR code.
+3. For an invalidated stored session, the first request records the dashboard-requested
+   reset. The connector clears the stale protocol device, restarts the bridge into QR-pairing
+   mode, and leaves it there for the new scan. This destructive reset is deliberately not
+   automatic when the invalidation is detected.
+4. Do **not** manually delete `public.whatsmeow_device`, edit
+   `messenger.whatsapp_sessions`, or stop/restart the connector for this recovery.
+   The dashboard route is the supported owner-triggered path. In a headless
+   deployment, invoke that same dashboard API route rather than the bridge's
+   Unix-socket `/pair/start` endpoint, which cannot request the reset.
+5. After successful re-pairing, the bridge exits pairing mode and enters `connected` state.
    The connector resumes event streaming from the last checkpoint.
 
 ### 2.3 Verifying Recovery
@@ -391,10 +406,13 @@ docker compose build --build-arg EXTRAS=whatsapp connector-whatsapp-user
 - The bridge is not running. Check `docker compose logs connector-whatsapp-user`.
 - The bridge may be starting up; wait 10–15 seconds and try again.
 
-**Connector says "pair_required" after restart:**
+**Dashboard shows `pair_required`, or Pair device reports an invalidated session:**
 
-- The session in PostgreSQL may have been cleared or is stale. Re-pair via the dashboard.
-- Check `messenger.whatsapp_sessions`: `SELECT phone_number, active, paired_at FROM messenger.whatsapp_sessions;`
+- Follow the supported recovery in section 2.2: click **Pair device**, wait up to a minute if
+  the reset is in progress, then click it again to scan the QR code.
+- Do not manually delete `public.whatsmeow_device` or edit
+  `messenger.whatsapp_sessions`; the connector performs that protocol-store reset only after
+  the dashboard's owner-triggered recovery request.
 
 **Messages not appearing in butler context:**
 
