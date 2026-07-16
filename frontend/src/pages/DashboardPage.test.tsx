@@ -62,10 +62,16 @@ import { useNotificationStats } from "@/hooks/use-notifications";
 import { useQaSummary } from "@/hooks/use-qa";
 import { useTimeline } from "@/hooks/use-timeline";
 import { useFleetHaltStatus } from "@/hooks/use-fleet-halt";
+import {
+  ShortcutRegistryProvider,
+  useShortcutHintEntries,
+} from "@/hooks/use-register-shortcut";
 import type { BoardRow } from "@/api/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 /**
  * A GET /api/butlers/board row -- the canonical, cadence-aware liveness
@@ -1144,6 +1150,39 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
     useOnlyHealthyBoardRows();
     renderLive();
     expect(container!.querySelector('[aria-label="Keyboard shortcuts for this list"]')).toBeNull();
+  });
+
+  it("keeps its shortcut registration stable across an unrelated parent render", () => {
+    const seenBindings: unknown[] = [];
+    const queryClient = new QueryClient();
+    function ShortcutBindingsProbe() {
+      seenBindings.push(useShortcutHintEntries());
+      return null;
+    }
+    function App({ tick }: { tick: number }) {
+      return (
+        <ShortcutRegistryProvider>
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter>
+              <DashboardPage />
+              <span data-testid="parent-render">{tick}</span>
+            </MemoryRouter>
+          </QueryClientProvider>
+          <ShortcutBindingsProbe />
+        </ShortcutRegistryProvider>
+      );
+    }
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const r = root;
+    act(() => r.render(<App tick={0} />));
+    const registeredBindings = seenBindings.at(-1);
+
+    act(() => r.render(<App tick={1} />));
+
+    expect(seenBindings.at(-1)).toBe(registeredBindings);
   });
 });
 

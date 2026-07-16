@@ -47,7 +47,7 @@
  *                 rows share the same undo-window grace contract as /approvals.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Page } from "@/components/ui/page";
 import { useBriefing } from "@/hooks/use-briefing";
@@ -117,6 +117,9 @@ export default function DashboardPage() {
   // the full Trust Console, instead of firing irreversibly on click.
   const { approveMut, denyMut, deferMut, scheduledDecisions, scheduleDecision, cancelDecision } =
     useApprovalDecisionMutations({ undoWindow: true });
+  const approve = approveMut.mutate;
+  const deny = denyMut.mutate;
+  const defer = deferMut.mutate;
   const notificationStatsQuery = useNotificationStats();
   const qaSummaryQuery = useQaSummary();
   const timelineQuery = useTimeline({ limit: 5 });
@@ -130,28 +133,61 @@ export default function DashboardPage() {
   // formula; this is the same real series CostsPage's chart uses).
   const dailySpendQuery = useDailySpend();
 
-  // Derived values
-  const model = deriveOverviewTriageModel({
-    boardRows: boardQuery.isError ? [] : (boardQuery.data?.data.rows ?? []),
-    butlersError: boardQuery.isError,
-    issues: issuesQuery.isError ? [] : (issuesQuery.data?.data ?? []),
-    issuesError: issuesQuery.isError,
-    approvalMetrics: approvalMetricsQuery.isError ? null : approvalMetricsQuery.data?.data,
-    approvals: pendingApprovalsQuery.isError ? null : pendingApprovalsQuery.data?.data,
-    notificationStats: notificationStatsQuery.isError ? null : notificationStatsQuery.data?.data,
-    notificationStatsError: notificationStatsQuery.isError,
-    qaSummary: qaSummaryQuery.isError ? null : qaSummaryQuery.data?.data,
-    qaSummaryError: qaSummaryQuery.isError,
-    timeline: timelineQuery.isError ? [] : (timelineQuery.data?.data ?? []),
-    timelineError: timelineQuery.isError,
-    fleetHalt: {
-      active: fleetHalt.active,
-      deniedToday: fleetHalt.deniedToday,
-      deniedTotal: fleetHalt.deniedTotal,
-      since: fleetHalt.since,
-      isSourceError: fleetHalt.isError,
-    },
-  });
+  // Derived values. Keep the source references stable when their underlying
+  // queries did not change so the list-triage shortcut registration does not
+  // churn on an unrelated DashboardPage render.
+  const boardData = boardQuery.data?.data;
+  const issuesData = issuesQuery.data?.data;
+  const approvalMetrics = approvalMetricsQuery.data?.data;
+  const approvals = pendingApprovalsQuery.data?.data;
+  const notificationStats = notificationStatsQuery.data?.data;
+  const qaSummary = qaSummaryQuery.data?.data;
+  const timeline = timelineQuery.data?.data;
+  const model = useMemo(
+    () =>
+      deriveOverviewTriageModel({
+        boardRows: boardQuery.isError ? [] : (boardData?.rows ?? []),
+        butlersError: boardQuery.isError,
+        issues: issuesQuery.isError ? [] : (issuesData ?? []),
+        issuesError: issuesQuery.isError,
+        approvalMetrics: approvalMetricsQuery.isError ? null : approvalMetrics,
+        approvals: pendingApprovalsQuery.isError ? null : approvals,
+        notificationStats: notificationStatsQuery.isError ? null : notificationStats,
+        notificationStatsError: notificationStatsQuery.isError,
+        qaSummary: qaSummaryQuery.isError ? null : qaSummary,
+        qaSummaryError: qaSummaryQuery.isError,
+        timeline: timelineQuery.isError ? [] : (timeline ?? []),
+        timelineError: timelineQuery.isError,
+        fleetHalt: {
+          active: fleetHalt.active,
+          deniedToday: fleetHalt.deniedToday,
+          deniedTotal: fleetHalt.deniedTotal,
+          since: fleetHalt.since,
+          isSourceError: fleetHalt.isError,
+        },
+      }),
+    [
+      approvals,
+      approvalMetrics,
+      approvalMetricsQuery.isError,
+      boardData,
+      boardQuery.isError,
+      fleetHalt.active,
+      fleetHalt.deniedToday,
+      fleetHalt.deniedTotal,
+      fleetHalt.isError,
+      fleetHalt.since,
+      issuesData,
+      issuesQuery.isError,
+      notificationStats,
+      notificationStatsQuery.isError,
+      pendingApprovalsQuery.isError,
+      qaSummary,
+      qaSummaryQuery.isError,
+      timeline,
+      timelineQuery.isError,
+    ],
+  );
 
   // Cost surface (spec: dashboard-domain-pages — CostWidget + TopSessionsTable).
   // Reuse the same useSpendSummary("today") query already fetched for the
@@ -178,6 +214,20 @@ export default function DashboardPage() {
   // irreversibly the instant the row is clicked. While scheduled, the row
   // shows the inline "Approving in 5s · Undo" state instead of its verb
   // buttons (see AttentionList's pendingDecisionLabel).
+  const approveAttention = useCallback(
+    (id: string) => scheduleDecision(id, "approve", () => approve(id)),
+    [approve, scheduleDecision],
+  );
+  const denyAttention = useCallback(
+    (id: string) => scheduleDecision(id, "deny", () => deny({ id })),
+    [deny, scheduleDecision],
+  );
+  const deferAttention = useCallback(
+    (id: string) => scheduleDecision(id, "defer", () => defer({ id, hours: 24 })),
+    [defer, scheduleDecision],
+  );
+  const undoAttentionDecision = useCallback((id: string) => cancelDecision(id), [cancelDecision]);
+
   const attentionRows: AttentionListItem[] = useMemo(
     () =>
       model.attentionRows.map((row) => {
@@ -188,14 +238,14 @@ export default function DashboardPage() {
           return {
             ...row,
             pendingDecisionLabel: `${verbGerund(scheduled.verb)} in ${Math.round(UNDO_WINDOW_MS / 1000)}s`,
-            onUndoDecision: () => cancelDecision(id),
+            onUndoDecision: () => undoAttentionDecision(id),
           };
         }
         return {
           ...row,
-          onApprove: () => scheduleDecision(id, "approve", () => approveMut.mutate(id)),
-          onDeny: () => scheduleDecision(id, "deny", () => denyMut.mutate({ id })),
-          onDefer: () => scheduleDecision(id, "defer", () => deferMut.mutate({ id, hours: 24 })),
+          onApprove: () => approveAttention(id),
+          onDeny: () => denyAttention(id),
+          onDefer: () => deferAttention(id),
           approvePending: approveMut.isPending && approveMut.variables === id,
           denyPending: denyMut.isPending && denyMut.variables?.id === id,
           deferPending: deferMut.isPending && deferMut.variables?.id === id,
@@ -204,11 +254,16 @@ export default function DashboardPage() {
     [
       model.attentionRows,
       scheduledDecisions,
-      scheduleDecision,
-      cancelDecision,
-      approveMut,
-      denyMut,
-      deferMut,
+      approveAttention,
+      approveMut.isPending,
+      approveMut.variables,
+      deferAttention,
+      deferMut.isPending,
+      deferMut.variables,
+      denyAttention,
+      denyMut.isPending,
+      denyMut.variables,
+      undoAttentionDecision,
     ],
   );
 

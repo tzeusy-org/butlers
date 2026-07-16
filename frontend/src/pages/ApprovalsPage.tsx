@@ -32,7 +32,7 @@
  * bu-86c4c.12 — One Trust Console: Autonomy panel, /approvals/:id, ranking
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -321,7 +321,7 @@ function RailItem({
 }: {
   summary: ApprovalSummary;
   selected: boolean;
-  onSelect: () => void;
+  onSelect: (id: string) => void;
   /**
    * Set while a keyboard-triage decision (a/d/x) is scheduled but not yet
    * fired -- the row renders dimmed with a present-tense verb + inline undo
@@ -329,13 +329,20 @@ function RailItem({
    * decision instead of selecting it (bu-86c4c.14 -- per-item pending state).
    */
   pendingVerb?: DecisionVerb | null;
-  onUndo?: () => void;
+  onUndo?: (id: string) => void;
 }) {
   const countdown = expiryCountdown(summary.expires_at);
   const isPending = !!pendingVerb;
+  const handleClick = useCallback(() => {
+    if (isPending) {
+      onUndo?.(summary.id);
+      return;
+    }
+    onSelect(summary.id);
+  }, [isPending, onSelect, onUndo, summary.id]);
   return (
     <button
-      onClick={isPending ? onUndo : onSelect}
+      onClick={handleClick}
       data-testid="rail-item"
       data-approval-id={summary.id}
       data-pending-verb={pendingVerb ?? undefined}
@@ -1335,20 +1342,21 @@ export default function ApprovalsPage() {
   // instant dossier-button path (via onDecided below) and the keyboard
   // schedule path (called immediately at schedule time, since the real
   // mutation -- and its own onDecided call -- doesn't fire until later).
-  // (Function declaration -- hoisted, so it's safe to reference from the
-  // useApprovalDecisionMutations() call below before this textual point.)
-  function advanceSelectionPast(id: string, skipIds: Set<string> = new Set()) {
-    if (routeId !== id) return;
-    const idx = rankedPending.findIndex((a) => a.id === id);
-    const isUsable = (a: ApprovalSummary) => a.id !== id && !skipIds.has(a.id);
-    const nextId =
-      rankedPending.slice(idx + 1).find(isUsable)?.id ??
-      rankedPending
-        .slice(0, idx)
-        .reverse()
-        .find(isUsable)?.id;
-    navigate(nextId ? `/approvals/${nextId}` : "/approvals", { replace: true });
-  }
+  const advanceSelectionPast = useCallback(
+    (id: string, skipIds: Set<string> = new Set()) => {
+      if (routeId !== id) return;
+      const idx = rankedPending.findIndex((a) => a.id === id);
+      const isUsable = (a: ApprovalSummary) => a.id !== id && !skipIds.has(a.id);
+      const nextId =
+        rankedPending.slice(idx + 1).find(isUsable)?.id ??
+        rankedPending
+          .slice(0, idx)
+          .reverse()
+          .find(isUsable)?.id;
+      navigate(nextId ? `/approvals/${nextId}` : "/approvals", { replace: true });
+    },
+    [navigate, rankedPending, routeId],
+  );
 
   // Optimistic decision flow (bu-approvals-fast-deny): a decision drops the
   // row from every "waiting" cache immediately, with rollback-on-error --
@@ -1365,9 +1373,12 @@ export default function ApprovalsPage() {
     scheduleDecision: scheduleHookDecision,
     cancelDecision,
   } = useApprovalDecisionMutations({
-    onDecided: (id) => advanceSelectionPast(id),
+    onDecided: advanceSelectionPast,
     undoWindow: true,
   });
+  const approve = approveMut.mutate;
+  const deny = denyMut.mutate;
+  const defer = deferMut.mutate;
 
   // The implicit default selection (no :id in the URL) must skip scheduled
   // items -- otherwise triaging the top-ranked item via keyboard would keep
@@ -1390,27 +1401,38 @@ export default function ApprovalsPage() {
   // surface it as an undoable, per-item pending state. Nothing reaches the
   // backend unless the window elapses without an undo.
   // ---------------------------------------------------------------------
-  function summaryLabel(id: string): string {
-    const summary = rankedPending.find((a) => a.id === id);
-    return summary ? summary.tool_name.replace(/_/g, " ") : "approval";
-  }
+  const summaryLabel = useCallback(
+    (id: string): string => {
+      const summary = rankedPending.find((a) => a.id === id);
+      return summary ? summary.tool_name.replace(/_/g, " ") : "approval";
+    },
+    [rankedPending],
+  );
 
   // Page-specific wrapper around the hook's shared scheduleDecision: adds
   // this page's own toast-with-undo-action + URL-selection-advance behavior.
   // (DashboardPage's rows render their own inline "Approving in 5s" state via
   // AttentionList instead of a toast -- same underlying schedule, different
   // page-level presentation.)
-  function scheduleDecision(id: string, verb: DecisionVerb, run: () => void) {
-    const scheduled = scheduleHookDecision(id, verb, run);
-    if (!scheduled) return; // already scheduled -- ignore repeat verbs
+  const scheduleDecision = useCallback(
+    (id: string, verb: DecisionVerb, run: () => void) => {
+      const scheduled = scheduleHookDecision(id, verb, run);
+      if (!scheduled) return; // already scheduled -- ignore repeat verbs
 
-    advanceSelectionPast(id, new Set(scheduledDecisions.keys()));
+      advanceSelectionPast(id, new Set(scheduledDecisions.keys()));
 
-    toast(`${pendingVerbLabel(verb)} ${summaryLabel(id)}`, {
-      action: { label: "Undo", onClick: () => cancelDecision(id) },
-      duration: UNDO_WINDOW_MS,
-    });
-  }
+      toast(`${pendingVerbLabel(verb)} ${summaryLabel(id)}`, {
+        action: { label: "Undo", onClick: () => cancelDecision(id) },
+        duration: UNDO_WINDOW_MS,
+      });
+    },
+    [advanceSelectionPast, cancelDecision, scheduleHookDecision, scheduledDecisions, summaryLabel],
+  );
+
+  const selectApproval = useCallback(
+    (id: string) => navigate(`/approvals/${id}`, { replace: true }),
+    [navigate],
+  );
 
   // j/k roving focus + a/d/x decision verbs + u=undo, active anywhere on the
   // page (not just while a rail item has DOM focus) -- built on the shared
@@ -1433,22 +1455,21 @@ export default function ApprovalsPage() {
       {
         key: "a",
         description: "Approve selected",
-        handler: () => scheduleDecision(id, "approve", () => approveMut.mutate(id)),
+        handler: () => scheduleDecision(id, "approve", () => approve(id)),
       },
       {
         key: "d",
         description: "Deny selected",
-        handler: () => scheduleDecision(id, "deny", () => denyMut.mutate({ id })),
+        handler: () => scheduleDecision(id, "deny", () => deny({ id })),
       },
       {
         key: "x",
         description: "Defer selected",
         handler: () =>
-          scheduleDecision(id, "defer", () => deferMut.mutate({ id, hours: KEYBOARD_DEFER_HOURS })),
+          scheduleDecision(id, "defer", () => defer({ id, hours: KEYBOARD_DEFER_HOURS })),
       },
     ];
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- scheduleDecision closes over scheduledDecisions/effectiveSelected directly and is recreated every render; listing the actual dependencies (effectiveSelected, scheduledDecisions, the mutations, cancelDecision) is what keeps this memo fresh without recomputing on every unrelated render.
-  }, [effectiveSelected, scheduledDecisions, approveMut, denyMut, deferMut, cancelDecision]);
+  }, [approve, cancelDecision, defer, deny, effectiveSelected, scheduleDecision, scheduledDecisions]);
 
   const { hints: triageHints } = useListTriage({
     ids: pendingIds,
@@ -1459,7 +1480,7 @@ export default function ApprovalsPage() {
     // (bu-k14bg) fixed for free-text filter inputs and bu-wlku1 fixed for
     // SessionsPage's ?selected= mirroring. RailItem's click-select below
     // gets the same treatment for the same reason (bu-2nnhj).
-    onSelect: (id) => navigate(`/approvals/${id}`, { replace: true }),
+    onSelect: selectApproval,
     verbs: approvalVerbs,
   });
 
@@ -1574,9 +1595,9 @@ export default function ApprovalsPage() {
                   key={summary.id}
                   summary={summary}
                   selected={summary.id === effectiveSelected}
-                  onSelect={() => navigate(`/approvals/${summary.id}`, { replace: true })}
+                  onSelect={selectApproval}
                   pendingVerb={scheduledDecisions.get(summary.id)?.verb ?? null}
-                  onUndo={() => cancelDecision(summary.id)}
+                  onUndo={cancelDecision}
                 />
               ))}
               {/* Load more — shown only when the previous response was full */}

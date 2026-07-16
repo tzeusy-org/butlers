@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
@@ -195,9 +195,21 @@ export default function IssuesPage() {
     setOccurrencesLimit((prev) => Math.min(500, prev + 50));
   }
 
-  function handleDismiss(issue: Issue) {
-    dismiss.mutate({ issueKey: issue.issue_key, lastSeenAt: issue.last_seen_at });
-  }
+  const dismissIssue = dismiss.mutate;
+  const undismissIssue = undismiss.mutate;
+  const handleDismiss = useCallback(
+    (issue: Issue) => {
+      dismissIssue({ issueKey: issue.issue_key, lastSeenAt: issue.last_seen_at });
+    },
+    [dismissIssue],
+  );
+
+  const handleUndismiss = useCallback(
+    (issueKey: string) => {
+      undismissIssue(issueKey);
+    },
+    [undismissIssue],
+  );
 
   // j/k roving selection + a=acknowledge/restore act key over the issue rows
   // (bu-qvnce.11 slice 4 -- useListTriage, extracted from ApprovalsPage's own
@@ -215,7 +227,7 @@ export default function IssuesPage() {
         {
           key: "a",
           description: "Restore selected",
-          handler: () => undismiss.mutate(issue.issue_key),
+          handler: () => handleUndismiss(issue.issue_key),
         },
       ];
     }
@@ -223,10 +235,10 @@ export default function IssuesPage() {
       {
         key: "a",
         description: "Acknowledge selected",
-        handler: () => dismiss.mutate({ issueKey: issue.issue_key, lastSeenAt: issue.last_seen_at }),
+        handler: () => handleDismiss(issue),
       },
     ];
-  }, [issues, selectedIssueKey, showDismissed, dismiss, undismiss]);
+  }, [handleDismiss, handleUndismiss, issues, selectedIssueKey, showDismissed]);
   const { hints: issueTriageHints } = useListTriage({
     ids: issueKeys,
     selectedId: selectedIssueKey,
@@ -418,7 +430,7 @@ export default function IssuesPage() {
         dismissedView={showDismissed}
         onDismiss={handleDismiss}
         isDismissing={dismiss.isPending}
-        onRestore={(issueKey) => undismiss.mutate(issueKey)}
+        onRestore={handleUndismiss}
         isRestoring={undismiss.isPending}
         onPingButler={handlePingButler}
         pendingPingButler={pingButler.isPending ? pingButler.variables : null}

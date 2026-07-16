@@ -103,6 +103,18 @@ describe("useApprovalDecisionMutations -- scheduleDecision (bu-qvnce.4)", () => 
     expect(result.current.scheduledDecisions.has("a1")).toBe(false);
   });
 
+  it("keeps scheduleDecision stable when the undo-window mode is unchanged", () => {
+    const { result, rerender } = renderHook(
+      ({ undoWindow }: { undoWindow: boolean }) => useApprovalDecisionMutations({ undoWindow }),
+      { initialProps: { undoWindow: true }, wrapper: makeWrapper() },
+    );
+    const scheduleDecision = result.current.scheduleDecision;
+
+    rerender({ undoWindow: true });
+
+    expect(result.current.scheduleDecision).toBe(scheduleDecision);
+  });
+
   it("cancelDecision prevents the scheduled run from ever firing", () => {
     const { result } = renderHook(() => useApprovalDecisionMutations({ undoWindow: true }), {
       wrapper: makeWrapper(),
