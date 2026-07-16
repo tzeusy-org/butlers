@@ -7,6 +7,7 @@ declare global {
 import { useEffect } from "react";
 import { useNavigate } from "react-router";
 import { dispatchOpenEntityFinder } from "@/lib/entity-finder";
+import { isEditableKeyboardTarget } from "@/lib/keyboard-target";
 import { dispatchOpenShortcutHelp } from "@/lib/shortcut-help";
 import { G_CHORD_ROUTES } from "@/lib/route-registry";
 
@@ -15,11 +16,7 @@ export function useKeyboardShortcuts() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      const target = e.target as HTMLElement;
-      const inEditableField =
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable;
+      const inEditableField = isEditableKeyboardTarget(e.target);
 
       // Cmd/Ctrl+K → the command menu. This is a modifier chord, so it can't
       // collide with normal typing — unlike '/' and 'g', it must work even

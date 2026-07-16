@@ -53,6 +53,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { isEditableKeyboardTarget } from "@/lib/keyboard-target";
 
 export interface ShortcutBinding {
   /** `KeyboardEvent.key` to match, case-sensitive (e.g. "a", "j", "ArrowUp", "?"). */
@@ -133,13 +134,10 @@ export function ShortcutRegistryProvider({ children }: { children: ReactNode }) 
  * gap plus the "double-fire under an open palette" failure mode this hook
  * exists to make structurally impossible.
  */
-const SUSPENDED_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
-
 export function isShortcutTargetSuspended(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (el) {
-    if (SUSPENDED_TAGS.has(el.tagName)) return true;
-    if (el.isContentEditable) return true;
+    if (isEditableKeyboardTarget(el) || el.tagName === "SELECT") return true;
     // Target-containment: a keystroke fired while focus sits INSIDE any dialog
     // — modal or not, e.g. the persistent non-modal floating chat widget — is
     // that dialog's keystroke and must never leak through to a page-scoped

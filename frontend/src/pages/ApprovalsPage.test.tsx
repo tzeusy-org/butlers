@@ -1700,17 +1700,22 @@ describe("ApprovalsPage — keyboard triage (bu-86c4c.14)", () => {
     );
     expect(reasonInput).not.toBeNull();
 
-    await act(async () => {
-      const evt = new KeyboardEvent("keydown", {
-        key: "d",
-        bubbles: true,
-        cancelable: true,
+    for (const key of ["j", "k", "a", "d", "x"]) {
+      await act(async () => {
+        const evt = new KeyboardEvent("keydown", {
+          key,
+          bubbles: true,
+          cancelable: true,
+        });
+        reasonInput?.dispatchEvent(evt);
+        await vi.advanceTimersByTimeAsync(0);
       });
-      reasonInput?.dispatchEvent(evt);
-      await vi.advanceTimersByTimeAsync(0);
-    });
+    }
 
+    expect(getApprovalDetail).not.toHaveBeenCalledWith("a2");
+    expect(approveApproval).not.toHaveBeenCalled();
     expect(denyApproval).not.toHaveBeenCalled();
+    expect(deferApproval).not.toHaveBeenCalled();
     expect(
       container.querySelector('[data-pending-verb]'),
     ).toBeNull();
