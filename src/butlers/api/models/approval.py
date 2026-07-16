@@ -6,7 +6,7 @@ Provides response/request models for the approvals dashboard API endpoints.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,14 @@ class EntityRef(BaseModel):
     roles: list[str] = Field(default_factory=list)
 
 
+class ApprovalEvidence(BaseModel):
+    """A typed reference supporting a proposed approval action."""
+
+    type: Literal["fact", "entity", "url", "text"]
+    ref: str
+    note: str
+
+
 class ApprovalAction(BaseModel):
     """Approval action representation for dashboard API.
 
@@ -60,7 +68,9 @@ class ApprovalAction(BaseModel):
     approval_rule_id: str | None = None
     target_contact: TargetContact | None = None
     why: str | None = None
-    evidence: list[str] = Field(default_factory=list)
+    evidence: list[ApprovalEvidence] = Field(default_factory=list)
+    blast_radius: Literal["none", "self", "contact", "external"] | None = None
+    reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     dispatched: bool = Field(
         default=False,
         description=(
@@ -87,7 +97,9 @@ class ApprovalDetail(BaseModel):
     created_at: datetime
     expires_at: datetime | None = None
     why: str | None = None
-    evidence: list[str] = Field(default_factory=list)
+    evidence: list[ApprovalEvidence] = Field(default_factory=list)
+    blast_radius: Literal["none", "self", "contact", "external"] | None = None
+    reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     proposed_action: dict[str, Any]
     status: str
     decided_by: str | None = None
@@ -121,6 +133,8 @@ class ApprovalSummary(BaseModel):
     created_at: datetime
     expires_at: datetime | None = None
     why: str | None = None
+    blast_radius: Literal["none", "self", "contact", "external"] | None = None
+    reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
 
 
 class ApprovalsPolicy(BaseModel):

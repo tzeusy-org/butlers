@@ -469,6 +469,8 @@ class TestOwnerCarveOut:
         assert str(owner_entity) == args["subject"]
         assert args["predicate"] == _PRED_HAS_EMAIL
         assert args["object"] == "owner@example.com"
+        assert row["evidence"]
+        assert all(set(item) == {"type", "ref", "note"} for item in row["evidence"])
 
     async def test_non_owner_subject_writes_fact_directly(self, pool, entity):
         """Regression: non-owner entities MUST NOT trigger the carve-out."""

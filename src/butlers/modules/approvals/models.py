@@ -25,6 +25,9 @@ class ActionStatus(enum.StrEnum):
     EXECUTED = "executed"
 
 
+EvidenceReference = dict[str, str]
+
+
 def _parse_uuid(value: Any) -> uuid.UUID:
     """Parse a UUID from a string or UUID object."""
     if isinstance(value, uuid.UUID):
@@ -69,7 +72,7 @@ def _parse_optional_jsonb(value: Any) -> dict[str, Any] | None:
     return _parse_jsonb(value)
 
 
-def _parse_jsonb_list(value: Any) -> list[str]:
+def _parse_jsonb_list(value: Any) -> list[Any]:
     """Parse a JSONB array value (may be a raw string from asyncpg without a codec).
 
     asyncpg can return JSONB columns as raw JSON strings when no custom codec is
@@ -104,7 +107,9 @@ class PendingAction:
     execution_result: dict[str, Any] | None = None
     approval_rule_id: uuid.UUID | None = None
     why: str | None = None
-    evidence: list[str] = field(default_factory=list)
+    evidence: list[EvidenceReference] = field(default_factory=list)
+    blast_radius: str | None = None
+    reversibility: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -123,6 +128,8 @@ class PendingAction:
             "approval_rule_id": str(self.approval_rule_id) if self.approval_rule_id else None,
             "why": self.why,
             "evidence": self.evidence,
+            "blast_radius": self.blast_radius,
+            "reversibility": self.reversibility,
         }
         return d
 
@@ -144,6 +151,8 @@ class PendingAction:
             approval_rule_id=_parse_optional_uuid(data.get("approval_rule_id")),
             why=data.get("why"),
             evidence=list(data.get("evidence") or []),
+            blast_radius=data.get("blast_radius"),
+            reversibility=data.get("reversibility"),
         )
 
     @classmethod
@@ -167,6 +176,8 @@ class PendingAction:
             approval_rule_id=_parse_optional_uuid(_get("approval_rule_id")),
             why=_get("why"),
             evidence=_parse_jsonb_list(_get("evidence")),
+            blast_radius=_get("blast_radius"),
+            reversibility=_get("reversibility"),
         )
 
 

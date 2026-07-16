@@ -637,7 +637,7 @@ async def test_list_rules_unknown_butler_returns_empty(app):
 
 
 def _make_pending_row(*, tool_name="send_email", status="pending"):
-    """Return a dict matching pending_actions columns including why/evidence."""
+    """Return a dict matching the RFC 0021 pending_actions dossier columns."""
     return {
         "id": uuid4(),
         "tool_name": tool_name,
@@ -652,7 +652,20 @@ def _make_pending_row(*, tool_name="send_email", status="pending"):
         "execution_result": None,
         "approval_rule_id": None,
         "why": "Sending a welcome email to new user",
-        "evidence": ["User signed up at 2026-05-16T10:00:00Z", "Email not yet sent"],
+        "evidence": [
+            {
+                "type": "fact",
+                "ref": "user:signup:2026-05-16T10:00:00Z",
+                "note": "User signed up",
+            },
+            {
+                "type": "text",
+                "ref": "Email not yet sent",
+                "note": "Delivery has not started",
+            },
+        ],
+        "blast_radius": "contact",
+        "reversibility": "compensable",
     }
 
 
@@ -1230,8 +1243,8 @@ async def test_deny_audits_action(app):
     assert deny_audits[0]["note"] == "Not authorized"
 
 
-async def test_why_and_evidence_returned_on_actions_list(app):
-    """GET /api/approvals/actions includes why and evidence on each action row."""
+async def test_decision_dossier_returned_on_actions_list(app):
+    """GET /api/approvals/actions includes the typed RFC 0021 dossier."""
     row = _make_pending_row()
     app, _ = _app_with_mock_db(app, fetch_rows=[row], fetchval_return=1)
     async with httpx.AsyncClient(
@@ -1243,9 +1256,19 @@ async def test_why_and_evidence_returned_on_actions_list(app):
     assert len(actions) == 1
     assert actions[0]["why"] == "Sending a welcome email to new user"
     assert actions[0]["evidence"] == [
-        "User signed up at 2026-05-16T10:00:00Z",
-        "Email not yet sent",
+        {
+            "type": "fact",
+            "ref": "user:signup:2026-05-16T10:00:00Z",
+            "note": "User signed up",
+        },
+        {
+            "type": "text",
+            "ref": "Email not yet sent",
+            "note": "Delivery has not started",
+        },
     ]
+    assert actions[0]["blast_radius"] == "contact"
+    assert actions[0]["reversibility"] == "compensable"
 
 
 # ---------------------------------------------------------------------------
@@ -1287,6 +1310,23 @@ async def test_emit_approvals_event_includes_expected_fields(app):
 # Console evidence wiring: link the dossier back to the session/trace that
 # produced the proposed action).
 # ---------------------------------------------------------------------------
+
+
+async def test_detail_returns_typed_decision_dossier_fields(app):
+    """The detail endpoint carries risk labels and typed evidence verbatim."""
+    row = _make_pending_row()
+    app, _ = _app_with_mock_db(app, fetchrow_return=row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/approvals/{row['id']}")
+
+    assert resp.status_code == 200
+    detail = resp.json()["data"]
+    assert detail["blast_radius"] == "contact"
+    assert detail["reversibility"] == "compensable"
+    assert detail["evidence"] == row["evidence"]
 
 
 async def test_detail_includes_originating_session_id(app):

@@ -81,6 +81,11 @@ async def _call_gate(
     """Drive the real gate wrapper against a non-owner target + standing rules."""
     if original_fn is None:
         original_fn = _original_fn()
+    tool_args = {
+        "_why": "The contact requested this update.",
+        "_evidence": [],
+        **tool_args,
+    }
     pool = _make_pool(rules)
 
     wrapper = _make_gate_wrapper(
@@ -223,7 +228,12 @@ class TestGateArgumentSerialization:
         )
 
         with patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()):
-            result = await wrapper(scheduled_for=scheduled_for, request_id=request_id)
+            result = await wrapper(
+                scheduled_for=scheduled_for,
+                request_id=request_id,
+                _why="The contact requested this update.",
+                _evidence=[],
+            )
 
         assert result["status"] == "pending_approval"
         pending_insert = next(
@@ -252,6 +262,11 @@ def _make_mock_mcp() -> Any:
         def __init__(self, name: str, fn: Any):
             self.name = name
             self.fn = fn
+            self.parameters = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            }
 
     async def get_tool(name: str) -> Any:
         return _tools.get(name)
@@ -300,7 +315,13 @@ class TestApplyApprovalGatesThreadsMetadata:
         ):
             await apply_approval_gates(mcp, config, pool, "messenger", tool_metadata=tool_metadata)
             tool = await mcp.get_tool(TOOL)
-            return await tool.fn(to=RECIPIENT, subject="Hi", body="x")
+            return await tool.fn(
+                to=RECIPIENT,
+                subject="Hi",
+                body="x",
+                _why="The contact requested this update.",
+                _evidence=[],
+            )
 
     async def test_metadata_threaded_parks_unpinned(self) -> None:
         result = await self._run(tool_metadata={TOOL: ToolMeta(arg_sensitivities={"to": True})})
@@ -309,6 +330,28 @@ class TestApplyApprovalGatesThreadsMetadata:
     async def test_without_metadata_auto_approves(self) -> None:
         result = await self._run(tool_metadata=None)
         assert result == {"status": "sent"}
+
+    async def test_advertises_non_owner_dossier_metadata(self) -> None:
+        """The MCP schema must let roster prompts supply the required dossier."""
+        from butlers.config import ApprovalConfig, ApprovalRiskTier, GatedToolConfig
+
+        mcp = _make_mock_mcp()
+
+        @mcp.tool()
+        async def email_send_message(to: str, subject: str, body: str) -> dict:
+            return {"status": "sent", "to": to}
+
+        config = ApprovalConfig(
+            enabled=True,
+            gated_tools={TOOL: GatedToolConfig(risk_tier=ApprovalRiskTier.MEDIUM)},
+        )
+        await apply_approval_gates(mcp, config, _make_pool([]), "messenger")
+
+        tool = await mcp.get_tool(TOOL)
+        properties = tool.parameters["properties"]
+        assert {"_why", "_blast_radius", "_reversibility", "_evidence"} <= set(properties)
+        assert properties["_blast_radius"]["enum"] == ["none", "self", "contact", "external"]
+        assert properties["_evidence"]["items"]["required"] == ["type", "ref", "note"]
 
 
 # ---------------------------------------------------------------------------

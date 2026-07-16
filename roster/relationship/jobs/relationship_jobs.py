@@ -1966,12 +1966,15 @@ async def run_memory_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
             f"next curation run until a matching active edge exists."
         )
         evidence = [
-            "source=memory_curation_backfill",
-            f"prose_fact.id={fact_id}",
-            f"prose_predicate={predicate}",
-            f"inferred_edge_predicate={target_predicate}",
-            f"conf={conf}",
-            f"content_preview={content[:120]}",
+            {"type": "text", "ref": item, "note": "Memory curation backfill evidence."}
+            for item in (
+                "source=memory_curation_backfill",
+                f"prose_fact.id={fact_id}",
+                f"prose_predicate={predicate}",
+                f"inferred_edge_predicate={target_predicate}",
+                f"conf={conf}",
+                f"content_preview={content[:120]}",
+            )
         ]
 
         try:
@@ -2611,12 +2614,15 @@ async def run_fact_retraction_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     "Rejecting keeps the fact active."
                 )
                 evidence = [
-                    "source=fact_retraction_curation",
-                    f"flag_reason={flag_reason}",
-                    f"fact_id={fact_id}",
-                    f"predicate={predicate}",
-                    f"confidence={conf_display}",
-                    f"content_preview={content[:120]}",
+                    {"type": "text", "ref": item, "note": "Fact retraction evidence."}
+                    for item in (
+                        "source=fact_retraction_curation",
+                        f"flag_reason={flag_reason}",
+                        f"fact_id={fact_id}",
+                        f"predicate={predicate}",
+                        f"confidence={conf_display}",
+                        f"content_preview={content[:120]}",
+                    )
                 ]
 
                 await conn.execute(
@@ -3104,12 +3110,15 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     "Rejecting keeps both entities separate."
                 )
                 evidence = [
-                    "source=entity_dedup_curation",
-                    f"match_type={match_type}",
-                    f"source_entity_id={source_id}",
-                    f"source_canonical_name={source['canonical_name']}",
-                    f"target_entity_id={target_id}",
-                    f"target_canonical_name={target['canonical_name']}",
+                    {"type": "text", "ref": item, "note": "Entity dedup evidence."}
+                    for item in (
+                        "source=entity_dedup_curation",
+                        f"match_type={match_type}",
+                        f"source_entity_id={source_id}",
+                        f"source_canonical_name={source['canonical_name']}",
+                        f"target_entity_id={target_id}",
+                        f"target_canonical_name={target['canonical_name']}",
+                    )
                 ]
 
                 await conn.execute(
@@ -3576,13 +3585,16 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
                 "re-proposed)."
             )
             evidence = [
-                "source=email_identity_enrichment",
-                f"address={address}",
-                f"action_kind={action_kind}",
-                f"distinct_threads={candidate.distinct_threads}",
-                f"distinct_days={candidate.distinct_days}",
-                f"event_count={candidate.event_count}",
-                f"entity_id={entity_id}",
+                {"type": "text", "ref": item, "note": "Email identity enrichment evidence."}
+                for item in (
+                    "source=email_identity_enrichment",
+                    f"address={address}",
+                    f"action_kind={action_kind}",
+                    f"distinct_threads={candidate.distinct_threads}",
+                    f"distinct_days={candidate.distinct_days}",
+                    f"event_count={candidate.event_count}",
+                    f"entity_id={entity_id}",
+                )
             ]
 
             await db_pool.execute(
@@ -3912,13 +3924,16 @@ async def run_episodic_predicate_curation(db_pool: asyncpg.Pool) -> dict[str, An
                     "Rejecting keeps the fact at its current permanence."
                 )
                 evidence = [
-                    "source=episodic_predicate_curation",
-                    f"predicate={predicate}",
-                    f"permanence_current={permanence}",
-                    "permanence_target=volatile",
-                    f"fact_id={fact_id}",
-                    f"confidence={conf_display}",
-                    f"content_preview={content[:120]}",
+                    {"type": "text", "ref": item, "note": "Episodic predicate evidence."}
+                    for item in (
+                        "source=episodic_predicate_curation",
+                        f"predicate={predicate}",
+                        f"permanence_current={permanence}",
+                        "permanence_target=volatile",
+                        f"fact_id={fact_id}",
+                        f"confidence={conf_display}",
+                        f"content_preview={content[:120]}",
+                    )
                 ]
 
                 await conn.execute(

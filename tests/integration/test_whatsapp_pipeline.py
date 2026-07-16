@@ -457,7 +457,12 @@ class TestApprovalGateWhatsApp:
             gated_tools={"whatsapp_send_message": GatedToolConfig(risk_tier="medium")},
         )
         await apply_approval_gates(mcp=mcp, approval_config=approval_config, pool=pool)
-        result = await tools["whatsapp_send_message"](recipient=external_jid, text="hello")
+        result = await tools["whatsapp_send_message"](
+            recipient=external_jid,
+            text="hello",
+            _why="The recipient requested this update.",
+            _evidence=[],
+        )
         assert result.get("status") == "pending_approval" and "action_id" in result
         action = next(iter(pool.pending_actions.values()))
         assert action["status"] == "pending" and action["decided_by"] is None

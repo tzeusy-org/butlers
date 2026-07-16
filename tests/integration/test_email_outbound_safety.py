@@ -940,7 +940,13 @@ class TestMessengerApprovalGate:
 
         # Now call the gated tool with an unknown email
         tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(to=UNKNOWN_EMAIL, subject="Test", body="Hello")
+        result = await tool.fn(
+            to=UNKNOWN_EMAIL,
+            subject="Test",
+            body="Hello",
+            _why="The recipient requested this test delivery.",
+            _evidence=[],
+        )
 
         assert result["status"] == "pending_approval", (
             f"email_send_message to unknown address MUST be parked, got: {result}"
@@ -1001,6 +1007,8 @@ class TestMessengerApprovalGate:
             to="notification-thealbatrossfile@nlb.gov.sg",
             thread_id="thread-abc",
             body="I've recorded your booking",
+            _why="The recipient requested this booking confirmation.",
+            _evidence=[],
         )
 
         assert result["status"] == "pending_approval", (
@@ -1030,7 +1038,13 @@ class TestMessengerApprovalGate:
         await apply_approval_gates(mcp, config, pool)
 
         tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(to=KNOWN_NON_OWNER_EMAIL, subject="Hi", body="Hello friend")
+        result = await tool.fn(
+            to=KNOWN_NON_OWNER_EMAIL,
+            subject="Hi",
+            body="Hello friend",
+            _why="The recipient requested this update.",
+            _evidence=[],
+        )
 
         assert result["status"] == "pending_approval", (
             "Known non-owner WITHOUT a standing rule MUST be parked for approval"
@@ -1141,6 +1155,8 @@ class TestIncidentReplay:
                 "I've recorded your Albatross File Exhibition booking "
                 "for March 14, 2026 at 6:30 PM SGT."
             ),
+            _why="The recipient requested this booking confirmation.",
+            _evidence=[],
         )
 
         assert result["status"] == "pending_approval", (

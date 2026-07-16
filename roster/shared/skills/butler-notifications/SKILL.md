@@ -1,7 +1,7 @@
 ---
 name: butler-notifications
 description: Usage patterns for the notify() tool — required parameters, intents, and examples
-version: 1.0.0
+version: 1.1.0
 ---
 
 ### Notify Usage
@@ -24,6 +24,38 @@ If `request_context.source_channel` is `"telegram_user_client"`, you MUST NOT ca
   - Use "react" for emoji-only acknowledgment (message not required for react)
   - Use "send" for new outbound messages
 - `emoji`: Required when intent is "react" (e.g., "✅", "👍", "❤️")
+
+### Approval dossier for non-owner delivery
+
+If an outbound tool is advertised with `_why`, `_blast_radius`, `_reversibility`,
+and `_evidence`, it is approval-gated. For a target that is not the verified
+owner (or cannot be resolved as the owner), include an honest decision dossier:
+
+- `_why`: a concrete, human-readable reason for this delivery.
+- `_blast_radius`: `none`, `self`, `contact`, or `external` when known.
+- `_reversibility`: `reversible`, `compensable`, or `irreversible` when known.
+- `_evidence`: zero or more exact objects with `type` (`fact`, `entity`, `url`,
+  or `text`), `ref`, and `note`. Never pass free-form strings as evidence.
+
+The owner-role path is exempt. Do not add these kwargs to a tool whose advertised
+schema does not include them. If a gated call returns a retryable dossier error,
+correct the named field and retry; do not retry without the required rationale.
+
+```python
+email_send_message(
+    to="friend@example.com",
+    subject="Requested update",
+    body="Here is the update you asked for.",
+    _why="The recipient explicitly requested this update in the linked thread.",
+    _blast_radius="contact",
+    _reversibility="compensable",
+    _evidence=[{
+        "type": "url",
+        "ref": "https://example.test/conversation/42",
+        "note": "The recipient's request",
+    }],
+)
+```
 
 **Examples**:
 

@@ -28,6 +28,7 @@ import inspect
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -39,7 +40,7 @@ from butlers.identity import (
 )
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
-from butlers.modules.approvals.models import ActionStatus
+from butlers.modules.approvals.models import ActionStatus, EvidenceReference
 from butlers.modules.approvals.rules import (
     constraint_pins_value,
     match_rules_from_list,
@@ -48,6 +49,241 @@ from butlers.modules.approvals.rules import (
 from butlers.modules.base import ToolMeta
 
 logger = logging.getLogger(__name__)
+
+_MISSING = object()
+_BLAST_RADIUS_VALUES = ("none", "self", "contact", "external")
+_REVERSIBILITY_VALUES = ("reversible", "compensable", "irreversible")
+_EVIDENCE_TYPES = ("fact", "entity", "url", "text")
+_WHY_MAX_CHARS = 2000
+_EVIDENCE_MAX_ITEMS = 50
+_EVIDENCE_VALUE_MAX_CHARS = 2000
+
+
+@dataclass(frozen=True)
+class DecisionDossier:
+    """Validated non-owner approval context persisted with an action."""
+
+    why: str
+    evidence: list[EvidenceReference]
+    blast_radius: str | None
+    reversibility: str | None
+
+
+def _dossier_error(
+    *,
+    field: str,
+    code: str,
+    message: str,
+    allowed_values: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Return a retryable, structured boundary error without parking an action."""
+    error: dict[str, Any] = {
+        "code": code,
+        "field": field,
+        "message": message,
+        "retryable": True,
+    }
+    if allowed_values is not None:
+        error["allowed_values"] = list(allowed_values)
+    return {"status": "error", "error": error, "retryable": True}
+
+
+def _pop_dossier_value(tool_args: dict[str, Any], private_name: str, public_name: str) -> Any:
+    """Remove a dossier argument, accepting either private or public spelling.
+
+    ``_why`` et al. are the advertised gate metadata fields.  The public aliases
+    preserve the pre-RFC 0021 gate contract for direct in-process callers.
+    Both are always removed before target resolution or tool execution.
+    """
+    private_value = tool_args.pop(private_name, _MISSING)
+    public_value = tool_args.pop(public_name, _MISSING)
+    return private_value if private_value is not _MISSING else public_value
+
+
+def _validate_optional_enum(
+    value: Any,
+    *,
+    field: str,
+    allowed_values: tuple[str, ...],
+) -> str | None | dict[str, Any]:
+    """Validate a nullable dossier enum without coercing malformed values."""
+    if value is _MISSING or value is None:
+        return None
+    if not isinstance(value, str) or value not in allowed_values:
+        return _dossier_error(
+            field=field,
+            code="invalid_dossier_value",
+            message=(f"{field} must be one of {', '.join(allowed_values)} when provided."),
+            allowed_values=allowed_values,
+        )
+    return value
+
+
+def _validate_non_owner_dossier(
+    *,
+    raw_why: Any,
+    raw_evidence: Any,
+    raw_blast_radius: Any,
+    raw_reversibility: Any,
+) -> DecisionDossier | dict[str, Any]:
+    """Strictly validate new dossier metadata before a non-owner call proceeds.
+
+    The migration is responsible for historic plain-string evidence.  This
+    runtime boundary deliberately refuses legacy-shaped or malformed inputs
+    instead of converting, trimming, or otherwise making an ambiguous action
+    look reviewable.
+    """
+    if raw_why is _MISSING or raw_why is None:
+        return _dossier_error(
+            field="why",
+            code="missing_required_dossier_field",
+            message="why is required for a gated non-owner action; retry with _why.",
+        )
+    if not isinstance(raw_why, str) or not raw_why.strip():
+        return _dossier_error(
+            field="why",
+            code="invalid_dossier_value",
+            message="why must be a non-empty human-readable string.",
+        )
+    if len(raw_why) > _WHY_MAX_CHARS:
+        return _dossier_error(
+            field="why",
+            code="invalid_dossier_value",
+            message=f"why must not exceed {_WHY_MAX_CHARS} characters.",
+        )
+
+    blast_radius = _validate_optional_enum(
+        raw_blast_radius,
+        field="blast_radius",
+        allowed_values=_BLAST_RADIUS_VALUES,
+    )
+    if isinstance(blast_radius, dict):
+        return blast_radius
+
+    reversibility = _validate_optional_enum(
+        raw_reversibility,
+        field="reversibility",
+        allowed_values=_REVERSIBILITY_VALUES,
+    )
+    if isinstance(reversibility, dict):
+        return reversibility
+
+    if raw_evidence is _MISSING or raw_evidence is None:
+        evidence: list[EvidenceReference] = []
+    elif not isinstance(raw_evidence, list):
+        return _dossier_error(
+            field="evidence",
+            code="invalid_dossier_value",
+            message="evidence must be a list of typed evidence references.",
+        )
+    elif len(raw_evidence) > _EVIDENCE_MAX_ITEMS:
+        return _dossier_error(
+            field="evidence",
+            code="invalid_dossier_value",
+            message=f"evidence may contain at most {_EVIDENCE_MAX_ITEMS} entries.",
+        )
+    else:
+        evidence = []
+        for index, item in enumerate(raw_evidence):
+            field = f"evidence[{index}]"
+            if not isinstance(item, dict):
+                return _dossier_error(
+                    field=field,
+                    code="invalid_dossier_value",
+                    message=(
+                        f"{field} must be an object with type, ref, and note; "
+                        "plain-string evidence is no longer accepted."
+                    ),
+                )
+            if set(item) != {"type", "ref", "note"}:
+                return _dossier_error(
+                    field=field,
+                    code="invalid_dossier_value",
+                    message=f"{field} must contain exactly type, ref, and note.",
+                )
+            evidence_type = item["type"]
+            ref = item["ref"]
+            note = item["note"]
+            if not isinstance(evidence_type, str) or evidence_type not in _EVIDENCE_TYPES:
+                return _dossier_error(
+                    field=f"{field}.type",
+                    code="invalid_dossier_value",
+                    message=f"{field}.type must be one of {', '.join(_EVIDENCE_TYPES)}.",
+                    allowed_values=_EVIDENCE_TYPES,
+                )
+            if not isinstance(ref, str) or not ref:
+                return _dossier_error(
+                    field=f"{field}.ref",
+                    code="invalid_dossier_value",
+                    message=f"{field}.ref must be a non-empty string.",
+                )
+            if not isinstance(note, str):
+                return _dossier_error(
+                    field=f"{field}.note",
+                    code="invalid_dossier_value",
+                    message=f"{field}.note must be a string.",
+                )
+            if len(ref) > _EVIDENCE_VALUE_MAX_CHARS or len(note) > _EVIDENCE_VALUE_MAX_CHARS:
+                return _dossier_error(
+                    field=field,
+                    code="invalid_dossier_value",
+                    message=(
+                        f"{field}.ref and {field}.note must not exceed "
+                        f"{_EVIDENCE_VALUE_MAX_CHARS} characters."
+                    ),
+                )
+            evidence.append({"type": evidence_type, "ref": ref, "note": note})
+
+    return DecisionDossier(
+        why=raw_why,
+        evidence=evidence,
+        blast_radius=blast_radius,
+        reversibility=reversibility,
+    )
+
+
+def _add_dossier_metadata_to_tool_schema(tool_obj: Any) -> None:
+    """Expose gate metadata to MCP clients without coupling individual tools to it."""
+    parameters = getattr(tool_obj, "parameters", None)
+    if not isinstance(parameters, dict):
+        return
+
+    updated_parameters = dict(parameters)
+    properties = dict(updated_parameters.get("properties", {}))
+    properties.update(
+        {
+            "_why": {
+                "type": "string",
+                "description": "Required rationale for non-owner approval-gated actions.",
+            },
+            "_blast_radius": {
+                "type": "string",
+                "enum": list(_BLAST_RADIUS_VALUES),
+                "description": "Optional scope affected if this action executes.",
+            },
+            "_reversibility": {
+                "type": "string",
+                "enum": list(_REVERSIBILITY_VALUES),
+                "description": "Optional reversibility classification for this action.",
+            },
+            "_evidence": {
+                "type": "array",
+                "description": "Optional typed references supporting the requested action.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["type", "ref", "note"],
+                    "properties": {
+                        "type": {"type": "string", "enum": list(_EVIDENCE_TYPES)},
+                        "ref": {"type": "string"},
+                        "note": {"type": "string"},
+                    },
+                },
+            },
+        }
+    )
+    updated_parameters["properties"] = properties
+    tool_obj.parameters = updated_parameters
 
 
 def _unpinned_safety_critical_args(
@@ -391,6 +627,7 @@ async def apply_approval_gates(
 
         # Replace the tool's handler on the MCP server
         tool_obj.fn = wrapper
+        _add_dossier_metadata_to_tool_schema(tool_obj)
 
     return originals
 
@@ -430,10 +667,6 @@ def _make_gate_wrapper(
     This complements the existing heuristics and never bypasses the gate.
     """
 
-    _WHY_MAX_CHARS = 2000
-    _EVIDENCE_MAX_ITEMS = 50
-    _EVIDENCE_ITEM_MAX_CHARS = 500
-
     async def _emit_created(action_id: uuid.UUID, status: str) -> None:
         """Publish a 'created' approval event onto the multiplexed fleet event
         bus via Postgres LISTEN/NOTIFY (RFC 0022, bu-01r64.1); silently
@@ -462,66 +695,14 @@ def _make_gate_wrapper(
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=expiry_hours)
 
-        # Extract and validate why/evidence from tool kwargs (§8.2 agent contract).
-        # These are gate-level metadata, not forwarded to the underlying tool.
-        raw_why: str | None = tool_args.pop("_why", None) or tool_args.pop("why", None)
-        raw_evidence: list | None = tool_args.pop("_evidence", None) or tool_args.pop(
-            "evidence", None
-        )
-
-        if raw_why is None:
-            logger.warning(
-                "Gate wrapper: tool %r called without 'why' rationale (action=%s)",
-                tool_name,
-                action_id,
-            )
-            why: str | None = None
-        elif not isinstance(raw_why, str):
-            logger.warning(
-                "Gate wrapper: tool %r 'why' is not a string (%r); ignoring",
-                tool_name,
-                type(raw_why).__name__,
-            )
-            why = None
-        elif len(raw_why) > _WHY_MAX_CHARS:
-            logger.warning(
-                "Gate wrapper: tool %r 'why' exceeds %d chars (%d); truncating",
-                tool_name,
-                _WHY_MAX_CHARS,
-                len(raw_why),
-            )
-            why = raw_why[:_WHY_MAX_CHARS]
-        else:
-            why = raw_why
-
-        evidence: list[str] = []
-        if raw_evidence is not None:
-            if not isinstance(raw_evidence, list):
-                logger.warning(
-                    "Gate wrapper: tool %r 'evidence' is not a list (%r); ignoring",
-                    tool_name,
-                    type(raw_evidence).__name__,
-                )
-            else:
-                if len(raw_evidence) > _EVIDENCE_MAX_ITEMS:
-                    logger.warning(
-                        "Gate wrapper: tool %r 'evidence' has %d items (max %d); truncating",
-                        tool_name,
-                        len(raw_evidence),
-                        _EVIDENCE_MAX_ITEMS,
-                    )
-                    raw_evidence = raw_evidence[:_EVIDENCE_MAX_ITEMS]
-                for item in raw_evidence:
-                    item_str = str(item)
-                    if len(item_str) > _EVIDENCE_ITEM_MAX_CHARS:
-                        logger.warning(
-                            "Gate wrapper: tool %r evidence item truncated from %d to %d chars",
-                            tool_name,
-                            len(item_str),
-                            _EVIDENCE_ITEM_MAX_CHARS,
-                        )
-                        item_str = item_str[:_EVIDENCE_ITEM_MAX_CHARS]
-                    evidence.append(item_str)
+        # Dossier metadata is always gate-only and is never forwarded to target
+        # resolution, standing-rule matching, persistence as tool args, or the
+        # underlying tool. Validation happens only after owner resolution: owner
+        # calls deliberately remain exempt from the non-owner dossier contract.
+        raw_why = _pop_dossier_value(tool_args, "_why", "why")
+        raw_evidence = _pop_dossier_value(tool_args, "_evidence", "evidence")
+        raw_blast_radius = _pop_dossier_value(tool_args, "_blast_radius", "blast_radius")
+        raw_reversibility = _pop_dossier_value(tool_args, "_reversibility", "reversibility")
 
         # Sanitize tool_args into a fully JSON-safe dict (UUID/datetime -> str)
         # via a json.dumps/loads round-trip, mirroring audit.append()'s pattern
@@ -533,8 +714,8 @@ def _make_gate_wrapper(
         # (the previous approach here) makes that encoder fire a SECOND time,
         # double-encoding tool_args into a jsonb-typed STRING instead of an
         # OBJECT (bu-qvnce.6, bu-cymc4; see tests/relationship/test_jsonb_codec.py).
-        # `evidence` (built above) is already a list[str] — JSON-safe as-is —
-        # so it is bound directly too, with no round-trip needed.
+        # Validated dossier evidence is JSON-safe and bound directly after the
+        # non-owner boundary check below.
         safe_tool_args = json.loads(json.dumps(tool_args, default=str))
 
         # Build the display summary from the same JSON-safe representation so
@@ -584,8 +765,8 @@ def _make_gate_wrapper(
                 now,
                 expires_at,
                 "role:owner",
-                why,
-                evidence,
+                None,
+                [],
             )
             await _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(
@@ -632,6 +813,27 @@ def _make_gate_wrapper(
                 return exec_result.result or {}
             return {"error": exec_result.error}
 
+        # Non-owner or unresolvable calls need an honest decision dossier before
+        # they can be matched against a rule or parked.  Returning here is
+        # intentionally before every database write, so a session can repair the
+        # request and retry rather than leave an unreviewable action pending.
+        dossier_or_error = _validate_non_owner_dossier(
+            raw_why=raw_why,
+            raw_evidence=raw_evidence,
+            raw_blast_radius=raw_blast_radius,
+            raw_reversibility=raw_reversibility,
+        )
+        if isinstance(dossier_or_error, dict):
+            logger.info(
+                "Rejected gated non-owner call without valid decision dossier "
+                "(tool=%r, action=%s, field=%s)",
+                tool_name,
+                action_id,
+                dossier_or_error["error"]["field"],
+            )
+            return dossier_or_error
+        dossier = dossier_or_error
+
         # Non-owner or unresolvable: check standing rules
         rules = await pool.fetch(
             "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true "
@@ -665,8 +867,9 @@ def _make_gate_wrapper(
             await pool.execute(
                 "INSERT INTO pending_actions "
                 "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                "requested_at, expires_at, approval_rule_id, decided_by, why, evidence) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                "requested_at, expires_at, approval_rule_id, decided_by, why, evidence, "
+                "blast_radius, reversibility) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
                 action_id,
                 tool_name,
                 safe_tool_args,
@@ -677,8 +880,10 @@ def _make_gate_wrapper(
                 expires_at,
                 rule_id,
                 f"rule:{rule_id}",
-                why,
-                evidence,
+                dossier.why,
+                dossier.evidence,
+                dossier.blast_radius,
+                dossier.reversibility,
             )
             await _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(
@@ -737,8 +942,8 @@ def _make_gate_wrapper(
         await pool.execute(
             "INSERT INTO pending_actions "
             "(id, tool_name, tool_args, agent_summary, session_id, status, "
-            "requested_at, expires_at, why, evidence) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
             action_id,
             tool_name,
             safe_tool_args,
@@ -747,8 +952,10 @@ def _make_gate_wrapper(
             ActionStatus.PENDING.value,
             now,
             expires_at,
-            why,
-            evidence,
+            dossier.why,
+            dossier.evidence,
+            dossier.blast_radius,
+            dossier.reversibility,
         )
         await _emit_created(action_id, ActionStatus.PENDING.value)
         await record_approval_event(

@@ -75,10 +75,17 @@ async def _call_gate(
     resolved_contact: Any,
     pool: AsyncMock,
     original_fn: AsyncMock | None = None,
+    include_dossier: bool = True,
 ) -> dict:
     """Helper: build a gate wrapper and call it with the given tool_args."""
     if original_fn is None:
         original_fn = _make_original_fn()
+    if include_dossier:
+        tool_args = {
+            "_why": "Test invocation has a documented reason.",
+            "_evidence": [],
+            **tool_args,
+        }
 
     from butlers.modules.approvals.executor import ExecutionResult
 
@@ -345,7 +352,12 @@ class TestGateOwnerOutboundAutoApprove:
                     risk_tier=MagicMock(value="medium"),
                     rule_precedence=("contact_role", "standing_rule"),
                 )
-                result = await wrapper(chat_id="12345", message="hi non-owner")
+                result = await wrapper(
+                    chat_id="12345",
+                    message="hi non-owner",
+                    _why="The contact requested this update.",
+                    _evidence=[],
+                )
 
         # No matching rule → parked (fetch returns [])
         assert result.get("status") == "pending_approval"
@@ -369,6 +381,109 @@ class TestGateOwnerOutboundAutoApprove:
                 pool=_make_pool(fetchrow_return={"primary": chat_id == primary_chat_id}),
             )
             assert result == {"status": "sent"}, f"send to {chat_id} should auto-approve"
+
+
+# ---------------------------------------------------------------------------
+# RFC 0021 decision dossier boundary
+# ---------------------------------------------------------------------------
+
+
+class TestDecisionDossierBoundary:
+    """Non-owner calls must carry an honest, typed dossier before parking."""
+
+    async def test_missing_why_is_retryable_and_does_not_park(self) -> None:
+        pool = _make_pool(fetchrow_return=None)
+        original_fn = _make_original_fn()
+
+        result = await _call_gate(
+            {"chat_id": "12345", "message": "hello"},
+            resolved_contact=_non_owner_contact(),
+            pool=pool,
+            original_fn=original_fn,
+            include_dossier=False,
+        )
+
+        assert result["status"] == "error"
+        assert result["retryable"] is True
+        assert result["error"]["field"] == "why"
+        assert result["error"]["code"] == "missing_required_dossier_field"
+        pool.execute.assert_not_awaited()
+        original_fn.assert_not_awaited()
+
+    async def test_invalid_dossier_enum_is_rejected_before_persistence(self) -> None:
+        pool = _make_pool(fetchrow_return=None)
+
+        result = await _call_gate(
+            {
+                "chat_id": "12345",
+                "message": "hello",
+                "_why": "The recipient asked for this update.",
+                "_blast_radius": "planet",
+            },
+            resolved_contact=_non_owner_contact(),
+            pool=pool,
+        )
+
+        assert result["status"] == "error"
+        assert result["retryable"] is True
+        assert result["error"]["field"] == "blast_radius"
+        assert result["error"]["allowed_values"] == ["none", "self", "contact", "external"]
+        pool.execute.assert_not_awaited()
+
+    async def test_legacy_plain_string_evidence_is_rejected_without_coercion(self) -> None:
+        pool = _make_pool(fetchrow_return=None)
+
+        result = await _call_gate(
+            {
+                "chat_id": "12345",
+                "message": "hello",
+                "_why": "The recipient asked for this update.",
+                "_evidence": ["prior free-form evidence"],
+            },
+            resolved_contact=_non_owner_contact(),
+            pool=pool,
+        )
+
+        assert result["status"] == "error"
+        assert result["error"]["field"] == "evidence[0]"
+        pool.execute.assert_not_awaited()
+
+    async def test_typed_dossier_parks_and_persists_risk_fields(self) -> None:
+        pool = _make_pool(fetchrow_return=None)
+        evidence = [
+            {
+                "type": "url",
+                "ref": "https://example.test/source/42",
+                "note": "Original request",
+            }
+        ]
+
+        result = await _call_gate(
+            {
+                "chat_id": "12345",
+                "message": "hello",
+                "_why": "The recipient asked for this update.",
+                "_blast_radius": "contact",
+                "_reversibility": "compensable",
+                "_evidence": evidence,
+            },
+            resolved_contact=_non_owner_contact(),
+            pool=pool,
+        )
+
+        assert result["status"] == "pending_approval"
+        pending_insert = next(
+            call
+            for call in pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        )
+        assert "blast_radius" in pending_insert.args[0]
+        assert "reversibility" in pending_insert.args[0]
+        assert "contact" in pending_insert.args
+        assert "compensable" in pending_insert.args
+        assert evidence in pending_insert.args
+        assert "_why" not in pending_insert.args[3]
+        assert "_evidence" not in pending_insert.args[3]
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +595,12 @@ class TestGateEmitsCreatedEvent:
                     rule_precedence=("contact_role", "standing_rule"),
                     butler_name="home",
                 )
-                result = await wrapper(chat_id="99999", message="hi non-owner")
+                result = await wrapper(
+                    chat_id="99999",
+                    message="hi non-owner",
+                    _why="The contact requested this update.",
+                    _evidence=[],
+                )
 
         assert result.get("status") == "pending_approval"
         mock_publish.assert_called_once()
@@ -573,7 +693,12 @@ class TestOwnerCrossSchemaFallback:
             patch("butlers.modules.approvals.gate.record_approval_event", new=AsyncMock()),
             patch("butlers.modules.approvals.gate.execute_approved_action", new=exec_mock),
         ):
-            result = await wrapper(chat_id="206570151", text="hi")
+            result = await wrapper(
+                chat_id="206570151",
+                text="hi",
+                _why="The contact requested this update.",
+                _evidence=[],
+            )
         return result, pool, exec_mock
 
     async def test_unresolvable_owner_primary_auto_approves(self) -> None:
@@ -713,6 +838,8 @@ class TestNotifySecondaryOwnerChannel:
                 channel="email",
                 recipient=self._NON_OWNER_EMAIL,
                 message="hello stranger",
+                _why="The contact requested this update.",
+                _evidence=[],
             )
         assert result.get("status") == "pending_approval"
         assert "action_id" in result

@@ -277,7 +277,7 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         with engine.connect() as conn:
             versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
-        assert "approvals_003" in versions
+        assert "approvals_005" in versions
 
         action_id = uuid.uuid4()
         with engine.connect() as conn:
@@ -382,7 +382,107 @@ class TestApprovalsMigration:
 
         assert row["why"] is None
         assert row["evidence"] == "[]"
-        assert "approvals_003" in versions
+        assert "approvals_005" in versions
+
+    def test_decision_dossier_migration_converts_legacy_evidence_and_enforces_enums(
+        self, postgres_container
+    ):
+        """Real Postgres proves RFC 0021 migrates data before enforcing its schema."""
+        import asyncio
+
+        from sqlalchemy import create_engine, exc, text
+
+        from butlers.migrations import run_migrations
+
+        db_name = _unique_db_name()
+        db_url = _create_db(postgres_container, db_name)
+        engine = create_engine(db_url)
+        action_id = uuid.uuid4()
+        legacy_evidence = [
+            "Owner asked for a status update",
+            {"type": "url", "ref": "https://example.test/request/42", "note": "request"},
+        ]
+
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE pending_actions ("
+                    "id UUID PRIMARY KEY,"
+                    "tool_name TEXT NOT NULL,"
+                    "tool_args JSONB NOT NULL,"
+                    "status VARCHAR NOT NULL DEFAULT 'pending',"
+                    "requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+                    "why TEXT,"
+                    "evidence JSONB NOT NULL DEFAULT '[]'::jsonb"
+                    ")"
+                )
+            )
+            conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('approvals_002')"))
+            conn.execute(
+                text(
+                    "INSERT INTO pending_actions "
+                    "(id, tool_name, tool_args, status, requested_at, evidence) "
+                    "VALUES (:id, :tool_name, CAST(:tool_args AS jsonb), :status, :requested_at, "
+                    "CAST(:evidence AS jsonb))"
+                ),
+                {
+                    "id": str(action_id),
+                    "tool_name": "notify",
+                    "tool_args": "{}",
+                    "status": "pending",
+                    "requested_at": datetime.now(UTC),
+                    "evidence": json.dumps(legacy_evidence),
+                },
+            )
+
+        asyncio.run(run_migrations(db_url, chain="approvals"))
+
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT evidence::text AS evidence, blast_radius, reversibility "
+                        "FROM pending_actions WHERE id = :id"
+                    ),
+                    {"id": str(action_id)},
+                )
+                .mappings()
+                .one()
+            )
+            versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
+
+        assert json.loads(row["evidence"]) == [
+            {
+                "type": "text",
+                "ref": "Owner asked for a status update",
+                "note": "",
+            },
+            {"type": "url", "ref": "https://example.test/request/42", "note": "request"},
+        ]
+        assert row["blast_radius"] is None
+        assert row["reversibility"] is None
+        assert "approvals_005" in versions
+
+        with pytest.raises(exc.IntegrityError):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO pending_actions "
+                        "(id, tool_name, tool_args, status, requested_at, blast_radius) "
+                        "VALUES (:id, :tool_name, CAST(:tool_args AS jsonb), :status, :requested_at, "
+                        ":blast_radius)"
+                    ),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "tool_name": "notify",
+                        "tool_args": "{}",
+                        "status": "pending",
+                        "requested_at": datetime.now(UTC),
+                        "blast_radius": "planet",
+                    },
+                )
+        engine.dispose()
 
     def test_model_round_trip_pending_action(self, postgres_container):
         import asyncio
