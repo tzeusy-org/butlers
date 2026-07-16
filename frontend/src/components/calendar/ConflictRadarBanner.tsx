@@ -129,7 +129,7 @@ function IssueCard({
             <span key={proposalId} className="flex gap-1">
               <button
                 type="button"
-                className="rounded bg-foreground px-2 py-0.5 text-xs font-medium text-background hover:opacity-90"
+                className="rounded border-fg bg-fg px-2 py-0.5 text-xs font-medium text-bg hover:opacity-90"
                 onClick={() => onAcceptProposal?.(proposalId)}
               >
                 Accept fix

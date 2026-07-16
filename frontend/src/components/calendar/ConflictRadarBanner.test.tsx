@@ -126,8 +126,12 @@ describe("ConflictRadarBanner", () => {
     const acceptFix = screen.getByRole("button", { name: "Accept fix" });
 
     expect(acceptFix.getAttribute("type")).toBe("button");
-    expect(acceptFix.classList.contains("bg-foreground")).toBe(true);
-    expect(acceptFix.classList.contains("text-background")).toBe(true);
+    expect(acceptFix.classList.contains("bg-fg")).toBe(true);
+    expect(acceptFix.classList.contains("text-bg")).toBe(true);
+    expect(acceptFix.classList.contains("border-fg")).toBe(true);
+    expect(acceptFix.className).not.toMatch(
+      /\b(?:bg|text|border)-(?:red|green|emerald|amber|yellow|orange)-(?:50|100|150|200|300|400|500|600|700|800|900|950)\b/,
+    );
   });
 
   it("is informational (no fix button) when no proposal exists yet", () => {
