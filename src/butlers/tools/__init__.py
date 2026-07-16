@@ -1,6 +1,6 @@
 """Butler tools package.
 
-Shared tools (extraction, extraction_queue) live directly in this package.
+Shared tools (such as extraction_queue) live directly in this package.
 Butler-specific tools live in ``roster/<name>/tools.py`` (single file) or
 ``roster/<name>/tools/`` (package directory) and are loaded dynamically via
 ``_loader.register_all_butler_tools()``.

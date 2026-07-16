@@ -46,14 +46,11 @@ def test_missing_tools_file_raises_and_shared_tools():
     """Missing tools.py raises FileNotFoundError; shared tools importable from src/."""
     import tempfile
 
-    import butlers.tools.extraction as ext_mod
     import butlers.tools.extraction_queue as queue_mod
     from butlers.tools._loader import register_butler_tools
-    from butlers.tools.extraction import ExtractorSchema, route
     from butlers.tools.extraction_queue import extraction_queue_add
 
-    assert callable(route) and callable(extraction_queue_add) and ExtractorSchema is not None
-    assert "src/butlers/tools/extraction.py" in ext_mod.__file__
+    assert callable(extraction_queue_add)
     assert "src/butlers/tools/extraction_queue.py" in queue_mod.__file__
 
     with tempfile.TemporaryDirectory() as tmp:
