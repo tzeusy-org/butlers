@@ -21,7 +21,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def generate_scope_description(tool_name: str, representative_args: dict[str, Any]) -> str:
+def generate_scope_description(
+    tool_name: str,
+    representative_args: dict[str, Any],
+    *,
+    fingerprint_version: int = 2,
+) -> str:
     """Generate a human-readable scope description for a promotion suggestion.
 
     Parameters
@@ -29,13 +34,14 @@ def generate_scope_description(tool_name: str, representative_args: dict[str, An
     tool_name:
         The tool name this suggestion would approve.
     representative_args:
-        The exact argument values from the triggering approval.
+        The exact v2 fingerprint-basis argument values from the triggering approval.
 
     Returns
     -------
     str
         Human-readable description like:
-        "Auto-approve send_telegram when chat_id = 'mom_123' AND text = 'hello'"
+        "Auto-approve send_telegram when chat_id = 'mom_123'; the shown
+        arguments are exactly pinned while omitted arguments may vary"
     """
     if not representative_args:
         return f"Auto-approve {tool_name} (no argument constraints)"
@@ -49,7 +55,12 @@ def generate_scope_description(tool_name: str, representative_args: dict[str, An
             conditions.append(f"{key} = {json.dumps(val)}")
 
     conditions_str = " AND ".join(conditions)
-    return f"Auto-approve {tool_name} when {conditions_str}"
+    if fingerprint_version == 2:
+        return (
+            f"Auto-approve {tool_name} when {conditions_str}; "
+            "the shown arguments are exactly pinned while omitted arguments may vary"
+        )
+    return f"Auto-approve {tool_name} when {conditions_str} (legacy all-argument scope)"
 
 
 async def create_promotion_suggestion(
@@ -58,6 +69,8 @@ async def create_promotion_suggestion(
     tool_name: str,
     representative_args: dict[str, Any],
     approval_count: int,
+    *,
+    fingerprint_version: int = 2,
 ) -> dict[str, Any]:
     """Create a pending promotion suggestion.
 
@@ -72,7 +85,7 @@ async def create_promotion_suggestion(
     tool_name:
         The tool name this suggestion is for.
     representative_args:
-        The exact tool_args from the most recent approval that triggered this.
+        The exact v2 fingerprint-basis arguments from the most recent approval that triggered this.
     approval_count:
         Number of manual approvals that triggered this suggestion.
 
@@ -85,7 +98,9 @@ async def create_promotion_suggestion(
 
     suggestion_id = uuid.uuid4()
     now = datetime.now(UTC)
-    scope_description = generate_scope_description(tool_name, representative_args)
+    scope_description = generate_scope_description(
+        tool_name, representative_args, fingerprint_version=fingerprint_version
+    )
 
     # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
     # asyncpg's registered jsonb codec already serializes once; pre-serializing
@@ -95,8 +110,8 @@ async def create_promotion_suggestion(
     await pool.execute(
         "INSERT INTO autonomy_suggestions "
         "(id, suggestion_type, pattern_fingerprint, tool_name, representative_args, status, "
-        "approval_count_at_creation, created_at) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "approval_count_at_creation, created_at, fingerprint_version) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         suggestion_id,
         "promotion",
         pattern_fingerprint,
@@ -105,6 +120,7 @@ async def create_promotion_suggestion(
         "pending",
         approval_count,
         now,
+        fingerprint_version,
     )
 
     await record_approval_event(
@@ -118,6 +134,7 @@ async def create_promotion_suggestion(
             "pattern_fingerprint": pattern_fingerprint,
             "tool_name": tool_name,
             "approval_count": approval_count,
+            "fingerprint_version": fingerprint_version,
             "scope_description": scope_description,
         },
     )
@@ -126,6 +143,7 @@ async def create_promotion_suggestion(
         "id": str(suggestion_id),
         "suggestion_type": "promotion",
         "pattern_fingerprint": pattern_fingerprint,
+        "fingerprint_version": fingerprint_version,
         "tool_name": tool_name,
         "representative_args": representative_args,
         "status": "pending",
@@ -145,6 +163,8 @@ async def create_demotion_suggestion(
     action: Any,
     rule_id: uuid.UUID,
     error_details: str,
+    *,
+    tool_meta: Any = None,
 ) -> dict[str, Any]:
     """Create a pending demotion suggestion when an auto-approved action fails.
 
@@ -166,24 +186,35 @@ async def create_demotion_suggestion(
     dict
         The new suggestion row as a dict.
     """
-    from butlers.modules.approvals.autonomy_tracker import compute_fingerprint
+    from butlers.modules.approvals.autonomy_tracker import (
+        FINGERPRINT_VERSION,
+        compute_fingerprint,
+        fingerprinted_args,
+    )
     from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 
     suggestion_id = uuid.uuid4()
     now = datetime.now(UTC)
-    pattern_fingerprint = compute_fingerprint(action.tool_name, action.tool_args)
-    scope_description = generate_scope_description(action.tool_name, action.tool_args)
+    pattern_fingerprint = compute_fingerprint(
+        action.tool_name, action.tool_args, tool_meta=tool_meta
+    )
+    representative_args = fingerprinted_args(action.tool_args, tool_meta)
+    scope_description = generate_scope_description(
+        action.tool_name,
+        representative_args,
+        fingerprint_version=FINGERPRINT_VERSION,
+    )
 
     # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
     # asyncpg's registered jsonb codec already serializes once; pre-serializing
     # double-encodes into a jsonb-typed STRING (bu-cymc4/bu-c8b8e; mirrors
     # gate.py's fix, PR #2924).
-    safe_representative_args = json.loads(json.dumps(action.tool_args, default=str))
+    safe_representative_args = json.loads(json.dumps(representative_args, default=str))
     await pool.execute(
         "INSERT INTO autonomy_suggestions "
         "(id, suggestion_type, pattern_fingerprint, tool_name, representative_args, status, "
-        "approval_count_at_creation, created_at, resulting_rule_id) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        "approval_count_at_creation, created_at, resulting_rule_id, fingerprint_version) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         suggestion_id,
         "demotion",
         pattern_fingerprint,
@@ -193,6 +224,7 @@ async def create_demotion_suggestion(
         0,
         now,
         rule_id,
+        FINGERPRINT_VERSION,
     )
 
     await record_approval_event(
@@ -205,6 +237,7 @@ async def create_demotion_suggestion(
         metadata={
             "pattern_fingerprint": pattern_fingerprint,
             "tool_name": action.tool_name,
+            "fingerprint_version": FINGERPRINT_VERSION,
             "error_details": error_details,
             "scope_description": scope_description,
         },
@@ -214,8 +247,9 @@ async def create_demotion_suggestion(
         "id": str(suggestion_id),
         "suggestion_type": "demotion",
         "pattern_fingerprint": pattern_fingerprint,
+        "fingerprint_version": FINGERPRINT_VERSION,
         "tool_name": action.tool_name,
-        "representative_args": action.tool_args,
+        "representative_args": representative_args,
         "status": "pending",
         "approval_count_at_creation": 0,
         "created_at": now.isoformat(),
@@ -303,7 +337,11 @@ async def confirm_suggestion(
         arg_constraints = {
             key: {"type": "exact", "value": val} for key, val in representative_args.items()
         }
-        scope_description = generate_scope_description(tool_name, representative_args)
+        scope_description = generate_scope_description(
+            tool_name,
+            representative_args,
+            fingerprint_version=int(row.get("fingerprint_version", 1)),
+        )
         description = f"Auto-created from promotion suggestion: {scope_description}"
 
         # Bind the sanitized dict directly (no json.dumps, no ::jsonb cast) —
@@ -654,9 +692,6 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     else:
         representative_args = dict(representative_args_raw)
 
-    tool_name = row["tool_name"] if hasattr(row, "__getitem__") else ""
-    scope_description = generate_scope_description(tool_name, representative_args)
-
     def _get(key: str, default: Any = None) -> Any:
         if hasattr(row, "get"):
             return row.get(key, default)
@@ -664,6 +699,12 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
             return row[key]
         except (KeyError, IndexError):
             return default
+
+    tool_name = row["tool_name"] if hasattr(row, "__getitem__") else ""
+    fingerprint_version = int(_get("fingerprint_version", 1))
+    scope_description = generate_scope_description(
+        tool_name, representative_args, fingerprint_version=fingerprint_version
+    )
 
     result_rule_id = _get("resulting_rule_id")
     cooldown_until = _get("cooldown_until")
@@ -689,6 +730,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "id": str(_get("id", "")),
         "suggestion_type": _get("suggestion_type", "promotion"),
         "pattern_fingerprint": _get("pattern_fingerprint", ""),
+        "fingerprint_version": fingerprint_version,
         "tool_name": tool_name,
         "representative_args": representative_args,
         "status": _get("status", "pending"),

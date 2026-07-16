@@ -231,7 +231,13 @@ class TestApprovalsMigration:
 
         asyncio.run(run_migrations(db_url, chain="approvals"))
 
-        for tbl in ["pending_actions", "approval_rules", "approval_events"]:
+        for tbl in [
+            "pending_actions",
+            "approval_rules",
+            "approval_events",
+            "autonomy_approval_history",
+            "autonomy_suggestions",
+        ]:
             assert _table_exists(db_url, tbl), f"{tbl} should exist"
         for col in ["why", "evidence"]:
             assert _column_exists(db_url, "pending_actions", col), (
@@ -245,8 +251,12 @@ class TestApprovalsMigration:
             "idx_approval_events_rule_id",
             "idx_approval_events_occurred_at",
             "idx_approval_events_event_type",
+            "idx_autonomy_history_fingerprint_version",
+            "idx_autonomy_suggestions_fingerprint_version",
         ]:
             assert _index_exists(db_url, idx), f"{idx} should exist"
+        for table_name in ["autonomy_approval_history", "autonomy_suggestions"]:
+            assert _column_exists(db_url, table_name, "fingerprint_version")
 
         # Idempotent
         asyncio.run(run_migrations(db_url, chain="approvals"))
@@ -267,7 +277,7 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         with engine.connect() as conn:
             versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
-        assert "approvals_002" in versions
+        assert "approvals_003" in versions
 
         action_id = uuid.uuid4()
         with engine.connect() as conn:
@@ -372,7 +382,7 @@ class TestApprovalsMigration:
 
         assert row["why"] is None
         assert row["evidence"] == "[]"
-        assert "approvals_002" in versions
+        assert "approvals_003" in versions
 
     def test_model_round_trip_pending_action(self, postgres_container):
         import asyncio

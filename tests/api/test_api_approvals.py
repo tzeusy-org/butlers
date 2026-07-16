@@ -19,7 +19,11 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_mcp_manager
-from butlers.api.routers.approvals import _clear_table_cache, _get_db_manager
+from butlers.api.routers.approvals import (
+    _clear_table_cache,
+    _get_db_manager,
+    _row_to_autonomy_suggestion,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -170,6 +174,27 @@ def _app_with_two_butlers(app, *, home_rows=None, general_rows=None, fetchval_re
 # ---------------------------------------------------------------------------
 # Paginated list structure
 # ---------------------------------------------------------------------------
+
+
+def test_v2_suggestion_api_explains_its_safety_critical_scope():
+    suggestion = _row_to_autonomy_suggestion(
+        {
+            "id": uuid4(),
+            "suggestion_type": "promotion",
+            "pattern_fingerprint": "fingerprint",
+            "fingerprint_version": 2,
+            "tool_name": "send_telegram",
+            "representative_args": {"chat_id": "mom_123"},
+            "status": "pending",
+            "approval_count_at_creation": 5,
+            "created_at": _NOW,
+        }
+    )
+
+    assert suggestion.fingerprint_version == 2
+    assert suggestion.representative_args == {"chat_id": "mom_123"}
+    assert "shown arguments are exactly pinned" in suggestion.scope_description
+    assert "omitted arguments may vary" in suggestion.scope_description
 
 
 async def test_list_actions_returns_paginated_structure(app):

@@ -248,6 +248,7 @@ class AutonomySuggestion(BaseModel):
     id: str
     suggestion_type: str  # "promotion" or "demotion"
     pattern_fingerprint: str
+    fingerprint_version: int = 1
     tool_name: str
     representative_args: dict[str, Any]
     status: str  # "pending", "confirmed", "dismissed", "superseded"

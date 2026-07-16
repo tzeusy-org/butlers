@@ -32,9 +32,9 @@
 
 ## 5. Fingerprint v2
 
-- [ ] 5.1 `compute_fingerprint` v2 over module-declared safety-critical args (fallback all-args); `fingerprint_version` columns on `autonomy_approval_history` + `autonomy_suggestions` (migration `approvals_004` or folded into `approvals_003`)
-- [ ] 5.2 Version-scoped counts/threshold checks; promotion suggestions pin exactly the fingerprinted args
-- [ ] 5.3 Dashboard suggestion scope description reflects v2 pinned-args basis
+- [x] 5.1 `compute_fingerprint` v2 over module-declared safety-critical args (fallback all-args); `fingerprint_version` columns on `autonomy_approval_history` + `autonomy_suggestions` (migration `approvals_004` or folded into `approvals_003`)
+- [x] 5.2 Version-scoped counts/threshold checks; promotion suggestions pin exactly the fingerprinted args
+- [x] 5.3 Dashboard suggestion scope description reflects v2 pinned-args basis
 
 ## 6. Verification
 

@@ -1378,32 +1378,41 @@ class ButlerDaemon:
         approvals_raw = self.config.modules.get("approvals")
         approval_config = parse_approval_config(approvals_raw)
 
+        # The approvals module also uses this map after a human manually
+        # approves an action to derive its autonomy fingerprint.  Wire it
+        # whenever that module is active, not only when this butler enables
+        # automatic approval gates.  A disabled gate must not silently change
+        # the fingerprint basis to the all-args fallback.
+        approvals_module = next(
+            (mod for mod in self._active_modules if mod.name == "approvals"),
+            None,
+        )
+        tool_metadata: dict[str, ToolMeta] = {}
+        if approvals_module is not None:
+            for mod in self._active_modules:
+                try:
+                    declared = mod.tool_metadata()
+                    if declared:
+                        tool_metadata.update(declared)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Module '%s' tool_metadata() failed: %s", mod.name, exc)
+                    continue
+
+            set_tool_metadata = getattr(approvals_module, "set_tool_metadata", None)
+            if callable(set_tool_metadata):
+                set_tool_metadata(tool_metadata)
+
         if approval_config is None or not approval_config.enabled:
             return {}
 
         pool = self.db.pool
 
-        # Collect module-declared tool sensitivity metadata so the gate can
-        # honor safety-critical argument declarations (a standing rule may only
-        # auto-approve when it pins the safety-critical args a module declared).
-        tool_metadata: dict[str, ToolMeta] = {}
-        for mod in self._active_modules:
-            try:
-                declared = mod.tool_metadata()
-                if declared:
-                    tool_metadata.update(declared)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Module '%s' tool_metadata() failed: %s", mod.name, exc)
-                continue
-
         originals = await apply_approval_gates(
             self.mcp, approval_config, pool, self.config.name, tool_metadata=tool_metadata
         )
 
-        for mod in self._active_modules:
-            if mod.name == "approvals" and hasattr(mod, "set_approval_policy"):
-                mod.set_approval_policy(approval_config)
-                break
+        if approvals_module is not None and hasattr(approvals_module, "set_approval_policy"):
+            approvals_module.set_approval_policy(approval_config)
 
         # Wire the originals into the ApprovalsModule if it's loaded,
         # so the post-approval executor can invoke them directly

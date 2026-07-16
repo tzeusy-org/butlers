@@ -165,7 +165,8 @@ async def approvals_full_pool(provisioned_postgres_pool):
                 tool_args JSONB NOT NULL,
                 action_id UUID REFERENCES pending_actions(id) ON DELETE SET NULL,
                 approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                time_to_decision_seconds DOUBLE PRECISION
+                time_to_decision_seconds DOUBLE PRECISION,
+                fingerprint_version SMALLINT NOT NULL DEFAULT 1
             )
         """)
         await pool.execute("""
@@ -183,6 +184,7 @@ async def approvals_full_pool(provisioned_postgres_pool):
                 resulting_rule_id UUID REFERENCES approval_rules(id) ON DELETE SET NULL,
                 cooldown_until TIMESTAMPTZ,
                 dismissal_reason TEXT,
+                fingerprint_version SMALLINT NOT NULL DEFAULT 1,
                 CONSTRAINT autonomy_suggestions_type_check
                     CHECK (suggestion_type IN ('promotion', 'demotion')),
                 CONSTRAINT autonomy_suggestions_status_check

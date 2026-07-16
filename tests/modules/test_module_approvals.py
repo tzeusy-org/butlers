@@ -46,7 +46,7 @@ from butlers.modules.approvals.redaction import (
     redact_tool_args,
 )
 from butlers.modules.approvals.rules import match_rules_from_list
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolMeta
 
 pytestmark = pytest.mark.unit
 
@@ -651,7 +651,7 @@ class _VelocityMockDB(MockDB):
     """MockDB extended with autonomy_approval_history + state-store support.
 
     Lets the real ``_approve_action`` path drive ``update_velocity`` end to end
-    so we can assert the ``autonomy:velocity:{fingerprint}`` state is written —
+    so we can assert the versioned ``autonomy:velocity:v2:{fingerprint}`` state is written —
     not a mock of ``update_velocity`` itself.
     """
 
@@ -683,7 +683,7 @@ class _VelocityMockDB(MockDB):
                 if r["pattern_fingerprint"] == fp and r["time_to_decision_seconds"] is not None
             ]
             rows.sort(key=lambda r: r["approved_at"], reverse=True)
-            limit = args[1] if len(args) > 1 else len(rows)
+            limit = args[2] if len(args) > 2 else len(rows)
             return [
                 {"time_to_decision_seconds": r["time_to_decision_seconds"]} for r in rows[:limit]
             ]
@@ -716,11 +716,19 @@ class TestApprovalVelocityWiring:
     dashboard ``fast_approval`` indicator surfaces (autonomy-tracker spec).
     """
 
-    async def _approve(self, db: _VelocityMockDB, requested_at: datetime) -> str:
+    async def _approve(
+        self,
+        db: _VelocityMockDB,
+        requested_at: datetime,
+        *,
+        tool_metadata: dict[str, ToolMeta] | None = None,
+    ) -> str:
         from butlers.modules.approvals.autonomy_tracker import compute_fingerprint
 
         module = ApprovalsModule()
         await module.on_startup(config=None, db=db)
+        if tool_metadata is not None:
+            module.set_tool_metadata(tool_metadata)
 
         action_id = uuid.uuid4()
         tool_args = {"to": "alice@example.com", "body": "hello"}
@@ -746,7 +754,11 @@ class TestApprovalVelocityWiring:
             },
         )
         assert result["status"] == "executed"
-        return compute_fingerprint("email_send", tool_args)
+        return compute_fingerprint(
+            "email_send",
+            tool_args,
+            tool_meta=tool_metadata.get("email_send") if tool_metadata is not None else None,
+        )
 
     async def test_manual_approval_writes_velocity_state(self):
         from butlers.modules.approvals.autonomy_tracker import get_velocity
@@ -760,7 +772,7 @@ class TestApprovalVelocityWiring:
         # The history row was recorded by the real path.
         assert len(db.approval_history) == 1
         # The velocity state key was written under the spec'd key.
-        state_key = f"autonomy:velocity:{fingerprint}"
+        state_key = f"autonomy:velocity:v2:{fingerprint}"
         assert state_key in db.state
 
         velocity = await get_velocity(db, fingerprint)
@@ -781,3 +793,21 @@ class TestApprovalVelocityWiring:
         assert velocity is not None
         assert velocity["avg_seconds"] < 5.0
         assert velocity["fast_approval"] is True
+
+    async def test_manual_approval_uses_daemon_collected_tool_metadata_for_v2(self):
+        from butlers.modules.approvals.autonomy_tracker import compute_fingerprint
+
+        db = _VelocityMockDB()
+        metadata = {"email_send": ToolMeta(arg_sensitivities={"to": True, "body": False})}
+        fingerprint = await self._approve(
+            db,
+            requested_at=datetime.now(UTC),
+            tool_metadata=metadata,
+        )
+
+        assert db.approval_history[0]["pattern_fingerprint"] == fingerprint
+        assert fingerprint == compute_fingerprint(
+            "email_send",
+            {"to": "alice@example.com", "body": "a different message"},
+            tool_meta=metadata["email_send"],
+        )
