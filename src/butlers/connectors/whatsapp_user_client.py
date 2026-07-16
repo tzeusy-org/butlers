@@ -1956,8 +1956,9 @@ class WhatsAppUserClientConnector:
     async def _request_backfill(self) -> None:
         """Request the bridge to replay messages from the backfill window.
 
-        Sends a POST /backfill?hours=N to the bridge, which replays historical
-        events through the SSE stream. Duplicates are caught by Switchboard dedup.
+        The owner-only bridge accepts a versioned request and acknowledges the
+        number of already-normalized messages scheduled for its existing SSE
+        stream. Duplicates remain harmless through Switchboard idempotency.
         """
         if not self._config.backfill_window_h:
             return
@@ -1973,26 +1974,64 @@ class WhatsAppUserClientConnector:
         try:
             reader, writer = await asyncio.open_unix_connection(self._config.bridge_socket)
             try:
+                body = json.dumps(
+                    {
+                        "schema_version": "whatsapp.backfill.v1",
+                        "window_hours": self._config.backfill_window_h,
+                    }
+                ).encode()
                 request = (
-                    f"POST /backfill?hours={self._config.backfill_window_h} HTTP/1.0\r\n"
+                    "POST /backfill HTTP/1.0\r\n"
                     "Host: localhost\r\n"
-                    "Content-Length: 0\r\n"
+                    "Content-Type: application/json\r\n"
+                    f"Content-Length: {len(body)}\r\n"
                     "Connection: close\r\n"
                     "\r\n"
                 )
-                writer.write(request.encode())
+                writer.write(request.encode() + body)
                 await writer.drain()
-                # Read and discard response
-                await asyncio.wait_for(reader.read(4096), timeout=10.0)
+                raw_response = await asyncio.wait_for(reader.read(4096), timeout=10.0)
             finally:
                 writer.close()
                 try:
                     await writer.wait_closed()
                 except Exception:
                     pass
-            logger.info("Backfill request sent to bridge")
+
+            headers, separator, response_body = raw_response.partition(b"\r\n\r\n")
+            status_line = headers.split(b"\r\n", maxsplit=1)[0]
+            status_parts = status_line.split(maxsplit=2)
+            if not separator or len(status_parts) < 2 or status_parts[1] != b"200":
+                safe_status = status_line.decode(errors="replace")
+                raise RuntimeError(
+                    f"Bridge /backfill returned unexpected response: {safe_status}"
+                )
+            acknowledgement = json.loads(response_body)
+            if (
+                acknowledgement.get("schema_version") != "whatsapp.backfill.v1"
+                or acknowledgement.get("status") != "accepted"
+                or acknowledgement.get("window_hours") != self._config.backfill_window_h
+            ):
+                raise RuntimeError("Bridge /backfill returned an invalid acknowledgement")
+            replay_event_count = acknowledgement.get("replay_event_count")
+            if (
+                not isinstance(replay_event_count, int)
+                or isinstance(replay_event_count, bool)
+                or replay_event_count < 0
+            ):
+                raise RuntimeError(
+                    "Bridge /backfill acknowledgement has an invalid replay_event_count"
+                )
+
+            logger.info(
+                "Backfill request accepted by bridge",
+                extra={
+                    "window_hours": self._config.backfill_window_h,
+                    "replay_event_count": replay_event_count,
+                },
+            )
         except Exception as exc:
-            # Non-fatal: bridge may not support backfill endpoint
+            # Non-fatal: replay supplements the normal live stream.
             logger.warning("Failed to request backfill from bridge: %s", exc)
 
 

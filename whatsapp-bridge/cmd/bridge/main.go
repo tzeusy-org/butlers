@@ -237,6 +237,18 @@ func runBridge(args []string) {
 			if be != nil {
 				srv.PublishEvent(be)
 			}
+
+		case *waEvents.HistorySync:
+			// WhatsApp history sync is received asynchronously during session
+			// bootstrap. Cache its normalised messages, but do not emit them until
+			// the connector explicitly requests its bounded /backfill window.
+			historyEvents := mapHistorySyncMessages(client, evt)
+			for _, be := range historyEvents {
+				srv.RecordHistoryEvent(be)
+			}
+			if len(historyEvents) > 0 {
+				log.Printf("cached %d history messages for bounded replay", len(historyEvents))
+			}
 		}
 	})
 

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -210,6 +212,153 @@ func TestServer_Send_WithSendFn(t *testing.T) {
 	}
 	if result["message_id"] != "fake-msg-id-123" {
 		t.Errorf("message_id: got %v", result["message_id"])
+	}
+}
+
+func TestServer_Backfill_ReplaysBufferedMessagesViaSSE(t *testing.T) {
+	sockPath := "/tmp/test-wa-bridge-backfill.sock"
+	srv := api.NewServer(sockPath, func() {})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		srv.Stop(shutCtx)
+	}()
+
+	srv.SetState(api.StateConnected, "+15551234567")
+	srv.SetLivenessFn(func() (bool, bool) { return true, true })
+	var sendCalls atomic.Int32
+	srv.SetSendFn(func(context.Context, string, string, string) (string, int64, error) {
+		sendCalls.Add(1)
+		return "unexpected-send", 0, nil
+	})
+	now := time.Now()
+	srv.RecordHistoryEvent(&bridgeEvents.BridgeEvent{
+		Type:      "text",
+		MessageID: "fresh-message",
+		ChatJID:   "chat@s.whatsapp.net",
+		SenderJID: "sender@s.whatsapp.net",
+		Timestamp: now.Add(-30 * time.Minute).Unix(),
+		Content:   json.RawMessage(`{"text":"replay me"}`),
+		Raw:       json.RawMessage(`{"is_from_me":true}`),
+	})
+	srv.RecordHistoryEvent(&bridgeEvents.BridgeEvent{
+		Type:      "text",
+		MessageID: "stale-message",
+		ChatJID:   "chat@s.whatsapp.net",
+		SenderJID: "sender@s.whatsapp.net",
+		Timestamp: now.Add(-2 * time.Hour).Unix(),
+		Content:   json.RawMessage(`{"text":"do not replay"}`),
+	})
+
+	client := dialUnix(sockPath)
+	requestBody := strings.NewReader(`{"schema_version":"whatsapp.backfill.v1","window_hours":1}`)
+	resp, err := client.Post("http://localhost/backfill", "application/json", requestBody)
+	if err != nil {
+		t.Fatalf("POST /backfill: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status code: got %d want 200; body: %s", resp.StatusCode, body)
+	}
+	var ack map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
+		t.Fatalf("decode acknowledgement: %v", err)
+	}
+	if ack["schema_version"] != "whatsapp.backfill.v1" {
+		t.Errorf("schema_version: got %v", ack["schema_version"])
+	}
+	if ack["status"] != "accepted" {
+		t.Errorf("status: got %v", ack["status"])
+	}
+	if ack["replay_event_count"] != float64(1) {
+		t.Errorf("replay_event_count: got %v want 1", ack["replay_event_count"])
+	}
+	if sendCalls.Load() != 0 {
+		t.Errorf("/backfill called live send %d times", sendCalls.Load())
+	}
+
+	streamCtx, streamCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer streamCancel()
+	streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet, "http://localhost/events", nil)
+	if err != nil {
+		t.Fatalf("new SSE request: %v", err)
+	}
+	streamResp, err := client.Do(streamReq)
+	if err != nil {
+		t.Fatalf("GET /events: %v", err)
+	}
+	defer streamResp.Body.Close()
+
+	scanner := bufio.NewScanner(streamResp.Body)
+	var replayed map[string]any
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &replayed); err != nil {
+			t.Fatalf("decode replayed SSE event: %v", err)
+		}
+		break
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read replayed SSE event: %v", err)
+	}
+	if replayed["message_id"] != "fresh-message" {
+		t.Errorf("replayed message_id: got %v want fresh-message", replayed["message_id"])
+	}
+	if replayed["chat_jid"] != "chat@s.whatsapp.net" {
+		t.Errorf("replayed chat_jid: got %v", replayed["chat_jid"])
+	}
+}
+
+func TestServer_Backfill_RequiresConnectedV1Request(t *testing.T) {
+	sockPath := "/tmp/test-wa-bridge-backfill-validation.sock"
+	srv := api.NewServer(sockPath, func() {})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		srv.Stop(shutCtx)
+	}()
+
+	client := dialUnix(sockPath)
+	body := `{"schema_version":"whatsapp.backfill.v1","window_hours":1}`
+	resp, err := client.Post("http://localhost/backfill", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /backfill while disconnected: %v", err)
+	}
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("disconnected status code: got %d want 503", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	srv.SetState(api.StateConnected, "+15551234567")
+	srv.SetLivenessFn(func() (bool, bool) { return true, true })
+	resp, err = client.Post(
+		"http://localhost/backfill",
+		"application/json",
+		strings.NewReader(`{"schema_version":"whatsapp.backfill.v0","window_hours":1}`),
+	)
+	if err != nil {
+		t.Fatalf("POST /backfill with unsupported version: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("unsupported-version status code: got %d want 400", resp.StatusCode)
 	}
 }
 
