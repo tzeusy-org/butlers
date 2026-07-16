@@ -35,6 +35,7 @@ import type {
   usePatchCalendarDedupRules,
   useSetCalendarKeepSeparate,
 } from "@/hooks/use-calendar-workspace.ts";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Tip } from "@/components/ui/tip";
 import { formatEventTime, tzDayKey } from "@/lib/calendar-grid.ts";
 import { cn } from "@/lib/utils.ts";
@@ -77,6 +78,8 @@ export interface CalendarDuplicatesPanelProps {
   data?: CalendarDuplicatesResponse;
   /** Whether the duplicates query is still loading (first fetch). */
   isLoading?: boolean;
+  /** Whether retained clusters are refreshing for a new workspace window. */
+  isFetching?: boolean;
   /** Whether the duplicates query errored. */
   isError?: boolean;
   /** The query error, when present. */
@@ -92,6 +95,7 @@ export interface CalendarDuplicatesPanelProps {
 export function CalendarDuplicatesPanel({
   data,
   isLoading = false,
+  isFetching = false,
   isError = false,
   error = null,
   rulesMutation,
@@ -187,7 +191,11 @@ export function CalendarDuplicatesPanel({
   const rulesBusy = rulesMutation.isPending;
 
   return (
-    <div data-testid="duplicates-panel" className="flex min-h-0 flex-1 flex-col gap-3">
+    <FetchingDim
+      isFetching={isFetching && !isLoading && !isError}
+      className="flex min-h-0 flex-1 flex-col"
+    >
+      <div data-testid="duplicates-panel" className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] pb-2">
         <h2 className="font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--mfg)]">
           Duplicate review
@@ -347,7 +355,7 @@ export function CalendarDuplicatesPanel({
           })}
         </ul>
       )}
-    </div>
+      </div>
+    </FetchingDim>
   );
 }
-

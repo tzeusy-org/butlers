@@ -136,9 +136,10 @@ export function useCalendarOverlays(
         start: params.start,
         end: params.end,
         timezone: params.timezone,
-      }),
+    }),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 60_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -159,9 +160,10 @@ export function useCalendarDayBriefing(
         date: params.date,
         timezone: params.timezone,
         butlers: params.butlers,
-      }),
+    }),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 60_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -182,6 +184,7 @@ export function useCalendarMeetingPrep(
     queryFn: () => getCalendarMeetingPrep(eventId as string),
     enabled: (options?.enabled ?? true) && !!eventId,
     refetchInterval: options?.refetchInterval ?? false,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -196,6 +199,7 @@ export function useCalendarWorkspaceSearch(
     queryFn: () => searchCalendarWorkspace({ ...params, q: trimmed }),
     enabled: (options?.enabled ?? true) && trimmed.length > 0,
     staleTime: 10_000,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -423,6 +427,7 @@ export function useCalendarDuplicates(
     queryFn: () => getCalendarWorkspaceDuplicates(params),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? false,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -441,6 +446,7 @@ export function useCalendarConflicts(
     queryFn: () => getCalendarWorkspaceConflicts(params),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? false,
+    placeholderData: (previousData) => previousData,
   });
 }
 
@@ -485,5 +491,6 @@ export function useCalendarWorkspaceAudit(
     queryFn: () => getCalendarWorkspaceAudit(params),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? 30_000,
+    placeholderData: (previousData) => previousData,
   });
 }

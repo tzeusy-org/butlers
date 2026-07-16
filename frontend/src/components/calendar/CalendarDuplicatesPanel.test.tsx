@@ -113,6 +113,7 @@ function renderPanel(props: Partial<PanelProps> = {}) {
     <CalendarDuplicatesPanel
       data={props.data ?? makeResponse()}
       isLoading={props.isLoading}
+      isFetching={props.isFetching}
       isError={props.isError}
       error={props.error}
       rulesMutation={rulesMutation}
@@ -222,5 +223,25 @@ describe("CalendarDuplicatesPanel", () => {
       />,
     );
     expect(screen.getByRole("alert").textContent).toContain("boom");
+  });
+
+  it("keeps previous clusters visible but dimmed while a new window fetches", () => {
+    renderPanel({ isFetching: true });
+
+    expect(screen.getByText("Team standup")).toBeTruthy();
+    expect(screen.getByTestId("duplicates-panel").parentElement?.className).toContain(
+      "opacity-60",
+    );
+  });
+
+  it("prioritizes a query error over retained clusters", () => {
+    renderPanel({
+      data: makeResponse(),
+      isError: true,
+      error: new Error("duplicate fetch failed"),
+    });
+
+    expect(screen.getByRole("alert").textContent).toContain("duplicate fetch failed");
+    expect(screen.queryByText("Team standup")).toBeNull();
   });
 });

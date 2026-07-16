@@ -132,6 +132,39 @@ describe("DayBriefingCard", () => {
     expect(screen.queryByTestId("day-briefing-clear")).toBeNull();
   });
 
+  it("keeps a previous briefing visible but dimmed while a new date is fetching", () => {
+    render(
+      <DayBriefingCard
+        heading="Tomorrow"
+        isFetching
+        groups={[financeGroup()]}
+        hasDomainContext
+        hasEntries
+      />,
+    );
+
+    expect(screen.getByText("Electric Co")).toBeTruthy();
+    expect(screen.getByTestId("day-briefing-card").parentElement?.className).toContain(
+      "opacity-60",
+    );
+  });
+
+  it("shows a transport error instead of retained briefing data", () => {
+    render(
+      <DayBriefingCard
+        heading="Tomorrow"
+        isError
+        error={new Error("briefing fetch failed")}
+        groups={[financeGroup()]}
+        hasDomainContext
+        hasEntries
+      />,
+    );
+
+    expect(screen.getByRole("alert").textContent).toContain("briefing fetch failed");
+    expect(screen.queryByText("Electric Co")).toBeNull();
+  });
+
   it("links a chip to its underlying item on click", () => {
     const onSelect = vi.fn();
     render(

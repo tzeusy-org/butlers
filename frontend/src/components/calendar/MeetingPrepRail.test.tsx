@@ -89,6 +89,39 @@ describe("MeetingPrepRail", () => {
     expect(screen.queryByTestId("meeting-prep-empty")).toBeNull();
   });
 
+  it("keeps prior prep context visible but dimmed while another event fetches", () => {
+    render(
+      <MeetingPrepRail
+        heading="Quarterly sync"
+        isFetching
+        hasPrepContext
+        attendees={[attendee()]}
+        sourceButlers={["relationship"]}
+      />,
+    );
+
+    expect(screen.getByText("Ada Lovelace")).toBeTruthy();
+    expect(screen.getByTestId("meeting-prep-rail").parentElement?.className).toContain(
+      "opacity-60",
+    );
+  });
+
+  it("shows a transport error instead of retained prep context", () => {
+    render(
+      <MeetingPrepRail
+        heading="Quarterly sync"
+        isError
+        error={new Error("prep fetch failed")}
+        hasPrepContext
+        attendees={[attendee()]}
+        sourceButlers={["relationship"]}
+      />,
+    );
+
+    expect(screen.getByRole("alert").textContent).toContain("prep fetch failed");
+    expect(screen.queryByText("Ada Lovelace")).toBeNull();
+  });
+
   it("omits the message-context panel and last-met when absent (graceful empty)", () => {
     render(
       <MeetingPrepRail

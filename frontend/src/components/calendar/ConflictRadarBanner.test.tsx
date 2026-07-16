@@ -67,6 +67,28 @@ describe("ConflictRadarBanner", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("keeps prior issues visible but dimmed while a new window fetches", () => {
+    render(<ConflictRadarBanner issues={[overlapIssue()]} available isFetching />);
+
+    expect(screen.getByTestId("conflict-radar-banner").parentElement?.className).toContain(
+      "opacity-60",
+    );
+  });
+
+  it("shows a query error instead of retained issues", () => {
+    render(
+      <ConflictRadarBanner
+        issues={[overlapIssue()]}
+        available
+        isError
+        error={new Error("conflict scan failed")}
+      />,
+    );
+
+    expect(screen.getByRole("alert").textContent).toContain("conflict scan failed");
+    expect(screen.queryByTestId("conflict-radar-banner")).toBeNull();
+  });
+
   it("expands to show contributing event titles", () => {
     render(<ConflictRadarBanner issues={[overlapIssue()]} available />);
     fireEvent.click(screen.getByText("Review"));

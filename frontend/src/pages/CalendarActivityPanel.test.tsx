@@ -43,6 +43,12 @@ function renderPanel(
   entries: CalendarAuditEntry[],
   onUndo: (entry: CalendarAuditEntry) => void = () => {},
   sourcesAvailable?: boolean,
+  queryState: {
+    isFetching?: boolean;
+    isLoading?: boolean;
+    isError?: boolean;
+    error?: Error | null;
+  } = {},
 ) {
   const auditQuery = {
     isLoading: false,
@@ -59,6 +65,7 @@ function renderPanel(
           : { sources_available: sourcesAvailable }),
       },
     },
+    ...queryState,
   };
   return render(
     <MemoryRouter>
@@ -164,5 +171,31 @@ describe("CalendarActivityPanel — degraded-source note (bu-yjfk2)", () => {
   it("omits the degraded note when sources_available is absent (default healthy)", () => {
     renderPanel([auditEntry({})]);
     expect(screen.queryByTestId("audit-sources-degraded")).toBeNull();
+  });
+});
+
+describe("CalendarActivityPanel — never-blank audit pages (bu-plib7)", () => {
+  it("keeps previous audit rows visible but dimmed while the next page fetches", () => {
+    const { container } = renderPanel(
+      [auditEntry({})],
+      () => {},
+      undefined,
+      { isFetching: true },
+    );
+
+    expect(screen.getByText(/workspace_user_update/i)).toBeTruthy();
+    expect(container.innerHTML).toContain("opacity-60");
+  });
+
+  it("prioritizes a query error over retained audit rows", () => {
+    renderPanel(
+      [auditEntry({})],
+      () => {},
+      undefined,
+      { isError: true, error: new Error("audit fetch failed") },
+    );
+
+    expect(screen.getByRole("alert").textContent).toContain("audit fetch failed");
+    expect(screen.queryByText(/workspace_user_update/i)).toBeNull();
   });
 });
