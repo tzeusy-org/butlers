@@ -1115,6 +1115,73 @@ async def test_group_size_in_extra_metadata_does_not_count_as_engagement(dunbar_
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_group_size_in_extra_metadata_matches_top_level_raw_score_dilution(dunbar_pool):
+    """Nested group_size uses the same 1/N raw-score divisor as top-level metadata."""
+    from butlers.tools.relationship.dunbar import compute_dunbar_scores
+
+    nested_group = await _make_contact(dunbar_pool, "NestedGroupSize")
+    top_level_group = await _make_contact(dunbar_pool, "TopLevelGroupSize")
+    direct_message = await _make_contact(dunbar_pool, "DirectMessageGroupSize")
+
+    group_size = 8
+    occurred_at = datetime.now(UTC) - timedelta(days=1)
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_group_interaction', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{nested_group['entity_id']}",
+        nested_group["entity_id"],
+        occurred_at,
+        {
+            "type": "group_interaction",
+            "direction": "incoming",
+            "extra_metadata": {"group_size": group_size},
+        },
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_group_interaction', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{top_level_group['entity_id']}",
+        top_level_group["entity_id"],
+        occurred_at,
+        {"type": "group_interaction", "direction": "incoming", "group_size": group_size},
+    )
+    await dunbar_pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_direct_message', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{direct_message['entity_id']}",
+        direct_message["entity_id"],
+        occurred_at,
+        {"type": "direct_message", "direction": "incoming", "group_size": 1},
+    )
+
+    scores = await compute_dunbar_scores(dunbar_pool)
+    raw_scores = {score["contact_id"]: score["raw_score"] for score in scores}
+
+    nested_raw_score = raw_scores[nested_group["id"]]
+    top_level_raw_score = raw_scores[top_level_group["id"]]
+    direct_message_raw_score = raw_scores[direct_message["id"]]
+
+    assert direct_message_raw_score > 0.0
+    assert abs(nested_raw_score - top_level_raw_score) < 1e-9, (
+        "extra_metadata.group_size must match the top-level group_size divisor"
+    )
+    assert abs(nested_raw_score - direct_message_raw_score / group_size) < 1e-9, (
+        f"Expected nested group raw score to be 1/{group_size} of the direct-message baseline"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_owner_entity_excluded_from_scoring(dunbar_pool):
     """The owner does not occupy a slot in their own Dunbar circles."""
     from butlers.tools.relationship.dunbar import compute_dunbar_scores
