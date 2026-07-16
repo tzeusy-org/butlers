@@ -180,7 +180,7 @@ def test_category_for_result_is_always_in_taxonomy() -> None:
 
 
 def test_all_supported_episode_adapters_have_non_other_category() -> None:
-    """Every lane-bearing SUPPORTED source in contracts.py must map to a category.
+    """Every lane-bearing SUPPORTED source in contracts.py must map non-``other``.
 
     _D1_PAIRS is derived from INITIAL_SOURCES and _CATEGORY_MAP. Adding a new
     SUPPORTED episode adapter therefore cannot make this test pass by editing a
@@ -192,6 +192,13 @@ def test_all_supported_episode_adapters_have_non_other_category() -> None:
     # lived time, so it has no source category / lane (IEA reframe, §4).
     intent_only_sources = {"google_calendar.completed"}
     d1_source_names = {pair[0] for pair in _D1_PAIRS}
+    other_mapped = sorted(
+        f"{source_name}/{episode_type}"
+        for source_name, episode_type, _trigger_source, expected in _D1_PAIRS
+        if source_name not in point_event_only_sources
+        and source_name not in intent_only_sources
+        and expected == "other"
+    )
 
     # Every lane-bearing SUPPORTED source must have at least one D1 entry.
     missing = (
@@ -201,6 +208,26 @@ def test_all_supported_episode_adapters_have_non_other_category() -> None:
         f"SUPPORTED sources without D1 mapping entries: {sorted(missing)}. "
         "Add the (source_name, episode_type) → category mapping to aggregations._CATEGORY_MAP."
     )
+    assert not other_mapped, (
+        "SUPPORTED D1 pairs explicitly mapped to 'other': "
+        f"{other_mapped}. Map each pair to a lane-bearing category."
+    )
+
+
+def test_supported_adapter_explicitly_mapped_to_other_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generated D1 case mapped to ``other`` cannot satisfy the guard."""
+    source_name = "future.adapter"
+    monkeypatch.setitem(globals(), "_SUPPORTED_SOURCE_NAMES", frozenset({source_name}))
+    monkeypatch.setitem(
+        globals(),
+        "_D1_PAIRS",
+        [(source_name, "future_episode", None, "other")],
+    )
+
+    with pytest.raises(AssertionError, match="explicitly mapped to 'other'"):
+        test_all_supported_episode_adapters_have_non_other_category()
 
 
 def test_d1_pairs_are_derived_only_from_supported_sources() -> None:
