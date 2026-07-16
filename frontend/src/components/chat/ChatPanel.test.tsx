@@ -20,6 +20,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ChatContent } from "./ChatPanel";
+import type { Message } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -235,6 +236,105 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
     // never reset.
     expect(screen.getAllByText("calendar thread")).toHaveLength(2);
     expect(screen.queryByText("New conversation")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retained thread during conversation-key refetch (bu-zu265)
+// ---------------------------------------------------------------------------
+
+const SWITCHING_CONVERSATIONS = [
+  {
+    id: "conv-current",
+    butler_name: "switchboard",
+    title: "Current thread",
+    status: "active",
+    created_at: "2026-07-03T12:00:00.000Z",
+    updated_at: "2026-07-04T12:00:00.000Z",
+    message_count: 1,
+    total_input_tokens: 5,
+    total_output_tokens: 5,
+    total_duration_ms: 200,
+    routed_butler: null,
+  },
+  {
+    id: "conv-next",
+    butler_name: "switchboard",
+    title: "Next thread",
+    status: "active",
+    created_at: "2026-07-02T12:00:00.000Z",
+    updated_at: "2026-07-03T12:00:00.000Z",
+    message_count: 1,
+    total_input_tokens: 5,
+    total_output_tokens: 5,
+    total_duration_ms: 200,
+    routed_butler: null,
+  },
+];
+
+const CURRENT_THREAD_MESSAGE: Message = {
+  id: "current-thread-message",
+  conversation_id: "conv-current",
+  role: "user",
+  content: "Retained while the next thread refetches",
+  tool_calls: null,
+  error: null,
+  model: null,
+  input_tokens: null,
+  output_tokens: null,
+  duration_ms: null,
+  session_id: null,
+  request_id: null,
+  created_at: "2026-07-04T12:00:00.000Z",
+};
+
+function mockHooksForConversationRefetchGap() {
+  const conversationsResult = {
+    data: { data: SWITCHING_CONVERSATIONS, meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversations>;
+  const emptyMessagesResult = {
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  const currentMessagesResult = {
+    data: { data: [CURRENT_THREAD_MESSAGE], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  const refetchGapResult = {
+    data: undefined,
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+
+  vi.mocked(useConversations).mockReturnValue(conversationsResult);
+  vi.mocked(useConversationMessages).mockImplementation(
+    (_butlerName: string, conversationId: string | null) => {
+      if (conversationId === "conv-current") return currentMessagesResult;
+      if (conversationId === "conv-next") return refetchGapResult;
+      return emptyMessagesResult;
+    },
+  );
+  vi.mocked(useConversationSearch).mockReturnValue({
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationSearch>);
+}
+
+describe("ChatContent — conversation switch refetch floor (bu-zu265)", () => {
+  it("keeps the current thread visible while the selected conversation has no query data yet", () => {
+    mockHooksForConversationRefetchGap();
+    renderChatContent();
+
+    expect(screen.getByText("Retained while the next thread refetches")).toBeDefined();
+
+    fireEvent.click(screen.getByText("Next thread"));
+
+    // The conversation selection changes immediately, but TanStack Query can
+    // briefly expose `data: undefined` for its new key. Keep the rendered
+    // thread instead of flashing MessageThread's empty state during that gap.
+    expect(screen.getAllByText("Next thread")).toHaveLength(2);
+    expect(screen.getByText("Retained while the next thread refetches")).toBeDefined();
+    expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
   });
 });
 
