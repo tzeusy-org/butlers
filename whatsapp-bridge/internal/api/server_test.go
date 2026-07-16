@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -257,29 +258,33 @@ func TestServer_Backfill_ReplaysBufferedMessagesViaSSE(t *testing.T) {
 	})
 
 	client := dialUnix(sockPath)
-	requestBody := strings.NewReader(`{"schema_version":"whatsapp.backfill.v1","window_hours":1}`)
-	resp, err := client.Post("http://localhost/backfill", "application/json", requestBody)
-	if err != nil {
-		t.Fatalf("POST /backfill: %v", err)
-	}
-	defer resp.Body.Close()
+	for range 2 {
+		requestBody := strings.NewReader(`{"schema_version":"whatsapp.backfill.v1","window_hours":1}`)
+		resp, err := client.Post("http://localhost/backfill", "application/json", requestBody)
+		if err != nil {
+			t.Fatalf("POST /backfill: %v", err)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status code: got %d want 200; body: %s", resp.StatusCode, body)
-	}
-	var ack map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
-		t.Fatalf("decode acknowledgement: %v", err)
-	}
-	if ack["schema_version"] != "whatsapp.backfill.v1" {
-		t.Errorf("schema_version: got %v", ack["schema_version"])
-	}
-	if ack["status"] != "accepted" {
-		t.Errorf("status: got %v", ack["status"])
-	}
-	if ack["replay_event_count"] != float64(1) {
-		t.Errorf("replay_event_count: got %v want 1", ack["replay_event_count"])
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("status code: got %d want %d; body: %s", resp.StatusCode, http.StatusOK, body)
+		}
+		var ack map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
+			resp.Body.Close()
+			t.Fatalf("decode acknowledgement: %v", err)
+		}
+		resp.Body.Close()
+		if ack["schema_version"] != "whatsapp.backfill.v1" {
+			t.Errorf("schema_version: got %v", ack["schema_version"])
+		}
+		if ack["status"] != "accepted" {
+			t.Errorf("status: got %v", ack["status"])
+		}
+		if ack["replay_event_count"] != float64(1) {
+			t.Errorf("replay_event_count: got %v want 1", ack["replay_event_count"])
+		}
 	}
 	if sendCalls.Load() != 0 {
 		t.Errorf("/backfill called live send %d times", sendCalls.Load())
@@ -297,26 +302,40 @@ func TestServer_Backfill_ReplaysBufferedMessagesViaSSE(t *testing.T) {
 	}
 	defer streamResp.Body.Close()
 
+	// A live frame after subscription proves the deduplicated replay drains
+	// completely before normal SSE traffic. Without pending-replay dedup, the
+	// second frame would be a duplicate fresh-message instead.
+	srv.PublishEvent(&bridgeEvents.BridgeEvent{
+		Type:      "text",
+		MessageID: "live-message",
+		ChatJID:   "chat@s.whatsapp.net",
+		SenderJID: "sender@s.whatsapp.net",
+		Timestamp: now.Unix(),
+		Content:   json.RawMessage(`{"text":"live after replay"}`),
+	})
+
 	scanner := bufio.NewScanner(streamResp.Body)
-	var replayed map[string]any
-	for scanner.Scan() {
+	var messageIDs []string
+	for len(messageIDs) < 2 && scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
+		var replayed map[string]any
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &replayed); err != nil {
 			t.Fatalf("decode replayed SSE event: %v", err)
 		}
-		break
+		messageID, ok := replayed["message_id"].(string)
+		if !ok {
+			t.Fatalf("replayed message_id: got %v", replayed["message_id"])
+		}
+		messageIDs = append(messageIDs, messageID)
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("read replayed SSE event: %v", err)
 	}
-	if replayed["message_id"] != "fresh-message" {
-		t.Errorf("replayed message_id: got %v want fresh-message", replayed["message_id"])
-	}
-	if replayed["chat_jid"] != "chat@s.whatsapp.net" {
-		t.Errorf("replayed chat_jid: got %v", replayed["chat_jid"])
+	if got, want := messageIDs, []string{"fresh-message", "live-message"}; !slices.Equal(got, want) {
+		t.Errorf("SSE message order: got %v want %v", got, want)
 	}
 }
 

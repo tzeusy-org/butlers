@@ -65,11 +65,12 @@ type Server struct {
 	// Replay state is deliberately in-memory and bounded. The bridge only
 	// replays normalised message events it has already received; it never asks
 	// WhatsApp for history as a consequence of an HTTP request.
-	replayMu       sync.Mutex
-	replayEvents   []*bridgeEvents.BridgeEvent
-	replayEventIDs map[string]struct{}
-	pendingReplay  []*bridgeEvents.BridgeEvent
-	backfillCutoff *time.Time
+	replayMu         sync.Mutex
+	replayEvents     []*bridgeEvents.BridgeEvent
+	replayEventIDs   map[string]struct{}
+	pendingReplay    []*bridgeEvents.BridgeEvent
+	pendingReplayIDs map[string]struct{}
+	backfillCutoff   *time.Time
 
 	// Pairing state
 	pairMu     sync.Mutex
@@ -100,12 +101,13 @@ type Server struct {
 // NewServer creates a new API server but does not start it.
 func NewServer(socketPath string, shutdownFn func()) *Server {
 	s := &Server{
-		socketPath:     socketPath,
-		state:          StateConnecting,
-		startTime:      time.Now(),
-		subscribers:    make(map[chan *bridgeEvents.BridgeEvent]struct{}),
-		replayEventIDs: make(map[string]struct{}),
-		shutdownFn:     shutdownFn,
+		socketPath:       socketPath,
+		state:            StateConnecting,
+		startTime:        time.Now(),
+		subscribers:      make(map[chan *bridgeEvents.BridgeEvent]struct{}),
+		replayEventIDs:   make(map[string]struct{}),
+		pendingReplayIDs: make(map[string]struct{}),
+		shutdownFn:       shutdownFn,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /events", s.handleEvents)
@@ -262,7 +264,7 @@ func (s *Server) recordReplayEvent(evt *bridgeEvents.BridgeEvent) bool {
 		return false
 	}
 
-	key := evt.ChatJID + "\x00" + evt.MessageID
+	key := replayEventKey(evt)
 	s.replayMu.Lock()
 	defer s.replayMu.Unlock()
 	if _, exists := s.replayEventIDs[key]; exists {
@@ -277,6 +279,10 @@ func (s *Server) recordReplayEvent(evt *bridgeEvents.BridgeEvent) bool {
 		s.replayEvents = s.replayEvents[1:]
 	}
 	return true
+}
+
+func replayEventKey(evt *bridgeEvents.BridgeEvent) string {
+	return evt.ChatJID + "\x00" + evt.MessageID
 }
 
 func (s *Server) matchesRequestedBackfill(evt *bridgeEvents.BridgeEvent) bool {
@@ -313,7 +319,18 @@ func (s *Server) enqueueReplay(events []*bridgeEvents.BridgeEvent) {
 	if len(s.subscribers) == 0 {
 		s.replayMu.Lock()
 		for _, evt := range events {
+			if evt == nil || evt.MessageID == "" || evt.ChatJID == "" {
+				continue
+			}
+			key := replayEventKey(evt)
+			if _, exists := s.pendingReplayIDs[key]; exists {
+				continue
+			}
+			if len(s.pendingReplay) >= maxReplayEvents {
+				break
+			}
 			s.pendingReplay = append(s.pendingReplay, cloneBridgeEvent(evt))
+			s.pendingReplayIDs[key] = struct{}{}
 		}
 		s.replayMu.Unlock()
 		return
@@ -366,6 +383,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	s.replayMu.Lock()
 	pendingReplay := s.pendingReplay
 	s.pendingReplay = nil
+	s.pendingReplayIDs = make(map[string]struct{})
 	s.replayMu.Unlock()
 	s.subsMu.Unlock()
 
