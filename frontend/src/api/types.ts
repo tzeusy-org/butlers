@@ -3508,6 +3508,20 @@ export interface PipelineStats {
   routed_pct: number;
   /** Count of filtered events in the last 24 hours. */
   filtered24h: number;
+  /**
+   * Unresolved ingestion events that failed execution. Deliberately reviewed
+   * write-offs are excluded and reported separately in `written_off_total`.
+   */
+  failed_total: number | null;
+  /** Events whose replay was requested and has not yet been reconciled. */
+  replay_pending_total: number | null;
+  /** Reviewed, deliberately unreplayed failures retained for audit history. */
+  written_off_total: number | null;
+  /**
+   * Whether the DB-backed backlog counts were available for this response.
+   * When false, every backlog count is null rather than a fabricated zero.
+   */
+  backlog_available: boolean;
 }
 
 /**

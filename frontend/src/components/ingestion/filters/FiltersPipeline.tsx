@@ -50,9 +50,10 @@ import { PrioritySendersBlock } from './PrioritySendersBlock'
 import { ChannelDefaultsBlock, type ChannelDefaultEditorState } from './ChannelDefaultsBlock'
 import { ArchivedRulesSection } from './ArchivedRulesSection'
 import { RuleEditor, type EditorMode } from './RuleEditor'
-import type { IngestionRule } from '@/api/types'
+import type { IngestionRule, PipelineStats } from '@/api/types'
 import type { ChannelDefaultPolicy } from '@/api/index.ts'
 import { ApiError } from '@/api/index.ts'
+import { getAvailablePipelineBacklog } from './backlog-state'
 
 // ---------------------------------------------------------------------------
 // Rule classification helpers
@@ -62,6 +63,87 @@ function isChannelDefault(rule: IngestionRule): boolean {
   return (
     rule.rule_type === 'channel_default' ||
     rule.scope === 'channel_default'
+  )
+}
+
+interface ExecutionBacklogProps {
+  stats: PipelineStats | undefined
+  loading: boolean
+}
+
+function ExecutionBacklog({ stats, loading }: ExecutionBacklogProps) {
+  if (loading) return null
+
+  const backlog = getAvailablePipelineBacklog(stats)
+  if (!backlog) {
+    return (
+      <div
+        className="mt-6 border border-border px-4 py-3 font-mono text-[10px] tracking-[0.08em] uppercase text-muted-foreground/70"
+        data-testid="pipeline-execution-backlog-unavailable"
+        role="status"
+        aria-live="polite"
+      >
+        backlog unavailable · execution counts could not be checked
+      </div>
+    )
+  }
+
+  return (
+    <section
+      className="mt-6 border border-border px-4 py-4"
+      data-testid="pipeline-execution-backlog"
+      aria-labelledby="pipeline-execution-backlog-heading"
+      aria-live="polite"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+        <div>
+          <p
+            id="pipeline-execution-backlog-heading"
+            className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground/70"
+          >
+            execution backlog · current ledger
+          </p>
+          <p className="mt-1 font-serif text-sm text-muted-foreground">
+            Work awaiting resolution after the execute gate.
+          </p>
+        </div>
+        <p className="font-mono text-lg font-medium tabular-nums tracking-[-0.02em]">
+          {backlog.activeTotal.toLocaleString()} active
+        </p>
+      </div>
+
+      <dl className="mt-4 grid gap-4 sm:grid-cols-3">
+        <div>
+          <dt className="font-mono text-[9.5px] tracking-[0.12em] uppercase text-[var(--red-text)]">
+            unresolved failures
+          </dt>
+          <dd className="mt-1 font-mono text-xl font-medium tabular-nums text-[var(--red-text)]">
+            {backlog.failedTotal.toLocaleString()}
+          </dd>
+        </div>
+        <div>
+          <dt className="font-mono text-[9.5px] tracking-[0.12em] uppercase text-[var(--amber-text)]">
+            replay pending
+          </dt>
+          <dd className="mt-1 font-mono text-xl font-medium tabular-nums text-[var(--amber-text)]">
+            {backlog.replayPendingTotal.toLocaleString()}
+          </dd>
+        </div>
+        <div>
+          <dt className="font-mono text-[9.5px] tracking-[0.12em] uppercase text-muted-foreground/70">
+            reviewed write-offs
+          </dt>
+          <dd className="mt-1 font-mono text-xl font-medium tabular-nums text-muted-foreground">
+            {backlog.writtenOffTotal.toLocaleString()}
+          </dd>
+        </div>
+      </dl>
+
+      <p className="mt-4 max-w-[72ch] font-serif text-[13.5px] leading-[1.55] text-muted-foreground">
+        Unresolved failures and requested replays awaiting reconciliation are active backlog. Reviewed
+        write-offs remain visible for audit, but are not active backlog.
+      </p>
+    </section>
   )
 }
 
@@ -332,6 +414,9 @@ export function FiltersPipeline() {
 
       {/* Five-gate diagram */}
       <PipelineGateDiagram counts={gateCounts} available={statsAvailable} />
+
+      {/* DB-backed execution backlog: independent of Prometheus funnel metrics. */}
+      <ExecutionBacklog stats={pipelineStats} loading={statsLoading} />
 
       {/* Gate sections */}
       <div className="mt-14">
