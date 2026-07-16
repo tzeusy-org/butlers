@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, useParams, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, cleanup, screen } from "@testing-library/react";
+import { render, cleanup, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import ButlerDetailPage from "@/pages/ButlerDetailPage";
@@ -54,6 +54,7 @@ vi.mock("@/hooks/use-butlers", () => ({
 vi.mock("@/hooks/use-sessions", () => ({
   useButlerSessions: vi.fn(() => ({ data: null, isLoading: false })),
   useGlobalSessionDetail: vi.fn(() => ({ data: null, isLoading: false })),
+  useSessionAggregate: vi.fn(() => ({ data: null, isLoading: false, isError: false })),
 }));
 
 vi.mock("@/hooks/use-contacts", () => ({
@@ -450,6 +451,77 @@ describe("ButlerDetailPage — deep-linking via ?tab=", () => {
     ]);
     const html = renderPage();
     expect(html).toContain("Loading sessions...");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Keyboard tab navigation
+// ---------------------------------------------------------------------------
+
+describe("ButlerDetailPage — keyboard tab navigation", () => {
+  it("maps visible tab positions 1 through 9 to their tab URLs", () => {
+    const setSearchParams = vi.fn();
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), setSearchParams]);
+    renderPageLive();
+
+    fireEvent.keyDown(window, { key: "1" });
+    expect(setSearchParams).toHaveBeenLastCalledWith({}, { replace: true });
+
+    fireEvent.keyDown(window, { key: "2" });
+    expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "activity" }, { replace: true });
+
+    fireEvent.keyDown(window, { key: "6" });
+    expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "collections" }, { replace: true });
+
+    fireEvent.keyDown(window, { key: "8" });
+    expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "system" }, { replace: true });
+  });
+
+  it("cycles the current tab with [ and ]", () => {
+    const setSearchParams = vi.fn();
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=activity"),
+      setSearchParams,
+    ]);
+    renderPageLive();
+
+    fireEvent.keyDown(window, { key: "[" });
+    expect(setSearchParams).toHaveBeenLastCalledWith({}, { replace: true });
+
+    fireEvent.keyDown(window, { key: "]" });
+    expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "approvals" }, { replace: true });
+  });
+
+  it("wraps bracket cycling from the first and last visible tabs", () => {
+    const fromOverview = vi.fn();
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), fromOverview]);
+    const overviewPage = renderPageLive();
+
+    fireEvent.keyDown(window, { key: "[" });
+    expect(fromOverview).toHaveBeenLastCalledWith({ tab: "system" }, { replace: true });
+    overviewPage.unmount();
+
+    const fromSystem = vi.fn();
+    vi.mocked(useSearchParams).mockReturnValue([
+      new URLSearchParams("tab=system"),
+      fromSystem,
+    ]);
+    renderPageLive();
+
+    fireEvent.keyDown(window, { key: "]" });
+    expect(fromSystem).toHaveBeenLastCalledWith({}, { replace: true });
+  });
+
+  it("does not steal number keys from the command input", () => {
+    const setSearchParams = vi.fn();
+    vi.mocked(useSearchParams).mockReturnValue([new URLSearchParams(), setSearchParams]);
+    renderPageLive();
+
+    const commandInput = screen.getByTestId("butler-command-input");
+    commandInput.focus();
+    fireEvent.keyDown(commandInput, { key: "2" });
+
+    expect(setSearchParams).not.toHaveBeenCalled();
   });
 });
 

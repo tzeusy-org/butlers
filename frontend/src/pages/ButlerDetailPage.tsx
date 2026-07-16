@@ -12,8 +12,9 @@ import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useButler } from "@/hooks/use-butlers";
+import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 import { titleize } from "@/lib/utils";
-import { type TabValue, isValidTab } from "@/pages/butler-detail-tabs";
+import { getAllTabs, type TabValue, isValidTab } from "@/pages/butler-detail-tabs";
 
 // ---------------------------------------------------------------------------
 // Lazy-loaded tabs
@@ -173,14 +174,14 @@ export default function ButlerDetailPage() {
 
   const isSwitchboard = name === "switchboard";
 
-  function handleTabChange(value: string) {
+  const handleTabChange = useCallback((value: string) => {
     if (value === "overview") {
       // Remove tab param for the default tab to keep URLs clean
       setSearchParams({}, { replace: true });
     } else {
       setSearchParams({ tab: value }, { replace: true });
     }
-  }
+  }, [setSearchParams]);
 
   const showCollectionsTab = name === "general";
   const showEntitiesTab = name === "general";
@@ -194,6 +195,41 @@ export default function ButlerDetailPage() {
   const showInvestigationsTab = name === "qa";
   const showContactsTab = name === "relationship";
   const showTripsTab = name === "travel";
+
+  // Keep shortcut order in lockstep with the visual rail: base tabs first,
+  // then this butler's bespoke tabs, with System remaining the terminal tab.
+  const visibleTabs = useMemo<TabValue[]>(() => {
+    const configuredTabs = getAllTabs(name) as TabValue[];
+    return [...configuredTabs.filter((tab) => tab !== "system"), "system"];
+  }, [name]);
+
+  const tabShortcuts = useMemo<ShortcutBinding[]>(() => {
+    const currentIndex = Math.max(0, visibleTabs.indexOf(activeTab));
+    const previousTab = visibleTabs[(currentIndex - 1 + visibleTabs.length) % visibleTabs.length];
+    const nextTab = visibleTabs[(currentIndex + 1) % visibleTabs.length];
+
+    return [
+      ...visibleTabs.slice(0, 9).map((tab, index) => ({
+        key: String(index + 1),
+        display: [String(index + 1)],
+        description: `Switch to ${titleize(tab)}`,
+        handler: () => handleTabChange(tab),
+      })),
+      {
+        key: "[",
+        display: ["["],
+        description: "Previous tab",
+        handler: () => handleTabChange(previousTab),
+      },
+      {
+        key: "]",
+        display: ["]"],
+        description: "Next tab",
+        handler: () => handleTabChange(nextTab),
+      },
+    ];
+  }, [activeTab, handleTabChange, visibleTabs]);
+  useRegisterShortcut(tabShortcuts);
 
   // Extract description from butler response (ButlerSummary.description is optional)
   const description = butlerResponse?.data?.description ?? undefined;

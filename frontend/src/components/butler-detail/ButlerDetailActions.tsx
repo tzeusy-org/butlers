@@ -150,7 +150,7 @@ export function ButlerDetailActions({ butlerName }: ButlerDetailActionsProps) {
 
   // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Reuses
   // this bar's own pause/resume toggle; "Run" is deliberately NOT duplicated
-  // here -- GlobalActionsRegistrar already registers "Trigger <butler>" for
+  // here -- GlobalActionsRegistrar already registers "Run <butler>" for
   // every butler (same underlying force-run semantics), so a second "Run
   // <butler>" verb here would be a redundant command-menu entry.
   const pauseResumeCommands = useMemo<PaletteCommand[]>(() => {

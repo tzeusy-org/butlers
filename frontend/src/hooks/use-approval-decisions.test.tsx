@@ -12,14 +12,17 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, renderHook, act } from "@testing-library/react";
+import { cleanup, renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { getApprovalActions } from "@/api/index.ts";
+import type { ApprovalAction, PaginatedResponse } from "@/api/types";
 
 vi.mock("@/api/index.ts", () => ({
   approveApproval: vi.fn(() => Promise.resolve({ data: { id: "a1", status: "executed", dispatched: true } })),
   denyApproval: vi.fn(() => Promise.resolve({ data: { id: "a1", status: "denied" } })),
   deferApproval: vi.fn(() => Promise.resolve({ data: { id: "a1", status: "deferred" } })),
+  getApprovalActions: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -27,6 +30,22 @@ vi.mock("sonner", () => ({
 }));
 
 import { UNDO_WINDOW_MS, useApprovalDecisionMutations } from "./use-approval-decisions";
+import { useApprovalActions } from "./use-approvals";
+
+function approvalAction(id: string): ApprovalAction {
+  return {
+    id,
+    butler: "general",
+    tool_name: "send_reminder",
+    tool_args: {},
+    status: "pending",
+    requested_at: "2026-07-16T00:00:00Z",
+  };
+}
+
+function pagedActions(actions: ApprovalAction[], total: number): PaginatedResponse<ApprovalAction> {
+  return { data: actions, meta: { total, offset: 0, limit: 5, has_more: false } };
+}
 
 function makeWrapper() {
   const client = new QueryClient({
@@ -148,5 +167,39 @@ describe("useApprovalDecisionMutations -- scheduleDecision (bu-qvnce.4)", () => 
 
     expect(runA).not.toHaveBeenCalled();
     expect(runB).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes paged action-preview rows and count after an inline approval decision", async () => {
+    vi.useRealTimers();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    vi.mocked(getApprovalActions)
+      .mockResolvedValueOnce(pagedActions([approvalAction("a1"), approvalAction("a2")], 2))
+      .mockResolvedValueOnce(pagedActions([approvalAction("a2")], 1));
+
+    function Wrapper({ children }: { children: ReactNode }) {
+      return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    }
+
+    const { result } = renderHook(() => ({
+      preview: useApprovalActions({ status: "pending", butler: "general", limit: 5 }),
+      decisions: useApprovalDecisionMutations(),
+    }), { wrapper: Wrapper });
+
+    await waitFor(() => {
+      expect(result.current.preview.data?.data.map((action) => action.id)).toEqual(["a1", "a2"]);
+      expect(result.current.preview.data?.meta.total).toBe(2);
+    });
+
+    await act(async () => {
+      await result.current.decisions.approveMut.mutateAsync("a1");
+    });
+
+    await waitFor(() => {
+      expect(result.current.preview.data?.data.map((action) => action.id)).toEqual(["a2"]);
+      expect(result.current.preview.data?.meta.total).toBe(1);
+    });
+    expect(vi.mocked(getApprovalActions)).toHaveBeenCalledTimes(2);
   });
 });

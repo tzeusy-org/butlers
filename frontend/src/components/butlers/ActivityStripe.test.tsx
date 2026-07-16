@@ -10,10 +10,13 @@
 //   - no illegal inline style on empty cells
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 
 import { ActivityStripe } from "./ActivityStripe"
+
+afterEach(() => cleanup())
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -187,5 +190,54 @@ describe("ActivityStripe: className forwarding", () => {
       <ActivityStripe counts={zeros()} className="my-custom-class" />,
     )
     expect(html).toContain("my-custom-class")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Optional interaction
+// ---------------------------------------------------------------------------
+
+describe("ActivityStripe: optional bar interaction", () => {
+  it("renders focusable bars and reports the clicked slot when onBarClick is supplied", () => {
+    const onBarClick = vi.fn()
+    render(<ActivityStripe counts={counts({ 5: 3 })} onBarClick={onBarClick} />)
+
+    expect(screen.getByRole("group", { name: /24-hour activity/i })).toBeDefined()
+    const bars = screen.getAllByRole("button")
+    expect(bars).toHaveLength(24)
+
+    fireEvent.click(bars[5])
+    expect(onBarClick).toHaveBeenCalledWith(5)
+  })
+
+  it("keeps interactive bars at the minimum target size inside a horizontally scrollable group", () => {
+    render(<ActivityStripe counts={zeros()} onBarClick={() => {}} />)
+
+    const stripe = screen.getByRole("group", { name: /24-hour activity/i })
+    expect(stripe.className).toContain("overflow-x-auto")
+    expect(screen.getAllByRole("button")[0].className).toContain("min-w-6")
+    expect(screen.getAllByRole("button")[0].className).toContain("min-h-6")
+  })
+
+  it("renders a two-pixel focus indicator for each interactive slot", () => {
+    render(<ActivityStripe counts={zeros()} onBarClick={() => {}} />)
+
+    const firstBar = screen.getAllByRole("button")[0]
+    expect(firstBar.className).toContain("focus-visible:ring-2")
+    expect(firstBar.className).toContain("focus-visible:ring-offset-2")
+    expect(firstBar.className).toContain("focus-visible:outline-1")
+    expect(firstBar.className).toContain("focus-visible:outline-foreground")
+  })
+
+  it("uses the supplied window end to label interactive slots accurately", () => {
+    render(
+      <ActivityStripe
+        counts={counts({ 20: 5 })}
+        windowEnd={new Date("2026-05-10T14:30:00.000Z")}
+        onBarClick={() => {}}
+      />,
+    )
+
+    expect(screen.getAllByRole("button")[20].getAttribute("aria-label")).toBe("5 sessions, 11:00 UTC")
   })
 })

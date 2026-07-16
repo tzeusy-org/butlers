@@ -11,8 +11,8 @@
 // the prototype rhythm while using container-boundary-safe process facts.
 // ---------------------------------------------------------------------------
 
-import { useState } from "react"
-import { Link } from "react-router"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { Link, useNavigate } from "react-router"
 
 import {
   ButlerPanelGrid,
@@ -22,9 +22,12 @@ import {
   MonoLabel,
   Panel,
 } from "@/components/butler-detail/atoms"
+import { ActivityStripe } from "@/components/butlers/ActivityStripe"
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer"
+import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
+import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions"
 import { useApprovalActions } from "@/hooks/use-approvals"
 import { useButler } from "@/hooks/use-butlers"
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics"
@@ -82,37 +85,6 @@ function stripeSlotWindow(index: number): { since: string; until: string } {
     since: new Date(now - hoursAgoSince * 3_600_000).toISOString(),
     until: new Date(now - hoursAgoUntil * 3_600_000).toISOString(),
   }
-}
-
-/**
- * 24-hour activity stripe. Every bar is a door (bu-86c4c.18): clicking a bar
- * deep-links to the Activity tab's Sessions section, pre-filtered to that
- * hour's window, instead of a purely decorative chart.
- */
-function ActivityStripe({ values }: { values: number[] }) {
-  const max = Math.max(...values, 1)
-  return (
-    <div className="flex h-[68px] items-end gap-px" aria-label="24-hour activity">
-      {values.map((value, index) => {
-        const height = value === 0 ? 2 : 2 + Math.round((value / max) * 66)
-        const { since, until } = stripeSlotWindow(index)
-        const hoursAgo = 23 - index
-        return (
-          <Link
-            key={index}
-            to={`?tab=activity&section=sessions&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`}
-            aria-label={`${value} session${value === 1 ? "" : "s"}, ${hoursAgo === 0 ? "this hour" : `${hoursAgo}h ago`}`}
-            data-testid="activity-stripe-bar"
-            className={[
-              "flex-1 rounded-[1px] transition-colors hover:bg-primary/70",
-              value === 0 ? "bg-muted" : "bg-foreground/70",
-            ].join(" ")}
-            style={{ height }}
-          />
-        )
-      })}
-    </div>
-  )
 }
 
 function HourAxis() {
@@ -196,24 +168,66 @@ function EventRow({
   )
 }
 
-function ActionRow({ action, butlerName }: { action: ApprovalAction; butlerName: string }) {
+type PendingDecision = "approve" | "reject"
+
+function ActionRow({
+  action,
+  butlerName,
+  onApprove,
+  onReject,
+  pendingDecision,
+}: {
+  action: ApprovalAction
+  butlerName: string
+  onApprove: (id: string) => void
+  onReject: (id: string) => void
+  pendingDecision: PendingDecision | undefined
+}) {
+  const actionLabel = action.agent_summary || action.tool_name
+  const approving = pendingDecision === "approve"
+  const rejecting = pendingDecision === "reject"
+  const isDeciding = approving || rejecting
+
   return (
     <div className="grid grid-cols-[8px_minmax(0,1fr)_auto] items-baseline gap-3 border-b border-border/40 py-2 last:border-b-0">
       <span className="mt-1.5 h-1.5 w-1.5 rounded-[1px] bg-[var(--amber)]" aria-hidden="true" />
       <span className="min-w-0 truncate text-xs">
-        {action.agent_summary || action.tool_name}
+        {actionLabel}
         <span className="text-muted-foreground"> · </span>
         <Time value={action.requested_at} mode="relative" />
       </span>
-      {/* Deep link (bu-86c4c.18): scopes the global approvals page to this
-          butler and this action, instead of dropping the operator on an
-          unfiltered global list they have to re-find the item in. */}
-      <Link
-        to={`/approvals?butler=${encodeURIComponent(butlerName)}&id=${encodeURIComponent(action.id)}`}
-        className="text-xs text-foreground underline decoration-border underline-offset-4"
-      >
-        review
-      </Link>
+      <div className="flex items-center gap-1">
+        <Button
+          type="button"
+          size="xs"
+          className="h-6 rounded-[3px] px-2 font-mono text-[10px] uppercase tracking-[0.06em]"
+          aria-label={`Approve ${actionLabel}`}
+          onClick={() => onApprove(action.id)}
+          disabled={isDeciding}
+        >
+          {approving ? "Approving…" : "Approve"}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          className="h-6 rounded-[3px] px-2 font-mono text-[10px] uppercase tracking-[0.06em] text-[var(--red-text)] hover:text-[var(--red-text)]"
+          aria-label={`Reject ${actionLabel}`}
+          onClick={() => onReject(action.id)}
+          disabled={isDeciding}
+        >
+          {rejecting ? "Rejecting…" : "Reject"}
+        </Button>
+        {/* Deep link (bu-86c4c.18): scopes the global approvals page to this
+            butler and this action, instead of dropping the operator on an
+            unfiltered global list they have to re-find the item in. */}
+        <Link
+          to={`/approvals?butler=${encodeURIComponent(butlerName)}&id=${encodeURIComponent(action.id)}`}
+          className="text-xs text-foreground underline decoration-border underline-offset-4"
+        >
+          review
+        </Link>
+      </div>
     </div>
   )
 }
@@ -243,6 +257,7 @@ function OverviewSkeleton() {
 }
 
 export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps) {
+  const navigate = useNavigate()
   const { data: butlerResponse, isLoading: butlerLoading } = useButler(butlerName)
   const { rows } = useButlerStatusBoard()
   const costQuery = useSpendSummary("today")
@@ -252,11 +267,75 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
     isLoading: activityFeedLoading,
     isError: activityFeedError,
   } = useButlerActivityFeed(butlerName, 5)
+  const pendingActions = approvalsQuery.data?.data
 
   // Session drawer state for the "recent events" door (bu-86c4c.18): clicking
   // a session_completed row opens its transcript in place instead of leaving
   // the operator on a dead-end line of text.
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null)
+  const [pendingDecisions, setPendingDecisions] = useState<Map<string, PendingDecision>>(
+    () => new Map(),
+  )
+  const pendingDecisionIds = useRef<Set<string>>(new Set())
+  const { approveMut, denyMut } = useApprovalDecisionMutations()
+
+  // Keep an approved/rejected row disabled until the action-preview query has
+  // reconciled it away. mutateAsync resolves once the endpoint responds, but
+  // this preview remains stale until its invalidation refetch returns; clearing
+  // earlier would expose a duplicate decision button for that interval.
+  useEffect(() => {
+    if (!pendingActions) return
+
+    const previewActionIds = new Set(pendingActions.map((action) => action.id))
+    setPendingDecisions((current) => {
+      let next: Map<string, PendingDecision> | undefined
+      for (const id of current.keys()) {
+        if (previewActionIds.has(id)) continue
+        pendingDecisionIds.current.delete(id)
+        next ??= new Map(current)
+        next.delete(id)
+      }
+      return next ?? current
+    })
+  }, [pendingActions])
+
+  const runDecision = useCallback(
+    (id: string, decision: PendingDecision, mutate: () => Promise<unknown>) => {
+      if (pendingDecisionIds.current.has(id)) return
+
+      pendingDecisionIds.current.add(id)
+      setPendingDecisions((current) => new Map(current).set(id, decision))
+
+      // The shared mutation hook owns success/error toasts. Keep a successful
+      // row pending until the effect above sees its refetched preview disappear;
+      // a failed mutation restores only this row's controls.
+      void mutate()
+        .catch(() => {
+          pendingDecisionIds.current.delete(id)
+          setPendingDecisions((current) => {
+            if (!current.has(id)) return current
+            const next = new Map(current)
+            next.delete(id)
+            return next
+          })
+        })
+    },
+    [],
+  )
+  const handleApprove = useCallback(
+    (id: string) => runDecision(id, "approve", () => approveMut.mutateAsync(id)),
+    [approveMut, runDecision],
+  )
+  const handleReject = useCallback(
+    (id: string) => runDecision(id, "reject", () => denyMut.mutateAsync({ id })),
+    [denyMut, runDecision],
+  )
+  const handleActivityStripeClick = useCallback((index: number) => {
+    const { since, until } = stripeSlotWindow(index)
+    navigate(
+      `?tab=activity&section=sessions&since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`,
+    )
+  }, [navigate])
 
   if (butlerLoading) {
     return <OverviewSkeleton />
@@ -270,14 +349,14 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const skills = butler?.skills ?? []
   const sessions24h = row?.sessions24h ?? butler?.sessions_24h ?? 0
   const costToday = costQuery.data?.data?.by_butler?.[butlerName] ?? 0
-  const pendingActions = approvalsQuery.data?.data ?? []
+  const visiblePendingActions = pendingActions ?? []
   const recentEvents = activityFeedData?.events ?? []
   const stripe = row?.hourlyStripe ?? Array(24).fill(0)
   const status = butler?.status ?? row?.status
   // meta.total (not the page-size-capped result length) is the true count of
   // pending approvals -- the KPI previously read "5" when 20 were pending
   // because it counted the preview page instead of the real total.
-  const awaitingCount = approvalsQuery.data?.meta?.total ?? pendingActions.length
+  const awaitingCount = approvalsQuery.data?.meta?.total ?? visiblePendingActions.length
 
   return (
     <>
@@ -333,7 +412,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       </Panel>
 
       <Panel title="activity" sub="24h" span={2} height="140px" className="sm:col-span-2" testId="panel-activity">
-        <ActivityStripe values={stripe} />
+        <ActivityStripe counts={stripe} className="h-[68px]" onBarClick={handleActivityStripeClick} />
         <HourAxis />
       </Panel>
 
@@ -369,12 +448,19 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
           </div>
         ) : approvalsQuery.isError ? (
           <ErrorLine>Could not load approvals.</ErrorLine>
-        ) : pendingActions.length === 0 ? (
+        ) : visiblePendingActions.length === 0 ? (
           <MonoLabel color="dim">no items pending review</MonoLabel>
         ) : (
           <div>
-            {pendingActions.map((action) => (
-              <ActionRow key={action.id} action={action} butlerName={butlerName} />
+            {visiblePendingActions.map((action) => (
+              <ActionRow
+                key={action.id}
+                action={action}
+                butlerName={butlerName}
+                onApprove={handleApprove}
+                onReject={handleReject}
+                pendingDecision={pendingDecisions.get(action.id)}
+              />
             ))}
           </div>
         )}

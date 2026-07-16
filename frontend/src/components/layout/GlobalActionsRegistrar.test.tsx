@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * GlobalActionsRegistrar — always-available "Trigger <butler>" command-menu
+ * GlobalActionsRegistrar — always-available "Run <butler>" command-menu
  * action (bu-86c4c.7).
  *
  * Regression coverage for bu-jlhk5: the quick-trigger action used to send
@@ -57,7 +57,7 @@ function renderRegistrar() {
   );
 }
 
-describe("GlobalActionsRegistrar — Trigger <butler> command", () => {
+describe("GlobalActionsRegistrar — Run <butler> command", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     registeredCommands = [];
@@ -77,9 +77,11 @@ describe("GlobalActionsRegistrar — Trigger <butler> command", () => {
   });
   afterEach(() => cleanup());
 
-  it("registers a trigger command per butler", () => {
+  it("registers a Run command per butler", () => {
     renderRegistrar();
-    expect(registeredCommands.map((c) => c.id)).toEqual(["trigger:general"]);
+    expect(registeredCommands).toMatchObject([
+      { id: "trigger:general", label: "Run general" },
+    ]);
   });
 
   it("triggers with a valid backend complexity tier, not 'medium' (bu-jlhk5)", async () => {

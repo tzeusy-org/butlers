@@ -1,6 +1,6 @@
 /**
  * Registers the always-available command-menu Actions (bu-86c4c.7) — the
- * ones that aren't specific to any one page. "Trigger <butler>" runs the
+ * ones that aren't specific to any one page. "Run <butler>" runs the
  * butler's scheduled tick right now, same as the Force Run button on the
  * butler detail page (ButlerDetailActions.tsx), but reachable from anywhere
  * via the command menu instead of only from that one page.
@@ -36,7 +36,7 @@ export function GlobalActionsRegistrar() {
     const butlers = butlersResponse?.data ?? [];
     return butlers.map((b) => ({
       id: `trigger:${b.name}`,
-      label: `Trigger ${b.name}`,
+      label: `Run ${b.name}`,
       keywords: ["trigger", "run", "force run", b.name],
       perform: async () => {
         try {
@@ -45,10 +45,10 @@ export function GlobalActionsRegistrar() {
             "Run your scheduled tick now.",
             DEFAULT_COMPLEXITY,
           );
-          toast.success(`Triggered ${b.name}`);
+          toast.success(`Started ${b.name}`);
           if (response.session_id) navigate(`/sessions/${response.session_id}`);
         } catch {
-          toast.error(`Failed to trigger ${b.name}`);
+          toast.error(`Failed to run ${b.name}`);
         }
       },
     }));

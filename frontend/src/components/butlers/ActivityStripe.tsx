@@ -11,7 +11,9 @@
 // primitive owning one dynamic prop — this is explicitly exempt from the
 // "no inline style" rule per design-language.md "One token system or none".
 //
-// Aria: role="img" with aria-label describing total sessions and peak hour.
+// Aria: role="img" with aria-label describing total sessions and peak hour
+// when read-only; a labeled button group when an interactive caller supplies
+// onBarClick.
 // ---------------------------------------------------------------------------
 
 interface ActivityStripeProps {
@@ -30,6 +32,8 @@ interface ActivityStripeProps {
   windowEnd?: Date
   /** Optional className forwarded to the container element. */
   className?: string
+  /** Optional handler for a clicked hourly slot (0 = oldest, 23 = newest). */
+  onBarClick?: (index: number) => void
 }
 
 /**
@@ -40,11 +44,12 @@ interface ActivityStripeProps {
  *   Pass the same `endAt` reference used by `bucketSessionsByHour` for alignment.
  *   Defaults to `new Date()` when omitted.
  * @param className - Optional className forwarded to the container element.
+ * @param onBarClick - Optional click handler that makes each slot a keyboard-accessible button.
  *
  * @example
  *   <ActivityStripe counts={row.hourlyStripe} windowEnd={stripeEndAt} />
  */
-export function ActivityStripe({ counts, windowEnd, className }: ActivityStripeProps) {
+export function ActivityStripe({ counts, windowEnd, className, onBarClick }: ActivityStripeProps) {
   if (import.meta.env.DEV && counts.length !== 24) {
     console.error(`ActivityStripe: counts.length must be 24, got ${counts.length}`)
   }
@@ -62,16 +67,39 @@ export function ActivityStripe({ counts, windowEnd, className }: ActivityStripeP
   const peakLabel = String(peakHour).padStart(2, "0")
 
   const ariaLabel = `24-hour activity, total ${total} sessions, peak ${max} at ${peakLabel}:00 UTC`
+  const interactiveBarClassName = onBarClick
+    ? "min-h-6 min-w-6 shrink-0 cursor-pointer border-0 p-0 transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-1 focus-visible:outline-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+    : ""
+
+  function slotAriaLabel(index: number, count: number): string {
+    const slotHour = (slot23UTCHour - 23 + index + 24) % 24
+    return `${count} session${count === 1 ? "" : "s"}, ${String(slotHour).padStart(2, "0")}:00 UTC`
+  }
 
   return (
     <div
-      role="img"
+      role={onBarClick ? "group" : "img"}
       aria-label={ariaLabel}
-      className={["flex gap-px h-[22px]", className].filter(Boolean).join(" ")}
+      className={[
+        "flex gap-px",
+        onBarClick ? "h-6 overflow-x-auto" : "h-[22px]",
+        className,
+      ].filter(Boolean).join(" ")}
     >
       {counts.map((count, i) => {
         const isEmpty = count === 0 || max === 0
         if (isEmpty) {
+          if (onBarClick) {
+            return (
+              <button
+                key={i}
+                type="button"
+                onClick={() => onBarClick(i)}
+                aria-label={slotAriaLabel(i, count)}
+                className={`flex-1 rounded-[1px] bg-muted/40 ${interactiveBarClassName}`}
+              />
+            )
+          }
           return (
             <div
               key={i}
@@ -81,6 +109,18 @@ export function ActivityStripe({ counts, windowEnd, className }: ActivityStripeP
         }
         // Typed primitive exemption: intensity is a single dynamic CSS prop.
         const intensity = 0.20 + (count / max) * 0.55
+        if (onBarClick) {
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={() => onBarClick(i)}
+              aria-label={slotAriaLabel(i, count)}
+              className={`flex-1 rounded-[1px] ${interactiveBarClassName}`}
+              style={{ backgroundColor: `color-mix(in oklch, var(--foreground) ${Math.round(intensity * 100)}%, transparent)` }}
+            />
+          )
+        }
         return (
           <div
             key={i}

@@ -5,8 +5,8 @@
  * Extracted from ApprovalsPage's inline mutation block so the exact same
  * optimistic cache-eviction + rollback-on-error + toast behavior can be
  * reused by any surface that renders actionable pending approvals — today
- * that's ApprovalsPage (the full dossier) and DashboardPage's Needs-attention
- * list (inline triage without leaving the pane).
+ * that's ApprovalsPage (the full dossier), DashboardPage's Needs-attention
+ * list, and ButlerOverviewTab's awaiting-action preview.
  *
  * Cache eviction matches on the `["approvals", "flat", "waiting"]` KEY
  * PREFIX, which react-query's setQueriesData/getQueriesData treat as a
@@ -35,6 +35,7 @@ import { useOptimisticMutation } from "@/hooks/use-optimistic-mutation.ts";
 
 const WAITING_KEY_PREFIX = ["approvals", "flat", "waiting"] as const;
 const HISTORY_KEY = ["approvals", "history"] as const;
+const ACTIONS_KEY_PREFIX = ["approvals", "actions"] as const;
 
 type PendingSnapshot = [readonly unknown[], unknown][];
 
@@ -122,6 +123,7 @@ export function useApprovalDecisionMutations(
   const scheduledDecisions = useSyncExternalStore(
     subscribeScheduledDecisions,
     getScheduledDecisionsSnapshot,
+    getScheduledDecisionsSnapshot,
   );
 
   function dropFromPending(id: string): PendingSnapshot {
@@ -138,7 +140,10 @@ export function useApprovalDecisionMutations(
     prev?.forEach(([key, snap]) => qc.setQueryData(key, snap));
   }
 
-  const reconcileKeys = [WAITING_KEY_PREFIX, HISTORY_KEY];
+  // Overview's awaiting-action rows use the paged `actions` endpoint rather
+  // than the flat waiting list. Reconcile that sibling cache after an inline
+  // decision so the row and its pending-count metadata refresh together.
+  const reconcileKeys = [WAITING_KEY_PREFIX, HISTORY_KEY, ACTIONS_KEY_PREFIX];
 
   const approveMut = useOptimisticMutation<ApiResponse<ApprovalAction>, string, PendingSnapshot>({
     mutationFn: (id: string) => approveApproval(id),

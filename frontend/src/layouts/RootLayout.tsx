@@ -104,7 +104,7 @@ function RootLayoutInner() {
                 identically by Cmd+K, '/', and the header button. Absorbs the
                 legacy CommandPalette's page/butler/session/state search. */}
             <EntityFinder />
-            {/* Registers the always-available "Trigger <butler>" Actions. */}
+            {/* Registers the always-available "Run <butler>" actions. */}
             <GlobalActionsRegistrar />
             <ShortcutHints />
             <Toaster />
