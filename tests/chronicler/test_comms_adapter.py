@@ -182,6 +182,36 @@ def test_group_into_bursts_groups_by_channel_and_sender() -> None:
     assert _BurstGroupKey("discord", "1") in groups
 
 
+def test_group_into_bursts_coalesces_canonical_email_identities() -> None:
+    """Historical raw headers and normalized Gmail rows share one sender group."""
+    raw_header = _event_row(
+        source_channel="email",
+        source_sender_identity="Alice Example <ALICE@example.com>",
+    )
+    normalized_address = _event_row(
+        source_channel="email",
+        source_sender_identity="alice@example.com",
+    )
+    distinct_sender = _event_row(
+        source_channel="email",
+        source_sender_identity="bob@example.com",
+    )
+
+    groups = CommsSocialAdapter._group_into_bursts(
+        [raw_header, normalized_address, distinct_sender]
+    )
+
+    assert set(groups) == {
+        _BurstGroupKey("email", "alice@example.com"),
+        _BurstGroupKey("email", "bob@example.com"),
+    }
+    assert groups[_BurstGroupKey("email", "alice@example.com")] == [
+        raw_header,
+        normalized_address,
+    ]
+    assert groups[_BurstGroupKey("email", "bob@example.com")] == [distinct_sender]
+
+
 def test_segment_burst_collapses_within_gap() -> None:
     adapter = CommsSocialAdapter()
     rows = [
