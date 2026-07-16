@@ -2003,9 +2003,7 @@ class WhatsAppUserClientConnector:
             status_parts = status_line.split(maxsplit=2)
             if not separator or len(status_parts) < 2 or status_parts[1] != b"200":
                 safe_status = status_line.decode(errors="replace")
-                raise RuntimeError(
-                    f"Bridge /backfill returned unexpected response: {safe_status}"
-                )
+                raise RuntimeError(f"Bridge /backfill returned unexpected response: {safe_status}")
             acknowledgement = json.loads(response_body)
             if (
                 acknowledgement.get("schema_version") != "whatsapp.backfill.v1"
