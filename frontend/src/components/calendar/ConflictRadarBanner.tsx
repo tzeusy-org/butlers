@@ -129,8 +129,7 @@ function IssueCard({
             <span key={proposalId} className="flex gap-1">
               <button
                 type="button"
-                // eslint-disable-next-line no-restricted-syntax -- call-to-action button color (confirm affordance), not a live status/health signal
-                className="rounded bg-emerald-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-emerald-700"
+                className="rounded bg-foreground px-2 py-0.5 text-xs font-medium text-background hover:opacity-90"
                 onClick={() => onAcceptProposal?.(proposalId)}
               >
                 Accept fix

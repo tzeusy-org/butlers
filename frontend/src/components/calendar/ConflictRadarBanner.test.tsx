@@ -114,6 +114,22 @@ describe("ConflictRadarBanner", () => {
     expect(onDismiss).toHaveBeenCalledWith("p1");
   });
 
+  it("uses the neutral Dispatch commit treatment for accepting a fix", () => {
+    render(
+      <ConflictRadarBanner
+        issues={[overlapIssue({ proposal_ids: ["p1"] })]}
+        available
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Review"));
+    const acceptFix = screen.getByRole("button", { name: "Accept fix" });
+
+    expect(acceptFix.getAttribute("type")).toBe("button");
+    expect(acceptFix.classList.contains("bg-foreground")).toBe(true);
+    expect(acceptFix.classList.contains("text-background")).toBe(true);
+  });
+
   it("is informational (no fix button) when no proposal exists yet", () => {
     render(<ConflictRadarBanner issues={[overlapIssue({ proposal_ids: [] })]} available />);
     fireEvent.click(screen.getByText("Review"));
