@@ -8,11 +8,11 @@
 import { ExternalLinkIcon, RefreshCwIcon, XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import type { SendError } from "./send-error-utils.ts";
+import type { RetryableSendError, SendError } from "./send-error-utils.ts";
 
 export interface SendErrorBannerProps {
   error: SendError;
-  onRetry: (text: string) => void;
+  onRetry: (error: RetryableSendError) => void;
   onCheckAgain: () => void;
   onDismiss: () => void;
 }
@@ -54,7 +54,7 @@ export function SendErrorBanner({ error, onRetry, onCheckAgain, onDismiss }: Sen
     >
       <span className="text-destructive">{error.message}</span>
       <div className="flex shrink-0 items-center gap-2">
-        <Button size="xs" variant="outline" onClick={() => onRetry(error.failedText)}>
+        <Button size="xs" variant="outline" onClick={() => onRetry(error)}>
           Retry
         </Button>
         <button

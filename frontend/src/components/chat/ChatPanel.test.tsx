@@ -284,6 +284,7 @@ describe("ChatContent — send-error classification", () => {
     sendMessageMock.mockResolvedValue({ ok: true } as Response);
     createConversationMock.mockResolvedValue({ ok: true } as Response);
     scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-retry-1", title: null } },
       {
         event: "error",
         data: { code: "SWITCHBOARD_UNAVAILABLE", message: "Switchboard offline — retry" },
@@ -307,14 +308,21 @@ describe("ChatContent — send-error classification", () => {
     // No inert assistant-bubble error message rendered alongside the banner.
     expect(screen.queryByText("Unknown error")).toBeNull();
 
-    // Retry re-sends the exact same failed text through the same submit path.
-    createConversationMock.mockClear();
+    const firstPayload = createConversationMock.mock.calls[0][1] as {
+      message_id: string;
+    };
+    // Retry uses the persisted conversation and exact same client message ID.
+    sendMessageMock.mockClear();
     scriptedEvents = [{ event: "done", data: {} }];
     await act(async () => {
       fireEvent.click(screen.getByText("Retry"));
     });
-    expect(createConversationMock).toHaveBeenCalledTimes(1);
-    expect(createConversationMock.mock.calls[0][1]).toEqual({ message: "hello switchboard" });
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock.mock.calls[0][1]).toBe("conv-retry-1");
+    expect(sendMessageMock.mock.calls[0][2]).toEqual({
+      message: "hello switchboard",
+      message_id: firstPayload.message_id,
+    });
   });
 
   it("shows an inspect-session banner with a session link on SESSION_TIMEOUT", async () => {

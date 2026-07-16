@@ -20,11 +20,17 @@
 import type { ConversationSseErrorData } from "@/api/types.ts";
 
 export type SendError =
-  | { kind: "offline"; message: string; failedText: string }
+  | { kind: "offline"; message: string; failedText: string; messageId: string }
   | { kind: "timeout"; message: string; sessionId: string | null }
-  | { kind: "generic"; message: string; failedText: string };
+  | { kind: "generic"; message: string; failedText: string; messageId: string };
 
-export function classifySendError(data: unknown, failedText: string): SendError {
+export type RetryableSendError = Exclude<SendError, { kind: "timeout" }>;
+
+export function classifySendError(
+  data: unknown,
+  failedText: string,
+  messageId: string,
+): SendError {
   const errData = (typeof data === "object" && data !== null ? data : {}) as ConversationSseErrorData;
   const message =
     errData.message ?? (typeof data === "string" ? data : "Something went wrong.");
@@ -33,7 +39,7 @@ export function classifySendError(data: unknown, failedText: string): SendError 
     return { kind: "timeout", message, sessionId: errData.session_id ?? null };
   }
   if (errData.code === "SWITCHBOARD_UNAVAILABLE") {
-    return { kind: "offline", message, failedText };
+    return { kind: "offline", message, failedText, messageId };
   }
-  return { kind: "generic", message, failedText };
+  return { kind: "generic", message, failedText, messageId };
 }

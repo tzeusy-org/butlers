@@ -362,13 +362,16 @@ describe("FloatingChatWidget — page-context capture", () => {
       fireEvent.click(screen.getByTitle("Send message"));
     });
 
-    expect(createConversationMock.mock.calls[0][1]).toEqual({
-      message: "Alice is child-of Bob",
-      page_context: {
-        route: "/entities/concentration",
-        query_params: { predicate: "child-of" },
-      },
-    });
+    expect(createConversationMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        message: "Alice is child-of Bob",
+        page_context: {
+          route: "/entities/concentration",
+          query_params: { predicate: "child-of" },
+        },
+        message_id: expect.any(String),
+      }),
+    );
   });
 });
 
@@ -436,6 +439,7 @@ describe("FloatingChatWidget — send-error classification", () => {
     sendMessageMock.mockResolvedValue({ ok: true } as Response);
     createConversationMock.mockResolvedValue({ ok: true } as Response);
     scriptedEvents = [
+      { event: "conversation_created", data: { conversation_id: "conv-retry-1", title: null } },
       {
         event: "error",
         data: { code: "SWITCHBOARD_UNAVAILABLE", message: "Switchboard offline — retry" },
@@ -458,17 +462,22 @@ describe("FloatingChatWidget — send-error classification", () => {
       "Switchboard offline",
     );
 
-    // Retry re-sends the same failed text through the same submit path.
-    createConversationMock.mockClear();
+    const firstPayload = createConversationMock.mock.calls[0][1] as {
+      message_id: string;
+    };
+    // Retry uses the persisted conversation and exact same client message ID.
+    sendMessageMock.mockClear();
     scriptedEvents = [{ event: "done", data: {} }];
     await act(async () => {
       fireEvent.click(screen.getByText("Retry"));
     });
-    expect(createConversationMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock.mock.calls[0][1]).toBe("conv-retry-1");
     // page_context is now attached (bu-p6ey8.4) — default capture (route
     // only, "/" has no query params) since this test renders at "/".
-    expect(createConversationMock.mock.calls[0][1]).toEqual({
+    expect(sendMessageMock.mock.calls[0][2]).toEqual({
       message: "hello switchboard",
+      message_id: firstPayload.message_id,
       page_context: { route: "/" },
     });
   });

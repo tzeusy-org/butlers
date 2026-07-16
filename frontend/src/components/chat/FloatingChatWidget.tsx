@@ -66,6 +66,7 @@ import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
 import { SendErrorBanner } from "./send-error.tsx";
 import { classifySendError, type SendError } from "./send-error-utils.ts";
+import { createClientMessageId } from "./message-id.ts";
 import {
   conversationKeys,
   useConversations,
@@ -95,8 +96,12 @@ const WIDGET_BUTLER = "switchboard";
  * point the widget uses to submit a message, so no call site needed to
  * change when page-context capture was added.
  */
-function buildMessagePayload(message: string, pageContext: PageContext): CreateConversationRequest {
-  return { message, page_context: pageContext };
+function buildMessagePayload(
+  message: string,
+  messageId: string,
+  pageContext: PageContext,
+): CreateConversationRequest {
+  return { message, message_id: messageId, page_context: pageContext };
 }
 
 // ---------------------------------------------------------------------------
@@ -188,12 +193,13 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   const isStreaming = streaming !== null;
 
   const sendText = useCallback(
-    async (text: string) => {
+    async (text: string, retryMessageId?: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
 
       setSendError(null);
       const isNew = activeConversationId == null;
+      const messageId = retryMessageId ?? createClientMessageId();
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -232,13 +238,13 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
         const response = isNew
           ? await createConversation(
               WIDGET_BUTLER,
-              buildMessagePayload(trimmed, pageContext),
+              buildMessagePayload(trimmed, messageId, pageContext),
               controller.signal,
             )
           : await sendMessage(
               WIDGET_BUTLER,
               activeConversationId!,
-              buildMessagePayload(trimmed, pageContext),
+              buildMessagePayload(trimmed, messageId, pageContext),
               controller.signal,
             );
 
@@ -288,7 +294,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               break;
             }
             case "error": {
-              setSendError(classifySendError(event.data, trimmed));
+              setSendError(classifySendError(event.data, trimmed, messageId));
               setStreaming(null);
               break;
             }
@@ -310,6 +316,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             kind: "generic",
             message: "There was a problem sending your message. Please try again.",
             failedText: trimmed,
+            messageId,
           });
         }
       }
@@ -445,7 +452,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           {sendError && (
             <SendErrorBanner
               error={sendError}
-              onRetry={(text) => void sendText(text)}
+              onRetry={(error) => void sendText(error.failedText, error.messageId)}
               onCheckAgain={handleCheckAgain}
               onDismiss={() => setSendError(null)}
             />

@@ -37,7 +37,9 @@ from butlers.api.conversations import (
     conversation_list,
     conversation_reply_create,
     conversation_set_routed_butler,
+    message_create_idempotent,
     message_find_reply_since,
+    message_get_by_id,
 )
 
 pytestmark = [
@@ -120,6 +122,41 @@ async def test_conversation_reply_create_returns_none_for_missing_conversation(
         assert result is None
         count = await pool.fetchval("SELECT count(*) FROM public.dashboard_messages")
         assert count == 0
+
+
+async def test_message_create_idempotent_reuses_the_original_user_row(
+    provisioned_postgres_pool,
+) -> None:
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(_SCHEMA)
+        conv = await conversation_create(pool, butler_name="switchboard", first_message="Retry me")
+        message_id = uuid.uuid4()
+
+        first, first_is_new = await message_create_idempotent(
+            pool,
+            message_id=message_id,
+            conversation_id=conv["id"],
+            role="user",
+            content="Retry me",
+        )
+        retry, retry_is_new = await message_create_idempotent(
+            pool,
+            message_id=message_id,
+            conversation_id=conv["id"],
+            role="user",
+            content="Retry me",
+        )
+
+        assert first_is_new is True
+        assert retry_is_new is False
+        assert retry == first
+        assert await message_get_by_id(pool, message_id) == first
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.dashboard_messages WHERE id = $1", message_id
+            )
+            == 1
+        )
 
 
 async def test_conversation_set_routed_butler_is_sticky_across_repeat_calls(

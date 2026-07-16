@@ -21,6 +21,7 @@ import pytest
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.tools.switchboard.ingestion.ingest import (
     IngestAcceptedResponse,
+    _compute_content_hash_key,
     _compute_dedupe_key,
     ingest_v1,
 )
@@ -31,6 +32,7 @@ from butlers.tools.switchboard.routing.contracts import (
     IngestPayloadV1,
     IngestSenderV1,
     IngestSourceV1,
+    parse_ingest_envelope,
 )
 
 
@@ -825,9 +827,8 @@ class TestPinnedTargetRouting:
 class TestDashboardConversationEnvelope:
     """Integration coverage for bu-mj2k2: the real dashboard envelope reaches
     ``ingest_v1`` with the fields ``build_dashboard_envelope`` promises, and
-    a client "retry" (re-submitting the same message content under a fresh
-    message id) is deduplicated idempotently — proving the SSE offline/retry
-    contract without needing a bespoke retry endpoint.
+    a client retry reuses the persisted message's stable external-event ID —
+    proving the SSE offline/retry contract without relying on a content hash.
     """
 
     async def test_dashboard_envelope_reaches_ingest_with_expected_fields(
@@ -937,18 +938,63 @@ class TestDashboardConversationEnvelope:
         )
         assert row_count == 1
 
-    async def test_retry_resubmission_with_new_message_id_is_idempotent(
+    async def test_retry_resubmission_with_stable_message_id_ignores_time_and_context(
         self, pool: asyncpg.Pool
     ) -> None:
-        """A client retry (new message_id, same text) dedupes via content-hash fallback.
+        """A dashboard retry dedupes by message ID, not its mutable content hash."""
+        conversation_id = uuid.uuid4()
+        message_id = uuid.uuid4()
+        first_envelope = build_dashboard_envelope(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            message_text="Alice's birthday is March 3rd",
+            pinned_target="relationship",
+        )
+        first_envelope["event"]["observed_at"] = "2026-07-01T09:00:00+00:00"
 
-        The dashboard message is persisted before submission (existing router
-        behavior); if the first ingest attempt fails after Switchboard already
-        accepted it (e.g. a dropped response), a naive client retry naturally
-        resubmits with the SAME conversation/text under a freshly generated
-        message_id. The primary dedupe key (keyed on external_event_id) would
-        differ, but ingest_v1's secondary content-hash check still returns the
-        original request_id — no duplicate route/session is created.
+        retry_envelope = build_dashboard_envelope(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            message_text="Alice's birthday is March 3rd",
+            conversation_context=[
+                {"role": "user", "content": "What birthdays do you remember?"},
+                {"role": "assistant", "content": "I remember one for Alice."},
+            ],
+            pinned_target="relationship",
+        )
+        retry_envelope["event"]["observed_at"] = "2026-07-01T11:00:00+00:00"
+
+        first_model = parse_ingest_envelope(first_envelope)
+        retry_model = parse_ingest_envelope(retry_envelope)
+        assert first_model.payload.normalized_text != retry_model.payload.normalized_text
+        assert _compute_content_hash_key(first_model) != _compute_content_hash_key(retry_model)
+        assert _compute_dedupe_key(first_model) == _compute_dedupe_key(retry_model)
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "relationship"}]),
+        ):
+            first_result = await ingest_v1(pool, first_envelope)
+        assert first_result.duplicate is False
+
+        with patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=[{"name": "relationship"}]),
+        ):
+            retry_result = await ingest_v1(pool, retry_envelope)
+
+        assert retry_result.duplicate is True
+        assert retry_result.request_id == first_result.request_id
+
+    async def test_distinct_dashboard_messages_still_use_content_hash_fallback(
+        self, pool: asyncpg.Pool
+    ) -> None:
+        """Distinct IDs with same content retain the existing hash fallback.
+
+        This is deliberately not the dashboard retry contract: normal retries
+        reuse the original message ID. It guards the generic cross-connector
+        content-hash behavior while the dashboard path uses its stronger event
+        identity.
         """
         conversation_id = uuid.uuid4()
         first_envelope = build_dashboard_envelope(
@@ -967,8 +1013,8 @@ class TestDashboardConversationEnvelope:
 
         retry_envelope = build_dashboard_envelope(
             conversation_id=conversation_id,
-            message_id=uuid.uuid4(),  # fresh message id, as a real client retry would send
-            message_text="Alice's birthday is March 3rd",  # identical text
+            message_id=uuid.uuid4(),
+            message_text="Alice's birthday is March 3rd",
             pinned_target="relationship",
         )
         with patch(

@@ -4832,6 +4832,8 @@ export interface PageContext {
 /** Request body for POST /api/butlers/{name}/conversations. */
 export interface CreateConversationRequest {
   message: string;
+  /** Client-generated UUID reused if this message submission is retried. */
+  message_id?: string;
   title?: string;
   /** See `PageContext` — unpopulated seam for bu-p6ey8.4. */
   page_context?: PageContext;
@@ -4840,6 +4842,8 @@ export interface CreateConversationRequest {
 /** Request body for POST /api/butlers/{name}/conversations/{id}/messages. */
 export interface SendMessageRequest {
   message: string;
+  /** Client-generated UUID reused if this message submission is retried. */
+  message_id?: string;
   /** See `PageContext` — unpopulated seam for bu-p6ey8.4. */
   page_context?: PageContext;
 }

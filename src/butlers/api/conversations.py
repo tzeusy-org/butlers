@@ -437,6 +437,84 @@ async def message_create(
     }
 
 
+async def message_create_idempotent(
+    pool: asyncpg.Pool,
+    *,
+    message_id: UUID,
+    conversation_id: UUID,
+    role: str,
+    content: str,
+) -> tuple[dict[str, Any], bool]:
+    """Create a client-identified message once, returning ``(message, is_new)``.
+
+    Dashboard retries reuse a client-generated message UUID.  The first writer
+    persists that message and later identical submissions recover the original
+    row, so the Switchboard sees the same external event identity rather than
+    relying on its content-hash fallback.
+    """
+    now = datetime.now(UTC)
+    inserted = await pool.fetchrow(
+        """
+        INSERT INTO public.dashboard_messages
+            (id, conversation_id, role, content, created_at,
+             session_id, model_name, input_tokens, output_tokens,
+             duration_ms, tool_calls, error, request_id)
+        VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+        ON CONFLICT (id) DO NOTHING
+        RETURNING id, conversation_id, role, content, created_at,
+                  session_id, model_name, input_tokens, output_tokens,
+                  duration_ms, tool_calls, error, request_id
+        """,
+        message_id,
+        conversation_id,
+        role,
+        content,
+        now,
+    )
+    if inserted is not None:
+        return dict(inserted), True
+
+    existing = await pool.fetchrow(
+        """
+        SELECT id, conversation_id, role, content, created_at,
+               session_id, model_name, input_tokens, output_tokens,
+               duration_ms, tool_calls, error, request_id
+        FROM public.dashboard_messages
+        WHERE id = $1
+        """,
+        message_id,
+    )
+    if existing is None:
+        raise RuntimeError(f"Message {message_id} disappeared after an idempotency conflict")
+
+    message = dict(existing)
+    if (
+        message["conversation_id"] != conversation_id
+        or message["role"] != role
+        or message["content"] != content
+    ):
+        raise ValueError("message_id is already associated with a different dashboard message")
+    return message, False
+
+
+async def message_get_by_id(
+    pool: asyncpg.Pool,
+    message_id: UUID,
+) -> dict[str, Any] | None:
+    """Fetch a dashboard message by its client-provided identity."""
+    row = await pool.fetchrow(
+        """
+        SELECT id, conversation_id, role, content, created_at,
+               session_id, model_name, input_tokens, output_tokens,
+               duration_ms, tool_calls, error, request_id
+        FROM public.dashboard_messages
+        WHERE id = $1
+        """,
+        message_id,
+    )
+    return dict(row) if row else None
+
+
 async def conversation_reply_create(
     pool: asyncpg.Pool,
     conversation_id: UUID,

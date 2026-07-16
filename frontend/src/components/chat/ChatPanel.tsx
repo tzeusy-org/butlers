@@ -37,6 +37,7 @@ import type { StreamingState } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
 import { SendErrorBanner } from "./send-error.tsx";
 import { classifySendError, type SendError } from "./send-error-utils.ts";
+import { createClientMessageId } from "./message-id.ts";
 import {
   conversationKeys,
   useConversations,
@@ -207,12 +208,13 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // ---------------------------------------------------------------------------
 
   const sendText = useCallback(
-    async (text: string) => {
+    async (text: string, retryMessageId?: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
 
       setSendError(null);
       const isNew = activeConversationId == null;
+      const messageId = retryMessageId ?? createClientMessageId();
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -245,11 +247,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
       try {
         const response = isNew
-          ? await createConversation(butlerName, { message: trimmed }, controller.signal)
+          ? await createConversation(
+              butlerName,
+              { message: trimmed, message_id: messageId },
+              controller.signal,
+            )
           : await sendMessage(
               butlerName,
               activeConversationId!,
-              { message: trimmed },
+              { message: trimmed, message_id: messageId },
               controller.signal,
             );
 
@@ -301,7 +307,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
               break;
             }
             case "error": {
-              setSendError(classifySendError(event.data, trimmed));
+              setSendError(classifySendError(event.data, trimmed, messageId));
               setStreaming(null);
               break;
             }
@@ -325,6 +331,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
             kind: "generic",
             message: "There was a problem sending your message. Please try again.",
             failedText: trimmed,
+            messageId,
           });
         }
       }
@@ -396,7 +403,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         {sendError && (
           <SendErrorBanner
             error={sendError}
-            onRetry={(text) => void sendText(text)}
+            onRetry={(error) => void sendText(error.failedText, error.messageId)}
             onCheckAgain={handleCheckAgain}
             onDismiss={() => setSendError(null)}
           />

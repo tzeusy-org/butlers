@@ -32,6 +32,7 @@ from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
     conversation_reply_create,
     conversation_set_routed_butler,
+    message_create_idempotent,
     message_find_reply_since,
 )
 from butlers.api.db import DatabaseManager
@@ -320,6 +321,39 @@ async def test_conversation_reply_create_returns_none_for_missing_conversation()
     pool.execute.assert_not_awaited()
 
 
+async def test_message_create_idempotent_returns_existing_message_without_incrementing():
+    message_id = uuid4()
+    existing = {
+        "id": message_id,
+        "conversation_id": _CONV_ID,
+        "role": "user",
+        "content": "Retry me",
+        "created_at": _NOW,
+        "session_id": None,
+        "model_name": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "duration_ms": None,
+        "tool_calls": None,
+        "error": None,
+        "request_id": None,
+    }
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(side_effect=[None, existing])
+
+    message, is_new = await message_create_idempotent(
+        pool,
+        message_id=message_id,
+        conversation_id=_CONV_ID,
+        role="user",
+        content="Retry me",
+    )
+
+    assert is_new is False
+    assert message == existing
+    assert pool.fetchrow.await_count == 2
+
+
 async def test_conversation_set_routed_butler_scopes_to_null_column():
     pool = AsyncMock()
 
@@ -477,6 +511,126 @@ async def test_create_conversation_streams_conversation_reply_message(app):
     # model_name/tokens are null — persisted mid-session, before the routed
     # session's own accounting exists.
     assert '"model_name": null' in resp.text
+
+
+async def test_create_conversation_retry_reuses_original_conversation_for_message_id(app):
+    """A lost initial SSE response retries against its original thread.
+
+    The browser has not received ``conversation_created`` in this case, so it
+    must retry ``POST /conversations`` rather than the follow-up endpoint.
+    Reusing the client message UUID must therefore find the already-persisted
+    user row before a second conversation is created.
+    """
+    message_id = uuid4()
+    original_conversation_id = uuid4()
+    original_conversation = _make_conversation_row(id=original_conversation_id)
+    existing_user_message = {
+        "id": message_id,
+        "conversation_id": original_conversation_id,
+        "role": "user",
+        "content": "Retry me",
+        "created_at": _NOW,
+        "session_id": None,
+        "model_name": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "duration_ms": None,
+        "tool_calls": None,
+        "error": None,
+        "request_id": None,
+    }
+    reply_row = _make_reply_row(created_at=_NOW + timedelta(seconds=1))
+
+    request_id = str(uuid4())
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult({"request_id": request_id, "status": "accepted"})
+    )
+    app, shared_pool = _app_with_mock_db_and_mcp(
+        app,
+        mcp_manager=_make_mcp_manager(mock_client),
+        reply_row=None,
+    )
+
+    async def fetchrow(sql, *_args):
+        if "FROM public.dashboard_messages" in sql and "WHERE id = $1" in sql:
+            return existing_user_message
+        if "FROM public.dashboard_conversations" in sql:
+            return original_conversation
+        if "FROM public.dashboard_messages" in sql:
+            return reply_row
+        raise AssertionError(f"Unexpected query: {sql}")
+
+    shared_pool.fetchrow = AsyncMock(side_effect=fetchrow)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "Retry me", "message_id": str(message_id)},
+        )
+
+    assert resp.status_code == 200
+    assert str(original_conversation_id) in resp.text
+    sent_envelope = mock_client.call_tool.call_args.args[1]
+    assert sent_envelope["event"]["external_event_id"] == str(message_id)
+    assert sent_envelope["source"]["endpoint_identity"] == (
+        f"dashboard:web:{original_conversation_id}"
+    )
+    assert not any(
+        "INSERT INTO public.dashboard_conversations" in call.args[0]
+        for call in shared_pool.execute.await_args_list
+    )
+
+
+async def test_create_conversation_rejects_message_id_reused_for_different_content(app):
+    message_id = uuid4()
+    original_conversation_id = uuid4()
+    existing_user_message = {
+        "id": message_id,
+        "conversation_id": original_conversation_id,
+        "role": "user",
+        "content": "Original message",
+        "created_at": _NOW,
+        "session_id": None,
+        "model_name": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "duration_ms": None,
+        "tool_calls": None,
+        "error": None,
+        "request_id": None,
+    }
+    app, shared_pool = _app_with_mock_db_and_mcp(
+        app,
+        mcp_manager=MagicMock(spec=MCPClientManager),
+        reply_row=None,
+    )
+
+    async def fetchrow(sql, *_args):
+        if "FROM public.dashboard_messages" in sql:
+            return existing_user_message
+        if "FROM public.dashboard_conversations" in sql:
+            return _make_conversation_row(id=original_conversation_id)
+        raise AssertionError(f"Unexpected query: {sql}")
+
+    shared_pool.fetchrow = AsyncMock(side_effect=fetchrow)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/butlers/finance/conversations",
+            json={"message": "Different message", "message_id": str(message_id)},
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "MESSAGE_ID_CONFLICT"
+    assert not any(
+        "INSERT INTO public.dashboard_conversations" in call.args[0]
+        for call in shared_pool.execute.await_args_list
+    )
 
 
 async def test_create_conversation_stamps_routed_butler_on_first_route(app):

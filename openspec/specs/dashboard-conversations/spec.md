@@ -46,7 +46,7 @@ The `public.dashboard_messages` table stores individual messages within a conver
 
 - **WHEN** the migration creates the `public.dashboard_messages` table
 - **THEN** the table SHALL contain the following columns:
-  - `id` (UUID7, primary key) — time-ordered unique identifier
+  - `id` (UUID, primary key) — server-generated UUID7 by default, or a client-generated UUID when a dashboard submission needs a stable retry identity
   - `conversation_id` (UUID, NOT NULL, FK to `public.dashboard_conversations.id` ON DELETE CASCADE) — parent conversation
   - `role` (TEXT, NOT NULL) — one of `user`, `assistant`
   - `content` (TEXT, NOT NULL) — message text (markdown for assistant responses)
@@ -99,7 +99,7 @@ Starting a new conversation creates a conversation record and sends the first us
 
 - **WHEN** `POST /api/butlers/{name}/conversations` is called with `{ "message": "Hello butler" }` and an optional `page_context`
 - **THEN** a new conversation row is inserted in `public.dashboard_conversations` with `butler_name = {name}`, `status = 'active'`, and a default title
-- **AND** a user message row is inserted in `public.dashboard_messages` **before** Switchboard submission is attempted
+- **AND** a user message row is inserted in `public.dashboard_messages` **before** Switchboard submission is attempted; a client MAY provide its UUID as `message_id`, and MUST reuse that UUID when retrying the same submission
 - **AND** the message is submitted to the Switchboard's `ingest` MCP tool as an `ingest.v1` envelope with `source.channel = "dashboard"`, `source.provider = "internal"`, `source.endpoint_identity = "dashboard:web:{conversation_id}"`
 - **AND** the response is streamed back via SSE on the same request (see SSE Streaming requirement)
 - **AND** the response includes the `conversation_id` in the initial SSE event
@@ -108,6 +108,13 @@ Starting a new conversation creates a conversation record and sends the first us
 
 - **WHEN** a conversation is created
 - **THEN** the title is set to the first 80 characters of the first user message, truncated at word boundary with ellipsis if needed
+
+#### Scenario: Retry initial conversation before its SSE response is received
+
+- **WHEN** a client retries `POST /api/butlers/{name}/conversations` with the same `message_id` after losing the initial SSE response
+- **THEN** the API SHALL reuse that message's existing conversation rather than insert a second conversation or user-message row
+- **AND** the retried envelope SHALL retain the original `source.endpoint_identity` and `event.external_event_id`
+- **AND** a request that reuses a `message_id` for another butler, role, or message content SHALL return `409` with `code: "MESSAGE_ID_CONFLICT"`
 
 ### Requirement: Continue Conversation
 
@@ -217,7 +224,7 @@ Assistant responses SHALL be streamed to the dashboard via Server-Sent Events on
 - **WHEN** the Switchboard MCP server cannot be reached while submitting the ingest envelope
 - **THEN** an `event: error` with `data: {"code": "SWITCHBOARD_UNAVAILABLE", "message": "Switchboard offline — retry"}` is sent, followed by `event: done`
 - **AND** the user message row inserted before submission is preserved (not rolled back)
-- **AND** a client retry that resubmits the same message content is deduplicated idempotently at the Switchboard ingest boundary (no duplicate route or session is created)
+- **AND** a client retry resubmits the original `message_id`, so Switchboard deduplicates by the stable `event.external_event_id` even when the retry crosses an hourly content-hash bucket or its rebuilt conversation-context preamble differs (no duplicate user row, route, or session is created)
 
 #### Scenario: Switchboard rejects the envelope
 
@@ -242,7 +249,7 @@ Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through 
   - `source.channel`: `"dashboard"`
   - `source.provider`: `"internal"`
   - `source.endpoint_identity`: `"dashboard:web:{conversation_id}"`
-  - `event.external_event_id`: `"{message_id}"`
+  - `event.external_event_id`: `"{message_id}"`, where `message_id` is client-generated for a new user message and reused for a retry of that message
   - `event.external_thread_id`: `"{conversation_id}"`
   - `event.observed_at`: current timestamp
   - `sender.identity`: `"dashboard:operator"`

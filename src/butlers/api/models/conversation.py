@@ -34,6 +34,13 @@ class ConversationCreateRequest(BaseModel):
     """Request body for creating a new conversation."""
 
     message: str = Field(..., min_length=1, description="First user message to send")
+    message_id: UUID | None = Field(
+        None,
+        description=(
+            "Client-generated UUID for this user message. Reuse it when retrying "
+            "the same submission so ingestion remains idempotent."
+        ),
+    )
     page_context: PageContext | None = Field(
         None, description="Dashboard page context captured at send time"
     )
@@ -43,6 +50,13 @@ class MessageCreateRequest(BaseModel):
     """Request body for sending a follow-up message."""
 
     message: str = Field(..., min_length=1, description="User message to send")
+    message_id: UUID | None = Field(
+        None,
+        description=(
+            "Client-generated UUID for this user message. Reuse it when retrying "
+            "the same submission so ingestion remains idempotent."
+        ),
+    )
     page_context: PageContext | None = Field(
         None, description="Dashboard page context captured at send time"
     )

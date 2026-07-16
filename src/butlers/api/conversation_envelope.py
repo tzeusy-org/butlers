@@ -76,7 +76,8 @@ def build_dashboard_envelope(
     conversation_id:
         The UUID of the dashboard conversation.
     message_id:
-        The UUID of the user message row just created.
+        The stable UUID of the persisted user message row. A retry reuses it
+        so ``event.external_event_id`` remains unchanged.
     message_text:
         The user's raw message text.
     conversation_context:
