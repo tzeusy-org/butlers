@@ -3,9 +3,9 @@
 Covers the four acceptance scenarios from bu-thx5x:
 1. Empty store — all three families return empty arrays;
    meta.failing_count=0 and meta.unverified_count=0.
-2. Mixed states — verified-ok, verified-failed, never-verified rows are
+2. Mixed states — verified-ok, verified-failed, and unverified rows are
    correctly classified; failing_count reflects genuine failures only and
-   unverified_count reflects never-probed ('warn') rows separately
+   unverified_count reflects quiet ('warn') rows separately
    (bu-976n0 tri-state split).
 3. Identity filter (projection lens) — ?identity=<uuid> restricts the user
    array to the specified entity; system/cli remain unfiltered.
@@ -64,6 +64,7 @@ from butlers.api.routers.secrets_v2 import (
     _get_db_manager,
     _infer_provider_from_type,
     _is_missing_secrets_schema_error,
+    _reclassify_stale_ok_state,
     _row_to_test_result,
     _unverified_count,
     _used_by_for_key,
@@ -325,6 +326,27 @@ def test_derive_state_expiring_lead_time_is_configurable():
 
 def test_default_expiring_lead_time_is_seven_days():
     assert DEFAULT_EXPIRING_LEAD_TIME == timedelta(days=7)
+
+
+def test_reclassify_stale_ok_state_preserves_more_severe_states():
+    """The Passport's stale probe state is quiet, without overriding failures."""
+    now = datetime(2026, 7, 16, 12, tzinfo=UTC)
+
+    assert (
+        _reclassify_stale_ok_state(state="ok", last_verified=now - timedelta(hours=25), now=now)
+        == "warn"
+    )
+    assert (
+        _reclassify_stale_ok_state(state="ok", last_verified=now - timedelta(hours=23), now=now)
+        == "ok"
+    )
+    assert (
+        _reclassify_stale_ok_state(
+            state="failing", last_verified=now - timedelta(hours=25), now=now
+        )
+        == "failing"
+    )
+    assert _reclassify_stale_ok_state(state="ok", last_verified=None, now=now) == "ok"
 
 
 def test_format_probe_time_today():
@@ -963,6 +985,46 @@ def test_inventory_family_counts_exclude_hidden_provider_managed_system_rows():
         "system": 0,
         "user": 0,
     }
+
+
+def test_inventory_reclassifies_stale_successful_rows_as_unverified():
+    """A stale successful probe is unknown, not a healthy credential.
+
+    This mirrors the staleness worker's 24-hour boundary.  Failed rows retain
+    their more-severe state, while a recent successful probe remains healthy.
+    """
+    fresh_ok = _make_system_row(
+        key="FRESH_OK",
+        value="fresh",
+        last_verified=_NOW - timedelta(hours=23),
+        last_test_ok=True,
+    )
+    stale_ok = _make_system_row(
+        key="STALE_OK",
+        value="stale",
+        last_verified=_NOW - timedelta(hours=25),
+        last_test_ok=True,
+    )
+    stale_failure = _make_system_row(
+        key="STALE_FAILURE",
+        value="failed",
+        last_verified=_NOW - timedelta(hours=25),
+        last_test_ok=False,
+    )
+    mock_db = _make_db_manager(
+        butler_names=["switchboard"],
+        system_rows=[fresh_ok, stale_ok, stale_failure],
+    )
+
+    client = _build_app(mock_db)
+    resp = client.get("/api/secrets/inventory")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    states = {row["key"]: row["state"] for row in body["data"]["system"]}
+    assert states == {"FRESH_OK": "ok", "STALE_OK": "warn", "STALE_FAILURE": "failing"}
+    assert body["meta"]["failing_count"] == 1
+    assert body["meta"]["unverified_count"] == 1
 
 
 def test_inventory_never_set_credential():

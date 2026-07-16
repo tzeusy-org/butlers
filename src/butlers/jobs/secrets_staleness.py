@@ -70,6 +70,7 @@ from fastapi import HTTPException
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.routers.secrets_v2 import (
+    DEFAULT_STALENESS_S,
     _fetch_cli_secrets,
     _fetch_system_secrets,
     _fetch_user_secrets,
@@ -84,11 +85,6 @@ logger = logging.getLogger(__name__)
 
 # never_set rows have nothing to verify — skip them everywhere in this module.
 _SKIP_STATES = frozenset({"never_set"})
-
-#: Default staleness window: a credential not verified within this long is
-#: re-probed by the background loop. 24h keeps the passport's "needs probe"
-#: bucket from silently accumulating for days between owner visits.
-DEFAULT_STALENESS_S: float = 24 * 60 * 60
 
 #: Default scan cadence for the staleness loop. 30 minutes matches
 #: jobs.secrets_lifecycle's notifier cadence (PR #2951) — frequent enough
