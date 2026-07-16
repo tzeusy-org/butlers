@@ -61,9 +61,9 @@ _EVIDENCE_VALUE_MAX_CHARS = 2000
 
 @dataclass(frozen=True)
 class DecisionDossier:
-    """Validated non-owner approval context persisted with an action."""
+    """Validated optional approval context persisted with an action."""
 
-    why: str
+    why: str | None
     evidence: list[EvidenceReference]
     blast_radius: str | None
     reversibility: str | None
@@ -119,14 +119,15 @@ def _validate_optional_enum(
     return value
 
 
-def _validate_non_owner_dossier(
+def _validate_dossier(
     *,
     raw_why: Any,
     raw_evidence: Any,
     raw_blast_radius: Any,
     raw_reversibility: Any,
+    require_why: bool,
 ) -> DecisionDossier | dict[str, Any]:
-    """Strictly validate new dossier metadata before a non-owner call proceeds.
+    """Strictly validate supplied dossier metadata without coercing it.
 
     The migration is responsible for historic plain-string evidence.  This
     runtime boundary deliberately refuses legacy-shaped or malformed inputs
@@ -134,23 +135,27 @@ def _validate_non_owner_dossier(
     look reviewable.
     """
     if raw_why is _MISSING or raw_why is None:
-        return _dossier_error(
-            field="why",
-            code="missing_required_dossier_field",
-            message="why is required for a gated non-owner action; retry with _why.",
-        )
-    if not isinstance(raw_why, str) or not raw_why.strip():
+        if require_why:
+            return _dossier_error(
+                field="why",
+                code="missing_required_dossier_field",
+                message="why is required for a gated non-owner action; retry with _why.",
+            )
+        why: str | None = None
+    elif not isinstance(raw_why, str) or not raw_why.strip():
         return _dossier_error(
             field="why",
             code="invalid_dossier_value",
             message="why must be a non-empty human-readable string.",
         )
-    if len(raw_why) > _WHY_MAX_CHARS:
+    elif len(raw_why) > _WHY_MAX_CHARS:
         return _dossier_error(
             field="why",
             code="invalid_dossier_value",
             message=f"why must not exceed {_WHY_MAX_CHARS} characters.",
         )
+    else:
+        why = raw_why
 
     blast_radius = _validate_optional_enum(
         raw_blast_radius,
@@ -235,10 +240,44 @@ def _validate_non_owner_dossier(
             evidence.append({"type": evidence_type, "ref": ref, "note": note})
 
     return DecisionDossier(
-        why=raw_why,
+        why=why,
         evidence=evidence,
         blast_radius=blast_radius,
         reversibility=reversibility,
+    )
+
+
+def _validate_non_owner_dossier(
+    *,
+    raw_why: Any,
+    raw_evidence: Any,
+    raw_blast_radius: Any,
+    raw_reversibility: Any,
+) -> DecisionDossier | dict[str, Any]:
+    """Require a complete, typed dossier before a non-owner call proceeds."""
+    return _validate_dossier(
+        raw_why=raw_why,
+        raw_evidence=raw_evidence,
+        raw_blast_radius=raw_blast_radius,
+        raw_reversibility=raw_reversibility,
+        require_why=True,
+    )
+
+
+def _validate_owner_dossier(
+    *,
+    raw_why: Any,
+    raw_evidence: Any,
+    raw_blast_radius: Any,
+    raw_reversibility: Any,
+) -> DecisionDossier | dict[str, Any]:
+    """Validate supplied owner metadata without making any field mandatory."""
+    return _validate_dossier(
+        raw_why=raw_why,
+        raw_evidence=raw_evidence,
+        raw_blast_radius=raw_blast_radius,
+        raw_reversibility=raw_reversibility,
+        require_why=False,
     )
 
 
@@ -751,11 +790,27 @@ def _make_gate_wrapper(
             # returns a row for an active, verified owner channel — so this
             # covers ANY such channel, not just the primary one (bu-nd5me).
             # entity_id dispatch and non-primary owner channels all land here.
+            dossier_or_error = _validate_owner_dossier(
+                raw_why=raw_why,
+                raw_evidence=raw_evidence,
+                raw_blast_radius=raw_blast_radius,
+                raw_reversibility=raw_reversibility,
+            )
+            if isinstance(dossier_or_error, dict):
+                logger.info(
+                    "Rejected owner call with malformed optional decision dossier "
+                    "(tool=%r, action=%s, field=%s)",
+                    tool_name,
+                    action_id,
+                    dossier_or_error["error"]["field"],
+                )
+                return dossier_or_error
+            dossier = dossier_or_error
             await pool.execute(
                 "INSERT INTO pending_actions "
                 "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                "requested_at, expires_at, decided_by, why, evidence) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                "requested_at, expires_at, decided_by, why, evidence, blast_radius, reversibility) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
                 action_id,
                 tool_name,
                 safe_tool_args,
@@ -765,8 +820,10 @@ def _make_gate_wrapper(
                 now,
                 expires_at,
                 "role:owner",
-                None,
-                [],
+                dossier.why,
+                dossier.evidence,
+                dossier.blast_radius,
+                dossier.reversibility,
             )
             await _emit_created(action_id, ActionStatus.APPROVED.value)
             await record_approval_event(

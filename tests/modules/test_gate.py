@@ -331,6 +331,65 @@ class TestGateOwnerOutboundAutoApprove:
         # but _is_primary_contact must NOT be called for entity_id dispatch.
         # We verify this indirectly: if it were called with is_primary=False the action would park.
 
+    async def test_owner_plain_string_evidence_is_rejected_before_persistence(self) -> None:
+        """Owner bypass may omit a dossier, but supplied evidence stays strict."""
+        owner = _owner_contact()
+        pool = _make_pool(fetchrow_return={"primary": True})
+        original_fn = _make_original_fn()
+
+        result = await _call_gate(
+            {
+                "chat_id": "12345",
+                "message": "hello",
+                "_evidence": ["legacy free-form evidence"],
+            },
+            resolved_contact=owner,
+            pool=pool,
+            original_fn=original_fn,
+        )
+
+        assert result["status"] == "error"
+        assert result["error"]["field"] == "evidence[0]"
+        pool.execute.assert_not_awaited()
+        original_fn.assert_not_awaited()
+
+    async def test_owner_typed_dossier_remains_optional_and_is_persisted(self) -> None:
+        """Owner metadata is optional but valid supplied context is not discarded."""
+        owner = _owner_contact()
+        pool = _make_pool(fetchrow_return={"primary": True})
+        evidence = [
+            {
+                "type": "text",
+                "ref": "owner-request",
+                "note": "Owner requested this notification.",
+            }
+        ]
+
+        result = await _call_gate(
+            {
+                "chat_id": "12345",
+                "message": "hello",
+                "_evidence": evidence,
+                "_blast_radius": "self",
+                "_reversibility": "reversible",
+            },
+            resolved_contact=owner,
+            pool=pool,
+            include_dossier=False,
+        )
+
+        assert result == {"status": "sent"}
+        pending_insert = next(
+            call
+            for call in pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        )
+        assert "blast_radius" in pending_insert.args[0]
+        assert "reversibility" in pending_insert.args[0]
+        assert evidence in pending_insert.args
+        assert "self" in pending_insert.args
+        assert "reversible" in pending_insert.args
+
     async def test_non_owner_with_primary_telegram_goes_through_rules(self) -> None:
         """Non-owner telegram target goes through rules path regardless of is_primary."""
         non_owner = _non_owner_contact()
