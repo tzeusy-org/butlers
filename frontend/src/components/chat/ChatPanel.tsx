@@ -393,7 +393,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           pricingMap={pricingMap}
         />
 
-        {isLoadingMessages && activeConversationId ? (
+        {isLoadingMessages && activeConversationId && localMessages.length === 0 ? (
           <MessageThreadSkeleton />
         ) : (
           <MessageThread
