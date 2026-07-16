@@ -122,6 +122,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from butlers.api.db import DatabaseManager
+from butlers.api.degraded import DegradedSources
 from butlers.api.routers import audit as audit_router
 from butlers.api.routers.secrets_v2 import (
     PROVIDER_CATALOG,
@@ -214,13 +215,21 @@ class CredentialSnapshot:
     provider: str | None = None  # user family only — display provider slug
 
 
-async def _collect_snapshots(db: DatabaseManager) -> list[CredentialSnapshot]:
+async def _collect_snapshots(
+    db: DatabaseManager,
+    *,
+    tracker: DegradedSources | None = None,
+) -> list[CredentialSnapshot]:
     """Collect current lifecycle-relevant state for every known credential.
 
     Reuses the same per-family fetch helpers as ``GET /api/secrets/inventory``
     and mirrors its scan shape (per-butler schemas + shared pool), minus the
-    response-model assembly this job doesn't need. Provider-managed Spotify
-    rows are omitted because dedicated provider status owns their health.
+    response-model assembly this job doesn't need. A failed per-butler fetch
+    is omitted while the scan continues to healthy butlers and the shared
+    system/CLI/user families; when provided, ``tracker`` records that genuine
+    partial failure so callers do not report a clean scan. Provider-managed
+    Spotify rows are omitted because dedicated provider status owns their
+    health.
     """
     snapshots: list[CredentialSnapshot] = []
 
@@ -229,7 +238,22 @@ async def _collect_snapshots(db: DatabaseManager) -> list[CredentialSnapshot]:
             pool = db.pool(butler_name)
         except KeyError:
             continue
-        for row in await _fetch_system_secrets(pool, butler_name):
+        try:
+            rows = await _fetch_system_secrets(pool, butler_name, tracker=tracker)
+        except Exception:  # noqa: BLE001
+            if tracker is not None:
+                tracker.mark(
+                    butler_name,
+                    msg=f"Failed to collect lifecycle secrets for butler {butler_name!r}",
+                )
+            else:
+                logger.warning(
+                    "secrets_lifecycle: failed to collect secrets for butler %s",
+                    butler_name,
+                    exc_info=True,
+                )
+            continue
+        for row in rows:
             if row.category in _LIFECYCLE_EXCLUDED_SYSTEM_CATEGORIES:
                 continue
             snapshots.append(
@@ -249,7 +273,7 @@ async def _collect_snapshots(db: DatabaseManager) -> list[CredentialSnapshot]:
     # Shared application config (public.butler_secrets), excluding cli/cli-auth
     # rows — those are the CLI family, fetched separately below. Mirrors
     # get_inventory()'s exclusion so this job never double-counts a row.
-    for row in await _fetch_system_secrets(shared_pool, "shared-public"):
+    for row in await _fetch_system_secrets(shared_pool, "shared-public", tracker=tracker):
         if row.category in ("cli", "cli-auth") or (
             row.category in _LIFECYCLE_EXCLUDED_SYSTEM_CATEGORIES
         ):
@@ -592,11 +616,13 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     each NEW transition into an attention state.
 
     Returns a summary dict: ``{scanned, attention, delivered, deferred,
-    suppressed, errors}``. ``deferred`` counts owner-quiet-hours holds enqueued
-    to the deferred_notifications table (a benign hold the flusher redelivers) —
-    distinct from ``suppressed`` (approvals-policy/context-bus drops) and
-    ``errors`` (genuine failures). Never raises — a failure in one credential's
-    notify attempt is logged and counted in ``errors``, and the scan continues.
+    suppressed, errors}``, with ``sources_degraded`` added when a per-butler
+    credential fetch failed. ``deferred`` counts owner-quiet-hours holds
+    enqueued to the deferred_notifications table (a benign hold the flusher
+    redelivers) — distinct from ``suppressed`` (approvals-policy/context-bus
+    drops) and ``errors`` (genuine failures). Never raises — a failure in one
+    credential's notify attempt is logged and counted in ``errors``, and the
+    scan continues.
     """
     try:
         shared_pool = db.credential_shared_pool()
@@ -611,7 +637,8 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
             "errors": 0,
         }
 
-    snapshots = await _collect_snapshots(db)
+    tracker = DegradedSources(logger)
+    snapshots = await _collect_snapshots(db, tracker=tracker)
     attention = [s for s in snapshots if s.state in _ATTENTION_STATES]
 
     dashboard_url = _dashboard_url()
@@ -910,7 +937,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 notification_ref=retry_ref,
             )
 
-    return {
+    summary: dict[str, Any] = {
         "scanned": len(snapshots),
         "attention": len(attention),
         "delivered": delivered,
@@ -918,6 +945,9 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
         "suppressed": suppressed,
         "errors": errors,
     }
+    if tracker.failed:
+        summary["sources_degraded"] = tracker.names
+    return summary
 
 
 # Default cadence for the background loop below. 30 minutes is frequent
