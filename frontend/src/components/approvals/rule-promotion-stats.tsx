@@ -112,10 +112,11 @@ export function RulePromotionStatsTile({
             testId="rule-promotion-stats-suggestions-degraded"
           />
         ) : (
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-5">
             <StatCell eyebrow="Pending" value={stats.suggestions_pending} />
             <StatCell eyebrow="Confirmed" value={stats.suggestions_confirmed} />
             <StatCell eyebrow="Dismissed" value={stats.suggestions_dismissed} />
+            <StatCell eyebrow="Superseded" value={stats.suggestions_superseded} />
             <StatCell
               eyebrow="Drifting rules"
               value={stats.demotion_pending}

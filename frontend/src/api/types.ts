@@ -8665,6 +8665,7 @@ export interface RulePromotionStats {
   suggestions_pending: number;
   suggestions_confirmed: number;
   suggestions_dismissed: number;
+  suggestions_superseded: number;
   promoted_rules_active: number;
   promoted_rule_matches: number;
   llm_sessions_avoided_estimate: number;

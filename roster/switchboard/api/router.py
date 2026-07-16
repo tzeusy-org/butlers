@@ -3692,6 +3692,8 @@ async def get_rule_promotion_stats(
                     stats.suggestions_confirmed = n
                 elif status == "dismissed":
                     stats.suggestions_dismissed = n
+                elif status == "superseded":
+                    stats.suggestions_superseded = n
             elif kind == "demotion" and status == "pending_review":
                 stats.demotion_pending = n
     except Exception:

@@ -1242,6 +1242,7 @@ function RulePromotionStatsSection() {
     stats.suggestions_pending > 0 ||
     stats.suggestions_confirmed > 0 ||
     stats.suggestions_dismissed > 0 ||
+    stats.suggestions_superseded > 0 ||
     stats.demotion_pending > 0;
   if (!hasActivity && degraded.length === 0) return null;
 

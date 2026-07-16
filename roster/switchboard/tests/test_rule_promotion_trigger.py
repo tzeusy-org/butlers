@@ -275,11 +275,18 @@ class _FakePool:
     rule_promotion.py: pending-check, evidence fetch, headers fetch, insert).
     """
 
-    def __init__(self, *, fetch_results=None, fetchrow_results=None, fetchval_results=None):
+    def __init__(
+        self,
+        *,
+        fetch_results=None,
+        fetchrow_results=None,
+        fetchval_results=None,
+        execute_result: str = "UPDATE 1",
+    ):
         self._fetch_results = list(fetch_results or [])
         self._fetchrow_results = list(fetchrow_results or [])
         self._fetchval_results = list(fetchval_results or [])
-        self.execute = AsyncMock(return_value="UPDATE 1")
+        self.execute = AsyncMock(return_value=execute_result)
 
     async def fetch(self, *_args, **_kwargs):
         return self._fetch_results.pop(0) if self._fetch_results else []
@@ -395,7 +402,10 @@ class TestRunRulePromotionTrigger:
         }
         new_agreeing = [{"decided_at": _ts(day=5)}]
         pool = _FakePool(
-            fetch_results=[candidates, new_agreeing],
+            # Candidate scan, latest evidence for the coverage recheck, then
+            # the post-suggestion evidence to bump. The synthetic evidence has
+            # no event id, so the header helper makes no DB fetch.
+            fetch_results=[candidates, [_verdict_row(day=3)], new_agreeing],
             fetchrow_results=[pending],
         )
         evaluator = _FakeEvaluator()
@@ -405,6 +415,55 @@ class TestRunRulePromotionTrigger:
         assert result["suggestions_bumped"] == 1
         pool.execute.assert_awaited_once()
 
+    async def test_supersedes_pending_suggestion_when_an_enabled_rule_now_covers_it(self):
+        """A manually added rule retires, rather than keeps bumping, its pending proposal."""
+        candidates = [{"sender_key": "covered@sender.com", "source_channel": "email"}]
+        pending = {
+            "id": uuid4(),
+            "evidence_count": 3,
+            "last_evidence_at": _ts(day=1),
+            "proposed_action": "route_to:finance",
+        }
+        pool = _FakePool(
+            # Candidate scan, then the latest evidence used for policy coverage.
+            fetch_results=[candidates, [_verdict_row(day=3)]],
+            fetchrow_results=[pending],
+        )
+        evaluator = _FakeEvaluator(action="skip")
+
+        result = await run_rule_promotion_trigger(pool, evaluator=evaluator)
+
+        assert result["suggestions_superseded"] == 1
+        assert result["suggestions_bumped"] == 0
+        update_sql, decided_by, suggestion_id = pool.execute.await_args.args
+        assert "status = 'superseded'" in update_sql
+        assert "AND status = 'pending_review'" in update_sql
+        assert decided_by == "system:rule_promotion_trigger"
+        assert suggestion_id == pending["id"]
+
+    async def test_supersede_race_does_not_overwrite_another_terminal_decision(self):
+        """The conditional update must report, not overwrite, a concurrent decision."""
+        candidates = [{"sender_key": "raced@sender.com", "source_channel": "email"}]
+        pending = {
+            "id": uuid4(),
+            "evidence_count": 3,
+            "last_evidence_at": _ts(day=1),
+            "proposed_action": "route_to:finance",
+        }
+        pool = _FakePool(
+            fetch_results=[candidates, [_verdict_row(day=3)]],
+            fetchrow_results=[pending],
+            execute_result="UPDATE 0",
+        )
+        evaluator = _FakeEvaluator(action="skip")
+
+        result = await run_rule_promotion_trigger(pool, evaluator=evaluator)
+
+        assert result["suggestions_superseded"] == 0
+        assert result["skipped_race_conflict"] == 1
+        update_sql = pool.execute.await_args.args[0]
+        assert "AND status = 'pending_review'" in update_sql
+
     async def test_no_new_evidence_leaves_pending_suggestion_untouched(self):
         candidates = [{"sender_key": "stale@sender.com", "source_channel": "email"}]
         pending = {
@@ -413,7 +472,10 @@ class TestRunRulePromotionTrigger:
             "last_evidence_at": _ts(day=1),
             "proposed_action": "skip",
         }
-        pool = _FakePool(fetch_results=[candidates, []], fetchrow_results=[pending])
+        pool = _FakePool(
+            fetch_results=[candidates, [_verdict_row(day=3)], []],
+            fetchrow_results=[pending],
+        )
         evaluator = _FakeEvaluator()
 
         result = await run_rule_promotion_trigger(pool, evaluator=evaluator)
@@ -457,6 +519,7 @@ def test_promotion_trigger_result_as_dict_has_all_fields():
         "candidates_scanned",
         "suggestions_created",
         "suggestions_bumped",
+        "suggestions_superseded",
         "skipped_existing_rule",
         "skipped_insufficient_evidence",
         "skipped_no_agreement",

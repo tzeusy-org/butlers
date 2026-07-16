@@ -246,6 +246,7 @@ async def test_stats_happy_path(app):
         _make_row({"suggestion_kind": "promotion", "status": "pending_review", "n": 3}),
         _make_row({"suggestion_kind": "promotion", "status": "confirmed", "n": 7}),
         _make_row({"suggestion_kind": "promotion", "status": "dismissed", "n": 2}),
+        _make_row({"suggestion_kind": "promotion", "status": "superseded", "n": 4}),
         _make_row({"suggestion_kind": "demotion", "status": "pending_review", "n": 1}),
     ]
     ids = [_make_row({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
@@ -264,6 +265,7 @@ async def test_stats_happy_path(app):
     assert d["suggestions_pending"] == 3
     assert d["suggestions_confirmed"] == 7
     assert d["suggestions_dismissed"] == 2
+    assert d["suggestions_superseded"] == 4
     assert d["demotion_pending"] == 1
     assert d["promoted_rules_active"] == 5
     assert d["promoted_rule_matches"] == 128
