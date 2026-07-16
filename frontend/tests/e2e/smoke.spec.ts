@@ -24,8 +24,8 @@ test("smoke: app loads and has a page title", async ({ page }) => {
 });
 
 test("smoke: /health route renders without crashing", async ({ page }) => {
-  // The route may fail API requests (no backend in e2e preview), but the
-  // React tree must mount cleanly — no JS error, no blank white screen.
+  // Domain API requests without page.route() fixtures receive an explicit 404
+  // from the local test harness, but the React tree must still mount cleanly.
   await page.goto("/health", { timeout: 10_000 });
 
   // Root element must be attached.
