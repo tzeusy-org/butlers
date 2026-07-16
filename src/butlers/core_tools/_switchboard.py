@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -769,19 +769,27 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         if conversation_id:
             _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "bug"
 
-        try:
-            parsed_severity = float(severity) if not isinstance(severity, bool) else None
-        except (TypeError, ValueError, OverflowError):
-            parsed_severity = None
-        if (
-            parsed_severity is None
-            or not math.isfinite(parsed_severity)
-            or not parsed_severity.is_integer()
-        ):
+        if isinstance(severity, bool):
             normalized_severity = 2
         else:
-            normalized_severity = int(parsed_severity)
-        clamped_severity = max(0, min(4, normalized_severity))
+            try:
+                parsed_severity = Decimal(str(severity))
+                is_integral = (
+                    parsed_severity.is_finite()
+                    and parsed_severity == parsed_severity.to_integral_value()
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                parsed_severity = None
+                is_integral = False
+            if parsed_severity is None or not is_integral:
+                normalized_severity = 2
+            elif parsed_severity <= 0:
+                normalized_severity = 0
+            elif parsed_severity >= 4:
+                normalized_severity = 4
+            else:
+                normalized_severity = int(parsed_severity)
+        clamped_severity = normalized_severity
         call_site = f"dashboard:{page_route or 'unknown'}"
 
         fp_result = compute_fingerprint_from_report(

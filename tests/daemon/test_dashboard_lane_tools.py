@@ -410,6 +410,13 @@ async def test_file_bug_report_relays_to_qa_and_replies_with_case_reference(
         ("9.0", 4),
         ("-3", 0),
         ("-3.0", 0),
+        pytest.param(10**400, 4, id="huge-integer-clamps"),
+        pytest.param("9" * 400, 4, id="huge-integer-string-clamps"),
+        pytest.param(
+            "1.0000000000000000000000000001",
+            2,
+            id="precise-fractional-string-defaults",
+        ),
         ("not-a-severity", 2),
         (None, 2),
         ("", 2),
