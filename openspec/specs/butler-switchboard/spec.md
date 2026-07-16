@@ -244,7 +244,7 @@ report). Bug/system reports SHALL NEVER be routed to a domain butler.
 
 #### Scenario: Unroutable dashboard message dead-letters and notifies the owner
 
-- **WHEN** a dashboard message's classification session calls neither `route_to_butler` nor `file_bug_report` (e.g. an ambiguous or unclassifiable message)
+- **WHEN** a dashboard message's classification session calls neither `route_to_butler` nor `file_bug_report` (e.g. an ambiguous or unclassifiable message), the classification spawn raises an exception, or `route_to_butler` was attempted but no target acknowledged the route because every `route.execute` dispatch failed
 - **THEN** the Switchboard SHALL capture the request to the dead-letter queue (`source_table="message_inbox"`)
-- **AND** SHALL post an in-thread `conversation_reply` telling the owner a lane decision could not be made, referencing the dead-letter case id
+- **AND** SHALL persist an in-thread `conversation_reply` telling the owner a lane decision could not be made, referencing the dead-letter case id
 - **AND** SHALL NOT silently fall back to routing the message to the `general` butler — that fallback is specific to non-dashboard channels
