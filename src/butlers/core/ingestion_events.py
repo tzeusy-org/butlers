@@ -917,21 +917,25 @@ async def ingestion_event_replay_request(
     *,
     switchboard_pool: asyncpg.Pool | None = None,
 ) -> dict[str, Any]:
-    """Request replay of a failed or filtered event.
+    """Request replay of a failed, ingested, or filtered event.
 
     Checks ``public.ingestion_events`` first (for routing-failed events), then
     falls back to ``connectors.filtered_events`` (for connector-filtered events).
 
-    For failed ingestion events, resets status to ``'ingested'`` so the
-    pipeline can re-route.  For already-ingested events, sets status to
-    ``'replay_pending'`` and resets the corresponding ``message_inbox`` row
-    to ``'accepted'`` so the DurableBuffer scanner re-routes it.
+    For failed ingestion events, this is a status-only ``failed`` →
+    ``ingested`` transition. It does not modify a corresponding
+    ``message_inbox`` row: a terminal inbox row (for example, ``parsed`` or
+    ``errored``) remains terminal, so the request neither redelivers nor
+    re-routes that message. For already-ingested or replay-failed events,
+    this instead sets status to ``'replay_pending'`` and, when a switchboard
+    pool is available, resets the corresponding ``message_inbox`` row to
+    ``'accepted'`` so the DurableBuffer scanner can re-route it.
     For filtered events, sets status to ``'replay_pending'`` for the existing
     replay worker.
 
     Allowed transitions:
-    - ``failed``          → ``ingested``        (ingestion event — ready for re-route)
-    - ``ingested``        → ``replay_pending``  (re-process successful event via scanner)
+    - ``failed``          → ``ingested``        (status-only; inbox unchanged)
+    - ``ingested``        → ``replay_pending``  (re-process via scanner when inbox resets)
     - ``filtered``        → ``replay_pending``  (connector filter)
     - ``error``           → ``replay_pending``  (connector error)
     - ``replay_failed``   → ``replay_pending``  (re-replay)
@@ -942,8 +946,9 @@ async def ingestion_event_replay_request(
             ``public.ingestion_events`` and ``connectors.filtered_events``.
         event_id: UUID of the event to replay.
         switchboard_pool: Optional asyncpg pool scoped to the switchboard schema.
-            Required for replaying ``ingested`` events (resets ``message_inbox``
-            lifecycle so the DurableBuffer scanner re-routes the message).
+            Used when replaying ``ingested`` or ``replay_failed`` events to
+            reset ``message_inbox`` for scanner processing; not used for the
+            status-only ``failed`` transition.
 
     Returns:
         A dict with ``outcome`` key:
