@@ -5305,20 +5305,26 @@ async def rotate_cli_credential(
             else "Value set via set-token (owner-supplied, first save)"
         )
 
+    # The persistence-key convention is authoritative: cli-auth/* rows mirror
+    # external CLI auth state and belong to the cli-auth category. This also
+    # repairs a legacy mismatched category on the next owner-supplied update.
+    category = "cli-auth" if credential_id.startswith("cli-auth/") else "cli"
+
     # Persist. UPSERT so a first-time owner-supplied save creates the row
-    # instead of 404-ing; in-place update keeps category/description intact for
-    # the existing-row case via ON CONFLICT.
+    # instead of 404-ing.
     try:
         await shared_pool.execute(
             """
             INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
-            VALUES ($1, $2, 'cli', now())
+            VALUES ($1, $2, $3, now())
             ON CONFLICT (secret_key) DO UPDATE
                 SET secret_value = EXCLUDED.secret_value,
+                    category = EXCLUDED.category,
                     updated_at = EXCLUDED.updated_at
             """,
             credential_id,
             new_value,
+            category,
         )
     except Exception as exc:
         logger.warning("rotate_cli_credential: persist failed for id=%s: %s", credential_id, exc)

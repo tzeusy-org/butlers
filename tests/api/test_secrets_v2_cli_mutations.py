@@ -287,6 +287,33 @@ def test_rotate_cli_first_save_never_set_succeeds():
     assert _persisted_secret_value(shared_pool) == supplied
 
 
+def test_rotate_cli_first_save_uses_cli_auth_category_for_prefixed_id():
+    """A first-time cli-auth/* paste persists in the auth-mirror category.
+
+    The slash prefix is the persistence convention used by the CLI auth flow,
+    so the rotate UPSERT must not create a mismatched ``category='cli'`` row.
+    """
+    mock_db = _make_db(cli_row=None)
+    shared_pool = mock_db.credential_shared_pool()
+    client = _build_app(mock_db)
+
+    resp = client.post(
+        "/api/secrets/cli/cli-auth/new-provider/rotate",
+        json={"value": "owner-pasted-token"},
+    )
+
+    assert resp.status_code == 200
+    persist_call = next(
+        call
+        for call in shared_pool.execute.await_args_list
+        if "INSERT INTO butler_secrets" in call.args[0]
+    )
+    persisted_sql = " ".join(persist_call.args[0].split())
+    assert "VALUES ($1, $2, $3, now())" in persisted_sql
+    assert "category = EXCLUDED.category" in persisted_sql
+    assert persist_call.args[3] == "cli-auth"
+
+
 def test_rotate_cli_empty_supplied_value_falls_back_to_generate():
     """An empty/whitespace value is treated as 'generate for me' (random)."""
     cli_row = _make_cli_row(key="cli-token-abc123", value="old_cli_secret_value")
