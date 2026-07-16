@@ -1416,8 +1416,19 @@ class TestMessagePipelineProcessDashboardLanes:
 
         assert result.target_butler == "qa"
         assert result.acked_targets == ["qa"]
-        assert result.route_result["co_occurring_route_targets"] == ["relationship"]
-        assert any("Dashboard lane co-occurrence" in rec.message for rec in caplog.records)
+        assert result.route_result["co_occurring_dispatched_targets"] == ["relationship"]
+        assert "co_occurring_attempted_only_targets" not in result.route_result
+        assert "co_occurring_route_targets" not in result.route_result
+        decomposition_output = pipeline._update_message_inbox_lifecycle.await_args.kwargs[
+            "decomposition_output"
+        ]
+        assert decomposition_output["co_occurring_dispatched_targets"] == ["relationship"]
+        assert "co_occurring_attempted_only_targets" not in decomposition_output
+        co_occurrence_record = next(
+            rec for rec in caplog.records if "Dashboard lane co-occurrence" in rec.message
+        )
+        assert co_occurrence_record.co_occurring_dispatched_targets == ["relationship"]
+        assert not hasattr(co_occurrence_record, "co_occurring_attempted_only_targets")
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -1427,10 +1438,12 @@ class TestMessagePipelineProcessDashboardLanes:
     async def test_lane_b_surfaces_co_occurring_route_bug_then_route_refused(
         self, mock_load, caplog
     ):
-        """Bug-then-route (bu-j5jqv): the tool-layer guard refuses the
-        co-occurring route_to_butler call, but the pipeline result must still
-        surface that the LLM attempted it — the refusal itself is visible
-        evidence of the misclassification, not swallowed."""
+        """Failed/refused co-occurring routes remain observable as attempts.
+
+        Neither target was acknowledged by a domain butler, so neither may
+        appear as an actual dispatch in the pipeline, persisted, or log
+        telemetry surfaces.
+        """
 
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(
@@ -1445,6 +1458,11 @@ class TestMessagePipelineProcessDashboardLanes:
                             "butler": "relationship",
                             "reason": "dashboard_lane_conflict",
                         },
+                    },
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "finance", "prompt": "hello"},
+                        "result": {"status": "error", "butler": "finance"},
                     },
                 ],
             )
@@ -1466,8 +1484,28 @@ class TestMessagePipelineProcessDashboardLanes:
 
         assert result.target_butler == "qa"
         assert result.acked_targets == ["qa"]
-        assert result.route_result["co_occurring_route_targets"] == ["relationship"]
-        assert any("Dashboard lane co-occurrence" in rec.message for rec in caplog.records)
+        assert result.route_result["co_occurring_attempted_only_targets"] == [
+            "finance",
+            "relationship",
+        ]
+        assert "co_occurring_dispatched_targets" not in result.route_result
+        assert "co_occurring_route_targets" not in result.route_result
+        decomposition_output = pipeline._update_message_inbox_lifecycle.await_args.kwargs[
+            "decomposition_output"
+        ]
+        assert decomposition_output["co_occurring_attempted_only_targets"] == [
+            "finance",
+            "relationship",
+        ]
+        assert "co_occurring_dispatched_targets" not in decomposition_output
+        co_occurrence_record = next(
+            rec for rec in caplog.records if "Dashboard lane co-occurrence" in rec.message
+        )
+        assert co_occurrence_record.co_occurring_attempted_only_targets == [
+            "finance",
+            "relationship",
+        ]
+        assert not hasattr(co_occurrence_record, "co_occurring_dispatched_targets")
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",

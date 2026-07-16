@@ -2797,13 +2797,32 @@ class MessagePipeline:
                             # it — bug lane always wins, but the conflict must be
                             # observable in the routing result and logs.
                             _co_routed, _co_acked, _co_failed = _extract_routed_butlers(tool_calls)
+                            _co_dispatched_targets = sorted(set(_co_acked))
+                            # A target acknowledged anywhere in this session is a
+                            # real dispatch, even if another call to that target
+                            # later failed or was refused. Keep the telemetry
+                            # fields mutually exclusive so consumers never infer
+                            # a failed-only route from a successful dispatch.
+                            _co_attempted_only_targets = sorted(
+                                set(_co_failed) - set(_co_dispatched_targets)
+                            )
+                            _co_occurrence_metadata: dict[str, list[str]] = {}
+                            if _co_dispatched_targets:
+                                _co_occurrence_metadata["co_occurring_dispatched_targets"] = (
+                                    _co_dispatched_targets
+                                )
+                            if _co_attempted_only_targets:
+                                _co_occurrence_metadata["co_occurring_attempted_only_targets"] = (
+                                    _co_attempted_only_targets
+                                )
                             if _co_routed:
                                 logger.warning(
                                     "Dashboard lane co-occurrence: both file_bug_report "
                                     "and route_to_butler were called in the same "
                                     "classification session; bug lane wins "
-                                    "(route targets=%s)",
-                                    sorted(set(_co_routed)),
+                                    "(dispatched targets=%s; attempted-only targets=%s)",
+                                    _co_dispatched_targets,
+                                    _co_attempted_only_targets,
                                     extra=self._log_fields(
                                         source=source,
                                         chat_id=chat_id,
@@ -2811,7 +2830,7 @@ class MessagePipeline:
                                         latency_ms=spawn_latency_ms,
                                         request_id=request_id,
                                         case_reference=bug_case_ref,
-                                        co_occurring_route_targets=sorted(set(_co_routed)),
+                                        **_co_occurrence_metadata,
                                     ),
                                 )
                             logger.info(
@@ -2834,11 +2853,7 @@ class MessagePipeline:
                                         "request_id": request_id,
                                         "lane": "bug_report",
                                         "case_reference": bug_case_ref,
-                                        **(
-                                            {"co_occurring_route_targets": sorted(set(_co_routed))}
-                                            if _co_routed
-                                            else {}
-                                        ),
+                                        **_co_occurrence_metadata,
                                     },
                                     dispatch_outcomes={
                                         "request_id": request_id,
@@ -2856,11 +2871,7 @@ class MessagePipeline:
                                 route_result={
                                     "lane": "bug_report",
                                     "case_reference": bug_case_ref,
-                                    **(
-                                        {"co_occurring_route_targets": sorted(set(_co_routed))}
-                                        if _co_routed
-                                        else {}
-                                    ),
+                                    **_co_occurrence_metadata,
                                 },
                                 routing_error=(
                                     None if bug_succeeded else "qa: file_bug_report failed"

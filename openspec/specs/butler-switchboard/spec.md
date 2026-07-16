@@ -238,7 +238,8 @@ report). Bug/system reports SHALL NEVER be routed to a domain butler.
 - **AND** the refusal SHALL be logged at WARNING with the conversation id and the attempted target butler
 - **WHEN** a dashboard classification session calls `route_to_butler` and then calls `file_bug_report` for the same session
 - **THEN** `file_bug_report` SHALL still file the bug report (bug reports are terminal and are never suppressed)
-- **AND** the co-occurrence SHALL be logged at WARNING with the conversation id and both targets, and SHALL be surfaced in `file_bug_report`'s own result (`dashboard_lane_conflict`) and in the pipeline's `RoutingResult.route_result` (`co_occurring_route_targets`) rather than being hidden by tool-call extraction that stops at the first matching call
+- **AND** the co-occurrence SHALL be logged at WARNING with the conversation id and outcome-qualified targets, and SHALL be surfaced in `file_bug_report`'s own result (`dashboard_lane_conflict`) and in the pipeline's `RoutingResult.route_result` rather than being hidden by tool-call extraction that stops at the first matching call
+- **AND** acknowledged domain-butler dispatches SHALL appear only in `co_occurring_dispatched_targets`; failed or refused calls with no acknowledgement in the classification session SHALL appear only in `co_occurring_attempted_only_targets`; the two lists SHALL be mutually exclusive and the ambiguous `co_occurring_route_targets` field SHALL NOT be emitted
 - **AND** this exclusivity guard SHALL be scoped to dashboard-source sessions only (a `dashboard_context` carrying a `conversation_id`) — non-dashboard Switchboard flows (e.g. domain-butler-initiated `route_to_butler` calls, QA canary injection) SHALL be unaffected
 
 #### Scenario: Unroutable dashboard message dead-letters and notifies the owner
