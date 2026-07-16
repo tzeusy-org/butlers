@@ -142,6 +142,7 @@ import {
 import { buildSpineEntries } from "./spine-builder.ts";
 import type { InventoryResponse } from "./types.ts";
 import { probeAllCredentials } from "@/api/client.ts";
+import { CommandRegistryProvider, useCommandMenuActions } from "@/lib/command-registry";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -445,6 +446,23 @@ describe("DirectionPassport: snapshot (full page with rich mock data)", () => {
 describe("DirectionPassport: probe-all button", () => {
   const mockProbeAll = vi.mocked(probeAllCredentials);
 
+  function ProbeAllCommandProbe() {
+    const command = useCommandMenuActions().find(
+      (candidate) => candidate.id === "secrets-probe-all",
+    );
+    return (
+      <button
+        type="button"
+        data-probe-all-command="true"
+        data-command-label={command?.label ?? ""}
+        disabled={!command}
+        onClick={() => command?.perform()}
+      >
+        Run probe all
+      </button>
+    );
+  }
+
   afterEach(() => {
     cleanup();
     mockProbeAll.mockReset();
@@ -459,6 +477,22 @@ describe("DirectionPassport: probe-all button", () => {
         <MemoryRouter initialEntries={["/secrets"]}>
           <DirectionPassport inventory={inventory} />
         </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  function renderPassportWithCommands(inventory: InventoryResponse) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <CommandRegistryProvider>
+          <MemoryRouter initialEntries={["/secrets"]}>
+            <DirectionPassport inventory={inventory} />
+          </MemoryRouter>
+          <ProbeAllCommandProbe />
+        </CommandRegistryProvider>
       </QueryClientProvider>,
     );
   }
@@ -498,6 +532,32 @@ describe("DirectionPassport: probe-all button", () => {
 
     resolvePromise!({ data: { results: [], probed: 1, ok: 1, failed: 0, skipped: 0 }, meta: {} });
     await waitFor(() => expect(getButton().disabled).toBe(false));
+  });
+
+  it("registers Probe all credentials in the command palette and withdraws it while sweeping", async () => {
+    let resolvePromise: (value: Awaited<ReturnType<typeof probeAllCredentials>>) => void;
+    mockProbeAll.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePromise = resolve;
+      }),
+    );
+
+    renderPassportWithCommands(MOCK_INVENTORY);
+    const getCommand = () =>
+      document.querySelector("[data-probe-all-command]") as HTMLButtonElement;
+
+    await waitFor(() => {
+      expect(getCommand().disabled).toBe(false);
+      expect(getCommand().dataset.commandLabel).toBe("Probe all credentials");
+    });
+
+    fireEvent.click(getCommand());
+
+    await waitFor(() => expect(mockProbeAll).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getCommand().disabled).toBe(true));
+
+    resolvePromise!({ data: { results: [], probed: 1, ok: 1, failed: 0, skipped: 0 }, meta: {} });
+    await waitFor(() => expect(getCommand().disabled).toBe(false));
   });
 });
 

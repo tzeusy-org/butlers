@@ -35,15 +35,22 @@ import { useProbeAllSecrets } from "@/hooks/use-secrets-mutations.ts";
  * spinner while the sweep is in flight; row states refresh via the
  * inventory-query invalidation the mutation already performs on success.
  */
-function ProbeAllButton({ count }: { count: number }) {
-  const probeAll = useProbeAllSecrets();
+function ProbeAllButton({
+  count,
+  onProbe,
+  isPending,
+}: {
+  count: number;
+  onProbe: () => void;
+  isPending: boolean;
+}) {
   if (count === 0) return null;
   return (
     <button
       type="button"
-      onClick={() => probeAll.mutate()}
-      disabled={probeAll.isPending}
-      aria-busy={probeAll.isPending}
+      onClick={onProbe}
+      disabled={isPending}
+      aria-busy={isPending}
       data-probe-all="true"
       aria-label={`Probe all ${count} credentials`}
       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight disabled:pointer-events-none disabled:opacity-60"
@@ -53,7 +60,7 @@ function ProbeAllButton({ count }: { count: number }) {
         borderColor: "var(--border)",
       }}
     >
-      {probeAll.isPending ? (
+      {isPending ? (
         <>
           <Loader2 size={11} className="animate-spin" aria-hidden="true" />
           probing {count}…
@@ -202,23 +209,8 @@ export function DirectionPassport({
 
   // ── Add panel ────────────────────────────────────────────────────────────
   const [addOpen, setAddOpen] = React.useState(false);
-
-  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Only
-  // "Add credential" is registered here -- bu-a63hn is in-flight adding a
-  // probe-all action; that verb belongs to whichever PR lands it, not this
-  // sweep.
-  const secretsCommands = React.useMemo<PaletteCommand[]>(
-    () => [
-      {
-        id: "secrets-add-credential",
-        label: "Add credential",
-        keywords: ["new", "credential", "secret"],
-        perform: () => setAddOpen(true),
-      },
-    ],
-    [],
-  );
-  useRegisterCommands(secretsCommands);
+  const { mutate: mutateProbeAll, isPending: isProbeAllPending } = useProbeAllSecrets();
+  const handleProbeAll = React.useCallback(() => mutateProbeAll(), [mutateProbeAll]);
 
   // ── URL writers ─────────────────────────────────────────────────────────
   function handleSelectKey(key: string) {
@@ -318,6 +310,30 @@ export function DirectionPassport({
   const probeableCount =
     kpis.integrations.total + kpis.system.configured + kpis.cli.total;
 
+  // Palette verbs (bu-t64p2, bu-fb9hr) reuse the header controls' exact
+  // handlers. The palette has no disabled Action state, so hide Probe all
+  // while its shared mutation is running just as the header button disables.
+  const secretsCommands = React.useMemo<PaletteCommand[]>(() => {
+    const commands: PaletteCommand[] = [
+      {
+        id: "secrets-add-credential",
+        label: "Add credential",
+        keywords: ["new", "credential", "secret"],
+        perform: () => setAddOpen(true),
+      },
+    ];
+    if (probeableCount > 0 && !isProbeAllPending) {
+      commands.unshift({
+        id: "secrets-probe-all",
+        label: "Probe all credentials",
+        keywords: ["probe", "verify", "check", "credentials", "secrets"],
+        perform: handleProbeAll,
+      });
+    }
+    return commands;
+  }, [handleProbeAll, isProbeAllPending, probeableCount]);
+  useRegisterCommands(secretsCommands);
+
   // Hide identity chip when only one identity is present.
   const showIdentityChip = inventory.identities.length > 1;
   const activeIdentity = inventory.identities.find((i) => i.id === identityId);
@@ -398,7 +414,11 @@ export function DirectionPassport({
                   onClick={() => {/* handled via spine */}}
                 />
               )}
-              <ProbeAllButton count={probeableCount} />
+              <ProbeAllButton
+                count={probeableCount}
+                onProbe={handleProbeAll}
+                isPending={isProbeAllPending}
+              />
               <SpineAddButton onClick={() => setAddOpen(true)} active={addOpen} />
             </div>
             <div className="flex gap-3.5 items-baseline">
