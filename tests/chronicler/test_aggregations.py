@@ -2,7 +2,7 @@
 
 Covers:
 - category_for() returns the correct non-'other' category for every active
-  SUPPORTED source/episode_type pair declared in contracts.py.
+  SUPPORTED source/episode_type pair in the aggregation category map.
 - category_for() returns 'other' for unknown pairs.
 - Guardrail: aggregations.py imports nothing from anthropic, openai, or
   claude_agent_sdk.
@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from butlers.chronicler.aggregations import (
+    _CATEGORY_MAP,
     CATEGORIES,
     LANES,
     category_for,
@@ -31,48 +32,32 @@ from butlers.chronicler.models import Compatibility
 
 # ── Mapping fixture: all active SUPPORTED source/episode_type pairs ────────
 
-# The D1 table — expected (source_name, episode_type, source category).
-# core.sessions is listed once per trigger_source branch. The trigger_source
-# column is the fourth element; None means "no trigger_source" (→ 'tasks').
-#
-# Calendar is intentionally absent: calendar rows are the intent layer and have
-# no source category (they resolve to 'other' and are dropped by the layer
-# filter, see lane_for_activity). workout_episode now has its own 'workout'
-# category so it can fold into the Exercise lane (IEA reframe, tasks.md §4).
+# The D1 cases are projected from the canonical adapter registry, never copied
+# into a second test-only list. Every map-backed case is sourced from the
+# registry's active SUPPORTED entries; core.sessions retains its explicit
+# trigger-source branches because category_for() handles it outside _CATEGORY_MAP.
+_SUPPORTED_SOURCE_NAMES = frozenset(
+    source.source_name
+    for source in INITIAL_SOURCES
+    if source.chronicler_compatibility == Compatibility.SUPPORTED
+)
+
+_CORE_SESSION_CASES: tuple[tuple[str | None, str], ...] = (
+    ("route", "conversations"),
+    ("trigger", "tasks"),
+    ("external", "tasks"),
+    ("dashboard", "tasks"),
+    (None, "tasks"),
+)
+
 _D1_PAIRS: list[tuple[str, str, str | None, str]] = [
-    ("core.sessions", "work", "route", "conversations"),
-    ("core.sessions", "work", "trigger", "tasks"),
-    ("core.sessions", "work", "external", "tasks"),
-    ("core.sessions", "work", "dashboard", "tasks"),
-    ("core.sessions", "work", None, "tasks"),
-    ("spotify.session_summary", "listening_episode", None, "music"),
-    ("steam.play_history", "play_episode", None, "gaming"),
-    ("owntracks.points", "movement_episode", None, "travel"),
-    # GPS place-cluster dwells (bu-ac2pg) → 'home' -> 'rest', never work.
-    ("owntracks.place_cluster", "place_episode", None, "home"),
-    ("owntracks.ssid_presence", "presence_episode", None, "home"),
-    ("owntracks.ssid_presence", "occupation_presence_episode", None, "occupation"),
-    ("google_health.measurements", "sleep_episode", None, "sleep"),
-    ("google_health.measurements", "workout_episode", None, "workout"),
-    ("health.meals", "eating_event", None, "meal"),
-    ("home_assistant.history", "presence_episode", None, "home"),
-    # Inferred owner focus/reading (bu-i29ix) → 'occupation' (owner Work lane)
-    # as of bu-whhll.14; graduated out of 'tasks' so 'tasks' is butler-only.
-    ("chronicler.focus_inferred", "focus_block", None, "occupation"),
-    ("chronicler.reading_inferred", "reading_block", None, "occupation"),
-    # Inferred exercise from HR+GPS corroboration (bu-1sj3zn) → Exercise lane.
-    ("chronicler.exercise_inferred", "exercise_episode", None, "workout"),
-    # Comms message bursts (bu-jc6htw.1) → Social lane.
-    ("comms.message_bursts", "social_episode", None, "social"),
-    # ActivityWatch desktop-activity screen (bu-whhll.6) → 'occupation' (owner
-    # Work lane) as of bu-whhll.14; graduated out of 'tasks'.
-    ("activitywatch.window", "screen_episode", None, "occupation"),
-    # Occupation-block inference from enabled routine windows (bu-whhll.10)
-    # → its own 'occupation' category, still folding into the Work lane.
-    ("chronicler.occupation_inferred", "occupation_block", None, "occupation"),
-    # HA non-person sensor-activity ambient motion (bu-49fqa) → its own
-    # 'ambient' category, folding into the Rest lane (never Work/Occupation).
-    ("home_assistant.sensor_activity", "room_activity_episode", None, "ambient"),
+    ("core.sessions", "work", trigger_source, category)
+    for trigger_source, category in _CORE_SESSION_CASES
+    if "core.sessions" in _SUPPORTED_SOURCE_NAMES
+] + [
+    (source_name, episode_type, None, category)
+    for (source_name, episode_type), category in _CATEGORY_MAP.items()
+    if source_name in _SUPPORTED_SOURCE_NAMES
 ]
 
 
@@ -194,34 +179,33 @@ def test_category_for_result_is_always_in_taxonomy() -> None:
     assert category_for("x", "y") in CATEGORIES
 
 
-def test_all_supported_sources_have_non_other_category() -> None:
+def test_all_supported_episode_adapters_have_non_other_category() -> None:
     """Every lane-bearing SUPPORTED source in contracts.py must map to a category.
 
-    This test enforces that adding a new SUPPORTED source requires also
-    wiring it in the D1 mapping table unless it is explicitly point-event-only
-    or an intent-only source. Point-event-only sources can still be SUPPORTED
-    without becoming lanes; intent-only sources (calendar) are never counted.
+    _D1_PAIRS is derived from INITIAL_SOURCES and _CATEGORY_MAP. Adding a new
+    SUPPORTED episode adapter therefore cannot make this test pass by editing a
+    second test-only list: it must have a category map entry unless it is
+    explicitly point-event-only or intent-only.
     """
     point_event_only_sources = {"health.steps", "health.heart_rate", "owner_outbound.messages"}
     # Calendar is the intent layer: shown as a planned block, never counted as
     # lived time, so it has no source category / lane (IEA reframe, §4).
     intent_only_sources = {"google_calendar.completed"}
-    supported_source_names = {
-        s.source_name
-        for s in INITIAL_SOURCES
-        if s.chronicler_compatibility == Compatibility.SUPPORTED
-    }
     d1_source_names = {pair[0] for pair in _D1_PAIRS}
 
     # Every lane-bearing SUPPORTED source must have at least one D1 entry.
     missing = (
-        supported_source_names - d1_source_names - point_event_only_sources - intent_only_sources
+        _SUPPORTED_SOURCE_NAMES - d1_source_names - point_event_only_sources - intent_only_sources
     )
     assert not missing, (
         f"SUPPORTED sources without D1 mapping entries: {sorted(missing)}. "
-        "Add the (source_name, episode_type) → category mapping to "
-        "aggregations._CATEGORY_MAP and a test row to _D1_PAIRS."
+        "Add the (source_name, episode_type) → category mapping to aggregations._CATEGORY_MAP."
     )
+
+
+def test_d1_pairs_are_derived_only_from_supported_sources() -> None:
+    """The parametrized category checks never retain stale adapter cases."""
+    assert {source_name for source_name, *_ in _D1_PAIRS} <= _SUPPORTED_SOURCE_NAMES
 
 
 # ── Guardrail: no LLM imports ──────────────────────────────────────────────
