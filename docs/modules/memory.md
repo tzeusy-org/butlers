@@ -172,6 +172,25 @@ The owning `source_schema` for a disownment cascade is resolved from the connect
 
 **Consolidation.** `execute_consolidation`/`run_consolidation` accept `enable_shared_catalog`/`source_schema` and forward them to every `store_fact`/`store_rule` call, so consolidation-derived facts/rules are cataloged exactly like directly-stored ones.
 
+### IVFFlat filtered-recall measurement
+
+The live semantic retrieval contract is [`_catalog_semantic_search`](../../src/butlers/modules/memory/search.py): it orders `public.memory_catalog` by `embedding <=> query_embedding` after applying `tenant_id`, `invalid_at IS NULL`, optional `memory_type`, and the caller's sensitivity ceiling. In this catalog, the user-facing notion of a category is the persisted `memory_type` filter (`fact` or `rule`); there is no separate category column.
+
+An operator can measure possible IVFFlat candidate shortfall without changing the live retrieval path, index, or database settings:
+
+```bash
+uv run python -m butlers.modules.memory.catalog_measurement \
+  --vectors-json ./catalog-measurement-vectors.json \
+  --memory-type fact \
+  --limit 10
+```
+
+Run it only from an operator-controlled environment whose standard `POSTGRES_*`/`DATABASE_URL` configuration already targets the intended database. The JSON file is a top-level list of precomputed, 384-dimensional numeric vectors; it must not contain natural-language queries and is never echoed in the command output. `--max-sensitivity` is a visibility ceiling (default `normal`), resolved inclusively with the same helper as live retrieval. The command returns aggregate-only JSON: filter population, result counts, overlap/recall, latency, whether the planner selected `idx_memory_catalog_embedding`, and safe lifecycle/index/table statistics. It never returns catalog text, provenance, row IDs, or vectors.
+
+[`measure_catalog_ivfflat`](../../src/butlers/modules/memory/catalog_measurement.py) uses one PostgreSQL read-only transaction, plain `EXPLAIN (FORMAT JSON)`, and the same filters as the live query. The exact reference is skipped before it runs when the filtered population exceeds the hard 50,000-row cap. A run is further bounded to 25 vectors, `limit <= 50`, and a 10-second client-side timeout per database operation. It does **not** issue DDL/DML, `SET`, `ANALYZE`, `VACUUM`, `REINDEX`, or any pgvector/index tuning command. The maintenance observations are read-only snapshots, not maintenance work.
+
+The command can inform a later proposal but cannot authorize tuning. A proposal requires at least 20 observations for which both the exact comparator completed and the named IVFFlat index was planned, plus either mean recall@limit below 0.98 or a candidate-shortfall rate of at least 10% with p95 shortfall of at least one result. Re-run in a separate window and review the aggregate evidence before considering any change. This is catalog IVFFlat evidence only; it is deliberately separate from HNSW production-table work (`bu-715xd`).
+
 ## Entity Resolution
 
 The `memory_entity_resolve` tool maps ambiguous name strings to stable entity identities using a 4-tier waterfall: role match -> exact (canonical or alias) -> prefix/substring -> fuzzy (edit distance <= 2). Context boosting from graph neighborhood and caller-provided `context_hints` refines scoring.
