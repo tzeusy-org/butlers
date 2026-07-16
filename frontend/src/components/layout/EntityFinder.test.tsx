@@ -96,7 +96,20 @@ vi.mock("@/components/layout/nav-config", () => ({
         { kind: "link", label: "Dashboard", path: "/" },
         { kind: "link", label: "Contacts", path: "/contacts" },
         { kind: "link", label: "Education", path: "/education", butler: "education" },
-        { kind: "link", label: "Health", path: "/health", butler: "health" },
+        {
+          kind: "group",
+          label: "Health",
+          butler: "health",
+          children: [
+            { label: "Overview", path: "/health" },
+            { label: "Measurements", path: "/health/measurements" },
+            { label: "Medications", path: "/health/medications" },
+            { label: "Conditions", path: "/health/conditions" },
+            { label: "Symptoms", path: "/health/symptoms" },
+            { label: "Meals", path: "/health/meals" },
+            { label: "Research", path: "/health/research" },
+          ],
+        },
         {
           kind: "group",
           label: "Relationship",
