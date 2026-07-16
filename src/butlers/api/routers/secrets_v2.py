@@ -188,6 +188,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import secrets as _secrets_mod
 import time
 from collections.abc import Callable
@@ -530,6 +531,36 @@ DEFAULT_EXPIRING_LEAD_TIME = timedelta(days=7)
 #: a current healthy verdict for the Passport.
 DEFAULT_STALENESS_S: float = 24 * 60 * 60
 
+#: The background re-probe loop and read-side passport classification must use
+#: this same configured freshness window.
+SECRETS_STALENESS_WINDOW_ENV = "SECRETS_STALENESS_WINDOW_S"
+
+
+def resolve_staleness_window_s(*, warn_invalid: bool = False) -> float:
+    """Return the configured credential-verification freshness window.
+
+    The value is static process configuration in normal deployments.  Read-side
+    classification calls this without warning so an invalid setting does not
+    log once per credential; API startup passes ``warn_invalid=True`` and logs
+    the fallback once while configuring the background re-probe loop.
+    """
+    raw = os.environ.get(SECRETS_STALENESS_WINDOW_ENV, str(DEFAULT_STALENESS_S))
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError("value must be a positive number")
+    except ValueError:
+        if warn_invalid:
+            logger.warning(
+                "%s=%r is not a valid positive number; falling back to default %s",
+                SECRETS_STALENESS_WINDOW_ENV,
+                raw,
+                DEFAULT_STALENESS_S,
+            )
+        return DEFAULT_STALENESS_S
+    return value
+
+
 # Per-category override, keyed on butler_secrets.category (system/cli families)
 # or the resolved provider slug (user family — see _expiring_lead_time_for_provider).
 # Empty today: every known category/provider is well served by the 7-day
@@ -594,6 +625,7 @@ def _reclassify_stale_ok_state(
     state: str,
     last_verified: datetime | None,
     now: datetime | None = None,
+    staleness_s: float | None = None,
 ) -> str:
     """Return ``warn`` when a previously-ok credential is no longer fresh.
 
@@ -610,7 +642,8 @@ def _reclassify_stale_ok_state(
         last_verified if last_verified.tzinfo else last_verified.replace(tzinfo=UTC)
     )
     effective_now = now or datetime.now(tz=UTC)
-    if (effective_now - effective_last_verified) >= timedelta(seconds=DEFAULT_STALENESS_S):
+    effective_staleness_s = resolve_staleness_window_s() if staleness_s is None else staleness_s
+    if (effective_now - effective_last_verified) >= timedelta(seconds=effective_staleness_s):
         return "warn"
     return state
 

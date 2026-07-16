@@ -99,7 +99,12 @@ from butlers.api.routers.runtime_config import router as runtime_config_router
 from butlers.api.routers.schedules import router as schedules_router
 from butlers.api.routers.search import router as search_router
 from butlers.api.routers.secrets import router as secrets_router
-from butlers.api.routers.secrets_v2 import router as secrets_v2_router
+from butlers.api.routers.secrets_v2 import (
+    resolve_staleness_window_s,
+)
+from butlers.api.routers.secrets_v2 import (
+    router as secrets_v2_router,
+)
 from butlers.api.routers.sessions import (
     butler_sessions_router,
 )
@@ -156,7 +161,6 @@ from butlers.jobs.secrets_lifecycle import (
     run_secrets_lifecycle_loop,
 )
 from butlers.jobs.secrets_staleness import (
-    DEFAULT_STALENESS_S,
     DEFAULT_STALENESS_SCAN_INTERVAL_S,
     run_secrets_staleness_loop,
 )
@@ -166,7 +170,6 @@ logger = logging.getLogger(__name__)
 _SECRETS_LIFECYCLE_SCAN_INTERVAL_ENV = "SECRETS_LIFECYCLE_SCAN_INTERVAL_S"
 _MODEL_VERIFY_INTERVAL_ENV = "MODEL_VERIFY_INTERVAL_S"
 _SECRETS_STALENESS_SCAN_INTERVAL_ENV = "SECRETS_STALENESS_SCAN_INTERVAL_S"
-_SECRETS_STALENESS_WINDOW_ENV = "SECRETS_STALENESS_WINDOW_S"
 _MIGRATION_DRIFT_CHECK_INTERVAL_ENV = "MIGRATION_DRIFT_CHECK_INTERVAL_S"
 _EXTERNAL_DEADMAN_CHECK_INTERVAL_ENV = "EXTERNAL_DEADMAN_CHECK_INTERVAL_S"
 _CALENDAR_SYNC_DEADMAN_CHECK_INTERVAL_ENV = "CALENDAR_SYNC_DEADMAN_CHECK_INTERVAL_S"
@@ -175,9 +178,9 @@ _RESTORE_DRILL_INTERVAL_ENV = "RESTORE_DRILL_INTERVAL_S"
 
 def _resolve_positive_float_env(env_var: str, default: float) -> float:
     """Read a positive-float env var, falling back to ``default`` (with a
-    warning) when unset, non-numeric, or non-positive. Shared by both the
-    secrets-lifecycle and secrets-staleness interval/window env lookups so
-    the fallback behavior can never silently drift between the two.
+    warning) when unset, non-numeric, or non-positive. Shared by the
+    secrets-lifecycle and secrets-staleness interval lookups so their fallback
+    behavior can never silently drift.
     """
     raw = os.environ.get(env_var, str(default))
     try:
@@ -374,9 +377,7 @@ async def lifespan(app: FastAPI):
         staleness_interval_s = _resolve_positive_float_env(
             _SECRETS_STALENESS_SCAN_INTERVAL_ENV, DEFAULT_STALENESS_SCAN_INTERVAL_S
         )
-        staleness_window_s = _resolve_positive_float_env(
-            _SECRETS_STALENESS_WINDOW_ENV, DEFAULT_STALENESS_S
-        )
+        staleness_window_s = resolve_staleness_window_s(warn_invalid=True)
         secrets_staleness_task = asyncio.create_task(
             run_secrets_staleness_loop(
                 get_db_manager(),

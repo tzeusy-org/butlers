@@ -1027,6 +1027,24 @@ def test_inventory_reclassifies_stale_successful_rows_as_unverified():
     assert body["meta"]["unverified_count"] == 1
 
 
+def test_inventory_uses_configured_staleness_window(monkeypatch):
+    """The passport and its background re-probe loop share one freshness boundary."""
+    monkeypatch.setenv("SECRETS_STALENESS_WINDOW_S", "3600")
+    row = _make_system_row(
+        key="CUSTOM_WINDOW",
+        value="stale-after-one-hour",
+        last_verified=_NOW - timedelta(hours=2),
+        last_test_ok=True,
+    )
+    mock_db = _make_db_manager(butler_names=["switchboard"], system_rows=[row])
+
+    response = _build_app(mock_db).get("/api/secrets/inventory")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["system"][0]["state"] == "warn"
+    assert response.json()["meta"]["unverified_count"] == 1
+
+
 def test_inventory_never_set_credential():
     """A row with empty value gets state=never_set."""
     empty_row = _make_system_row(key="UNSET_KEY", value="", last_test_ok=None)
