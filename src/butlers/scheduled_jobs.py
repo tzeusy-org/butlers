@@ -371,8 +371,10 @@ async def _run_memory_decay_sweep_job(
         raise RuntimeError(
             f"memory_decay_sweep job does not accept job_args; received: {sorted(job_args)}"
         )
+    from butlers.core.memory_hooks import resolve_memory_runtime_pool
     from butlers.modules.memory.storage import run_decay_sweep
 
+    pool = resolve_memory_runtime_pool()
     return await run_decay_sweep(pool)
 
 
@@ -444,7 +446,10 @@ async def _run_memory_episode_cleanup_job(
 
     Logs the number of removed rows to public.memory_compaction_log after each run.
     """
+    from butlers.core.memory_hooks import resolve_memory_runtime_pool
     from butlers.modules.memory.consolidation import run_episode_cleanup
+
+    pool = resolve_memory_runtime_pool()
 
     # Load policy from DB (kind='event' governs general episode capacity).
     policy = await _fetch_retention_policy(pool, "event")
@@ -502,7 +507,10 @@ async def _run_memory_purge_superseded_job(
 
     Logs the number of removed rows to public.memory_compaction_log.
     """
+    from butlers.core.memory_hooks import resolve_memory_runtime_pool
     from butlers.modules.memory.storage import purge_superseded_facts
+
+    pool = resolve_memory_runtime_pool()
 
     policy = await _fetch_retention_policy(pool, "fact")
     # "ttl_days" absent  → table not yet migrated → fall back to 7.
@@ -579,6 +587,7 @@ async def _run_memory_catalog_backfill_job(
     tables live directly in ``public`` (where auto-inference intentionally
     treats the result as unresolved).
     """
+    from butlers.core.memory_hooks import resolve_memory_runtime_pool
     from butlers.modules.memory.storage import run_memory_catalog_backfill
 
     batch_size = 200
@@ -609,6 +618,7 @@ async def _run_memory_catalog_backfill_job(
                 )
             source_schema = raw_schema.strip()
 
+    pool = resolve_memory_runtime_pool()
     if source_schema is None:
         source_schema = await _infer_current_schema(pool)
         if source_schema is None:
