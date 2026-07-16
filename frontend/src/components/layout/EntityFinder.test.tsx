@@ -31,6 +31,7 @@ import {
   useEntityNeighbours,
 } from "@/hooks/use-entities";
 import { useSearch } from "@/hooks/use-search";
+import { useButlers } from "@/hooks/use-butlers";
 import type { NeighbourEntry } from "@/api/index.ts";
 
 /** Renders the current location path+search for navigation assertions. */
@@ -73,6 +74,10 @@ vi.mock("@/hooks/use-search", () => ({
   useSearch: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-butlers", () => ({
+  useButlers: vi.fn(),
+}));
+
 vi.mock("@/api/index", () => ({
   getOwnerSetupStatus: vi.fn(async () => ({
     entity_id: null,
@@ -90,6 +95,8 @@ vi.mock("@/components/layout/nav-config", () => ({
       items: [
         { kind: "link", label: "Dashboard", path: "/" },
         { kind: "link", label: "Contacts", path: "/contacts" },
+        { kind: "link", label: "Education", path: "/education", butler: "education" },
+        { kind: "link", label: "Health", path: "/health", butler: "health" },
         {
           kind: "group",
           label: "Relationship",
@@ -116,6 +123,7 @@ function flush(): Promise<void> {
 
 type UseEntityFinderSearchResult = ReturnType<typeof useEntityFinderSearch>;
 type UseEntityNeighboursResult = ReturnType<typeof useEntityNeighbours>;
+type UseButlersResult = ReturnType<typeof useButlers>;
 
 function mockNeighboursEmpty(): void {
   vi.mocked(useEntityNeighbours).mockReturnValue({
@@ -164,6 +172,12 @@ function mockGenericSearch(response: unknown): void {
   } as unknown as ReturnType<typeof useSearch>);
 }
 
+function mockButlers(names: string[]): void {
+  vi.mocked(useButlers).mockReturnValue({
+    data: { data: names.map((name) => ({ name })), meta: {} },
+  } as unknown as UseButlersResult);
+}
+
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
@@ -177,6 +191,7 @@ describe("EntityFinder", () => {
     mockSearchEmpty();
     mockNeighboursEmpty();
     mockGenericSearch(undefined);
+    mockButlers([]);
     localStorage.clear();
 
     container = document.createElement("div");
@@ -1131,6 +1146,197 @@ describe("EntityFinder", () => {
     });
 
     expect(getRecents().some((r) => r.kind === "page")).toBe(true);
+  });
+
+  it("hides pages owned by absent butlers while retaining global pages", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const input = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+
+    await act(async () => {
+      typeInto(input, "measurements");
+      await flush();
+    });
+    expect(document.body.querySelector("[data-testid='entity-finder-page-item']")).toBeNull();
+
+    await act(async () => {
+      typeInto(input, "education");
+      await flush();
+    });
+    expect(document.body.querySelector("[data-testid='entity-finder-page-item']")).toBeNull();
+
+    await act(async () => {
+      typeInto(input, "contacts");
+      await flush();
+    });
+    expect(document.body.querySelector("[data-testid='entity-finder-page-item']")?.textContent).toContain(
+      "Contacts",
+    );
+  });
+
+  it("keeps roster-owned pages reachable until the installed roster is known", async () => {
+    vi.mocked(useButlers).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+    } as unknown as UseButlersResult);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const input = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(input, "measurements");
+      await flush();
+    });
+
+    const pageItem = document.body.querySelector("[data-testid='entity-finder-page-item']");
+    expect(pageItem).not.toBeNull();
+    expect(pageItem?.textContent).toContain("Measurements");
+  });
+
+  it("keeps roster-owned pages reachable when the installed roster fails", async () => {
+    vi.mocked(useButlers).mockReturnValue({
+      data: { data: [], meta: {} },
+      isLoading: false,
+      isError: true,
+    } as unknown as UseButlersResult);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const input = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(input, "measurements");
+      await flush();
+    });
+
+    const pageItem = document.body.querySelector("[data-testid='entity-finder-page-item']");
+    expect(pageItem).not.toBeNull();
+    expect(pageItem?.textContent).toContain("Measurements");
+  });
+
+  it("treats a missing roster data array as an empty installed roster", async () => {
+    vi.mocked(useButlers).mockReturnValue({
+      data: { data: undefined },
+    } as unknown as UseButlersResult);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const input = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(input, "contacts");
+      await flush();
+    });
+    expect(document.body.querySelector("[data-testid='entity-finder-page-item']")?.textContent).toContain(
+      "Contacts",
+    );
+
+    await act(async () => {
+      typeInto(input, "measurements");
+      await flush();
+    });
+    expect(document.body.querySelector("[data-testid='entity-finder-page-item']")).toBeNull();
+  });
+
+  it("shows pages owned by an installed butler", async () => {
+    mockButlers(["health"]);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <EntityFinder />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    await act(async () => {
+      dispatchOpenEntityFinder();
+      await flush();
+    });
+
+    const input = document.body.querySelector(
+      "[data-testid='entity-finder-input']",
+    ) as HTMLInputElement;
+    await act(async () => {
+      typeInto(input, "measurements");
+      await flush();
+    });
+
+    expect(document.body.querySelector("[data-testid='entity-finder-page-item']")?.textContent).toContain(
+      "Measurements",
+    );
   });
 
   // -------------------------------------------------------------------------
