@@ -54,6 +54,27 @@ _DOC_EXPIRY_CANDIDATE_EXPIRES_DAYS = 14
 # Document types scanned for insight expiry warnings
 _INSIGHT_EXPIRY_DOC_TYPES = {"visa", "insurance"}
 
+# Medication preparation insight timing and priorities
+_MEDICATION_PREP_URGENT_DAYS = 7
+_MEDICATION_PREP_WINDOW_DAYS = 14
+_MEDICATION_PREP_MIN_TRIP_DAYS = 3
+_MEDICATION_PREP_PRIORITY_URGENT = 75
+_MEDICATION_PREP_PRIORITY_INFO = 55
+
+
+def _departure_date_expiry_utc(departure_date: date) -> datetime:
+    """Return the final UTC instant of a departure date."""
+    return (
+        datetime(
+            departure_date.year,
+            departure_date.month,
+            departure_date.day,
+            tzinfo=UTC,
+        )
+        + timedelta(days=1)
+        - timedelta(microseconds=1)
+    )
+
 
 async def run_upcoming_travel_check(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Check for imminent departures within 7 days and surface pre-trip actions.
@@ -447,7 +468,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             priority = _PRETRIP_PRIORITY_INFO
 
         dedup_key = f"travel:pre-trip:{trip_id}:{start_d.isoformat()}"
-        expires_at = datetime(start_d.year, start_d.month, start_d.day, tzinfo=UTC)
+        expires_at = _departure_date_expiry_utc(start_d)
         message = (
             f"Trip to {destination} departs in {days_until} day(s) — "
             "review your pre-trip checklist to ensure you're ready."
@@ -534,11 +555,79 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             return stats
 
     # -----------------------------------------------------------------------
-    # 3. Medication prep insights — intentional no-op
+    # 3. Medication prep insights (trips >3 days departing within 14 days)
     # -----------------------------------------------------------------------
-    # The shared schema has been dropped. Cross-butler health data (medications)
-    # must be fetched through the MCP layer, not direct SQL. Until a health
-    # butler MCP integration is wired up, medication prep insights are disabled.
+    medication_window_end = today + timedelta(days=_MEDICATION_PREP_WINDOW_DAYS)
+    medication_trip_rows = await db_pool.fetch(
+        """
+        SELECT id, name, destination, start_date, end_date
+        FROM travel.trips
+        WHERE status IN ('planned', 'active')
+          AND start_date >= $1
+          AND start_date <= $2
+        ORDER BY start_date ASC
+        """,
+        today,
+        medication_window_end,
+    )
+
+    eligible_medication_trips: list[tuple[Any, date, date]] = []
+    for row in medication_trip_rows:
+        start_d = _parse_date_from_db(row["start_date"])
+        end_d = _parse_date_from_db(row["end_date"])
+        if start_d is None or end_d is None:
+            continue
+        if (end_d - start_d).days <= _MEDICATION_PREP_MIN_TRIP_DAYS:
+            continue
+        eligible_medication_trips.append((row, start_d, end_d))
+
+    if eligible_medication_trips:
+        from butlers.core.tool_call_capture import get_current_switchboard_client
+        from butlers.tools.travel.health import request_health_medication_snapshot
+
+        health_snapshot = await request_health_medication_snapshot(
+            db_pool,
+            get_current_switchboard_client(),
+        )
+        if health_snapshot.get("status") != "ok":
+            error = health_snapshot.get("error") or {}
+            logger.warning(
+                "Travel medication prep skipped: Health snapshot failed (code=%s, retryable=%s)",
+                error.get("code", "unknown"),
+                error.get("retryable", False),
+            )
+        elif health_snapshot.get("medications"):
+            for row, start_d, end_d in eligible_medication_trips:
+                days_until = (start_d - today).days
+                duration_days = (end_d - start_d).days
+                trip_id = str(row["id"])
+                destination = row["destination"] or row["name"]
+                priority = (
+                    _MEDICATION_PREP_PRIORITY_URGENT
+                    if days_until <= _MEDICATION_PREP_URGENT_DAYS
+                    else _MEDICATION_PREP_PRIORITY_INFO
+                )
+                expires_at = _departure_date_expiry_utc(start_d)
+                message = (
+                    f"Your {duration_days}-day trip to {destination} departs in "
+                    f"{days_until} day(s) — ensure you have enough medication supply "
+                    "for the trip."
+                )
+
+                should_continue = await _submit(
+                    priority=priority,
+                    category="medication-prep",
+                    dedup_key=f"travel:medication-prep:{trip_id}",
+                    message=message,
+                    expires_at=expires_at,
+                )
+                if not should_continue:
+                    logger.info(
+                        "Travel insight scan: verbosity=off, exiting early after "
+                        "medication-prep check"
+                    )
+                    stats["early_exit"] = True
+                    return stats
 
     logger.info(
         "Travel insight scan complete: proposed=%d, accepted=%d, "

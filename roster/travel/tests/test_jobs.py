@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1062,6 +1063,31 @@ async def test_insight_scan_pretrip_expires_at_is_departure_date(provisioned_pos
         assert expires_at.date() == departure
 
 
+async def test_insight_scan_pretrip_departing_today_has_future_expiry(
+    provisioned_postgres_pool,
+):
+    """A same-day departure remains eligible after UTC midnight."""
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+        await _insert_trip(
+            pool,
+            start_date=_today(),
+            end_date=_today() + timedelta(days=3),
+        )
+
+        result = await run_insight_scan(pool)
+
+        expires_at = await pool.fetchval(
+            "SELECT expires_at FROM insight_candidates WHERE category = 'pre-trip'"
+        )
+        assert result["candidates_errored"] == 0
+        assert expires_at.date() == _today()
+        assert expires_at > _utcnow()
+
+
 # ---------------------------------------------------------------------------
 # Tests: run_insight_scan — document expiry
 # ---------------------------------------------------------------------------
@@ -1315,3 +1341,252 @@ async def test_insight_scan_result_keys_present(provisioned_postgres_pool):
         assert "candidates_filtered" in result
         assert "candidates_errored" in result
         assert "early_exit" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: run_insight_scan — medication preparation via Health MCP
+# ---------------------------------------------------------------------------
+
+
+def _active_medication_snapshot() -> dict:
+    return {
+        "schema_version": "health.medication-travel.v1",
+        "status": "ok",
+        "medications": [
+            {
+                "name": "Private medication name",
+                "dosage": "Private dosage",
+                "frequency": "Private frequency",
+                "schedule": ["Private schedule"],
+            }
+        ],
+        "error": None,
+    }
+
+
+async def test_insight_scan_medication_prep_uses_health_consumer_once_for_eligible_trips(
+    provisioned_postgres_pool,
+    monkeypatch,
+):
+    """Eligible trips share one privacy-minimized Health snapshot request per scan."""
+    from butlers.core.tool_call_capture import (
+        reset_current_switchboard_client,
+        set_current_switchboard_client,
+    )
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
+    from butlers.tools.travel import health as travel_health
+
+    client = object()
+    snapshot_reader = AsyncMock(return_value=_active_medication_snapshot())
+    monkeypatch.setattr(travel_health, "request_health_medication_snapshot", snapshot_reader)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+
+        near_trip_id = await _insert_trip(
+            pool,
+            name="Near trip",
+            destination="Tokyo",
+            start_date=_today() + timedelta(days=5),
+            end_date=_today() + timedelta(days=12),
+        )
+        later_trip_id = await _insert_trip(
+            pool,
+            name="Later trip",
+            destination="Lisbon",
+            start_date=_today() + timedelta(days=10),
+            end_date=_today() + timedelta(days=15),
+        )
+
+        token = set_current_switchboard_client(client)
+        try:
+            result = await run_insight_scan(pool)
+        finally:
+            reset_current_switchboard_client(token)
+
+        snapshot_reader.assert_awaited_once_with(pool, client)
+        rows = await pool.fetch(
+            """
+            SELECT priority, dedup_key, message, expires_at
+            FROM insight_candidates
+            WHERE category = 'medication-prep'
+            ORDER BY priority DESC
+            """
+        )
+
+        assert result["candidates_accepted"] == 3  # one pre-trip plus two medication reminders
+        assert [row["priority"] for row in rows] == [75, 55]
+        assert {row["dedup_key"] for row in rows} == {
+            f"travel:medication-prep:{near_trip_id}",
+            f"travel:medication-prep:{later_trip_id}",
+        }
+        assert {row["expires_at"].date() for row in rows} == {
+            _today() + timedelta(days=5),
+            _today() + timedelta(days=10),
+        }
+        assert all("medication supply" in row["message"].lower() for row in rows)
+        assert all("Private" not in row["message"] for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("departure_days", "expected_priority"),
+    [(0, 75), (7, 75), (8, 55), (14, 55), (15, None)],
+)
+async def test_insight_scan_medication_prep_honors_departure_window_boundaries(
+    provisioned_postgres_pool,
+    monkeypatch,
+    departure_days: int,
+    expected_priority: int | None,
+):
+    """Today through day 14 are eligible, with the day 7 priority boundary inclusive."""
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
+    from butlers.tools.travel import health as travel_health
+
+    snapshot_reader = AsyncMock(return_value=_active_medication_snapshot())
+    monkeypatch.setattr(travel_health, "request_health_medication_snapshot", snapshot_reader)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+        start_date = _today() + timedelta(days=departure_days)
+        await _insert_trip(
+            pool,
+            start_date=start_date,
+            end_date=start_date + timedelta(days=4),
+        )
+
+        await run_insight_scan(pool)
+
+        row = await pool.fetchrow(
+            "SELECT priority, expires_at FROM insight_candidates WHERE category = 'medication-prep'"
+        )
+        if expected_priority is None:
+            assert row is None
+            snapshot_reader.assert_not_awaited()
+        else:
+            assert row["priority"] == expected_priority
+            assert row["expires_at"].date() == start_date
+            snapshot_reader.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("duration_days", "expected_candidates"),
+    [(3, 0), (4, 1)],
+)
+async def test_insight_scan_medication_prep_requires_trip_longer_than_three_days(
+    provisioned_postgres_pool,
+    monkeypatch,
+    duration_days: int,
+    expected_candidates: int,
+):
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
+    from butlers.tools.travel import health as travel_health
+
+    snapshot_reader = AsyncMock(return_value=_active_medication_snapshot())
+    monkeypatch.setattr(travel_health, "request_health_medication_snapshot", snapshot_reader)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+        start_date = _today() + timedelta(days=10)
+        await _insert_trip(
+            pool,
+            start_date=start_date,
+            end_date=start_date + timedelta(days=duration_days),
+        )
+
+        await run_insight_scan(pool)
+
+        rows = await pool.fetch(
+            "SELECT id FROM insight_candidates WHERE category = 'medication-prep'"
+        )
+        assert len(rows) == expected_candidates
+        if expected_candidates:
+            snapshot_reader.assert_awaited_once()
+        else:
+            snapshot_reader.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {
+            "schema_version": "health.medication-travel.v1",
+            "status": "ok",
+            "medications": [],
+            "error": None,
+        },
+        {
+            "schema_version": "health.medication-travel.v1",
+            "status": "error",
+            "medications": [],
+            "error": {
+                "code": "health_unavailable",
+                "message": "Health medication data is temporarily unavailable.",
+                "retryable": True,
+            },
+        },
+    ],
+)
+async def test_insight_scan_medication_prep_skips_empty_or_failed_health_snapshot(
+    provisioned_postgres_pool,
+    monkeypatch,
+    caplog,
+    snapshot: dict,
+):
+    """Empty Health data and typed failures are both no-candidate outcomes, not fabricated data."""
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
+    from butlers.tools.travel import health as travel_health
+
+    snapshot_reader = AsyncMock(return_value=snapshot)
+    monkeypatch.setattr(travel_health, "request_health_medication_snapshot", snapshot_reader)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+        start_date = _today() + timedelta(days=10)
+        await _insert_trip(pool, start_date=start_date, end_date=start_date + timedelta(days=7))
+
+        result = await run_insight_scan(pool)
+
+        snapshot_reader.assert_awaited_once()
+        rows = await pool.fetch(
+            "SELECT id FROM insight_candidates WHERE category = 'medication-prep'"
+        )
+        assert rows == []
+        assert result["candidates_errored"] == 0
+        if snapshot["status"] == "error":
+            assert "Health snapshot failed (code=health_unavailable, retryable=True)" in caplog.text
+
+
+async def test_insight_scan_medication_prep_honors_broker_verbosity_filter(
+    provisioned_postgres_pool,
+    monkeypatch,
+):
+    from butlers.jobs._roster.travel_jobs import run_insight_scan
+    from butlers.tools.travel import health as travel_health
+
+    snapshot_reader = AsyncMock(return_value=_active_medication_snapshot())
+    monkeypatch.setattr(travel_health, "request_health_medication_snapshot", snapshot_reader)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_travel_schema(pool)
+        await _setup_insight_tables(pool)
+        await pool.execute(
+            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'off') "
+            "ON CONFLICT (id) DO UPDATE SET verbosity = 'off'"
+        )
+        start_date = _today() + timedelta(days=10)
+        await _insert_trip(pool, start_date=start_date, end_date=start_date + timedelta(days=7))
+
+        result = await run_insight_scan(pool)
+
+        snapshot_reader.assert_awaited_once()
+        assert result == {
+            "candidates_proposed": 1,
+            "candidates_accepted": 0,
+            "candidates_filtered": 1,
+            "candidates_errored": 0,
+            "early_exit": True,
+        }
