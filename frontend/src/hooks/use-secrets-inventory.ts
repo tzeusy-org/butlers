@@ -223,6 +223,7 @@ function mergeCapabilities(a: CapabilityStatus[], b: CapabilityStatus[]): Capabi
 function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, SecretsProviderInfo>): UserCredential {
   return {
     provider:       extractProvider(raw.type, providers),
+    sourceTypes:    [raw.type],
     identity:       raw.entity_id,
     state:          normalizeCredentialState(raw.state),
     fingerprint:    raw.fingerprint ?? null,
@@ -374,6 +375,10 @@ function groupUserCredentials(credentials: UserCredential[]): UserCredential[] {
 
     grouped.set(key, {
       ...existing,
+      sourceTypes: Array.from(new Set([
+        ...(existing.sourceTypes ?? []),
+        ...(credential.sourceTypes ?? []),
+      ])),
       state: moreSevereState(existing.state, credential.state),
       fingerprint: mergeFingerprints(existing.fingerprint, credential.fingerprint),
       lastVerified: existing.lastVerified ?? credential.lastVerified,

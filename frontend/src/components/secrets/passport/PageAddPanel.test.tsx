@@ -376,6 +376,40 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
     expect(document.querySelector('[data-user-guided-connect="true"]')).toBeFalsy();
   });
 
+  it("links to the selected email-password source in the raw user form", () => {
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/advanced: paste raw credential/i));
+    fireEvent.change(document.querySelector('[data-user-type-select="true"]')!, {
+      target: { value: "email_password" },
+    });
+
+    const link = screen.getByRole("link", { name: "Google App Passwords" });
+    expect(link.getAttribute("href")).toBe("https://myaccount.google.com/apppasswords");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
+  it("links to the selected Telegram API field source in the raw user form", () => {
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/advanced: paste raw credential/i));
+    fireEvent.change(document.querySelector('[data-user-type-select="true"]')!, {
+      target: { value: "telegram_api_hash" },
+    });
+
+    const link = screen.getByRole("link", { name: "Telegram API development tools" });
+    expect(link.getAttribute("href")).toBe("https://my.telegram.org/apps");
+  });
+
+  it("does not add a provenance link for a raw type without a source", () => {
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/advanced: paste raw credential/i));
+    fireEvent.change(document.querySelector('[data-user-type-select="true"]')!, {
+      target: { value: "other" },
+    });
+
+    expect(document.querySelector('[data-provenance-line="true"]')).toBeFalsy();
+  });
+
   it("shows a one-line warning that pasted tokens bypass account/scope tracking", () => {
     renderUserFamily("entity-uuid-123");
     fireEvent.click(screen.getByText(/advanced: paste raw credential/i));

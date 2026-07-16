@@ -92,6 +92,12 @@ export interface CapabilityStatus {
 /** User credential (entity_info-based, oauth/token/apikey/webhook). */
 export interface UserCredential {
   provider: string;
+  /**
+   * Raw entity_info types grouped into this provider-level passport row.
+   * Kept so UI provenance can remain field-specific when a provider combines
+   * distinct credential components (for example, Telegram API + session).
+   */
+  sourceTypes?: string[];
   identity: string;
   state: CredentialState;
   fingerprint: string | null;

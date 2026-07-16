@@ -67,6 +67,7 @@ beforeEach(() => {
 
 import { PageUser } from "./pages.tsx"
 import { MOCK_USER_CREDENTIALS, MOCK_PROVIDERS } from "./mock-data.ts"
+import type { ProviderInfo, UserCredential } from "./types.ts"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -75,6 +76,28 @@ import { MOCK_USER_CREDENTIALS, MOCK_PROVIDERS } from "./mock-data.ts"
 /** Google credential is in "ok" state — test + rotate + disconnect visible. */
 const GOOGLE = MOCK_USER_CREDENTIALS.find((u) => u.provider === "google" && u.identity === "tze")!
 const GOOGLE_PROVIDER = MOCK_PROVIDERS.google
+const EMAIL: UserCredential = {
+  ...GOOGLE,
+  provider: "email",
+  sourceTypes: ["email_password"],
+}
+const EMAIL_PROVIDER: ProviderInfo = {
+  ...GOOGLE_PROVIDER,
+  id: "email",
+  label: "Email",
+  kind: "token",
+  authority: "mail.google.com",
+}
+const TELEGRAM: UserCredential = {
+  ...GOOGLE,
+  provider: "telegram_bot",
+  sourceTypes: ["telegram_api_id", "telegram_api_hash"],
+}
+const TELEGRAM_PROVIDER = MOCK_PROVIDERS.telegram_bot
+const UNMAPPED: UserCredential = {
+  ...GOOGLE,
+  sourceTypes: ["google_oauth_refresh"],
+}
 
 /** Steam credential is in "never_set" state — only connect visible. */
 const STEAM = MOCK_USER_CREDENTIALS.find((u) => u.provider === "steam")!
@@ -93,6 +116,18 @@ function renderInProvider(element: React.ReactElement) {
 
 function renderGoogle() {
   return renderInProvider(<PageUser credential={GOOGLE} provider={GOOGLE_PROVIDER} />)
+}
+
+function renderEmail() {
+  return renderInProvider(<PageUser credential={EMAIL} provider={EMAIL_PROVIDER} />)
+}
+
+function renderTelegram() {
+  return renderInProvider(<PageUser credential={TELEGRAM} provider={TELEGRAM_PROVIDER} />)
+}
+
+function renderUnmapped() {
+  return renderInProvider(<PageUser credential={UNMAPPED} provider={GOOGLE_PROVIDER} />)
 }
 
 function renderSteam() {
@@ -184,6 +219,34 @@ describe("PageUser: rotate button (value-entry panel)", () => {
     fireEvent.click(getBtn("rotate"))
 
     expect(screen.getByPlaceholderText("paste token here")).toBeTruthy()
+  })
+
+  it("links to the email password source with the established external-link semantics", () => {
+    renderEmail()
+
+    fireEvent.click(getBtn("rotate"))
+
+    const link = screen.getByRole("link", { name: "Google App Passwords" })
+    expect(link.getAttribute("href")).toBe("https://myaccount.google.com/apppasswords")
+    expect(link.getAttribute("target")).toBe("_blank")
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer")
+  })
+
+  it("links to Telegram API development tools when the grouped fields agree", () => {
+    renderTelegram()
+
+    fireEvent.click(getBtn("rotate"))
+
+    const link = screen.getByRole("link", { name: "Telegram API development tools" })
+    expect(link.getAttribute("href")).toBe("https://my.telegram.org/apps")
+  })
+
+  it("does not show a provenance link for an unmapped credential type", () => {
+    renderUnmapped()
+
+    fireEvent.click(getBtn("rotate"))
+
+    expect(document.querySelector('[data-provenance-line="true"]')).toBeNull()
   })
 
   it("calls rotateUserCredential with the entered value on submit", async () => {

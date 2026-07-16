@@ -51,6 +51,7 @@ import {
   USER_SECRET_TEMPLATES,
   ENTITY_INFO_TYPES,
   entityInfoTypeLabel,
+  userSecretProvenanceForTypes,
 } from "@/lib/user-secret-templates.ts";
 import {
   useCliDeviceAuth,
@@ -1176,6 +1177,7 @@ export function PageUser({
   const isWebhook = provider.kind === "webhook";
   const isMissing = credential.state === "never_set";
   const sick = credential.state !== "ok" && credential.state !== "never_set";
+  const provenance = userSecretProvenanceForTypes(credential.sourceTypes);
 
   // ── Reauthorize / Connect ───────────────────────────────────────────────────
   // Both "re-authorize" (expired/revoked) and "connect" (never_set) flow through
@@ -1567,6 +1569,7 @@ export function PageUser({
           data-rotate-panel="true"
         >
           <Mono size={9} upper tracking="0.14em" color="var(--dim)">new credential value</Mono>
+          <ProvenanceLine provenance={provenance} />
           <textarea
             rows={3}
             value={rotateValue}
@@ -3570,6 +3573,9 @@ export function PassportAddPanel({
                     this type has a guided connect above. Only paste here if that path doesn't work.
                   </Mono>
                 )}
+                <ProvenanceLine
+                  provenance={USER_SECRET_TEMPLATES.find((template) => template.type === userType)?.provenance}
+                />
               </div>
 
               {/* Value */}
