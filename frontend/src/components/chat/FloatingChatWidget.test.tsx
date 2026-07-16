@@ -228,11 +228,23 @@ describe("FloatingChatWidget — trigger and open/close", () => {
     expect(screen.queryByTestId("floating-chat-panel")).toBeNull();
   });
 
-  it("opens the panel and hides the trigger on click", () => {
-    renderWidget();
-    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
-    expect(screen.getByTestId("floating-chat-panel")).toBeDefined();
-    expect(screen.queryByTestId("floating-chat-trigger")).toBeNull();
+  it("opens the panel without a ref-forwarding warning", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      renderWidget();
+      fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+      expect(screen.getByTestId("floating-chat-panel")).toBeDefined();
+      expect(screen.queryByTestId("floating-chat-trigger")).toBeNull();
+      expect(
+        consoleError.mock.calls.some(
+          ([message]) =>
+            typeof message === "string" && message.includes("Function components cannot be given refs"),
+        ),
+      ).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("closes the panel and restores the trigger on close click", () => {
