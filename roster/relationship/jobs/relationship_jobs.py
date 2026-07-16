@@ -3234,6 +3234,11 @@ _EMAIL_ENRICHMENT_STATE_KEY = "email_identity_enrichment.last_run_at"
 _EMAIL_ENRICHMENT_PRIORITY = 40
 _EMAIL_ENRICHMENT_EXPIRES_DAYS = 7
 _EMAIL_ENRICHMENT_INSIGHT_COOLDOWN_DAYS = 30
+# This limits newly-created, human-gated pending actions rather than raw sender
+# candidates. Applying it after the existing eligibility/idempotency gates keeps
+# the established priority ordering while preventing a first run from flooding
+# the approvals queue.
+_MAX_EMAIL_IDENTITY_PROPOSALS_PER_RUN = 10
 
 # Heuristics (bu-qeaou spec): "not noreply/bulk" (is_bulk_or_noreply_address),
 # ">= N threads", and "appears in both to+from directions". The third signal
@@ -3383,8 +3388,10 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
     Returns:
         Dictionary with keys: senders_scanned, already_linked, filtered_bulk,
         insufficient_evidence, already_pending, already_proposed, linked_existing,
-        created_new, archived_orphans, errors, truncated (True if the underlying
-        scan hit its row cap).
+        created_new, archived_orphans, errors, truncated (True if either the
+        underlying scan or proposal cap left work for a later run), and
+        proposal_cap_truncated (True if an otherwise eligible sender was left
+        for a later run after the proposal cap).
     """
     from butlers.modules.contacts.email_identity_matching import (
         choose_display_name,
@@ -3409,6 +3416,7 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
         "archived_orphans": 0,
         "errors": 0,
         "truncated": False,
+        "proposal_cap_truncated": False,
     }
 
     now_utc = datetime.now(UTC)
@@ -3502,6 +3510,23 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
             if already_proposed_entity is not None:
                 stats["already_proposed"] += 1
                 continue
+
+            if (
+                stats["linked_existing"] + stats["created_new"]
+                >= _MAX_EMAIL_IDENTITY_PROPOSALS_PER_RUN
+            ):
+                # Do not mint a placeholder entity or enqueue another approval
+                # after the cap. The candidate order comes from
+                # fetch_email_sender_stats(), so this consistently leaves the
+                # lower-priority remainder for a future run.
+                stats["proposal_cap_truncated"] = True
+                stats["truncated"] = True
+                logger.warning(
+                    "email_identity_enrichment: proposal cap=%d reached — remaining "
+                    "eligible senders were not proposed this run",
+                    _MAX_EMAIL_IDENTITY_PROPOSALS_PER_RUN,
+                )
+                break
 
             # Prefer the real stored From: display name (bu-vs9cr); fall back to
             # the address local-part heuristic for legacy rows with no stored name.
@@ -3633,7 +3658,8 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
     logger.info(
         "email_identity_enrichment complete: scanned=%d already_linked=%d filtered_bulk=%d "
         "insufficient_evidence=%d already_pending=%d already_proposed=%d "
-        "linked_existing=%d created_new=%d archived_orphans=%d errors=%d",
+        "linked_existing=%d created_new=%d archived_orphans=%d errors=%d "
+        "truncated=%s proposal_cap_truncated=%s",
         stats["senders_scanned"],
         stats["already_linked"],
         stats["filtered_bulk"],
@@ -3644,6 +3670,8 @@ async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]
         stats["created_new"],
         stats["archived_orphans"],
         stats["errors"],
+        stats["truncated"],
+        stats["proposal_cap_truncated"],
     )
     return stats
 
