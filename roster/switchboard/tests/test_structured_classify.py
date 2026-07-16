@@ -383,6 +383,35 @@ async def test_failover_exhausted_returns_none() -> None:
     assert result is None
 
 
+async def test_failover_stops_at_safety_cap_when_all_api_candidates_fail() -> None:
+    """The structured fast lane stops after its configured same-tier attempt cap."""
+    pool = MagicMock()
+    adapter = _make_adapter(
+        side_effect=[RuntimeError("connection error")] * sc._MAX_FAILOVER_ATTEMPTS
+    )
+    fallback_candidates = [
+        ("api", f"claude-haiku-fallback-{index}", [], uuid.uuid4(), 30)
+        for index in range(1, sc._MAX_FAILOVER_ATTEMPTS)
+    ]
+
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=_catalog())),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_MODULE}.create_adapter", return_value=adapter),
+        patch(
+            f"{_MODULE}.next_same_tier_candidate",
+            AsyncMock(side_effect=fallback_candidates),
+        ) as mock_next,
+    ):
+        result = await sc.try_structured_classification(
+            pool, mcp_server=_make_mcp_server({}), prompt="hi", include_bug_report=False
+        )
+
+    assert result is None
+    assert adapter.invoke_structured.await_count == sc._MAX_FAILOVER_ATTEMPTS
+    assert mock_next.await_count == sc._MAX_FAILOVER_ATTEMPTS - 1
+
+
 def test_reuses_shared_failover_classifier() -> None:
     """Must import and call the SAME classifier Spawner._run() /
     DiscretionDispatcher.call() use, not a forked/duplicate implementation.
