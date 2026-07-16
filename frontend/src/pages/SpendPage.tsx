@@ -1147,6 +1147,12 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
     .filter(Boolean)
     .join(" and ")
 
+  const triggerPurposeHint = trigger
+    ? "Trigger selected. Clear it to choose Purpose; both target the same dispatch source."
+    : purpose
+      ? "Purpose selected. Clear it to choose Trigger; both target the same dispatch source."
+      : "Choose either Trigger or Purpose; both target the same dispatch source."
+
   return (
     <form
       onSubmit={handleSubmit}
@@ -1186,7 +1192,9 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
           <Eyebrow>Trigger</Eyebrow>
           <select
             aria-label="Trigger condition"
-            className="text-xs border rounded px-2 py-1 bg-background"
+            aria-describedby="trigger-purpose-alias-hint"
+            className="text-xs border rounded px-2 py-1 bg-background disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={Boolean(purpose)}
             value={trigger}
             onChange={(e) => setTrigger(e.target.value)}
           >
@@ -1202,7 +1210,9 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
           <Eyebrow>Purpose</Eyebrow>
           <select
             aria-label="Purpose condition"
-            className="text-xs border rounded px-2 py-1 bg-background"
+            aria-describedby="trigger-purpose-alias-hint"
+            className="text-xs border rounded px-2 py-1 bg-background disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={Boolean(trigger)}
             value={purpose}
             onChange={(e) => setPurpose(e.target.value)}
           >
@@ -1215,6 +1225,16 @@ function CreateRuleForm({ onCancel, onCreated }: CreateRuleFormProps) {
           </select>
         </label>
       </div>
+      <p
+        id="trigger-purpose-alias-hint"
+        data-testid="trigger-purpose-alias-hint"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="text-xs text-muted-foreground"
+      >
+        {triggerPurposeHint}
+      </p>
       <Eyebrow>Action (set at least one effect)</Eyebrow>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label className="flex flex-col gap-1">

@@ -978,6 +978,42 @@ describe("SpendPage — routing rules", () => {
       })
     })
   })
+
+  it("keeps Trigger and Purpose mutually exclusive with an accessible explanation", async () => {
+    await act(async () => {
+      renderPage()
+    })
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("add-rule-button"))
+    })
+
+    const trigger = screen.getByLabelText("Trigger condition") as HTMLSelectElement
+    const purpose = screen.getByLabelText("Purpose condition") as HTMLSelectElement
+    const hint = screen.getByTestId("trigger-purpose-alias-hint")
+
+    expect(trigger.disabled).toBe(false)
+    expect(purpose.disabled).toBe(false)
+    expect(trigger.getAttribute("aria-describedby")).toBe("trigger-purpose-alias-hint")
+    expect(purpose.getAttribute("aria-describedby")).toBe("trigger-purpose-alias-hint")
+    expect(hint.getAttribute("role")).toBe("status")
+    expect(hint.textContent).toContain("Choose either Trigger or Purpose")
+
+    await act(async () => {
+      fireEvent.change(trigger, { target: { value: "route" } })
+    })
+
+    expect(purpose.disabled).toBe(true)
+    expect(hint.textContent).toContain("Trigger selected")
+
+    await act(async () => {
+      fireEvent.change(trigger, { target: { value: "" } })
+      fireEvent.change(purpose, { target: { value: "discretion" } })
+    })
+
+    expect(trigger.disabled).toBe(true)
+    expect(hint.textContent).toContain("Purpose selected")
+  })
 })
 
 // ---------------------------------------------------------------------------
