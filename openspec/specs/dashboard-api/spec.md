@@ -682,9 +682,10 @@ The dashboard API SHALL expose a `/api/secrets/*` namespace that backs the passp
 
 #### Scenario: Inventory endpoint shape
 - **WHEN** `GET /api/secrets/inventory?identity=<uuid>` is called
-- **THEN** the response is `ApiResponse<{ cli: CliRuntime[], system: SystemSecret[], user: UserSecret[] }>` with `meta` containing severity counts and the tri-state `failing_count` / `unverified_count` fields (bu-976n0; replaces the prior single `needs_hand_count`, which conflated a genuinely failed/expired/expiring credential with one that was merely set-but-never-probed)
+- **THEN** the response is `ApiResponse<{ cli: CliRuntime[], system: SystemSecret[], user: UserSecret[] }>` with `meta` containing severity counts, aggregate tri-state `failing_count` / `unverified_count` fields, and matching `failing_count_by_family` / `unverified_count_by_family` maps keyed by `cli`, `system`, and `user` (bu-976n0; replaces the prior single `needs_hand_count`, which conflated a genuinely failed/expired/expiring credential with one that was merely set-but-never-probed)
 - **AND** `failing_count` counts credentials in a genuinely broken or imminently-expiring state (`expired`, `failing`, `expiring`); `unverified_count` counts credentials in the `warn` state (set, but with no successful probe on record) — a `warn` row is an unknown, not a failure, and MUST NOT inflate `failing_count`
 - **AND** both counts are computed over a row set deduplicated by conceptual credential (one row per system-secret key / per user provider+identity / per CLI id) — not the raw per-butler-schema row set, so the aggregate matches what the grouped UI displays
+- **AND** each family-map entry is computed over the same family-specific deduplicated row set; the passport's per-family KPI captions SHALL consume these maps rather than recomputing failure or unverified counts from adapted rows
 - **AND** the `?identity=` query parameter filters the `user` array to credentials associated with the specified entity (projection-lens semantics; see `butler-secrets`)
 - **AND** when `?identity=` is omitted, the owner identity is used as the default
 - **AND** every credential row includes `state`, `fingerprint` (sha256 first-8 hex, computed on-read, never persisted), and per-family identity (`provider` / `key` / `id`)

@@ -94,7 +94,12 @@ const MOCK_INVENTORY_WITH_EXPIRED = {
       },
     },
   },
-  meta: { failing_count: 0, unverified_count: 0 },
+  meta: {
+    failing_count: 0,
+    unverified_count: 0,
+    failing_count_by_family: { cli: 0, system: 0, user: 0 },
+    unverified_count_by_family: { cli: 0, system: 0, user: 0 },
+  },
 };
 
 // ---------------------------------------------------------------------------

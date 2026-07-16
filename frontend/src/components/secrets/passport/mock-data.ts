@@ -201,4 +201,8 @@ export const MOCK_INVENTORY: InventoryResponse = {
   cli: MOCK_CLI_CREDENTIALS,
   identities: MOCK_IDENTITIES,
   providers: MOCK_PROVIDERS,
+  failingCount: 3,
+  unverifiedCount: 0,
+  failingCountByFamily: { cli: 1, system: 0, user: 2 },
+  unverifiedCountByFamily: { cli: 0, system: 0, user: 0 },
 };

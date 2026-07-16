@@ -24,7 +24,6 @@ import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
 import { Spine, SpineAddButton } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCliConnected, PassportEmptyState, PassportAddPanel } from "./pages.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
-import { needsHand, isUnverified } from "./constants.ts";
 import { useProbeAllSecrets } from "@/hooks/use-secrets-mutations.ts";
 
 // ── ProbeAllButton ───────────────────────────────────────────────────────────
@@ -278,21 +277,21 @@ export function DirectionPassport({
     integrations: {
       total:      userForIdentity.length,
       healthy:    userForIdentity.filter((x) => x.state === "ok").length,
-      // Genuinely broken only (bu-976n0) — see UNVERIFIED_STATES for the
-      // separate "set but never probed" bucket below.
-      needsHand:  userForIdentity.filter((x) => needsHand(x.state)).length,
-      unverified: userForIdentity.filter((x) => isUnverified(x.state)).length,
+      needsHand:  inventory.failingCountByFamily.user,
+      unverified: inventory.unverifiedCountByFamily.user,
     },
     system: {
       total:      inventory.system.length,
       configured: inventory.system.filter((x) => x.rowState !== "missing").length,
       missing:    inventory.system.filter((x) => x.rowState === "missing").length,
+      needsHand:  inventory.failingCountByFamily.system,
+      unverified: inventory.unverifiedCountByFamily.system,
     },
     cli: {
       total:      inventory.cli.length,
       ok:         inventory.cli.filter((x) => x.state === "ok").length,
-      attention:  inventory.cli.filter((x) => needsHand(x.state)).length,
-      unverified: inventory.cli.filter((x) => isUnverified(x.state)).length,
+      attention:  inventory.failingCountByFamily.cli,
+      unverified: inventory.unverifiedCountByFamily.cli,
     },
   };
   // needsAttention drives the headline + voice paragraph urgency — genuinely
@@ -300,7 +299,7 @@ export function DirectionPassport({
   // (quiet KPI caption + their own Spine group) and never inflate this count
   // (bu-976n0: this was the fabricated-alarm bug — 19 amber rows of which
   // only 3 were actually broken).
-  const needsAttention = kpis.integrations.needsHand + kpis.cli.attention;
+  const needsAttention = inventory.failingCount;
 
   // Rough count of what "probe all" is about to sweep — never_set/missing
   // rows have nothing to verify, so they're excluded from this hint. Not a
@@ -395,6 +394,13 @@ export function DirectionPassport({
                   {kpis.cli.attention > 0 && (
                     <>
                       {kpis.cli.attention} runtime token expiring.
+                      {kpis.system.needsHand > 0 ? " " : ""}
+                    </>
+                  )}
+                  {kpis.system.needsHand > 0 && (
+                    <>
+                      {kpis.system.needsHand} system credential
+                      {kpis.system.needsHand === 1 ? "" : "s"} need attention.
                     </>
                   )}
                 </Voice>
@@ -437,7 +443,17 @@ export function DirectionPassport({
               <KpiCell
                 label="system"
                 value={`${kpis.system.configured}/${kpis.system.total}`}
-                caption={`${kpis.system.missing} unset`}
+                caption={
+                  kpis.system.needsHand > 0
+                    ? `${kpis.system.needsHand} need hand`
+                    : `${kpis.system.missing} unset`
+                }
+                captionTone={kpis.system.needsHand > 0 ? "amber" : "dim"}
+                quietCaption={
+                  kpis.system.unverified > 0
+                    ? `${kpis.system.unverified} unverified`
+                    : undefined
+                }
               />
               <KpiSep />
               <KpiCell

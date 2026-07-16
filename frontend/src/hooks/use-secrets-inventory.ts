@@ -34,6 +34,7 @@ import type {
   CliCredential,
   Identity,
   CredentialState,
+  CredentialFamilyCounts,
   TestResult,
   AuditEvent,
   CapabilityStatus,
@@ -481,6 +482,10 @@ export function adaptInventoryResponse(data: {
   user: SecretsUserRaw[];
   identities: SecretsIdentityInfo[];
   providers?: Record<string, SecretsProviderInfo>;
+  failing_count: number;
+  unverified_count: number;
+  failing_count_by_family: CredentialFamilyCounts;
+  unverified_count_by_family: CredentialFamilyCounts;
   /** Threaded from meta.sources_degraded (bu-5ccth); see InventoryResponse.sourcesDegraded. */
   sources_degraded?: string[];
 }): InventoryResponse {
@@ -509,6 +514,10 @@ export function adaptInventoryResponse(data: {
     ]),
     identities,
     providers,
+    failingCount: data.failing_count,
+    unverifiedCount: data.unverified_count,
+    failingCountByFamily: data.failing_count_by_family,
+    unverifiedCountByFamily: data.unverified_count_by_family,
     ownerEntityId,
     sourcesDegraded: data.sources_degraded ?? [],
   };
@@ -548,7 +557,14 @@ export function useSecretsInventory(args: UseSecretsInventoryArgs = {}) {
       // from this fan-out rather than failing the whole request — thread it
       // through so SecretsPage can name the missing family inline instead of
       // silently rendering an incomplete inventory as an all-clear.
-      return adaptInventoryResponse({ ...resp.data, sources_degraded: resp.meta.sources_degraded });
+      return adaptInventoryResponse({
+        ...resp.data,
+        failing_count: resp.meta.failing_count,
+        unverified_count: resp.meta.unverified_count,
+        failing_count_by_family: resp.meta.failing_count_by_family,
+        unverified_count_by_family: resp.meta.unverified_count_by_family,
+        sources_degraded: resp.meta.sources_degraded,
+      });
     },
     staleTime: THIRTY_SECONDS_MS,
     refetchInterval: FIVE_MINUTES_MS,

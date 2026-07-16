@@ -125,6 +125,26 @@ import { PageGoogleAccounts } from "./pages.tsx";
 import type { InventoryResponse, UserCredential, Identity } from "./types.ts";
 import { MOCK_PROVIDERS } from "./mock-data.ts";
 
+const EMPTY_INVENTORY_COUNTS = {
+  failingCount: 0,
+  unverifiedCount: 0,
+  failingCountByFamily: { cli: 0, system: 0, user: 0 },
+  unverifiedCountByFamily: { cli: 0, system: 0, user: 0 },
+} satisfies Pick<
+  InventoryResponse,
+  "failingCount" | "unverifiedCount" | "failingCountByFamily" | "unverifiedCountByFamily"
+>;
+
+const ONE_USER_FAILURE_COUNTS = {
+  failingCount: 1,
+  unverifiedCount: 0,
+  failingCountByFamily: { cli: 0, system: 0, user: 1 },
+  unverifiedCountByFamily: { cli: 0, system: 0, user: 0 },
+} satisfies Pick<
+  InventoryResponse,
+  "failingCount" | "unverifiedCount" | "failingCountByFamily" | "unverifiedCountByFamily"
+>;
+
 function renderInRouter(element: React.ReactElement, initialEntries: string[] = ["/secrets"]): string {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -308,6 +328,7 @@ describe("Owner-default discoverability: Google spine entry visible without ?ide
     identities: [ownerIdentity, googleCompanionIdentity],
     providers: { google: MOCK_PROVIDERS.google },
     ownerEntityId: OWNER_ENTITY_ID,
+    ...EMPTY_INVENTORY_COUNTS,
   };
 
   it("buildSpineEntries with all identities includes companion entity credentials", () => {
@@ -442,6 +463,7 @@ describe("Owner-default discoverability: expired primary still surfaces; non-pri
       identities: [ownerIdentity, primaryGoogleIdentity],
       providers: { google: MOCK_PROVIDERS.google },
       ownerEntityId: OWNER_ENTITY_ID,
+      ...ONE_USER_FAILURE_COUNTS,
     };
 
     // Pass all identities (owner-default mode — no ?identity= chip selected)
@@ -463,6 +485,7 @@ describe("Owner-default discoverability: expired primary still surfaces; non-pri
       identities: [ownerIdentity, primaryGoogleIdentity],
       providers: { google: MOCK_PROVIDERS.google },
       ownerEntityId: OWNER_ENTITY_ID,
+      ...ONE_USER_FAILURE_COUNTS,
     };
 
     const html = renderInRouter(
@@ -484,6 +507,7 @@ describe("Owner-default discoverability: expired primary still surfaces; non-pri
       identities: [ownerIdentity, primaryGoogleIdentity],
       providers: { google: MOCK_PROVIDERS.google },
       ownerEntityId: OWNER_ENTITY_ID,
+      ...ONE_USER_FAILURE_COUNTS,
     };
 
     const allIdentityIds = [OWNER_ENTITY_ID, PRIMARY_GOOGLE_ENTITY_ID];
@@ -505,6 +529,7 @@ describe("Owner-default discoverability: expired primary still surfaces; non-pri
       identities: [ownerIdentity, nonPrimaryGoogleIdentity],
       providers: { google: MOCK_PROVIDERS.google },
       ownerEntityId: OWNER_ENTITY_ID,
+      ...EMPTY_INVENTORY_COUNTS,
     };
 
     // When the ?identity= chip is set to the non-primary entity, its credential appears

@@ -169,6 +169,10 @@ const ALL_OK_INVENTORY: InventoryResponse = {
     rowState: "shared" as const,
   })),
   cli: MOCK_CLI_CREDENTIALS.map((c) => ({ ...c, state: "ok" as const })),
+  failingCount: 0,
+  unverifiedCount: 0,
+  failingCountByFamily: { cli: 0, system: 0, user: 0 },
+  unverifiedCountByFamily: { cli: 0, system: 0, user: 0 },
 };
 
 // ── 1. Spine all-ok-day zero-pixel test ──────────────────────────────────────
@@ -498,12 +502,16 @@ describe("DirectionPassport: probe-all button", () => {
   }
 
   it("is hidden when there is nothing probeable", () => {
-    const emptyInventory: InventoryResponse = {
-      ...MOCK_INVENTORY,
-      user: [],
-      system: [],
-      cli: [],
-    };
+  const emptyInventory: InventoryResponse = {
+    ...MOCK_INVENTORY,
+    user: [],
+    system: [],
+    cli: [],
+    failingCount: 0,
+    unverifiedCount: 0,
+    failingCountByFamily: { cli: 0, system: 0, user: 0 },
+    unverifiedCountByFamily: { cli: 0, system: 0, user: 0 },
+  };
     renderPassport(emptyInventory);
     expect(document.querySelector("[data-probe-all]")).toBeNull();
   });
@@ -582,6 +590,10 @@ describe("Tri-state: unverified ('warn') rows are quiet, not alarm-colored [bu-9
     ],
     system: [],
     cli: [],
+    failingCount: 0,
+    unverifiedCount: 1,
+    failingCountByFamily: { cli: 0, system: 0, user: 0 },
+    unverifiedCountByFamily: { cli: 0, system: 0, user: 1 },
   };
 
   it("Spine: a 'warn' row lands in its own 'stale' group, not 'needs hand'", () => {
@@ -633,6 +645,28 @@ describe("Tri-state: unverified ('warn') rows are quiet, not alarm-colored [bu-9
     const html = renderInRouter(<DirectionPassport inventory={staleInventory} />);
     expect(html).toContain("0 need hand");
     expect(html).toContain("1 unverified");
+  });
+
+  it("DirectionPassport: KPI captions and urgency use the server's deduplicated counts", () => {
+    const inventoryWithAuthoritativeCounts: InventoryResponse = {
+      ...staleInventory,
+      failingCount: 4,
+      unverifiedCount: 5,
+      failingCountByFamily: { cli: 1, system: 2, user: 1 },
+      unverifiedCountByFamily: { cli: 2, system: 1, user: 2 },
+    };
+
+    const html = renderInRouter(
+      <DirectionPassport inventory={inventoryWithAuthoritativeCounts} />,
+    );
+
+    expect(html).toContain("1 need hand");
+    expect(html).toContain("2 unverified");
+    expect(html).toContain("1 expiring");
+    expect(html).toContain("4 credentials need attention.");
+    expect(html).toContain(
+      "1 integration sick. 1 runtime token expiring. 2 system credentials need attention.",
+    );
   });
 
   it("DirectionPassport: headline stays calm when only unverified rows are present", () => {

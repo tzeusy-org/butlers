@@ -11,8 +11,36 @@
 
 import { describe, expect, it } from "vitest";
 
-import { adaptInventoryResponse } from "@/hooks/use-secrets-inventory.ts";
+import { adaptInventoryResponse as adaptRawInventoryResponse } from "@/hooks/use-secrets-inventory.ts";
 import type { SecretsIdentityInfo, SecretsProviderInfo, SecretsSystemRaw, SecretsUserRaw } from "@/api/types.ts";
+
+type InventoryAdapterInput = Parameters<typeof adaptRawInventoryResponse>[0];
+type InventoryFixtureInput = Omit<
+  InventoryAdapterInput,
+  | "failing_count"
+  | "unverified_count"
+  | "failing_count_by_family"
+  | "unverified_count_by_family"
+> & Partial<
+  Pick<
+    InventoryAdapterInput,
+    | "failing_count"
+    | "unverified_count"
+    | "failing_count_by_family"
+    | "unverified_count_by_family"
+  >
+>;
+
+const EMPTY_STATE_COUNTS = {
+  failing_count: 0,
+  unverified_count: 0,
+  failing_count_by_family: { cli: 0, system: 0, user: 0 },
+  unverified_count_by_family: { cli: 0, system: 0, user: 0 },
+};
+
+function adaptInventoryResponse(data: InventoryFixtureInput) {
+  return adaptRawInventoryResponse({ ...EMPTY_STATE_COUNTS, ...data });
+}
 
 function makeSystem(overrides: Partial<SecretsSystemRaw> & Pick<SecretsSystemRaw, "key" | "state">): SecretsSystemRaw {
   return {
@@ -43,6 +71,26 @@ function makeIdentity(overrides: Pick<SecretsIdentityInfo, "entity_id" | "name" 
 }
 
 describe("adaptInventoryResponse: system credential rowState", () => {
+  it("preserves server-deduplicated state counts for the passport KPIs", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [],
+      identities: [],
+      failing_count: 4,
+      unverified_count: 5,
+      failing_count_by_family: { cli: 1, system: 2, user: 1 },
+      unverified_count_by_family: { cli: 2, system: 1, user: 2 },
+    });
+
+    expect(result).toMatchObject({
+      failingCount: 4,
+      unverifiedCount: 5,
+      failingCountByFamily: { cli: 1, system: 2, user: 1 },
+      unverifiedCountByFamily: { cli: 2, system: 1, user: 2 },
+    });
+  });
+
   it("maps 'shared' state to rowState 'shared'", () => {
     const result = adaptInventoryResponse({
       cli: [],
@@ -302,6 +350,32 @@ describe("adaptInventoryResponse: provider-managed system credentials are hidden
     expect(result.system).toHaveLength(0);
     expect(result.cli).toHaveLength(0);
     expect(result.user).toHaveLength(0);
+  });
+});
+
+describe("adaptInventoryResponse: server KPI family contract", () => {
+  it("preserves server counts through cli-auth relocation and provider-row hiding", () => {
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [
+        makeSystem({ key: "cli-auth/codex", category: "cli-auth", state: "failing" }),
+        makeSystem({ key: "OWNTRACKS_WEBHOOK_TOKEN", category: "owntracks", state: "failing" }),
+        makeSystem({ key: "SPOTIFY_ACCESS_TOKEN", category: "spotify", state: "warn" }),
+      ],
+      user: [],
+      identities: [],
+      failing_count: 1,
+      unverified_count: 0,
+      failing_count_by_family: { cli: 1, system: 0, user: 0 },
+      unverified_count_by_family: { cli: 0, system: 0, user: 0 },
+    });
+
+    expect(result.cli).toHaveLength(1);
+    expect(result.system).toHaveLength(0);
+    expect(result.failingCount).toBe(1);
+    expect(result.unverifiedCount).toBe(0);
+    expect(result.failingCountByFamily).toEqual({ cli: 1, system: 0, user: 0 });
+    expect(result.unverifiedCountByFamily).toEqual({ cli: 0, system: 0, user: 0 });
   });
 });
 

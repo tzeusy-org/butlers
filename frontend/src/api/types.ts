@@ -8100,12 +8100,23 @@ export interface SecretsInventoryData {
   providers?: Record<string, SecretsProviderInfo>;
 }
 
+/** Deduplicated state counts keyed by the passport credential family. */
+export interface SecretsInventoryFamilyCounts {
+  cli: number;
+  system: number;
+  user: number;
+}
+
 /** Meta fields returned alongside the inventory payload. */
 export interface SecretsInventoryMeta {
   /** Genuinely broken or imminently-expiring rows (bu-976n0 tri-state split). */
   failing_count: number;
   /** Set-but-never-probed rows — an unknown, not a failure (bu-976n0). */
   unverified_count: number;
+  /** Per-family failing counts from the same deduplicated server-side row set. */
+  failing_count_by_family: SecretsInventoryFamilyCounts;
+  /** Per-family unverified counts from the same deduplicated server-side row set. */
+  unverified_count_by_family: SecretsInventoryFamilyCounts;
   severity?: Record<string, number>;
   /**
    * Named sources that failed during this fan-out and were dropped from the

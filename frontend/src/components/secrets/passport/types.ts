@@ -17,6 +17,9 @@ export type CredentialState =
 /** Credential family. */
 export type CredentialFamily = "user" | "system" | "cli";
 
+/** Deduplicated failing/unverified counts supplied by the inventory backend. */
+export type CredentialFamilyCounts = Record<CredentialFamily, number>;
+
 /** Sort mode for the spine. */
 export type SpineSortMode = "severity" | "recency" | "alpha";
 
@@ -183,6 +186,14 @@ export interface InventoryResponse {
   cli: CliCredential[];
   identities: Identity[];
   providers: Record<string, ProviderInfo>;
+  /** Aggregate failing count from the backend's deduplicated credential set. */
+  failingCount: number;
+  /** Aggregate unverified count from the backend's deduplicated credential set. */
+  unverifiedCount: number;
+  /** Per-family failing counts from that same backend deduplication. */
+  failingCountByFamily: CredentialFamilyCounts;
+  /** Per-family unverified counts from that same backend deduplication. */
+  unverifiedCountByFamily: CredentialFamilyCounts;
   /**
    * The owner entity UUID — used by the add-credential flow (bu-ayp6v.6)
    * to POST entity_info rows. Populated from identities[role==="owner"].id.

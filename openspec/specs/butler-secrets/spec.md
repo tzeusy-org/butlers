@@ -48,6 +48,7 @@ The page is rendered in the binding **Dispatch** design language specified in `o
 - **THEN** its spine row renders with a `--dim` state dot and no left-edge sliver — never `--amber` and never a sliver
 - **AND** its subline reads `unverified` (or `verified <when>` if a prior verification timestamp exists)
 - **AND** it does NOT count toward `meta.failing_count` or the "N need hand" KPI caption; it counts toward `meta.unverified_count` and a separate quiet KPI caption instead
+- **AND** the Passport consumes the backend's aggregate and per-family count metadata for headline urgency and KPI captions, rather than recomputing those state counts from adapted credential rows
 
 ### Requirement: Evidence-Over-Value Affordance Contract
 Each credential row in the spine SHALL surface a 6px state dot, a 2px left-edge sliver (coloured only when state demands), a mono label, and a mono subline. The masked-value blob (`••••••••`) is FORBIDDEN as the only proof a credential exists. Each credential page SHALL render the following evidence — in order — without any LLM-generated text:
