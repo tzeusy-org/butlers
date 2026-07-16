@@ -76,13 +76,6 @@ export interface TestResult {
   message?: string | null;
 }
 
-/** A break entry — butler feature that goes silent when credential is sick. */
-export interface BreakEntry {
-  butler: string;
-  feature: string;
-  severity: "high" | "medium" | "low";
-}
-
 /**
  * Latest probe result for one capability family of a user credential
  * (bu-4v5es) — e.g. 'calendar' | 'gmail' | 'drive' | 'health' for Google,
@@ -106,7 +99,6 @@ export interface UserCredential {
   scopesRequired: string[];
   scopesGranted: string[];
   feeds: string[];
-  breaks: BreakEntry[];
   test: TestResult | null;
   audit: AuditEvent[];
   failureTail?: string | null;
@@ -138,7 +130,6 @@ export interface SystemCredential {
    * not a confident "nobody yet".
    */
   usedBy: string[];
-  breaks: BreakEntry[];
   test: TestResult | null;
   audit: AuditEvent[];
   plainValue?: string | null;

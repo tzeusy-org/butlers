@@ -59,7 +59,6 @@ const GOOGLE_CLIENT_ID: SystemCredential = {
   target: "shared",
   lastVerified: "14:00 today",
   usedBy: [],
-  breaks: [],
   test: null,
   audit: [],
   readOnly: true,

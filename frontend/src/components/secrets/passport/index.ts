@@ -39,7 +39,6 @@ export type {
   StateMeta,
   AuditEvent,
   TestResult,
-  BreakEntry,
   UserCredential,
   SystemCredential,
   CliCredential,

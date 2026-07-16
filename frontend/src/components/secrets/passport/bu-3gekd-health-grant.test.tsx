@@ -296,7 +296,6 @@ describe("Owner-default discoverability: Google spine entry visible without ?ide
     scopesRequired: [],
     scopesGranted: ["https://www.googleapis.com/auth/calendar.readonly"],
     feeds: [],
-    breaks: [],
     test: null,
     audit: [],
   };
@@ -413,7 +412,6 @@ describe("Owner-default discoverability: expired primary still surfaces; non-pri
     scopesRequired: [],
     scopesGranted: ["https://www.googleapis.com/auth/calendar.readonly"],
     feeds: [],
-    breaks: [],
     test: null,
     audit: [],
   };
@@ -431,7 +429,6 @@ describe("Owner-default discoverability: expired primary still surfaces; non-pri
     scopesRequired: [],
     scopesGranted: [],
     feeds: [],
-    breaks: [],
     test: null,
     audit: [],
   };

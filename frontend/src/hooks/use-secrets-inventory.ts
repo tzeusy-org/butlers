@@ -241,7 +241,6 @@ function adaptUserCredential(raw: SecretsUserRaw, providers: Record<string, Secr
     // stays honestly empty.
     scopesGranted:  raw.scopes_granted ?? [],
     feeds:          [],
-    breaks:         [],
     test:           adaptProbeResult(raw.test),
     // Real (bu-6v1hx): last few public.audit_log rows for this credential.
     audit:          adaptAuditEvents(raw.audit),
@@ -273,7 +272,6 @@ function adaptSystemCredential(raw: SecretsSystemRaw): SystemCredential {
     // key->consumer map. Empty means "not tracked", never "verified unused"
     // — see SystemCredential.usedBy and the "used by" band's rendering.
     usedBy:       raw.used_by ?? [],
-    breaks:       [],
     test:         adaptProbeResult(raw.test),
     // Real (bu-6v1hx): last few public.audit_log rows for this credential.
     audit:        adaptAuditEvents(raw.audit),
@@ -382,7 +380,6 @@ function groupUserCredentials(credentials: UserCredential[]): UserCredential[] {
       scopesRequired: Array.from(new Set([...existing.scopesRequired, ...credential.scopesRequired])),
       scopesGranted: Array.from(new Set([...existing.scopesGranted, ...credential.scopesGranted])),
       feeds: Array.from(new Set([...existing.feeds, ...credential.feeds])),
-      breaks: [...existing.breaks, ...credential.breaks],
       test: existing.test ?? credential.test,
       audit: [...existing.audit, ...credential.audit],
       failureTail: existing.failureTail ?? credential.failureTail,
@@ -443,7 +440,6 @@ function groupSystemCredentials(credentials: SystemCredential[]): SystemCredenti
       target: mergedTarget,
       lastVerified: existing.lastVerified ?? credential.lastVerified,
       usedBy: Array.from(new Set([...existing.usedBy, ...credential.usedBy])),
-      breaks: [...existing.breaks, ...credential.breaks],
       test: existing.test ?? credential.test,
       audit: [...existing.audit, ...credential.audit],
       plainValue: existing.plainValue ?? credential.plainValue,

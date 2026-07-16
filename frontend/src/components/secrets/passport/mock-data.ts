@@ -39,11 +39,6 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     scopesRequired: ["calendar.readonly", "gmail.readonly", "drive.metadata.readonly"],
     scopesGranted:  ["calendar.readonly", "gmail.readonly", "drive.metadata.readonly"],
     feeds: ["calendar", "chronicler"],
-    breaks: [
-      { butler: "calendar",     feature: "calendar events read", severity: "high"   },
-      { butler: "relationship", feature: "gmail thread scan",    severity: "high"   },
-      { butler: "chronicler",   feature: "drive recent index",   severity: "medium" },
-    ],
     test: { ok: true, code: 200, latencyMs: 42, at: "14:21 today" },
     audit: [
       { ts: "2026-05-23 14:21", actor: "system", action: "verified",  note: "200 OK · 42ms" },
@@ -60,9 +55,6 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     scopesGranted:  ["user-read-recently-played"],
     feeds: ["chronicler"],
     failureTail: "401 invalid_grant · refresh-token expired",
-    breaks: [
-      { butler: "chronicler", feature: "spotify · daily listens", severity: "medium" },
-    ],
     test: { ok: false, code: 401, latencyMs: 134, at: "2 days ago", message: "refresh-token expired" },
     audit: [
       { ts: "2026-05-21 06:08", actor: "system", action: "failed",    note: "401 · refresh failed · marked expired" },
@@ -77,10 +69,6 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     scopesRequired: ["states.read", "events.fire"],
     scopesGranted:  ["states.read", "events.fire"],
     feeds: ["household", "calendar"],
-    breaks: [
-      { butler: "household", feature: "rooms · presence",   severity: "high"   },
-      { butler: "household", feature: "thermostat · climate", severity: "medium" },
-    ],
     test: { ok: true, code: 200, latencyMs: 18, at: "14:00 today" },
     audit: [
       { ts: "2026-05-23 14:00", actor: "system", action: "verified",  note: "200 OK · 18ms" },
@@ -95,10 +83,6 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     scopesRequired: ["messages.read", "messages.send", "contacts.read"],
     scopesGranted:  ["messages.read", "messages.send"],
     feeds: ["relationship"],
-    breaks: [
-      { butler: "relationship", feature: "contact disambiguation", severity: "high"   },
-      { butler: "relationship", feature: "group lookup",           severity: "medium" },
-    ],
     test: { ok: true, code: 200, latencyMs: 73, at: "13:58 today", message: "scope set incomplete" },
     audit: [
       { ts: "2026-05-19 11:12", actor: "system", action: "warned",    note: "contacts.read newly required" },
@@ -114,10 +98,6 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     scopesGranted:  ["webhook.post"],
     feeds: ["chronicler", "household"],
     webhook: "https://butlers.tze/ingest/owntracks",
-    breaks: [
-      { butler: "chronicler", feature: "location stream",    severity: "medium" },
-      { butler: "household",  feature: "arrivals · departures", severity: "medium" },
-    ],
     test: { ok: true, code: 200, latencyMs: 8, at: "14:19 today" },
     audit: [
       { ts: "2026-05-23 14:19", actor: "system", action: "verified",  note: "200 OK · 8ms" },
@@ -129,7 +109,7 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     fingerprint: null, issued: null, expires: null,
     lastVerified: null, lastUsed: null,
     scopesRequired: ["publisher.read"], scopesGranted: [],
-    feeds: ["chronicler"], breaks: [], test: null, audit: [],
+    feeds: ["chronicler"], test: null, audit: [],
   },
   // Household member — Wei
   {
@@ -139,9 +119,6 @@ export const MOCK_USER_CREDENTIALS: UserCredential[] = [
     lastVerified: "13:51 today", lastUsed: "13:51 today",
     scopesRequired: ["calendar.readonly"], scopesGranted: ["calendar.readonly"],
     feeds: ["calendar"],
-    breaks: [
-      { butler: "calendar", feature: "wei · busy/free", severity: "medium" },
-    ],
     test: { ok: true, code: 200, latencyMs: 51, at: "13:51 today" },
     audit: [
       { ts: "2026-05-23 13:51", actor: "system", action: "verified", note: "200 OK · 51ms" },
@@ -156,10 +133,6 @@ export const MOCK_SYSTEM_CREDENTIALS: SystemCredential[] = [
     description: "Bot API token for system-wide Telegram I/O.",
     source: "shared", target: "shared", lastVerified: "14:20 today",
     usedBy: ["switchboard", "relationship", "qa"],
-    breaks: [
-      { butler: "switchboard", feature: "inbound telegram",  severity: "high" },
-      { butler: "switchboard", feature: "outbound replies",  severity: "high" },
-    ],
     test: { ok: true, code: 200, latencyMs: 41, at: "14:20 today" },
     audit: [
       { ts: "2026-05-23 14:20", actor: "system", action: "verified", note: "getMe · 41ms" },
@@ -172,7 +145,6 @@ export const MOCK_SYSTEM_CREDENTIALS: SystemCredential[] = [
     description: "Claude API key. Used by every butler that talks to a model.",
     source: "shared", target: "shared", lastVerified: "14:14 today",
     usedBy: ["*"],
-    breaks: [{ butler: "*", feature: "all model calls", severity: "high" }],
     test: { ok: true, code: 200, latencyMs: 220, at: "14:14 today" },
     audit: [
       { ts: "2026-05-23 14:14", actor: "system", action: "verified", note: "1-token probe · 220ms" },
@@ -184,7 +156,7 @@ export const MOCK_SYSTEM_CREDENTIALS: SystemCredential[] = [
     fingerprint: null,
     description: "Bearer token OwnTracks uses to authenticate webhook posts.",
     source: "", target: "shared", lastVerified: null,
-    usedBy: ["chronicler"], breaks: [], test: null, audit: [],
+    usedBy: ["chronicler"], test: null, audit: [],
   },
   {
     key: "GMAIL_SENDER_ADDRESS", category: "email", rowState: "shared",
@@ -193,7 +165,7 @@ export const MOCK_SYSTEM_CREDENTIALS: SystemCredential[] = [
     source: "shared", target: "shared", lastVerified: "14:01 today",
     usedBy: ["relationship"],
     plainValue: "tze@lim.house",
-    breaks: [], test: null,
+    test: null,
     audit: [
       { ts: "2026-04-22 16:00", actor: "tze", action: "set", note: "changed from butlers@…" },
     ],
