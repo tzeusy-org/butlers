@@ -1,7 +1,7 @@
 """Shared Google credential storage for butler modules.
 
 Provides a single source of truth for Google OAuth credentials that can be
-consumed by both the Gmail connector and the Calendar module.
+consumed by the Gmail, Calendar, and Google Health connectors.
 
 **Storage split:**
 
@@ -71,13 +71,49 @@ _GOOGLE_CATEGORY = "google"
 
 CONTACT_INFO_REFRESH_TOKEN = "google_oauth_refresh"
 
+
+# ---------------------------------------------------------------------------
+# OAuth token-endpoint error parsing
+# ---------------------------------------------------------------------------
+
+# These are the only Google OAuth token-endpoint error codes that require
+# operator action.  ``invalid_grant`` additionally proves the shared refresh
+# grant is gone; ``unauthorized_client`` is limited to the configured client.
+_GOOGLE_OAUTH_REAUTH_ERROR_CODES = frozenset({"invalid_grant", "unauthorized_client"})
+
+
+def google_oauth_error_code(response: Any) -> str | None:
+    """Return Google's exact top-level OAuth token-endpoint error code.
+
+    Google data APIs use a nested ``{"error": { ... }}`` response shape.  It
+    can include OAuth-looking prose in ``message`` or ``reason``, but that is
+    not evidence that the refresh grant failed.  Only the token endpoint's
+    top-level string ``error`` field is suitable for credential state changes.
+    """
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - callers may pass an HTTP test double
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    error = payload.get("error")
+    return error if isinstance(error, str) and error else None
+
+
+def google_oauth_requires_reauthorization(response: Any) -> bool:
+    """Whether a token-endpoint response requires operator reauthorization."""
+    return google_oauth_error_code(response) in _GOOGLE_OAUTH_REAUTH_ERROR_CODES
+
+
 # ---------------------------------------------------------------------------
 # Credential model
 # ---------------------------------------------------------------------------
 
 
 class GoogleCredentials(BaseModel):
-    """Shared Google OAuth credential set for Gmail and Calendar."""
+    """Shared Google OAuth credential set for Gmail, Calendar, and Google Health."""
 
     model_config = ConfigDict(extra="forbid")
 

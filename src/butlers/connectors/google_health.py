@@ -104,6 +104,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthCredentialError,
     GoogleHealthError,
     GoogleHealthForbiddenError,
+    GoogleHealthOAuthCredentialError,
     GoogleHealthRateLimitError,
     GoogleHealthSourcePreconditionError,
     GoogleHealthTokenRevokedError,
@@ -127,6 +128,7 @@ from butlers.google_account_registry import (
 )
 from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
+    google_oauth_error_code,
     load_google_credentials,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
@@ -665,9 +667,9 @@ class OwnerContext:
     token_expires_at:
         Expiry timestamp for ``cached_access_token``.
     auth_error:
-        True when this account's credential refresh has permanently failed (e.g.
-        revoked refresh token).  Cleared when the account successfully completes
-        a poll.
+        True only when Google's token endpoint explicitly requires
+        reauthorization (for example, a revoked refresh token). Cleared when
+        the account successfully completes a poll.
     auth_error_message:
         Human-readable error message set alongside ``auth_error``.
     auth_error_at:
@@ -1353,13 +1355,18 @@ class GoogleHealthConnector:
 
         if resp.status_code != 200:
             body = resp.text[:200]
-            # Distinguish a genuine grant revocation (``invalid_grant``) from any
-            # other non-200.  Only the former may flip the shared, cross-connector
-            # google_accounts row to revoked; everything else stays connector-local
-            # so a transient blip never knocks Drive/Calendar/Gmail offline.
-            if "invalid_grant" in body:
+            # The shared helper reads only the token endpoint's exact top-level
+            # OAuth code. Nested data-API prose mentioning ``invalid_grant`` is
+            # not evidence that this account's refresh grant was revoked.
+            oauth_error = google_oauth_error_code(resp)
+            if oauth_error == "invalid_grant":
                 raise GoogleHealthTokenRevokedError(
                     f"Google refresh token revoked/expired for {ctx.email}: "
+                    f"HTTP {resp.status_code}: {body}"
+                )
+            if oauth_error == "unauthorized_client":
+                raise GoogleHealthOAuthCredentialError(
+                    f"Google OAuth client unauthorized for {ctx.email}: "
                     f"HTTP {resp.status_code}: {body}"
                 )
             raise GoogleHealthCredentialError(
@@ -1394,9 +1401,9 @@ class GoogleHealthConnector:
     async def _mark_account_revoked(self, account_uuid: uuid.UUID) -> None:
         """Mark a google account row as revoked.
 
-        Called when the connector observes a persistent 401 after token refresh
-        for a specific account.  The dashboard picks up the new status and
-        surfaces a re-consent CTA.  Non-fatal — failure is logged and swallowed.
+        Called only when Google's token endpoint reports ``invalid_grant`` for
+        a specific account. The dashboard picks up the new status and surfaces
+        a re-consent CTA. Non-fatal — failure is logged and swallowed.
         """
         if self._shared_pool is None:
             return
@@ -1580,17 +1587,17 @@ class GoogleHealthConnector:
                 try:
                     await self._poll_resource(acct_id, state)
                 except GoogleHealthCredentialError as exc:
-                    # Only a genuine grant revocation (invalid_grant) may flip the
-                    # shared google_accounts row — the row is read by every Google
-                    # connector's account-sync (status='active' filter), so revoking
-                    # it on a transient/scope-local failure would knock Drive/
-                    # Calendar/Gmail offline too.  Other credential errors stay
-                    # connector-local: poll stops for this account, status untouched.
+                    # Exact OAuth token-endpoint errors drive local auth state;
+                    # unproven credential failures stay degraded like Gmail's
+                    # source API errors. Only invalid_grant may revoke the
+                    # shared cross-connector account row.
+                    oauth_reauthorization = isinstance(exc, GoogleHealthOAuthCredentialError)
                     token_revoked = isinstance(exc, GoogleHealthTokenRevokedError)
                     logger.error(
                         "GoogleHealthConnector: credential error account=%s "
-                        "(token_revoked=%s) — skipping%s: %s",
+                        "(oauth_reauthorization=%s token_revoked=%s) — skipping%s: %s",
                         ctx.email,
+                        oauth_reauthorization,
                         token_revoked,
                         " and marking account revoked" if token_revoked else "",
                         exc,
@@ -1598,15 +1605,23 @@ class GoogleHealthConnector:
                     # Isolate: only this account's polls stop; others continue.
                     ctx.cached_access_token = None
                     ctx.token_expires_at = None
-                    ctx.refresh_token_present = False
-                    # Set per-account auth_error flag for observability.
-                    ctx.auth_error = True
-                    ctx.auth_error_message = str(exc) or "token_invalid"
-                    ctx.auth_error_at = datetime.now(UTC)
-                    # Recompute global: True only when ALL accounts have auth_error.
-                    self._auth_error = bool(self._accounts) and all(
-                        c.auth_error for c in self._accounts.values()
-                    )
+                    if oauth_reauthorization:
+                        ctx.refresh_token_present = False
+                        # Set per-account auth_error only for Google's exact
+                        # reauthorization signals, matching Gmail.
+                        ctx.auth_error = True
+                        ctx.auth_error_message = str(exc) or "token_invalid"
+                        ctx.auth_error_at = datetime.now(UTC)
+                        # Recompute global: True only when ALL accounts have auth_error.
+                        self._auth_error = bool(self._accounts) and all(
+                            c.auth_error for c in self._accounts.values()
+                        )
+                    else:
+                        self._last_source_api_ok = False
+                        self._source_api_error_message = "source_api_unreachable"
+                        state.consecutive_failures += 1
+                        state.last_error = str(exc)
+                        state.last_error_at = datetime.now(UTC)
                     if token_revoked:
                         await self._mark_account_revoked(acct_id)
                     # Reschedule after one full recheck cycle so we don't tight-loop.

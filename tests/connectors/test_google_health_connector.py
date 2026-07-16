@@ -50,6 +50,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthClient,
     GoogleHealthCredentialError,
     GoogleHealthForbiddenError,
+    GoogleHealthOAuthCredentialError,
     GoogleHealthRateLimitError,
     GoogleHealthSourcePreconditionError,
     GoogleHealthTokenRevokedError,
@@ -531,6 +532,42 @@ def _make_connector_with_account(
     connector._account_missing = False
     connector._scope_missing = False
     return connector, ctx
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "expected_error"),
+    [
+        ({"error": "invalid_grant"}, GoogleHealthTokenRevokedError),
+        ({"error": "unauthorized_client"}, GoogleHealthOAuthCredentialError),
+        (
+            {"error": {"message": "invalid_grant mentioned in a data-API error"}},
+            GoogleHealthCredentialError,
+        ),
+    ],
+)
+async def test_mint_access_token_classifies_only_exact_oauth_error_codes(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, object],
+    expected_error: type[GoogleHealthCredentialError],
+) -> None:
+    """Only exact token-endpoint codes may drive OAuth error state changes."""
+    connector, ctx = _make_connector_with_account()
+    connector._shared_pool = MagicMock()
+    connector._client_id = "client-id"
+    connector._client_secret = "client-secret"
+    connector._http_client = MagicMock()
+    connector._http_client.post = AsyncMock(return_value=httpx.Response(400, json=payload))
+    monkeypatch.setattr(
+        "butlers.google_credentials._resolve_entity_refresh_token",
+        AsyncMock(return_value="refresh-token"),
+    )
+
+    with pytest.raises(expected_error) as exc_info:
+        await connector._mint_access_token(ctx.account_id)
+
+    if expected_error is GoogleHealthCredentialError:
+        assert type(exc_info.value) is GoogleHealthCredentialError
 
 
 def test_health_state_reports_degraded_when_account_missing() -> None:
@@ -1828,10 +1865,10 @@ def test_auth_error_clears_on_successful_poll_and_recomputes_global() -> None:
 
 
 @pytest.mark.asyncio
-async def test_main_loop_credential_error_sets_per_account_auth_error(
+async def test_main_loop_exact_oauth_credential_error_sets_per_account_auth_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A GoogleHealthCredentialError in _main_loop sets auth_error on the failing OwnerContext.
+    """An exact OAuth credential error sets auth_error on the failing OwnerContext.
 
     The global _auth_error flag must remain False when only one of two accounts fails.
     """
@@ -1840,7 +1877,8 @@ async def test_main_loop_credential_error_sets_per_account_auth_error(
     connector._mcp_client = MagicMock()  # prevent heartbeat MCP calls
 
     # Stub _mark_account_revoked to avoid DB calls.
-    monkeypatch.setattr(connector, "_mark_account_revoked", AsyncMock())
+    revoke_mock = AsyncMock()
+    monkeypatch.setattr(connector, "_mark_account_revoked", revoke_mock)
     monkeypatch.setattr(connector, "_drain_replay", AsyncMock())
     monkeypatch.setattr(connector, "_flush_filtered_events", AsyncMock())
     monkeypatch.setattr(connector, "_resolve_owner_and_scopes", AsyncMock())
@@ -1851,7 +1889,7 @@ async def test_main_loop_credential_error_sets_per_account_auth_error(
     async def _poll_resource_raises_for_a(acct_id: uuid.UUID, state: ResourceState) -> None:
         polled_accounts.append(acct_id)
         if acct_id == _UUID_A:
-            raise GoogleHealthCredentialError("token_revoked")
+            raise GoogleHealthOAuthCredentialError("unauthorized_client")
         # B succeeds (no-op).
         # Stop the loop after all resources for both accounts have been attempted.
         all_resources = len(RESOURCE_BUNDLES) * 2
@@ -1869,13 +1907,17 @@ async def test_main_loop_credential_error_sets_per_account_auth_error(
 
     # Per-account: A has auth_error, B does not.
     assert ctx_a.auth_error is True
-    assert ctx_a.auth_error_message == "token_revoked"
+    assert ctx_a.auth_error_message == "unauthorized_client"
     assert ctx_a.auth_error_at is not None
 
     assert ctx_b.auth_error is False
 
     # Global flag must be False (not all accounts failed).
     assert connector._auth_error is False
+
+    # unauthorized_client requires local reauthorization but does not prove
+    # the shared refresh grant itself was revoked.
+    revoke_mock.assert_not_awaited()
 
     # Heartbeat was triggered for the failing account (once per resource error, or at least once).
     assert hb_a_mock._send_heartbeat.await_count >= 1
@@ -1918,8 +1960,13 @@ async def test_main_loop_transient_credential_error_does_not_revoke_account(
 
     await connector._main_loop()
 
-    # Per-account auth_error is still set for observability...
-    assert ctx_a.auth_error is True
+    # Generic connector-local failures remain degraded rather than looking
+    # like a Gmail-style OAuth reauthorization requirement.
+    assert ctx_a.auth_error is False
+    assert ctx_a.refresh_token_present is True
+    source_state = connector._resources[(_UUID_A, RESOURCE_BUNDLES[0].resource)]
+    assert source_state.consecutive_failures == 1
+    assert source_state.last_error is not None
     # ...but the shared account row was NOT revoked.
     revoke_mock.assert_not_awaited()
 
@@ -2054,7 +2101,7 @@ async def test_main_loop_resource_failure_streak_resets_on_next_success(
 async def test_main_loop_all_accounts_fail_sets_global_auth_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When every account raises GoogleHealthCredentialError, global _auth_error becomes True."""
+    """When every account raises a precise OAuth error, global _auth_error becomes True."""
     connector, ctx_a, ctx_b = _make_two_account_connector()
     connector._running = True
     connector._mcp_client = MagicMock()
@@ -2071,7 +2118,7 @@ async def test_main_loop_all_accounts_fail_sets_global_auth_error(
         all_resources = len(RESOURCE_BUNDLES) * 2
         if len(polled_accounts) >= all_resources:
             connector._shutdown_event.set()
-        raise GoogleHealthCredentialError("token_revoked")
+        raise GoogleHealthOAuthCredentialError("unauthorized_client")
 
     monkeypatch.setattr(connector, "_poll_resource", _poll_always_fails)
 

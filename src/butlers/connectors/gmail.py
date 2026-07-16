@@ -84,6 +84,7 @@ from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
+    google_oauth_requires_reauthorization,
     load_google_credentials,
 )
 from butlers.identity import parse_email_sender
@@ -253,13 +254,6 @@ def _format_google_error(response: httpx.Response) -> str | None:
     return None
 
 
-# Google OAuth token-endpoint error codes that indicate the refresh token
-# itself is actually revoked/expired (owner re-consent required) — as
-# opposed to a transient network/rate-limit/5xx failure that self-heals on
-# the next poll. See _classify_source_api_error.
-_OAUTH_REVOCATION_ERROR_CODES = ("invalid_grant", "unauthorized_client")
-
-
 def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
     """Classify a Gmail source-API failure for honest health reporting.
 
@@ -293,12 +287,7 @@ def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
     google_error = _format_google_error(response) if response is not None else None
     is_auth_revocation = False
     if response is not None:
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
-        if isinstance(payload, dict) and payload.get("error") in _OAUTH_REVOCATION_ERROR_CODES:
-            is_auth_revocation = True
+        is_auth_revocation = google_oauth_requires_reauthorization(response)
     description = google_error or f"{get_error_type(exc)}: {exc}"
     return is_auth_revocation, description
 
