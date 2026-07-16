@@ -16,20 +16,25 @@ Use the equivalent setting on your device when the wording differs.
    uppercase `SSID` field while connected to Wi-Fi. OwnTracks does not currently
    document `SSID` as an Android location field, and VPN or OS privacy
    restrictions can prevent it from appearing even on supported devices.
-3. Create regions/waypoints named `Home` and `Office` at the corresponding
+3. Set a stable Tracker ID (`tid`) of one or two ASCII letters or digits. When
+   no `OWNTRACKS_TRACKER_ID` override is configured, Butlers uses it as the
+   per-device connector identity; malformed or longer values are ignored rather
+   than creating a device record.
+4. Create regions/waypoints named `Home` and `Office` at the corresponding
    locations. Use distinct, stable names: the phone sends them verbatim in the
    location payload's `inregions` list and in enter/leave transitions.
    - iOS: long-press the map at the desired location, then create or edit the
      region and radius.
    - Android: open the app's Regions/Waypoints screen and use the place picker.
-4. During waking hours, consider **Move** monitoring mode when movement history
+5. During waking hours, consider **Move** monitoring mode when movement history
    remains sparse. Move mode requests substantially more frequent/high-power
    location updates and therefore costs more battery; switch back to a lower
    power mode overnight if that tradeoff is preferable.
 
-OwnTracks' official references describe [waypoints and regions](https://owntracks.org/booklet/features/waypoints/),
-[location monitoring modes](https://owntracks.org/booklet/features/location/),
-and the optional [`SSID` and `inregions` location fields](https://owntracks.org/booklet/tech/json/).
+OwnTracks' official references describe [tracker IDs](https://owntracks.org/booklet/features/tid/),
+[waypoints and regions](https://owntracks.org/booklet/features/waypoints/), [location monitoring
+modes](https://owntracks.org/booklet/features/location/), and the optional [`SSID` and `inregions`
+location fields](https://owntracks.org/booklet/tech/json/).
 
 ## Verify the evidence stream
 
