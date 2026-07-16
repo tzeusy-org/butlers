@@ -5046,7 +5046,7 @@ export function telegramVerifyCode(
   });
 }
 
-/** GET /api/telegram/session/status — check if Telegram credentials are configured */
+/** GET /api/telegram/session/status — check Telegram credentials and scope consent */
 export function getTelegramSessionStatus(): Promise<TelegramSessionStatusResponse> {
   return apiFetch<TelegramSessionStatusResponse>("/telegram/session/status");
 }

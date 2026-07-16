@@ -355,6 +355,9 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
   afterEach(() => {
     cleanup();
     mockReauth.mockReset();
+    mockCreateEntityInfo.mockReset();
+    mockTelegramSessionStatus.mockReset();
+    mockTelegramSendCode.mockReset();
   });
 
   function renderUserFamily(ownerEntityId: string | undefined) {
@@ -496,6 +499,7 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
       has_api_id: false,
       has_api_hash: false,
       has_session: false,
+      has_scope_consent: false,
       ready: false,
     });
     renderUserFamily("entity-uuid-123");
@@ -516,6 +520,7 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
       has_api_id: false,
       has_api_hash: false,
       has_session: false,
+      has_scope_consent: false,
       ready: false,
     });
     mockTelegramSendCode.mockResolvedValue({
@@ -529,6 +534,7 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
     fireEvent.change(screen.getByLabelText("Telegram API ID"), { target: { value: "12345" } });
     fireEvent.change(screen.getByLabelText("Telegram API hash"), { target: { value: "test-api-hash" } });
     fireEvent.change(screen.getByLabelText("Telegram phone number"), { target: { value: "+15551234567" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /account-wide telegram ingestion/i }));
     fireEvent.click(screen.getByRole("button", { name: "Send code" }));
 
     await waitFor(() =>
@@ -536,9 +542,39 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
         api_id: 12345,
         api_hash: "test-api-hash",
         phone: "+15551234567",
+        scope_consent: true,
       }),
     );
     expect(mockCreateEntityInfo).not.toHaveBeenCalled();
+  });
+
+  it("cannot submit Telegram session setup until account-wide ingestion is acknowledged", async () => {
+    mockTelegramSessionStatus.mockResolvedValue({
+      has_api_id: false,
+      has_api_hash: false,
+      has_session: false,
+      has_scope_consent: false,
+      ready: false,
+    });
+    renderUserFamily("entity-uuid-123");
+
+    fireEvent.click(screen.getByText(/set up telegram/i));
+    await waitFor(() => expect(screen.getByLabelText("Telegram API hash")).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("Telegram API ID"), { target: { value: "12345" } });
+    fireEvent.change(screen.getByLabelText("Telegram API hash"), { target: { value: "test-api-hash" } });
+    fireEvent.change(screen.getByLabelText("Telegram phone number"), { target: { value: "+15551234567" } });
+
+    expect(
+      screen.getByRole("button", { name: "Send code" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      screen.getByRole("checkbox", { name: /account-wide telegram ingestion/i }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("group", { name: "Account-wide ingestion scope" }),
+    ).toBeTruthy();
+    expect(screen.getByText(/direct chat, group, supergroup, and channel/i)).toBeTruthy();
+    expect(mockTelegramSendCode).not.toHaveBeenCalled();
   });
 
   it("returns focus to the Telegram setup trigger when the inline drawer is dismissed", () => {

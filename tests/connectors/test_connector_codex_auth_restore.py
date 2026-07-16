@@ -174,6 +174,17 @@ async def test_telegram_user_entrypoint_restores_codex_auth() -> None:
             "butlers.connectors.cursor_store.create_cursor_pool_from_env",
             new=AsyncMock(return_value=pool),
         ),
+        patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(
+                return_value={
+                    "account_wide_ingestion_consent": {
+                        "version": "telegram-user-client-account-wide-v1",
+                        "granted_at": "2026-07-17T00:00:00+00:00",
+                    }
+                }
+            ),
+        ),
         patch.object(tg, "TelegramUserClientConnector", return_value=conn),
         patch(
             "butlers.cli_auth.persistence.restore_connector_cli_auth",
@@ -184,6 +195,120 @@ async def test_telegram_user_entrypoint_restores_codex_auth() -> None:
 
     restore.assert_awaited_once()
     assert restore.await_args.args[0] is pool
+    conn.start.assert_awaited_once()
+
+
+async def test_telegram_user_entrypoint_fails_closed_without_account_wide_scope_consent() -> None:
+    """Credentials alone must never start account-wide Telegram ingestion."""
+    import butlers.connectors.telegram_user_client as tg
+
+    cfg = tg.TelegramUserClientConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+        provider="telegram",
+        channel="telegram_user_client",
+        endpoint_identity="telegram:pending",
+    )
+    pool = MagicMock()
+    pool.close = AsyncMock()
+    conn = MagicMock()
+    creds = {
+        "TELEGRAM_API_ID": "123",
+        "TELEGRAM_API_HASH": "hash",
+        "TELEGRAM_USER_SESSION": "session",
+    }
+
+    with (
+        patch.object(tg.TelegramUserClientConnectorConfig, "from_env", return_value=cfg),
+        patch.object(
+            tg,
+            "_resolve_telegram_user_credentials_from_db",
+            new=AsyncMock(return_value=creds),
+        ),
+        patch.object(tg, "_resolve_endpoint_identity", new=AsyncMock()) as resolve_identity,
+        patch(
+            "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+            new=AsyncMock(return_value=pool),
+        ),
+        patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(tg, "TelegramUserClientConnector", return_value=conn) as connector,
+        patch(
+            "butlers.cli_auth.persistence.restore_connector_cli_auth",
+            new=AsyncMock(return_value={"codex": True}),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="explicit informed consent"):
+            await tg.run_telegram_user_client_connector()
+
+    resolve_identity.assert_not_awaited()
+    connector.assert_not_called()
+    pool.close.assert_awaited_once()
+
+
+async def test_telegram_user_entrypoint_starts_after_persisted_account_wide_scope_consent() -> None:
+    """A recognized persisted consent grant permits the normal startup path."""
+    import butlers.connectors.telegram_user_client as tg
+
+    cfg = tg.TelegramUserClientConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+        provider="telegram",
+        channel="telegram_user_client",
+        endpoint_identity="telegram:pending",
+    )
+    pool = MagicMock()
+    pool.close = AsyncMock()
+    conn = MagicMock()
+    conn.start = AsyncMock()
+    conn.stop = AsyncMock()
+    creds = {
+        "TELEGRAM_API_ID": "123",
+        "TELEGRAM_API_HASH": "hash",
+        "TELEGRAM_USER_SESSION": "session",
+    }
+
+    with (
+        patch.object(tg.TelegramUserClientConnectorConfig, "from_env", return_value=cfg),
+        patch.object(
+            tg,
+            "_resolve_telegram_user_credentials_from_db",
+            new=AsyncMock(return_value=creds),
+        ),
+        patch.object(
+            tg,
+            "_resolve_endpoint_identity",
+            new=AsyncMock(return_value="telegram:me"),
+        ) as resolve_identity,
+        patch(
+            "butlers.connectors.cursor_store.create_cursor_pool_from_env",
+            new=AsyncMock(return_value=pool),
+        ),
+        patch(
+            "butlers.connectors.cursor_store.load_connector_settings",
+            new=AsyncMock(
+                return_value={
+                    "account_wide_ingestion_consent": {
+                        "version": "telegram-user-client-account-wide-v1",
+                        "granted_at": "2026-07-17T00:00:00+00:00",
+                    }
+                }
+            ),
+        ) as load_settings,
+        patch.object(tg, "TelegramUserClientConnector", return_value=conn),
+        patch(
+            "butlers.cli_auth.persistence.restore_connector_cli_auth",
+            new=AsyncMock(return_value={"codex": True}),
+        ),
+    ):
+        await tg.run_telegram_user_client_connector()
+
+    load_settings.assert_awaited_once_with(
+        pool,
+        "telegram_user_client",
+        "telegram:user:consent-control",
+    )
+    resolve_identity.assert_awaited_once()
     conn.start.assert_awaited_once()
 
 

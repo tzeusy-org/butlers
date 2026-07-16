@@ -6,7 +6,8 @@ run CLI tools or paste pre-generated session strings.
 
 Flow:
   1. POST /api/telegram/session/send-code
-     - Accepts ``api_id``, ``api_hash``, ``phone``.
+     - Accepts ``api_id``, ``api_hash``, ``phone``, and an explicit
+       account-wide ingestion acknowledgement.
      - Creates a temporary Telethon client, calls ``send_code_request()``.
      - Serializes the intermediate session state to the DB.
      - Returns a ``session_token`` (opaque handle) and ``phone_code_hash``.
@@ -17,15 +18,19 @@ Flow:
      - Signs in with the OTP code (and 2FA if needed).
      - On success, exports the ``StringSession``, stores ``telegram_api_id``,
        ``telegram_api_hash``, and ``telegram_user_session`` on the owner
-       entity via ``upsert_owner_entity_info()``, and disconnects the client.
+       entity via ``upsert_owner_entity_info()``, stores the versioned
+       non-secret consent grant in connector control settings, and disconnects
+       the client.
 
   3. GET /api/telegram/session/status
-     - Reports whether all three Telegram user credentials exist on the
-       owner entity.
+     - Reports whether all three Telegram user credentials and the current
+       account-wide consent grant exist.
 
 Security:
   - Pending auth state is stored in butler_secrets with a TTL.
   - Session strings are never returned to the frontend.
+  - The client must acknowledge the disclosed account-wide ingestion scope;
+    a missing acknowledgement is rejected server-side.
   - The Telethon client is created fresh per request and disconnected after.
   - Phone numbers are stored only in the pending auth blob (deleted after use).
 
@@ -40,11 +45,19 @@ import json
 import logging
 import secrets
 import time
+from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
+from butlers.connectors.telegram_user_client_consent import (
+    CONNECTOR_TYPE,
+    CONSENT_ENDPOINT_IDENTITY,
+    account_wide_ingestion_consent_settings,
+    is_account_wide_ingestion_consent_granted,
+)
 from butlers.credential_store import (
     CredentialStore,
     resolve_owner_entity_info,
@@ -74,6 +87,7 @@ class SendCodeRequest(BaseModel):
     api_id: int
     api_hash: str
     phone: str
+    scope_consent: Literal[True]
 
 
 class SendCodeResponse(BaseModel):
@@ -97,6 +111,7 @@ class SessionStatusResponse(BaseModel):
     has_api_id: bool
     has_api_hash: bool
     has_session: bool
+    has_scope_consent: bool
     ready: bool
 
 
@@ -124,6 +139,17 @@ def _get_pool(db: DatabaseManager):
                 detail="No database pool available.",
             )
         return db.pool(butler_names[0])
+
+
+def _get_switchboard_pool(db: DatabaseManager):
+    """Return the connector control-plane pool or fail closed for setup."""
+    try:
+        return db.pool("switchboard")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Telegram setup cannot persist account-wide ingestion consent.",
+        ) from exc
 
 
 async def _save_pending(
@@ -219,6 +245,7 @@ async def send_code(
             "phone": req.phone,
             "phone_code_hash": result.phone_code_hash,
             "session": intermediate_session,
+            "scope_consent": req.scope_consent,
         },
     )
 
@@ -242,8 +269,17 @@ async def verify_code(
         raise HTTPException(status_code=503, detail="Telethon is not installed.")
 
     pool = _get_pool(db)
+    switchboard_pool = _get_switchboard_pool(db)
     store = CredentialStore(pool)
     pending = await _load_pending(store, req.session_token)
+    if pending.get("scope_consent") is not True:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Explicit informed consent is required. Restart Telegram setup and acknowledge its "
+                "scope."
+            ),
+        )
 
     # Reconstruct the client from the saved intermediate session.
     session = StringSession(pending["session"])
@@ -277,6 +313,15 @@ async def verify_code(
         # Auth succeeded — export final session string
         me = await client.get_me()
         session_string = StringSession.save(client.session)
+
+        from butlers.connectors.cursor_store import save_connector_settings
+
+        await save_connector_settings(
+            switchboard_pool,
+            CONNECTOR_TYPE,
+            CONSENT_ENDPOINT_IDENTITY,
+            account_wide_ingestion_consent_settings(datetime.now(UTC)),
+        )
 
         await upsert_owner_entity_info(
             pool, "telegram_api_id", str(pending["api_id"]), secured=False
@@ -327,10 +372,23 @@ async def session_status(
     has_api_id = await resolve_owner_entity_info(pool, "telegram_api_id") is not None
     has_api_hash = await resolve_owner_entity_info(pool, "telegram_api_hash") is not None
     has_session = await resolve_owner_entity_info(pool, "telegram_user_session") is not None
+    try:
+        from butlers.connectors.cursor_store import load_connector_settings
+
+        settings = await load_connector_settings(
+            db.pool("switchboard"),
+            CONNECTOR_TYPE,
+            CONSENT_ENDPOINT_IDENTITY,
+        )
+        has_scope_consent = is_account_wide_ingestion_consent_granted(settings)
+    except Exception:
+        logger.warning("Telegram session status could not verify account-wide ingestion consent")
+        has_scope_consent = False
 
     return SessionStatusResponse(
         has_api_id=has_api_id,
         has_api_hash=has_api_hash,
         has_session=has_session,
+        has_scope_consent=has_scope_consent,
         ready=has_api_id and has_api_hash and has_session,
     )

@@ -11,6 +11,7 @@ import {
 import type { EntityInfoEntry } from "@/api/types";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -24,6 +25,43 @@ type TelegramStep =
   | "code"
   | "two_fa"
   | "success";
+
+function AccountWideScopeConsent({
+  checked,
+  disabled,
+  inputId,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  inputId: string;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  const disclosureId = `${inputId}-disclosure`;
+  return (
+    <fieldset className="space-y-2 rounded-md border border-border p-3">
+      <legend className="px-1 text-sm font-medium">Account-wide ingestion scope</legend>
+      <p id={disclosureId} className="text-sm text-muted-foreground">
+        Butlers will read and ingest new messages from every Telegram direct chat, group,
+        supergroup, and channel visible to this account. The current connector has no per-chat
+        or per-sender controls, and messages enter the normal routing pipeline. Historical
+        messages are read only when optional backfill is configured.
+      </p>
+      <div className="flex items-start gap-2">
+        <Checkbox
+          id={inputId}
+          checked={checked}
+          disabled={disabled}
+          aria-describedby={disclosureId}
+          onCheckedChange={(value) => onCheckedChange(value === true)}
+        />
+        <Label htmlFor={inputId} className="leading-snug">
+          I acknowledge the account-wide Telegram ingestion scope described above.
+        </Label>
+      </div>
+    </fieldset>
+  );
+}
 
 /**
  * Guided Telegram user-session bootstrap shared by the entity detail view and
@@ -61,6 +99,7 @@ export function TelegramSessionSetup({
   const [phone, setPhone] = React.useState("");
   const [code, setCode] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [scopeConsent, setScopeConsent] = React.useState(false);
   const [sessionToken, setSessionToken] = React.useState("");
   const [userName, setUserName] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -149,10 +188,15 @@ export function TelegramSessionSetup({
       setError("Phone number is required");
       return;
     }
+    if (!scopeConsent) {
+      setError("Acknowledge the account-wide Telegram ingestion scope before continuing.");
+      return;
+    }
     sendCodeMutation.mutate({
       api_id: numericApiId,
       api_hash: apiHash.trim(),
       phone: phone.trim(),
+      scope_consent: true,
     });
   }
 
@@ -185,6 +229,7 @@ export function TelegramSessionSetup({
     setPhone("");
     setCode("");
     setPassword("");
+    setScopeConsent(false);
     setSessionToken("");
     setUserName(null);
     setError(null);
@@ -196,6 +241,7 @@ export function TelegramSessionSetup({
   const phoneInputId = `${fieldId}-phone`;
   const codeInputId = `${fieldId}-code`;
   const passwordInputId = `${fieldId}-password`;
+  const scopeConsentInputId = `${fieldId}-account-wide-scope-consent`;
 
   if (isLoading) {
     return (
@@ -210,7 +256,7 @@ export function TelegramSessionSetup({
     <section className="space-y-3" data-telegram-session-setup="true">
       <div className="flex items-center justify-between">
         <Eyebrow as="div">Telegram user session</Eyebrow>
-        {status?.ready && (
+        {status?.ready && status.has_scope_consent && (
           <span
             aria-label="Telegram session ready"
             className="h-2 w-2 rounded-full bg-[var(--green)]"
@@ -224,7 +270,14 @@ export function TelegramSessionSetup({
           <span>{status.has_api_id ? "+" : "−"} API ID</span>
           <span>{status.has_api_hash ? "+" : "−"} API hash</span>
           <span>{status.has_session ? "+" : "−"} session</span>
+          <span>{status.has_scope_consent ? "+" : "−"} account-wide ingestion consent</span>
         </div>
+      )}
+
+      {status?.ready && !status.has_scope_consent && step === "idle" && (
+        <p className="text-sm text-muted-foreground" role="status">
+          Account-wide ingestion is disabled until you review and acknowledge its scope.
+        </p>
       )}
 
       {step === "idle" && (
@@ -233,7 +286,11 @@ export function TelegramSessionSetup({
           size="sm"
           onClick={handleStart}
         >
-          {status?.ready ? "Regenerate session" : "Set up Telegram session"}
+          {status?.ready
+            ? status.has_scope_consent
+              ? "Regenerate session"
+              : "Review scope and enable"
+            : "Set up Telegram session"}
         </Button>
       )}
 
@@ -300,8 +357,14 @@ export function TelegramSessionSetup({
               />
             </div>
           </div>
+          <AccountWideScopeConsent
+            checked={scopeConsent}
+            disabled={isPending}
+            inputId={scopeConsentInputId}
+            onCheckedChange={setScopeConsent}
+          />
           <div className="flex gap-2">
-            <Button size="sm" onClick={handleSendCode} disabled={isPending}>
+            <Button size="sm" onClick={handleSendCode} disabled={isPending || !scopeConsent}>
               {sendCodeMutation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
               Send code
             </Button>
@@ -330,8 +393,14 @@ export function TelegramSessionSetup({
               onKeyDown={(event) => { if (event.key === "Enter") handleSendCode(); }}
             />
           </div>
+          <AccountWideScopeConsent
+            checked={scopeConsent}
+            disabled={isPending}
+            inputId={scopeConsentInputId}
+            onCheckedChange={setScopeConsent}
+          />
           <div className="flex gap-2">
-            <Button size="sm" onClick={handleSendCode} disabled={isPending}>
+            <Button size="sm" onClick={handleSendCode} disabled={isPending || !scopeConsent}>
               {sendCodeMutation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
               Send code
             </Button>
