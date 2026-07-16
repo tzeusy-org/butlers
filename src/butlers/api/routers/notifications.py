@@ -113,8 +113,8 @@ def _empty_notification_page(
 def _empty_notification_stats(*, source_available: bool = True) -> ApiResponse[NotificationStats]:
     """Return the standard empty notification stats envelope.
 
-    ``source_available=False`` when this all-zero payload reflects a
-    genuinely unreachable Switchboard pool, not a truthful "no activity".
+    ``source_available=False`` when this all-zero payload reflects an
+    unavailable or failed Switchboard source, not a truthful "no activity".
     """
     return ApiResponse[NotificationStats](
         data=NotificationStats(
@@ -457,7 +457,6 @@ async def notification_stats(
             f"SELECT channel, count(*) AS cnt FROM notifications{window_where} GROUP BY channel",
             *window_args,
         )
-        by_channel = {row["channel"]: row["cnt"] for row in channel_rows}
 
         # by_butler is scoped to FAILED notifications only (unlike by_channel
         # above, which spans every status) -- it powers the notifications
@@ -468,12 +467,18 @@ async def notification_stats(
             f"WHERE status = 'failed'{window_and} GROUP BY source_butler",
             *window_args,
         )
-        by_butler = {row["source_butler"]: row["cnt"] for row in butler_rows}
     except Exception as exc:
-        if not _is_missing_notifications_table_error(exc):
-            raise
-        _log_missing_notifications_table_once(operation="notification_stats")
-        return _empty_notification_stats()
+        if _is_missing_notifications_table_error(exc):
+            _log_missing_notifications_table_once(operation="notification_stats")
+            return _empty_notification_stats()
+        logger.warning(
+            "Switchboard notification stats query failed; returning degraded empty stats",
+            exc_info=True,
+        )
+        return _empty_notification_stats(source_available=False)
+
+    by_channel = {row["channel"]: row["cnt"] for row in channel_rows}
+    by_butler = {row["source_butler"]: row["cnt"] for row in butler_rows}
 
     return ApiResponse[NotificationStats](
         data=NotificationStats(

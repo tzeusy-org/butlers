@@ -2,10 +2,10 @@
 butler-scoped /api/butlers/{name}/notifications -- the source_available
 degraded-mode contract (bu-qvnce.1).
 
-A Switchboard pool that is genuinely unreachable (KeyError from
-db.pool("switchboard")) must be distinguishable from a truthful "no
-notifications match" result: both currently render an all-zero/empty
-payload, but only the unreachable case must carry ``source_available: false``.
+A genuinely unavailable Switchboard source — whether pool acquisition raises
+``KeyError`` or a live pool query fails — must be distinguishable from a
+truthful "no notifications match" result. Both render an all-zero/empty
+payload, but only the unavailable case carries ``source_available: false``.
 """
 
 from __future__ import annotations
@@ -100,6 +100,64 @@ async def test_notification_list_query_failure_returns_degraded_envelope(app, pa
     assert body["data"] == []
     assert body["meta"] == {"total": 0, "offset": 0, "limit": 50, "has_more": False}
     assert body["source_available"] is False
+
+
+@pytest.mark.parametrize("query_method", ["fetchval", "fetch"], ids=["counts", "groups"])
+async def test_notification_stats_query_failure_returns_degraded_envelope(app, query_method):
+    """A live pool can fail during either notification-stats query type."""
+    mock_db, pool = _make_available_db()
+    getattr(pool, query_method).side_effect = ConnectionError("connection reset by peer")
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/notifications/stats")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == {
+        "total": 0,
+        "sent": 0,
+        "failed": 0,
+        "by_channel": {},
+        "by_butler": {},
+        "source_available": False,
+    }
+
+
+async def test_notification_stats_missing_table_remains_available_empty_stats(app):
+    """An unmigrated notifications table is legitimate absence, not degradation."""
+    mock_db, pool = _make_available_db()
+    pool.fetchval.side_effect = asyncpg.exceptions.UndefinedTableError(
+        'relation "notifications" does not exist'
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/notifications/stats")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["source_available"] is True
+
+
+async def test_notification_stats_does_not_mask_response_mapping_errors(app):
+    """Only database query failures receive the degraded stats fallback."""
+    mock_db, pool = _make_available_db()
+    pool.fetch.return_value = [{}]
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/notifications/stats")
+
+    assert resp.status_code == 500
 
 
 async def test_notification_list_missing_table_remains_available_empty_page(app):
