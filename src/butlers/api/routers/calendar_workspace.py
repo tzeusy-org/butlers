@@ -108,6 +108,7 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     update_dedup_rules,
 )
 from butlers.api.routers.audit import log_audit_entry
+from butlers.calendar_action_result import reconstruct_action_result
 from butlers.config import list_butlers
 from butlers.google_account_registry import list_google_accounts
 from butlers.modules.calendar import (
@@ -3120,48 +3121,6 @@ def _undo_create_args(pre_state: dict[str, Any]) -> dict[str, Any]:
     return arguments
 
 
-def _reconstruct_action_result(value: object) -> dict[str, Any]:
-    """Normalize a ``calendar_action_log.action_result`` JSONB value into a dict.
-
-    Handles the canonical object shape as well as legacy rows corrupted by the
-    action_result double-JSON-encoding bug (bu-x92jw): the undo-marker writes
-    used to pre-serialize the marker with ``json.dumps()`` and bind it through
-    an asyncpg pool whose registered jsonb codec calls ``json.dumps()`` again,
-    landing the parameter as a jsonb-typed STRING. Postgres's ``||`` between a
-    jsonb object and a jsonb scalar coerces both operands into an array, so a
-    corrupted row looks like ``[{...original...}, "{\\"undo\\": {...}}"]``
-    instead of a merged object.
-
-    Reconstructs the equivalent merged object by dict-updating from every
-    array element in order -- Mapping elements merge directly; string elements
-    are re-parsed as JSON and merged if they decode to an object -- so a later
-    marker element always wins over an earlier one, matching the semantics the
-    original (uncorrupted) ``||`` concat was meant to have.
-    """
-    if isinstance(value, Mapping):
-        return dict(value)
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return {}
-        return dict(parsed) if isinstance(parsed, Mapping) else {}
-    if isinstance(value, list):
-        merged: dict[str, Any] = {}
-        for element in value:
-            if isinstance(element, Mapping):
-                merged.update(element)
-            elif isinstance(element, str):
-                try:
-                    parsed_element = json.loads(element)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(parsed_element, Mapping):
-                    merged.update(parsed_element)
-        return merged
-    return {}
-
-
 def _created_event_id(action_result: dict[str, Any], origin_ref: object) -> str | None:
     """Resolve the created event's provider id for an undo-of-create delete."""
     event = action_result.get("event")
@@ -3237,7 +3196,7 @@ async def undo_calendar_mutation(
     action_type = str(row["action_type"])
     action_status = str(row["action_status"])
     raw_action_result = row["action_result"]
-    action_result = _reconstruct_action_result(raw_action_result)
+    action_result = reconstruct_action_result(raw_action_result)
 
     if isinstance(raw_action_result, list):
         # Legacy corrupted row (bu-x92jw double-encoding bug): heal it back to
