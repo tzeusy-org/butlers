@@ -125,7 +125,7 @@ _LINK_WATCHDOG_INTERVAL_S = 60  # How often the stale-link watchdog checks the b
 _BRIDGE_STARTUP_TIMEOUT_S = 60.0  # Bridge startup timeout (longer for QR re-pair)
 _SSE_RECONNECT_DELAY_S = 5.0  # Delay before reconnecting SSE after failure
 _SSE_KEEPALIVE_TIMEOUT_S = 90.0  # Max silence from SSE stream before treating as stale
-_SSE_PAIRING_IDLE_INTERVAL_S = 30.0  # How often to recheck while awaiting QR pairing (bu-7sh43)
+_SSE_PAIRING_WAIT_TIMEOUT_S = 30.0  # Maximum wait for the bridge to reconnect after pairing
 _CONNECTOR_TYPE = "whatsapp_user_client"
 
 # Discretion fail-open threshold for WhatsApp (bu-cicgb). WhatsApp is a primary
@@ -788,16 +788,18 @@ class WhatsAppUserClientConnector:
                 if self._bridge_manager.is_awaiting_pairing:
                     # A bridge sitting in pair_required is legitimately
                     # waiting for a human to scan the QR — not a failure.
-                    # Idle here instead of stopping the whole connector
-                    # (and tearing down the bridge in the finally-block
-                    # below); the health-poll loop clears degraded once
-                    # pairing completes and this loop resumes the SSE
-                    # stream on its next iteration (bu-7sh43).
-                    logger.debug("Bridge awaiting QR pairing — idling SSE loop without stopping")
+                    # Wait for the manager's connection signal instead of
+                    # polling on a fixed delay. The timeout preserves the
+                    # previous recheck cadence if the bridge does not emit a
+                    # connection signal, while a completed pairing wakes the
+                    # loop immediately.
+                    logger.debug("Bridge awaiting QR pairing — waiting for connection signal")
                     try:
-                        await asyncio.sleep(_SSE_PAIRING_IDLE_INTERVAL_S)
-                    except asyncio.CancelledError:
-                        raise
+                        await self._bridge_manager.wait_until_connected(
+                            timeout=_SSE_PAIRING_WAIT_TIMEOUT_S
+                        )
+                    except TimeoutError:
+                        logger.debug("Bridge is still awaiting QR pairing")
                     continue
                 logger.error(
                     "Bridge entered degraded mode: %s — stopping SSE loop",

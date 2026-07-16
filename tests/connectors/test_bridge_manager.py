@@ -143,6 +143,32 @@ def test_not_running_with_exited_process() -> None:
     assert not mgr.is_running
 
 
+async def test_wait_until_connected_returns_after_connection_signal() -> None:
+    """The public wait returns immediately once the bridge is connected."""
+    mgr = BridgeSubprocessManager(_make_config())
+    mgr._connected_event.set()
+
+    await mgr.wait_until_connected(timeout=0.01)
+
+
+async def test_wait_until_connected_preserves_timeout_behavior() -> None:
+    """The public wait propagates a timeout when the bridge stays disconnected."""
+    mgr = BridgeSubprocessManager(_make_config())
+
+    with pytest.raises(TimeoutError):
+        await mgr.wait_until_connected(timeout=0.01)
+
+
+async def test_wait_until_connected_blocks_after_bridge_becomes_degraded() -> None:
+    """A stale connection signal cannot wake a re-pairing SSE loop."""
+    mgr = BridgeSubprocessManager(_make_config())
+    mgr._connected_event.set()
+    mgr._set_degraded("pair_required", terminal=True, awaiting_pairing=True)
+
+    with pytest.raises(TimeoutError):
+        await mgr.wait_until_connected(timeout=0.01)
+
+
 @pytest.mark.parametrize(
     ("state", "expected_reason", "expected_awaiting_pairing"),
     [
