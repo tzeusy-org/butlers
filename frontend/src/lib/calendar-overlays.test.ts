@@ -106,8 +106,10 @@ describe("overlayAmountBadge", () => {
 
 describe("overlayButlerAccent / overlayKindGlyph", () => {
   it("returns a stable accent per butler and a glyph per kind", () => {
-    expect(overlayButlerAccent("finance")).toContain("emerald");
-    expect(overlayButlerAccent("travel")).toContain("sky");
+    expect(overlayButlerAccent("finance")).toContain("categorical-1");
+    expect(overlayButlerAccent("travel")).toContain("categorical-2");
+    expect(overlayButlerAccent("relationship")).toContain("categorical-3");
+    expect(overlayButlerAccent("health")).toContain("categorical-4");
     expect(overlayButlerAccent(null)).toContain("var(--border)");
     expect(overlayKindGlyph("departure")).toBe("✈");
     expect(overlayKindGlyph("unknown_kind")).toBe("•");

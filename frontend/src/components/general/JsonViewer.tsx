@@ -42,26 +42,16 @@ function isArray(value: unknown): value is unknown[] {
 
 function ValueSpan({ value }: { value: unknown }) {
   if (value === null) {
-    return <span className="text-rose-400 italic">null</span>;
+    return <span className="text-categorical-5 italic">null</span>;
   }
   if (typeof value === "boolean") {
-    return (
-      // eslint-disable-next-line no-restricted-syntax -- JSON syntax-highlighting color (value-type coloring), not a status signal
-      <span className="text-amber-500 font-medium">
-        {value ? "true" : "false"}
-      </span>
-    );
+    return <span className="text-categorical-8 font-medium">{value ? "true" : "false"}</span>;
   }
   if (typeof value === "number") {
-    return <span className="text-sky-400">{String(value)}</span>;
+    return <span className="text-categorical-7">{String(value)}</span>;
   }
   if (typeof value === "string") {
-    return (
-      // eslint-disable-next-line no-restricted-syntax -- JSON syntax-highlighting color (value-type coloring), not a status signal
-      <span className="text-emerald-400">
-        &quot;{value}&quot;
-      </span>
-    );
+    return <span className="text-categorical-9">&quot;{value}&quot;</span>;
   }
   // fallback
   return <span className="text-muted-foreground">{String(value)}</span>;
@@ -90,7 +80,7 @@ function JsonNode({ label, value, defaultCollapsed, depth }: NodeProps) {
       <div className="flex items-baseline gap-1" style={{ paddingLeft: depth * 16 }}>
         {label != null && (
           <>
-            <span className="text-violet-400 font-medium">{label}</span>
+            <span className="text-categorical-2 font-medium">{label}</span>
             <span className="text-muted-foreground">:</span>{" "}
           </>
         )}
@@ -128,7 +118,7 @@ function JsonNode({ label, value, defaultCollapsed, depth }: NodeProps) {
         </span>
         {label != null && (
           <>
-            <span className="text-violet-400 font-medium">{label}</span>
+            <span className="text-categorical-2 font-medium">{label}</span>
             <span className="text-muted-foreground">:</span>{" "}
           </>
         )}

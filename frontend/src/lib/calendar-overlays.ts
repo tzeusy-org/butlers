@@ -106,14 +106,13 @@ export function overlaysByDay(
 export function overlayButlerAccent(sourceButler: string | null): string {
   switch (sourceButler) {
     case "finance":
-      // eslint-disable-next-line no-restricted-syntax -- categorical per-butler-domain accent (finance/travel/relationship/health), not a live status signal
-      return "border-emerald-500/40 text-emerald-600 dark:text-emerald-400";
+      return "border-categorical-1/40 text-categorical-1";
     case "travel":
-      return "border-sky-500/40 text-sky-600 dark:text-sky-400";
+      return "border-categorical-2/40 text-categorical-2";
     case "relationship":
-      return "border-rose-500/40 text-rose-600 dark:text-rose-400";
+      return "border-categorical-3/40 text-categorical-3";
     case "health":
-      return "border-violet-500/40 text-violet-600 dark:text-violet-400";
+      return "border-categorical-4/40 text-categorical-4";
     default:
       return "border-[var(--border)] text-[var(--mfg)]";
   }

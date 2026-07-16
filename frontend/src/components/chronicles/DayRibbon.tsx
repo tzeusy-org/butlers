@@ -182,7 +182,7 @@ export function DayRibbon({ episodes, windowStart, windowEnd, onEpisodeClick }: 
                 style={{
                   left: `${b.leftPct}%`,
                   width: `${b.widthPct}%`,
-                  backgroundColor: config.hex,
+                  backgroundColor: config.color,
                   ...(b.isSensitive
                     ? {
                         backgroundImage:
