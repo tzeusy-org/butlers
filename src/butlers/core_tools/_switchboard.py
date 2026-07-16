@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -710,7 +711,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     @tool_span("file_bug_report", butler_name=butler_name)
     async def file_bug_report(
         summary: str,
-        severity: int = 2,
+        severity: int | float | str | bool | None = 2,
     ) -> dict[str, Any]:
         """BUG/SYSTEM-REPORT TOOL — file a dashboard bug or data-problem report.
 
@@ -727,6 +728,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             summary: Concise description of the bug/problem, in the owner's
                 own words plus any grounding detail (e.g. the page/route).
             severity: 0=critical, 1=high, 2=medium (default), 3=low, 4=info.
+                Caller values may be integer-like numeric strings or floats;
+                booleans, non-finite, fractional, and malformed values use medium.
         """
         from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 
@@ -767,9 +770,17 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "bug"
 
         try:
-            normalized_severity = int(float(severity)) if not isinstance(severity, bool) else 2
+            parsed_severity = float(severity) if not isinstance(severity, bool) else None
         except (TypeError, ValueError, OverflowError):
+            parsed_severity = None
+        if (
+            parsed_severity is None
+            or not math.isfinite(parsed_severity)
+            or not parsed_severity.is_integer()
+        ):
             normalized_severity = 2
+        else:
+            normalized_severity = int(parsed_severity)
         clamped_severity = max(0, min(4, normalized_severity))
         call_site = f"dashboard:{page_route or 'unknown'}"
 

@@ -26,6 +26,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import Client
+from fastmcp import FastMCP as RuntimeFastMCP
 
 from butlers.daemon import ButlerDaemon
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
@@ -402,6 +404,8 @@ async def test_file_bug_report_relays_to_qa_and_replies_with_case_reference(
         ("1", 1),
         (1.0, 1),
         ("1.0", 1),
+        (1.5, 2),
+        ("1.5", 2),
         ("9", 4),
         ("9.0", 4),
         ("-3", 0),
@@ -410,7 +414,13 @@ async def test_file_bug_report_relays_to_qa_and_replies_with_case_reference(
         (None, 2),
         ("", 2),
         (True, 2),
+        (False, 2),
         ("inf", 2),
+        ("-inf", 2),
+        ("nan", 2),
+        (float("inf"), 2),
+        (float("-inf"), 2),
+        (float("nan"), 2),
     ],
 )
 async def test_file_bug_report_coerces_clamps_and_defaults_severity(
@@ -427,9 +437,15 @@ async def test_file_bug_report_coerces_clamps_and_defaults_severity(
         butler_dir, patches, mock_route=mock_route
     )
 
-    result = await tools["file_bug_report"](summary="The dashboard is broken", severity=severity)
+    runtime_mcp = RuntimeFastMCP("test-switchboard")
+    runtime_mcp.tool()(tools["file_bug_report"])
+    async with Client(runtime_mcp) as client:
+        result = await client.call_tool(
+            "file_bug_report",
+            {"summary": "The dashboard is broken", "severity": severity},
+        )
 
-    assert result["status"] == "ok"
+    assert result.data["status"] == "ok"
     mock_route.assert_awaited_once()
     assert mock_route.await_args.kwargs["args"]["severity"] == expected_severity
 
