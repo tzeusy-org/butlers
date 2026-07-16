@@ -620,7 +620,7 @@ function OwnerPlexCanvas({
             className="absolute left-0 top-0 -translate-x-1/2 -translate-y-1/2 bg-background px-1 font-mono text-[9px] uppercase tracking-[0.08em]"
             style={{
               transform: `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`,
-              color: over ? "var(--amber)" : "var(--dim)",
+              color: over ? "var(--amber-text)" : "var(--dim)",
             }}
           >
             <span className="tabular-nums">
@@ -1371,7 +1371,7 @@ function AttentionRail({
                     </span>
                     <span
                       className="font-mono text-[10px] tabular-nums"
-                      style={{ color: over ? "var(--amber)" : "var(--dim)" }}
+                      style={{ color: over ? "var(--amber-text)" : "var(--dim)" }}
                     >
                       {count}/{tier}
                     </span>

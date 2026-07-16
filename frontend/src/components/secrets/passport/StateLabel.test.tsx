@@ -30,10 +30,10 @@ import { StateLabel } from "./atoms.tsx"
 const STATE_CASES = [
   { state: "expired",        label: "expired",        color: "var(--red"    },
   { state: "revoked",        label: "revoked",        color: "var(--red"    },
-  { state: "scope_mismatch", label: "scope mismatch", color: "var(--amber"  },
-  { state: "expiring",       label: "expiring",       color: "var(--amber"  },
+  { state: "scope_mismatch", label: "scope mismatch", color: "var(--amber-text"  },
+  { state: "expiring",       label: "expiring",       color: "var(--amber-text"  },
   { state: "warn",           label: "unverified",     color: "var(--mfg"    },
-  { state: "rotating",       label: "rotating…",      color: "var(--amber"  },
+  { state: "rotating",       label: "rotating…",      color: "var(--amber-text"  },
   { state: "ok",             label: "healthy",        color: "var(--green"  },
   { state: "failed",         label: "failed",         color: "var(--red"    },
   { state: "never_set",      label: "not set",        color: "var(--mfg"    },

@@ -31,7 +31,7 @@
 //   ScopeBalance:
 //     - Renders nothing when there are no required scopes
 //     - Renders the have/required ratio text
-//     - granted < required → --amber colour
+//     - granted < required → --amber-text foreground and --amber fill
 //     - granted >= required → --green colour
 //   VisaRow:
 //     - missing/extra/granted states render the correct glyph symbol
@@ -66,10 +66,11 @@ describe("ScopeBalance: ratio text", () => {
 })
 
 describe("ScopeBalance: colour", () => {
-  it("uses --amber when granted < required", () => {
+  it("uses AA-safe --amber-text for the ratio while preserving --amber for the segmented fill", () => {
     const html = renderToStaticMarkup(
       <ScopeBalance granted={["a"]} required={["a", "b", "c"]} />,
     )
+    expect(html).toContain("var(--amber-text)")
     expect(html).toContain("var(--amber)")
   })
 
@@ -86,10 +87,10 @@ describe("ScopeBalance: colour", () => {
 // ---------------------------------------------------------------------------
 
 describe("VisaRow: state glyphs", () => {
-  it('state="missing" renders ∅ and --amber', () => {
+  it('state="missing" renders ∅ and AA-safe --amber-text', () => {
     const html = renderToStaticMarkup(<VisaRow scope={SCOPE} state="missing" />)
     expect(html).toContain("∅")
-    expect(html).toContain("var(--amber)")
+    expect(html).toContain("var(--amber-text)")
   })
 
   it('state="extra" renders ✓ and --dim', () => {

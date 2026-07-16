@@ -34,6 +34,7 @@ import {
   PillBtn,
   KV,
   toneColor,
+  toneTextColor,
   IdentityChip,
   formatPassportTimestamp,
 } from "./atoms.tsx";
@@ -143,6 +144,7 @@ function HeadingBand({
   subtitle,
   mark,
   stateColor,
+  stateTextColor = stateColor,
   stateLabel,
   stateLines = [],
 }: {
@@ -153,6 +155,7 @@ function HeadingBand({
   subtitle?: string;
   mark?: React.ReactNode;
   stateColor: string;
+  stateTextColor?: string;
   stateLabel: string;
   stateLines?: string[];
 }) {
@@ -195,15 +198,15 @@ function HeadingBand({
         className="flex flex-col gap-0.5 items-end shrink-0 p-2"
         style={{
           border: `1.5px solid ${stateColor}`,
-          color: stateColor,
+          color: stateTextColor,
         }}
         data-state-plaque="true"
       >
-        <Mono size={12} upper tracking="0.18em" color={stateColor} weight={500}>
+        <Mono size={12} upper tracking="0.18em" color={stateTextColor} weight={500}>
           {stateLabel}
         </Mono>
         {stateLines.map((line, i) => (
-          <Mono key={i} size={9} color={stateColor}>
+          <Mono key={i} size={9} color={stateTextColor}>
             {line}
           </Mono>
         ))}
@@ -846,6 +849,7 @@ function TestModeExpiryBanner({
   primaryAccountEmail: string | null;
 }) {
   const tone = isExpiring ? "var(--red)" : "var(--amber)";
+  const textTone = isExpiring ? "var(--red)" : "var(--amber-text)";
   const label = isExpiring
     ? "test-mode consent about to expire, re-consent to keep Google Health connected"
     : "test mode: consent expires every 7 days until production verification completes";
@@ -879,13 +883,13 @@ function TestModeExpiryBanner({
         aria-hidden="true"
       />
       <div className="flex flex-col gap-1 min-w-0">
-        <Mono size={10} color={tone}>{label}</Mono>
+        <Mono size={10} color={textTone}>{label}</Mono>
         <a
           href={reconsentUrl}
           data-testid="test-mode-reconsent-link"
           className="underline underline-offset-2 w-fit"
         >
-          <Mono size={9} color={tone}>re-consent (Google Health)</Mono>
+          <Mono size={9} color={textTone}>re-consent (Google Health)</Mono>
         </a>
       </div>
     </div>
@@ -918,6 +922,7 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
       : status.state === "error"
         ? "var(--red)"
         : "var(--amber)";
+  const stateTextColor = stateColor === "var(--amber)" ? "var(--amber-text)" : stateColor;
 
   // Compute banner flags via a module-level helper so Date.now() is not called
   // directly during render (required by the react-hooks/purity ESLint rule).
@@ -947,7 +952,7 @@ function GoogleHealthPassportStatusCard({ status }: { status: GoogleHealthStatus
             style={{ width: 6, height: 6, backgroundColor: stateColor }}
             aria-hidden="true"
           />
-          <Mono size={10} color={stateColor}>{status.state}</Mono>
+          <Mono size={10} color={stateTextColor}>{status.state}</Mono>
         </div>
 
         {/* KV rows */}
@@ -1300,6 +1305,7 @@ export function PageUser({
         subtitle={`${provider.authority} · ${provider.kind}`}
         mark={<ProviderMark glyph={provider.glyph} label={provider.label} size={36} />}
         stateColor={color}
+        stateTextColor={toneTextColor(meta.tone)}
         stateLabel={meta.label}
         stateLines={stateLines}
       />
@@ -1361,7 +1367,7 @@ export function PageUser({
                 credential.state === "expired"
                   ? "var(--red)"
                   : credential.state === "expiring"
-                    ? "var(--amber)"
+                    ? "var(--amber-text)"
                     : credential.expires
                       ? "var(--fg)"
                       : "var(--mfg)"
@@ -2350,7 +2356,7 @@ function CliDeviceAuthPanel({ auth }: { auth: CliDeviceAuthState }) {
       ? "var(--green)"
       : session?.state === "failed" || session?.state === "expired"
         ? "var(--red)"
-        : "var(--amber)";
+        : "var(--amber-text)";
 
   const showCode =
     session?.state === "awaiting_auth" && !!session.auth_url && !!session.device_code;
@@ -2676,6 +2682,7 @@ export function PageCli({
         title={credential.label}
         subtitle={credential.id}
         stateColor={color}
+        stateTextColor={toneTextColor(meta.tone)}
         stateLabel={meta.label}
         stateLines={stateLines}
       />
@@ -2707,7 +2714,7 @@ export function PageCli({
             label="expires"
             value={credential.expires ?? "no expiry"}
             valueColor={
-              credential.state === "expiring" ? "var(--amber)" : credential.expires ? "var(--fg)" : "var(--mfg)"
+              credential.state === "expiring" ? "var(--amber-text)" : credential.expires ? "var(--fg)" : "var(--mfg)"
             }
           />
           <KV label="last used" value={credential.lastUsed ?? "—"} />
@@ -3535,7 +3542,7 @@ export function PassportAddPanel({
           {/* Advanced — raw type+value paste. Demoted: bypasses account/scope tracking. */}
           {userAdvanced && (
             <div className="flex flex-col gap-3" data-user-raw-form="true">
-              <Mono size={11} color="var(--amber)">
+              <Mono size={11} color="var(--amber-text)">
                 pasted tokens bypass account and scope tracking. Prefer the guided connect above when available.
               </Mono>
 

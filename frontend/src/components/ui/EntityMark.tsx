@@ -169,7 +169,7 @@ export function EntityMark({
     tone === "fill"
       ? ENTITY_BADGE_TEXT
       : isUnidentified
-        ? "var(--amber)"
+        ? "var(--amber-text)"
         : "var(--fg)"
 
   // Border color: fill uses no border; neutral uses ownership/state hierarchy.

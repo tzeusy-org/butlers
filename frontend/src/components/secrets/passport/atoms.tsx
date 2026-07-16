@@ -27,6 +27,12 @@ export function toneColor(tone: string): string {
   }
 }
 
+/** Map a state tone to an AA-safe CSS foreground token. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function toneTextColor(tone: string): string {
+  return tone === "amber" ? "var(--amber-text)" : toneColor(tone);
+}
+
 /** Color for a credential state. */
 // eslint-disable-next-line react-refresh/only-export-components
 export function stateColor(state: CredentialState): string {
@@ -290,7 +296,7 @@ export function StateLabel({
   className?: string;
 }) {
   const meta = STATE_CATALOG[state];
-  const color = meta ? toneColor(meta.tone) : "var(--mfg)";
+  const color = meta ? toneTextColor(meta.tone) : "var(--mfg)";
   return (
     <Mono
       size={10}
@@ -517,7 +523,8 @@ export function StampGlyph({
   className?: string;
 }) {
   const meta = STAMP_GLYPHS[action] ?? { glyph: "·", tone: "dim" };
-  const color = toneColor(meta.tone);
+  const borderColor = toneColor(meta.tone);
+  const textColor = toneTextColor(meta.tone);
   return (
     <span
       data-stamp-action={action}
@@ -526,8 +533,8 @@ export function StampGlyph({
         width: size + 4,
         height: size + 4,
         borderRadius: 2,
-        border: `1px solid ${color}`,
-        color,
+        border: `1px solid ${borderColor}`,
+        color: textColor,
         fontSize: Math.round(size * 0.85),
         lineHeight: 1,
         flexShrink: 0,
@@ -644,9 +651,9 @@ export function VisaRow({
   scope: string;
   state: "granted" | "missing" | "extra";
 }) {
-  const color =
+  const textColor =
     state === "missing"
-      ? "var(--amber)"
+      ? "var(--amber-text)"
       : state === "granted"
         ? "var(--fg)"
         : "var(--dim)";
@@ -657,13 +664,13 @@ export function VisaRow({
       data-scope-state={state}
       title={VISA_STATE_LEGEND[state]}
     >
-      <Mono size={10} color={state === "missing" ? "var(--amber)" : "var(--mfg)"}>
+      <Mono size={10} color={state === "missing" ? "var(--amber-text)" : "var(--mfg)"}>
         {state === "missing" ? "∅" : "✓"}
       </Mono>
-      <Mono size={11} color={color}>
+      <Mono size={11} color={textColor}>
         {scope}
       </Mono>
-      <Mono size={9} upper tracking="0.10em" color={color}>
+      <Mono size={9} upper tracking="0.10em" color={textColor}>
         {state === "missing" ? "not granted" : state === "granted" ? "granted" : "extra"}
       </Mono>
     </div>
@@ -684,10 +691,11 @@ export function ScopeBalance({
   const grantedSet = new Set(granted);
   const have = required.filter((s) => grantedSet.has(s)).length;
   const missing = required.length - have;
-  const color = missing > 0 ? "var(--amber)" : "var(--green)";
+  const fillColor = missing > 0 ? "var(--amber)" : "var(--green)";
+  const textColor = missing > 0 ? "var(--amber-text)" : fillColor;
   return (
     <div className="flex items-center gap-2.5">
-      <Mono size={11} color={color}>
+      <Mono size={11} color={textColor}>
         {have}/{required.length}
       </Mono>
       <span
@@ -703,7 +711,7 @@ export function ScopeBalance({
                 i < required.length - 1
                   ? "1px solid var(--bg)"
                   : "none",
-              background: grantedSet.has(scope) ? color : "transparent",
+              background: grantedSet.has(scope) ? fillColor : "transparent",
             }}
           />
         ))}

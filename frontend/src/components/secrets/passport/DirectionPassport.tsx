@@ -88,7 +88,7 @@ function KpiCell({
 }) {
   const captionColor =
     captionTone === "amber"
-      ? "var(--amber)"
+      ? "var(--amber-text)"
       : captionTone === "red"
         ? "var(--red)"
         : "var(--dim)";

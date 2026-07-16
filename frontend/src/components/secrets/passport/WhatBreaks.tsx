@@ -315,7 +315,7 @@ export function ConfirmImpact({
   if (state === "unavailable") {
     return (
       <div className={cn("py-1", className)} {...props} data-confirm-impact-state="unavailable">
-        <Mono style={{ color: "var(--amber,oklch(0.7_0.15_80))" }}>
+        <Mono style={{ color: "var(--amber-text)" }}>
           impact unavailable: could not reach the dependency catalogue.
         </Mono>
       </div>

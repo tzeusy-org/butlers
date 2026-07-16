@@ -23,7 +23,7 @@
 //
 // Coverage:
 //   - Each action renders its glyph character (per constants.ts STAMP_GLYPHS)
-//   - Each action renders the colour toneColor() derives from its tone
+//   - Each action renders the foreground colour derived from its tone
 //   - className forwarding
 // ---------------------------------------------------------------------------
 
@@ -40,7 +40,7 @@ const GLYPH_CASES = [
   { action: "revoked",      char: "⊘", color: "var(--red"   },
   { action: "connected",    char: "⊕", color: "var(--fg"    },
   { action: "disconnected", char: "⊖", color: "var(--mfg"   },
-  { action: "warned",       char: "!", color: "var(--amber" },
+  { action: "warned",       char: "!", color: "var(--amber-text" },
   { action: "overrode",     char: "⤳", color: "var(--fg"    },
   { action: "attempted",    char: "▷", color: "var(--mfg"   },
   { action: "set",          char: "⊙", color: "var(--fg"    },
@@ -62,6 +62,14 @@ describe("StampGlyph: colour tokens (derived from constants.ts tone)", () => {
       expect(html).toContain(color)
     })
   }
+})
+
+describe("StampGlyph: amber foreground versus decoration", () => {
+  it("uses --amber-text for the warned glyph while retaining --amber for its border", () => {
+    const html = renderToStaticMarkup(<StampGlyph action="warned" />)
+
+    expect(html).toMatch(/border:1px solid var\(--amber,[^;]+;color:var\(--amber-text\)/)
+  })
 })
 
 describe("StampGlyph: unknown action fallback", () => {

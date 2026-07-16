@@ -206,13 +206,11 @@ describe("EntityMark: isUnidentified border", () => {
     expect(html).toContain("var(--amber)")
   })
 
-  it("applies --amber text color when isUnidentified=true in neutral tone", () => {
+  it("applies AA-safe --amber-text color when isUnidentified=true in neutral tone", () => {
     const html = renderToStaticMarkup(
       <EntityMark name="Alice" entityType="person" isUnidentified />,
     )
-    // amber appears as both text color and border
-    const matches = (html.match(/var\(--amber\)/g) ?? []).length
-    expect(matches).toBeGreaterThanOrEqual(2)
+    expect(html).toContain("var(--amber-text)")
   })
 
   it("isOwner takes precedence over isUnidentified for border color", () => {

@@ -16,7 +16,7 @@ import { SeverityPip } from "./SeverityPip"
 
 const PIP_CASES = [
   { severity: "high" as const,   char: "↑", color: "var(--red)",    label: "high severity"   },
-  { severity: "medium" as const, char: "·", color: "var(--amber)",  label: "medium severity" },
+  { severity: "medium" as const, char: "·", color: "var(--amber-text)",  label: "medium severity" },
   { severity: "low" as const,    char: "↓", color: "var(--dim",     label: "low severity"    },
 ] as const
 

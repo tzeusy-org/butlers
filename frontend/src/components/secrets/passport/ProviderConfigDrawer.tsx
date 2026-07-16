@@ -580,7 +580,7 @@ export function OwnTracksDrawerContent() {
           style={{ border: "1px solid var(--amber)", background: "var(--bg-elev)" }}
           data-owntracks-regenerate-confirm="true"
         >
-          <Mono size={11} color="var(--amber)">
+          <Mono size={11} color="var(--amber-text)">
             Regenerate token? The OwnTracks app will need to be reconfigured with the new token.
           </Mono>
           <div className="flex gap-2">
@@ -1349,7 +1349,7 @@ function WhatsAppPairModal({
         <Mono size={11} color="var(--green)">paired successfully</Mono>
       )}
       {pollQuery.data?.status === "expired" && (
-        <Mono size={11} color="var(--amber)">qr code expired, try again</Mono>
+        <Mono size={11} color="var(--amber-text)">qr code expired, try again</Mono>
       )}
 
       <PillBtn onClick={onCancel}>cancel</PillBtn>
