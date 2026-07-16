@@ -48,13 +48,21 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.core.approval_callbacks import (
+    APPROVAL_CALLBACK_PREFIX,
+    APPROVAL_CALLBACK_SECRET_KEY,
+    parse_approval_callback_token,
+    verify_approval_callback_token,
+)
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env
+from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.telegram_api import edit_telegram_message_text, remove_telegram_inline_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,15 @@ _GAP_INTERVIEW_ANSWER_TOASTS: dict[str, str] = {
     "confirm": "Logged as a work day ✅",
     "correct": "Removed — not a work day ✏️",
     "dismiss": "Dismissed 🚫",
+}
+
+_APPROVAL_CALLBACK_DECISION_ACTOR = "owner@telegram"
+_APPROVAL_CALLBACK_DECISION_HEADER = "X-Butlers-Decision-Actor"
+_APPROVAL_CALLBACK_RESOLVED_TEXT = {
+    "approved": "✅ Approved",
+    "executed": "✅ Approved",
+    "rejected": "❌ Rejected",
+    "expired": "⏰ Expired",
 }
 
 
@@ -190,6 +207,10 @@ class TelegramBotConnectorConfig:
     # (which runs with a chronicler-capable pool). None disables the round-trip
     # (the tap is acknowledged with a "try again from the dashboard" toast).
     internal_api_url: str | None = None
+
+    # Tier-1 ``APPROVAL_CALLBACK_SECRET`` resolved at startup through
+    # CredentialStore. It is intentionally never read from the environment.
+    approval_callback_secret: str | None = None
 
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
@@ -780,12 +801,14 @@ class TelegramBotConnector:
         async with self._semaphore:
             update_id = str(update.get("update_id", "unknown"))
             try:
-                # Gap-interview one-tap callbacks (bu-whhll.12): a narrow,
-                # prefix-guarded (``cgi:``) inline-button handler. Only these
-                # callbacks are claimed here; every other ``callback_query``
-                # (and every non-callback update) falls through to the normal
-                # ingest path unchanged — additive by construction.
+                # Approval callbacks are control-plane decisions, never
+                # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
+                # path additive, then benignly acknowledge all other buttons.
+                if await self._maybe_handle_approval_callback(update):
+                    return
                 if await self._maybe_handle_gap_interview_callback(update):
+                    return
+                if await self._maybe_ack_unhandled_callback(update):
                     return
 
                 envelope = self._normalize_to_ingest_v1(update)
@@ -900,15 +923,227 @@ class TelegramBotConnector:
                     error_detail=str(exc),
                 )
 
+    async def _maybe_handle_approval_callback(self, update: dict[str, Any]) -> bool:
+        """Apply one signed owner approval callback without entering ingestion.
+
+        This is intentionally ordered as owner-channel verification, token HMAC
+        verification, prompt Telegram acknowledgement, then the existing
+        dashboard approve/deny route. Failed verification is acknowledgement-only
+        and never reaches an approval mutation surface.
+        """
+        callback_query = update.get("callback_query")
+        if not isinstance(callback_query, dict):
+            return False
+        callback_data = callback_query.get("data")
+        if not isinstance(callback_data, str) or not callback_data.startswith(
+            f"{APPROVAL_CALLBACK_PREFIX}:"
+        ):
+            return False
+
+        callback_query_id = str(callback_query.get("id", ""))
+        parsed = parse_approval_callback_token(callback_data)
+        if parsed is None:
+            logger.warning("Rejected malformed Telegram approval callback")
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "")
+            return True
+
+        sender = callback_query.get("from")
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        if self._db_pool is None or sender_id is None:
+            logger.warning("Rejected Telegram approval callback without an owner resolution path")
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "")
+            return True
+
+        owner_channel = await resolve_owner_channel_via_definer(
+            self._db_pool, "telegram_bot", str(sender_id)
+        )
+        if owner_channel is None:
+            logger.warning(
+                "Ignored Telegram approval callback from a non-owner channel",
+                extra={"action_id": str(parsed.action_id), "sender_id": str(sender_id)},
+            )
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "")
+            return True
+
+        detail = await self._fetch_approval_callback_detail(str(parsed.action_id))
+        requested_at = self._approval_callback_requested_at(detail)
+        secret = self._config.approval_callback_secret
+        if requested_at is None or not secret:
+            logger.warning("Rejected Telegram approval callback without verifiable action state")
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "")
+            return True
+
+        verified = verify_approval_callback_token(
+            callback_data,
+            requested_at=requested_at,
+            secret=secret,
+        )
+        if verified is None:
+            logger.warning("Rejected Telegram approval callback with an invalid HMAC")
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "")
+            return True
+
+        status = detail.get("status") if detail is not None else None
+        if status != "pending":
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "Already handled.")
+            if isinstance(status, str):
+                await self._edit_approval_callback_message(callback_query, status)
+            return True
+
+        expires_at = self._approval_callback_expires_at(detail)
+        if expires_at is not None and expires_at < datetime.now(UTC):
+            # The standard decision route owns the pending -> expired transition.
+            # It returns a conflict after recording that denial, so re-read before
+            # clearing the prompt and showing the already-handled acknowledgement.
+            await self._submit_approval_callback_decision(str(verified.action_id), verified.verb)
+            refreshed = await self._fetch_approval_callback_detail(str(verified.action_id))
+            refreshed_status = refreshed.get("status") if refreshed is not None else None
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "Already handled.")
+            if isinstance(refreshed_status, str) and refreshed_status != "pending":
+                await self._edit_approval_callback_message(callback_query, refreshed_status)
+            return True
+
+        if callback_query_id:
+            await self._answer_callback_query(callback_query_id, "Decision received.")
+
+        resolved_status = await self._submit_approval_callback_decision(
+            str(verified.action_id), verified.verb
+        )
+        if resolved_status is None:
+            # A concurrent expiry/decision can race the route call. Refreshing
+            # is read-only and lets us still remove a stale keyboard.
+            refreshed = await self._fetch_approval_callback_detail(str(verified.action_id))
+            refreshed_status = refreshed.get("status") if refreshed is not None else None
+            if isinstance(refreshed_status, str) and refreshed_status != "pending":
+                await self._edit_approval_callback_message(callback_query, refreshed_status)
+            return True
+
+        await self._edit_approval_callback_message(callback_query, resolved_status)
+        return True
+
+    async def _maybe_ack_unhandled_callback(self, update: dict[str, Any]) -> bool:
+        """Clear the Telegram spinner for foreign/unsupported button callbacks."""
+        callback_query = update.get("callback_query")
+        if not isinstance(callback_query, dict):
+            return False
+        callback_query_id = str(callback_query.get("id", ""))
+        if callback_query_id:
+            await self._answer_callback_query(callback_query_id, "")
+        return True
+
+    async def _fetch_approval_callback_detail(self, action_id: str) -> dict[str, Any] | None:
+        """Read the decision dossier needed to verify an ``apr1`` token."""
+        if not self._config.internal_api_url:
+            logger.warning("Telegram approval callback received without an internal API URL")
+            return None
+        try:
+            response = await self._http_client.get(
+                f"{self._config.internal_api_url.rstrip('/')}/api/approvals/{action_id}"
+            )
+            if response.status_code != 200:
+                return None
+            payload = response.json()
+        except Exception:  # noqa: BLE001 -- untrusted network boundary
+            logger.warning("Telegram approval callback detail lookup failed", exc_info=True)
+            return None
+        detail = payload.get("data") if isinstance(payload, dict) else None
+        return detail if isinstance(detail, dict) else None
+
+    @staticmethod
+    def _approval_callback_requested_at(detail: dict[str, Any] | None) -> datetime | None:
+        value = detail.get("created_at") if detail is not None else None
+        if not isinstance(value, str):
+            return None
+        try:
+            requested_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if requested_at.tzinfo is None or requested_at.utcoffset() is None:
+            return None
+        return requested_at
+
+    @staticmethod
+    def _approval_callback_expires_at(detail: dict[str, Any] | None) -> datetime | None:
+        value = detail.get("expires_at") if detail is not None else None
+        if not isinstance(value, str):
+            return None
+        try:
+            expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+            return None
+        return expires_at
+
+    async def _submit_approval_callback_decision(self, action_id: str, verb: str) -> str | None:
+        """Call the established approve/deny REST transition with provenance."""
+        if not self._config.internal_api_url:
+            return None
+        endpoint = "approve" if verb == "a" else "deny"
+        try:
+            response = await self._http_client.post(
+                f"{self._config.internal_api_url.rstrip('/')}/api/approvals/{action_id}/{endpoint}",
+                json={},
+                headers={_APPROVAL_CALLBACK_DECISION_HEADER: _APPROVAL_CALLBACK_DECISION_ACTOR},
+            )
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+        except Exception:  # noqa: BLE001 -- a callback must never crash polling
+            logger.warning("Telegram approval callback decision route failed", exc_info=True)
+            return None
+        data = payload.get("data") if isinstance(payload, dict) else None
+        status = data.get("status") if isinstance(data, dict) else None
+        return status if isinstance(status, str) else None
+
+    async def _edit_approval_callback_message(
+        self, callback_query: dict[str, Any], status: str
+    ) -> None:
+        """Render one terminal approval state and remove its inline keyboard."""
+        text = _APPROVAL_CALLBACK_RESOLVED_TEXT.get(status)
+        message = callback_query.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if text is None or chat_id is None or not isinstance(message_id, int):
+            return
+        try:
+            await edit_telegram_message_text(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=str(chat_id),
+                message_id=message_id,
+                text=text,
+            )
+        except Exception:  # noqa: BLE001 -- resolution already persisted
+            logger.warning("Failed to edit resolved Telegram approval prompt", exc_info=True)
+        try:
+            await remove_telegram_inline_keyboard(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=str(chat_id),
+                message_id=message_id,
+            )
+        except Exception:  # noqa: BLE001 -- resolution already persisted
+            logger.warning("Failed to remove Telegram approval keyboard", exc_info=True)
+
     async def _maybe_handle_gap_interview_callback(self, update: dict[str, Any]) -> bool:
         """Handle a chronicler gap-interview (bu-whhll.12) inline-button tap.
 
         Returns ``True`` iff this update was a ``callback_query`` carrying our
         prefix-guarded ``cgi:<interview_id>:<answer>`` ``callback_data`` and was
         handled here (so ``_process_update`` skips the normal ingest path). Any
-        other update — including a ``callback_query`` with different data —
-        returns ``False`` and keeps its existing behaviour (ultimately dropped
-        by ``_normalize_to_ingest_v1``), so this is strictly additive.
+        other update returns ``False``: foreign callback queries receive the
+        connector's generic acknowledgement, while non-callback updates retain
+        the normal ingest/drop behaviour. This keeps the ``cgi:`` route strictly
+        additive.
 
         The connector cannot write the chronicler schema itself (it runs as the
         restricted ``connector_writer`` role), so it POSTs the answer to the
@@ -1243,12 +1478,13 @@ class TelegramBotConnector:
             logger.exception("Failed to save checkpoint to DB")
 
 
-async def _resolve_telegram_bot_token_from_db() -> str | None:
-    """Attempt DB-first credential resolution for the Telegram bot connector.
+async def _resolve_telegram_bot_system_credential_from_db(credential_key: str) -> str | None:
+    """Resolve one Telegram connector Tier-1 credential without env fallback.
 
-    Creates a short-lived asyncpg pool, resolves ``BUTLER_TELEGRAM_TOKEN``
-    from the ``butler_secrets`` table via :class:`~butlers.credential_store.CredentialStore`,
-    and closes the pool before returning.
+    Creates a short-lived asyncpg pool, resolves *credential_key* from the
+    ``butler_secrets`` table via :class:`~butlers.credential_store.CredentialStore`,
+    and closes the pool before returning. The callback HMAC key follows the
+    same Tier-1 authority model as the Telegram bot token.
 
     Returns ``None`` if:
     - No DB connection parameters are configured (env vars absent).
@@ -1299,11 +1535,12 @@ async def _resolve_telegram_bot_token_from_db() -> str | None:
     store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
 
     try:
-        token = await store.resolve("BUTLER_TELEGRAM_TOKEN", env_fallback=False)
+        token = await store.resolve(credential_key, env_fallback=False)
         if token:
             logger.info(
-                "Telegram bot connector: resolved BUTLER_TELEGRAM_TOKEN from layered DB lookup "
+                "Telegram bot connector: resolved %s from layered DB lookup "
                 "(primary_db=%s, fallbacks=%d)",
+                credential_key,
                 primary_db_name,
                 len(fallback_pools),
             )
@@ -1314,6 +1551,11 @@ async def _resolve_telegram_bot_token_from_db() -> str | None:
     finally:
         for _, pool in connected_pools:
             await pool.close()
+
+
+async def _resolve_telegram_bot_token_from_db() -> str | None:
+    """Backward-compatible DB-first lookup for the Telegram bot token."""
+    return await _resolve_telegram_bot_system_credential_from_db("BUTLER_TELEGRAM_TOKEN")
 
 
 async def resolve_telegram_endpoint_identity(token: str) -> str:
@@ -1368,6 +1610,17 @@ async def run_telegram_bot_connector() -> None:
         db_token = await _resolve_telegram_bot_token_from_db()
         if db_token:
             config = replace(config, telegram_token=db_token)
+        approval_callback_secret = await _resolve_telegram_bot_system_credential_from_db(
+            APPROVAL_CALLBACK_SECRET_KEY
+        )
+        if approval_callback_secret:
+            config = replace(config, approval_callback_secret=approval_callback_secret)
+        else:
+            logger.warning(
+                "Telegram approval callbacks disabled: %s is not configured in the "
+                "credential store",
+                APPROVAL_CALLBACK_SECRET_KEY,
+            )
 
     # Step 3: Validate we have a token from either source.
     if not config.telegram_token:

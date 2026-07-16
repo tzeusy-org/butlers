@@ -22,7 +22,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -1471,6 +1471,20 @@ _DECIDED_STATUSES = {"approved", "rejected", "expired", "executed"}
 _WAITING_STATUSES = {"pending"}
 
 _ACTOR_DASHBOARD = "dashboard:rest-api"
+_TELEGRAM_CALLBACK_ACTOR = "owner@telegram"
+
+
+def _decision_actor_id(callback_actor: str | None) -> str:
+    """Accept only the connector's fixed, non-escalating provenance marker."""
+    if callback_actor == _TELEGRAM_CALLBACK_ACTOR:
+        return _TELEGRAM_CALLBACK_ACTOR
+    return _ACTOR_DASHBOARD
+
+
+def _decision_audit_actor(actor_id: str) -> str:
+    if actor_id == _TELEGRAM_CALLBACK_ACTOR:
+        return f"human:{actor_id}"
+    return _ACTOR_DASHBOARD
 
 
 @router.get("")
@@ -2036,6 +2050,7 @@ async def approve_approval(
     request: ApprovalApproveRequest = Body(default=ApprovalApproveRequest()),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
+    callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
     """Approve a pending action — POST /api/approvals/{id}/approve {edits?: object}.
 
@@ -2050,6 +2065,7 @@ async def approve_approval(
     if found is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
+    actor_id = _decision_actor_id(callback_actor)
 
     # Use a single connection + transaction for the read, optional edits update,
     # approve, and audit so that an edits UPDATE / approve transition cannot
@@ -2080,11 +2096,16 @@ async def approve_approval(
         result = await approvals_ops.approve_action(
             conn,
             action_id=action_id,
+            actor_id=actor_id,
             create_rule=False,
         )
         edits_note = json.dumps(request.edits) if request.edits else None
         await audit_router.append(
-            conn, _ACTOR_DASHBOARD, "approval.approve", target=action_id, note=edits_note
+            conn,
+            _decision_audit_actor(actor_id),
+            "approval.approve",
+            target=action_id,
+            note=edits_note,
         )
 
     if "error" in result:
@@ -2141,6 +2162,7 @@ async def deny_approval(
     action_id: str,
     request: ApprovalDenyRequest = Body(default=ApprovalDenyRequest()),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
+    callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
     """Deny (reject) a pending action — POST /api/approvals/{id}/deny {reason?: str}."""
     try:
@@ -2152,6 +2174,7 @@ async def deny_approval(
     if found is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
+    actor_id = _decision_actor_id(callback_actor)
 
     # AuditTableNotAvailableError is intentionally NOT caught here — it
     # propagates to the app-level handler, which returns 503
@@ -2162,9 +2185,14 @@ async def deny_approval(
             conn,
             action_id=action_id,
             reason=request.reason,
+            actor_id=actor_id,
         )
         await audit_router.append(
-            conn, _ACTOR_DASHBOARD, "approval.deny", target=action_id, note=request.reason
+            conn,
+            _decision_audit_actor(actor_id),
+            "approval.deny",
+            target=action_id,
+            note=request.reason,
         )
 
     if "error" in result:

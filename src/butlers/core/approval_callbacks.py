@@ -111,14 +111,13 @@ def mint_approval_callback_token(
     return token
 
 
-def verify_approval_callback_token(
-    token: str | object,
-    *,
-    requested_at: datetime,
-    secret: str | bytes,
-    expected_verb: str | None = None,
-) -> ApprovalCallbackToken | None:
-    """Return a verified approval callback token, or ``None`` for untrusted input."""
+def parse_approval_callback_token(token: str | object) -> ApprovalCallbackToken | None:
+    """Extract an *unverified* callback action id and verb for a lookup.
+
+    The connector uses this only to load the pending action's stored
+    ``requested_at`` before calling :func:`verify_approval_callback_token`.
+    Callers MUST NOT treat this result as authorization or a valid decision.
+    """
     if not isinstance(token, str) or len(token.encode("utf-8")) > MAX_APPROVAL_CALLBACK_DATA_BYTES:
         return None
 
@@ -137,20 +136,39 @@ def verify_approval_callback_token(
         if str(action_id) != action_id_raw:
             return None
         normalized_verb = _normalize_verb(verb)
-        if expected_verb is not None and normalized_verb != _normalize_verb(expected_verb):
+    except ApprovalCallbackTokenError:
+        return None
+    return ApprovalCallbackToken(action_id=action_id, verb=normalized_verb)
+
+
+def verify_approval_callback_token(
+    token: str | object,
+    *,
+    requested_at: datetime,
+    secret: str | bytes,
+    expected_verb: str | None = None,
+) -> ApprovalCallbackToken | None:
+    """Return a verified approval callback token, or ``None`` for untrusted input."""
+    parsed = parse_approval_callback_token(token)
+    if parsed is None:
+        return None
+
+    try:
+        if expected_verb is not None and parsed.verb != _normalize_verb(expected_verb):
             return None
         expected_signature = _signature(
-            action_id=action_id,
-            verb=normalized_verb,
+            action_id=parsed.action_id,
+            verb=parsed.verb,
             requested_at=requested_at,
             secret=secret,
         )
     except ApprovalCallbackTokenError:
         return None
 
+    signature = token.rsplit(":", 1)[-1]
     if not hmac.compare_digest(signature, expected_signature):
         return None
-    return ApprovalCallbackToken(action_id=action_id, verb=normalized_verb)
+    return parsed
 
 
 __all__ = [
@@ -160,5 +178,6 @@ __all__ = [
     "ApprovalCallbackToken",
     "ApprovalCallbackTokenError",
     "mint_approval_callback_token",
+    "parse_approval_callback_token",
     "verify_approval_callback_token",
 ]

@@ -10,6 +10,7 @@ import pytest
 from butlers.core.approval_callbacks import (
     ApprovalCallbackTokenError,
     mint_approval_callback_token,
+    parse_approval_callback_token,
     verify_approval_callback_token,
 )
 
@@ -39,6 +40,24 @@ def test_callback_token_round_trip_is_telegram_safe() -> None:
     assert verified is not None
     assert verified.action_id == _ACTION_ID
     assert verified.verb == "a"
+
+
+def test_parse_extracts_only_untrusted_lookup_fields() -> None:
+    """The connector needs the action id before it can load requested_at."""
+    token = mint_approval_callback_token(
+        action_id=_ACTION_ID,
+        verb="a",
+        requested_at=_REQUESTED_AT,
+        secret=_SECRET,
+    )
+
+    parsed = parse_approval_callback_token(token)
+
+    assert parsed is not None
+    assert parsed.action_id == _ACTION_ID
+    assert parsed.verb == "a"
+    assert parse_approval_callback_token(f"{token[:-1]}0") is not None
+    assert parse_approval_callback_token("not-an-approval-token") is None
 
 
 def test_callback_token_rejects_tampered_hmac() -> None:

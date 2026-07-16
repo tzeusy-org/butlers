@@ -36,6 +36,15 @@ from butlers.modules.approvals.sensitivity import suggest_constraints
 
 logger = logging.getLogger(__name__)
 
+_TELEGRAM_CALLBACK_ACTOR = "owner@telegram"
+
+
+def _decision_event_actor(actor_id: str) -> str:
+    """Keep the verified Telegram decision provenance intact in the event spine."""
+    if actor_id == _TELEGRAM_CALLBACK_ACTOR:
+        return f"human:{actor_id}"
+    return f"user:{actor_id}"
+
 
 # ---------------------------------------------------------------------------
 # Approve action
@@ -172,7 +181,7 @@ async def approve_action(
     await record_approval_event(
         pool,
         ApprovalEventType.ACTION_APPROVED,
-        actor=f"user:{actor_id}",
+        actor=_decision_event_actor(actor_id),
         action_id=parsed_id,
         reason="approved via REST API",
         metadata={"tool_name": action.tool_name},
@@ -356,7 +365,7 @@ async def reject_action(
     await record_approval_event(
         pool,
         ApprovalEventType.ACTION_REJECTED,
-        actor=f"user:{actor_id}",
+        actor=_decision_event_actor(actor_id),
         action_id=parsed_id,
         reason=reason or "rejected via REST API",
         metadata={"tool_name": action.tool_name},
