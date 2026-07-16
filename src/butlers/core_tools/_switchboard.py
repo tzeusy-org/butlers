@@ -767,8 +767,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "bug"
 
         try:
-            normalized_severity = int(severity)
-        except (TypeError, ValueError):
+            normalized_severity = int(float(severity)) if not isinstance(severity, bool) else 2
+        except (TypeError, ValueError, OverflowError):
             normalized_severity = 2
         clamped_severity = max(0, min(4, normalized_severity))
         call_site = f"dashboard:{page_route or 'unknown'}"

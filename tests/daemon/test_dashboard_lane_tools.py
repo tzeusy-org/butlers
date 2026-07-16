@@ -401,10 +401,16 @@ async def test_file_bug_report_relays_to_qa_and_replies_with_case_reference(
     [
         ("1", 1),
         (1.0, 1),
+        ("1.0", 1),
         ("9", 4),
+        ("9.0", 4),
         ("-3", 0),
+        ("-3.0", 0),
         ("not-a-severity", 2),
         (None, 2),
+        ("", 2),
+        (True, 2),
+        ("inf", 2),
     ],
 )
 async def test_file_bug_report_coerces_clamps_and_defaults_severity(
