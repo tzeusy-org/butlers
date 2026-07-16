@@ -40,7 +40,7 @@ def _make_catalogue_row(
     provider: str = "google",
     butler: str = "health",
     feature: str = "Google Health ingestion",
-    severity: str = "high",
+    severity: str | None = "high",
     required_scopes: list | None = None,
 ) -> MagicMock:
     """Build a MagicMock that behaves like an asyncpg Record for catalogue rows."""
@@ -250,6 +250,25 @@ def test_breaks_catalogue_no_shared_pool_returns_empty():
     assert body["meta"]["catalogue_available"] is False
 
 
+def test_breaks_catalogue_query_failure_returns_honest_degraded_envelope():
+    """A failed catalogue query is unavailable, not a truthful empty catalogue."""
+    shared_pool = AsyncMock()
+    shared_pool.fetch = AsyncMock(side_effect=ConnectionError("connection reset by peer"))
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/breaks-catalogue?provider=google")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["catalogue_available"] is False
+
+
 # ---------------------------------------------------------------------------
 # Scenario 6: Table absent (migration not yet run)
 # ---------------------------------------------------------------------------
@@ -280,6 +299,41 @@ def test_breaks_catalogue_table_not_found_returns_empty():
     body = resp.json()
     assert body["data"] == []
     assert "catalogue_available" not in body["meta"]
+
+
+def test_breaks_catalogue_schema_not_found_returns_empty():
+    """A missing schema is also a pre-migration empty state, not an outage."""
+    from asyncpg.exceptions import InvalidSchemaNameError
+
+    shared_pool = AsyncMock()
+    shared_pool.fetch = AsyncMock(
+        side_effect=InvalidSchemaNameError("schema 'public' does not exist")
+    )
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+    mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
+
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/breaks-catalogue?provider=google")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"] == []
+    assert "catalogue_available" not in body["meta"]
+
+
+def test_breaks_catalogue_invalid_row_remains_a_visible_validation_failure():
+    """A corrupt row must not be misrepresented as a temporary catalogue outage."""
+    mock_db = _make_db_manager_with_catalogue_rows([_make_catalogue_row(severity=None)])
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/breaks-catalogue?provider=google")
+
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert "severity" in body["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
