@@ -126,6 +126,7 @@ describe("ConflictRadarBanner", () => {
     const acceptFix = screen.getByRole("button", { name: "Accept fix" });
 
     expect(acceptFix.getAttribute("type")).toBe("button");
+    expect(acceptFix.classList.contains("border")).toBe(true);
     expect(acceptFix.classList.contains("bg-fg")).toBe(true);
     expect(acceptFix.classList.contains("text-bg")).toBe(true);
     expect(acceptFix.classList.contains("border-fg")).toBe(true);
