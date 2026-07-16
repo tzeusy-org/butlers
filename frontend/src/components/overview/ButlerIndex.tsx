@@ -99,6 +99,7 @@ export function ButlerIndex({ butlers, butlersError = false }: ButlerIndexProps)
           </RowLink>
         ))}
         {butlers.length === 0 && butlersError && (
+          <div role="listitem">
           <p
             role="alert"
             style={{
@@ -112,9 +113,11 @@ export function ButlerIndex({ butlers, butlersError = false }: ButlerIndexProps)
           >
             Butler health source unavailable.
           </p>
+          </div>
         )}
         {butlers.length === 0 && !butlersError && (
           <p
+            role="listitem"
             style={{
               fontFamily: "var(--font-serif)",
               fontSize: "14px",
