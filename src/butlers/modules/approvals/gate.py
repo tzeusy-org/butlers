@@ -147,7 +147,17 @@ def match_standing_rule(
         normalized.setdefault("description", "")
         normalized.setdefault("created_from", None)
         normalized.setdefault("created_at", now)
-        normalized.setdefault("arg_constraints", "{}")
+        if "arg_constraints" not in normalized:
+            normalized["arg_constraints"] = {}
+        elif not isinstance(normalized["arg_constraints"], dict):
+            logger.warning(
+                "Skipping standing approval rule %s for tool %r: "
+                "arg_constraints must be a mapping, got %s",
+                normalized.get("id", "unknown"),
+                tool_name,
+                type(normalized["arg_constraints"]).__name__,
+            )
+            continue
         normalized.setdefault("active", True)
         normalized.setdefault("use_count", 0)
         normalized_rules.append(normalized)

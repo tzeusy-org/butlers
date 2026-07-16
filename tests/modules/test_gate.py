@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.modules.approvals._shared import is_primary_contact
-from butlers.modules.approvals.gate import _make_gate_wrapper
+from butlers.modules.approvals.gate import _make_gate_wrapper, match_standing_rule
 
 pytestmark = pytest.mark.unit
 
@@ -106,6 +106,43 @@ async def _call_gate(
         ),
     ):
         return await wrapper(**tool_args)
+
+
+# ---------------------------------------------------------------------------
+# Standing-rule compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestMatchStandingRule:
+    def test_missing_arg_constraints_defaults_to_empty_mapping(self) -> None:
+        """A rule row without constraints retains empty-constraint behavior."""
+        rule_id = uuid.uuid4()
+
+        matched = match_standing_rule(
+            "telegram_send_message",
+            {"chat_id": "12345", "message": "hello"},
+            [{"id": rule_id, "tool_name": "telegram_send_message"}],
+        )
+
+        assert matched is not None
+        assert matched["id"] == rule_id
+        assert matched["arg_constraints"] == {}
+
+    def test_non_mapping_arg_constraints_do_not_widen_a_rule(self) -> None:
+        """A malformed stored value must not become an unconstrained approval."""
+        matched = match_standing_rule(
+            "telegram_send_message",
+            {"chat_id": "12345", "message": "hello"},
+            [
+                {
+                    "id": uuid.uuid4(),
+                    "tool_name": "telegram_send_message",
+                    "arg_constraints": None,
+                }
+            ],
+        )
+
+        assert matched is None
 
 
 # ---------------------------------------------------------------------------
