@@ -76,7 +76,7 @@ const KPI_DATA = {
   data: {
     hours_by_top_lanes: [
       { lane: "work", hours: 5.5 },
-      { lane: "music", hours: 2.0 },
+      { lane: "play", hours: 2.0 },
     ],
     longest_episode_minutes: 90,
     longest_episode_title: "Deep work session",

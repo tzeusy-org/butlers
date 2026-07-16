@@ -105,12 +105,12 @@ function buildBriefing(overrides: Partial<ChroniclesBriefing> = {}): ChroniclesB
     date: "2026-05-08",
     state_class: "quiet",
     headline: "Quiet day.",
-    voice_paragraph: "The day was led by conversations at 2.4 hours. Nothing needs attention.",
+    voice_paragraph: "The day was led by butler_ops at 2.4 hours. Nothing needs attention.",
     voice_source: "templated",
     kpi: {
       hours_by_top_lanes: [
-        { lane: "conversations", hours: 2.4 },
-        { lane: "calendar", hours: 1.1 },
+        { lane: "butler_ops", hours: 2.4 },
+        { lane: "play", hours: 1.1 },
       ],
       longest_episode_minutes: 95,
       longest_episode_title: "Conversation with Anna",
@@ -120,7 +120,7 @@ function buildBriefing(overrides: Partial<ChroniclesBriefing> = {}): ChroniclesB
     },
     attention_items: [],
     recent_days: [
-      { date: "2026-05-07", total_minutes: 642, top_lane: "conversations", episode_count: 23 },
+      { date: "2026-05-07", total_minutes: 642, top_lane: "butler_ops", episode_count: 23 },
     ],
     earliest_date: "2026-01-01",
     ...overrides,
@@ -148,10 +148,10 @@ describe("ChroniclesPage editorial archetype", () => {
     _briefing = buildBriefing();
     const html = renderPage();
     expect(html).toContain("Quiet day.");
-    expect(html).toContain("The day was led by conversations");
+    expect(html).toContain("The day was led by butler_ops");
     // KPI top-lane cell now shows the hours as the number and the lane as delta.
     expect(html).toContain("2.4h");
-    expect(html).toContain("conversations");
+    expect(html).toContain("butler_ops");
     expect(html).toContain("Sleep");
     expect(html).toContain("Recent days");
   });
@@ -272,7 +272,7 @@ describe("ChroniclesPage editorial archetype", () => {
     vi.setSystemTime(new Date("2026-05-09T16:30:00.000Z"));
     _briefing = buildBriefing({
       recent_days: [
-        { date: "2026-05-05", total_minutes: 120, top_lane: "tasks", episode_count: 4 },
+        { date: "2026-05-05", total_minutes: 120, top_lane: "butler_ops", episode_count: 4 },
       ],
     });
 

@@ -106,8 +106,8 @@ def _payload() -> BriefingPayload:
         headline="Quiet day.",
         kpi=KpiSnapshot(
             hours_by_top_lanes=[
-                LaneHours(lane="conversations", hours=2.4),
-                LaneHours(lane="calendar", hours=1.1),
+                LaneHours(lane="butler_ops", hours=2.4),
+                LaneHours(lane="play", hours=1.1),
             ],
             longest_episode_minutes=95,
             longest_episode_title="Conversation with Anna",
@@ -128,7 +128,7 @@ def _payload() -> BriefingPayload:
             RecentDay(
                 date="2026-05-07",
                 total_minutes=642,
-                top_lane="conversations",
+                top_lane="butler_ops",
                 episode_count=23,
             )
         ],
@@ -184,7 +184,7 @@ async def test_briefing_uses_templated_fallback_when_cache_missing(
     """Missing day-close cache returns the deterministic templated voice."""
 
     monkeypatch.setattr(editorial, "compose_briefing_payload", _fake_compose)
-    templated = MagicMock(return_value="The day was led by conversations.")
+    templated = MagicMock(return_value="The day was led by butler_ops.")
     monkeypatch.setattr(editorial, "templated_voice_paragraph", templated)
 
     app = _make_app(_Conn(fetchrow_returns=[None]))
@@ -199,7 +199,7 @@ async def test_briefing_uses_templated_fallback_when_cache_missing(
     assert resp.status_code == 200
     body = resp.json()
     assert body["voice_source"] == "templated"
-    assert body["voice_paragraph"] == "The day was led by conversations."
+    assert body["voice_paragraph"] == "The day was led by butler_ops."
     templated.assert_called_once()
 
 
@@ -226,7 +226,7 @@ async def test_attention_and_kpi_endpoints_wrap_payload(monkeypatch: pytest.Monk
     assert attention.json()["data"][0]["severity"] == "medium"
     assert kpi.status_code == 200
     assert kpi.json()["data"]["hours_by_top_lanes"][0] == {
-        "lane": "conversations",
+        "lane": "butler_ops",
         "hours": 2.4,
     }
     assert kpi.json()["data"]["streaks"] == {"sleep": 4, "exercise": 2}
