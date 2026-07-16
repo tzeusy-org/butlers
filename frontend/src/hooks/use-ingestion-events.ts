@@ -39,6 +39,7 @@ import type {
   IngestionWindowRollup,
   IngestionWindowRollupParams,
 } from "@/api/index.ts";
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
 // ---------------------------------------------------------------------------
 // Query key factory
@@ -88,12 +89,16 @@ export const ingestionEventKeys = {
  *
  * total is NOT available — the API no longer returns a count.
  *
- * Auto-refetches every 30s so the ledger and live-status badge stay honest.
+ * The fleet event bus invalidates this query-key prefix on each ingestion
+ * event, so the default poll is a bus-aware reconciliation sweep. Callers can
+ * still provide an explicit interval (or `false`) for focused views.
  */
 export function useIngestionEvents(
   filters: IngestionEventsFilters = {},
   options?: { enabled?: boolean; refetchInterval?: number | false },
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
+
   return useInfiniteQuery<
     CursorPaginatedResponse<IngestionEventSummary>,
     Error,
@@ -110,7 +115,7 @@ export function useIngestionEvents(
     staleTime: 30_000,
     // Refetch only the first page at the interval; infinite queries refetch all
     // loaded pages but we only need freshness from the newest (first) page.
-    refetchInterval: options?.refetchInterval !== undefined ? options.refetchInterval : 30_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     enabled: options?.enabled !== false,
     // Never-blank list (JARVIS audit move 10): keep the previous filter's
     // pages visible while a filter change re-keys the query and refetches.

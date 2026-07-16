@@ -229,6 +229,9 @@ const POLL_POLICY_FILES = [
   // bu-01r64.3: the 8th bus-covered hook -- previously had NO refetchInterval
   // at all, now onto the same named-token pattern as the other seven.
   'src/hooks/use-notifications.ts',
+  // bu-k8888: ingestionPatch invalidates this hook's query-key prefix; its
+  // default interval is therefore a bus-aware reconciliation sweep.
+  'src/hooks/use-ingestion-events.ts',
 ]
 
 const POLL_POLICY_SELECTORS = [
@@ -236,7 +239,7 @@ const POLL_POLICY_SELECTORS = [
     // Descendant (not direct-child) combinator: also catches a numeric
     // literal nested inside `options?.refetchInterval ?? 30_000` or
     // `5 * 60_000`, not just a bare `refetchInterval: 30_000`.
-    selector: 'Property[key.name="refetchInterval"] Literal[value=/^[0-9]/]',
+    selector: 'Property[key.name="refetchInterval"] Literal[value=type(number)][value>=0]',
     message:
       'refetchInterval must use a named poll-policy token (POLL_BUS_RECONCILE_MS from ' +
       'src/lib/poll-policy.ts, or an equally-named local constant), not a raw numeric ' +
