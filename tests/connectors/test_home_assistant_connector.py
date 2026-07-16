@@ -23,7 +23,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from butlers.connectors.home_assistant import persist_ha_history
+from butlers.connectors.home_assistant import (
+    _DEFAULT_DOMAIN_ALLOWLIST,
+    HAConnectorConfig,
+    _load_domain_allowlist_from_store,
+    persist_ha_history,
+)
 from butlers.connectors.home_assistant_envelope import (
     build_automation_triggered_envelope,
     build_state_changed_envelope,
@@ -121,6 +126,83 @@ def test_normalized_text_binary_sensor_on_off() -> None:
     assert text
     assert isinstance(text, str)
     assert "on" in text.lower() or "Motion Sensor" in text
+
+
+# ---------------------------------------------------------------------------
+# Domain allowlist configuration
+# ---------------------------------------------------------------------------
+
+
+def test_domain_allowlist_env_extends_safety_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An env addition must not silently remove ``person`` or other defaults."""
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("HA_DOMAIN_ALLOWLIST", "media_player")
+
+    config = HAConnectorConfig.from_env()
+
+    assert config.domain_allowlist == _DEFAULT_DOMAIN_ALLOWLIST | {"media_player"}
+
+
+@pytest.mark.asyncio
+async def test_registry_domain_allowlist_overrides_env_extras_but_preserves_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dashboard config is endpoint-scoped and can never drop safety defaults."""
+    from butlers.connectors import cursor_store
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("HA_DOMAIN_ALLOWLIST", "media_player")
+    load_settings = AsyncMock(return_value={"domain_allowlist": ["vacuum"]})
+    monkeypatch.setattr(cursor_store, "load_connector_settings", load_settings)
+    config = HAConnectorConfig.from_env()
+    endpoint_identity = "home_assistant:ha.test:8123"
+    db_pool = MagicMock()
+
+    await _load_domain_allowlist_from_store(config, db_pool, endpoint_identity)
+
+    assert config.domain_allowlist == _DEFAULT_DOMAIN_ALLOWLIST | {"vacuum"}
+    load_settings.assert_awaited_once_with(db_pool, "home_assistant", endpoint_identity)
+
+
+@pytest.mark.asyncio
+async def test_invalid_registry_domain_allowlist_retains_env_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A malformed dashboard value must not turn an operator typo into data loss."""
+    from butlers.connectors import cursor_store
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("HA_DOMAIN_ALLOWLIST", "media_player")
+    monkeypatch.setattr(
+        cursor_store,
+        "load_connector_settings",
+        AsyncMock(return_value={"domain_allowlist": ["vacuum", 42]}),
+    )
+    config = HAConnectorConfig.from_env()
+
+    await _load_domain_allowlist_from_store(
+        config,
+        MagicMock(),
+        "home_assistant:ha.test:8123",
+    )
+
+    assert config.domain_allowlist == _DEFAULT_DOMAIN_ALLOWLIST | {"media_player"}
+    assert any(
+        "ignoring invalid domain_allowlist setting" in message for message in caplog.messages
+    )
+
+
+def test_main_loads_registry_domain_allowlist_before_constructing_pipeline() -> None:
+    """The startup path must apply endpoint settings before Layer 1 is configured."""
+    import inspect
+
+    from butlers.connectors import home_assistant
+
+    source = inspect.getsource(home_assistant._main)
+    settings_idx = source.index("await _load_domain_allowlist_from_store(")
+    pipeline_idx = source.index("pipeline = HAFilterPipeline(")
+    assert settings_idx < pipeline_idx
 
 
 # ---------------------------------------------------------------------------
