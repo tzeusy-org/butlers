@@ -92,7 +92,10 @@ class _FakeCursorPool:
 
 
 def _make_connector(
-    *, cursor_pool: _FakeCursorPool | None = None, call_tool: AsyncMock | None = None
+    *,
+    cursor_pool: _FakeCursorPool | None = None,
+    call_tool: AsyncMock | None = None,
+    tracker_id_override: str | None = None,
 ) -> OwnTracksConnector:
     """Build an OwnTracksConnector with a mocked MCP client (no real network I/O).
 
@@ -100,7 +103,10 @@ def _make_connector(
     attempted) so tests don't need to stub `.fetch()`. ``cursor_pool`` is a
     ``_FakeCursorPool`` when the test needs real checkpoint persistence.
     """
-    config = OwnTracksConnectorConfig(switchboard_mcp_url="http://test-switchboard/mcp")
+    config = OwnTracksConnectorConfig(
+        switchboard_mcp_url="http://test-switchboard/mcp",
+        tracker_id_override=tracker_id_override,
+    )
     connector = OwnTracksConnector(
         config=config,
         webhook_token="test-token",
@@ -144,6 +150,65 @@ async def test_get_or_create_device_reuses_existing_device_for_same_identity() -
 
         assert first is second
         assert len(connector._devices) == 1
+    finally:
+        await _stop_all_heartbeats(connector)
+
+
+@pytest.mark.parametrize("tid", [None, "", "abc", "phone", "a!", "12-"])
+async def test_invalid_tids_do_not_create_per_device_state(tid: object) -> None:
+    """Malformed or overlong tracker IDs must not mint durable device resources."""
+    connector = _make_connector()
+    try:
+        await connector._process_webhook_event(
+            {
+                "_type": "location",
+                "tst": 100,
+                "tid": tid,
+                "lat": 1.0,
+                "lon": 2.0,
+            }
+        )
+
+        assert connector._devices == {}
+        connector._mcp_client.call_tool.assert_not_awaited()
+    finally:
+        await _stop_all_heartbeats(connector)
+
+
+async def test_unsupported_payload_does_not_create_state_for_a_valid_tid() -> None:
+    """Protocol-level ignores do not need a per-device heartbeat or metrics bundle."""
+    connector = _make_connector()
+    try:
+        await connector._process_webhook_event(
+            {
+                "_type": "lwt",
+                "tid": "a1",
+            }
+        )
+
+        assert connector._devices == {}
+        connector._mcp_client.call_tool.assert_not_awaited()
+    finally:
+        await _stop_all_heartbeats(connector)
+
+
+async def test_tracker_id_override_uses_its_fixed_device_for_invalid_payload_tid() -> None:
+    """A configured single-device deployment remains pinned to its fixed identity."""
+    connector = _make_connector(tracker_id_override="configured")
+    try:
+        await connector._process_webhook_event(
+            {
+                "_type": "location",
+                "tst": 100,
+                "tid": "malformed",
+                "lat": 1.0,
+                "lon": 2.0,
+            }
+        )
+
+        assert connector._devices.keys() == {"owntracks:configured"}
+        ingest_call = connector._mcp_client.call_tool.await_args
+        assert ingest_call.args[1]["source"]["endpoint_identity"] == "owntracks:configured"
     finally:
         await _stop_all_heartbeats(connector)
 
@@ -255,7 +320,7 @@ async def test_checkpoint_replays_are_logged_but_submitted(
 ) -> None:
     """A scalar checkpoint is diagnostic only; Switchboard owns duplicate effects."""
     cursor_pool = _FakeCursorPool()
-    cursor_pool.store[("owntracks", "owntracks:phone")] = "555"
+    cursor_pool.store[("owntracks", "owntracks:ph")] = "555"
     call_tool = AsyncMock(return_value={"status": "accepted"})
     connector = _make_connector(cursor_pool=cursor_pool, call_tool=call_tool)
     try:
@@ -264,7 +329,7 @@ async def test_checkpoint_replays_are_logged_but_submitted(
                 {
                     "_type": "location",
                     "tst": event_tst,
-                    "tid": "phone",
+                    "tid": "ph",
                     "lat": 1.0,
                     "lon": 2.0,
                 }
@@ -281,7 +346,7 @@ async def test_checkpoint_replays_are_logged_but_submitted(
         ]
         assert len(replay_records) == 1
         record = replay_records[0]
-        assert record.endpoint_identity == "owntracks:phone"
+        assert record.endpoint_identity == "owntracks:ph"
         assert record.event_tst == event_tst
         assert record.checkpoint_tst == 555
     finally:

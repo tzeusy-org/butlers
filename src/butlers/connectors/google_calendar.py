@@ -105,6 +105,87 @@ _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY_S = 2.0
 _RATE_LIMIT_MAX_DELAY_S = 30.0
 
+_OAUTH_ACTION_REQUIRED_ERROR_CODES = frozenset({"invalid_grant", "unauthorized_client"})
+
+
+def _format_google_error(response: httpx.Response | None) -> str | None:
+    """Return compact Google OAuth/API error detail without leaking request secrets."""
+    if response is None:
+        return None
+
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            parts: list[str] = []
+            code = error.get("code")
+            if code is not None:
+                parts.append(f"code={code}")
+            status = error.get("status")
+            if isinstance(status, str) and status:
+                parts.append(f"status={status}")
+            message = error.get("message")
+            if isinstance(message, str) and message:
+                parts.append(f"message={message}")
+            if parts:
+                return ", ".join(parts)
+        if isinstance(error, str) and error:
+            description = payload.get("error_description")
+            if isinstance(description, str) and description:
+                return f"error={error}, description={description}"
+            return f"error={error}"
+
+    body = response.text.strip()
+    if body:
+        return f"HTTP {response.status_code}: {body[:200]}"
+    return f"HTTP {response.status_code}"
+
+
+def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
+    """Classify Calendar source failures without confusing API errors for revocation.
+
+    Google only proves refresh-token revocation at the OAuth token endpoint via
+    a top-level ``invalid_grant``/``unauthorized_client`` error.  Calendar API
+    401/403 responses can clear after token refresh or reflect scope-local
+    configuration, so they stay degraded and do not mutate shared account state.
+    """
+    response = getattr(exc, "response", None)
+    detail = _format_google_error(response) if isinstance(response, httpx.Response) else None
+    is_auth_revocation = False
+    if isinstance(response, httpx.Response):
+        try:
+            request = response.request
+        except RuntimeError:
+            request = None
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if (
+            request is not None
+            and request.method == "POST"
+            and str(request.url) == _GOOGLE_TOKEN_URL
+            and isinstance(payload, dict)
+        ):
+            error_code = payload.get("error")
+            if isinstance(error_code, str) and error_code in _OAUTH_ACTION_REQUIRED_ERROR_CODES:
+                is_auth_revocation = True
+
+    return is_auth_revocation, detail or f"{type(exc).__name__}: {exc}"
+
+
+def _http_status_error(response: httpx.Response, message: str) -> httpx.HTTPStatusError:
+    """Attach a response to a status error even when a unit-test response lacks a request."""
+    try:
+        request = response.request
+    except RuntimeError:
+        request = httpx.Request("POST", _GOOGLE_TOKEN_URL)
+    return httpx.HTTPStatusError(message, request=request, response=response)
+
 
 # ---------------------------------------------------------------------------
 # Health status models
@@ -875,6 +956,8 @@ class CalendarConnectorRuntime:
         self._last_checkpoint_save: float | None = None
         self._last_ingest_submit: float | None = None
         self._source_api_ok: bool | None = None
+        self._source_api_error_message: str | None = None
+        self._auth_error: bool = False
 
         # Heartbeat
         self._heartbeat: ConnectorHeartbeat | None = None
@@ -894,6 +977,17 @@ class CalendarConnectorRuntime:
             connector_type=_CONNECTOR_TYPE,
             endpoint_identity=config.endpoint_identity,
         )
+
+    def _record_source_api_success(self) -> None:
+        """Clear source-API health failures after a successful Google call."""
+        self._source_api_ok = True
+        self._source_api_error_message = None
+        self._auth_error = False
+
+    def _record_source_api_failure(self, exc: Exception) -> None:
+        """Capture the latest source failure without revoking the shared account."""
+        self._source_api_ok = False
+        self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -983,7 +1077,7 @@ class CalendarConnectorRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._source_api_ok = False
+                self._record_source_api_failure(exc)
                 self._metrics.record_error(
                     error_type=get_error_type(exc),
                     operation="poll_cycle",
@@ -1130,12 +1224,15 @@ class CalendarConnectorRuntime:
         )
 
         if resp.status_code != 200:
-            raise RuntimeError(f"Token refresh failed: HTTP {resp.status_code}: {resp.text[:200]}")
+            error = _http_status_error(resp, "Calendar token refresh failed")
+            self._record_source_api_failure(error)
+            raise error
 
         data = resp.json()
         self._access_token = data["access_token"]
         expires_in = int(data.get("expires_in", 3600))
         self._token_expires_at = now + timedelta(seconds=expires_in)
+        self._record_source_api_success()
         logger.debug("Calendar: token refreshed for email=%s", self._config.email)
         return self._access_token
 
@@ -1165,30 +1262,35 @@ class CalendarConnectorRuntime:
                 )
             except httpx.TransportError as exc:
                 self._metrics.record_source_api_call(api_method, "error")
-                raise RuntimeError(f"Calendar API transport error: {exc}") from exc
+                error = RuntimeError(f"Calendar API transport error: {exc}")
+                self._record_source_api_failure(error)
+                raise error from exc
 
             self._metrics.record_source_api_call(api_method, str(resp.status_code))
 
             if resp.status_code == 200:
-                self._source_api_ok = True
+                self._record_source_api_success()
                 return resp.json()
 
             if resp.status_code == 410:
                 # syncToken expired
-                self._source_api_ok = True
+                self._record_source_api_success()
                 raise _SyncTokenExpiredError("syncToken expired (410 Gone)")
 
             if resp.status_code in (401, 403):
                 # Clear token to force refresh next call
                 self._access_token = None
                 self._token_expires_at = None
-                self._source_api_ok = False
-                raise RuntimeError(
+                error = RuntimeError(
                     f"Calendar API auth error: HTTP {resp.status_code}: {resp.text[:200]}"
                 )
+                self._record_source_api_failure(error)
+                raise error
 
             if resp.status_code in (429, 503) and attempt < _RATE_LIMIT_MAX_RETRIES:
-                self._source_api_ok = False
+                self._record_source_api_failure(
+                    RuntimeError(f"Calendar API retryable failure: HTTP {resp.status_code}")
+                )
                 logger.warning(
                     "Calendar API rate limited (HTTP %d) for email=%s, retry %d/%d in %.1fs",
                     resp.status_code,
@@ -1201,11 +1303,13 @@ class CalendarConnectorRuntime:
                 delay = min(delay * 2, _RATE_LIMIT_MAX_DELAY_S)
                 continue
 
-            self._source_api_ok = False
-            raise RuntimeError(f"Calendar API error: HTTP {resp.status_code}: {resp.text[:200]}")
+            error = _http_status_error(resp, "Calendar API request failed")
+            self._record_source_api_failure(error)
+            raise error
 
-        self._source_api_ok = False
-        raise RuntimeError(f"Calendar API: exhausted retries for {path}")
+        error = RuntimeError(f"Calendar API: exhausted retries for {path}")
+        self._record_source_api_failure(error)
+        raise error
 
     async def _perform_full_sync(self, *, ingest_events: bool) -> None:
         """Perform a full calendar sync to establish syncToken.
@@ -1629,7 +1733,12 @@ class CalendarConnectorRuntime:
             return "degraded", "Starting up, API not yet checked"
         if self._source_api_ok:
             return "healthy", None
-        return "error", "Google Calendar API is not reachable"
+        if self._auth_error:
+            return (
+                "error",
+                self._source_api_error_message or "Google Calendar OAuth token invalid or revoked",
+            )
+        return "degraded", self._source_api_error_message or "Google Calendar API request failed"
 
     def _get_checkpoint(self) -> tuple[str | None, datetime | None]:
         """Return (cursor, updated_at) tuple for heartbeat."""
@@ -1734,11 +1843,12 @@ class CalendarAccountLoop:
         else:
             connectivity = "disconnected"
 
-        error_msg = self._error
-        if not self.is_running and error_msg:
+        terminal_error = self._error
+        error_msg = terminal_error or runtime._source_api_error_message
+        if not self.is_running and terminal_error:
             account_status: Literal["healthy", "degraded", "error"] = "error"
         elif runtime._source_api_ok is False:
-            account_status = "error"
+            account_status = "error" if runtime._auth_error else "degraded"
         else:
             account_status = "healthy"
 

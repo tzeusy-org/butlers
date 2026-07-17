@@ -1,7 +1,7 @@
 """Autonomy tracker — pattern fingerprinting, approval history, and promotion thresholds.
 
 Provides:
-- compute_fingerprint: deterministic SHA-256 hash of (tool_name, tool_args)
+- compute_fingerprint: deterministic SHA-256 hash of the versioned pattern basis
 - record_approval: insert into autonomy_approval_history
 - get_approval_count: count manual approvals for a fingerprint
 - check_promotion_threshold: decide whether to create a suggestion
@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from butlers.core.state import state_get, state_set
+from butlers.modules.base import ToolMeta
 
 if TYPE_CHECKING:
     pass
@@ -30,12 +31,66 @@ _VELOCITY_KEY_PREFIX = "autonomy:velocity:"
 # Fast-approval threshold in seconds (below this is considered fast)
 _FAST_APPROVAL_THRESHOLD_SECONDS = 5.0
 
+# A fingerprint records the stable action boundary used to accumulate approval
+# evidence.  Version 1 hashed every argument; version 2 uses only module-declared
+# safety-critical arguments, falling back to every argument when no critical
+# declaration is available.  Every v2 writer must persist this value explicitly
+# so a rolling deploy cannot blend legacy evidence into the new threshold.
+FINGERPRINT_VERSION = 2
 
-def compute_fingerprint(tool_name: str, tool_args: dict[str, Any]) -> str:
+
+def fingerprinted_args(
+    tool_args: dict[str, Any],
+    tool_meta: ToolMeta | None = None,
+) -> dict[str, Any]:
+    """Return the v2 argument basis that an approval fingerprint holds constant.
+
+    A valid ``ToolMeta`` with one or more declared safety-critical arguments
+    narrows the basis to those present arguments.  Missing or malformed metadata
+    deliberately falls back to all arguments: it may create fewer promotions,
+    but it can never create a broader promotion from uncertain sensitivity data.
+    """
+    if tool_meta is None:
+        return dict(tool_args)
+
+    sensitivities = getattr(tool_meta, "arg_sensitivities", None)
+    if not isinstance(sensitivities, dict) or any(
+        not isinstance(name, str) or not isinstance(sensitive, bool)
+        for name, sensitive in sensitivities.items()
+    ):
+        logger.warning(
+            "Invalid ToolMeta sensitivity declaration; fingerprinting all args",
+            extra={"tool_name": "<resolved by caller>", "tool_arg_count": len(tool_args)},
+        )
+        return dict(tool_args)
+
+    critical_args = sorted(name for name, sensitive in sensitivities.items() if sensitive)
+    if not critical_args:
+        return dict(tool_args)
+
+    if any(name not in tool_args for name in critical_args):
+        logger.warning(
+            "Safety-critical ToolMeta arg missing from invocation; fingerprinting all args",
+            extra={"missing_arg_count": sum(name not in tool_args for name in critical_args)},
+        )
+        return dict(tool_args)
+
+    return {name: tool_args[name] for name in critical_args}
+
+
+def compute_fingerprint(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    *,
+    tool_meta: ToolMeta | None = None,
+) -> str:
     """Compute a deterministic SHA-256 fingerprint for a tool invocation.
 
-    The fingerprint is derived from the canonical JSON of ``(tool_name, tool_args)``
-    with dictionary keys sorted alphabetically at every level.
+    Version 2 derives the fingerprint from canonical JSON of ``(tool_name,
+    fingerprinted_args)`` with dictionary keys sorted alphabetically at every
+    level.  ``fingerprinted_args`` is module-declared safety-critical arguments
+    only; if no valid declaration identifies a critical argument, it is all
+    supplied arguments (the conservative legacy-compatible basis).
 
     Parameters
     ----------
@@ -49,12 +104,12 @@ def compute_fingerprint(tool_name: str, tool_args: dict[str, Any]) -> str:
     str
         Lowercase hex SHA-256 digest.
     """
-    payload = {"tool_name": tool_name, "tool_args": tool_args}
+    payload = {"tool_name": tool_name, "tool_args": fingerprinted_args(tool_args, tool_meta)}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-async def record_approval(pool: Any, action: Any) -> None:
+async def record_approval(pool: Any, action: Any, *, tool_meta: ToolMeta | None = None) -> None:
     """Record a manual approval in ``autonomy_approval_history``.
 
     Parameters
@@ -66,7 +121,7 @@ async def record_approval(pool: Any, action: Any) -> None:
         ``id``, ``tool_name``, ``tool_args``, ``requested_at``,
         and ``decided_at``.
     """
-    fingerprint = compute_fingerprint(action.tool_name, action.tool_args)
+    fingerprint = compute_fingerprint(action.tool_name, action.tool_args, tool_meta=tool_meta)
     now = datetime.now(UTC)
     approved_at = action.decided_at if action.decided_at is not None else now
 
@@ -83,8 +138,8 @@ async def record_approval(pool: Any, action: Any) -> None:
     await pool.execute(
         "INSERT INTO autonomy_approval_history "
         "(id, pattern_fingerprint, tool_name, tool_args, "
-        "action_id, approved_at, time_to_decision_seconds) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "action_id, approved_at, time_to_decision_seconds, fingerprint_version) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         uuid.uuid4(),
         fingerprint,
         action.tool_name,
@@ -92,10 +147,16 @@ async def record_approval(pool: Any, action: Any) -> None:
         action.id,
         approved_at,
         time_to_decision,
+        FINGERPRINT_VERSION,
     )
 
 
-async def get_approval_count(pool: Any, pattern_fingerprint: str) -> int:
+async def get_approval_count(
+    pool: Any,
+    pattern_fingerprint: str,
+    *,
+    fingerprint_version: int = FINGERPRINT_VERSION,
+) -> int:
     """Count manual approvals recorded for a given pattern fingerprint.
 
     Parameters
@@ -111,8 +172,10 @@ async def get_approval_count(pool: Any, pattern_fingerprint: str) -> int:
         Number of rows in ``autonomy_approval_history`` matching the fingerprint.
     """
     row = await pool.fetchrow(
-        "SELECT COUNT(*) AS cnt FROM autonomy_approval_history WHERE pattern_fingerprint = $1",
+        "SELECT COUNT(*) AS cnt FROM autonomy_approval_history "
+        "WHERE pattern_fingerprint = $1 AND fingerprint_version = $2",
         pattern_fingerprint,
+        fingerprint_version,
     )
     if row is None:
         return 0
@@ -125,6 +188,9 @@ async def check_promotion_threshold(
     tool_name: str,
     tool_args: dict[str, Any],
     config: Any,
+    *,
+    tool_meta: ToolMeta | None = None,
+    fingerprint_version: int = FINGERPRINT_VERSION,
 ) -> None:
     """Check if the promotion threshold is met and create a suggestion if needed.
 
@@ -141,13 +207,16 @@ async def check_promotion_threshold(
     tool_name:
         Tool name for suggestion creation.
     tool_args:
-        Tool args for the representative_args on the suggestion.
+        Invocation arguments from which the v2 representative fingerprint basis is derived.
     config:
         ApprovalsConfig-like object with threshold/cooldown attributes.
     """
     threshold = getattr(config, "promotion_threshold", 5)
 
-    count = await get_approval_count(pool, pattern_fingerprint)
+    pattern_args = fingerprinted_args(tool_args, tool_meta)
+    count = await get_approval_count(
+        pool, pattern_fingerprint, fingerprint_version=fingerprint_version
+    )
     if count < threshold:
         return
 
@@ -174,7 +243,7 @@ async def check_promotion_threshold(
             # any schema, so no isinstance(str) double-encoding workaround is
             # needed here.
             constraints = rule_row["arg_constraints"]
-            if _args_match_constraints(tool_args, constraints):
+            if _args_match_constraints(pattern_args, constraints):
                 logger.debug(
                     "Existing standing rule covers pattern %s, skipping suggestion",
                     pattern_fingerprint,
@@ -184,9 +253,11 @@ async def check_promotion_threshold(
     # Check for active/pending suggestion or cooldown
     suggestion_row = await pool.fetchrow(
         "SELECT id, status, cooldown_until FROM autonomy_suggestions "
-        "WHERE pattern_fingerprint = $1 AND suggestion_type = 'promotion' "
+        "WHERE pattern_fingerprint = $1 AND fingerprint_version = $2 "
+        "AND suggestion_type = 'promotion' "
         "ORDER BY created_at DESC LIMIT 1",
         pattern_fingerprint,
+        fingerprint_version,
     )
     if suggestion_row is not None:
         status = suggestion_row["status"]
@@ -215,8 +286,9 @@ async def check_promotion_threshold(
         pool=pool,
         pattern_fingerprint=pattern_fingerprint,
         tool_name=tool_name,
-        representative_args=tool_args,
+        representative_args=pattern_args,
         approval_count=count,
+        fingerprint_version=fingerprint_version,
     )
 
 
@@ -258,13 +330,15 @@ async def update_velocity(
     state_pool: Any,
     pattern_fingerprint: str,
     config: Any,
+    *,
+    fingerprint_version: int = FINGERPRINT_VERSION,
 ) -> None:
     """Compute and store rolling approval velocity for a pattern fingerprint.
 
     Reads the last N ``time_to_decision_seconds`` values from
     ``autonomy_approval_history`` (N = ``config.velocity_window``) and stores
     the rolling average in the butler's state store under
-    ``autonomy:velocity:{pattern_fingerprint}``.
+    ``autonomy:velocity:v{fingerprint_version}:{pattern_fingerprint}``.
 
     Parameters
     ----------
@@ -281,9 +355,10 @@ async def update_velocity(
 
     rows = await pool.fetch(
         "SELECT time_to_decision_seconds FROM autonomy_approval_history "
-        "WHERE pattern_fingerprint = $1 AND time_to_decision_seconds IS NOT NULL "
-        "ORDER BY approved_at DESC LIMIT $2",
+        "WHERE pattern_fingerprint = $1 AND fingerprint_version = $2 "
+        "AND time_to_decision_seconds IS NOT NULL ORDER BY approved_at DESC LIMIT $3",
         pattern_fingerprint,
+        fingerprint_version,
         window,
     )
 
@@ -301,11 +376,16 @@ async def update_velocity(
         "updated_at": datetime.now(UTC).isoformat(),
     }
 
-    state_key = f"{_VELOCITY_KEY_PREFIX}{pattern_fingerprint}"
+    state_key = f"{_VELOCITY_KEY_PREFIX}v{fingerprint_version}:{pattern_fingerprint}"
     await state_set(state_pool, state_key, velocity_data)
 
 
-async def get_velocity(state_pool: Any, pattern_fingerprint: str) -> dict[str, Any] | None:
+async def get_velocity(
+    state_pool: Any,
+    pattern_fingerprint: str,
+    *,
+    fingerprint_version: int = FINGERPRINT_VERSION,
+) -> dict[str, Any] | None:
     """Retrieve velocity data from the state store.
 
     Parameters
@@ -321,5 +401,5 @@ async def get_velocity(state_pool: Any, pattern_fingerprint: str) -> dict[str, A
         Dict with ``avg_seconds``, ``sample_count``, ``fast_approval``,
         ``updated_at`` keys, or None if no data exists.
     """
-    state_key = f"{_VELOCITY_KEY_PREFIX}{pattern_fingerprint}"
+    state_key = f"{_VELOCITY_KEY_PREFIX}v{fingerprint_version}:{pattern_fingerprint}"
     return await state_get(state_pool, state_key)

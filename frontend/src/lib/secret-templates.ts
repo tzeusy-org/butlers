@@ -13,6 +13,11 @@ export interface SecretProvenance {
   url: string;
 }
 
+export const GOOGLE_APP_PASSWORDS_PROVENANCE: SecretProvenance = {
+  label: "Google App Passwords",
+  url: "https://myaccount.google.com/apppasswords",
+};
+
 export interface SecretTemplate {
   key: string;
   description: string;
@@ -39,7 +44,7 @@ export const SECRET_TEMPLATES: SecretTemplate[] = [
     key: "BUTLER_EMAIL_PASSWORD",
     description: "Butler email password or app password",
     category: "email",
-    provenance: { label: "Google App Passwords", url: "https://myaccount.google.com/apppasswords" },
+    provenance: GOOGLE_APP_PASSWORDS_PROVENANCE,
   },
   // Google OAuth
   {

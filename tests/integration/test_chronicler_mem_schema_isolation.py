@@ -33,7 +33,13 @@ from butlers.core.spawn_hooks import clear_spawner, register_spawner
 from butlers.db import Database, register_jsonb_codec
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.memory.storage import store_fact
-from butlers.scheduled_jobs import _run_memory_consolidation_job
+from butlers.scheduled_jobs import (
+    _run_memory_catalog_backfill_job,
+    _run_memory_consolidation_job,
+    _run_memory_decay_sweep_job,
+    _run_memory_episode_cleanup_job,
+    _run_memory_purge_superseded_job,
+)
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.modules.memory._test_helpers import make_embedding_engine_mock
 
@@ -156,6 +162,108 @@ async def test_fact_write_lands_in_chronicler_mem(isolated_db_url: str) -> None:
         assert chronicler_facts is None
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
+    isolated_db_url: str,
+) -> None:
+    """Every direct maintenance job uses ``chronicler_mem``, never the domain pool."""
+    parsed = urlparse(isolated_db_url)
+    domain_db = Database(
+        db_name=parsed.path.lstrip("/"),
+        schema="chronicler",
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 5432,
+        user=parsed.username or "postgres",
+        password=parsed.password or "postgres",
+        min_pool_size=1,
+        max_pool_size=3,
+        strict_role_enforcement=False,
+    )
+    await domain_db.connect()
+    module = MemoryModule()
+    engine = make_embedding_engine_mock()
+    try:
+        await module.on_startup(
+            MemoryModuleConfig(memory_schema="chronicler_mem"),
+            domain_db,
+        )
+        memory_pool = module._get_pool()
+        assert await memory_pool.fetchval("SELECT current_schema()") == "chronicler_mem"
+
+        # Decay reaches ``memory_policies``, ``facts``, and ``rules``. None of
+        # those memory tables exist in the chronicler domain schema.
+        decay_result = await _run_memory_decay_sweep_job(pool=domain_db.pool, job_args=None)
+        assert {"facts_checked", "rules_checked"} <= set(decay_result)
+
+        # Cleanup requires the memory table's ``expires_at`` column, which the
+        # domain's independently-owned ``chronicler.episodes`` table lacks.
+        await memory_pool.execute(
+            "INSERT INTO episodes (butler, content, expires_at) "
+            "VALUES ('chronicler', 'expired scheduled maintenance episode', now() - interval '1 day')"
+        )
+        cleanup_result = await _run_memory_episode_cleanup_job(pool=domain_db.pool, job_args=None)
+        assert cleanup_result["expired_deleted"] == 1
+        assert (
+            await memory_pool.fetchval(
+                "SELECT count(*) FROM episodes "
+                "WHERE content = 'expired scheduled maintenance episode'"
+            )
+            == 0
+        )
+
+        # The backfill must read unqualified facts from chronicler_mem and
+        # stamp that private schema into public catalog provenance.
+        catalog_fact = await store_fact(
+            memory_pool,
+            "scheduled-maintenance",
+            "catalog_backfill",
+            "A fact awaiting scheduled catalog backfill.",
+            engine,
+            source_butler="chronicler",
+        )
+        catalog_result = await _run_memory_catalog_backfill_job(
+            pool=domain_db.pool,
+            job_args=None,
+        )
+        assert catalog_result["source_schema"] == "chronicler_mem"
+        assert catalog_result["facts_backfilled"] >= 1
+        assert (
+            await memory_pool.fetchval(
+                "SELECT count(*) FROM public.memory_catalog "
+                "WHERE source_schema = 'chronicler_mem' "
+                "AND source_table = 'facts' AND source_id = $1",
+                catalog_fact["id"],
+            )
+            == 1
+        )
+
+        # Purge performs independent deletes from the memory ``facts`` table;
+        # it catches per-delete errors, so assert the actual private-schema
+        # mutation rather than only a non-error result.
+        purge_fact = await store_fact(
+            memory_pool,
+            "scheduled-maintenance",
+            "purge_superseded",
+            "A superseded fact awaiting scheduled purge.",
+            engine,
+            source_butler="chronicler",
+        )
+        await memory_pool.execute(
+            "UPDATE facts SET validity = 'superseded', "
+            "created_at = now() - interval '8 days' WHERE id = $1",
+            purge_fact["id"],
+        )
+        purge_result = await _run_memory_purge_superseded_job(pool=domain_db.pool, job_args=None)
+        assert purge_result["deleted"] == 1
+        assert (
+            await memory_pool.fetchval("SELECT count(*) FROM facts WHERE id = $1", purge_fact["id"])
+            == 0
+        )
+    finally:
+        await module.on_shutdown()
+        await domain_db.close()
 
 
 @pytest.mark.asyncio(loop_scope="session")

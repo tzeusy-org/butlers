@@ -17,6 +17,7 @@ from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
     MissingGoogleCredentialsError,
     delete_google_credentials,
+    google_oauth_error_code,
     list_google_account_entities,
     load_app_credentials,
     load_google_credentials,
@@ -96,6 +97,25 @@ def test_google_credentials_model():
 
     r = repr(GoogleCredentials(client_id="cid", client_secret="SECRET", refresh_token="TOKEN"))
     assert "SECRET" not in r and "TOKEN" not in r and "REDACTED" in r
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"error": "invalid_grant"}, "invalid_grant"),
+        ({"error": "unauthorized_client"}, "unauthorized_client"),
+        ({"error": {"message": "invalid_grant mentioned in prose"}}, None),
+        ({"error": ""}, None),
+    ],
+)
+def test_google_oauth_error_code_only_reads_top_level_token_endpoint_code(
+    payload: dict[str, object], expected: str | None
+) -> None:
+    """Nested data-API prose must never masquerade as an OAuth token error."""
+    response = MagicMock()
+    response.json.return_value = payload
+
+    assert google_oauth_error_code(response) == expected
 
 
 # ---------------------------------------------------------------------------

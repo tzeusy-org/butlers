@@ -504,10 +504,18 @@ export interface Issue {
  * `meta.sources_degraded` convention (see CLAUDE.md API Conventions). Absent
  * or empty means every source answered; a non-empty list means the feed is
  * incomplete and MUST NOT render as an all-clear "no issues".
+ *
+ * The audit-derived lane is separately capped at 500 groups. When an
+ * overflow sentinel exists, `truncated` is true and the UI must name that
+ * incomplete history rather than treating the rendered groups as exhaustive.
+ * The field stays absent when the result is complete, including exactly 500
+ * groups.
  */
 export interface IssuesListMeta extends ApiMeta {
   /** Names of the feed sources whose query failed and were dropped. */
   sources_degraded?: string[];
+  /** More than 500 audit-derived issue groups matched this feed window. */
+  truncated?: boolean;
 }
 
 /** GET /api/issues response: grouped issues + degraded-source meta. */
@@ -3080,6 +3088,7 @@ export interface AutonomySuggestion {
   id: string;
   suggestion_type: "promotion" | "demotion";
   pattern_fingerprint: string;
+  fingerprint_version: number;
   tool_name: string;
   representative_args: Record<string, unknown>;
   status: "pending" | "confirmed" | "dismissed" | "superseded";
@@ -3508,6 +3517,20 @@ export interface PipelineStats {
   routed_pct: number;
   /** Count of filtered events in the last 24 hours. */
   filtered24h: number;
+  /**
+   * Unresolved ingestion events that failed execution. Deliberately reviewed
+   * write-offs are excluded and reported separately in `written_off_total`.
+   */
+  failed_total: number | null;
+  /** Events whose replay was requested and has not yet been reconciled. */
+  replay_pending_total: number | null;
+  /** Reviewed, deliberately unreplayed failures retained for audit history. */
+  written_off_total: number | null;
+  /**
+   * Whether the DB-backed backlog counts were available for this response.
+   * When false, every backlog count is null rather than a fabricated zero.
+   */
+  backlog_available: boolean;
 }
 
 /**
@@ -6073,6 +6096,10 @@ export interface ChroniclerEpisodeExplainResponse {
  *    are refreshed by the miner (not owner-editable), but enable/label are.
  *  - `"declared"` — owner bootstrap ("I work Mon-Fri 09:30-19:30 at Acme");
  *    fully owner-editable and deletable.
+ *
+ * Mined rows expose their evidence lifecycle for owner review. A `stale` row
+ * has missed one or more evidence-backed weekly mining runs; a declared row
+ * is never made stale by the miner.
  */
 export interface ChroniclerRoutine {
   id: string;
@@ -6089,6 +6116,12 @@ export interface ChroniclerRoutine {
   evidence_summary: Record<string, unknown>;
   origin: "mined" | "declared";
   enabled: boolean;
+  /** Most recent miner re-detection; null for owner-declared routines. */
+  last_confirmed_at: string | null;
+  /** Consecutive evidence-backed mining runs that did not re-detect this row. */
+  missed_mine_cycles: number;
+  /** Whether a mined row has missed at least one mining cycle. */
+  stale: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -8078,12 +8111,23 @@ export interface SecretsInventoryData {
   providers?: Record<string, SecretsProviderInfo>;
 }
 
+/** Deduplicated state counts keyed by the passport credential family. */
+export interface SecretsInventoryFamilyCounts {
+  cli: number;
+  system: number;
+  user: number;
+}
+
 /** Meta fields returned alongside the inventory payload. */
 export interface SecretsInventoryMeta {
   /** Genuinely broken or imminently-expiring rows (bu-976n0 tri-state split). */
   failing_count: number;
   /** Set-but-never-probed rows — an unknown, not a failure (bu-976n0). */
   unverified_count: number;
+  /** Per-family failing counts from the same deduplicated server-side row set. */
+  failing_count_by_family: SecretsInventoryFamilyCounts;
+  /** Per-family unverified counts from the same deduplicated server-side row set. */
+  unverified_count_by_family: SecretsInventoryFamilyCounts;
   severity?: Record<string, number>;
   /**
    * Named sources that failed during this fan-out and were dropped from the

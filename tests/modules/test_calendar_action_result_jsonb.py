@@ -1,8 +1,8 @@
 """Unit tests for the calendar_action_log.action_result jsonb repair (bu-x92jw).
 
-``CalendarModule._reconstruct_action_result`` recovers the equivalent merged
-object from rows corrupted by the action_result double-JSON-encoding bug
-(fixed in api/routers/calendar_workspace.py's undo-marker writes): Postgres's
+``reconstruct_action_result`` recovers the equivalent merged object from rows
+corrupted by the action_result double-JSON-encoding bug (fixed in
+api/routers/calendar_workspace.py's undo-marker writes): Postgres's
 ``||`` between a jsonb object and a jsonb-typed STRING scalar coerces both
 operands into an array, so a corrupted row looks like
 ``[{...original...}, "{\"undo\": {...}}"]`` instead of a merged object.
@@ -23,24 +23,31 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.api.routers.calendar_workspace import reconstruct_action_result as workspace_result
+from butlers.calendar_action_result import reconstruct_action_result
 from butlers.modules.calendar import CalendarModule
+from butlers.modules.calendar import reconstruct_action_result as module_result
 
 pytestmark = pytest.mark.unit
 
 
 class TestReconstructActionResult:
+    def test_workspace_and_module_share_the_single_normalizer(self):
+        assert workspace_result is reconstruct_action_result
+        assert module_result is reconstruct_action_result
+
     def test_plain_object_passes_through(self):
         value = {"status": "updated", "pre_state": {"event_id": "evt-1"}}
-        assert CalendarModule._reconstruct_action_result(value) == value
+        assert reconstruct_action_result(value) == value
 
     def test_json_string_object_decodes(self):
         value = json.dumps({"status": "updated"})
-        assert CalendarModule._reconstruct_action_result(value) == {"status": "updated"}
+        assert reconstruct_action_result(value) == {"status": "updated"}
 
     def test_none_and_garbage_return_empty_dict(self):
-        assert CalendarModule._reconstruct_action_result(None) == {}
-        assert CalendarModule._reconstruct_action_result(42) == {}
-        assert CalendarModule._reconstruct_action_result("not json") == {}
+        assert reconstruct_action_result(None) == {}
+        assert reconstruct_action_result(42) == {}
+        assert reconstruct_action_result("not json") == {}
 
     def test_corrupted_array_merges_object_and_string_elements(self):
         """The canonical corruption shape: an original object element plus a
@@ -49,7 +56,7 @@ class TestReconstructActionResult:
         marker_string = json.dumps({"undo": {"status": "pending", "request_id": "undo-1"}})
         corrupted = [original, marker_string]
 
-        result = CalendarModule._reconstruct_action_result(corrupted)
+        result = reconstruct_action_result(corrupted)
 
         assert result["status"] == "updated"
         assert result["pre_state"] == {"event_id": "evt-1"}
@@ -63,13 +70,13 @@ class TestReconstructActionResult:
         final_marker = json.dumps({"undo": {"status": "updated"}})
         corrupted = [original, pending_marker, final_marker]
 
-        result = CalendarModule._reconstruct_action_result(corrupted)
+        result = reconstruct_action_result(corrupted)
 
         assert result["undo"] == {"status": "updated"}
 
     def test_array_with_unparseable_string_element_is_ignored(self):
         corrupted = [{"status": "updated"}, "not valid json"]
-        result = CalendarModule._reconstruct_action_result(corrupted)
+        result = reconstruct_action_result(corrupted)
         assert result == {"status": "updated"}
 
 

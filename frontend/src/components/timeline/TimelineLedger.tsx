@@ -169,7 +169,8 @@ function groupByHour(events: TimelineEvent[]): HourGroup[] {
 // Row
 // ---------------------------------------------------------------------------
 
-const ROW_GRID = "96px 120px 92px 1fr 18px";
+const ROW_GRID = "96px 120px 92px 1fr 24px";
+const ROW_DISCLOSURE_GRID = "96px 120px 92px minmax(0, 1fr)";
 
 function EventRow({
   event,
@@ -182,56 +183,50 @@ function EventRow({
 }) {
   const sessionLink = isSessionEvent(event) ? sessionDetailHref(event) : null;
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (e.target !== e.currentTarget) return;
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onToggle();
-    }
-  }
-
   return (
     <div
       className={[
-        "grid items-center gap-x-3 px-3 py-2 border-b border-border/50 text-[13px] transition-colors cursor-pointer group",
-        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+        "grid items-center gap-x-3 px-3 py-2 border-b border-border/50 text-[13px] transition-colors group",
         isOpen ? "bg-muted/20" : "hover:bg-muted/10",
       ].join(" ")}
       style={{ gridTemplateColumns: ROW_GRID }}
-      onClick={onToggle}
-      onKeyDown={handleKeyDown}
-      tabIndex={0}
-      role="button"
-      aria-expanded={isOpen}
       data-testid="timeline-row"
       data-event-id={event.id}
     >
-      <Time
-        value={event.timestamp}
-        mode="absolute"
-        precision="time-seconds"
-        className="font-mono tabular-nums text-[11px] text-muted-foreground"
-      />
-      <span className="font-mono text-[11px] text-muted-foreground truncate">{event.butler}</span>
-      <TypeBadge type={event.type} failed={isFailedNotification(event)} />
-      <span className="truncate font-serif text-[13px] leading-[1.5]" title={event.summary}>
-        {event.summary}
-      </span>
+      <button
+        type="button"
+        className={`${sessionLink ? "col-span-4" : "col-span-5"} grid min-h-6 min-w-0 items-center gap-x-3 bg-transparent p-0 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset`}
+        style={{ gridTemplateColumns: sessionLink ? ROW_DISCLOSURE_GRID : ROW_GRID }}
+        onClick={onToggle}
+        aria-expanded={isOpen}
+      >
+        <Time
+          value={event.timestamp}
+          mode="absolute"
+          precision="time-seconds"
+          className="font-mono tabular-nums text-[11px] text-muted-foreground"
+        />
+        <span className="font-mono text-[11px] text-muted-foreground truncate">{event.butler}</span>
+        <TypeBadge type={event.type} failed={isFailedNotification(event)} />
+        <span className="truncate font-serif text-[13px] leading-[1.5]" title={event.summary}>
+          {event.summary}
+        </span>
+        {!sessionLink && (
+          <span className="font-mono text-[10px] text-muted-foreground select-none">
+            {isOpen ? "▲" : "▼"}
+          </span>
+        )}
+      </button>
       {sessionLink ? (
         <Link
           to={sessionLink}
-          onClick={(e) => e.stopPropagation()}
-          className="font-mono text-[10px] text-muted-foreground select-none hover:text-foreground transition-colors"
+          className="inline-flex size-6 items-center justify-center font-mono text-[10px] text-muted-foreground select-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
           data-testid="row-session-link"
           aria-label="View session"
         >
           ↗
         </Link>
-      ) : (
-        <span className="font-mono text-[10px] text-muted-foreground select-none">
-          {isOpen ? "▲" : "▼"}
-        </span>
-      )}
+      ) : null}
     </div>
   );
 }

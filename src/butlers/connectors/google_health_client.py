@@ -78,9 +78,9 @@ TokenFetcher = Callable[[], Awaitable[str]]
 Implementations MUST:
 
 - Return a freshly-minted access token when invalidated.
-- Raise :class:`GoogleHealthCredentialError` (or a subclass) when the
-  refresh token itself is invalid / revoked — the connector uses this to
-  transition to ``degraded``.
+- Raise :class:`GoogleHealthCredentialError` (or a subclass) when a token
+  cannot be minted.  Exact token-endpoint OAuth codes use subclasses so the
+  connector can distinguish reauthorization from a degraded source failure.
 - Never write tokens to disk or logs.
 """
 
@@ -90,21 +90,24 @@ class GoogleHealthError(Exception):
 
 
 class GoogleHealthCredentialError(GoogleHealthError):
-    """Raised when Google Health authentication fails and cannot be recovered.
+    """Raised when the connector cannot complete a credentialed request.
 
-    The connector treats this as a terminal auth failure — it transitions to
-    ``degraded`` and re-checks scopes / credentials periodically.
-
-    NOTE: this is *per-connector* and does NOT imply the shared
-    ``public.google_accounts`` row should be marked revoked.  Many causes are
-    transient or connector-local (missing refresh token mid-DB-sync, app
-    credentials not yet configured, a non-200 from Google's token endpoint that
-    is not an ``invalid_grant``).  Only :class:`GoogleHealthTokenRevokedError`
-    means the underlying grant is actually gone for the whole account.
+    This base class is connector-local and does not by itself prove a shared
+    refresh grant failed.  Callers report it as a degraded source failure so a
+    transient/malformed response cannot falsely demand reauthorization.
     """
 
 
-class GoogleHealthTokenRevokedError(GoogleHealthCredentialError):
+class GoogleHealthOAuthCredentialError(GoogleHealthCredentialError):
+    """A precise token-endpoint OAuth error that requires reauthorization.
+
+    This covers ``unauthorized_client`` as well as subclasses for grant
+    revocation.  It affects Google Health's local auth state but does not by
+    itself allow mutation of the shared ``google_accounts`` row.
+    """
+
+
+class GoogleHealthTokenRevokedError(GoogleHealthOAuthCredentialError):
     """Raised when Google's token endpoint reports ``invalid_grant``.
 
     This is the *only* credential failure that genuinely indicates the account's
@@ -262,7 +265,9 @@ class GoogleHealthClient:
         Raises
         ------
         GoogleHealthCredentialError
-            On a persistent 401 — the connector marks the account revoked.
+            On a persistent 401 — the connector marks its source state
+            degraded. Only a token endpoint ``invalid_grant`` may revoke the
+            shared account row.
         GoogleHealthRateLimitError
             On HTTP 429.
         httpx.HTTPStatusError
@@ -433,6 +438,7 @@ __all__ = [
     "GoogleHealthCredentialError",
     "GoogleHealthError",
     "GoogleHealthForbiddenError",
+    "GoogleHealthOAuthCredentialError",
     "GoogleHealthRateLimitError",
     "GoogleHealthSourcePreconditionError",
     "TokenFetcher",

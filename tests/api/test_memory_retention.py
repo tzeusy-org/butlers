@@ -90,6 +90,14 @@ def _make_inspect_row(
     return m
 
 
+def _register_memory_runtime_pool(monkeypatch, pool) -> None:
+    """Make a unit test's mock pool represent the started MemoryModule pool."""
+    monkeypatch.setattr(
+        "butlers.core.memory_hooks.resolve_memory_runtime_pool",
+        lambda: pool,
+    )
+
+
 class _NullTxCtx:
     """No-op async context manager standing in for ``conn.transaction()``."""
 
@@ -399,7 +407,7 @@ async def test_inspect_pagination_meta_present(app):
 # ---------------------------------------------------------------------------
 
 
-async def test_episode_cleanup_uses_policy_max_rows():
+async def test_episode_cleanup_uses_policy_max_rows(monkeypatch):
     """_run_memory_episode_cleanup_job reads max_rows from memory_retention_policies."""
     from butlers.scheduled_jobs import _run_memory_episode_cleanup_job
 
@@ -408,6 +416,7 @@ async def test_episode_cleanup_uses_policy_max_rows():
 
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=policy_row)
+    _register_memory_runtime_pool(monkeypatch, pool)
 
     with patch(
         "butlers.modules.memory.consolidation.run_episode_cleanup",
@@ -420,7 +429,7 @@ async def test_episode_cleanup_uses_policy_max_rows():
     assert kwargs.get("max_entries") == 500
 
 
-async def test_purge_superseded_uses_policy_ttl_days():
+async def test_purge_superseded_uses_policy_ttl_days(monkeypatch):
     """_run_memory_purge_superseded_job reads ttl_days from memory_retention_policies."""
     from butlers.scheduled_jobs import _run_memory_purge_superseded_job
 
@@ -429,6 +438,7 @@ async def test_purge_superseded_uses_policy_ttl_days():
 
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=policy_row)
+    _register_memory_runtime_pool(monkeypatch, pool)
 
     with patch(
         "butlers.modules.memory.storage.purge_superseded_facts",
@@ -442,12 +452,13 @@ async def test_purge_superseded_uses_policy_ttl_days():
     assert kwargs.get("older_than_days") == 30
 
 
-async def test_episode_cleanup_falls_back_to_default_when_policy_missing():
+async def test_episode_cleanup_falls_back_to_default_when_policy_missing(monkeypatch):
     """When the policy table is unavailable, cleanup defaults to 10000."""
     from butlers.scheduled_jobs import _run_memory_episode_cleanup_job
 
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(side_effect=Exception("relation does not exist"))
+    _register_memory_runtime_pool(monkeypatch, pool)
 
     with patch(
         "butlers.modules.memory.consolidation.run_episode_cleanup",
@@ -459,12 +470,13 @@ async def test_episode_cleanup_falls_back_to_default_when_policy_missing():
     assert kwargs.get("max_entries") == 10000
 
 
-async def test_cleanup_logs_compaction_when_rows_removed():
+async def test_cleanup_logs_compaction_when_rows_removed(monkeypatch):
     """_run_memory_episode_cleanup_job calls _log_compaction when rows were deleted."""
     from butlers.scheduled_jobs import _run_memory_episode_cleanup_job
 
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=None)
+    _register_memory_runtime_pool(monkeypatch, pool)
 
     with patch(
         "butlers.modules.memory.consolidation.run_episode_cleanup",
@@ -483,12 +495,13 @@ async def test_cleanup_logs_compaction_when_rows_removed():
     assert call_args.args[2] == 10  # rows_removed = 3 + 7
 
 
-async def test_cleanup_passes_bytes_freed_to_log_compaction():
+async def test_cleanup_passes_bytes_freed_to_log_compaction(monkeypatch):
     """_run_memory_episode_cleanup_job computes bytes_freed from table-size delta."""
     from butlers.scheduled_jobs import _run_memory_episode_cleanup_job
 
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=None)
+    _register_memory_runtime_pool(monkeypatch, pool)
 
     # Simulate table shrinking from 8192 → 4096 bytes after cleanup.
     size_sequence = [8192, 4096]
@@ -512,12 +525,13 @@ async def test_cleanup_passes_bytes_freed_to_log_compaction():
     assert call_args.kwargs.get("bytes_freed") == 4096  # 8192 - 4096
 
 
-async def test_cleanup_bytes_freed_is_none_when_size_unavailable():
+async def test_cleanup_bytes_freed_is_none_when_size_unavailable(monkeypatch):
     """bytes_freed is None when pg_total_relation_size returns None."""
     from butlers.scheduled_jobs import _run_memory_episode_cleanup_job
 
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=None)
+    _register_memory_runtime_pool(monkeypatch, pool)
 
     with patch(
         "butlers.modules.memory.consolidation.run_episode_cleanup",
@@ -538,12 +552,13 @@ async def test_cleanup_bytes_freed_is_none_when_size_unavailable():
     assert call_args.kwargs.get("bytes_freed") is None
 
 
-async def test_purge_superseded_passes_bytes_freed_to_log_compaction():
+async def test_purge_superseded_passes_bytes_freed_to_log_compaction(monkeypatch):
     """_run_memory_purge_superseded_job computes bytes_freed from facts table-size delta."""
     from butlers.scheduled_jobs import _run_memory_purge_superseded_job
 
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=None)
+    _register_memory_runtime_pool(monkeypatch, pool)
 
     size_sequence = [16384, 8192]
 
@@ -568,12 +583,13 @@ async def test_purge_superseded_passes_bytes_freed_to_log_compaction():
     assert call_args.kwargs.get("bytes_freed") == 8192  # 16384 - 8192
 
 
-async def test_cleanup_does_not_log_when_nothing_removed():
+async def test_cleanup_does_not_log_when_nothing_removed(monkeypatch):
     """_log_compaction is NOT called when no rows were removed."""
     from butlers.scheduled_jobs import _run_memory_episode_cleanup_job
 
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=None)
+    _register_memory_runtime_pool(monkeypatch, pool)
 
     with patch(
         "butlers.modules.memory.consolidation.run_episode_cleanup",

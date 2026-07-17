@@ -1206,6 +1206,7 @@ function auditStatusColor(status: CalendarAuditEntry["action_status"]): string {
 interface CalendarActivityPanelProps {
   auditQuery: {
     isLoading: boolean;
+    isFetching?: boolean;
     isError: boolean;
     error: Error | null;
     data?: {
@@ -1510,6 +1511,8 @@ export function CalendarActivityPanel({
   const sourcesAvailable = auditQuery.data?.data?.sources_available !== false;
   const hasPrev = offset > 0;
   const hasNext = offset + limit < total;
+  const shouldDim =
+    !!auditQuery.isFetching && !auditQuery.isLoading && !auditQuery.isError;
 
   if (auditQuery.isLoading) {
     return (
@@ -1535,6 +1538,31 @@ export function CalendarActivityPanel({
   }
   if (entries.length === 0) {
     return (
+      <FetchingDim
+        isFetching={shouldDim}
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
+          {!sourcesAvailable ? (
+            <SourceDegradedNote
+              testId="audit-sources-degraded"
+              label="Activity log"
+              detail="some sources unavailable: recent mutations may be missing"
+            />
+          ) : null}
+          <Voice variant="italic" className="text-[var(--mfg)]">
+            No calendar mutations logged yet.
+          </Voice>
+        </div>
+      </FetchingDim>
+    );
+  }
+
+  return (
+    <FetchingDim
+      isFetching={shouldDim}
+      className="flex min-h-0 flex-1 flex-col"
+    >
       <div className="flex min-h-0 flex-1 flex-col gap-3">
         {!sourcesAvailable ? (
           <SourceDegradedNote
@@ -1543,135 +1571,120 @@ export function CalendarActivityPanel({
             detail="some sources unavailable: recent mutations may be missing"
           />
         ) : null}
-        <Voice variant="italic" className="text-[var(--mfg)]">
-          No calendar mutations logged yet.
-        </Voice>
-      </div>
-    );
-  }
+        <div className="flex items-center justify-between gap-4">
+          <Mono muted className="tabular-nums">
+            {total} {total === 1 ? "entry" : "entries"} total · showing{" "}
+            {offset + 1}–{Math.min(offset + limit, total)}
+          </Mono>
+          <div className="flex items-center gap-1">
+            <PillButton
+              disabled={!hasPrev}
+              onClick={() => onPageChange(Math.max(0, offset - limit))}
+            >
+              ‹ Prev
+            </PillButton>
+            <PillButton
+              disabled={!hasNext}
+              onClick={() => onPageChange(offset + limit)}
+            >
+              Next ›
+            </PillButton>
+          </div>
+        </div>
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3">
-      {!sourcesAvailable ? (
-        <SourceDegradedNote
-          testId="audit-sources-degraded"
-          label="Activity log"
-          detail="some sources unavailable: recent mutations may be missing"
-        />
-      ) : null}
-      <div className="flex items-center justify-between gap-4">
-        <Mono muted className="tabular-nums">
-          {total} {total === 1 ? "entry" : "entries"} total · showing{" "}
-          {offset + 1}–{Math.min(offset + limit, total)}
-        </Mono>
-        <div className="flex items-center gap-1">
-          <PillButton
-            disabled={!hasPrev}
-            onClick={() => onPageChange(Math.max(0, offset - limit))}
-          >
-            ‹ Prev
-          </PillButton>
-          <PillButton
-            disabled={!hasNext}
-            onClick={() => onPageChange(offset + limit)}
-          >
-            Next ›
-          </PillButton>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1" role="list">
+          {entries.map((entry) => {
+            const createdAt = entry.created_at
+              ? format(new Date(entry.created_at), "yyyy-MM-dd HH:mm:ss")
+              : "";
+            const summaryTitle =
+              typeof entry.payload_summary?.title === "string"
+                ? entry.payload_summary.title
+                : null;
+            const undoable = isUndoableAuditEntry(entry);
+            const undone = undoneIds.has(entry.id);
+            const undoing = undoingId === entry.id;
+
+            return (
+              <Row
+                key={entry.id}
+                mark={
+                  <span
+                    className={`font-mono text-[10px] uppercase tracking-[0.12em] ${auditStatusColor(entry.action_status)}`}
+                  >
+                    {auditStatusLabel(entry.action_status)}
+                  </span>
+                }
+                meta={
+                  <div className="flex items-center gap-3">
+                    {entry.source_session_id ? (
+                      <Tip content={`Session ${entry.source_session_id}`}>
+                        <Link
+                          to={`/sessions/${entry.source_session_id}`}
+                          className="font-mono text-[10px] text-[var(--mfg)] underline decoration-dotted hover:text-fg"
+                        >
+                          session ›
+                        </Link>
+                      </Tip>
+                    ) : null}
+                    {undoable ? (
+                      undone ? (
+                        <span
+                          className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]"
+                          data-testid="calendar-audit-undone"
+                        >
+                          undone
+                        </span>
+                      ) : (
+                        <PillButton
+                          data-testid="calendar-audit-undo"
+                          data-action-id={entry.id}
+                          disabled={undoingId !== null}
+                          onClick={() => onUndo(entry)}
+                          title="Reverse this calendar change"
+                        >
+                          {undoing ? "Undoing…" : "Undo"}
+                        </PillButton>
+                      )
+                    ) : null}
+                  </div>
+                }
+              >
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-sm font-medium text-fg">
+                      {entry.action_type}
+                      {summaryTitle ? `: ${summaryTitle}` : ""}
+                    </span>
+                    {entry.source_butler ? (
+                      <KindTag>{entry.source_butler}</KindTag>
+                    ) : null}
+                  </div>
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
+                    <Mono muted className="tabular-nums">
+                      {createdAt}
+                    </Mono>
+                    {entry.error ? (
+                      <span
+                        className="max-w-[20rem] truncate text-[11px] text-[var(--red-text)]"
+                        title={entry.error}
+                      >
+                        {entry.error}
+                      </span>
+                    ) : null}
+                    {entry.origin_ref ? (
+                      <Mono muted className="truncate">
+                        {entry.origin_ref}
+                      </Mono>
+                    ) : null}
+                  </div>
+                </div>
+              </Row>
+            );
+          })}
         </div>
       </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1" role="list">
-        {entries.map((entry) => {
-          const createdAt = entry.created_at
-            ? format(new Date(entry.created_at), "yyyy-MM-dd HH:mm:ss")
-            : "";
-          const summaryTitle =
-            typeof entry.payload_summary?.title === "string"
-              ? entry.payload_summary.title
-              : null;
-          const undoable = isUndoableAuditEntry(entry);
-          const undone = undoneIds.has(entry.id);
-          const undoing = undoingId === entry.id;
-
-          return (
-            <Row
-              key={entry.id}
-              mark={
-                <span
-                  className={`font-mono text-[10px] uppercase tracking-[0.12em] ${auditStatusColor(entry.action_status)}`}
-                >
-                  {auditStatusLabel(entry.action_status)}
-                </span>
-              }
-              meta={
-                <div className="flex items-center gap-3">
-                  {entry.source_session_id ? (
-                    <Tip content={`Session ${entry.source_session_id}`}>
-                      <Link
-                        to={`/sessions/${entry.source_session_id}`}
-                        className="font-mono text-[10px] text-[var(--mfg)] underline decoration-dotted hover:text-fg"
-                      >
-                        session ›
-                      </Link>
-                    </Tip>
-                  ) : null}
-                  {undoable ? (
-                    undone ? (
-                      <span
-                        className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--mfg)]"
-                        data-testid="calendar-audit-undone"
-                      >
-                        undone
-                      </span>
-                    ) : (
-                      <PillButton
-                        data-testid="calendar-audit-undo"
-                        data-action-id={entry.id}
-                        disabled={undoingId !== null}
-                        onClick={() => onUndo(entry)}
-                        title="Reverse this calendar change"
-                      >
-                        {undoing ? "Undoing…" : "Undo"}
-                      </PillButton>
-                    )
-                  ) : null}
-                </div>
-              }
-            >
-              <div className="flex min-w-0 flex-col gap-0.5">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate text-sm font-medium text-fg">
-                    {entry.action_type}
-                    {summaryTitle ? `: ${summaryTitle}` : ""}
-                  </span>
-                  {entry.source_butler ? (
-                    <KindTag>{entry.source_butler}</KindTag>
-                  ) : null}
-                </div>
-                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
-                  <Mono muted className="tabular-nums">
-                    {createdAt}
-                  </Mono>
-                  {entry.error ? (
-                    <span
-                      className="max-w-[20rem] truncate text-[11px] text-[var(--red-text)]"
-                      title={entry.error}
-                    >
-                      {entry.error}
-                    </span>
-                  ) : null}
-                  {entry.origin_ref ? (
-                    <Mono muted className="truncate">
-                      {entry.origin_ref}
-                    </Mono>
-                  ) : null}
-                </div>
-              </div>
-            </Row>
-          );
-        })}
-      </div>
-    </div>
+    </FetchingDim>
   );
 }
 
@@ -2371,6 +2384,18 @@ function CalendarSearchPalette({
             <Voice variant="italic" className="text-[var(--mfg)]">
               Searching…
             </Voice>
+          ) : searchQuery.isError ? (
+            <div role="alert" className="flex items-start gap-2">
+              <StateDot state="error" className="mt-[7px]" />
+              <p className="text-sm text-fg">
+                Failed to search calendar events. {" "}
+                <span className="text-[var(--mfg)]">
+                  {searchQuery.error instanceof Error
+                    ? searchQuery.error.message
+                    : "Unknown error"}
+                </span>
+              </p>
+            </div>
           ) : !searchAvailable ? (
             <div
               role="status"
@@ -2391,50 +2416,54 @@ function CalendarSearchPalette({
               No matching events.
             </Voice>
           ) : (
-            groups.map((group) => (
-              <section key={group.day} className="mb-4">
-                <div className="mb-1 border-b border-[var(--border)] pb-1">
-                  <Eyebrow>
-                    {formatEventTime(
-                      group.date,
-                      displayTimezone,
-                      "EEE · MMM d, yyyy",
-                    )}
-                  </Eyebrow>
-                </div>
-                <div role="list">
-                  {group.items.map((entry) => (
-                    <button
-                      key={entry.entry_id}
-                      type="button"
-                      onClick={() => onJump(entry)}
-                      className="flex w-full items-center gap-2 rounded-[3px] px-2 py-1.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
-                    >
-                      <Mono muted className="w-14 shrink-0 tabular-nums">
-                        {entry.all_day
-                          ? "all day"
-                          : formatEventTime(
-                              entry.start_at,
-                              displayTimezone,
-                              "HH:mm",
-                            )}
-                      </Mono>
-                      <span className="truncate text-sm text-fg">
-                        {entry.title}
-                      </span>
-                      {entry.butler_name ? (
-                        <Mono
-                          muted
-                          className="ml-auto hidden shrink-0 sm:inline"
-                        >
-                          {entry.butler_name}
+            <FetchingDim
+              isFetching={searchQuery.isFetching && !searchQuery.isLoading}
+            >
+              {groups.map((group) => (
+                <section key={group.day} className="mb-4">
+                  <div className="mb-1 border-b border-[var(--border)] pb-1">
+                    <Eyebrow>
+                      {formatEventTime(
+                        group.date,
+                        displayTimezone,
+                        "EEE · MMM d, yyyy",
+                      )}
+                    </Eyebrow>
+                  </div>
+                  <div role="list">
+                    {group.items.map((entry) => (
+                      <button
+                        key={entry.entry_id}
+                        type="button"
+                        onClick={() => onJump(entry)}
+                        className="flex w-full items-center gap-2 rounded-[3px] px-2 py-1.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
+                      >
+                        <Mono muted className="w-14 shrink-0 tabular-nums">
+                          {entry.all_day
+                            ? "all day"
+                            : formatEventTime(
+                                entry.start_at,
+                                displayTimezone,
+                                "HH:mm",
+                              )}
                         </Mono>
-                      ) : null}
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ))
+                        <span className="truncate text-sm text-fg">
+                          {entry.title}
+                        </span>
+                        {entry.butler_name ? (
+                          <Mono
+                            muted
+                            className="ml-auto hidden shrink-0 sm:inline"
+                          >
+                            {entry.butler_name}
+                          </Mono>
+                        ) : null}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </FetchingDim>
           )}
         </div>
       </DialogContent>
@@ -2670,10 +2699,11 @@ export default function CalendarWorkspacePage() {
   );
   const conflictScan = conflictsQuery.data?.data;
   const conflictIssues = useMemo(
-    () => (radarEnabled ? (conflictScan?.issues ?? []) : []),
-    [radarEnabled, conflictScan?.issues],
+    () => (radarEnabled && !conflictsQuery.isError ? (conflictScan?.issues ?? []) : []),
+    [conflictsQuery.isError, radarEnabled, conflictScan?.issues],
   );
-  const conflictsAvailable = radarEnabled && (conflictScan?.issues_available ?? false);
+  const conflictsAvailable =
+    radarEnabled && !conflictsQuery.isError && (conflictScan?.issues_available ?? false);
   // entry_ids appearing in any overlap issue get the amber grid edge.
   const overlapEntryIds = useMemo(() => {
     const ids = new Set<string>();
@@ -2690,10 +2720,14 @@ export default function CalendarWorkspacePage() {
     { enabled: overlaysEnabled },
   );
   const overlayEntries = useMemo(
-    () => (overlaysEnabled ? (overlaysQuery.data?.data.entries ?? []) : []),
-    [overlaysEnabled, overlaysQuery.data?.data.entries],
+    () =>
+      overlaysEnabled && !overlaysQuery.isError
+        ? (overlaysQuery.data?.data.entries ?? [])
+        : [],
+    [overlaysEnabled, overlaysQuery.isError, overlaysQuery.data?.data.entries],
   );
-  const hasDomainContext = overlaysQuery.data?.data.has_domain_context ?? false;
+  const hasDomainContext =
+    !overlaysQuery.isError && (overlaysQuery.data?.data.has_domain_context ?? false);
   const overlaysByDayMap = useMemo(
     () => overlaysByDay(overlayEntries),
     [overlayEntries],
@@ -2713,6 +2747,16 @@ export default function CalendarWorkspacePage() {
     { enabled: overlaysEnabled },
   );
   const dayBriefing = dayBriefingQuery.data?.data;
+  const calendarSurfaceFetching =
+    workspaceQuery.isFetching ||
+    (overlaysEnabled &&
+      !overlaysQuery.isLoading &&
+      !overlaysQuery.isError &&
+      overlaysQuery.isFetching) ||
+    (radarEnabled &&
+      !conflictsQuery.isLoading &&
+      !conflictsQuery.isError &&
+      conflictsQuery.isFetching);
 
   const syncMutation = useSyncCalendarWorkspace();
   const butlerMutation = useMutateCalendarWorkspaceButlerEvent();
@@ -4895,9 +4939,19 @@ export default function CalendarWorkspacePage() {
                 : "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
             )}
           >
-            <StateDot state={overlaysEnabled ? "ok" : "waiting"} />
+            <StateDot
+              state={
+                overlaysEnabled && overlaysQuery.isError
+                  ? "error"
+                  : overlaysEnabled
+                    ? "ok"
+                    : "waiting"
+              }
+            />
             Overlays
-            {overlaysEnabled && overlaysQuery.isFetched && !hasDomainContext ? (
+            {overlaysEnabled && overlaysQuery.isError ? (
+              <span className="text-[var(--red-text)]">· unavailable</span>
+            ) : overlaysEnabled && overlaysQuery.isFetched && !hasDomainContext ? (
               <span className="text-[var(--dim)]">· none</span>
             ) : null}
           </button>
@@ -4988,6 +5042,11 @@ export default function CalendarWorkspacePage() {
           <DayBriefingCard
             heading={`Tomorrow · ${format(briefingDate, "EEE, MMM d")}`}
             isLoading={dayBriefingQuery.isLoading}
+            isFetching={dayBriefingQuery.isFetching && !dayBriefingQuery.isLoading}
+            isError={dayBriefingQuery.isError}
+            error={
+              dayBriefingQuery.error instanceof Error ? dayBriefingQuery.error : null
+            }
             groups={dayBriefing?.groups ?? []}
             hasDomainContext={dayBriefing?.has_domain_context ?? false}
             hasEntries={dayBriefing?.has_entries ?? false}
@@ -5049,6 +5108,7 @@ export default function CalendarWorkspacePage() {
           <CalendarDuplicatesPanel
             data={duplicatesQuery.data?.data}
             isLoading={duplicatesQuery.isLoading}
+            isFetching={duplicatesQuery.isFetching && !duplicatesQuery.isLoading}
             isError={duplicatesQuery.isError}
             error={
               duplicatesQuery.error instanceof Error
@@ -5085,6 +5145,18 @@ export default function CalendarWorkspacePage() {
               />
             </div>
           ) : null}
+          {overlaysEnabled && overlaysQuery.isError ? (
+            <div data-testid="calendar-overlays-error" className="pb-2">
+              <SourceDegradedNote
+                label="Cross-domain overlays"
+                detail={
+                  overlaysQuery.error instanceof Error
+                    ? overlaysQuery.error.message
+                    : "unavailable"
+                }
+              />
+            </div>
+          ) : null}
           {/* Linked-people resolution degraded (bu-qs64f): entries still render,
               but avatars may be incomplete — name the degraded source rather
               than let empty avatars read as "no one linked". */}
@@ -5117,7 +5189,7 @@ export default function CalendarWorkspacePage() {
             // keeps the outgoing window's entries rendered the instant week/day
             // navigation fires a new query key; this dims them instead of the
             // grid replacing itself with "Drawing the calendar…" on every step.
-            <FetchingDim isFetching={workspaceQuery.isFetching}>
+            <FetchingDim isFetching={calendarSurfaceFetching}>
               {view === "butler" ? (
             /* ---- Butler lanes ---- */
             butlerLaneRows.length === 0 ? (
@@ -5374,6 +5446,11 @@ export default function CalendarWorkspacePage() {
               <ConflictRadarBanner
                 issues={conflictIssues}
                 available={conflictsAvailable}
+                isFetching={conflictsQuery.isFetching && !conflictsQuery.isLoading}
+                isError={conflictsQuery.isError}
+                error={
+                  conflictsQuery.error instanceof Error ? conflictsQuery.error : null
+                }
                 className="mb-2"
                 onAcceptProposal={(proposalId) => {
                   acceptProposalMutation.mutate(

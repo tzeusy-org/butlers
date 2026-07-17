@@ -89,7 +89,7 @@ function Ring({
               cy="22"
               r={RING_RADIUS}
               fill="none"
-              stroke={config.hex}
+              stroke={config.color}
               strokeWidth="4"
               strokeLinecap="round"
               strokeDasharray={`${dash} ${RING_CIRCUMFERENCE}`}

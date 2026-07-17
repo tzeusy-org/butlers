@@ -59,7 +59,7 @@ function LaneSparkline({ series }: { series: ChroniclerTrendLaneSeries }) {
               className="flex-1 rounded-sm"
               style={{
                 height: `${heightPct}%`,
-                backgroundColor: d.unavailable ? "var(--muted)" : config.hex,
+                backgroundColor: d.unavailable ? "var(--muted)" : config.color,
                 ...(d.unavailable
                   ? {
                       backgroundImage:
@@ -162,7 +162,7 @@ export function TrendsLens({
                     key={`${a.lane}-${a.local_date}-${a.direction}`}
                     className="text-xs text-muted-foreground"
                   >
-                    <span className="font-medium" style={{ color: laneConfig(a.lane).hex }}>
+                    <span className="font-medium" style={{ color: laneConfig(a.lane).color }}>
                       {laneConfig(a.lane).label}
                     </span>{" "}
                     {a.direction === "spike" ? "spiked" : "dropped"} on {a.local_date} (

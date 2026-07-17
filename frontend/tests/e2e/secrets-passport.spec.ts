@@ -112,7 +112,12 @@ const MOCK_INVENTORY_RESPONSE = {
       spotify: { id: "spotify", label: "Spotify", glyph: "S", kind: "oauth", authority: "accounts.spotify.com", brief: "Recent listens.", cadence: "poll · 15m" },
     },
   },
-  meta: { failing_count: 1, unverified_count: 0 },
+  meta: {
+    failing_count: 1,
+    unverified_count: 0,
+    failing_count_by_family: { cli: 0, system: 0, user: 1 },
+    unverified_count_by_family: { cli: 0, system: 0, user: 0 },
+  },
 };
 
 // ---------------------------------------------------------------------------

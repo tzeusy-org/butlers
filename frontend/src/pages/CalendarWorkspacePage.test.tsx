@@ -9,10 +9,12 @@ import { toast } from "sonner";
 
 import CalendarWorkspacePage from "@/pages/CalendarWorkspacePage";
 import {
+  useCalendarOverlays,
   useCalendarMeetingPrep,
   useCalendarWorkspace,
   useCalendarWorkspaceEntry,
   useCalendarWorkspaceMeta,
+  useCalendarWorkspaceSearch,
   useFindCalendarWorkspaceTime,
   useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
@@ -60,6 +62,13 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
         source_butlers: [],
       },
     },
+  })),
+  useCalendarWorkspaceSearch: vi.fn(() => ({
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    error: null,
+    data: { data: { available: true, entries: [] } },
   })),
   useCalendarWorkspaceMeta: vi.fn(),
   useCalendarWorkspaceAudit: vi.fn(() => ({
@@ -167,6 +176,8 @@ vi.mock("@/hooks/use-debounce", () => ({
 
 type UseWorkspaceResult = ReturnType<typeof useCalendarWorkspace>;
 type UseWorkspaceMetaResult = ReturnType<typeof useCalendarWorkspaceMeta>;
+type UseOverlaysResult = ReturnType<typeof useCalendarOverlays>;
+type UseWorkspaceSearchResult = ReturnType<typeof useCalendarWorkspaceSearch>;
 type UseButlerMutationResult = ReturnType<
   typeof useMutateCalendarWorkspaceButlerEvent
 >;
@@ -794,6 +805,198 @@ describe("CalendarWorkspacePage", () => {
       "The calendar workspace failed to load.",
     );
     expect(container.textContent).not.toContain("Morning planning");
+  });
+
+  it("dims retained overlay pills while the next visible window is fetching", () => {
+    vi.mocked(useCalendarOverlays).mockReturnValue({
+      isLoading: false,
+      isFetching: true,
+      isError: false,
+      isFetched: true,
+      error: null,
+      data: {
+        data: {
+          entries: [
+            {
+              entry_id: "overlay-stale-1",
+              event_id: null,
+              view: "overlays",
+              source_type: "overlay_contribution",
+              source_key: "overlays",
+              title: "Stale electricity bill",
+              start_at: "2026-03-01T00:00:00Z",
+              end_at: "2026-03-02T00:00:00Z",
+              timezone: "UTC",
+              all_day: true,
+              calendar_id: null,
+              provider_event_id: null,
+              butler_name: "finance",
+              schedule_id: null,
+              reminder_id: null,
+              rrule: null,
+              cron: null,
+              until_at: null,
+              status: "active",
+              sync_state: null,
+              editable: false,
+              metadata: {
+                kind: "bill_due",
+                priority: "high",
+                source_butler: "finance",
+              },
+            },
+          ],
+          has_domain_context: true,
+        },
+      },
+    } as unknown as UseOverlaysResult);
+
+    renderPage("/calendar?view=user&range=month&anchor=2026-03-01&overlays=1");
+
+    expect(container.textContent).toContain("Stale electricity bill");
+    expect(container.innerHTML).toContain("opacity-60");
+  });
+
+  it("surfaces an overlays query error instead of retained overlay pills", () => {
+    vi.mocked(useCalendarOverlays).mockReturnValue({
+      isLoading: false,
+      isFetching: false,
+      isError: true,
+      isFetched: true,
+      error: new Error("overlay fetch failed"),
+      data: {
+        data: {
+          entries: [
+            {
+              entry_id: "overlay-stale-2",
+              event_id: null,
+              view: "overlays",
+              source_type: "overlay_contribution",
+              source_key: "overlays",
+              title: "Stale flight reminder",
+              start_at: "2026-03-01T00:00:00Z",
+              end_at: "2026-03-02T00:00:00Z",
+              timezone: "UTC",
+              all_day: true,
+              calendar_id: null,
+              provider_event_id: null,
+              butler_name: "travel",
+              schedule_id: null,
+              reminder_id: null,
+              rrule: null,
+              cron: null,
+              until_at: null,
+              status: "active",
+              sync_state: null,
+              editable: false,
+              metadata: {
+                kind: "travel_leg",
+                priority: "high",
+                source_butler: "travel",
+              },
+            },
+          ],
+          has_domain_context: true,
+        },
+      },
+    } as unknown as UseOverlaysResult);
+
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01&overlays=1");
+
+    expect(container.querySelector("[data-testid='calendar-overlays-error']")?.textContent).toContain(
+      "overlay fetch failed",
+    );
+    expect(container.textContent).not.toContain("Stale flight reminder");
+  });
+
+  it("dims retained search results while the next phrase is fetching", async () => {
+    vi.mocked(useCalendarWorkspaceSearch).mockReturnValue({
+      isLoading: false,
+      isFetching: true,
+      isError: false,
+      error: null,
+      data: {
+        data: {
+          available: true,
+          entries: [
+            {
+              entry_id: "search-stale-1",
+              title: "Stale planning result",
+              start_at: "2026-03-01T09:00:00Z",
+              all_day: false,
+              butler_name: "general",
+              view: "user",
+            },
+          ],
+        },
+      },
+    } as unknown as UseWorkspaceSearchResult);
+
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+    await act(async () => {
+      (container.querySelector('button[aria-label="Search events"]') as HTMLButtonElement)
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const input = document.querySelector(
+      'input[aria-label="Search calendar events"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      setInputValue(input, "planning");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+
+    expect(document.body.textContent).toContain("Stale planning result");
+    const result = Array.from(document.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Stale planning result"),
+    );
+    expect(result?.parentElement?.parentElement?.parentElement?.className).toContain(
+      "opacity-60",
+    );
+  });
+
+  it("surfaces a search query error instead of retained search results", async () => {
+    vi.mocked(useCalendarWorkspaceSearch).mockReturnValue({
+      isLoading: false,
+      isFetching: false,
+      isError: true,
+      error: new Error("search fetch failed"),
+      data: {
+        data: {
+          available: true,
+          entries: [
+            {
+              entry_id: "search-stale-2",
+              title: "Stale search result",
+              start_at: "2026-03-01T09:00:00Z",
+              all_day: false,
+              butler_name: "general",
+              view: "user",
+            },
+          ],
+        },
+      },
+    } as unknown as UseWorkspaceSearchResult);
+
+    renderPage("/calendar?view=user&range=list&anchor=2026-03-01");
+    await act(async () => {
+      (container.querySelector('button[aria-label="Search events"]') as HTMLButtonElement)
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const input = document.querySelector(
+      'input[aria-label="Search calendar events"]',
+    ) as HTMLInputElement;
+    await act(async () => {
+      setInputValue(input, "planning");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+
+    const alert = document.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("search fetch failed");
+    expect(document.body.textContent).not.toContain("Stale search result");
   });
 
   it("renders event times in the configured workspace timezone, not browser-local", async () => {

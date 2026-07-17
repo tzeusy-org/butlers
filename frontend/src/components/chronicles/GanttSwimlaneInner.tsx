@@ -226,7 +226,7 @@ function buildLanes(
 }
 
 function laneColour(category: Category): string {
-  return LANE_TAXONOMY[category].hex
+  return LANE_TAXONOMY[category].color
 }
 
 // ---------------------------------------------------------------------------

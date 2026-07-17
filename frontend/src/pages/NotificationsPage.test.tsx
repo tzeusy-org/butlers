@@ -309,6 +309,10 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(useMarkNotificationRead).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useMarkNotificationRead>);
     vi.mocked(useAcknowledgeAllFailed).mockReturnValue({
       mutate: vi.fn(),
       isPending: false,

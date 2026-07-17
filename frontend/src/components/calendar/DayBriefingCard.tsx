@@ -26,6 +26,7 @@ import {
   overlayKindGlyph,
   overlayMetadata,
 } from "@/lib/calendar-overlays.ts";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { cn } from "@/lib/utils.ts";
 
 /** Title-case a `source_butler` / `kind` identifier for section labels. */
@@ -106,6 +107,12 @@ export interface DayBriefingCardProps {
   heading: string;
   /** Whether the underlying query is still loading (first fetch). */
   isLoading?: boolean;
+  /** Whether retained data is refreshing for a new target date. */
+  isFetching?: boolean;
+  /** Whether the query failed; this always takes precedence over stale data. */
+  isError?: boolean;
+  /** Query error detail shown when the read could not complete. */
+  error?: Error | null;
   /** Grouped overlay entries by butler/kind (from the day-briefing response). */
   groups: import("@/api/types.ts").DayBriefingButlerGroup[];
   /** Whether at least one specialist contributed for the date. */
@@ -124,12 +131,15 @@ export interface DayBriefingCardProps {
 export function DayBriefingCard({
   heading,
   isLoading = false,
+  isFetching = false,
+  isError = false,
+  error = null,
   groups,
   hasDomainContext,
   hasEntries,
   onSelectEntry,
 }: DayBriefingCardProps) {
-  return (
+  const content = (
     <section
       data-testid="day-briefing-card"
       aria-label="Day briefing"
@@ -144,6 +154,10 @@ export function DayBriefingCard({
 
       {isLoading ? (
         <p className="font-mono text-[11px] text-[var(--dim)]">Loading…</p>
+      ) : isError ? (
+        <p role="alert" className="font-mono text-[11px] text-[var(--red-text)]">
+          Couldn&apos;t load this day briefing. {error?.message ?? "Unknown error"}
+        </p>
       ) : !hasDomainContext ? (
         // Honest empty/degraded state — no specialist contributed (or the cached
         // view is unavailable). Render explicitly rather than omitting the card.
@@ -197,5 +211,10 @@ export function DayBriefingCard({
       )}
     </section>
   );
-}
 
+  return (
+    <FetchingDim isFetching={isFetching && !isLoading && !isError}>
+      {content}
+    </FetchingDim>
+  );
+}

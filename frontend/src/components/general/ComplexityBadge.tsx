@@ -14,19 +14,15 @@ const COMPLEXITY_LABELS: Record<ComplexityTier, string> = {
   legacy: "Legacy",
 };
 
-// bu-86c4c.6: fixed 6-slot model-complexity-tier palette, not a status
-// signal — "reasoning" landing on red is a coincidence of an arbitrary
-// 6-color tier palette (workhorse/cheap/specialty/local/legacy are blue/
-// slate/purple/teal/zinc), not an error/critical state. Exempted from the
-// raw-status-color eslint rule with a line-level disable, not a recolor.
+// Fixed 6-slot model-complexity-tier palette. Complexity is a local taxonomy,
+// not an operational state, so it uses the dedicated categorical ramp.
 const COMPLEXITY_COLORS: Record<ComplexityTier, string> = {
-  // eslint-disable-next-line no-restricted-syntax -- tier palette color, not a status signal (see comment above)
-  reasoning: "bg-red-600 text-white hover:bg-red-600/90",
-  workhorse: "bg-blue-600 text-white hover:bg-blue-600/90",
-  cheap: "bg-slate-500 text-white hover:bg-slate-500/90",
-  specialty: "bg-purple-600 text-white hover:bg-purple-600/90",
-  local: "bg-teal-600 text-white hover:bg-teal-600/90",
-  legacy: "bg-zinc-600 text-white hover:bg-zinc-600/90",
+  reasoning: "border-categorical-1 text-categorical-1",
+  workhorse: "border-categorical-2 text-categorical-2",
+  cheap: "border-categorical-3 text-categorical-3",
+  specialty: "border-categorical-4 text-categorical-4",
+  local: "border-categorical-5 text-categorical-5",
+  legacy: "border-categorical-6 text-categorical-6",
 };
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -50,11 +46,11 @@ export interface ComplexityBadgeProps {
 
 /** A colored badge showing a complexity tier. */
 export function ComplexityBadge({ tier }: ComplexityBadgeProps) {
-  const colorClass = COMPLEXITY_COLORS[tier as ComplexityTier] ?? "bg-slate-400 text-white";
+  const colorClass =
+    COMPLEXITY_COLORS[tier as ComplexityTier] ?? "border-muted-foreground text-muted-foreground";
   return (
-    <Badge className={colorClass}>
+    <Badge variant="outline" className={colorClass}>
       {complexityLabel(tier)}
     </Badge>
   );
 }
-

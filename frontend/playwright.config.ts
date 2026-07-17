@@ -10,23 +10,25 @@ import { defineConfig, devices } from "@playwright/test";
  * Install browsers first:
  *   npm run test:e2e:install
  *
- * By default, Playwright will start a `vite preview` server automatically
- * (via the `webServer` config below). Set PLAYWRIGHT_BASE_URL to point at a
- * running instance instead:
+ * By default, Playwright starts a strict local API mock and a `vite preview`
+ * server automatically (via the `webServer` config below). Set
+ * PLAYWRIGHT_BASE_URL to point at a running instance instead:
  *   PLAYWRIGHT_BASE_URL=https://your-instance.example.com npm run test:e2e
  *
- * Local dev workflow — reuse an already-running preview server:
- *   npm run preview    (in a separate terminal, starts at :4173)
- *   npm run test:e2e   (Playwright detects the server and reuses it)
+ * Local isolated workflow — Playwright starts both test processes:
+ *   npm run build
+ *   npm run test:e2e
  *
  * To test against the Vite dev server instead, set PLAYWRIGHT_BASE_URL:
  *   PLAYWRIGHT_BASE_URL=http://localhost:5173 npm run test:e2e
  *
- * In CI, Playwright always starts a fresh `vite preview` server so each run
- * is reproducible and independent of any external process.
+ * In CI, Playwright always starts fresh local processes so each run is
+ * reproducible and independent of any external process.
  */
 
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL || "http://localhost:4173";
+const API_MOCK_PORT = 4174;
+const API_MOCK_URL = `http://127.0.0.1:${API_MOCK_PORT}`;
 
 export default defineConfig({
   testDir: "tests/e2e",
@@ -54,21 +56,36 @@ export default defineConfig({
   ],
 
   /**
-   * webServer: Playwright manages the preview server lifecycle.
+   * webServer: Playwright manages the test-only API mock and preview server
+   * lifecycle. The mock answers only /api/health; every other API route gets
+   * an explicit 404 error envelope unless its test registers page.route().
    *
    * - Uses `vite preview` (port 4173) over a prior `vite build`, which is
    *   closer to production than `vite dev` and avoids HMR overhead in CI.
-   * - `reuseExistingServer: !CI` lets local developers keep their own dev
-   *   server running without Playwright trying to start a second one.
-   *   In CI (where CI=true), Playwright always starts a fresh server.
+   * - The preview process proxies /api to the API mock's dedicated port, so
+   *   ready preview HTML cannot be mistaken for ready API coverage.
+   * - `reuseExistingServer: !CI` permits local iteration against an existing
+   *   preview/mock pair. In CI, both are always fresh.
    * - The build step is a separate CI job step; here we only start preview.
    */
-  webServer: {
-    command: "npm run preview",
-    url: BASE_URL,
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-    stdout: "pipe",
-    stderr: "pipe",
-  },
+  webServer: process.env.PLAYWRIGHT_BASE_URL
+    ? undefined
+    : [
+        {
+          command: `E2E_API_MOCK_PORT=${API_MOCK_PORT} node scripts/e2e-api-mock.mjs`,
+          url: `${API_MOCK_URL}/api/health`,
+          reuseExistingServer: !process.env.CI,
+          timeout: 60_000,
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+        {
+          command: `VITE_PROXY_TARGET=${API_MOCK_URL} npm run preview`,
+          url: BASE_URL,
+          reuseExistingServer: !process.env.CI,
+          timeout: 60_000,
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      ],
 });

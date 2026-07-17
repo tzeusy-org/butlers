@@ -131,6 +131,10 @@ function makeStats(overrides: Partial<PipelineStats> = {}): PipelineStats {
     rate1h: 12,
     routed_pct: 95,
     filtered24h: 200,
+    failed_total: 0,
+    replay_pending_total: 0,
+    written_off_total: 0,
+    backlog_available: true,
     ...overrides,
   }
 }
@@ -324,6 +328,61 @@ describe('PipelineGateDiagram — AC1: five gates render with correct labels', (
 
     const unavailableNote = container.querySelector('[data-testid="funnel-bar-unavailable"]')
     expect(unavailableNote).not.toBeNull()
+  })
+})
+
+// ============================================================================
+// Execution backlog — DB-backed counts independent of funnel metrics
+// ============================================================================
+
+describe('FiltersPipeline: execution backlog status', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    ;({ container, root } = makeRoot())
+    setupDefaultMocks({
+      failed_total: 7,
+      replay_pending_total: 2,
+      written_off_total: 11,
+      backlog_available: true,
+    })
+  })
+  afterEach(() => cleanup(root, container))
+
+  it('shows unresolved and replay-pending work separately while excluding reviewed write-offs from active backlog', () => {
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const backlog = container.querySelector('[data-testid="pipeline-execution-backlog"]')
+    expect(backlog, 'execution backlog summary missing').not.toBeNull()
+    expect(backlog?.textContent).toContain('9 active')
+    expect(backlog?.textContent).toContain('7')
+    expect(backlog?.textContent).toContain('unresolved failures')
+    expect(backlog?.textContent).toContain('2')
+    expect(backlog?.textContent).toContain('replay pending')
+    expect(backlog?.textContent).toContain('11')
+    expect(backlog?.textContent).toContain('reviewed write-offs')
+    expect(backlog?.textContent).toContain('not active backlog')
+    expect(backlog?.textContent).toContain('awaiting reconciliation')
+  })
+
+  it('shows backlog availability as unknown instead of displaying fabricated zero counts', () => {
+    mockUsePipelineStats.mockReturnValue({
+      data: makeStats({
+        failed_total: null,
+        replay_pending_total: null,
+        written_off_total: null,
+        backlog_available: false,
+      }),
+      isLoading: false,
+    })
+
+    renderComponent(container, root, <FiltersPipeline />)
+
+    const unavailable = container.querySelector('[data-testid="pipeline-execution-backlog-unavailable"]')
+    expect(unavailable, 'backlog unavailable state missing').not.toBeNull()
+    expect(unavailable?.textContent).toContain('backlog unavailable')
+    expect(container.querySelector('[data-testid="pipeline-execution-backlog"]')).toBeNull()
   })
 })
 

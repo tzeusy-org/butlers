@@ -32,13 +32,9 @@ This test exercises the real chain against a live database:
    ``tests/integration/test_conversation_reply_db.py``), carrying the exact
    case reference the owner would see.
 
-``provisioned_postgres_pool()`` only creates a fresh database + extensions —
-it does not run the Alembic chain — so this file hand-provisions the minimal
-``public.qa_patrols`` / ``public.qa_findings`` (mirroring alembic/versions/core/
-core_051_qa_patrols.py and core_052_qa_findings.py) and
-``public.dashboard_conversations`` / ``public.dashboard_messages`` shapes
-directly, matching the established pattern in
-``tests/integration/test_conversation_reply_db.py``.
+``migrated_core_postgres_pool()`` runs the core Alembic chain against the
+fresh provisioned database, so the relay is exercised against the production
+schema instead of hand-provisioned tables.
 """
 
 from __future__ import annotations
@@ -63,73 +59,6 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available"),
 ]
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS public.dashboard_conversations (
-    id UUID PRIMARY KEY,
-    butler_name TEXT NOT NULL,
-    title TEXT,
-    status TEXT NOT NULL DEFAULT 'active',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    message_count INTEGER NOT NULL DEFAULT 0,
-    total_input_tokens BIGINT NOT NULL DEFAULT 0,
-    total_output_tokens BIGINT NOT NULL DEFAULT 0,
-    total_duration_ms BIGINT NOT NULL DEFAULT 0,
-    routed_butler TEXT NULL
-);
-
-CREATE TABLE IF NOT EXISTS public.dashboard_messages (
-    id UUID PRIMARY KEY,
-    conversation_id UUID NOT NULL REFERENCES public.dashboard_conversations(id)
-        ON DELETE CASCADE,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    session_id UUID,
-    model_name TEXT,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    duration_ms INTEGER,
-    tool_calls JSONB,
-    error TEXT,
-    request_id UUID
-);
-
-CREATE TABLE IF NOT EXISTS public.qa_patrols (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at TIMESTAMPTZ,
-    status TEXT NOT NULL DEFAULT 'running',
-    findings_count INTEGER NOT NULL DEFAULT 0,
-    novel_count INTEGER NOT NULL DEFAULT 0,
-    dispatched_count INTEGER NOT NULL DEFAULT 0,
-    log_lookback_minutes INTEGER NOT NULL DEFAULT 15,
-    sources_polled TEXT[] NOT NULL DEFAULT '{}',
-    error_detail TEXT
-);
-
-CREATE TABLE IF NOT EXISTS public.qa_findings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    patrol_id UUID NOT NULL REFERENCES public.qa_patrols(id) ON DELETE CASCADE,
-    fingerprint TEXT NOT NULL,
-    source_type TEXT NOT NULL,
-    source_butler TEXT NOT NULL,
-    severity INTEGER NOT NULL,
-    exception_type TEXT NOT NULL,
-    event_summary TEXT NOT NULL,
-    call_site TEXT NOT NULL,
-    occurrence_count INTEGER NOT NULL DEFAULT 1,
-    first_seen TIMESTAMPTZ NOT NULL,
-    last_seen TIMESTAMPTZ NOT NULL,
-    dedup_reason TEXT,
-    healing_attempt_id UUID,
-    source_session_trigger_source TEXT DEFAULT NULL,
-    structured_evidence JSONB DEFAULT NULL,
-    dispatch_queued BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
 
 
 class _FakeIngestionPolicyEvaluator:
@@ -191,7 +120,7 @@ def _register_file_bug_report(monkeypatch, pool, mock_route) -> Any:
 
 
 async def test_file_bug_report_lands_qa_finding_with_correct_fingerprint(
-    monkeypatch, provisioned_postgres_pool
+    monkeypatch, migrated_core_postgres_pool
 ) -> None:
     """A dashboard bug report must reach a real ``public.qa_findings`` row.
 
@@ -200,9 +129,7 @@ async def test_file_bug_report_lands_qa_finding_with_correct_fingerprint(
     """
     from butlers.core.routing_context import _routing_ctx_var
 
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA)
-
+    async with migrated_core_postgres_pool() as pool:
         # Real QA module, wired with a real (in-memory) reactive buffer —
         # nothing about report_finding's handling is mocked.
         qa_module = QaModule()
@@ -304,14 +231,13 @@ async def test_file_bug_report_lands_qa_finding_with_correct_fingerprint(
 
 
 async def test_file_bug_report_relay_failure_does_not_create_qa_finding(
-    monkeypatch, provisioned_postgres_pool
+    monkeypatch, migrated_core_postgres_pool
 ) -> None:
     """When QA is unreachable, no finding is buffered — but the owner still
     gets an honest in-thread ack (never a silent drop)."""
     from butlers.core.routing_context import _routing_ctx_var
 
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA)
+    async with migrated_core_postgres_pool() as pool:
 
         async def _fake_route_error(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"error": "Butler 'qa' not found in registry"}

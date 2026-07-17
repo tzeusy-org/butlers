@@ -8,6 +8,7 @@ all against a mocked pool.
 
 from __future__ import annotations
 
+import logging
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -47,6 +48,15 @@ def _event_row(
         "source_thread_identity": thread_id,
         "received_at": _NOW - timedelta(days=day_offset),
     }
+
+
+def _recurring_sender_rows(addresses: list[str]) -> list[dict[str, Any]]:
+    """Return the minimum recurring evidence for each candidate address."""
+    return [
+        _event_row(address, thread_id=f"{address}-thread-{thread}", day_offset=thread)
+        for address in addresses
+        for thread in range(3)
+    ]
 
 
 class _FakePool:
@@ -334,3 +344,56 @@ async def test_already_proposed_entity_is_not_recreated() -> None:
     assert result["already_proposed"] == 1
     assert pool.inserted_actions == []
     assert pool.created_entities == []
+
+
+@pytest.mark.asyncio
+async def test_proposes_exactly_the_per_run_cap_without_truncation(
+    _patch_insight_and_state: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exactly a full run is complete; only a surplus candidate marks truncation."""
+    rjobs = _get_rjobs()
+
+    async def no_orphans(_pool: Any) -> int:
+        return 0
+
+    monkeypatch.setattr(rjobs, "archive_rejected_identity_enrichment_orphans", no_orphans)
+    addresses = [f"person{index}@example.com" for index in range(10)]
+    pool = _FakePool(sender_rows=_recurring_sender_rows(addresses))
+
+    result = await rjobs.run_email_identity_enrichment(pool)
+
+    assert result["created_new"] == 10
+    assert result["linked_existing"] == 0
+    assert result["proposal_cap_truncated"] is False
+    assert result["truncated"] is False
+    assert [action["tool_args"]["object"] for action in pool.inserted_actions] == addresses
+    assert len(_patch_insight_and_state) == 10
+
+
+@pytest.mark.asyncio
+async def test_stops_at_per_run_proposal_cap_and_reports_truncation(
+    _patch_insight_and_state: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A surplus eligible sender is neither proposed nor silently discarded."""
+    rjobs = _get_rjobs()
+
+    async def no_orphans(_pool: Any) -> int:
+        return 0
+
+    monkeypatch.setattr(rjobs, "archive_rejected_identity_enrichment_orphans", no_orphans)
+    addresses = [f"person{index}@example.com" for index in range(11)]
+    pool = _FakePool(sender_rows=_recurring_sender_rows(addresses))
+
+    with caplog.at_level(logging.WARNING, logger=rjobs.__name__):
+        result = await rjobs.run_email_identity_enrichment(pool)
+
+    assert result["created_new"] == 10
+    assert result["linked_existing"] == 0
+    assert result["proposal_cap_truncated"] is True
+    assert result["truncated"] is True
+    assert [action["tool_args"]["object"] for action in pool.inserted_actions] == addresses[:10]
+    assert len(_patch_insight_and_state) == 10
+    assert "proposal cap=10 reached" in caplog.text

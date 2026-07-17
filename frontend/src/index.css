@@ -68,7 +68,7 @@
   --sidebar-ring: oklch(0.708 0 0);
 
   /* ---------------------------------------------------------------------------
-   * Semantic categorical tokens
+   * Semantic and identity tokens
    *
    * --severity-*        Health / symptom severity bands (low / medium / high).
    *                     Consumed by SymptomsPage severity bars.
@@ -77,10 +77,9 @@
    *                     fleeting = Eden (transient), medium = short-term,
    *                     strong = mid-term, permanent = long-term.
    *
-   * --category-1..8     General categorical palette for groups, labels, tags,
-   *                     and Dunbar-tier badges. Consumers pick a slot by hash
-   *                     or ordinal. Tokens are forwarded via @theme inline so
-   *                     Tailwind arbitrary values resolve at build time.
+   * --category-1..12    Butler identity palette. These tokens are reserved for
+   *                     ButlerMark; non-butler categorical axes use the
+   *                     dedicated --categorical-* ramp below.
    * ---------------------------------------------------------------------------*/
 
   /* Severity */
@@ -182,6 +181,27 @@
   --category-10: oklch(0.620 0.150 346.0); /* raspberry   — fills the 320°→11.2° (mauve→rose) gap */
   --category-11: oklch(0.580 0.140 234.0); /* indigo      — fills the 208.5°→259° (cyan→blue) gap */
   --category-12: oklch(0.620 0.150 35.0);  /* red-orange  — fills the 11.2°→58° (rose→orange) gap; spare growth slot */
+
+  /* Non-butler categorical/decorative ramp.
+   *
+   * Use only for discrete, non-status axes such as syntax tokens, chart
+   * series, legends, and local taxonomies. Every consumer must retain a
+   * label, icon, or position so color is never its sole signal. Values are
+   * text-safe against --bg and --bg-elev in their respective themes; keep
+   * state colors (--red/--amber/--green) and Butler identity hues separate.
+   */
+  --categorical-1:  oklch(0.440 0.140 255.0); /* blue */
+  --categorical-2:  oklch(0.430 0.145 290.0); /* violet */
+  --categorical-3:  oklch(0.460 0.120 82.0);  /* ochre */
+  --categorical-4:  oklch(0.420 0.110 182.0); /* teal */
+  --categorical-5:  oklch(0.440 0.145 14.0);  /* rose */
+  --categorical-6:  oklch(0.440 0.135 320.0); /* mauve */
+  --categorical-7:  oklch(0.430 0.110 208.0); /* cyan */
+  --categorical-8:  oklch(0.470 0.135 58.0);  /* orange */
+  --categorical-9:  oklch(0.420 0.115 145.0); /* green-blue */
+  --categorical-10: oklch(0.440 0.140 346.0); /* raspberry */
+  --categorical-11: oklch(0.430 0.130 234.0); /* indigo */
+  --categorical-12: oklch(0.440 0.135 35.0);  /* coral */
 
   /* ---------------------------------------------------------------------------
    * Role badge tokens
@@ -413,6 +433,20 @@ body {
   --color-category-11: var(--category-11);
   --color-category-12: var(--category-12);
 
+  /* Non-butler categorical/decorative palette */
+  --color-categorical-1:  var(--categorical-1);
+  --color-categorical-2:  var(--categorical-2);
+  --color-categorical-3:  var(--categorical-3);
+  --color-categorical-4:  var(--categorical-4);
+  --color-categorical-5:  var(--categorical-5);
+  --color-categorical-6:  var(--categorical-6);
+  --color-categorical-7:  var(--categorical-7);
+  --color-categorical-8:  var(--categorical-8);
+  --color-categorical-9:  var(--categorical-9);
+  --color-categorical-10: var(--categorical-10);
+  --color-categorical-11: var(--categorical-11);
+  --color-categorical-12: var(--categorical-12);
+
   /* Role badges */
   --color-role-owner:   var(--role-owner);
   --color-role-admin:   var(--role-admin);
@@ -544,6 +578,20 @@ body {
   --category-10: oklch(0.680 0.145 346.0); /* raspberry   — lifted ~0.06 L */
   --category-11: oklch(0.640 0.135 234.0); /* indigo      — lifted ~0.06 L */
   --category-12: oklch(0.680 0.145 35.0);  /* red-orange  — lifted ~0.06 L; spare growth slot */
+
+  /* Non-butler categorical/decorative ramp — lifted for text on dark surfaces */
+  --categorical-1:  oklch(0.750 0.130 255.0); /* blue */
+  --categorical-2:  oklch(0.730 0.140 290.0); /* violet */
+  --categorical-3:  oklch(0.790 0.115 82.0);  /* ochre */
+  --categorical-4:  oklch(0.730 0.105 182.0); /* teal */
+  --categorical-5:  oklch(0.740 0.140 14.0);  /* rose */
+  --categorical-6:  oklch(0.730 0.130 320.0); /* mauve */
+  --categorical-7:  oklch(0.750 0.110 208.0); /* cyan */
+  --categorical-8:  oklch(0.790 0.125 58.0);  /* orange */
+  --categorical-9:  oklch(0.750 0.110 145.0); /* green-blue */
+  --categorical-10: oklch(0.740 0.135 346.0); /* raspberry */
+  --categorical-11: oklch(0.730 0.125 234.0); /* indigo */
+  --categorical-12: oklch(0.750 0.130 35.0);  /* coral */
 
   /* Role badges — lifted ~0.07 L for legibility on dark card backgrounds */
   --role-owner:   oklch(0.561 0.262 275.1);

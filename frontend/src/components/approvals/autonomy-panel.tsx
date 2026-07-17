@@ -154,7 +154,7 @@ export function AutonomyPanel() {
 
   return (
     <div
-      className="w-80 shrink-0 border-l border-border overflow-y-auto flex flex-col"
+      className="w-full md:w-80 shrink-0 border-t md:border-t-0 md:border-l border-border overflow-y-auto flex flex-col max-h-64 md:max-h-none"
       data-testid="autonomy-panel"
     >
       <div className="px-4 pt-4 pb-3 border-b border-border flex items-center justify-between gap-2 shrink-0">

@@ -73,6 +73,14 @@ describe("LANE_TAXONOMY", () => {
       expect(colour).not.toContain("#")
     }
   })
+
+  it("uses the dedicated categorical ramp for CSS and Tailwind consumers", () => {
+    for (const category of EXPECTED_CATEGORIES) {
+      const config = LANE_TAXONOMY[category]
+      expect(config.colour).toMatch(/^bg-categorical-\d+$/)
+      expect(config.color).toMatch(/^var\(--categorical-\d+\)$/)
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -121,7 +121,19 @@ describe("contrast: math sanity", () => {
 // the text AA floor. Text sites use "amber-text" instead (checked below).
 // "red" is also excluded — like amber it is a fill/border token; text sites
 // use "red-text" instead (bu-f310e, checked below).
-const TEXT_TOKENS = ["dim", "amber-text", "red-text", "fg", "mfg", "green"]
+const CATEGORICAL_TEXT_TOKENS = Array.from(
+  { length: 12 },
+  (_, index) => `categorical-${index + 1}`,
+)
+const TEXT_TOKENS = [
+  "dim",
+  "amber-text",
+  "red-text",
+  "fg",
+  "mfg",
+  "green",
+  ...CATEGORICAL_TEXT_TOKENS,
+]
 const BG_TOKENS = ["bg", "bg-elev"]
 
 describe.each(["light", "dark"] as const)("contrast: %s theme text tokens vs surface backgrounds", (theme) => {

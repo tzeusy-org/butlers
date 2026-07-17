@@ -37,6 +37,10 @@ function makeStats(overrides: Partial<PipelineStats> = {}): PipelineStats {
     rate1h: 12,
     routed_pct: 95,
     filtered24h: 200,
+    failed_total: 0,
+    replay_pending_total: 0,
+    written_off_total: 0,
+    backlog_available: true,
     ...overrides,
   }
 }
@@ -70,6 +74,44 @@ describe('FiltersHeaderAside — degraded-mode KPI handling', () => {
       container.querySelector('[data-testid="filters-header-metrics-unavailable"]'),
     ).toBeNull()
     expect(container.textContent).toContain('1,200')
+  })
+
+  it('shows the current active execution backlog independently of funnel metrics', () => {
+    mockUsePipelineStats.mockReturnValue({
+      data: makeStats({
+        aggregates_available: false,
+        failed_total: 3,
+        replay_pending_total: 2,
+        written_off_total: 8,
+        backlog_available: true,
+      }),
+    })
+
+    act(() => { root.render(<FiltersHeaderAside />) })
+
+    const backlog = container.querySelector('[data-testid="filters-header-backlog"]')
+    expect(backlog, 'active backlog KPI missing').not.toBeNull()
+    expect(backlog?.textContent).toContain('active backlog · current')
+    expect(backlog?.textContent).toContain('5')
+    expect(backlog?.textContent).toContain('active')
+  })
+
+  it('shows backlog unavailability instead of a fabricated zero', () => {
+    mockUsePipelineStats.mockReturnValue({
+      data: makeStats({
+        failed_total: null,
+        replay_pending_total: null,
+        written_off_total: null,
+        backlog_available: false,
+      }),
+    })
+
+    act(() => { root.render(<FiltersHeaderAside />) })
+
+    const unavailable = container.querySelector('[data-testid="filters-header-backlog-unavailable"]')
+    expect(unavailable, 'backlog unavailable note missing').not.toBeNull()
+    expect(unavailable?.textContent).toContain('backlog unavailable')
+    expect(container.querySelector('[data-testid="filters-header-backlog"]')).toBeNull()
   })
 
   it('shows a "metrics unavailable" note (not bare em-dashes) when degraded', () => {

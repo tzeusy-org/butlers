@@ -158,6 +158,8 @@ export default function NotificationsPage() {
   // Mutation hooks
   const markReadMutation = useMarkNotificationRead();
   const ackAllMutation = useAcknowledgeAllFailed();
+  const markRead = markReadMutation.mutate;
+  const acknowledgeAll = ackAllMutation.mutate;
 
   const notifications = useMemo(() => notificationsResponse?.data ?? [], [notificationsResponse]);
   const meta = notificationsResponse?.meta;
@@ -213,7 +215,7 @@ export default function NotificationsPage() {
   const handleMarkRead = useCallback(
     (notificationId: string) => {
       setPendingAckIds((prev) => new Set(prev).add(notificationId));
-      markReadMutation.mutate(notificationId, {
+      markRead(notificationId, {
         onSettled: () => {
           setPendingAckIds((prev) => {
             const next = new Set(prev);
@@ -223,7 +225,7 @@ export default function NotificationsPage() {
         },
       });
     },
-    [markReadMutation],
+    [markRead],
   );
 
   // Dismiss is semantically identical to mark-read: the backend exposes a single
@@ -232,8 +234,8 @@ export default function NotificationsPage() {
   const handleDismiss = handleMarkRead;
 
   const handleAcknowledgeAll = useCallback(() => {
-    ackAllMutation.mutate();
-  }, [ackAllMutation]);
+    acknowledgeAll();
+  }, [acknowledgeAll]);
 
   // j/k roving selection + a=mark-read act key over the notification rows
   // (bu-qvnce.11 slice 4 -- useListTriage, extracted from ApprovalsPage's own

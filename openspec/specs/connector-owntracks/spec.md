@@ -23,6 +23,7 @@ The OwnTracks connector bridges the OwnTracks mobile app into the butler ecosyst
 - **WHEN** several physical OwnTracks devices (e.g. household members' phones) post to the same connector instance's webhook URL
 - **THEN** the connector resolves each device's own `owntracks:<tid>` identity independently and gives it its own heartbeat lifecycle, Prometheus metrics labels, filtered-event buffer, and checkpoint cursor
 - **AND** each resolved device registers its own row in `connector_registry`, keyed by `(connector_type, endpoint_identity)`, independently of sibling devices -- one device's activity never stops, replaces, or corrupts another device's heartbeat, checkpoint, or metrics
+- **AND** without `OWNTRACKS_TRACKER_ID`, only a device-reported `tid` of one or two ASCII alphanumeric characters may allocate that identity-scoped state; missing, malformed, or overlong values are ignored before they can create a heartbeat task, checkpoint row, or identity-labeled metric series
 - **AND** setting `OWNTRACKS_TRACKER_ID` pins the connector to one fixed identity (ignoring device-reported `tid`) for deployments that intentionally run one connector instance per device
 
 ### Requirement: Webhook Server

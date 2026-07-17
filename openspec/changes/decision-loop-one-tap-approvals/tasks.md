@@ -18,8 +18,8 @@
 
 ## 3. One-tap Telegram decisions
 
-- [ ] 3.1 `module-telegram`: `reply_markup` (inline keyboard) support on send/reply; keyboard-removal + message-edit helper
-- [ ] 3.2 Callback token mint/verify helper (HMAC-SHA256 over action_id+verb_char+requested_at, daemon-internal key, 64-byte-safe format using single-character verb codes)
+- [x] 3.1 `module-telegram`: `reply_markup` (inline keyboard) support on send/reply; keyboard-removal + message-edit helper
+- [x] 3.2 Callback token mint/verify helper (HMAC-SHA256 over action_id+verb_char+requested_at, daemon-internal key, 64-byte-safe format using single-character verb codes)
 - [ ] 3.3 `telegram_bot` connector: handle `callback_query` — verify owner channel, answerCallbackQuery ack, route decision to approvals decision routes with actor `human:owner@telegram`
 - [ ] 3.4 Edit originating message on resolution (approved/rejected/expired) and on already-decided taps; non-owner taps ignored + logged
 - [ ] 3.5 Security review of the callback path against RFC 0017 (owner-routing safety) checklist
@@ -32,9 +32,9 @@
 
 ## 5. Fingerprint v2
 
-- [ ] 5.1 `compute_fingerprint` v2 over module-declared safety-critical args (fallback all-args); `fingerprint_version` columns on `autonomy_approval_history` + `autonomy_suggestions` (migration `approvals_004` or folded into `approvals_003`)
-- [ ] 5.2 Version-scoped counts/threshold checks; promotion suggestions pin exactly the fingerprinted args
-- [ ] 5.3 Dashboard suggestion scope description reflects v2 pinned-args basis
+- [x] 5.1 `compute_fingerprint` v2 over module-declared safety-critical args (fallback all-args); `fingerprint_version` columns on `autonomy_approval_history` + `autonomy_suggestions` (migration `approvals_004` or folded into `approvals_003`)
+- [x] 5.2 Version-scoped counts/threshold checks; promotion suggestions pin exactly the fingerprinted args
+- [x] 5.3 Dashboard suggestion scope description reflects v2 pinned-args basis
 
 ## 6. Verification
 

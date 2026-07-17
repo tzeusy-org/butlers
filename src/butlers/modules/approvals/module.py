@@ -65,7 +65,7 @@ from butlers.modules.approvals.executor import (
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.operations import expire_pending_action_if_stale
 from butlers.modules.approvals.sensitivity import suggest_constraints
-from butlers.modules.base import Module, ToolGroupMixin, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
 
 logger = logging.getLogger(__name__)
 _HIGH_RISK_TIERS: frozenset[ApprovalRiskTier] = frozenset(
@@ -248,6 +248,7 @@ class ApprovalsModule(Module):
         self._db: Any = None
         self._tool_executor: ToolExecutor | None = None
         self._approval_policy: ApprovalConfig | None = None
+        self._tool_metadata: dict[str, ToolMeta] = {}
 
     @property
     def name(self) -> str:
@@ -277,6 +278,10 @@ class ApprovalsModule(Module):
     def set_approval_policy(self, policy: ApprovalConfig | None) -> None:
         """Set parsed approval policy metadata used for rule safety enforcement."""
         self._approval_policy = policy
+
+    def set_tool_metadata(self, tool_metadata: dict[str, ToolMeta]) -> None:
+        """Set daemon-collected ToolMeta used for v2 approval fingerprints."""
+        self._tool_metadata = dict(tool_metadata)
 
     def _risk_tier_for_tool(self, tool_name: str) -> ApprovalRiskTier:
         """Resolve effective risk tier for a tool."""
@@ -757,14 +762,18 @@ class ApprovalsModule(Module):
             )
             if updated_action_row is not None:
                 updated_action = PendingAction.from_row(updated_action_row)
-                fingerprint = _compute_fingerprint(action.tool_name, action.tool_args)
-                await _record_approval(self._db, updated_action)
+                tool_meta = self._tool_metadata.get(action.tool_name)
+                fingerprint = _compute_fingerprint(
+                    action.tool_name, action.tool_args, tool_meta=tool_meta
+                )
+                await _record_approval(self._db, updated_action, tool_meta=tool_meta)
                 await _check_promotion_threshold(
                     pool=self._db,
                     pattern_fingerprint=fingerprint,
                     tool_name=action.tool_name,
                     tool_args=action.tool_args,
                     config=self._config,
+                    tool_meta=tool_meta,
                 )
                 # Compute and persist approval velocity so the dashboard
                 # fast_approval indicator surfaces (autonomy-tracker spec:

@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.connectors.whatsapp_user_client import (
-    _SSE_PAIRING_IDLE_INTERVAL_S,
+    _SSE_PAIRING_WAIT_TIMEOUT_S,
     WhatsAppUserClientConnector,
     WhatsAppUserClientConnectorConfig,
     _derive_wa_chat_type,
@@ -946,34 +946,39 @@ async def test_build_bridge_config_allows_degraded_for_recovery() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_sse_event_loop_idles_without_stopping_while_awaiting_pairing(
+async def test_sse_event_loop_waits_for_bridge_connection_while_awaiting_pairing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A bridge sitting in pair_required is a legitimate waiting state, not a
-    failure: the SSE loop must idle-and-recheck instead of breaking (which
-    would trigger connector.start()'s finally-block teardown of the bridge
-    the user is mid-scan against — the exact symptom bu-7sh43 reports)."""
+    failure: the SSE loop must wait for its manager's connection signal
+    instead of tearing down the bridge or polling on a fixed sleep."""
     connector = _connector_with_mocks()
+
+    async def _wait_until_connected(*, timeout: float) -> None:
+        assert timeout == _SSE_PAIRING_WAIT_TIMEOUT_S
+        bridge_manager.is_degraded = False
+        connector._running = False
+
+    wait_until_connected = AsyncMock(side_effect=_wait_until_connected)
     bridge_manager = SimpleNamespace(
-        is_degraded=True, is_awaiting_pairing=True, degraded_reason="pair_required"
+        is_degraded=True,
+        is_awaiting_pairing=True,
+        degraded_reason="pair_required",
+        wait_until_connected=wait_until_connected,
     )
     connector._bridge_manager = bridge_manager
     connector._running = True
 
-    sleep_calls: list[float] = []
-
-    async def _fake_sleep(delay: float) -> None:
-        sleep_calls.append(delay)
-        # Simulate pairing completing right after the first idle wakeup, and
-        # stop the connector so the loop exits deterministically.
-        bridge_manager.is_degraded = False
+    async def _unexpected_sleep(_delay: float) -> None:
         connector._running = False
 
-    monkeypatch.setattr("butlers.connectors.whatsapp_user_client.asyncio.sleep", _fake_sleep)
+    sleep = AsyncMock(side_effect=_unexpected_sleep)
+    monkeypatch.setattr("butlers.connectors.whatsapp_user_client.asyncio.sleep", sleep)
 
     await connector._sse_event_loop()  # must return without raising or hanging
 
-    assert sleep_calls == [_SSE_PAIRING_IDLE_INTERVAL_S]
+    wait_until_connected.assert_awaited_once_with(timeout=_SSE_PAIRING_WAIT_TIMEOUT_S)
+    sleep.assert_not_awaited()
 
 
 async def test_sse_event_loop_stops_for_genuinely_degraded_non_pairing_state() -> None:
@@ -1084,14 +1089,14 @@ async def test_sse_event_loop_retries_pending_identity_resolution_on_each_pass(
         degraded_reason="pair_required",
         get_status=AsyncMock(return_value={"state": "connected", "phone": "12025551234"}),
     )
-    connector._bridge_manager = bridge_manager
-    connector._running = True
 
-    async def _fake_sleep(delay: float) -> None:
-        # Simulate pairing completing after the first idle wakeup.
+    async def _wait_until_connected(*, timeout: float) -> None:
+        assert timeout == _SSE_PAIRING_WAIT_TIMEOUT_S
         bridge_manager.is_degraded = False
 
-    monkeypatch.setattr("butlers.connectors.whatsapp_user_client.asyncio.sleep", _fake_sleep)
+    bridge_manager.wait_until_connected = AsyncMock(side_effect=_wait_until_connected)
+    connector._bridge_manager = bridge_manager
+    connector._running = True
 
     async def _empty_stream(_socket: str):
         connector._running = False

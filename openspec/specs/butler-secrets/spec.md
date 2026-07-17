@@ -24,13 +24,20 @@ The page is rendered in the binding **Dispatch** design language specified in `o
 #### Scenario: Spine grouping order
 - **WHEN** the spine renders
 - **THEN** rows are grouped in this exact order: `needs-hand` (pinned, act-now), `stale` (quiet, unverified — bu-976n0), `CLI runtimes`, `System`, `User`
-- **AND** the `needs-hand` group contains ONLY genuinely broken or imminently-expiring credentials (`expired`, `revoked`, `failed`, `scope_mismatch`, `expiring_soon`) and is always pinned and severity-sorted regardless of the `?sort=` mode
+- **AND** the `needs-hand` group contains ONLY genuinely broken or imminently-expiring credentials (`expired`, `revoked`, `failed`, `scope_mismatch`, `expiring`) and is always pinned and severity-sorted regardless of the `?sort=` mode
 - **AND** the `stale` group contains credentials in the `warn` state (set, but with no successful probe on record) — a `warn` credential is an unknown, not a failure, and MUST NOT appear in `needs-hand`
 - **AND** group eyebrows render in mono 10px uppercase with tracking 0.14em
 
 #### Scenario: Empty `needs-hand` group
-- **WHEN** every credential is healthy (no row has state in {`expired`, `revoked`, `failed`, `scope_mismatch`, `expiring_soon`})
+- **WHEN** every credential is healthy (no row has state in {`expired`, `revoked`, `failed`, `scope_mismatch`, `expiring`})
 - **THEN** the spine omits the `needs-hand` group entirely (no empty-state stub) and the page renders **zero red and zero amber pixels**, even if `warn`-state (stale/unverified) rows are present in their own quiet group
+
+#### Scenario: Imminent expiry uses the canonical state
+- **WHEN** a set credential expires within its configured imminent-expiry lead time but has not yet expired
+- **AND** its most recent probe succeeded, or no probe has run
+- **THEN** the inventory returns state `expiring` rather than `warn` in the no-probe case
+- **AND** the passport treats `expiring` as a `needs-hand` state
+- **AND** `expiring` is the sole imminent-expiry state name in both contracts
 
 #### Scenario: Empty `stale` group
 - **WHEN** no credential is in the `warn` state
@@ -41,11 +48,12 @@ The page is rendered in the binding **Dispatch** design language specified in `o
 - **THEN** its spine row renders with a `--dim` state dot and no left-edge sliver — never `--amber` and never a sliver
 - **AND** its subline reads `unverified` (or `verified <when>` if a prior verification timestamp exists)
 - **AND** it does NOT count toward `meta.failing_count` or the "N need hand" KPI caption; it counts toward `meta.unverified_count` and a separate quiet KPI caption instead
+- **AND** the Passport consumes the backend's aggregate and per-family count metadata for headline urgency and KPI captions, rather than recomputing those state counts from adapted credential rows
 
 ### Requirement: Evidence-Over-Value Affordance Contract
 Each credential row in the spine SHALL surface a 6px state dot, a 2px left-edge sliver (coloured only when state demands), a mono label, and a mono subline. The masked-value blob (`••••••••`) is FORBIDDEN as the only proof a credential exists. Each credential page SHALL render the following evidence — in order — without any LLM-generated text:
 
-1. **Heading + state plaque** — credential title, state label (one of {`ok`, `warn`, `expired`, `revoked`, `expiring_soon`, `scope_mismatch`, `failed`, `never_set`}), fingerprint pill (`sha256:7a3f…`, mono 11px).
+1. **Heading + state plaque** — credential title, state label (one of {`ok`, `warn`, `expired`, `revoked`, `expiring`, `scope_mismatch`, `failed`, `never_set`}), fingerprint pill (`sha256:7a3f…`, mono 11px).
 2. **Dense KV band** — issued / expires / last verified / last used / source / target / category, all in mono with tabular numerals.
 3. **Scopes inventory** (when applicable) — granted vs required scopes; missing scopes called out in `--amber`; over-grant noted dim.
 4. **WhatBreaks list** — butler features that will silently fail if the credential is sick; severity pip per row; rendered from `public.provider_feature_catalogue` server-side, never from a static frontend JSON.
@@ -262,6 +270,8 @@ This requirement defines a scope boundary, not a UI contract; the UI contract fo
 - Read-mostly observability / design language tokens — `about/heart-and-soul/design-language.md:25-43`
 - Binding integration brief (§0 design intent, §3 backend contract, §4 LLM-cost de-scopes, §5 Q8/Q13) — `docs/redesigns/2026-05-25-secrets-brief.md`
 - Dispatch design language — `openspec/specs/dashboard-design-language/spec.md`
+- Canonical imminent-expiry state derivation and inventory aggregation — `src/butlers/api/routers/secrets_v2.py:539-580, 1616-1670`
+- Passport credential-state union and `needs-hand` membership — `frontend/src/components/secrets/passport/types.ts:6-17`; `frontend/src/components/secrets/passport/constants.ts:9-49`
 - `_fetch_user_secrets` owner-default join (current behavior being extended) — `src/butlers/api/routers/secrets_v2.py:701-721`
 - `{google_account}` companion entity model and exclusion from entity resolution — `openspec/specs/google-account-registry/spec.md:71-89`
 - Primary account is_primary constraint — `openspec/specs/google-account-registry/spec.md:32-33`

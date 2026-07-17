@@ -43,6 +43,9 @@ function makeRoutine(overrides: Partial<ChroniclerRoutine>): ChroniclerRoutine {
     evidence_summary: {},
     origin: "declared",
     enabled: true,
+    last_confirmed_at: null,
+    missed_mine_cycles: 0,
+    stale: false,
     created_at: "2026-07-01T00:00:00Z",
     updated_at: "2026-07-01T00:00:00Z",
     ...overrides,
@@ -148,6 +151,29 @@ describe("WorkScheduleSettings — rows", () => {
     mockRoutines({ data: { data: [makeRoutine({ id: "d2", enabled: false })], meta: {} } });
     const html = render();
     expect(html).toContain(">disabled<");
+  });
+
+  it("shows evidence-backed staleness and the last confirmation for a mined row", () => {
+    mockRoutines({
+      data: {
+        data: [
+          makeRoutine({
+            id: "m-stale",
+            origin: "mined",
+            last_confirmed_at: "2026-07-01T00:00:00Z",
+            missed_mine_cycles: 2,
+            stale: true,
+          }),
+        ],
+        meta: {},
+      },
+    });
+
+    const html = render();
+
+    expect(html).toContain("2 missed mines");
+    expect(html).toContain("Last confirmed:");
+    expect(html).toContain("routine-staleness-m-stale");
   });
 
   it("surfaces a toggle/update failure outside edit mode instead of failing silently", () => {

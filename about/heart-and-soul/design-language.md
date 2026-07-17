@@ -950,6 +950,22 @@ permits a 4–7% alpha state-color tint on rows or panels requiring
 immediate human action. That exception is scoped, bounded, and single-
 purpose; it does not weaken the general prohibition.
 
+### Non-butler categorical and decorative hue scope
+
+`--categorical-1` through `--categorical-12` are a separate, theme-aware
+palette for a local discrete axis that is neither a butler identity nor an
+operational state: activity lanes, sleep-stage legends, syntax tokens, model
+tiers, and similar labeled categories. The ramp may appear on foregrounds,
+borders, chart marks, and compact legend markers. It must not be used to
+signal healthy, degraded, warning, or error state, and it must not turn into
+general page chrome.
+
+Every categorical use keeps its label, icon, position, or direct data label;
+color reinforces a distinction but never carries it alone. The token values
+are tuned in both themes for text against the canonical surfaces. Consumers
+must use the named tokens from `frontend/src/index.css`, not raw palette
+utilities or hex values.
+
 ### Motion budget
 
 The editorial archetype obeys the existing motion contract (see

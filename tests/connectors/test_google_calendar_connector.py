@@ -12,8 +12,10 @@ Verifies:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from butlers.connectors.google_calendar import (
@@ -22,6 +24,7 @@ from butlers.connectors.google_calendar import (
     StartingSoonSeenSet,
     _build_ingest_envelope,
     _build_normalized_text,
+    _classify_source_api_error,
     _parse_dt,
     _parse_event_start,
     build_event_envelope,
@@ -629,3 +632,89 @@ async def test_submission_error_retains_raw_payload(
     assert row[8] == "error"
     # The error path preserves the raw payload built into the envelope.
     assert row[9]["payload"]["raw"] == event
+
+
+# ---------------------------------------------------------------------------
+# Source API health classification (bu-q2m3n)
+# ---------------------------------------------------------------------------
+
+
+def _google_token_http_error(payload: dict[str, Any], status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://oauth2.googleapis.com/token")
+    response = httpx.Response(status_code, json=payload, request=request)
+    return httpx.HTTPStatusError("error", request=request, response=response)
+
+
+@pytest.mark.parametrize(
+    ("payload", "status_code", "is_auth_revocation"),
+    [
+        (
+            {"error": "invalid_grant", "error_description": "Token expired or revoked"},
+            400,
+            True,
+        ),
+        (
+            {"error": "unauthorized_client", "error_description": "Client is not authorized"},
+            400,
+            True,
+        ),
+        ({"error": {"code": 401, "message": "Invalid Credentials"}}, 401, False),
+        ({"error": {"code": 403, "message": "Insufficient Permission"}}, 403, False),
+        ({"error": {"code": 503, "message": "Backend Error"}}, 503, False),
+    ],
+)
+def test_classify_source_api_error_distinguishes_google_revocation_from_api_failure(
+    payload: dict[str, Any], status_code: int, is_auth_revocation: bool
+) -> None:
+    """Only structured OAuth token errors are action-required failures."""
+    classified, detail = _classify_source_api_error(_google_token_http_error(payload, status_code))
+
+    assert classified is is_auth_revocation
+    if is_auth_revocation:
+        assert payload["error"] in detail
+    else:
+        assert str(status_code) in detail
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+        "https://oauth2.googleapis.com/token",
+    ],
+)
+def test_calendar_non_post_token_response_never_proves_token_revocation(url: str) -> None:
+    """Calendar data APIs must not promote a payload-shaped transient failure."""
+    request = httpx.Request("GET", url)
+    response = httpx.Response(
+        401,
+        json={"error": "invalid_grant", "error_description": "Synthetic resource failure"},
+        request=request,
+    )
+    error = httpx.HTTPStatusError("resource API failure", request=request, response=response)
+
+    classified, _ = _classify_source_api_error(error)
+
+    assert classified is False
+
+
+def test_calendar_health_reports_revocation_as_error_and_api_failure_as_degraded(
+    account_config: CalendarAccountConfig,
+) -> None:
+    runtime = CalendarConnectorRuntime(account_config)
+    runtime._record_source_api_failure(
+        _google_token_http_error({"error": {"code": 503, "message": "Backend Error"}}, 503)
+    )
+
+    assert runtime._get_health_state() == ("degraded", "code=503, message=Backend Error")
+
+    runtime._record_source_api_failure(
+        _google_token_http_error(
+            {"error": "invalid_grant", "error_description": "Token expired or revoked"}, 400
+        )
+    )
+
+    assert runtime._get_health_state() == (
+        "error",
+        "error=invalid_grant, description=Token expired or revoked",
+    )

@@ -485,6 +485,47 @@ independent activity corroborates it, attributed to that activity's lane.
   it
 - **AND** corroborated time is attributed to the activity's lane, not "calendar"
 
+### Requirement: Evidence-Mined Routine Lifecycle
+
+The deterministic weekly routine miner SHALL retain only evidence-backed mined
+patterns as active occupation-inference inputs. It SHALL record its most recent
+re-detection time and reconcile a missing pattern only after a completed mining
+window contains at least one primary activity episode. This lifecycle applies
+only to rows with `origin = 'mined'`; owner-declared schedules remain under
+owner control.
+
+#### Scenario: Re-detected mined pattern is reconfirmed
+
+- **WHEN** the miner re-detects an existing mined weekday pattern
+- **THEN** it SHALL update `last_confirmed_at` using that deterministic run's
+  timestamp
+- **AND** it SHALL reset `missed_mine_cycles` to zero
+- **AND** it SHALL preserve the owner's existing `enabled` and `label` values
+
+#### Scenario: Evidence-backed pattern absence is bounded
+
+- **WHEN** a completed mining run inspected one or more primary activity
+  episodes and does not re-detect a mined routine
+- **THEN** the routine's `missed_mine_cycles` SHALL increase by one
+- **AND** the routine SHALL remain enabled through its first two consecutive
+  misses so the owner can review the changed evidence
+- **AND** the third consecutive miss SHALL disable that mined routine so it no
+  longer feeds occupation inference
+
+#### Scenario: Empty primary evidence does not age out a pattern
+
+- **WHEN** a mining window contains no primary activity episodes
+- **THEN** the miner SHALL NOT increment any routine's missed-cycle count or
+  disable any routine, because a dark feeder is not evidence of a disappeared
+  pattern
+
+#### Scenario: Owner-declared and manually-disabled routines are protected
+
+- **WHEN** a declared routine shares a weekday mask with a mined routine, or an
+  owner has manually disabled a mined routine
+- **THEN** mining reconciliation SHALL NOT modify the declared row
+- **AND** re-detecting the mined row SHALL NOT silently re-enable it
+
 ### Requirement: Owner-Mapped Wi-Fi SSID Presence Projection
 
 Chronicler SHALL deterministically project OwnTracks Wi-Fi observations into

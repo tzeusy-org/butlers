@@ -18,12 +18,19 @@ import { useMemo, useState } from "react";
 import { format, parseISO } from "date-fns";
 
 import type { ConflictIssue } from "@/api/types.ts";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { cn } from "@/lib/utils.ts";
 
 export interface ConflictRadarBannerProps {
   issues: ConflictIssue[];
   /** `false` ⇒ degraded scan; the banner stays silent (renders nothing). */
   available: boolean;
+  /** Whether retained issues are refreshing for a new visible window. */
+  isFetching?: boolean;
+  /** Whether the query failed; this always takes precedence over stale issues. */
+  isError?: boolean;
+  /** Query error detail shown when the scan could not complete. */
+  error?: Error | null;
   /** Accept a pending fix proposal (existing proposals accept surface). */
   onAcceptProposal?: (proposalId: string) => void;
   /** Decline a pending fix proposal (existing proposals dismiss surface). */
@@ -150,6 +157,9 @@ function IssueCard({
 export function ConflictRadarBanner({
   issues,
   available,
+  isFetching = false,
+  isError = false,
+  error = null,
   onAcceptProposal,
   onDismissProposal,
   className,
@@ -159,13 +169,24 @@ export function ConflictRadarBanner({
 
   const summary = useMemo(() => summariseByDay(issues), [issues]);
 
+  if (isError) {
+    return (
+      <div role="alert" className={cn("flex items-start gap-2 py-1", className)}>
+        <span className="mt-[2px] font-mono text-[11px] text-[var(--red-text)]">●</span>
+        <p className="text-sm text-fg">
+          Failed to scan calendar conflicts. {error?.message ?? "Unknown error"}
+        </p>
+      </div>
+    );
+  }
+
   // Silent degraded mode and clean windows render nothing; a session dismiss
   // hides the banner until the page reloads.
   if (!available || issues.length === 0 || dismissed) return null;
 
   const warningCount = issues.filter((i) => i.severity === "warning").length;
 
-  return (
+  const content = (
     <div
       role="status"
       aria-label="Calendar conflict radar"
@@ -222,4 +243,6 @@ export function ConflictRadarBanner({
       )}
     </div>
   );
+
+  return <FetchingDim isFetching={isFetching}>{content}</FetchingDim>;
 }

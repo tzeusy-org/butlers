@@ -22,7 +22,7 @@ handler against a real Postgres instance (testcontainers) to prove:
 2. The old buggy write path (``json.dumps()`` + ``::jsonb`` cast) reproduces
    the exact array-corruption failure mode, documenting why the fix matters.
 3. A legacy corrupted (array-shaped) row is reconstructed by
-   ``_reconstruct_action_result`` and healed back to a proper object by the
+   ``reconstruct_action_result`` and healed back to a proper object by the
    guarded repair UPDATE, idempotently.
 """
 
@@ -34,7 +34,7 @@ import uuid
 
 import pytest
 
-from butlers.api.routers.calendar_workspace import _reconstruct_action_result
+from butlers.calendar_action_result import reconstruct_action_result
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -152,7 +152,7 @@ async def test_buggy_write_path_corrupts_action_result_into_array(provisioned_po
 
 async def test_legacy_corrupted_array_row_is_reconstructed_and_healed(provisioned_postgres_pool):
     """A pre-existing corrupted (array-shaped) row is reconstructed correctly
-    by ``_reconstruct_action_result`` and the guarded repair UPDATE heals it
+    by ``reconstruct_action_result`` and the guarded repair UPDATE heals it
     back into a proper jsonb object, idempotently."""
     async with provisioned_postgres_pool() as pool:
         await pool.execute(_CREATE_TABLE_SQL)
@@ -178,7 +178,7 @@ async def test_legacy_corrupted_array_row_is_reconstructed_and_healed(provisione
         raw = row["action_result"]
         assert isinstance(raw, list)
 
-        reconstructed = _reconstruct_action_result(raw)
+        reconstructed = reconstruct_action_result(raw)
         assert reconstructed["status"] == "updated"
         assert reconstructed["pre_state"] == {"event_id": "evt-1"}
         assert reconstructed["undo"] == {"status": "pending", "request_id": "undo-prev"}

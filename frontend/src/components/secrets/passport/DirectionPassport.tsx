@@ -24,7 +24,6 @@ import { buildSpineEntries, pickDefaultKey } from "./spine-builder.ts";
 import { Spine, SpineAddButton } from "./Spine.tsx";
 import { PageUser, PageSystem, PageCliConnected, PassportEmptyState, PassportAddPanel } from "./pages.tsx";
 import { Eyebrow, Mono, Voice, IdentityChip } from "./atoms.tsx";
-import { needsHand, isUnverified } from "./constants.ts";
 import { useProbeAllSecrets } from "@/hooks/use-secrets-mutations.ts";
 
 // ── ProbeAllButton ───────────────────────────────────────────────────────────
@@ -35,15 +34,22 @@ import { useProbeAllSecrets } from "@/hooks/use-secrets-mutations.ts";
  * spinner while the sweep is in flight; row states refresh via the
  * inventory-query invalidation the mutation already performs on success.
  */
-function ProbeAllButton({ count }: { count: number }) {
-  const probeAll = useProbeAllSecrets();
+function ProbeAllButton({
+  count,
+  onProbe,
+  isPending,
+}: {
+  count: number;
+  onProbe: () => void;
+  isPending: boolean;
+}) {
   if (count === 0) return null;
   return (
     <button
       type="button"
-      onClick={() => probeAll.mutate()}
-      disabled={probeAll.isPending}
-      aria-busy={probeAll.isPending}
+      onClick={onProbe}
+      disabled={isPending}
+      aria-busy={isPending}
       data-probe-all="true"
       aria-label={`Probe all ${count} credentials`}
       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight disabled:pointer-events-none disabled:opacity-60"
@@ -53,7 +59,7 @@ function ProbeAllButton({ count }: { count: number }) {
         borderColor: "var(--border)",
       }}
     >
-      {probeAll.isPending ? (
+      {isPending ? (
         <>
           <Loader2 size={11} className="animate-spin" aria-hidden="true" />
           probing {count}…
@@ -202,23 +208,8 @@ export function DirectionPassport({
 
   // ── Add panel ────────────────────────────────────────────────────────────
   const [addOpen, setAddOpen] = React.useState(false);
-
-  // Palette verb (bu-t64p2 -- reachability sweep, bu-qvnce.11 slice 5). Only
-  // "Add credential" is registered here -- bu-a63hn is in-flight adding a
-  // probe-all action; that verb belongs to whichever PR lands it, not this
-  // sweep.
-  const secretsCommands = React.useMemo<PaletteCommand[]>(
-    () => [
-      {
-        id: "secrets-add-credential",
-        label: "Add credential",
-        keywords: ["new", "credential", "secret"],
-        perform: () => setAddOpen(true),
-      },
-    ],
-    [],
-  );
-  useRegisterCommands(secretsCommands);
+  const { mutate: mutateProbeAll, isPending: isProbeAllPending } = useProbeAllSecrets();
+  const handleProbeAll = React.useCallback(() => mutateProbeAll(), [mutateProbeAll]);
 
   // ── URL writers ─────────────────────────────────────────────────────────
   function handleSelectKey(key: string) {
@@ -286,21 +277,21 @@ export function DirectionPassport({
     integrations: {
       total:      userForIdentity.length,
       healthy:    userForIdentity.filter((x) => x.state === "ok").length,
-      // Genuinely broken only (bu-976n0) — see UNVERIFIED_STATES for the
-      // separate "set but never probed" bucket below.
-      needsHand:  userForIdentity.filter((x) => needsHand(x.state)).length,
-      unverified: userForIdentity.filter((x) => isUnverified(x.state)).length,
+      needsHand:  inventory.failingCountByFamily.user,
+      unverified: inventory.unverifiedCountByFamily.user,
     },
     system: {
       total:      inventory.system.length,
       configured: inventory.system.filter((x) => x.rowState !== "missing").length,
       missing:    inventory.system.filter((x) => x.rowState === "missing").length,
+      needsHand:  inventory.failingCountByFamily.system,
+      unverified: inventory.unverifiedCountByFamily.system,
     },
     cli: {
       total:      inventory.cli.length,
       ok:         inventory.cli.filter((x) => x.state === "ok").length,
-      attention:  inventory.cli.filter((x) => needsHand(x.state)).length,
-      unverified: inventory.cli.filter((x) => isUnverified(x.state)).length,
+      attention:  inventory.failingCountByFamily.cli,
+      unverified: inventory.unverifiedCountByFamily.cli,
     },
   };
   // needsAttention drives the headline + voice paragraph urgency — genuinely
@@ -308,7 +299,7 @@ export function DirectionPassport({
   // (quiet KPI caption + their own Spine group) and never inflate this count
   // (bu-976n0: this was the fabricated-alarm bug — 19 amber rows of which
   // only 3 were actually broken).
-  const needsAttention = kpis.integrations.needsHand + kpis.cli.attention;
+  const needsAttention = inventory.failingCount;
 
   // Rough count of what "probe all" is about to sweep — never_set/missing
   // rows have nothing to verify, so they're excluded from this hint. Not a
@@ -317,6 +308,30 @@ export function DirectionPassport({
   // the button's busy label.
   const probeableCount =
     kpis.integrations.total + kpis.system.configured + kpis.cli.total;
+
+  // Palette verbs (bu-t64p2, bu-fb9hr) reuse the header controls' exact
+  // handlers. The palette has no disabled Action state, so hide Probe all
+  // while its shared mutation is running just as the header button disables.
+  const secretsCommands = React.useMemo<PaletteCommand[]>(() => {
+    const commands: PaletteCommand[] = [
+      {
+        id: "secrets-add-credential",
+        label: "Add credential",
+        keywords: ["new", "credential", "secret"],
+        perform: () => setAddOpen(true),
+      },
+    ];
+    if (probeableCount > 0 && !isProbeAllPending) {
+      commands.unshift({
+        id: "secrets-probe-all",
+        label: "Probe all credentials",
+        keywords: ["probe", "verify", "check", "credentials", "secrets"],
+        perform: handleProbeAll,
+      });
+    }
+    return commands;
+  }, [handleProbeAll, isProbeAllPending, probeableCount]);
+  useRegisterCommands(secretsCommands);
 
   // Hide identity chip when only one identity is present.
   const showIdentityChip = inventory.identities.length > 1;
@@ -379,6 +394,13 @@ export function DirectionPassport({
                   {kpis.cli.attention > 0 && (
                     <>
                       {kpis.cli.attention} runtime token expiring.
+                      {kpis.system.needsHand > 0 ? " " : ""}
+                    </>
+                  )}
+                  {kpis.system.needsHand > 0 && (
+                    <>
+                      {kpis.system.needsHand} system credential
+                      {kpis.system.needsHand === 1 ? "" : "s"} need attention.
                     </>
                   )}
                 </Voice>
@@ -398,7 +420,11 @@ export function DirectionPassport({
                   onClick={() => {/* handled via spine */}}
                 />
               )}
-              <ProbeAllButton count={probeableCount} />
+              <ProbeAllButton
+                count={probeableCount}
+                onProbe={handleProbeAll}
+                isPending={isProbeAllPending}
+              />
               <SpineAddButton onClick={() => setAddOpen(true)} active={addOpen} />
             </div>
             <div className="flex gap-3.5 items-baseline">
@@ -417,7 +443,17 @@ export function DirectionPassport({
               <KpiCell
                 label="system"
                 value={`${kpis.system.configured}/${kpis.system.total}`}
-                caption={`${kpis.system.missing} unset`}
+                caption={
+                  kpis.system.needsHand > 0
+                    ? `${kpis.system.needsHand} need hand`
+                    : `${kpis.system.missing} unset`
+                }
+                captionTone={kpis.system.needsHand > 0 ? "amber" : "dim"}
+                quietCaption={
+                  kpis.system.unverified > 0
+                    ? `${kpis.system.unverified} unverified`
+                    : undefined
+                }
               />
               <KpiSep />
               <KpiCell

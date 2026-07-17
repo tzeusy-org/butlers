@@ -11,15 +11,9 @@
 //
 // Backend never returns colours, labels, or icons — those live here only.
 //
-// bu-86c4c.6: this is a fixed 10-slot life-activity categorical palette (9
-// lanes + the `other` catch-all; bu-whhll.14 added `butler_ops`), not the
-// tri-state (red/amber/green) system color vocabulary — "eat" and "rest"
-// happen to land on amber/emerald shades by coincidence of the categorical
-// taxonomy, not because either lane is a health/error signal. `--category-*`
-// is not a substitute either (that ramp is reserved for butler letter-marks
-// only, per about/heart-and-soul/design-language.md § Butler hue scope).
-// The two coincidental matches below are exempted from the raw-status-color
-// eslint rule with a line-level disable, not a lane recoloring.
+// This fixed 10-slot life-activity taxonomy (nine lanes plus `other`) is not
+// an operational-state signal or a Butler identity. It uses the dedicated
+// categorical ramp rather than the state or Butler hue vocabularies.
 // ---------------------------------------------------------------------------
 
 import type { LucideIcon } from "lucide-react"
@@ -68,11 +62,11 @@ export interface LaneConfig {
    */
   colour: string
   /**
-   * Hex colour value for consumers that cannot use Tailwind classes directly
+   * CSS color value for consumers that cannot use Tailwind classes directly
    * (e.g. recharts SVG fill attributes).
    * Must visually match `colour` above.
    */
-  hex: string
+  color: string
   /** Lucide-react icon component associated with this lane. */
   icon: LucideIcon
   /**
@@ -95,22 +89,22 @@ export interface LaneConfig {
 export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
   sleep: {
     label: "Sleep",
-    colour: "bg-slate-500",
-    hex: "#64748b",
+    colour: "bg-categorical-1",
+    color: "var(--categorical-1)",
     icon: Moon,
     sortOrder: 0,
   },
   exercise: {
     label: "Exercise",
-    colour: "bg-rose-500",
-    hex: "#f43f5e",
+    colour: "bg-categorical-2",
+    color: "var(--categorical-2)",
     icon: Dumbbell,
     sortOrder: 1,
   },
   work: {
     label: "Work",
-    colour: "bg-blue-600",
-    hex: "#2563eb",
+    colour: "bg-categorical-3",
+    color: "var(--categorical-3)",
     icon: Briefcase,
     sortOrder: 2,
   },
@@ -119,52 +113,50 @@ export const LANE_TAXONOMY: Readonly<Record<Category, LaneConfig>> = {
   // masquerades as the owner's workday. Rendered right after Work.
   butler_ops: {
     label: "Butler ops",
-    colour: "bg-indigo-500",
-    hex: "#6366f1",
+    colour: "bg-categorical-4",
+    color: "var(--categorical-4)",
     icon: Bot,
     sortOrder: 3,
   },
   play: {
     label: "Play",
-    colour: "bg-violet-600",
-    hex: "#7c3aed",
+    colour: "bg-categorical-5",
+    color: "var(--categorical-5)",
     icon: Gamepad2,
     sortOrder: 4,
   },
   social: {
     label: "Social",
-    colour: "bg-pink-500",
-    hex: "#ec4899",
+    colour: "bg-categorical-6",
+    color: "var(--categorical-6)",
     icon: Users,
     sortOrder: 5,
   },
   travel: {
     label: "Travel",
-    colour: "bg-cyan-500",
-    hex: "#06b6d4",
+    colour: "bg-categorical-7",
+    color: "var(--categorical-7)",
     icon: Plane,
     sortOrder: 6,
   },
   eat: {
     label: "Eat",
-    // eslint-disable-next-line no-restricted-syntax -- lane taxonomy color, not a status signal (see file header)
-    colour: "bg-amber-500",
-    hex: "#f59e0b",
+    colour: "bg-categorical-8",
+    color: "var(--categorical-8)",
     icon: Utensils,
     sortOrder: 7,
   },
   rest: {
     label: "Rest",
-    // eslint-disable-next-line no-restricted-syntax -- lane taxonomy color, not a status signal (see file header)
-    colour: "bg-emerald-600",
-    hex: "#059669",
+    colour: "bg-categorical-9",
+    color: "var(--categorical-9)",
     icon: Armchair,
     sortOrder: 8,
   },
   other: {
     label: "Other",
-    colour: "bg-slate-400",
-    hex: "#94a3b8",
+    colour: "bg-categorical-10",
+    color: "var(--categorical-10)",
     icon: CircleQuestionMark,
     sortOrder: 9,
   },

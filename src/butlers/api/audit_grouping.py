@@ -129,9 +129,9 @@ grouped_errors AS (
         ) AS schedule_names
     FROM normalized_errors
     GROUP BY error_summary
-    ORDER BY last_seen_at DESC{limit_clause}
 )
-SELECT * FROM grouped_errors"""
+SELECT * FROM grouped_errors
+ORDER BY last_seen_at DESC{limit_clause}"""
 
 _OCCURRENCES_SELECT = """
 SELECT
@@ -164,7 +164,7 @@ def build_audit_group_query(
         where_extra: Extra SQL appended to the inner WHERE clause after
             ``result = 'error'``.  Must start with a newline + whitespace and
             a SQL keyword, e.g. ``"\\n                  AND created_at >= ..."``.
-        limit: If given, adds a LIMIT clause to the grouped CTE.
+        limit: If given, caps the newest grouped rows in the final result.
 
     Returns:
         A complete SQL string ready to be passed to ``pool.fetch()``.

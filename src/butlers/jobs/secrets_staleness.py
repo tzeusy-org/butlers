@@ -68,6 +68,7 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from butlers.api.db import DatabaseManager
+from butlers.api.degraded import DegradedSources
 from butlers.api.routers.secrets_v2 import (
     _fetch_cli_secrets,
     _fetch_system_secrets,
@@ -139,13 +140,19 @@ class ProbeOutcome:
 # ---------------------------------------------------------------------------
 
 
-async def _collect_probe_targets(db: DatabaseManager) -> list[ProbeTarget]:
+async def _collect_probe_targets(
+    db: DatabaseManager,
+    *,
+    tracker: DegradedSources | None = None,
+) -> list[ProbeTarget]:
     """Enumerate every probeable credential.
 
     Mirrors ``jobs.secrets_lifecycle._collect_snapshots``'s scan shape (same
     per-family fetch helpers, same owner-default user projection) so this
     module can never see a different set of credentials than the /secrets
-    page or the lifecycle notifier do.
+    page or the lifecycle notifier do. A failed per-butler fetch is omitted
+    while healthy butlers and the shared system/CLI/user families still run;
+    when provided, ``tracker`` records that genuine partial failure.
     """
     targets: list[ProbeTarget] = []
 
@@ -154,7 +161,22 @@ async def _collect_probe_targets(db: DatabaseManager) -> list[ProbeTarget]:
             pool = db.pool(butler_name)
         except KeyError:
             continue
-        for row in await _fetch_system_secrets(pool, butler_name):
+        try:
+            rows = await _fetch_system_secrets(pool, butler_name, tracker=tracker)
+        except Exception:  # noqa: BLE001
+            if tracker is not None:
+                tracker.mark(
+                    butler_name,
+                    msg=f"Failed to collect staleness targets for butler {butler_name!r}",
+                )
+            else:
+                logger.warning(
+                    "secrets_staleness: failed to collect targets for butler %s",
+                    butler_name,
+                    exc_info=True,
+                )
+            continue
+        for row in rows:
             if row.state in _SKIP_STATES:
                 continue
             targets.append(
@@ -177,7 +199,7 @@ async def _collect_probe_targets(db: DatabaseManager) -> list[ProbeTarget]:
     # Shared application config (public.butler_secrets), excluding cli/cli-auth
     # rows — those are the CLI family, collected separately below. Mirrors
     # _collect_snapshots's exclusion so this scan never double-counts a row.
-    for row in await _fetch_system_secrets(shared_pool, "shared-public"):
+    for row in await _fetch_system_secrets(shared_pool, "shared-public", tracker=tracker):
         if row.category in ("cli", "cli-auth"):
             continue
         if row.state in _SKIP_STATES:
@@ -404,14 +426,16 @@ async def run_secrets_staleness_check(
 ) -> dict[str, Any]:
     """Re-probe every credential whose ``last_verified`` is stale (or never
     set). Returns a summary dict: ``{scanned, stale, probed, ok, failed,
-    skipped}``.
+    skipped}``, with ``sources_degraded`` added when a per-butler credential
+    fetch failed.
 
     Never raises — collection failure (e.g. no shared pool configured)
     degrades to an empty scan; each individual probe is fault-isolated by
     ``_dispatch_probe``.
     """
     try:
-        targets = await _collect_probe_targets(db)
+        tracker = DegradedSources(logger)
+        targets = await _collect_probe_targets(db, tracker=tracker)
     except Exception:
         logger.exception("secrets_staleness_check: target collection failed")
         return {"scanned": 0, "stale": 0, "probed": 0, "ok": 0, "failed": 0, "skipped": 0}
@@ -422,6 +446,8 @@ async def run_secrets_staleness_check(
     summary = _summarize(outcomes)
     summary["scanned"] = len(targets)
     summary["stale"] = len(stale)
+    if tracker.failed:
+        summary["sources_degraded"] = tracker.names
     return summary
 
 

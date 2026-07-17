@@ -24,7 +24,7 @@
  * DashboardPage's one-click attention-list rows share the IDENTICAL grace
  * window instead of firing irreversibly the moment they're clicked.
  */
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { approveApproval, deferApproval, denyApproval } from "@/api/index.ts";
@@ -198,24 +198,27 @@ export function useApprovalDecisionMutations(
    * (a no-op -- ignore repeat verbs on the same id). When `undoWindow` was
    * not opted into, `run()` fires immediately -- same as calling it directly.
    */
-  function scheduleDecision(id: string, verb: DecisionVerb, run: () => void): boolean {
-    if (scheduledDecisionsSnapshot.has(id)) return false;
+  const scheduleDecision = useCallback(
+    (id: string, verb: DecisionVerb, run: () => void): boolean => {
+      if (scheduledDecisionsSnapshot.has(id)) return false;
 
-    if (!undoWindow) {
-      run();
+      if (!undoWindow) {
+        run();
+        return true;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        const next = new Map(scheduledDecisionsSnapshot);
+        next.delete(id);
+        setScheduledDecisionsSnapshot(next);
+        run();
+      }, UNDO_WINDOW_MS);
+
+      setScheduledDecisionsSnapshot(new Map(scheduledDecisionsSnapshot).set(id, { verb, timeoutId }));
       return true;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      const next = new Map(scheduledDecisionsSnapshot);
-      next.delete(id);
-      setScheduledDecisionsSnapshot(next);
-      run();
-    }, UNDO_WINDOW_MS);
-
-    setScheduledDecisionsSnapshot(new Map(scheduledDecisionsSnapshot).set(id, { verb, timeoutId }));
-    return true;
-  }
+    },
+    [undoWindow],
+  );
 
   return {
     approveMut,

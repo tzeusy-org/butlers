@@ -19,6 +19,7 @@ No real database required — DatabaseManager and its pools are faked/mocked.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -26,6 +27,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from butlers.api.degraded import DegradedSources
 from butlers.api.models import ApiMeta, ApiResponse
 from butlers.api.routers.cli_auth import CLIAuthTestResponse
 from butlers.api.routers.secrets_v2 import CliRuntime, SystemSecret, TestResult, UserSecret
@@ -158,6 +160,61 @@ async def test_collect_probe_targets_returns_system_only_when_no_shared_pool():
         targets = await _collect_probe_targets(db)
 
     assert [t.canonical_key for t in targets] == ["s:FINANCE_KEY"]
+
+
+async def test_collect_probe_targets_continues_after_per_butler_failure_and_tracks_source():
+    """A failed butler must not hide healthy or shared probe targets."""
+    broken_pool = object()
+    healthy_pool = object()
+    shared_pool = object()
+    db = _FakeDatabaseManager(
+        butler_pools={"broken": broken_pool, "healthy": healthy_pool},
+        shared_pool=shared_pool,
+    )
+    tracker = DegradedSources(logging.getLogger(__name__))
+    entity_id = str(uuid4())
+
+    async def fake_fetch_system_secrets(pool, butler_name, **kwargs):
+        if pool is broken_pool:
+            raise RuntimeError("broken pool")
+        if pool is healthy_pool:
+            return [SystemSecret(key="HEALTHY_KEY", state="ok", butler="healthy")]
+        assert pool is shared_pool
+        assert butler_name == "shared-public"
+        return [SystemSecret(key="SHARED_KEY", state="ok", butler="shared-public")]
+
+    with (
+        patch(
+            "butlers.jobs.secrets_staleness._fetch_system_secrets",
+            side_effect=fake_fetch_system_secrets,
+        ),
+        patch(
+            "butlers.jobs.secrets_staleness._fetch_cli_secrets",
+            new=AsyncMock(return_value=[CliRuntime(key="cli-auth/claude", state="ok")]),
+        ),
+        patch(
+            "butlers.jobs.secrets_staleness._fetch_user_secrets",
+            new=AsyncMock(
+                return_value=[
+                    UserSecret(
+                        id="u1",
+                        entity_id=entity_id,
+                        type="google_oauth_refresh",
+                        state="ok",
+                    )
+                ]
+            ),
+        ),
+    ):
+        targets = await _collect_probe_targets(db, tracker=tracker)
+
+    assert {target.canonical_key for target in targets} == {
+        "s:HEALTHY_KEY",
+        "s:SHARED_KEY",
+        "c:cli-auth/claude",
+        "u:google",
+    }
+    assert tracker.names == ["broken"]
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +500,30 @@ async def test_run_secrets_staleness_check_collection_failure_is_clean_noop():
         summary = await run_secrets_staleness_check(object())
 
     assert summary == {"scanned": 0, "stale": 0, "probed": 0, "ok": 0, "failed": 0, "skipped": 0}
+
+
+async def test_run_secrets_staleness_check_reports_degraded_collection_sources():
+    """A partial collection must not produce a clean staleness summary."""
+
+    async def fake_collect(_db, *, tracker):
+        tracker.mark("broken")
+        return []
+
+    with patch(
+        "butlers.jobs.secrets_staleness._collect_probe_targets",
+        side_effect=fake_collect,
+    ):
+        summary = await run_secrets_staleness_check(object())
+
+    assert summary == {
+        "scanned": 0,
+        "stale": 0,
+        "probed": 0,
+        "ok": 0,
+        "failed": 0,
+        "skipped": 0,
+        "sources_degraded": ["broken"],
+    }
 
 
 # ---------------------------------------------------------------------------

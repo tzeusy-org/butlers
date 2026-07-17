@@ -26,6 +26,7 @@ graph TB
 
         subgraph ConnProcs["Connector Processes"]
             TGBot["telegram-bot :40081"]
+            TGUser["telegram-user :40080"]
             Gmail["gmail :40082"]
             Discord["discord :40084"]
             LiveL["live-listener :40091"]
@@ -75,10 +76,11 @@ butler fleet.
 | lifestyle | butler | 41109 | Evolving |
 | qa | staffer | 41110 | Evolving |
 
-### Connector Health Ports (40081-40091)
+### Connector Health Ports (40080-40091)
 
 | Connector | Port |
 |---|---|
+| telegram-user | 40080 |
 | telegram-bot | 40081 |
 | gmail | 40082 |
 | discord | 40084 |

@@ -11,13 +11,18 @@ Verifies:
 
 from __future__ import annotations
 
+import asyncio
+import json
+import socket
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import butlers.connectors.telegram_user_client as telegram_user_client
 from butlers.connectors.telegram_user_client import (
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
@@ -36,6 +41,28 @@ def connector() -> TelegramUserClientConnector:
         endpoint_identity=_ENDPOINT,
     )
     return TelegramUserClientConnector(config, cursor_pool=MagicMock())
+
+
+@pytest.mark.parametrize(
+    ("configured_port", "expected_port"),
+    [(None, 40080), (40123, 40123)],
+)
+def test_config_reads_loopback_health_port(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_port: int | None,
+    expected_port: int,
+) -> None:
+    """The local health endpoint uses its documented default or env override."""
+    monkeypatch.setattr(telegram_user_client, "TELETHON_AVAILABLE", True)
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
+    if configured_port is None:
+        monkeypatch.delenv("CONNECTOR_HEALTH_PORT", raising=False)
+    else:
+        monkeypatch.setenv("CONNECTOR_HEALTH_PORT", str(configured_port))
+
+    config = TelegramUserClientConnectorConfig.from_env()
+
+    assert config.health_port == expected_port
 
 
 def _make_message(
@@ -479,6 +506,99 @@ def test_get_health_state_healthy_when_discretion_auth_ok(
 
     assert state == "healthy"
     assert error_msg is None
+
+
+# ---------------------------------------------------------------------------
+# Local health endpoint
+# ---------------------------------------------------------------------------
+
+
+def _unused_loopback_port() -> int:
+    """Return an ephemeral loopback port currently available to this test."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+async def _get_health_response(port: int) -> tuple[bytes, dict[str, object]]:
+    """Request the local health endpoint, waiting briefly for its server task."""
+    for _ in range(50):
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        except OSError:
+            await asyncio.sleep(0.01)
+            continue
+
+        try:
+            writer.write(b"GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            await writer.drain()
+            response = await reader.read()
+        finally:
+            writer.close()
+            with suppress(OSError):
+                await writer.wait_closed()
+
+        headers, body = response.split(b"\r\n\r\n", maxsplit=1)
+        return headers.splitlines()[0], json.loads(body)
+
+    pytest.fail("Telegram user-client local health server did not accept a connection")
+
+
+async def _health_payload(
+    connector: TelegramUserClientConnector,
+) -> tuple[bytes, dict[str, object]]:
+    health_server = getattr(telegram_user_client, "_run_health_server", None)
+    assert health_server is not None, "Telegram user-client must expose a local health server"
+
+    port = _unused_loopback_port()
+    task = asyncio.create_task(health_server(port, connector))
+    try:
+        return await _get_health_response(port)
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_health_endpoint_serves_local_connector_status(
+    owner_connector: TelegramUserClientConnector,
+) -> None:
+    """The local endpoint exposes the connector's basic operational status."""
+    owner_connector._telegram_client = MagicMock()
+    owner_connector._telegram_client.is_connected.return_value = True
+    owner_connector._discretion_dispatcher = None
+
+    status_line, payload = await _health_payload(owner_connector)
+
+    assert status_line == b"HTTP/1.0 200 OK"
+    assert payload == {
+        "status": "healthy",
+        "connector_type": "telegram_user_client",
+        "endpoint_identity": _OWNER_ENDPOINT,
+    }
+
+
+async def test_health_endpoint_exposes_raw_discretion_auth_snapshot(
+    owner_connector: TelegramUserClientConnector,
+) -> None:
+    """The endpoint returns the dispatcher's unmodified auth-health snapshot."""
+    owner_connector._telegram_client = MagicMock()
+    owner_connector._telegram_client.is_connected.return_value = True
+    assert owner_connector._discretion_dispatcher is not None
+    auth_snapshot = {
+        "runtime_type": "codex",
+        "auth_file_present": False,
+        "last_discretion_success_at": None,
+        "last_auth_failure_at": "2026-07-06T00:00:00+00:00",
+        "status": "degraded",
+    }
+    owner_connector._discretion_dispatcher.get_auth_health = MagicMock(return_value=auth_snapshot)
+
+    status_line, payload = await _health_payload(owner_connector)
+
+    assert status_line == b"HTTP/1.0 200 OK"
+    assert payload["status"] == "degraded"
+    assert payload["discretion_auth"] == auth_snapshot
 
 
 # ---------------------------------------------------------------------------

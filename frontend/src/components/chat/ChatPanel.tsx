@@ -27,8 +27,7 @@ import {
 } from "@/components/ui/sheet";
 
 import { createConversation, sendMessage } from "@/api/index.ts";
-import { fetchPricingMap } from "@/api/client.ts";
-import type { Message, ConversationSummary, PricingMap } from "@/api/types.ts";
+import type { Message, ConversationSummary } from "@/api/types.ts";
 import { consumeSseStream } from "./sse-utils.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
@@ -47,6 +46,7 @@ import {
   useConversations,
   useConversationMessages,
 } from "@/hooks/use-conversations.ts";
+import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 
 // ---------------------------------------------------------------------------
@@ -71,8 +71,10 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // mirrors FloatingChatWidget's sendError seam, see ./send-error.tsx.
   const [sendError, setSendError] = useState<SendError | null>(null);
 
-  // Pricing map for cost estimation
-  const [pricingMap, setPricingMap] = useState<PricingMap | null>(null);
+  // Pricing is optional decoration: keep the existing null behavior while
+  // loading or after an error, with a cache shared by both chat surfaces.
+  const { data: pricingMapData } = usePricingMap();
+  const pricingMap = pricingMapData ?? null;
 
   // AbortController for the current SSE stream
   const abortRef = useRef<AbortController | null>(null);
@@ -85,15 +87,6 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         abortRef.current = null;
       }
     };
-  }, []);
-
-  // Load pricing map once
-  useEffect(() => {
-    fetchPricingMap()
-      .then((pm) => setPricingMap(pm.data))
-      .catch(() => {
-        /* pricing is optional */
-      });
   }, []);
 
   // Fetch conversations list
@@ -114,10 +107,14 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // Avoid overwriting optimistic/streaming messages while an SSE stream is active.
   useEffect(() => {
     if (streaming) return;
-    const msgs = messagesData?.data ?? [];
-    setLocalMessages((previous) =>
-      reconcileConversationMessages(msgs, previous, activeConversationId),
-    );
+    // A conversation-key switch can briefly expose `messagesData` as undefined
+    // before the next query result lands. Keep the rendered thread during that
+    // gap rather than treating it as a successful empty conversation.
+    if (messagesData?.data) {
+      setLocalMessages((previous) =>
+        reconcileConversationMessages(messagesData.data, previous, activeConversationId),
+      );
+    }
   }, [activeConversationId, messagesData, streaming]);
 
   // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations. Migrated
@@ -399,7 +396,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           pricingMap={pricingMap}
         />
 
-        {isLoadingMessages && activeConversationId ? (
+        {isLoadingMessages && activeConversationId && localMessages.length === 0 ? (
           <MessageThreadSkeleton />
         ) : (
           <MessageThread

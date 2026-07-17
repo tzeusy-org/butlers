@@ -57,6 +57,7 @@ import hmac
 import logging
 import math
 import os
+import re
 import signal
 import time
 from dataclasses import dataclass
@@ -113,6 +114,12 @@ RETENTION_PURGE_INTERVAL_S = _RETENTION_PURGE_INTERVAL_S
 
 # Supported OwnTracks payload types (others are silently ignored)
 _SUPPORTED_PAYLOAD_TYPES = frozenset({"location", "transition", "waypoints"})
+
+# OwnTracks TIDs are compact, one- or two-character alphanumeric identifiers.
+# Restricting the device-reported value at the webhook boundary keeps the
+# dynamically allocated per-device heartbeat, metric, policy, and checkpoint
+# state bounded by the protocol's identifier space.
+_TID_PATTERN = re.compile(r"[A-Za-z0-9]{1,2}")
 
 # Ingestion tier values
 _TIER_METADATA = "metadata"
@@ -216,6 +223,20 @@ def extract_event_type(payload: dict[str, Any]) -> str:
     if isinstance(event_type, str) and not event_type.strip():
         return "unknown"
     return str(event_type)
+
+
+def extract_tid(payload: dict[str, Any]) -> str | None:
+    """Return a protocol-valid OwnTracks tracker ID, if present.
+
+    OwnTracks documents ``tid`` as the compact tracker identifier shown for a
+    device. It is limited to one or two ASCII alphanumeric characters. The
+    connector uses the value as a durable per-device identity, so malformed or
+    overlong values must not enter the dynamic state map.
+    """
+    tid = payload.get("tid")
+    if isinstance(tid, str) and _TID_PATTERN.fullmatch(tid):
+        return tid
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1167,8 +1188,20 @@ class OwnTracksConnector:
         Dispatches by _type, normalizes to ingest.v1, applies policy gate,
         submits to Switchboard, updates checkpoint, drains replay queue.
         """
-        payload_type = body.get("_type", "")
+        payload_type = extract_event_type(body)
         observed_at = datetime.now(UTC).isoformat()
+
+        # Protocol-level unsupported events never need an identity-scoped
+        # state bundle. Count them against the connector's stable process
+        # identity rather than allowing an arbitrary body.tid to create a
+        # permanent metric label or heartbeat task.
+        if payload_type not in _SUPPORTED_PAYLOAD_TYPES:
+            logger.debug("OwnTracksConnector: ignoring unsupported _type=%r", payload_type)
+            owntracks_events_received_total.labels(
+                endpoint_identity=self._endpoint_identity,
+                event_type="ignored",
+            ).inc()
+            return
 
         # Resolve which device this event belongs to and fetch (or lazily
         # create) its dedicated state bundle -- captured as a local variable
@@ -1183,11 +1216,17 @@ class OwnTracksConnector:
         # checkpoint/location-evidence attribution (bu-86zll). Resolving once
         # up front and using only the local `device` reference for the rest
         # of this call closes that race regardless of interleaving.
-        tid = body.get("tid")
-        if tid and not self._config.tracker_id_override:
-            identity = f"owntracks:{tid}"
-        else:
+        if self._config.tracker_id_override:
             identity = self._endpoint_identity
+        else:
+            tid = extract_tid(body)
+            if tid is None:
+                logger.debug(
+                    "OwnTracksConnector: ignoring supported payload with invalid tid (type=%r)",
+                    payload_type,
+                )
+                return
+            identity = f"owntracks:{tid}"
         device = await self._get_or_create_device(identity)
 
         # Track event counter for today (task 6.3). Aggregate across all
@@ -1196,14 +1235,6 @@ class OwnTracksConnector:
         if now_date != self._events_today_date:
             self._events_today = 0
             self._events_today_date = now_date
-
-        if payload_type not in _SUPPORTED_PAYLOAD_TYPES:
-            logger.debug("OwnTracksConnector: ignoring unsupported _type=%r", payload_type)
-            owntracks_events_received_total.labels(
-                endpoint_identity=device.endpoint_identity,
-                event_type="ignored",
-            ).inc()
-            return
 
         # Increment received counter (task 6.2)
         owntracks_events_received_total.labels(

@@ -22,6 +22,7 @@
 
 import type { CalendarPrepAttendee, CalendarPrepMessageContext } from "@/api/types.ts";
 import { TierBadge, tierLabel } from "@/components/ui/TierBadge.tsx";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { useCalendarMeetingPrep } from "@/hooks/use-calendar-workspace.ts";
 
 /** Title-case a `source_butler` identifier for the contributor footnote. */
@@ -144,6 +145,12 @@ export interface MeetingPrepRailProps {
   heading?: string;
   /** Whether the underlying query is still loading (first fetch). */
   isLoading?: boolean;
+  /** Whether retained context is refreshing for a newly selected event. */
+  isFetching?: boolean;
+  /** Whether the query failed; this always takes precedence over stale context. */
+  isError?: boolean;
+  /** Query error detail shown when the read could not complete. */
+  error?: Error | null;
   /** Whether at least one specialist contributed prep context for the event. */
   hasPrepContext: boolean;
   /** Resolved attendees with merged prep context. */
@@ -160,12 +167,16 @@ export interface MeetingPrepRailProps {
 export function MeetingPrepRail({
   heading,
   isLoading = false,
+  isFetching = false,
+  isError = false,
+  error = null,
   hasPrepContext,
   attendees,
   sourceButlers = [],
 }: MeetingPrepRailProps) {
-  const showEmpty = !isLoading && (!hasPrepContext || attendees.length === 0);
-  return (
+  const showEmpty =
+    !isLoading && !isError && (!hasPrepContext || attendees.length === 0);
+  const content = (
     <section
       data-testid="meeting-prep-rail"
       aria-label="Meeting prep"
@@ -182,6 +193,10 @@ export function MeetingPrepRail({
 
       {isLoading ? (
         <p className="font-mono text-[11px] text-[var(--dim)]">Loading…</p>
+      ) : isError ? (
+        <p role="alert" className="font-mono text-[11px] text-[var(--red-text)]">
+          Couldn&apos;t load meeting prep. {error?.message ?? "Unknown error"}
+        </p>
       ) : showEmpty ? (
         // Honest empty-state — no specialist contributed prep context for this
         // event (co-attended / contact-link coverage not yet populated, or the
@@ -212,6 +227,12 @@ export function MeetingPrepRail({
       )}
     </section>
   );
+
+  return (
+    <FetchingDim isFetching={isFetching && !isLoading && !isError}>
+      {content}
+    </FetchingDim>
+  );
 }
 
 export interface MeetingPrepRailContainerProps {
@@ -227,27 +248,30 @@ export interface MeetingPrepRailContainerProps {
  * Data-fetching wrapper around {@link MeetingPrepRail}. Reads the prep endpoint
  * via {@link useCalendarMeetingPrep} and projects the response into the rail.
  *
- * Fail-open: the endpoint never 500s for an unknown/uncovered event (it returns
- * the empty-state payload), and a transport error degrades to the same honest
- * "No prep context yet" empty-state rather than surfacing an error banner.
+ * Unknown or uncovered events return a successful empty-state payload. A real
+ * transport/query error remains visible so retained context never reads as a
+ * successful response for the newly selected event.
  */
 export function MeetingPrepRailContainer({
   eventId,
   enabled = true,
   heading,
 }: MeetingPrepRailContainerProps) {
-  const { data, isLoading, isError } = useCalendarMeetingPrep(eventId, { enabled });
+  const { data, error, isError, isFetching, isLoading } = useCalendarMeetingPrep(eventId, {
+    enabled,
+  });
   const prep = data?.data;
 
   return (
     <MeetingPrepRail
       heading={heading}
       isLoading={enabled && !!eventId && isLoading}
-      // A transport error degrades to the honest empty-state (fail-open).
-      hasPrepContext={!isError && (prep?.has_prep_context ?? false)}
+      isFetching={enabled && !!eventId && isFetching && !isLoading}
+      isError={isError}
+      error={error instanceof Error ? error : null}
+      hasPrepContext={prep?.has_prep_context ?? false}
       attendees={prep?.attendees ?? []}
       sourceButlers={prep?.source_butlers ?? []}
     />
   );
 }
-

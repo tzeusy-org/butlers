@@ -1,6 +1,6 @@
 # RFC 0021: Decision Loop — One-Tap Approvals and Decision Memory
 
-**Status:** Proposed
+**Status:** Accepted (owner sign-off 2026-07-17, gate bu-24lu6.1)
 **Date:** 2026-07-02
 **Related:** RFC 0011 (insight anti-spam patterns), RFC 0017 (owner-routing safety),
 RFC 0019 (proactive egress dispositions), `about/heart-and-soul/security.md`

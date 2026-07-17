@@ -39,10 +39,13 @@ Connector module               ``ingestion_events.source_channel``
 
 Burst segmentation
 -------------------
-Ingestion events sharing the same ``(source_channel, source_sender_identity)``
-are grouped and sorted by ``received_at``; a run of events separated by no
-more than ``BURST_GAP_MINUTES`` collapses into one ``social_episode`` spanning
-``(first.received_at, last.received_at)``. This mirrors
+Ingestion events sharing the same ``(source_channel, canonical sender
+identity)`` are grouped and sorted by ``received_at``; a run of events
+separated by no more than ``BURST_GAP_MINUTES`` collapses into one
+``social_episode`` spanning ``(first.received_at, last.received_at)``. Email
+identities use the same bare, lowercased form at grouping time as at ingest and
+participant resolution, so pre-cutover raw ``From:`` headers do not fragment a
+later normalized Gmail conversation. This mirrors
 ``OwnTracksPointAdapter``'s movement-episode rollup, with one deliberate
 simplification: **no cross-batch carryover**. A burst that straddles a batch
 boundary may be fragmented into two candidate episodes. This is accepted by
@@ -328,12 +331,16 @@ class CommsSocialAdapter(ProjectionAdapter):
     def _group_into_bursts(
         rows: list[asyncpg.Record],
     ) -> dict[_BurstGroupKey, list[asyncpg.Record]]:
-        """Group fetched rows by ``(channel, sender_identity)``, order preserved."""
+        """Group fetched rows by ``(channel, canonical_sender_identity)``."""
         groups: dict[_BurstGroupKey, list[asyncpg.Record]] = {}
         for row in rows:
+            channel = row["source_channel"]
+            sender_identity = row["source_sender_identity"]
+            if channel == "email":
+                sender_identity = _normalize_email_sender(sender_identity)
             key = _BurstGroupKey(
-                channel=row["source_channel"],
-                sender_identity=row["source_sender_identity"],
+                channel=channel,
+                sender_identity=sender_identity,
             )
             groups.setdefault(key, []).append(row)
         return groups

@@ -92,6 +92,118 @@ class TestToolRegistration:
         assert set(mock_mcp._registered_tools.keys()) == EXPECTED_TELEGRAM_TOOLS
 
 
+class TestInlineKeyboardSupport:
+    async def test_send_passes_reply_markup_to_telegram(self) -> None:
+        mod = TelegramModule()
+        markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Approve", "callback_data": "apr1:action:a:0123456789abcdef"},
+                    {"text": "Open", "url": "https://example.test/approvals/action"},
+                ]
+            ]
+        }
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"ok": True, "result": {"message_id": 42}}
+
+        with (
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(return_value=response)
+            mock_get_client.return_value = client
+
+            result = await mod._send_message("123456", "Review this action", reply_markup=markup)
+
+        assert result == {"ok": True, "result": {"message_id": 42}}
+        payload = client.post.await_args.kwargs["json"]
+        assert payload["reply_markup"] is markup
+        assert payload["reply_markup"]["inline_keyboard"][0][0]["text"] == "Approve"
+
+    async def test_reply_passes_reply_markup_to_telegram(self) -> None:
+        mod = TelegramModule()
+        markup = {
+            "inline_keyboard": [
+                [{"text": "Reject", "callback_data": "apr1:action:r:0123456789abcdef"}]
+            ]
+        }
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"ok": True}
+
+        with (
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(return_value=response)
+            mock_get_client.return_value = client
+
+            await mod._reply_to_message("123456", 99, "Review this action", reply_markup=markup)
+
+        payload = client.post.await_args.kwargs["json"]
+        assert payload["reply_to_message_id"] == 99
+        assert payload["reply_markup"] is markup
+
+    async def test_tool_rejects_oversized_callback_data_before_api_call(
+        self, telegram_module: TelegramModule, mock_mcp: MagicMock
+    ) -> None:
+        await telegram_module.register_tools(
+            mcp=mock_mcp,
+            config={},
+            db=None,
+            butler_name="test-butler",
+        )
+        markup = {"inline_keyboard": [[{"text": "Too long", "callback_data": "é" * 33}]]}
+
+        with patch.object(telegram_module, "_get_client") as mock_get_client:
+            result = await mock_mcp._registered_tools["telegram_send_message"](
+                "123456", "Review this action", reply_markup=markup
+            )
+
+        assert result["error_code"] == "validation_error"
+        assert result["field"] == "reply_markup.inline_keyboard[0][0].callback_data"
+        assert result["max_bytes"] == 64
+        assert result["actual_bytes"] == 66
+        mock_get_client.assert_not_called()
+
+    async def test_edits_message_then_removes_its_inline_keyboard(self) -> None:
+        mod = TelegramModule()
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"ok": True}
+
+        with (
+            patch.object(mod, "_get_client") as mock_get_client,
+            patch.object(mod, "_base_url", return_value="https://api.telegram.org/bot<token>"),
+        ):
+            client = AsyncMock()
+            client.post = AsyncMock(return_value=response)
+            mock_get_client.return_value = client
+
+            await mod._edit_message_text("123456", 99, "**Approved**")
+            await mod._remove_inline_keyboard("123456", 99)
+
+        text_call, markup_call = client.post.await_args_list
+        assert text_call.args[0].endswith("/editMessageText")
+        assert text_call.kwargs["json"] == {
+            "chat_id": "123456",
+            "message_id": 99,
+            "text": "<b>Approved</b>",
+            "parse_mode": "HTML",
+        }
+        assert markup_call.args[0].endswith("/editMessageReplyMarkup")
+        assert markup_call.kwargs["json"] == {
+            "chat_id": "123456",
+            "message_id": 99,
+            "reply_markup": None,
+        }
+
+
 class TestTelegramSendAuditEmit:
     """telegram_send is emitted to dashboard_audit_log on outbound sendMessage."""
 

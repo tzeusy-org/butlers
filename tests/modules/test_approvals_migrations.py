@@ -58,3 +58,15 @@ def test_approvals_repair_migration_downgrade_is_noop() -> None:
     mod = _load_migration("002_pending_actions_why_evidence.py")
 
     assert _collect_sqls(mod, "downgrade") == []
+
+
+def test_fingerprint_v2_migration_backfills_versioned_history_and_suggestions() -> None:
+    mod = _load_migration("003_fingerprint_v2.py")
+    normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
+
+    assert mod.revision == "approvals_003"
+    assert mod.down_revision == "approvals_002"
+    assert "autonomy_approval_history" in normalized
+    assert "autonomy_suggestions" in normalized
+    assert "fingerprint_version" in normalized
+    assert "set fingerprint_version = 1" in normalized

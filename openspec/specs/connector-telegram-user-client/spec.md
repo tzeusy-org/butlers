@@ -180,6 +180,17 @@ The Telegram user client connector uses the shared discretion layer (`butlers.co
 - **THEN** the discretion model is resolved from the shared model catalog at the `discretion` complexity tier (managed via the Settings UI at `/butlers/settings`)
 - **AND** window/weight configuration (`window_size`, `window_seconds`, `weight_bypass`, `weight_fail_open`) is passed directly to the `DiscretionEvaluator` constructor
 
+### Requirement: Loopback Health Endpoint
+The Telegram user client connector SHALL expose its operational health without
+expanding the connector's transport surface beyond the local process.
+
+#### Scenario: Local health snapshot
+- **WHEN** the connector process is running
+- **THEN** it listens on `127.0.0.1` at `CONNECTOR_HEALTH_PORT` (default `40080`)
+- **AND** `GET /health` returns JSON containing `status`, `connector_type`, and `endpoint_identity`
+- **AND** when a `DiscretionDispatcher` is available, the response includes its raw `get_auth_health()` result as `discretion_auth`
+- **AND** `GET /metrics` returns Prometheus text format
+
 ### Requirement: Environment Variables
 
 #### Scenario: Required variables
@@ -190,7 +201,7 @@ The Telegram user client connector uses the shared discretion layer (`butlers.co
 
 #### Scenario: Optional variables
 - **WHEN** the connector starts
-- **THEN** `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_BACKFILL_WINDOW_H` (bounded startup replay window), and `CONNECTOR_HEARTBEAT_INTERVAL_S` are optionally configurable
+- **THEN** `CONNECTOR_MAX_INFLIGHT` (default 8), `CONNECTOR_HEALTH_PORT` (default 40080), `CONNECTOR_BACKFILL_WINDOW_H` (bounded startup replay window), and `CONNECTOR_HEARTBEAT_INTERVAL_S` are optionally configurable
 
 #### Scenario: New default for flush interval
 - **WHEN** `TELEGRAM_USER_FLUSH_INTERVAL_S` is not set and no dashboard override exists
@@ -246,11 +257,11 @@ The user client connector runs as a dedicated daemon, separate from butler daemo
 
 #### Scenario: Completed features
 - **WHEN** evaluating the connector for deployment
-- **THEN** the following are implemented: live user-client session via Telethon (MTProto), real-time message event subscription, normalization to `ingest.v1`, idempotent submission to Switchboard, durable checkpoint with restart-safe replay, bounded in-flight concurrency control, optional bounded backfill on startup, graceful degradation when Telethon not installed
+- **THEN** the following are implemented: live user-client session via Telethon (MTProto), real-time message event subscription, normalization to `ingest.v1`, idempotent submission to Switchboard, durable checkpoint with restart-safe replay, bounded in-flight concurrency control, optional bounded backfill on startup, loopback health and Prometheus metrics endpoints, graceful degradation when Telethon not installed
 
 #### Scenario: [TARGET-STATE] v2-only gaps
 - **WHEN** evaluating for production deployment with real user accounts
-- **THEN** the following remain unimplemented: privacy/consent guardrails (Section 8 of docs), explicit feature flag enforcement, per-chat/per-sender filtering, content redaction, structured metrics export, health check endpoint, lag monitoring and alerting
+- **THEN** the following remain unimplemented: privacy/consent guardrails (Section 8 of docs), explicit feature flag enforcement, per-chat/per-sender filtering, content redaction, structured metrics export, lag monitoring and alerting
 
 ---
 

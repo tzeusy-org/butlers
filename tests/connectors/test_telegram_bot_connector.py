@@ -13,11 +13,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
+    _classify_source_api_error,
 )
 
 _ENDPOINT = "telegram:bot:123456789"
@@ -212,3 +214,50 @@ async def test_submission_error_retains_raw_payload(connector: TelegramBotConnec
     row = rows[0]
     assert row[8] == "error"
     assert row[9]["payload"]["raw"] == update
+
+
+# ---------------------------------------------------------------------------
+# Source API health classification (bu-q2m3n)
+# ---------------------------------------------------------------------------
+
+
+def _telegram_http_error(status_code: int, description: str) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://api.telegram.org/bottoken/getUpdates")
+    response = httpx.Response(
+        status_code,
+        json={"ok": False, "error_code": status_code, "description": description},
+        request=request,
+    )
+    return httpx.HTTPStatusError("error", request=request, response=response)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "description", "is_auth_revocation"),
+    [
+        (401, "Unauthorized", True),
+        (403, "Forbidden: bot was blocked by the user", False),
+        (409, "Conflict: terminated by other getUpdates request", False),
+        (429, "Too Many Requests", False),
+        (503, "Service Unavailable", False),
+    ],
+)
+def test_classify_source_api_error_distinguishes_invalid_bot_token_from_transient_failure(
+    status_code: int, description: str, is_auth_revocation: bool
+) -> None:
+    """Telegram 401 is credential failure; service failures remain recoverable."""
+    classified, detail = _classify_source_api_error(_telegram_http_error(status_code, description))
+
+    assert classified is is_auth_revocation
+    assert description in detail
+
+
+def test_telegram_health_reports_auth_failure_as_error_and_api_failure_as_degraded(
+    connector: TelegramBotConnector,
+) -> None:
+    connector._record_source_api_failure(_telegram_http_error(503, "Service Unavailable"))
+
+    assert connector._get_health_state() == ("degraded", "HTTP 503: Service Unavailable")
+
+    connector._record_source_api_failure(_telegram_http_error(401, "Unauthorized"))
+
+    assert connector._get_health_state() == ("error", "HTTP 401: Unauthorized")

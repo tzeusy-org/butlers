@@ -26,6 +26,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import Client
+from fastmcp import FastMCP as RuntimeFastMCP
 
 from butlers.daemon import ButlerDaemon
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
@@ -394,6 +396,65 @@ async def test_file_bug_report_relays_to_qa_and_replies_with_case_reference(
 
     fake_reply.assert_awaited_once()
     assert result["case_reference"] in fake_reply.await_args.kwargs["message"]
+
+
+@pytest.mark.parametrize(
+    ("severity", "expected_severity"),
+    [
+        ("1", 1),
+        (1.0, 1),
+        ("1.0", 1),
+        (1.5, 2),
+        ("1.5", 2),
+        ("9", 4),
+        ("9.0", 4),
+        ("-3", 0),
+        ("-3.0", 0),
+        pytest.param(10**400, 4, id="huge-integer-clamps"),
+        pytest.param("9" * 400, 4, id="huge-integer-string-clamps"),
+        pytest.param(
+            "1.0000000000000000000000000001",
+            2,
+            id="precise-fractional-string-defaults",
+        ),
+        ("not-a-severity", 2),
+        (None, 2),
+        ("", 2),
+        (True, 2),
+        (False, 2),
+        ("inf", 2),
+        ("-inf", 2),
+        ("nan", 2),
+        (float("inf"), 2),
+        (float("-inf"), 2),
+        (float("nan"), 2),
+    ],
+)
+async def test_file_bug_report_coerces_clamps_and_defaults_severity(
+    tmp_path: Path,
+    severity: object,
+    expected_severity: int,
+) -> None:
+    """Caller-shaped severity values reach QA as clamped integer priorities."""
+    patches = _patch_infra()
+    butler_dir = _make_switchboard_dir(tmp_path)
+    mock_route = AsyncMock(return_value={"result": {"accepted": True}})
+
+    _, tools = await _start_switchboard_and_capture_tools(
+        butler_dir, patches, mock_route=mock_route
+    )
+
+    runtime_mcp = RuntimeFastMCP("test-switchboard")
+    runtime_mcp.tool()(tools["file_bug_report"])
+    async with Client(runtime_mcp) as client:
+        result = await client.call_tool(
+            "file_bug_report",
+            {"summary": "The dashboard is broken", "severity": severity},
+        )
+
+    assert result.data["status"] == "ok"
+    mock_route.assert_awaited_once()
+    assert mock_route.await_args.kwargs["args"]["severity"] == expected_severity
 
 
 async def test_file_bug_report_relay_failure_still_replies(tmp_path: Path, monkeypatch) -> None:

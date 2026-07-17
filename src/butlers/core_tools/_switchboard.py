@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -710,7 +711,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     @tool_span("file_bug_report", butler_name=butler_name)
     async def file_bug_report(
         summary: str,
-        severity: int = 2,
+        severity: int | float | str | bool | None = 2,
     ) -> dict[str, Any]:
         """BUG/SYSTEM-REPORT TOOL — file a dashboard bug or data-problem report.
 
@@ -727,6 +728,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             summary: Concise description of the bug/problem, in the owner's
                 own words plus any grounding detail (e.g. the page/route).
             severity: 0=critical, 1=high, 2=medium (default), 3=low, 4=info.
+                Caller values may be integer-like numeric strings or floats;
+                booleans, non-finite, fractional, and malformed values use medium.
         """
         from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 
@@ -766,7 +769,27 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         if conversation_id:
             _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "bug"
 
-        clamped_severity = max(0, min(4, int(severity) if isinstance(severity, int) else 2))
+        if isinstance(severity, bool):
+            normalized_severity = 2
+        else:
+            try:
+                parsed_severity = Decimal(str(severity))
+                is_integral = (
+                    parsed_severity.is_finite()
+                    and parsed_severity == parsed_severity.to_integral_value()
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                parsed_severity = None
+                is_integral = False
+            if parsed_severity is None or not is_integral:
+                normalized_severity = 2
+            elif parsed_severity <= 0:
+                normalized_severity = 0
+            elif parsed_severity >= 4:
+                normalized_severity = 4
+            else:
+                normalized_severity = int(parsed_severity)
+        clamped_severity = normalized_severity
         call_site = f"dashboard:{page_route or 'unknown'}"
 
         fp_result = compute_fingerprint_from_report(

@@ -26,6 +26,12 @@ from butlers.core.channel_reactions import (
 )
 from butlers.core.permissions import NOTIFY_PERMISSION, require_permission
 from butlers.modules.base import Module
+from butlers.telegram_api import (
+    TelegramReplyMarkupValidationError,
+    edit_telegram_message_text,
+    remove_telegram_inline_keyboard,
+    validate_telegram_reply_markup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -214,15 +220,30 @@ class TelegramModule(Module):
         self._butler_name = butler_name or self._butler_name
         module = self  # capture for closures
 
-        async def telegram_send_message(chat_id: str, text: str) -> dict[str, Any]:
+        async def telegram_send_message(
+            chat_id: str,
+            text: str,
+            reply_markup: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
             """Send a Telegram message."""
-            return await module._send_message(chat_id, text)
+            try:
+                return await module._send_message(chat_id, text, reply_markup=reply_markup)
+            except TelegramReplyMarkupValidationError as exc:
+                return exc.to_tool_error()
 
         async def telegram_reply_to_message(
-            chat_id: str, message_id: int, text: str
+            chat_id: str,
+            message_id: int,
+            text: str,
+            reply_markup: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
             """Reply to a Telegram message."""
-            return await module._reply_to_message(chat_id, message_id, text)
+            try:
+                return await module._reply_to_message(
+                    chat_id, message_id, text, reply_markup=reply_markup
+                )
+            except TelegramReplyMarkupValidationError as exc:
+                return exc.to_tool_error()
 
         async def telegram_react_to_message(
             chat_id: str, message_id: int, emoji: str
@@ -343,7 +364,11 @@ class TelegramModule(Module):
         return getattr(self._db, "pool", None) if self._db is not None else None
 
     async def _send_message(
-        self, chat_id: str, text: str, reply_to_message_id: int | None = None
+        self,
+        chat_id: str,
+        text: str,
+        reply_to_message_id: int | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Call Telegram sendMessage API.
 
@@ -359,6 +384,7 @@ class TelegramModule(Module):
         any Telegram traffic. require_permission fails open, so a DB error never
         wedges delivery.
         """
+        validated_reply_markup = validate_telegram_reply_markup(reply_markup)
         await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
         url = f"{self._base_url()}/sendMessage"
         payload: dict[str, Any] = {
@@ -368,6 +394,8 @@ class TelegramModule(Module):
         }
         if reply_to_message_id is not None:
             payload["reply_to_message_id"] = reply_to_message_id
+        if validated_reply_markup is not None:
+            payload["reply_markup"] = validated_reply_markup
         client = self._get_client()
         resp = await client.post(url, json=payload)
         if resp.status_code >= 400:
@@ -400,9 +428,41 @@ class TelegramModule(Module):
         )
         return data
 
-    async def _reply_to_message(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
+    async def _reply_to_message(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Reply to a specific Telegram message."""
-        return await self._send_message(chat_id, text, reply_to_message_id=message_id)
+        return await self._send_message(
+            chat_id,
+            text,
+            reply_to_message_id=message_id,
+            reply_markup=reply_markup,
+        )
+
+    async def _edit_message_text(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
+        """Edit a sent Telegram message while preserving its current keyboard."""
+        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+        return await edit_telegram_message_text(
+            self._get_client(),
+            self._base_url(),
+            chat_id=chat_id,
+            message_id=message_id,
+            text=_markdown_to_telegram_html(text),
+        )
+
+    async def _remove_inline_keyboard(self, chat_id: str, message_id: int) -> dict[str, Any]:
+        """Remove a sent Telegram message's inline keyboard."""
+        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+        return await remove_telegram_inline_keyboard(
+            self._get_client(),
+            self._base_url(),
+            chat_id=chat_id,
+            message_id=message_id,
+        )
 
     async def _set_webhook(self, url: str) -> dict[str, Any]:
         """Call Telegram setWebhook API."""

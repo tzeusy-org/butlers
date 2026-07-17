@@ -3366,6 +3366,8 @@ def _validate_routine_timezone(tz: str) -> None:
 
 
 def _routine_to_row(routine: Any) -> RoutineRow:
+    origin = routine.origin.value if hasattr(routine.origin, "value") else str(routine.origin)
+    missed_mine_cycles = routine.missed_mine_cycles
     return RoutineRow(
         id=str(routine.id),
         dow_mask=routine.dow_mask,
@@ -3376,8 +3378,11 @@ def _routine_to_row(routine: Any) -> RoutineRow:
         support_count=routine.support_count,
         confidence=routine.confidence,
         evidence_summary=routine.evidence_summary,
-        origin=routine.origin.value if hasattr(routine.origin, "value") else str(routine.origin),
+        origin=origin,
         enabled=routine.enabled,
+        last_confirmed_at=routine.last_confirmed_at,
+        missed_mine_cycles=missed_mine_cycles,
+        stale=origin == "mined" and missed_mine_cycles > 0,
         created_at=routine.created_at,
         updated_at=routine.updated_at,
     )

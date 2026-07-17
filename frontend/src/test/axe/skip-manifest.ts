@@ -77,10 +77,6 @@ export const AXE_SKIP_MANIFEST: AxeSkipEntry[] = [
     reason: "ChroniclesPage — not yet swept; lift the hook-mock list from ChroniclesPage.test.tsx.",
   },
   {
-    path: "/timeline",
-    reason: "TimelinePage — not yet swept; lift the hook-mock list from TimelinePage.test.tsx.",
-  },
-  {
     path: "/notifications",
     reason: "NotificationsPage — not yet swept; lift the hook-mock list from NotificationsPage.test.tsx.",
   },

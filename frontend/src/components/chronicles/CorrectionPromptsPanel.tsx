@@ -96,7 +96,10 @@ export function CorrectionPromptsPanel({
           >
             <span
               className="flex size-7 shrink-0 items-center justify-center rounded-md"
-              style={{ backgroundColor: `${config.hex}22`, color: config.hex }}
+              style={{
+                backgroundColor: `color-mix(in oklch, ${config.color} 14%, transparent)`,
+                color: config.color,
+              }}
               aria-hidden
             >
               <Icon className="size-4" />

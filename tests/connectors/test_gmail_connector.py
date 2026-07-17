@@ -529,6 +529,19 @@ def test_classify_source_api_error_detects_invalid_grant() -> None:
     assert "invalid_grant" in description
 
 
+def test_classify_source_api_error_detects_unauthorized_client() -> None:
+    """An exact unauthorized_client token-endpoint response also needs reauthorization."""
+    exc = _http_error_with_response(
+        {"error": "unauthorized_client", "error_description": "client not allowed"},
+        401,
+    )
+
+    is_auth_revocation, description = _classify_source_api_error(exc)
+
+    assert is_auth_revocation is True
+    assert "unauthorized_client" in description
+
+
 def test_classify_source_api_error_transient_5xx_is_not_auth_revocation() -> None:
     """A transient 5xx from the Gmail data API is not an auth revocation."""
     exc = _http_error_with_response(

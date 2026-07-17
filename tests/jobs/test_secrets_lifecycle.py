@@ -19,11 +19,13 @@ No real database required — DatabaseManager and its pools are faked/mocked.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from butlers.api.degraded import DegradedSources
 from butlers.api.routers.secrets_v2 import CliRuntime, SystemSecret, UserSecret
 from butlers.jobs.secrets_lifecycle import (
     CredentialSnapshot,
@@ -189,6 +191,60 @@ async def test_collect_snapshots_returns_system_only_when_no_shared_pool():
         snapshots = await _collect_snapshots(db)
 
     assert [s.key for s in snapshots] == ["s:FINANCE_KEY"]
+
+
+async def test_collect_snapshots_continues_after_per_butler_failure_and_tracks_source():
+    """A failed butler must not hide healthy or shared credential families."""
+    broken_pool = object()
+    healthy_pool = object()
+    shared_pool = object()
+    db = _FakeDatabaseManager(
+        butler_pools={"broken": broken_pool, "healthy": healthy_pool},
+        shared_pool=shared_pool,
+    )
+    tracker = DegradedSources(logging.getLogger(__name__))
+
+    async def fake_fetch_system_secrets(pool, butler_name, **kwargs):
+        if pool is broken_pool:
+            raise RuntimeError("broken pool")
+        if pool is healthy_pool:
+            return [SystemSecret(key="HEALTHY_KEY", state="ok", butler="healthy")]
+        assert pool is shared_pool
+        assert butler_name == "shared-public"
+        return [SystemSecret(key="SHARED_KEY", state="ok", butler="shared-public")]
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._fetch_system_secrets",
+            side_effect=fake_fetch_system_secrets,
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._fetch_cli_secrets",
+            new=AsyncMock(return_value=[CliRuntime(key="cli-auth/claude", state="ok")]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._fetch_user_secrets",
+            new=AsyncMock(
+                return_value=[
+                    UserSecret(
+                        id="u1",
+                        entity_id="e1",
+                        type="google_oauth_refresh",
+                        state="ok",
+                    )
+                ]
+            ),
+        ),
+    ):
+        snapshots = await _collect_snapshots(db, tracker=tracker)
+
+    assert {snapshot.key for snapshot in snapshots} == {
+        "s:HEALTHY_KEY",
+        "s:SHARED_KEY",
+        "c:cli-auth/claude",
+        "u:google",
+    }
+    assert tracker.names == ["broken"]
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +796,31 @@ async def test_run_secrets_lifecycle_check_no_shared_pool_is_a_clean_noop():
         "deferred": 0,
         "suppressed": 0,
         "errors": 0,
+    }
+
+
+async def test_run_secrets_lifecycle_check_reports_degraded_collection_sources():
+    """A partial collection must not produce a clean lifecycle summary."""
+    db = _FakeDatabaseManager(butler_pools={}, shared_pool=object())
+
+    async def fake_collect(_db, *, tracker):
+        tracker.mark("broken")
+        return []
+
+    with patch(
+        "butlers.jobs.secrets_lifecycle._collect_snapshots",
+        side_effect=fake_collect,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    assert summary == {
+        "scanned": 0,
+        "attention": 0,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 0,
+        "sources_degraded": ["broken"],
     }
 
 

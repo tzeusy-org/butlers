@@ -28,11 +28,11 @@ Environment variables:
 - CONNECTOR_HEALTH_PORT (default: 40087)
 - HA_BASE_URL: HA instance base URL (overrides entity_info)
 - HA_ACCESS_TOKEN: HA long-lived access token (overrides entity_info)
-- HA_DOMAIN_ALLOWLIST: comma-separated domain allowlist (default now includes
-  ``person`` — see ``_DEFAULT_DOMAIN_ALLOWLIST``, bu-whhll.3 — which feeds
-  presence/location data into ``connectors.home_assistant_history``; setting
-  this variable REPLACES the entire default list, so omitting ``person`` here
-  silently re-drops presence data)
+- HA_DOMAIN_ALLOWLIST: comma-separated additional domains. It extends the
+  safety baseline (including ``person``, which feeds presence/location data
+  into ``connectors.home_assistant_history``) rather than replacing it. A valid
+  endpoint-scoped ``connector_registry.settings.domain_allowlist`` JSON array
+  can replace those env additions at startup, but cannot remove defaults.
 - HA_POLL_INTERVAL_S (default: 60): REST fallback poll interval
 - HA_CHECKPOINT_OVERLAP_S (default: 30): checkpoint resume safety margin
 - HA_WS_PING_INTERVAL_S (default: 30): WebSocket keepalive ping interval
@@ -64,7 +64,7 @@ import logging
 import os
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -139,6 +139,12 @@ _DEFAULT_DOMAIN_ALLOWLIST = frozenset(
         "person",
     }
 )
+
+
+def _domain_allowlist_with_defaults(domains: Iterable[str]) -> frozenset[str]:
+    """Return configured additions combined with the non-removable safety baseline."""
+    return frozenset(_DEFAULT_DOMAIN_ALLOWLIST | {domain.strip() for domain in domains})
+
 
 # Health states per spec §8
 HealthState = Literal["healthy", "degraded", "error", "starting"]
@@ -1132,12 +1138,9 @@ class HAConnectorConfig:
                 return default
 
         raw_allowlist = os.environ.get("HA_DOMAIN_ALLOWLIST", "").strip()
-        if raw_allowlist:
-            domain_allowlist: frozenset[str] = frozenset(
-                d.strip() for d in raw_allowlist.split(",") if d.strip()
-            )
-        else:
-            domain_allowlist = frozenset(_DEFAULT_DOMAIN_ALLOWLIST)
+        domain_allowlist = _domain_allowlist_with_defaults(
+            domain for domain in raw_allowlist.split(",") if domain.strip()
+        )
 
         def _bool(key: str, default: bool) -> bool:
             raw = os.environ.get(key, "").strip().lower()
@@ -1170,6 +1173,63 @@ class HAConnectorConfig:
             wellness_rules_extra=wellness_rules_extra,
             wellness_entity_denylist=wellness_entity_denylist,
         )
+
+
+async def _load_domain_allowlist_from_store(
+    config: HAConnectorConfig,
+    db_pool: Any | None,
+    endpoint_identity: str,
+) -> None:
+    """Apply a valid endpoint-scoped domain setting without weakening defaults.
+
+    ``connector_registry.settings`` is the established connector configuration
+    store. The dashboard setting supersedes environment-supplied *additions*
+    after this connector's endpoint identity is known, but its JSON array is
+    always unioned with :data:`_DEFAULT_DOMAIN_ALLOWLIST`. An absent, malformed,
+    or unreadable setting leaves the environment-derived configuration intact.
+    """
+    if db_pool is None:
+        return
+
+    try:
+        from butlers.connectors.cursor_store import load_connector_settings
+
+        settings = await load_connector_settings(db_pool, _CONNECTOR_TYPE, endpoint_identity)
+    except Exception:
+        logger.warning(
+            "HAConnector: could not load domain allowlist settings for %s; retaining env config",
+            endpoint_identity,
+            exc_info=True,
+        )
+        return
+
+    if settings is None:
+        return
+    if not isinstance(settings, dict):
+        logger.warning(
+            "HAConnector: ignoring non-object connector settings for %s; retaining env config",
+            endpoint_identity,
+        )
+        return
+    if "domain_allowlist" not in settings:
+        return
+
+    raw_allowlist = settings["domain_allowlist"]
+    if not isinstance(raw_allowlist, list) or not all(
+        isinstance(domain, str) and domain.strip() for domain in raw_allowlist
+    ):
+        logger.warning(
+            "HAConnector: ignoring invalid domain_allowlist setting for %s; "
+            "expected a JSON array of non-empty strings",
+            endpoint_identity,
+        )
+        return
+
+    config.domain_allowlist = _domain_allowlist_with_defaults(raw_allowlist)
+    logger.info(
+        "HAConnector: loaded domain allowlist additions from connector settings for %s",
+        endpoint_identity,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1769,6 +1829,12 @@ async def _main() -> None:
 
     connector._ha_access_token = ha_access_token
     connector._set_endpoint_identity(ha_base_url)
+
+    await _load_domain_allowlist_from_store(
+        config,
+        db_pool,
+        connector._endpoint_identity,
+    )
 
     connector.start_health_server()
     connector.start_heartbeat()

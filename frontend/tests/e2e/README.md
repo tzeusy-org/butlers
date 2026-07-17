@@ -11,19 +11,19 @@ cd frontend
 npm run test:e2e:install
 ```
 
-### Start the dev server (separate terminal)
-
-```bash
-cd frontend
-npm run dev
-```
-
 ### Run the tests
 
 ```bash
 cd frontend
 npm run test:e2e          # headless chromium
 npm run test:e2e:headed   # headed (visible browser, good for debugging)
+```
+
+Playwright starts its own test-only API mock and Vite preview process. Build
+first if `dist/` is absent or stale:
+
+```bash
+npm run build
 ```
 
 From the repo root:
@@ -59,13 +59,19 @@ CI flow:
 1. `npm ci` — install dependencies
 2. `npm run test:e2e:install` — install Playwright browsers (chromium + deps)
 3. `npm run build` — produce the production build
-4. `npm run test:e2e` — Playwright starts `vite preview` automatically (via
-   the `webServer` block in `playwright.config.ts`) and runs the tests
+4. `npm run test:e2e` — Playwright starts a strict local API mock and `vite
+   preview` automatically (via the `webServer` block in
+   `playwright.config.ts`) and runs the tests
 
 The `webServer` config uses `vite preview` (port 4173) over the built output,
-which is closer to production than `vite dev`. `reuseExistingServer` is `true`
-locally so an existing preview server at `:4173` is reused. To test against
-a dev server at `:5173`, set `PLAYWRIGHT_BASE_URL=http://localhost:5173`.
+which is closer to production than `vite dev`. Its `/api` proxy is pointed at
+the test-only mock on port 4174; that mock only returns `200` for
+`GET /api/health`. All other `/api/*` requests return an explicit `404` error
+envelope unless the individual test mocks them with `page.route()`. This keeps
+missing fixtures visible rather than converting them into generic proxy
+failures. To test against a dev server at `:5173`, set
+`PLAYWRIGHT_BASE_URL=http://localhost:5173`; Playwright will then start no
+local server or mock.
 
 Playwright reports (screenshots, traces, videos on failure) are uploaded as the
 `playwright-report` artifact and retained for 7 days.

@@ -1669,18 +1669,6 @@ async def update_approvals_policy(
 _SUGGESTIONS_TABLE = "autonomy_suggestions"
 
 
-def _generate_scope_description(tool_name: str, representative_args: dict) -> str:
-    """Produce a human-readable scope description for an autonomy suggestion.
-
-    Lists every (arg_key, arg_value) pair with exact match semantics, e.g.:
-    "Auto-approve send_telegram when chat_id = 'mom_123' AND text = 'Good morning'"
-    """
-    if not representative_args:
-        return f"Auto-approve {tool_name} (no argument constraints)"
-    parts = [f"{k} = {v!r}" for k, v in sorted(representative_args.items())]
-    return f"Auto-approve {tool_name} when {' AND '.join(parts)}"
-
-
 def _row_to_autonomy_suggestion(row: dict) -> AutonomySuggestion:
     """Convert a database row to an AutonomySuggestion API model."""
     # representative_args arrives as a dict via asyncpg's jsonb codec — every
@@ -1693,12 +1681,20 @@ def _row_to_autonomy_suggestion(row: dict) -> AutonomySuggestion:
     redacted_args = redact_tool_args(row["tool_name"], representative_args)
 
     # Generate scope_description from the redacted view to avoid leaking secrets.
-    scope_description = _generate_scope_description(row["tool_name"], redacted_args)
+    fingerprint_version = int(row.get("fingerprint_version") or 1)
+    from butlers.modules.approvals.autonomy_suggestions import generate_scope_description
+
+    scope_description = generate_scope_description(
+        row["tool_name"],
+        redacted_args,
+        fingerprint_version=fingerprint_version,
+    )
 
     return AutonomySuggestion(
         id=str(row["id"]),
         suggestion_type=row.get("suggestion_type") or "promotion",
         pattern_fingerprint=row["pattern_fingerprint"],
+        fingerprint_version=fingerprint_version,
         tool_name=row["tool_name"],
         representative_args=redacted_args,
         status=row["status"],
@@ -1879,7 +1875,13 @@ async def confirm_suggestion(
                 k: {"type": "exact", "value": v} for k, v in representative_args.items()
             }
             tool_name = row["tool_name"]
-            scope_desc = _generate_scope_description(tool_name, representative_args)
+            from butlers.modules.approvals.autonomy_suggestions import generate_scope_description
+
+            scope_desc = generate_scope_description(
+                tool_name,
+                representative_args,
+                fingerprint_version=int(row.get("fingerprint_version") or 1),
+            )
 
             create_result = await approvals_ops.create_approval_rule(
                 conn,

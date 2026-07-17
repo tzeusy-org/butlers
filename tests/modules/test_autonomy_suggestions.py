@@ -23,6 +23,7 @@ from butlers.modules.approvals.autonomy_tracker import (
     get_approval_count,
     record_approval,
 )
+from butlers.modules.base import ToolMeta
 
 pytestmark = pytest.mark.unit
 
@@ -89,6 +90,53 @@ class TestComputeFingerprint:
     def test_returns_non_empty_string(self) -> None:
         fp = compute_fingerprint("tool", {"a": "1"})
         assert isinstance(fp, str) and len(fp) > 0
+
+    def test_v2_uses_only_declared_safety_critical_args(self) -> None:
+        """Different message bodies share a fingerprint when the recipient is pinned."""
+        metadata = ToolMeta(arg_sensitivities={"chat_id": True, "text": False})
+
+        first = compute_fingerprint(
+            "send_telegram",
+            {"chat_id": "mom_123", "text": "hello"},
+            tool_meta=metadata,
+        )
+        second = compute_fingerprint(
+            "send_telegram",
+            {"chat_id": "mom_123", "text": "running late!"},
+            tool_meta=metadata,
+        )
+        different_recipient = compute_fingerprint(
+            "send_telegram",
+            {"chat_id": "dad_456", "text": "hello"},
+            tool_meta=metadata,
+        )
+
+        assert first == second
+        assert first != different_recipient
+
+    def test_v2_falls_back_to_all_args_when_no_critical_args_are_declared(self) -> None:
+        metadata = ToolMeta(arg_sensitivities={"text": False})
+
+        first = compute_fingerprint("draft_note", {"text": "first"}, tool_meta=metadata)
+        second = compute_fingerprint("draft_note", {"text": "second"}, tool_meta=metadata)
+
+        assert first != second
+
+    def test_v2_malformed_tool_metadata_fails_closed_to_all_args(self) -> None:
+        metadata = ToolMeta(arg_sensitivities={"chat_id": "yes"})  # type: ignore[dict-item]
+
+        first = compute_fingerprint(
+            "send_telegram",
+            {"chat_id": "mom_123", "text": "hello"},
+            tool_meta=metadata,
+        )
+        second = compute_fingerprint(
+            "send_telegram",
+            {"chat_id": "mom_123", "text": "running late!"},
+            tool_meta=metadata,
+        )
+
+        assert first != second
 
 
 class TestApprovalCount:

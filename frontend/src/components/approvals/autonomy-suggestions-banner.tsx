@@ -66,6 +66,11 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
         <p className="text-sm text-foreground/80 font-mono bg-muted/50 rounded px-2 py-1">
           {suggestion.scope_description}
         </p>
+        {suggestion.fingerprint_version === 2 && (
+          <p className="text-xs text-muted-foreground">
+            This scope pins only the shown arguments; omitted arguments may vary.
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
           <span>Tool: {suggestion.tool_name}</span>
           <span>·</span>

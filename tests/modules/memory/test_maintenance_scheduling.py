@@ -37,7 +37,7 @@ import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import asyncpg
 import pytest
@@ -49,6 +49,8 @@ from butlers.scheduled_jobs import (
     _run_memory_catalog_backfill_job,
     _run_memory_consolidation_job,
     _run_memory_decay_sweep_job,
+    _run_memory_episode_cleanup_job,
+    _run_memory_purge_superseded_job,
     get_deterministic_schedule_job_registry,
 )
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -78,6 +80,14 @@ _EXPECTED_MEMORY_JOB_NAMES = {
     "memory_decay_sweep",
     "memory_catalog_backfill",
 }
+
+
+def _register_runtime_pool(monkeypatch, pool: Any) -> None:
+    """Make a unit test's pool look like the started MemoryModule runtime."""
+    monkeypatch.setattr(
+        "butlers.core.memory_hooks.resolve_memory_runtime_pool",
+        lambda: pool,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +157,80 @@ def test_roster_memory_schedule_blocks_were_removed() -> None:
 # ---------------------------------------------------------------------------
 
 
+class TestMemoryMaintenanceRuntimePool:
+    async def test_every_direct_maintenance_job_uses_the_registered_runtime_pool(
+        self, monkeypatch
+    ) -> None:
+        """Private memory schemas must never fall back to the daemon pool.
+
+        The scheduler's deterministic-job interface always supplies the daemon
+        pool.  The active MemoryModule owns the authoritative runtime pool,
+        which may instead be scoped to a private schema such as
+        ``chronicler_mem``.  Exercise every direct maintenance path here; the
+        consolidation path has its own Spawner/runtime-hook coverage below.
+        """
+        daemon_pool = object()
+        memory_pool = object()
+        resolve_runtime_pool = MagicMock(return_value=memory_pool)
+        fetch_policy = AsyncMock(return_value={})
+        table_size = AsyncMock(return_value=None)
+        infer_schema = AsyncMock(return_value="chronicler_mem")
+        run_decay_sweep = AsyncMock(return_value={"facts_checked": 0})
+        run_episode_cleanup = AsyncMock(return_value={"expired_deleted": 0, "capacity_deleted": 0})
+        purge_superseded_facts = AsyncMock(return_value={"deleted": 0, "deleted_ha_state": 0})
+        run_catalog_backfill = AsyncMock(return_value={"facts_backfilled": 0})
+
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.resolve_memory_runtime_pool",
+            resolve_runtime_pool,
+            raising=False,
+        )
+        monkeypatch.setattr("butlers.scheduled_jobs._fetch_retention_policy", fetch_policy)
+        monkeypatch.setattr("butlers.scheduled_jobs._table_size_bytes", table_size)
+        monkeypatch.setattr("butlers.scheduled_jobs._infer_current_schema", infer_schema)
+        monkeypatch.setattr("butlers.modules.memory.storage.run_decay_sweep", run_decay_sweep)
+        monkeypatch.setattr(
+            "butlers.modules.memory.consolidation.run_episode_cleanup", run_episode_cleanup
+        )
+        monkeypatch.setattr(
+            "butlers.modules.memory.storage.purge_superseded_facts", purge_superseded_facts
+        )
+        monkeypatch.setattr(
+            "butlers.modules.memory.storage.run_memory_catalog_backfill", run_catalog_backfill
+        )
+
+        await _run_memory_decay_sweep_job(pool=daemon_pool, job_args=None)
+        await _run_memory_episode_cleanup_job(pool=daemon_pool, job_args=None)
+        await _run_memory_purge_superseded_job(pool=daemon_pool, job_args=None)
+        await _run_memory_catalog_backfill_job(pool=daemon_pool, job_args=None)
+
+        assert resolve_runtime_pool.call_args_list == [call(), call(), call(), call()]
+        run_decay_sweep.assert_awaited_once_with(memory_pool)
+        run_episode_cleanup.assert_awaited_once_with(pool=memory_pool, max_entries=10000)
+        purge_superseded_facts.assert_awaited_once_with(memory_pool, older_than_days=7)
+        infer_schema.assert_awaited_once_with(memory_pool)
+        run_catalog_backfill.assert_awaited_once_with(
+            memory_pool,
+            source_schema="chronicler_mem",
+            batch_size=200,
+        )
+
+    async def test_direct_maintenance_fails_closed_without_a_runtime_pool_hook(
+        self, monkeypatch
+    ) -> None:
+        """A stopped or missing MemoryModule must surface a scheduler error."""
+        import butlers.core.memory_hooks as memory_hooks
+
+        monkeypatch.setattr(memory_hooks, "_memory_runtime_pool_hook", None, raising=False)
+        monkeypatch.setattr(
+            "butlers.modules.memory.storage.run_decay_sweep",
+            AsyncMock(return_value={"facts_checked": 0}),
+        )
+
+        with pytest.raises(RuntimeError, match="memory module runtime pool hook"):
+            await _run_memory_decay_sweep_job(pool=object(), job_args=None)
+
+
 class TestJobArgsValidation:
     async def test_decay_sweep_rejects_any_job_args(self) -> None:
         with pytest.raises(RuntimeError, match="does not accept job_args"):
@@ -161,6 +245,7 @@ class TestJobArgsValidation:
 
         monkeypatch.setattr("butlers.modules.memory.storage.run_decay_sweep", _fake_run_decay_sweep)
         pool = object()
+        _register_runtime_pool(monkeypatch, pool)
         result = await _run_memory_decay_sweep_job(pool=pool, job_args=None)
         assert result == {"facts_checked": 0}
         assert called["pool"] is pool
@@ -229,16 +314,18 @@ class TestCatalogBackfillJobArgsValidation:
 
         pool = AsyncMock()
         pool.fetchval = AsyncMock(return_value="health")
+        _register_runtime_pool(monkeypatch, pool)
         result = await _run_memory_catalog_backfill_job(pool=pool, job_args=None)
 
         assert captured["source_schema"] == "health"
         assert captured["batch_size"] == 200
         assert result["source_schema"] == "health"
 
-    async def test_unresolved_schema_skips_without_raising(self) -> None:
+    async def test_unresolved_schema_skips_without_raising(self, monkeypatch) -> None:
         pool = AsyncMock()
         # current_schema() resolves to 'public' -- treated as unresolved.
         pool.fetchval = AsyncMock(return_value="public")
+        _register_runtime_pool(monkeypatch, pool)
         result = await _run_memory_catalog_backfill_job(pool=pool, job_args=None)
         assert result == {
             "facts_backfilled": 0,
@@ -248,9 +335,10 @@ class TestCatalogBackfillJobArgsValidation:
             "skipped": "source_schema_not_resolved",
         }
 
-    async def test_current_schema_query_failure_skips_without_raising(self) -> None:
+    async def test_current_schema_query_failure_skips_without_raising(self, monkeypatch) -> None:
         pool = AsyncMock()
         pool.fetchval = AsyncMock(side_effect=RuntimeError("connection lost"))
+        _register_runtime_pool(monkeypatch, pool)
         result = await _run_memory_catalog_backfill_job(pool=pool, job_args=None)
         assert result["skipped"] == "source_schema_not_resolved"
 
@@ -268,6 +356,7 @@ class TestCatalogBackfillJobArgsValidation:
 
         pool = AsyncMock()
         pool.fetchval = AsyncMock(side_effect=AssertionError("should not be called"))
+        _register_runtime_pool(monkeypatch, pool)
         result = await _run_memory_catalog_backfill_job(
             pool=pool, job_args={"source_schema": "finance", "batch_size": 50}
         )

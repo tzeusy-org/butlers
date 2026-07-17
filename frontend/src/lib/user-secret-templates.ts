@@ -15,6 +15,11 @@
  * non-secret channel written to entity_info with HTTP 422.
  */
 
+import {
+  GOOGLE_APP_PASSWORDS_PROVENANCE,
+  type SecretProvenance,
+} from "./secret-templates.ts";
+
 export type UserSecretCategory =
   | "telegram"
   | "home_assistant"
@@ -28,7 +33,14 @@ export interface UserSecretTemplate {
   description: string;
   category: UserSecretCategory;
   secured: boolean;
+  /** Static source page for a value the owner needs to obtain or regenerate. */
+  provenance?: SecretProvenance;
 }
+
+const TELEGRAM_API_DEVELOPMENT_TOOLS_PROVENANCE: SecretProvenance = {
+  label: "Telegram API development tools",
+  url: "https://my.telegram.org/apps",
+};
 
 // NOTE: non-secret CHANNEL handles (telegram, telegram_chat_id, email,
 // whatsapp_phone) are intentionally ABSENT — they belong in the relationship
@@ -37,15 +49,63 @@ export interface UserSecretTemplate {
 // home_assistant_url) live in entity_info.
 export const USER_SECRET_TEMPLATES: UserSecretTemplate[] = [
   // Telegram
-  { type: "telegram_api_id", label: "Telegram API ID", description: "Telegram API application ID", category: "telegram", secured: false },
-  { type: "telegram_api_hash", label: "Telegram API Hash", description: "Telegram API application hash", category: "telegram", secured: true },
+  {
+    type: "telegram_api_id",
+    label: "Telegram API ID",
+    description: "Telegram API application ID",
+    category: "telegram",
+    secured: false,
+    provenance: TELEGRAM_API_DEVELOPMENT_TOOLS_PROVENANCE,
+  },
+  {
+    type: "telegram_api_hash",
+    label: "Telegram API Hash",
+    description: "Telegram API application hash",
+    category: "telegram",
+    secured: true,
+    provenance: TELEGRAM_API_DEVELOPMENT_TOOLS_PROVENANCE,
+  },
   { type: "telegram_user_session", label: "Telegram User Session", description: "Telethon StringSession (managed via setup card)", category: "telegram", secured: true },
   // Home Assistant
   { type: "home_assistant_url", label: "Home Assistant URL", description: "HA instance base URL", category: "home_assistant", secured: false },
   { type: "home_assistant_token", label: "Home Assistant Token", description: "HA long-lived access token", category: "home_assistant", secured: true },
   // Email (user-scope) — only the password is a secret; the address is a contact channel.
-  { type: "email_password", label: "Email Password", description: "Owner email password or app password", category: "email", secured: true },
+  {
+    type: "email_password",
+    label: "Email Password",
+    description: "Owner email password or app password",
+    category: "email",
+    secured: true,
+    provenance: GOOGLE_APP_PASSWORDS_PROVENANCE,
+  },
 ];
+
+/**
+ * Resolve an owner-credential source page from the raw entity_info types that
+ * make up a Passport user row. Provider slugs are display-level groupings: for
+ * example, Telegram API values and a user session share `telegram_bot`.
+ * Show a link only when every contributing type resolves to the same static
+ * source, so an unrelated session or unknown field never inherits an API link.
+ */
+export function userSecretProvenanceForTypes(
+  types: readonly string[] | undefined,
+): SecretProvenance | undefined {
+  if (!types?.length) return undefined;
+
+  let provenance: SecretProvenance | undefined;
+  for (const type of types) {
+    const candidate = USER_SECRET_TEMPLATES.find((template) => template.type === type)?.provenance;
+    if (!candidate) return undefined;
+    if (
+      provenance
+      && (provenance.label !== candidate.label || provenance.url !== candidate.url)
+    ) {
+      return undefined;
+    }
+    provenance = candidate;
+  }
+  return provenance;
+}
 
 /** Entity_info types shown in the type dropdown (excludes session — managed interactively).
  *
@@ -74,4 +134,3 @@ export function entityInfoTypeLabel(type: string): string {
     default: return type;
   }
 }
-

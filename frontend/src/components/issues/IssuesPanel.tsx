@@ -41,6 +41,12 @@ interface IssuesPanelProps {
    * + zero rows) keeps the existing empty state.
    */
   sourcesDegraded?: string[]
+  /**
+   * The audit-derived lane exceeded GET /api/issues' 500-group public cap.
+   * This is an incomplete-but-successful response, so it needs the same
+   * no-false-all-clear treatment as a degraded source.
+   */
+  truncated?: boolean
   /** Called with the full issue when the user acknowledges it. */
   onDismiss?: (issue: Issue) => void
   /** Disables the Acknowledge control while an ack is in flight. */
@@ -202,6 +208,7 @@ export default function IssuesPanel({
   isLoading,
   isError,
   sourcesDegraded = [],
+  truncated = false,
   onDismiss,
   isDismissing,
   onRestore,
@@ -253,11 +260,11 @@ export default function IssuesPanel({
     )
   }
 
-  // Degraded feed (bu-tpudw.3): a non-empty `sourcesDegraded` means a backend
-  // source errored, so the feed undercounts. The same note serves both the
-  // empty branch (in place of the all-clear) and the populated branch (above
-  // the rows); the two branches are mutually exclusive on `issues.length`, so
-  // the shared testid never appears twice.
+  // An incomplete feed can result either from a failed source or from the
+  // bounded audit-group query. In both cases, the same note is shown in the
+  // empty branch (instead of a false all-clear) and above surviving rows.
+  // The two branches are mutually exclusive on `issues.length`, so each note
+  // appears at most once.
   const degradedNote =
     sourcesDegraded.length > 0 ? (
       <SourceDegradedNote
@@ -265,6 +272,20 @@ export default function IssuesPanel({
         detail={`${sourcesDegraded.join(', ')} unavailable; some issues may be missing`}
         testId="issues-feed-degraded"
       />
+    ) : null
+  const truncationNote = truncated ? (
+    <SourceDegradedNote
+      label="Issues feed"
+      detail="500-group cap reached; some audit-derived issues may be missing"
+      testId="issues-feed-truncated"
+    />
+  ) : null
+  const incompleteNotes =
+    degradedNote || truncationNote ? (
+      <>
+        {degradedNote}
+        {truncationNote}
+      </>
     ) : null
 
   if (issues.length === 0) {
@@ -274,7 +295,7 @@ export default function IssuesPanel({
           <CardTitle>Issues</CardTitle>
         </CardHeader>
         <CardContent>
-          {degradedNote ?? (
+          {incompleteNotes ?? (
             <EmptyState
               variant="page"
               title={dismissedView ? 'No acknowledged issues.' : 'No issues recorded.'}
@@ -297,7 +318,7 @@ export default function IssuesPanel({
         <Badge variant={dismissedView ? 'secondary' : 'destructive'}>{issues.length}</Badge>
       </CardHeader>
       <CardContent>
-        {degradedNote && <div className="mb-3">{degradedNote}</div>}
+        {incompleteNotes && <div className="mb-3 space-y-2">{incompleteNotes}</div>}
         <div className="space-y-3">
           {issues.map((issue) => {
             // Remedies only make sense once a single, real butler is

@@ -140,6 +140,23 @@ is unused headroom for the next butler added to the roster):
 - **WHEN** a diff references `var(--category-`
 - **THEN** every match is inside a `ButlerMark` component or its style block
 
+### Requirement: Non-butler Categorical and Decorative Hue Ramp
+The dashboard SHALL provide `--categorical-1..12` as a separate, theme-aware
+token ramp for discrete local categories and decorative data differentiation.
+This ramp is not a Butler identity system and is not an operational state
+system.
+
+#### Scenario: Labeled non-status categories
+- **WHEN** a surface distinguishes a local taxonomy, syntax value type, chart series, or legend item
+- **THEN** it uses the `--categorical-*` ramp rather than `--category-*` or state colors
+- **AND** the item retains a text label, icon, stable position, or direct data label so color is never the only signal
+- **AND** a foreground use clears the WCAG AA text-contrast floor in both supported themes
+
+#### Scenario: Categorical colors do not become chrome
+- **WHEN** a diff uses a `--categorical-*` token
+- **THEN** it appears only on the category mark, label, border, or data visualization it differentiates
+- **AND** it does not become a page background, generic hover color, button treatment, or status indicator
+
 ### Requirement: Type System
 Pages SHALL use only the three type families — no page invents a fourth: **Inter Tight** (everything UI —
 display, body, labels, interface numbers), **Source Serif 4** (the system's *voice* — LLM-written
@@ -407,4 +424,3 @@ investigating before shipping.
 #### Scenario: Conformance gate before merge
 - **WHEN** a dashboard page is added or redesigned
 - **THEN** the change passes all ten conformance checks (the dispatch-kit review checklist operationalizes them) before merge
-

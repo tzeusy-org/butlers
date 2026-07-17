@@ -9,11 +9,9 @@ rather than only against AsyncMock pools (see tests/api/test_conversations.py
 for the mocked-pool unit coverage of the same functions plus the router/SSE
 layer above them).
 
-``provisioned_postgres_pool()`` only creates a fresh database + extensions;
-it does not run the Alembic chain (see tests/migrations/test_backfill_dashboard_audit_log.py
-for the established pattern), so this file provisions the minimal
-``public.dashboard_conversations`` / ``public.dashboard_messages`` shape
-directly, matching core_006 (creation) + core_153 (``routed_butler`` column).
+``migrated_core_postgres_pool()`` runs the core Alembic chain against the
+fresh provisioned database, so this test exercises the production schema
+rather than a hand-maintained approximation.
 
 bu-qesw0: also covers ``conversation_list``'s ``latest_assistant_reply_at``
 subquery against a live database. The unread-badge dead-signal bug (bu-qesw0)
@@ -48,45 +46,11 @@ pytestmark = [
     pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available"),
 ]
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS public.dashboard_conversations (
-    id UUID PRIMARY KEY,
-    butler_name TEXT NOT NULL,
-    title TEXT,
-    status TEXT NOT NULL DEFAULT 'active',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    message_count INTEGER NOT NULL DEFAULT 0,
-    total_input_tokens BIGINT NOT NULL DEFAULT 0,
-    total_output_tokens BIGINT NOT NULL DEFAULT 0,
-    total_duration_ms BIGINT NOT NULL DEFAULT 0,
-    routed_butler TEXT NULL
-);
-
-CREATE TABLE IF NOT EXISTS public.dashboard_messages (
-    id UUID PRIMARY KEY,
-    conversation_id UUID NOT NULL REFERENCES public.dashboard_conversations(id)
-        ON DELETE CASCADE,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    session_id UUID,
-    model_name TEXT,
-    input_tokens INTEGER,
-    output_tokens INTEGER,
-    duration_ms INTEGER,
-    tool_calls JSONB,
-    error TEXT,
-    request_id UUID
-);
-"""
-
 
 async def test_conversation_reply_create_persists_message_and_bumps_count(
-    provisioned_postgres_pool,
+    migrated_core_postgres_pool,
 ) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA)
+    async with migrated_core_postgres_pool() as pool:
         conv = await conversation_create(pool, butler_name="switchboard", first_message="hi")
 
         msg = await conversation_reply_create(
@@ -112,11 +76,9 @@ async def test_conversation_reply_create_persists_message_and_bumps_count(
 
 
 async def test_conversation_reply_create_returns_none_for_missing_conversation(
-    provisioned_postgres_pool,
+    migrated_core_postgres_pool,
 ) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA)
-
+    async with migrated_core_postgres_pool() as pool:
         result = await conversation_reply_create(pool, uuid.uuid4(), message="hello")
 
         assert result is None
@@ -125,10 +87,9 @@ async def test_conversation_reply_create_returns_none_for_missing_conversation(
 
 
 async def test_message_create_idempotent_reuses_the_original_user_row(
-    provisioned_postgres_pool,
+    migrated_core_postgres_pool,
 ) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA)
+    async with migrated_core_postgres_pool() as pool:
         conv = await conversation_create(pool, butler_name="switchboard", first_message="Retry me")
         message_id = uuid.uuid4()
 
@@ -160,10 +121,9 @@ async def test_message_create_idempotent_reuses_the_original_user_row(
 
 
 async def test_conversation_set_routed_butler_is_sticky_across_repeat_calls(
-    provisioned_postgres_pool,
+    migrated_core_postgres_pool,
 ) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA)
+    async with migrated_core_postgres_pool() as pool:
         conv = await conversation_create(pool, butler_name="switchboard", first_message="hi")
 
         await conversation_set_routed_butler(pool, conv["id"], routed_butler="finance")
@@ -178,13 +138,12 @@ async def test_conversation_set_routed_butler_is_sticky_across_repeat_calls(
 
 
 async def test_message_find_reply_since_ignores_stale_reply_and_finds_fresh_one(
-    provisioned_postgres_pool,
+    migrated_core_postgres_pool,
 ) -> None:
     """The poller must not surface a reply from an earlier turn, and must
     pick up a genuinely late reply once it lands (the confirm-loop reply can
     arrive independently of — often before — the routed session finishing)."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA)
+    async with migrated_core_postgres_pool() as pool:
         conv = await conversation_create(pool, butler_name="switchboard", first_message="hi")
         conv_id = conv["id"]
 
@@ -215,14 +174,13 @@ async def test_message_find_reply_since_ignores_stale_reply_and_finds_fresh_one(
 
 
 async def test_conversation_list_exposes_latest_assistant_reply_at(
-    provisioned_postgres_pool,
+    migrated_core_postgres_pool,
 ) -> None:
     """conversation_list's latest_assistant_reply_at must reflect the newest
     assistant message even though total_output_tokens stays at 0 — the
     dead-signal bug (bu-qesw0) was total_output_tokens never incrementing
     for a conversation_reply-persisted assistant message."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA)
+    async with migrated_core_postgres_pool() as pool:
         conv = await conversation_create(pool, butler_name="switchboard", first_message="hi")
         conv_id = conv["id"]
 
