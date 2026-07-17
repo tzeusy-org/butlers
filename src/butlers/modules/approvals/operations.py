@@ -30,6 +30,7 @@ from butlers.modules.approvals.autonomy_tracker import (
 from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
+from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
@@ -104,6 +105,7 @@ async def approve_action(
     action_id: str,
     actor_id: str = "dashboard:rest-api",
     create_rule: bool = False,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Approve a pending action and execute it (status transition only — no tool execution).
 
@@ -210,6 +212,7 @@ async def approve_action(
             pool,
             action_id=action_id,
             actor_id=actor_id,
+            decision_memory_writer=decision_memory_writer,
         )
         if "error" not in rule_result:
             rule_dict = rule_result
@@ -232,6 +235,7 @@ async def mark_executed(
     execution_result: dict[str, Any] | None = None,
     success: bool = True,
     actor_id: str = "dashboard:rest-api",
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Transition an approved action to executed with an execution result.
 
@@ -284,7 +288,11 @@ async def mark_executed(
         occurred_at=now,
     )
 
-    return PendingAction.from_row(executed_row).to_dict()
+    executed_action = PendingAction.from_row(executed_row)
+    if decision_memory_writer is not None:
+        await decision_memory_writer.record_terminal_decision(executed_action, "approved")
+
+    return executed_action.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +305,7 @@ async def reject_action(
     action_id: str,
     reason: str | None = None,
     actor_id: str = "dashboard:rest-api",
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Reject a pending action with optional reason.
 
@@ -363,6 +372,11 @@ async def reject_action(
         occurred_at=now,
     )
 
+    if decision_memory_writer is not None:
+        await decision_memory_writer.record_terminal_decision(
+            PendingAction.from_row(rejected_row), "rejected"
+        )
+
     final_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
     return PendingAction.from_row(final_row).to_dict()
 
@@ -380,6 +394,7 @@ async def create_approval_rule(
     expires_at: str | None = None,
     max_uses: int | None = None,
     actor_id: str = "dashboard:rest-api",
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Create a new standing approval rule.
 
@@ -457,6 +472,9 @@ async def create_approval_rule(
         occurred_at=now,
     )
 
+    if decision_memory_writer is not None:
+        await decision_memory_writer.record_standing_rule(rule, active=True)
+
     # Rule-creation supersede hook (task 7.3)
     try:
         await _supersede_matching_suggestions(
@@ -480,6 +498,7 @@ async def create_rule_from_action(
     action_id: str,
     constraint_overrides: dict[str, Any] | None = None,
     actor_id: str = "dashboard:rest-api",
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Create a standing rule from a pending action using smart constraint defaults.
 
@@ -560,6 +579,9 @@ async def create_rule_from_action(
         occurred_at=now,
     )
 
+    if decision_memory_writer is not None:
+        await decision_memory_writer.record_standing_rule(rule, active=True)
+
     # Rule-creation supersede hook (task 7.3)
     try:
         await _supersede_matching_suggestions(
@@ -582,6 +604,7 @@ async def revoke_approval_rule(
     pool: Any,
     rule_id: str,
     actor_id: str = "dashboard:rest-api",
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Deactivate a standing approval rule.
 
@@ -627,4 +650,7 @@ async def revoke_approval_rule(
     )
 
     updated_row = await pool.fetchrow("SELECT * FROM approval_rules WHERE id = $1", parsed_id)
-    return ApprovalRule.from_row(updated_row).to_dict()
+    updated_rule = ApprovalRule.from_row(updated_row)
+    if decision_memory_writer is not None:
+        await decision_memory_writer.record_standing_rule(updated_rule, active=False)
+    return updated_rule.to_dict()

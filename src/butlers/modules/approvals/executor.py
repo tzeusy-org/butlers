@@ -21,10 +21,13 @@ import uuid
 import weakref
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.models import ActionStatus
+
+if TYPE_CHECKING:
+    from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 
 logger = logging.getLogger(__name__)
 _EXECUTION_LOCKS: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
@@ -117,6 +120,7 @@ async def execute_approved_action(
     tool_args: dict[str, Any],
     tool_fn: Any,
     approval_rule_id: uuid.UUID | None = None,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> ExecutionResult:
     """Execute an approved action and persist the result.
 
@@ -139,6 +143,9 @@ async def execute_approved_action(
     approval_rule_id:
         If set, the action was auto-approved by this rule; its use_count
         will be incremented.
+    decision_memory_writer:
+        Optional owning-memory writer invoked after the execution outcome is
+        committed and audited. Its failures are intentionally non-blocking.
 
     Returns
     -------
@@ -215,7 +222,7 @@ async def execute_approved_action(
         safe_execution_result = json.loads(json.dumps(execution_result.to_dict(), default=str))
 
         # 3. Update the pending_action row to 'executed' (CAS on approved)
-        await pool.execute(
+        transition_result = await pool.execute(
             "UPDATE pending_actions "
             "SET status = $1, execution_result = $2, decided_at = $3 "
             "WHERE id = $4 AND status = $5",
@@ -232,6 +239,11 @@ async def execute_approved_action(
                 "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
                 approval_rule_id,
             )
+
+    # asyncpg returns ``UPDATE 1`` for the successful CAS.  Keep compatibility
+    # with lightweight test doubles that return None, but never write a second
+    # tally for an actual database CAS miss.
+    transitioned_to_executed = transition_result is None or str(transition_result).endswith(" 1")
 
     logger.info(
         "Executed action %s (%s) success=%s rule=%s",
@@ -254,6 +266,27 @@ async def execute_approved_action(
         metadata={"tool_name": tool_name},
         occurred_at=now,
     )
+
+    # Decision memory is a best-effort knowledge dividend, not part of the
+    # execution transaction. It runs only after the terminal state and audit
+    # outcome are durable, and the writer itself fails open.
+    if decision_memory_writer is not None and transitioned_to_executed:
+        try:
+            from butlers.modules.approvals.models import PendingAction
+
+            action_row = await pool.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1", action_id
+            )
+            if action_row is not None:
+                await decision_memory_writer.record_terminal_decision(
+                    PendingAction.from_row(action_row), "approved"
+                )
+        except Exception:  # noqa: BLE001 -- writeback must never affect execution
+            logger.warning(
+                "Decision-memory executor hook failed for action %s; execution remains committed",
+                action_id,
+                exc_info=True,
+            )
 
     # Post-execution demotion hook (task 7.2):
     # If execution failed on an auto-approved action, create a demotion suggestion.

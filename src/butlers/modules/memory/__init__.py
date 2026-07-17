@@ -348,8 +348,12 @@ class MemoryModule(Module):
             import asyncio
 
             embedding_engine = await asyncio.to_thread(module._get_embedding_engine)
+            # The Spawner passes its domain pool, but MemoryModule may be
+            # configured with a private memory schema. Context recall must use
+            # the module-owned pool just like storage and consolidation do.
+            memory_pool = module._get_pool()
             result = await _context.memory_context(
-                pool,
+                memory_pool,
                 embedding_engine,
                 prompt,
                 butler_name,

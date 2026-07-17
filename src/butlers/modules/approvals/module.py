@@ -57,6 +57,7 @@ from butlers.modules.approvals.autonomy_tracker import (
 from butlers.modules.approvals.autonomy_tracker import (
     update_velocity as _update_velocity,
 )
+from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.executor import (
@@ -246,9 +247,11 @@ class ApprovalsModule(Module):
     def __init__(self) -> None:
         self._config: ApprovalsConfig = ApprovalsConfig()
         self._db: Any = None
+        self._butler_name: str | None = None
         self._tool_executor: ToolExecutor | None = None
         self._approval_policy: ApprovalConfig | None = None
         self._tool_metadata: dict[str, ToolMeta] = {}
+        self._decision_memory_writer: DecisionMemoryWriter | None = None
 
     @property
     def name(self) -> str:
@@ -282,6 +285,29 @@ class ApprovalsModule(Module):
     def set_tool_metadata(self, tool_metadata: dict[str, ToolMeta]) -> None:
         """Set daemon-collected ToolMeta used for v2 approval fingerprints."""
         self._tool_metadata = dict(tool_metadata)
+
+    def get_decision_memory_writer(self) -> DecisionMemoryWriter | None:
+        """Return the owning-memory writeback hook, if this butler has memory."""
+        return self._decision_memory_writer
+
+    def on_all_modules_ready(self, module_map: dict[str, Module]) -> None:
+        """Bind deterministic writeback only when the owning memory module exists."""
+        memory_module = module_map.get("memory")
+        if memory_module is None or self._db is None or self._butler_name is None:
+            return
+
+        memory_pool_provider = getattr(memory_module, "_get_pool", None)
+        embedding_engine_provider = getattr(memory_module, "_get_embedding_engine", None)
+        if not callable(memory_pool_provider) or not callable(embedding_engine_provider):
+            return
+
+        self._decision_memory_writer = DecisionMemoryWriter(
+            butler_name=self._butler_name,
+            memory_pool_provider=memory_pool_provider,
+            resolution_pool_provider=lambda: self._db.pool,
+            embedding_engine_provider=embedding_engine_provider,
+            tool_meta_provider=lambda tool_name: self._tool_metadata.get(tool_name),
+        )
 
     def _risk_tier_for_tool(self, tool_name: str) -> ApprovalRiskTier:
         """Resolve effective risk tier for a tool."""
@@ -337,6 +363,7 @@ class ApprovalsModule(Module):
             config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))
         )
         self._db = db
+        self._butler_name = butler_name
         module = self  # capture for closures
 
         # Build a group-aware tool decorator: returns @mcp.tool() when the
@@ -634,6 +661,7 @@ class ApprovalsModule(Module):
             tool_name=action.tool_name,
             tool_args=action.tool_args,
             tool_fn=_tool_fn,
+            decision_memory_writer=self._decision_memory_writer,
         )
 
         final_row = await self._db.fetchrow(
@@ -727,6 +755,7 @@ class ApprovalsModule(Module):
                 tool_name=action.tool_name,
                 tool_args=action.tool_args,
                 tool_fn=_tool_fn,
+                decision_memory_writer=self._decision_memory_writer,
             )
         else:
             # No executor — still mark as executed (with no execution result)
@@ -752,6 +781,10 @@ class ApprovalsModule(Module):
                         f"to '{ActionStatus.EXECUTED.value}'"
                     )
                 }
+            if self._decision_memory_writer is not None:
+                await self._decision_memory_writer.record_terminal_decision(
+                    PendingAction.from_row(executed_row), "approved"
+                )
 
         # Post-approval autonomy tracker hook (task 7.1)
         # Wrap in try/except so tracker failure doesn't block approval
@@ -848,6 +881,8 @@ class ApprovalsModule(Module):
                 metadata={"tool_name": rule.tool_name},
                 occurred_at=now,
             )
+            if self._decision_memory_writer is not None:
+                await self._decision_memory_writer.record_standing_rule(rule, active=True)
             rule_dict = rule.to_dict()
 
         # Re-read the final state
@@ -927,6 +962,10 @@ class ApprovalsModule(Module):
             metadata={"tool_name": action.tool_name},
             occurred_at=now,
         )
+        if self._decision_memory_writer is not None:
+            await self._decision_memory_writer.record_terminal_decision(
+                PendingAction.from_row(rejected_row), "rejected"
+            )
 
         final_row = await self._db.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1", parsed_id
@@ -1064,6 +1103,8 @@ class ApprovalsModule(Module):
             metadata={"tool_name": rule.tool_name},
             occurred_at=now,
         )
+        if self._decision_memory_writer is not None:
+            await self._decision_memory_writer.record_standing_rule(rule, active=True)
 
         # Rule-creation supersede hook (task 7.3)
         try:
@@ -1167,6 +1208,8 @@ class ApprovalsModule(Module):
             metadata={"tool_name": rule.tool_name},
             occurred_at=now,
         )
+        if self._decision_memory_writer is not None:
+            await self._decision_memory_writer.record_standing_rule(rule, active=True)
 
         # Rule-creation supersede hook (task 7.3)
         try:
@@ -1256,6 +1299,9 @@ class ApprovalsModule(Module):
             reason="rule revoked by operator",
             metadata={"tool_name": rule.tool_name},
         )
+
+        if self._decision_memory_writer is not None:
+            await self._decision_memory_writer.record_standing_rule(rule, active=False)
 
         # Re-read to return updated state
         updated_row = await self._db.fetchrow(
@@ -1354,6 +1400,7 @@ class ApprovalsModule(Module):
             pool=self._db,
             suggestion_id=suggestion_id,
             actor=actor_id,
+            decision_memory_writer=self._decision_memory_writer,
         )
 
     async def _dismiss_promotion_suggestion(

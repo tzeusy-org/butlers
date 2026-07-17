@@ -16,7 +16,10 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +269,7 @@ async def confirm_suggestion(
     pool: Any,
     suggestion_id: str | uuid.UUID,
     actor: str,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
     """Confirm a pending promotion or demotion suggestion.
 
@@ -383,12 +387,28 @@ async def confirm_suggestion(
             metadata={"tool_name": tool_name, "suggestion_id": str(parsed_id)},
             occurred_at=now,
         )
+        if decision_memory_writer is not None:
+            from butlers.modules.approvals.models import ApprovalRule
+
+            await decision_memory_writer.record_standing_rule(
+                ApprovalRule(
+                    id=new_rule_id,
+                    tool_name=tool_name,
+                    arg_constraints=arg_constraints,
+                    description=description,
+                    created_at=now,
+                ),
+                active=True,
+            )
 
         event_type = ApprovalEventType.PROMOTION_CONFIRMED
 
     else:  # demotion
         # Revoke the referenced rule
         if referenced_rule_id is not None:
+            rule_row = await pool.fetchrow(
+                "SELECT * FROM approval_rules WHERE id = $1", referenced_rule_id
+            )
             await pool.execute(
                 "UPDATE approval_rules SET active = false WHERE id = $1",
                 referenced_rule_id,
@@ -401,6 +421,12 @@ async def confirm_suggestion(
                 reason=f"Rule revoked via confirmed demotion suggestion {parsed_id}",
                 occurred_at=now,
             )
+            if decision_memory_writer is not None and rule_row is not None:
+                from butlers.modules.approvals.models import ApprovalRule
+
+                await decision_memory_writer.record_standing_rule(
+                    ApprovalRule.from_row(rule_row), active=False
+                )
 
         # Update suggestion
         await pool.execute(

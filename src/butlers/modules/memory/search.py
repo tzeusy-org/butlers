@@ -96,8 +96,17 @@ async def semantic_search(
     param_idx += 1
 
     # Scope filtering: facts/rules use IN ('global', scope), episodes use butler = scope.
+    # Decision-memory facts deliberately use ``<butler>:decision:<key>`` so a
+    # stable property fact can be independently upserted for each decision
+    # pattern.  They are still own-butler context, so include that namespace
+    # whenever ordinary recall asks for the owning butler's scope.
     if scope is not None and table in _SCOPED_TABLES:
-        conditions.append(f"scope IN ('global', ${param_idx})")
+        if table == "facts":
+            conditions.append(
+                f"(scope IN ('global', ${param_idx}) OR scope LIKE ${param_idx} || ':decision:%')"
+            )
+        else:
+            conditions.append(f"scope IN ('global', ${param_idx})")
         params.append(scope)
         param_idx += 1
     elif scope is not None and table in _BUTLER_TABLES:
@@ -181,9 +190,15 @@ async def keyword_search(
     params.append(tenant_id)
     param_idx += 1
 
-    # Scope filtering: facts/rules use IN ('global', scope), episodes use butler = scope.
+    # See semantic_search: decision-memory fact namespaces are part of the
+    # owning butler's normal recall surface.
     if scope is not None and table in _SCOPED_TABLES:
-        conditions.append(f"scope IN ('global', ${param_idx})")
+        if table == "facts":
+            conditions.append(
+                f"(scope IN ('global', ${param_idx}) OR scope LIKE ${param_idx} || ':decision:%')"
+            )
+        else:
+            conditions.append(f"scope IN ('global', ${param_idx})")
         params.append(scope)
         param_idx += 1
     elif scope is not None and table in _BUTLER_TABLES:

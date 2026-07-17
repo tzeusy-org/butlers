@@ -87,7 +87,9 @@ class TestLifecycle:
         mod._db = fake_db
         assert mod._get_pool() is fake_db.pool
 
-    async def test_on_startup_context_hook_enables_fleet_knowledge(self, monkeypatch):
+    async def test_on_startup_context_hook_uses_memory_pool_and_enables_fleet_knowledge(
+        self, monkeypatch
+    ):
         """The real trigger-time context hook (bu-qvnce.15) requests the
 
         Fleet Knowledge section on every call — this is the "first consumer"
@@ -96,7 +98,9 @@ class TestLifecycle:
         """
         mod = MemoryModule()
         fake_db = MagicMock()
-        fake_db.pool = MagicMock(name="fake_pool")
+        daemon_pool = MagicMock(name="daemon_pool")
+        memory_pool = MagicMock(name="memory_pool")
+        fake_db.pool = daemon_pool
 
         captured_hook: dict[str, Any] = {}
 
@@ -116,12 +120,14 @@ class TestLifecycle:
         assert "hook" in captured_hook
 
         mod._get_embedding_engine = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(mod, "_get_pool", lambda: memory_pool)
         context_mock = AsyncMock(return_value="# Memory Context\n")
         monkeypatch.setattr("butlers.modules.memory.tools.context.memory_context", context_mock)
 
-        result = await captured_hook["hook"](fake_db.pool, "general", "prompt")
+        result = await captured_hook["hook"](daemon_pool, "general", "prompt")
 
         assert result == "# Memory Context\n"
+        assert context_mock.call_args.args[0] is memory_pool
         _, kwargs = context_mock.call_args
         assert kwargs.get("include_fleet_knowledge") is True
 
