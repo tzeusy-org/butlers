@@ -17,8 +17,11 @@ resume the original request.
 ```mermaid
 flowchart LR
     Retry["Retry (same message_id)"] --> Submit["Fresh POST + SSE attempt"]
-    Submit --> Persist["Reuse dashboard message row"]
-    Submit --> Envelope["Rebuild ingest.v1 envelope"]
+    Submit --> Found{"Persisted message row found?"}
+    Found -->|yes| Reuse["Reuse row and its conversation"]
+    Found -->|no| Persist["Create conversation and persist message row"]
+    Reuse --> Envelope["Rebuild ingest.v1 envelope"]
+    Persist --> Envelope
     Envelope --> Ingest["Fresh Switchboard ingest call"]
     Ingest --> Seen{"Prior ingest record found?"}
     Seen -->|yes| Duplicate["Return existing request (duplicate = true)"]
@@ -29,9 +32,11 @@ flowchart LR
 
 The chat surfaces retain the `message_id` in the retryable error state and pass
 it back into `sendText`. The initial send creates that UUID; a retry supplies it
-instead of generating another one. The conversation endpoints use that identity
-to reuse the existing user-message row, and the envelope builder places it in
-`event.external_event_id`.
+instead of generating another one. For an initial conversation, the endpoint
+uses that identity to look up a prior persisted dashboard user-message row. If
+it finds a matching row, retry reuses the row and its conversation; if it finds
+none, retry creates the initial conversation and persists the message under the
+same ID. The envelope builder places that ID in `event.external_event_id`.
 
 That stable identity is intentionally narrower than an API-level replay
 guarantee:
@@ -39,7 +44,7 @@ guarantee:
 | Stable across a retry | Newly created or evaluated on a retry |
 | --- | --- |
 | Logical message identity (`message_id`) | Dashboard POST and its SSE stream |
-| Existing dashboard user-message row (or the original initial conversation) | Client abort controller and optimistic UI attempt |
+| A persisted dashboard user-message row and its conversation, only when the retry finds that row | Initial conversation and dashboard user-message row when no prior row is found |
 | Switchboard event identity (`external_event_id`) | `ingest.v1` envelope, including a fresh `observed_at` value |
 | A matching Switchboard dedupe key, when the first ingest reached Switchboard | MCP `ingest` invocation and its acceptance result |
 
@@ -54,8 +59,12 @@ The retry button is appropriate when the user wants to submit the logical
 message again, including after an uncertain failure. It does not promise that
 the first submission's request lifecycle or stream will be resumed.
 
-- If the first attempt never reached Switchboard, the new ingest call creates
-  the request for that logical message.
+- If a generic fetch/non-OK failure occurs before initial persistence, retry
+  retains the same `message_id`, then creates the initial conversation and
+  dashboard user-message row before its new ingest call.
+- If the first attempt persisted a user-message row but never reached
+  Switchboard, retry reuses that row and conversation; the new ingest call
+  creates the request for that logical message.
 - If the first attempt reached Switchboard but the dashboard did not receive a
   usable response, the new ingest call can be recognized as a duplicate and
   return the existing request reference rather than route the message again.
@@ -109,6 +118,6 @@ idempotent replay of an original envelope or request.
 | Fresh initial/follow-up POST handlers and SSE response | [`create_conversation` and `send_message`](../../src/butlers/api/routers/conversations.py) |
 | Fresh MCP `ingest` submission | [`_submit_to_switchboard`](../../src/butlers/api/routers/conversations.py) |
 | Stable external event identity and freshly built timestamp/context | [`build_dashboard_envelope`](../../src/butlers/api/conversation_envelope.py) |
-| Reuse-or-conflict behavior for a dashboard message row | [`message_create_idempotent`](../../src/butlers/api/conversations.py) |
+| Initial-conversation lookup and conditional row reuse/persistence | [`create_conversation` and `_persist_dashboard_user_message`](../../src/butlers/api/routers/conversations.py) and [`message_create_idempotent`](../../src/butlers/api/conversations.py) |
 | Ingest-boundary dedupe and duplicate acceptance | [`_compute_dedupe_key` and `ingest_v1`](../../roster/switchboard/tools/ingestion/ingest.py) |
 | Retry regression coverage | [`test_create_conversation_retry_reuses_original_conversation_for_message_id`](../../tests/api/test_conversations.py), [`FloatingChatWidget` retry test](../../frontend/src/components/chat/FloatingChatWidget.test.tsx), and [`ChatPanel` retry test](../../frontend/src/components/chat/ChatPanel.test.tsx) |
