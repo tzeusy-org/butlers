@@ -137,8 +137,10 @@ def _strip_allowed_claude_session_commit_trailers(message: str) -> str:
     if not candidate_markers:
         return message
 
+    # Keep Git's default divider handling: text after `---` is commit text,
+    # not an exempt trailer block.
     proc = subprocess.run(
-        ["git", "interpret-trailers", "--parse", "--no-divider"],
+        ["git", "interpret-trailers", "--parse"],
         input="".join(parse_lines),
         capture_output=True,
         check=True,

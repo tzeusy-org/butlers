@@ -252,6 +252,23 @@ def test_iter_commit_messages_allows_exact_claude_session_trailer(tmp_path: Path
     assert findings == []
 
 
+def test_main_rejects_claude_session_after_git_divider_in_commit_range(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init_repo(tmp_path)
+    base_sha = _commit(tmp_path, "chore: base commit", "a.txt")
+    head_sha = _commit(
+        tmp_path,
+        f"fix: retain post-divider commit text\n\n---\n\nClaude-Session: {_CLAUDE_EXAMPLE_URL}\n",
+        "b.txt",
+    )
+
+    exit_code = slg.main(["--commit-range", f"{base_sha}..{head_sha}", "--repo", str(tmp_path)])
+
+    assert exit_code == 1
+    assert "claude-code-session-url" in capsys.readouterr().out
+
+
 def test_load_review_comments_accepts_flat_list(tmp_path: Path) -> None:
     path = tmp_path / "comments.json"
     path.write_text(json.dumps([{"source": "review comment 1", "body": _CLAUDE_EXAMPLE_URL}]))
