@@ -29,7 +29,7 @@ from butlers.credential_store import (
     ensure_secrets_schema,
     shared_db_name_from_env,
 )
-from butlers.db import Database, db_params_from_env
+from butlers.db import Database, database_name_from_env, db_params_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -420,37 +420,16 @@ async def init_db_manager(
     """
     global _db_manager  # noqa: PLW0603
 
-    params = _db_params_from_env()
-    mgr = DatabaseManager(**params)
-    effective_db_names = {cfg.db_name or "butlers" for cfg in butler_configs}
+    # Resolve every target before opening any pool. A supplied DATABASE_URL is
+    # the canonical target for the daemon publisher, dashboard pools, and
+    # dedicated fleet-event listener; its missing-path configuration error must
+    # not be downgraded to an individual pool-provisioning warning.
+    resolved_butler_db_names = [
+        (cfg, database_name_from_env(cfg.db_name or "butlers")) for cfg in butler_configs
+    ]
+    effective_db_names = {db_name for _, db_name in resolved_butler_db_names}
     all_schema_scoped = bool(butler_configs) and all(cfg.db_schema for cfg in butler_configs)
     one_db_schema_topology = len(effective_db_names) == 1 and all_schema_scoped
-
-    for cfg in butler_configs:
-        try:
-            effective_db_name = cfg.db_name or "butlers"
-            db = Database.from_env(effective_db_name)
-            db.set_schema(cfg.db_schema)
-            await db.provision()
-            await mgr.add_butler(
-                cfg.name,
-                db_name=effective_db_name,
-                db_schema=cfg.db_schema,
-                modules=cfg.modules,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to add DB pool for butler %r (db=%s, schema=%s)",
-                cfg.name,
-                cfg.db_name or "butlers",
-                cfg.db_schema or "default",
-                exc_info=True,
-            )
-    # The API layer never calls Database.from_env() with a role parameter —
-    # schema isolation is enforced at the butler-daemon layer, not here.
-    # SET ROLE is therefore always disabled for API-managed pools; report that
-    # honest state on the health endpoint so operators can see it.
-    mgr.set_role_enforcement_disabled(True)
 
     configured_shared_db_name = shared_db_name_from_env()
     shared_db_env_override = os.environ.get("BUTLER_SHARED_DB_NAME")
@@ -460,24 +439,56 @@ async def init_db_manager(
         canonical_db_name = next(iter(effective_db_names))
         if shared_db_env_override is None:
             shared_db_name = canonical_db_name
-        elif configured_shared_db_name != canonical_db_name:
+        elif database_name_from_env(configured_shared_db_name) != canonical_db_name:
             logger.warning(
                 "Using transitional BUTLER_SHARED_DB_NAME=%s override in one-db mode; expected %s",
                 configured_shared_db_name,
                 canonical_db_name,
             )
         shared_db_schema = "public"
+    # Validate the shared target before any manager pool is opened, while still
+    # leaving connection/provisioning failures in the existing per-pool warning
+    # path below.
+    resolved_shared_db_name = database_name_from_env(shared_db_name)
+
+    params = _db_params_from_env()
+    mgr = DatabaseManager(**params)
+
+    for cfg, resolved_db_name in resolved_butler_db_names:
+        try:
+            db = Database.from_env(cfg.db_name or "butlers")
+            db.set_schema(cfg.db_schema)
+            await db.provision()
+            await mgr.add_butler(
+                cfg.name,
+                db_name=db.db_name,
+                db_schema=cfg.db_schema,
+                modules=cfg.modules,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to add DB pool for butler %r (db=%s, schema=%s)",
+                cfg.name,
+                resolved_db_name,
+                cfg.db_schema or "default",
+                exc_info=True,
+            )
+    # The API layer never calls Database.from_env() with a role parameter —
+    # schema isolation is enforced at the butler-daemon layer, not here.
+    # SET ROLE is therefore always disabled for API-managed pools; report that
+    # honest state on the health endpoint so operators can see it.
+    mgr.set_role_enforcement_disabled(True)
 
     try:
         shared_db = Database.from_env(shared_db_name)
         shared_db.set_schema(shared_db_schema)
         await shared_db.provision()
-        await mgr.set_credential_shared_pool(shared_db_name, db_schema=shared_db_schema)
+        await mgr.set_credential_shared_pool(shared_db.db_name, db_schema=shared_db_schema)
         await ensure_secrets_schema(mgr.credential_shared_pool())
     except Exception:
         logger.warning(
             "Failed to initialize shared credential DB pool (db=%s, schema=%s)",
-            shared_db_name,
+            resolved_shared_db_name,
             shared_db_schema,
             exc_info=True,
         )

@@ -169,7 +169,8 @@ during butler daemon startup.
 
 | Variable | Default | Used by |
 |---|---|---|
-| `DATABASE_URL` | -- | All (libpq-style URL, alternative to POSTGRES_* vars) |
+| `DATABASE_URL` | -- | All (libpq-style URL; daemon publisher pools, dashboard API pools, and the fleet bridge use its decoded database path as the target when set) |
+| `POSTGRES_DB` | caller-configured fallback | Daemon publisher pools, dashboard API pools, and fleet bridge (database target when `DATABASE_URL` is unset) |
 | `POSTGRES_HOST` | `localhost` | All |
 | `POSTGRES_PORT` | `5432` | All |
 | `POSTGRES_USER` | `butlers` | All |
