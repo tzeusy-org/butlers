@@ -176,8 +176,8 @@ All memory write tools SHALL accept an optional `retention_class` parameter that
 ### Requirement: Memory maintenance jobs are module-default
 
 The memory module SHALL self-register its maintenance jobs (decay sweep,
-consolidation, episode cleanup, superseded-fact purge, and a bounded
-consolidation backfill) as scheduled jobs for every butler that enables
+consolidation, episode cleanup, superseded-fact purge, a bounded consolidation
+backfill, and local ANN observability) as scheduled jobs for every butler that enables
 `[modules.memory]`, rather than requiring each butler's `butler.toml` to
 declare them by hand. `butler.toml` MAY still declare a `[[butler.schedule]]`
 block reusing one of these schedule names to override cadence; existence of
@@ -214,7 +214,8 @@ the schedule is never conditional on a `butler.toml` block, only its cadence.
 
 - **WHEN** a butler enables `[modules.memory]`
 - **THEN** `memory_consolidation`, `memory_episode_cleanup`,
-  `memory_purge_superseded`, and `memory_decay_sweep` MUST all resolve to a
+  `memory_purge_superseded`, `memory_decay_sweep`, and
+  `memory_ann_observability` MUST all resolve to a
   registered deterministic-job handler for that butler — a module-registered
   schedule naming a job with no registered handler for that butler is a
   defect, not an acceptable configuration
@@ -229,3 +230,42 @@ the schedule is never conditional on a `butler.toml` block, only its cadence.
 - **AND** episodes in `consolidation_status = 'dead_letter'` MUST NOT be
   reclaimed by this or any consolidation pass
 
+### Requirement: Live-safe local HNSW observability
+
+The `memory_ann_observability` scheduled job SHALL report aggregate health for
+the local HNSW indexes on `episodes`, `facts`, and `rules`. It SHALL use the
+active memory module's pool, including a configured private `memory_schema`,
+and SHALL NOT inspect the IVFFlat-backed `public.memory_catalog`.
+
+The job SHALL be read-only. It MUST NOT run `VACUUM`, `REINDEX`, a write, or an
+unbounded exact vector scan. Its scheduler result SHALL contain only aggregate
+health, recall, churn, and statistics-freshness values; embeddings, memory
+text, IDs, and tenant IDs MUST NOT be emitted.
+
+#### Scenario: Small local corpus receives sampled exact recall
+
+- **WHEN** PostgreSQL's catalogue estimates a local searchable memory table at
+  or below the monitor's hard exact-corpus limit
+- **THEN** the job MAY select a bounded physical-page sample of query vectors
+  and compare forced-HNSW top-k results against exact top-k results
+- **AND** the result MUST report only aggregate `recall_at_k` and the number
+  of queries compared
+
+#### Scenario: Large local corpus reports degraded recall honestly
+
+- **WHEN** PostgreSQL's catalogue estimates a local searchable memory table
+  above the hard exact-corpus limit, or its heap relation exceeds the monitor's
+  hard physical-page limit
+- **THEN** the job MUST skip both sampling and exact comparison for that table
+- **AND** the result MUST report recall as `degraded` with a reason that the
+  corpus exceeds the exact-recall cap, while still reporting churn and
+  statistics freshness
+
+#### Scenario: Churn requires no maintenance action from the monitor
+
+- **WHEN** lifecycle actions such as decay, retraction, cleanup, or purge have
+  accumulated update/delete pressure on a local memory table
+- **THEN** the job MUST report aggregate dead-tuple and modified-since-analyze
+  ratios with threshold-based health
+- **AND** it MUST not automatically vacuum, reindex, or otherwise mutate the
+  table

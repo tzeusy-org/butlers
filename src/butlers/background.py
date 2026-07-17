@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 
+from butlers.core.memory_hooks import bind_memory_maintenance_dispatch
 from butlers.core.model_routing import Complexity
 from butlers.core.tool_call_capture import (
     reset_current_switchboard_client,
@@ -144,7 +145,11 @@ async def dispatch_scheduled_task(
         )
         _client_token = set_current_switchboard_client(switchboard_client)
         try:
-            return await handler(pool, job_args)
+            with bind_memory_maintenance_dispatch(
+                butler_name=butler_name,
+                spawner=spawner,
+            ):
+                return await handler(pool, job_args)
         finally:
             reset_current_switchboard_client(_client_token)
 

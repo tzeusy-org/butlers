@@ -36,6 +36,7 @@ import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 
+from butlers.modules.memory.ann_observability import run_ann_observability
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.testing.recall_bench import (
     recall_at_k,
@@ -60,6 +61,16 @@ _EMBEDDING_INDEXES = {
 @pytest.fixture(scope="module")
 def memory_migrated_db(postgres_container) -> str:
     """A fresh DB with the full core + memory migration chain applied."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "memory"],
+    )
+
+
+@pytest.fixture
+def memory_observability_migrated_db(postgres_container) -> str:
+    """A fresh memory schema reserved for the bounded-monitor smoke test."""
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
@@ -171,3 +182,33 @@ def test_recall_harness_runs_end_to_end(memory_migrated_db: str) -> None:
     # Loose sanity floor only -- catches total breakage (e.g. the ANN index
     # silently returning nothing, or a broken query), not quality regressions.
     assert recall >= 0.5, f"recall harness smoke check unexpectedly low: {recall!r}"
+
+
+async def _run_ann_observability_smoke(db_url: str) -> dict:
+    """Exercise the monitor's PostgreSQL-only sample and planner paths."""
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+    try:
+        corpus, _centers = synthetic_corpus(seed=17, n=200, n_clusters=10)
+        await seed_embeddings(pool, table="facts", tenant_id="ann-observe", vectors=corpus)
+        await pool.execute("ANALYZE facts")
+        return await run_ann_observability(pool, tables=("facts",), sample_queries=1, k=5)
+    finally:
+        await pool.close()
+
+
+def test_ann_observability_runs_bounded_sampled_recall_on_migrated_hnsw_db(
+    memory_observability_migrated_db: str,
+) -> None:
+    """The production probe uses HNSW and exact paths without leaking sample rows.
+
+    The test owns a fresh, isolated migration database, keeping the monitor
+    below its hard exact-scan cap regardless of other integration fixtures.
+    """
+    result = asyncio.run(_run_ann_observability_smoke(memory_observability_migrated_db))
+
+    facts = result["tables"]["facts"]
+    assert facts["recall"]["status"] == "measured"
+    assert facts["recall"]["queries_compared"] == 1
+    assert 0.0 <= facts["recall"]["recall_at_k"] <= 1.0
+    assert "embedding" not in str(result)
+    assert "ann-observe" not in str(result)

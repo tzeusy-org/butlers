@@ -300,11 +300,12 @@ async def _run_memory_consolidation_job(
     schedule (larger batch size, tighter cadence) registered against the same
     ``job_name`` — see ``MemoryModule.on_startup``'s default schedules.
 
-    The daemon registers its fully configured ``Spawner`` in ``spawn_hooks``
-    during startup. Reusing that instance keeps model selection, spend routing,
-    quotas, failover, and session timeouts under the authoritative model-catalog
-    path. ``run_consolidation`` only invokes it when the bounded claim produced
-    at least one ``(tenant_id, butler)`` group, so an empty backlog is a no-op.
+    Scheduler dispatch binds the dispatching daemon's fully configured
+    ``Spawner`` with the maintenance runtime. Reusing that exact instance keeps
+    model selection, spend routing, quotas, failover, and session timeouts under
+    the authoritative model-catalog path. ``run_consolidation`` only invokes it
+    when the bounded claim produced at least one ``(tenant_id, butler)`` group,
+    so an empty backlog is a no-op.
 
     ``enable_shared_catalog=True`` is passed through regardless — it matches
     the memory module's own default (see the memory-discovery-catalog spec's
@@ -319,7 +320,6 @@ async def _run_memory_consolidation_job(
     del pool
 
     from butlers.core.memory_hooks import consolidate_memory
-    from butlers.core.spawn_hooks import get_spawner
     from butlers.modules.memory.consolidation import DEFAULT_BATCH_SIZE
 
     batch_size = DEFAULT_BATCH_SIZE
@@ -342,14 +342,7 @@ async def _run_memory_consolidation_job(
                 )
             batch_size = raw_batch_size
 
-    spawner = get_spawner()
-    if spawner is None:
-        raise RuntimeError(
-            "memory_consolidation requires the daemon Spawner to be registered before dispatch"
-        )
-
     return await consolidate_memory(
-        spawner=spawner,
         batch_size=batch_size,
         enable_shared_catalog=True,
     )
@@ -635,12 +628,42 @@ async def _run_memory_catalog_backfill_job(
     )
 
 
+async def _run_memory_ann_observability_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the live-safe HNSW monitor through the memory runtime pool.
+
+    The supplied scheduler pool may point at a butler's domain schema while
+    the memory module uses a private schema (notably ``chronicler_mem``).  The
+    registered runtime-pool resolver keeps this monitor pointed at the same
+    local tables as memory retrieval.  The monitor itself is read-only and
+    reports a degraded result rather than scanning a corpus above its
+    exact-recall safety cap.
+    """
+    del pool
+    if job_args:
+        raise RuntimeError(
+            f"memory_ann_observability job does not accept job_args; received: {sorted(job_args)}"
+        )
+    import importlib
+
+    from butlers.core.memory_hooks import resolve_memory_runtime_pool
+
+    # The deterministic Finder guard walks imports reachable from relationship
+    # handlers.  Keep the pgvector implementation outside that graph; this
+    # scheduler path loads it only when the maintenance job actually runs.
+    ann_observability = importlib.import_module("butlers.modules.memory.ann_observability")
+    return await ann_observability.run_ann_observability(resolve_memory_runtime_pool())
+
+
 _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "memory_consolidation": _run_memory_consolidation_job,
     "memory_episode_cleanup": _run_memory_episode_cleanup_job,
     "memory_purge_superseded": _run_memory_purge_superseded_job,
     "memory_decay_sweep": _run_memory_decay_sweep_job,
     "memory_catalog_backfill": _run_memory_catalog_backfill_job,
+    "memory_ann_observability": _run_memory_ann_observability_job,
 }
 
 
