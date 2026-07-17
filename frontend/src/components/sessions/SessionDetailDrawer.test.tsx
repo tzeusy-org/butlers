@@ -391,7 +391,7 @@ describe("SessionDetailDrawer", () => {
     expect(document.body.textContent).not.toContain("Runtime Type");
   });
 
-  it("links the Trace ID to the ingestion timeline pre-filtered by that trace (bu-86c4c.3)", () => {
+  it("links the Trace ID to the fleet timeline pre-filtered by that trace", () => {
     setQueryState({
       data: {
         data: SESSION_DETAIL,
@@ -406,7 +406,7 @@ describe("SessionDetailDrawer", () => {
     );
     expect(traceLink).toBeDefined();
     expect(traceLink?.getAttribute("href")).toBe(
-      `/ingestion?trace=${encodeURIComponent(SESSION_DETAIL.trace_id)}`,
+      `/timeline?trace=${encodeURIComponent(SESSION_DETAIL.trace_id)}`,
     );
   });
 

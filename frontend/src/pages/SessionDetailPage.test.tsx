@@ -218,7 +218,7 @@ describe("SessionDetailPage — content", () => {
   it("renders trace_id, request_id, and parent_session_id links (previously omitted, types.ts:221-268)", () => {
     setSessionState({ ...BASE_SESSION, parent_session_id: "sess-parent-1" });
     const html = renderPage();
-    expect(html).toContain(`href="/ingestion?trace=trace-001"`);
+    expect(html).toContain(`href="/timeline?trace=trace-001"`);
     expect(html).toContain(`href="/sessions?request=req-001"`);
     expect(html).toContain(`href="/sessions/sess-parent-1"`);
   });
