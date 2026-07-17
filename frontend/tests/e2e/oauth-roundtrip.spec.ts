@@ -38,7 +38,7 @@
  *   npm run build && npm run preview  (or Playwright starts preview automatically)
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 // ---------------------------------------------------------------------------
 // Mock inventory: credentials in "expired" state so the "re-authorize" button
@@ -107,7 +107,7 @@ const MOCK_INVENTORY_WITH_EXPIRED = {
 // ---------------------------------------------------------------------------
 
 async function mockSecretsRoutes(
-  page: Parameters<Parameters<typeof test>[1]>[0]["page"],
+  page: Page,
 ) {
   await page.route("**/api/secrets/inventory**", (route) => {
     route.fulfill({
@@ -125,6 +125,129 @@ async function mockSecretsRoutes(
     });
   });
 }
+
+/**
+ * Arm the callback-response and transient callback-URL navigation observers
+ * before the reauthorize click. The initial page already has the expected
+ * focus and no transient parameter, so a final-state assertion alone could
+ * pass before the full-page OAuth navigation has reached the callback.
+ *
+ * The route contract is the decoded query value. React Router serializes its
+ * URLSearchParams state canonically, so a colon may appear as %3A in page.url().
+ */
+function waitForOAuthRoundtripComplete(
+  page: Page,
+  callbackPath: string,
+  expectedFocus: string,
+  transientParam: "toast" | "oauth_error",
+  transientValue: string,
+): Promise<void> {
+  const callbackResponse = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === callbackPath,
+  );
+  const transientCallbackNavigation = page.waitForEvent("framenavigated", (frame) => {
+    if (frame !== page.mainFrame()) {
+      return false;
+    }
+
+    const url = new URL(frame.url());
+    return (
+      url.pathname === "/secrets" &&
+      url.searchParams.get("focus") === expectedFocus &&
+      url.searchParams.get(transientParam) === transientValue
+    );
+  });
+
+  return Promise.all([callbackResponse, transientCallbackNavigation]).then(async ([response]) => {
+    expect(response.status()).toBe(302);
+
+    await expect
+      .poll(
+        () => {
+          const url = new URL(page.url());
+          return {
+            pathname: url.pathname,
+            focus: url.searchParams.get("focus"),
+            hasToast: url.searchParams.has("toast"),
+            hasOAuthError: url.searchParams.has("oauth_error"),
+          };
+        },
+        { timeout: 8_000 },
+      )
+      .toEqual({
+        pathname: "/secrets",
+        focus: expectedFocus,
+        hasToast: false,
+        hasOAuthError: false,
+      });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 0. Regression probe: completion must wait for the callback response
+// ---------------------------------------------------------------------------
+
+test("oauth roundtrip: delayed callback response cannot complete the flow early", async ({ page }) => {
+  await mockSecretsRoutes(page);
+
+  let releaseCallback!: () => void;
+  const callbackRelease = new Promise<void>((resolve) => {
+    releaseCallback = resolve;
+  });
+  let markCallbackStarted!: () => void;
+  const callbackStarted = new Promise<void>((resolve) => {
+    markCallbackStarted = resolve;
+  });
+
+  await page.route("**/api/secrets/user/google/reauthorize**", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          redirect_url: "/api/oauth/google/callback?code=delayed-code&state=delayed-state",
+        },
+      }),
+    });
+  });
+  await page.route("**/api/oauth/google/callback**", async (route) => {
+    markCallbackStarted();
+    await callbackRelease;
+    await route.fulfill({
+      status: 302,
+      headers: { Location: "/secrets?focus=u:google&toast=connected" },
+    });
+  });
+
+  await page.goto("/secrets?focus=u:google", { timeout: 10_000 });
+  await expect(page.locator('[data-direction-passport="true"]')).toBeAttached({ timeout: 8_000 });
+
+  const reauthorizeBtn = page.getByRole("button", { name: /re-authorize/i });
+  await expect(reauthorizeBtn).toBeAttached({ timeout: 5_000 });
+
+  let roundtripComplete = false;
+  const roundtrip = waitForOAuthRoundtripComplete(
+    page,
+    "/api/oauth/google/callback",
+    "u:google",
+    "toast",
+    "connected",
+  ).then(() => {
+    roundtripComplete = true;
+  });
+
+  await reauthorizeBtn.click();
+  await callbackStarted;
+
+  try {
+    await page.waitForTimeout(250);
+    expect(roundtripComplete).toBe(false);
+  } finally {
+    releaseCallback();
+  }
+
+  await roundtrip;
+});
 
 // ---------------------------------------------------------------------------
 // 1. Google OAuth roundtrip
@@ -177,19 +300,19 @@ test("oauth roundtrip: google re-authorize click → redirect → callback → t
   const reauthorizeBtn = page.getByRole("button", { name: /re-authorize/i });
   await expect(reauthorizeBtn).toBeAttached({ timeout: 5_000 });
 
-  // Click the re-authorize button — triggers handleReauthorize() in pages.tsx.
+  const roundtrip = waitForOAuthRoundtripComplete(
+    page,
+    "/api/oauth/google/callback",
+    "u:google",
+    "toast",
+    "connected",
+  );
+
+  // Click the re-authorize button — triggers handleReauthorize() in pages.tsx
+  // and follows the mocked callback redirect.
   await reauthorizeBtn.click();
 
-  // After the full roundtrip the page lands on /secrets?focus=u:google&toast=connected.
-  // SecretsPage.useEffect fires: calls toast.success() and strips ?toast=.
-  // Proof the effect ran = the param is gone.
-  await expect(async () => {
-    expect(page.url()).not.toContain("toast=");
-  }).toPass({ timeout: 8_000 });
-
-  // ?focus= must survive the strip.
-  expect(page.url()).toContain("focus=");
-  expect(page.url()).toContain("u:google");
+  await roundtrip;
 });
 
 // ---------------------------------------------------------------------------
@@ -233,15 +356,17 @@ test("oauth roundtrip: spotify re-authorize → callback → toast-connected str
   const reauthorizeBtn = page.getByRole("button", { name: /re-authorize/i });
   await expect(reauthorizeBtn).toBeAttached({ timeout: 5_000 });
 
+  const roundtrip = waitForOAuthRoundtripComplete(
+    page,
+    "/api/oauth/spotify/callback",
+    "u:spotify",
+    "toast",
+    "connected",
+  );
+
   await reauthorizeBtn.click();
 
-  // Param stripped = toast effect fired.
-  await expect(async () => {
-    expect(page.url()).not.toContain("toast=");
-  }).toPass({ timeout: 8_000 });
-
-  expect(page.url()).toContain("focus=");
-  expect(page.url()).toContain("u:spotify");
+  await roundtrip;
 });
 
 // ---------------------------------------------------------------------------
@@ -283,14 +408,15 @@ test("oauth roundtrip: callback returns oauth_error → error param stripped (wa
   const reauthorizeBtn = page.getByRole("button", { name: /re-authorize/i });
   await expect(reauthorizeBtn).toBeAttached({ timeout: 5_000 });
 
+  const roundtrip = waitForOAuthRoundtripComplete(
+    page,
+    "/api/oauth/google/callback",
+    "u:google",
+    "oauth_error",
+    "access_denied",
+  );
+
   await reauthorizeBtn.click();
 
-  // SecretsPage.useEffect strips ?oauth_error= after calling toast.warning().
-  // Stripped param = proof the warning-toast effect ran.
-  await expect(async () => {
-    expect(page.url()).not.toContain("oauth_error=");
-  }).toPass({ timeout: 8_000 });
-
-  // ?focus= must survive.
-  expect(page.url()).toContain("focus=");
+  await roundtrip;
 });
