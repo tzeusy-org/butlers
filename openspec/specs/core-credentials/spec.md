@@ -311,8 +311,8 @@ The catalogue SHALL be bootstrapped by an Alembic seed during the initial migrat
 - **THEN** the module UPSERTs rows for each `(provider=google, butler=health, feature=<label>, severity=<lvl>, required_scopes=<set>)` it depends on
 - **AND** UPSERTs are idempotent: running the boot sequence twice produces zero net row changes after the first run
 
-### Requirement: Audit Action Enum Extension for Credential Lifecycle
-The audit action enum used by `public.audit_log` (originally specified by `redesign-settings-dispatch-console`) SHALL be extended with the following values for credential-lifecycle events:
+### Requirement: Audit Action Vocabulary for Credential Lifecycle (formerly Audit Action Enum Extension)
+The `public.audit_log.action` column is unconstrained `TEXT`; this requirement defines the credential-lifecycle action vocabulary that writers SHALL use:
 
 | Action | Used by |
 |---|---|
@@ -328,11 +328,11 @@ The audit action enum used by `public.audit_log` (originally specified by `redes
 | `set` | New System secret created (first-time `POST /api/secrets/system/<key>`) |
 | `lifecycle_state_notified` | A direct proactive lifecycle notification was delivered for an attention state |
 
-These values SHALL be added to whichever enum or check constraint enforces the action vocabulary in `public.audit_log`. If the column is `TEXT` with a check constraint, the constraint is extended; if it is an enum type, the enum is altered.
+Because `public.audit_log.action` has no enum or check constraint, this specification is the authoritative action vocabulary; an action addition requires no enum or constraint migration.
 
 #### Scenario: All mutation endpoints write audit rows with new actions
 - **WHEN** any `/api/secrets/*` mutation endpoint completes successfully
-- **THEN** an `audit_log` row is appended with `actor = "owner"` (single-owner system), `action = <appropriate enum value above>`, `target = <canonical credential key>`, and `note = <stored prose; never LLM-generated>`
+- **THEN** an `audit_log` row is appended with `actor = "owner"` (single-owner system), `action = <appropriate vocabulary value above>`, `target = <canonical credential key>`, and `note = <stored prose; never LLM-generated>`
 
 ### Requirement: `public.audit_log` Index for Credential-Key Filtering
 The Switchboard's migration chain SHALL add an index `ix_audit_log_target_ts` on `public.audit_log (target, ts DESC)` to support `GET /api/audit-log?key=<key>` filtering in O(log N) time even at high audit-log row counts. (The `public.audit_log` timestamp column is `ts`, declared by `redesign-settings-dispatch-console`'s `dashboard-audit-log` spec; this index reuses that column unchanged.)
@@ -433,12 +433,12 @@ This read-then-write debounce SHALL be operated with one dashboard-API replica. 
 #### Scenario: A later attention state is delivered
 - **WHEN** the latest lifecycle marker for a canonical credential key is `expiring` and the current state is `expired`
 - **THEN** the scan attempts an `expired` notification
-- **AND** after confirmed direct delivery with successful ledger and audit writes it appends a new marker with `note="expired"`
+- **AND** after confirmed direct delivery with a successful audit write it appends a new marker with `note="expired"`
 
 ### Requirement: Lifecycle Notification Remediation and Delivery Honesty
 The lifecycle notification SHALL identify the credential state and include a dashboard URL ending in `/secrets?focus=<URL-encoded canonical credential key>`. For a User credential whose catalogued provider is OAuth, it SHALL additionally include the clickable reauthorization URL `/api/oauth/<provider>/start`; non-OAuth credentials SHALL not receive that reauthorization URL.
 
-Lifecycle delivery SHALL use medium-priority owner Telegram delivery and the established notify-boundary order: (1) Switchboard `delivery_preferences` quiet-hours evaluation, (2) owner quiet-hours and context-bus suppression, then (3) recipient resolution and delivery. The first gate defers by placing a `notify.v1` envelope on Switchboard's deferred-notifications queue; the next gates suppress and rely on a later lifecycle scan. Every delivery decision SHALL be written to the attention ledger as `delivered`, `deferred`, `suppressed`, or `failed` with a machine-readable reason; `failed` and `deferred` are never interchangeable.
+Lifecycle delivery SHALL use medium-priority owner Telegram delivery and the established notify-boundary order: (1) Switchboard `delivery_preferences` quiet-hours evaluation, (2) owner quiet-hours and context-bus suppression, then (3) recipient resolution and delivery. The first gate defers by placing a `notify.v1` envelope on Switchboard's deferred-notifications queue; the next gates suppress and rely on a later lifecycle scan. Every delivery decision SHALL be recorded to the attention ledger as `delivered`, `deferred`, `suppressed`, or `failed` with a machine-readable reason. A ledger-write failure MUST NOT change the delivery decision or lifecycle-marker behavior it describes; `failed` and `deferred` are never interchangeable.
 
 For a failed transport delivery, or an unexpected error after a complete message and recipient are known, the scan SHALL best-effort enqueue one retry envelope on Switchboard's deferred-notifications queue with a 30-minute backoff (or the already-resolved quiet-hours delivery time). Before enqueueing it SHALL cancel pending envelopes for the same credential's state-independent `/secrets?focus=` fragment, so the latest state supersedes old retries. A later confirmed direct delivery SHALL cancel any remaining pending retry envelope for that fragment. Missing-recipient and pre-resolution failures SHALL be recorded as `failed` without a malformed retry envelope.
 
