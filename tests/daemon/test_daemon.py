@@ -1736,7 +1736,13 @@ async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path
         approval_hooks._recipient_guard_hook = original_hook
 
     assert result["status"] == "error"
+    assert result["error"]["class"] == "validation_error"
+    assert result["error"]["retryable"] is True
     assert "why is required" in result["error"]["message"]
+    notify_error = result["result"]["notify_response"]["error"]
+    assert notify_error["class"] == "validation_error"
+    assert notify_error["retryable"] is True
+    assert "why is required" in notify_error["message"]
     match_rules.assert_not_awaited()
     telegram_module._send_message.assert_not_awaited()
     pending_inserts = [

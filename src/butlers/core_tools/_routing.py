@@ -313,15 +313,18 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             error_class: str,
             message: str,
             notify_response: dict[str, Any] | None = None,
+            retryable: bool | None = None,
         ) -> dict[str, Any]:
-            retryable = _ROUTE_ERROR_RETRYABLE.get(error_class, False)
+            resolved_retryable = (
+                _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
+            )
             response: dict[str, Any] = {
                 "schema_version": "route_response.v1",
                 "status": "error",
                 "error": {
                     "class": error_class,
                     "message": message,
-                    "retryable": retryable,
+                    "retryable": resolved_retryable,
                 },
                 "timing": {"duration_ms": _elapsed_ms()},
             }
@@ -350,14 +353,18 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             channel: str | None,
             error_class: str,
             message: str,
+            retryable: bool | None = None,
         ) -> dict[str, Any]:
+            resolved_retryable = (
+                _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
+            )
             notify_payload: dict[str, Any] = {
                 "schema_version": "notify_response.v1",
                 "status": "error",
                 "error": {
                     "class": error_class,
                     "message": message,
-                    "retryable": _ROUTE_ERROR_RETRYABLE.get(error_class, False),
+                    "retryable": resolved_retryable,
                 },
             }
             if request_id is not None:
@@ -365,6 +372,33 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             if channel is not None:
                 notify_payload["delivery"] = {"channel": channel}
             return notify_payload
+
+        def _dossier_error_response(
+            *,
+            context_payload: dict[str, Any],
+            request_id: str,
+            channel: str,
+            dossier_error: dict[str, Any],
+        ) -> dict[str, Any]:
+            """Preserve a gate-issued dossier error across route response envelopes."""
+            error = dossier_error.get("error")
+            if not isinstance(error, dict):
+                error = {}
+            message = "Delivery rejected: " + str(error.get("message", "invalid decision dossier."))
+            retryable = error.get("retryable") is True
+            return _route_error_response(
+                context_payload=context_payload,
+                error_class="validation_error",
+                message=message,
+                retryable=retryable,
+                notify_response=_notify_error_response(
+                    request_id=request_id,
+                    channel=channel,
+                    error_class="validation_error",
+                    message=message,
+                    retryable=retryable,
+                ),
+            )
 
         route_payload: dict[str, Any] = {
             "schema_version": schema_version,
@@ -770,10 +804,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             enforce_dossier=True,
                         )
                         if decision.dossier_error is not None:
-                            error = decision.dossier_error["error"]
-                            raise ValueError(
-                                "Delivery rejected: "
-                                f"{error.get('message', 'invalid decision dossier.')}"
+                            return _dossier_error_response(
+                                context_payload=route_context,
+                                request_id=notify_request_id,
+                                channel=channel,
+                                dossier_error=decision.dossier_error,
                             )
                         if not decision.allowed:
                             raise ValueError(
@@ -917,10 +952,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             enforce_dossier=True,
                         )
                         if decision.dossier_error is not None:
-                            error = decision.dossier_error["error"]
-                            raise ValueError(
-                                "Delivery rejected: "
-                                f"{error.get('message', 'invalid decision dossier.')}"
+                            return _dossier_error_response(
+                                context_payload=route_context,
+                                request_id=notify_request_id,
+                                channel=channel,
+                                dossier_error=decision.dossier_error,
                             )
                         if not decision.allowed:
                             raise ValueError(
