@@ -31,6 +31,107 @@ _RULE_PREDICATE = normalize_predicate("decision:standing_rule")
 _TERMINAL_OUTCOMES = frozenset({"approved", "rejected"})
 
 
+class _BorrowedConnection:
+    """Async context manager that lets storage reuse an already-locked connection."""
+
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    async def __aenter__(self) -> Any:
+        return self._connection
+
+    async def __aexit__(self, *_args: Any) -> bool:
+        return False
+
+
+class _ConnectionBoundPool:
+    """Minimal pool facade for storage operations inside an outer transaction."""
+
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    def acquire(self) -> _BorrowedConnection:
+        return _BorrowedConnection(self._connection)
+
+
+class _SchemaScopedAcquire:
+    """Borrow a pool connection with a temporary private memory search path."""
+
+    def __init__(self, acquire_context: Any, schema: str) -> None:
+        self._acquire_context = acquire_context
+        self._schema = schema
+        self._connection: Any | None = None
+        self._previous_search_path: str | None = None
+
+    async def __aenter__(self) -> Any:
+        connection = await self._acquire_context.__aenter__()
+        self._connection = connection
+        try:
+            self._previous_search_path = await connection.fetchval(
+                "SELECT current_setting('search_path')"
+            )
+            await connection.execute(
+                "SELECT set_config('search_path', $1, false)",
+                f"{self._schema}, public",
+            )
+        except Exception:
+            await self._acquire_context.__aexit__(None, None, None)
+            self._connection = None
+            raise
+        return connection
+
+    async def __aexit__(self, *args: Any) -> bool:
+        try:
+            if self._connection is not None and self._previous_search_path is not None:
+                await self._connection.execute(
+                    "SELECT set_config('search_path', $1, false)",
+                    self._previous_search_path,
+                )
+        finally:
+            await self._acquire_context.__aexit__(*args)
+        return False
+
+
+class SchemaScopedPool:
+    """Pool facade for direct writes to a configured private memory schema.
+
+    The dashboard owns a butler-domain pool, while a memory module may use a
+    private ``memory_schema``. This facade scopes each borrowed connection for
+    the deterministic storage call without creating a second long-lived pool.
+    """
+
+    def __init__(self, pool: Any, schema: str) -> None:
+        self._pool = pool
+        self._schema = schema
+
+    def acquire(self) -> _SchemaScopedAcquire:
+        return _SchemaScopedAcquire(self._pool.acquire(), self._schema)
+
+    async def fetchrow(self, *args: Any, **kwargs: Any) -> Any:
+        async with self.acquire() as connection:
+            return await connection.fetchrow(*args, **kwargs)
+
+    async def fetch(self, *args: Any, **kwargs: Any) -> Any:
+        """Run a multi-row query with the owning memory schema in scope."""
+        async with self.acquire() as connection:
+            return await connection.fetch(*args, **kwargs)
+
+    async def fetchval(self, *args: Any, **kwargs: Any) -> Any:
+        """Run a scalar query with the owning memory schema in scope."""
+        async with self.acquire() as connection:
+            return await connection.fetchval(*args, **kwargs)
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        """Run a statement with the owning memory schema in scope."""
+        async with self.acquire() as connection:
+            return await connection.execute(*args, **kwargs)
+
+
+def memory_pool_for_schema(pool: Any, schema: str | None) -> Any:
+    """Return ``pool`` or a temporary private-schema facade when configured."""
+    return SchemaScopedPool(pool, schema) if schema else pool
+
+
 def _canonical_json(value: Any) -> str:
     """Serialize a deterministic, compact description without relying on an LLM."""
     return json.dumps(value, default=str, sort_keys=True, separators=(",", ":"))
@@ -112,6 +213,12 @@ def _count(previous: dict[str, Any], key: str) -> int:
         return 0
 
 
+def _tally_lock_key(scope: str, entity_id: Any, subject: str) -> str:
+    """Return the stable PostgreSQL advisory-lock key for one tally fact."""
+    target = str(entity_id) if entity_id is not None else subject
+    return f"decision-memory:tally:{scope}:{target}"
+
+
 class DecisionMemoryWriter:
     """Best-effort writer bound to one approvals module and its own memory store.
 
@@ -190,54 +297,63 @@ class DecisionMemoryWriter:
         subject = _pattern_descriptor(action.tool_name, action.tool_args, tool_meta)
         scope = _tally_scope(self._butler_name, fingerprint)
 
-        # Reuse the approval gate's established channel/entity resolution rather
-        # than duplicating identity interpretation in a new writer.
-        from butlers.modules.approvals.gate import _resolve_target_contact
+        # Reuse the approval gate's established normal + SECURITY DEFINER owner
+        # fallback resolution rather than duplicating identity interpretation.
+        from butlers.modules.approvals.gate import resolve_action_target_contact
 
-        resolved_target = await _resolve_target_contact(resolution_pool, action.tool_args)
+        resolved_target = await resolve_action_target_contact(resolution_pool, action.tool_args)
         entity_id = resolved_target.entity_id if resolved_target is not None else None
-        previous = await _existing_tally_metadata(
-            memory_pool,
-            scope=scope,
-            subject=subject,
-            entity_id=entity_id,
-        )
 
-        approve_count = _count(previous, "approve_count")
-        reject_count = _count(previous, "reject_count")
-        if outcome == "approved":
-            approve_count += 1
-        else:
-            reject_count += 1
+        # Read, increment, and supersede through one connection/transaction.
+        # ``store_fact`` normally opens its own transaction, so bind it to this
+        # connection to keep the advisory lock alive through the actual write.
+        async with memory_pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                _tally_lock_key(scope, entity_id, subject),
+            )
+            previous = await _existing_tally_metadata(
+                connection,
+                scope=scope,
+                subject=subject,
+                entity_id=entity_id,
+            )
 
-        metadata = {
-            "approve_count": approve_count,
-            "reject_count": reject_count,
-            "last_decision": outcome,
-            "last_action_id": str(action.id),
-            "fingerprint": fingerprint,
-            "fingerprint_version": FINGERPRINT_VERSION,
-        }
-        content = (
-            f"Owner {outcome} this action pattern. "
-            f"Approved {approve_count} time(s); rejected {reject_count} time(s)."
-        )
-        await store_fact(
-            memory_pool,
-            subject=subject,
-            predicate=_TALLY_PREDICATE,
-            content=content,
-            embedding_engine=embedding_engine,
-            importance=8.0,
-            permanence="stable",
-            scope=scope,
-            tags=["decision", "approval"],
-            source_butler=self._butler_name,
-            metadata=metadata,
-            entity_id=entity_id,
-            retention_class="operational",
-            sensitivity="normal",
-        )
+            approve_count = _count(previous, "approve_count")
+            reject_count = _count(previous, "reject_count")
+            if outcome == "approved":
+                approve_count += 1
+            else:
+                reject_count += 1
+
+            metadata = {
+                "approve_count": approve_count,
+                "reject_count": reject_count,
+                "last_decision": outcome,
+                "last_action_id": str(action.id),
+                "fingerprint": fingerprint,
+                "fingerprint_version": FINGERPRINT_VERSION,
+            }
+            content = (
+                f"Owner {outcome} this action pattern. "
+                f"Approved {approve_count} time(s); rejected {reject_count} time(s)."
+            )
+            await store_fact(
+                _ConnectionBoundPool(connection),
+                subject=subject,
+                predicate=_TALLY_PREDICATE,
+                content=content,
+                embedding_engine=embedding_engine,
+                importance=8.0,
+                permanence="stable",
+                scope=scope,
+                tags=["decision", "approval"],
+                source_butler=self._butler_name,
+                metadata=metadata,
+                entity_id=entity_id,
+                retention_class="operational",
+                sensitivity="normal",
+            )
 
     async def _write_standing_rule(self, rule: Any, *, active: bool) -> None:
         memory_pool, _resolution_pool, embedding_engine = await self._resources()

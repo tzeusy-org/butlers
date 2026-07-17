@@ -317,6 +317,27 @@ async def _resolve_target_contact(
     return await resolve_contact_by_channel(pool, channel_type, channel_value)
 
 
+async def resolve_action_target_contact(
+    pool: Any,
+    tool_args: dict[str, Any],
+) -> ResolvedContact | None:
+    """Resolve an action target using the gate's full normal/owner fallback.
+
+    Non-relationship butlers may not read ``relationship.entity_facts`` under
+    schema isolation. In that case owner-directed sends are resolved through
+    the narrow SECURITY DEFINER fallback, exactly as the gate does before an
+    owner auto-approval. Terminal decision-memory writeback reuses this helper
+    so a previously resolved owner remains entity-linked in the tally fact.
+    """
+    resolved_contact = await _resolve_target_contact(pool, tool_args)
+    identity = _extract_channel_identity(tool_args)
+    if resolved_contact is None and identity is not None and identity[0] != "entity_id":
+        fallback = await resolve_owner_channel_via_definer(pool, identity[0], identity[1])
+        if fallback is not None:
+            resolved_contact, _ = fallback
+    return resolved_contact
+
+
 async def apply_approval_gates(
     mcp: Any,
     approval_config: ApprovalConfig | None,
@@ -551,27 +572,7 @@ def _make_gate_wrapper(
         agent_summary = f"Tool '{tool_name}' called with args: {json.dumps(safe_tool_args)}"
 
         # --- Role-based target resolution ---
-        resolved_contact = await _resolve_target_contact(pool, tool_args)
-        identity = _extract_channel_identity(tool_args)
-
-        # Cross-schema owner fallback. resolve_contact_by_channel reads
-        # relationship.entity_facts directly, which a non-relationship butler's
-        # role cannot (schema isolation via SET ROLE). So owner-directed sends from
-        # those butlers resolve to None and would park as "unresolvable target".
-        # Recognize the owner via the SECURITY DEFINER public.resolve_owner_triple()
-        # lookup (migration core_145), which runs as a role that can read the
-        # relationship schema and returns only owner matches (active triples on an
-        # entity where 'owner'=ANY(roles)).  Only when normal resolution failed
-        # entirely: a resolved non-owner contact means the butler COULD read the
-        # relationship schema, so no owner fallback is needed (and the channel
-        # demonstrably belongs to a non-owner).
-        if resolved_contact is None and identity is not None and identity[0] != "entity_id":
-            fallback = await resolve_owner_channel_via_definer(pool, identity[0], identity[1])
-            if fallback is not None:
-                # The definer also reports channel primacy, but owner-directed
-                # OUTBOUND sends auto-approve on ANY active owner channel, so the
-                # is_primary flag is intentionally discarded here (bu-nd5me).
-                resolved_contact, _ = fallback
+        resolved_contact = await resolve_action_target_contact(pool, tool_args)
 
         if resolved_contact is not None and "owner" in resolved_contact.roles:
             # Owner-directed outbound: auto-approve without any standing rule.

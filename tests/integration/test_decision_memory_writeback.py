@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -10,9 +11,10 @@ import asyncpg
 import pytest
 
 from butlers.db import register_jsonb_codec
+from butlers.identity import ResolvedContact
 from butlers.modules.approvals import operations
 from butlers.modules.approvals.autonomy_tracker import FINGERPRINT_VERSION
-from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
+from butlers.modules.approvals.decision_memory import DecisionMemoryWriter, memory_pool_for_schema
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.base import ToolMeta
@@ -43,6 +45,7 @@ def migrated_db_url(postgres_container) -> str:
         postgres_container,
         migration_db_name(),
         chains=["core", "memory", "approvals"],
+        schemas={"memory": "home_mem"},
     )
 
 
@@ -56,7 +59,7 @@ async def pool(migrated_db_url: str):
         init=register_jsonb_codec,
     )
     await db_pool.execute(
-        "TRUNCATE TABLE memory_links, facts, approval_events, pending_actions, "
+        "TRUNCATE TABLE home_mem.memory_links, home_mem.facts, approval_events, pending_actions, "
         "approval_rules, autonomy_approval_history, autonomy_suggestions, public.entities "
         "CASCADE"
     )
@@ -67,7 +70,7 @@ async def pool(migrated_db_url: str):
 def _writer(pool: asyncpg.Pool) -> DecisionMemoryWriter:
     return DecisionMemoryWriter(
         butler_name="home",
-        memory_pool_provider=lambda: pool,
+        memory_pool_provider=lambda: memory_pool_for_schema(pool, "home_mem"),
         resolution_pool_provider=lambda: pool,
         embedding_engine_provider=_EmbeddingEngine,
         tool_meta_provider=lambda _tool_name: ToolMeta(
@@ -107,7 +110,7 @@ async def test_terminal_decisions_upsert_entity_linked_tally_and_recall_it(pool)
 
     fact = await pool.fetchrow(
         "SELECT subject, predicate, content, scope, metadata, entity_id "
-        "FROM facts WHERE predicate = $1 AND validity = 'active'",
+        "FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:approval_tally",
     )
 
@@ -126,12 +129,76 @@ async def test_terminal_decisions_upsert_entity_linked_tally_and_recall_it(pool)
     assert "notify" in fact["subject"]
 
     context = await memory_context(
-        pool,
+        memory_pool_for_schema(pool, "home_mem"),
         _EmbeddingEngine(),
         "Should I notify Avery again?",
         butler="home",
     )
     assert "decision:approval_tally" in context
+
+
+async def test_concurrent_terminal_decisions_do_not_lose_tally_updates(pool) -> None:
+    """The per-pattern tally lock preserves both simultaneous terminal outcomes."""
+    entity_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, $2) RETURNING id",
+        "Avery Example",
+        "person",
+    )
+    writer = _writer(pool)
+
+    await asyncio.gather(
+        writer.record_terminal_decision(_action(entity_id), "approved"),
+        writer.record_terminal_decision(_action(entity_id), "approved"),
+    )
+
+    tally = await pool.fetchrow(
+        "SELECT metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
+        "decision:approval_tally",
+    )
+    assert tally is not None
+    assert tally["metadata"]["approve_count"] == 2
+    assert tally["metadata"]["reject_count"] == 0
+
+
+async def test_owner_definer_resolution_keeps_tally_entity_linked(pool, monkeypatch) -> None:
+    """Writeback shares the gate's owner-only fallback under schema isolation."""
+    entity_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, $2) RETURNING id",
+        "Owner Example",
+        "person",
+    )
+
+    async def _owner_fallback(_pool, channel_type: str, channel_value: str):
+        assert (channel_type, channel_value) == ("telegram", "123456")
+        return (
+            ResolvedContact(
+                contact_id=None,
+                name="Owner Example",
+                roles=["owner"],
+                entity_id=entity_id,
+            ),
+            True,
+        )
+
+    monkeypatch.setattr(
+        "butlers.modules.approvals.gate.resolve_owner_channel_via_definer",
+        _owner_fallback,
+    )
+    action = PendingAction(
+        id=uuid.uuid4(),
+        tool_name="notify",
+        tool_args={"channel": "telegram", "recipient": "123456", "text": "Hello"},
+        status=ActionStatus.REJECTED,
+        requested_at=datetime.now(UTC),
+    )
+
+    await _writer(pool).record_terminal_decision(action, "rejected")
+
+    linked_entity_id = await pool.fetchval(
+        "SELECT entity_id FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
+        "decision:approval_tally",
+    )
+    assert linked_entity_id == entity_id
 
 
 async def test_standing_rule_fact_is_updated_on_revocation(pool) -> None:
@@ -149,7 +216,7 @@ async def test_standing_rule_fact_is_updated_on_revocation(pool) -> None:
     await writer.record_standing_rule(rule, active=False)
 
     fact = await pool.fetchrow(
-        "SELECT content, metadata FROM facts WHERE predicate = $1 AND validity = 'active'",
+        "SELECT content, metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:standing_rule",
     )
 
@@ -191,7 +258,7 @@ async def test_executor_writes_tally_only_after_an_execution_outcome(pool) -> No
 
     assert result.success is True
     tally = await pool.fetchrow(
-        "SELECT metadata FROM facts WHERE predicate = $1 AND validity = 'active'",
+        "SELECT metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:approval_tally",
     )
     assert tally is not None
@@ -256,11 +323,11 @@ async def test_operations_rejection_and_rule_changes_write_memory_facts(pool) ->
     assert executed["status"] == "executed"
     assert revoked["active"] is False
     tally = await pool.fetchrow(
-        "SELECT metadata FROM facts WHERE predicate = $1 AND validity = 'active'",
+        "SELECT metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:approval_tally",
     )
     standing_rule = await pool.fetchrow(
-        "SELECT metadata FROM facts WHERE predicate = $1 AND validity = 'active'",
+        "SELECT metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:standing_rule",
     )
     assert tally is not None

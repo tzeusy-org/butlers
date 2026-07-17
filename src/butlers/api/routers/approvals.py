@@ -17,7 +17,9 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from typing import Any
 from uuid import UUID
 
@@ -56,7 +58,10 @@ from butlers.api.models.approval import (
 )
 from butlers.api.routers import audit as audit_router
 from butlers.modules.approvals import operations as approvals_ops
-from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
+from butlers.modules.approvals.decision_memory import (
+    DecisionMemoryWriter,
+    memory_pool_for_schema,
+)
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
@@ -64,6 +69,7 @@ from butlers.modules.approvals.models import (
     PendingAction,
 )
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
+from butlers.modules.base import ToolMeta
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +221,56 @@ async def _find_action_pool(
     return None
 
 
+@dataclass(frozen=True)
+class _DecisionMemorySettings:
+    """Static configuration the dashboard needs for a direct memory write."""
+
+    memory_schema: str | None
+    tool_metadata: dict[str, ToolMeta]
+
+
+@lru_cache(maxsize=64)
+def _decision_memory_settings_for(butler_name: str) -> _DecisionMemorySettings | None:
+    """Load the owning memory schema and v2 ToolMeta from its roster config."""
+    try:
+        from butlers.api.deps import _DEFAULT_ROSTER_DIR
+        from butlers.config import load_config
+        from butlers.modules.registry import default_registry
+
+        config = load_config(_DEFAULT_ROSTER_DIR / butler_name)
+        memory_config = config.modules.get("memory")
+        if not isinstance(memory_config, dict):
+            return None
+
+        tool_metadata: dict[str, ToolMeta] = {}
+        configured_modules = set(config.modules)
+        for module in default_registry().load_all(config.modules):
+            if module.name not in configured_modules:
+                continue
+            try:
+                tool_metadata.update(module.tool_metadata())
+            except Exception:  # noqa: BLE001 -- daemon uses the same conservative fallback
+                logger.warning(
+                    "Unable to load ToolMeta from module %s for decision-memory writeback",
+                    module.name,
+                    exc_info=True,
+                )
+
+        raw_schema = memory_config.get("memory_schema")
+        memory_schema = raw_schema.strip() if isinstance(raw_schema, str) else None
+        return _DecisionMemorySettings(
+            memory_schema=memory_schema or None,
+            tool_metadata=tool_metadata,
+        )
+    except Exception:  # noqa: BLE001 -- direct memory writeback is fail-open
+        logger.warning(
+            "Unable to load decision-memory settings for butler %s; skipping writeback",
+            butler_name,
+            exc_info=True,
+        )
+        return None
+
+
 def _decision_memory_writer_for(
     db_mgr: DatabaseManager,
     butler_name: str,
@@ -232,6 +288,12 @@ def _decision_memory_writer_for(
     if memory_butlers is not None and butler_name not in memory_butlers:
         return None
 
+    settings = _decision_memory_settings_for(butler_name)
+    if settings is None:
+        return None
+
+    memory_pool = memory_pool_for_schema(pool, settings.memory_schema)
+
     def _embedding_engine_provider() -> Any:
         from butlers.modules.memory.tools import get_embedding_engine
 
@@ -239,13 +301,10 @@ def _decision_memory_writer_for(
 
     return DecisionMemoryWriter(
         butler_name=butler_name,
-        memory_pool_provider=lambda: pool,
+        memory_pool_provider=lambda: memory_pool,
         resolution_pool_provider=lambda: pool,
         embedding_engine_provider=_embedding_engine_provider,
-        # The dashboard process has no live daemon ToolMeta registry. The
-        # fingerprint helper safely falls back to all supplied args in that
-        # explicitly conservative case.
-        tool_meta_provider=lambda _tool_name: None,
+        tool_meta_provider=lambda tool_name: settings.tool_metadata.get(tool_name),
     )
 
 
