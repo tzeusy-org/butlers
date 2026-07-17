@@ -1175,7 +1175,9 @@ async def aggregate_by_category(
 
     Buckets are sorted by ``total_seconds DESC``, then ``category ASC`` for
     deterministic ordering.  Restricted episodes are excluded by default.
-    Tombstoned episodes are excluded unless ``include_tombstoned=true``.
+    Tombstoned episodes are excluded unless ``include_tombstoned=true``;
+    opt-in preserves marked source provenance for audit without allocating the
+    tombstoned interval to a live category.
     Open episodes (``end_at IS NULL``) are clipped to ``query_end`` so that
     in-progress activities are counted up to the window boundary.
     """
@@ -1344,9 +1346,15 @@ async def aggregate_by_category(
 
             bucket_key = (ep_lane, source_name)
             bucket = cat_src[bucket_key]
+            # include_tombstoned retains a marked provenance entry for audit,
+            # but a tombstone cannot allocate time to a live category.  The
+            # untracked slice intentionally treats it as uncovered, so adding
+            # its interval here would count the same period twice.
+            if is_tombstoned:
+                bucket["tombstoned"] = True
+                continue
             bucket["intervals"].append((overlap_start, overlap_end))
             bucket["episode_count"] += 1
-            bucket["tombstoned"] = bucket["tombstoned"] or is_tombstoned
             bucket["precision_values"].append(precision)
             bucket["retention_days_values"].append(retention_days)
             # Track the low-confidence share separately so the dashboard can flag

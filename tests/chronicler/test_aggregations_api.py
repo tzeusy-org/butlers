@@ -95,8 +95,13 @@ def _make_episode_row(
     }
 
 
-def _build_app(rows: list[dict[str, Any]]):
-    """Wire a FastAPI test app with a mocked pool returning the given episode rows."""
+def _build_app(rows: list[dict[str, Any]], *, apply_tombstone_sql_filter: bool = False):
+    """Wire a FastAPI test app with a mocked pool returning the given episode rows.
+
+    ``apply_tombstone_sql_filter`` lets tombstone tests emulate the database's
+    ``tombstone_at IS NULL`` predicate while keeping the default helper simple
+    for aggregation-only fixtures.
+    """
     mock_pool = AsyncMock()
 
     def _make_mock_row(row: dict[str, Any]) -> MagicMock:
@@ -104,7 +109,13 @@ def _build_app(rows: list[dict[str, Any]]):
         m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
         return m
 
-    mock_pool.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    async def _fetch(query: str, *_args: Any) -> list[MagicMock]:
+        filtered_rows = rows
+        if apply_tombstone_sql_filter and "tombstone_at IS NULL" in query:
+            filtered_rows = [row for row in rows if row["tombstone_at"] is None]
+        return [_make_mock_row(row) for row in filtered_rows]
+
+    mock_pool.fetch = AsyncMock(side_effect=_fetch)
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
@@ -918,9 +929,11 @@ async def test_by_category_untracked_seconds_intent_layer_does_not_reduce_untrac
     assert data["untracked_seconds"] == pytest.approx(16 * 3600.0)
 
 
-async def test_by_category_untracked_seconds_tombstoned_activity_not_counted_as_tracked():
-    """A tombstoned activity episode (surfaced via include_tombstoned=true)
-    must not count as evidence for untracked-seconds purposes."""
+@pytest.mark.parametrize("include_tombstoned", [False, True])
+async def test_by_category_tombstoned_activity_preserves_untracked_partition(
+    include_tombstoned: bool,
+):
+    """Tombstones remain audit-visible without overlapping the untracked slice."""
     day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
     rows = [
         _make_episode_row(
@@ -929,24 +942,38 @@ async def test_by_category_untracked_seconds_tombstoned_activity_not_counted_as_
             tombstone_at=day_start - timedelta(hours=1),
         )
     ]
-    app, _ = _build_app(rows)
+    app, _ = _build_app(rows, apply_tombstone_sql_filter=True)
+    params = {
+        "start_at": "2024-03-15T00:00:00Z",
+        "end_at": "2024-03-16T00:00:00Z",
+    }
+    if include_tombstoned:
+        params["include_tombstoned"] = "true"
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get(
-            _BY_CATEGORY,
-            params={
-                "start_at": "2024-03-15T00:00:00Z",
-                "end_at": "2024-03-16T00:00:00Z",
-                "include_tombstoned": "true",
-            },
-        )
+        resp = await client.get(_BY_CATEGORY, params=params)
     assert resp.status_code == 200
     data = resp.json()["data"]
-    # Bucket is still populated (existing include_tombstoned contract)...
-    assert len(data["buckets"]) == 1
-    # ...but the tombstoned episode contributes nothing to "tracked" time.
+    assert sum(bucket["total_seconds"] for bucket in data["buckets"]) + data[
+        "untracked_seconds"
+    ] == pytest.approx(16 * 3600.0)
     assert data["untracked_seconds"] == pytest.approx(16 * 3600.0)
+
+    if include_tombstoned:
+        assert len(data["buckets"]) == 1
+        bucket = data["buckets"][0]
+        assert bucket["total_seconds"] == 0
+        assert bucket["source_breakdown"] == [
+            {
+                "source_name": "chronicler.occupation_inferred",
+                "total_seconds": 0,
+                "episode_count": 0,
+                "tombstoned": True,
+            }
+        ]
+    else:
+        assert data["buckets"] == []
 
 
 async def test_by_category_untracked_seconds_nap_counts_as_tracked_without_special_casing():
