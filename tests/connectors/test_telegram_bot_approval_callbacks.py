@@ -131,6 +131,24 @@ async def test_non_owner_approval_callback_is_acknowledged_without_state_or_api_
     assert connector._http_client.post.call_args.args[0].endswith("/answerCallbackQuery")
 
 
+async def test_non_primary_owner_approval_callback_is_acknowledged_without_state_or_api_reads(
+    owner_resolver: AsyncMock,
+) -> None:
+    owner_resolver.return_value = (SimpleNamespace(roles=["owner"]), False)
+    connector = _connector()
+    connector._http_client = MagicMock()
+    connector._http_client.get = AsyncMock()
+    connector._http_client.post = AsyncMock(return_value=_response())
+
+    handled = await connector._maybe_handle_approval_callback(_update(_token()))
+
+    assert handled is True
+    connector._http_client.get.assert_not_awaited()
+    connector._http_client.post.assert_awaited_once()
+    assert connector._http_client.post.call_args.args[0].endswith("/answerCallbackQuery")
+    assert connector._http_client.post.call_args.kwargs["json"]["text"] == ""
+
+
 async def test_tampered_approval_callback_is_acknowledged_without_decision_mutation(
     owner_resolver: AsyncMock,
 ) -> None:

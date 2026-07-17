@@ -974,6 +974,16 @@ class TelegramBotConnector:
                 await self._answer_callback_query(callback_query_id, "")
             return True
 
+        _, is_primary = owner_channel
+        if not is_primary:
+            logger.warning(
+                "Ignored Telegram approval callback from a non-primary owner channel",
+                extra={"action_id": str(parsed.action_id), "sender_id": str(sender_id)},
+            )
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "")
+            return True
+
         secret = self._config.approval_callback_secret
         connector_token = self._config.approval_callback_connector_token
         if not secret or not connector_token:
