@@ -1176,6 +1176,7 @@ export function PageUser({
   const allScopes = Array.from(new Set([...credential.scopesGranted, ...credential.scopesRequired]));
   const isOauth = provider.kind === "oauth";
   const isWebhook = provider.kind === "webhook";
+  const isTelegramSession = provider.id === "telegram_bot";
   const isMissing = credential.state === "never_set";
   const sick = credential.state !== "ok" && credential.state !== "never_set";
   const provenance = userSecretProvenanceForTypes(credential.sourceTypes);
@@ -1280,6 +1281,31 @@ export function PageUser({
   function handleDisconnectCancel() {
     setDisconnectConfirm(false);
     disconnectMutation.reset();
+  }
+
+  // Telegram API credentials belong to the guided OTP flow, which commits the
+  // API ID, API hash, session, and consent grant together.  Never offer its
+  // grouped passport row the generic raw-value rotate panel.
+  const [telegramSetupOpen, setTelegramSetupOpen] = React.useState(false);
+  const telegramSetupTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const restoreTelegramSetupTriggerFocusRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!telegramSetupOpen && restoreTelegramSetupTriggerFocusRef.current) {
+      restoreTelegramSetupTriggerFocusRef.current = false;
+      telegramSetupTriggerRef.current?.focus();
+    }
+  }, [telegramSetupOpen]);
+
+  function openTelegramSetup() {
+    setTelegramSetupOpen(true);
+    setRotateOpen(false);
+    setDisconnectConfirm(false);
+  }
+
+  function closeTelegramSetup() {
+    restoreTelegramSetupTriggerFocusRef.current = true;
+    setTelegramSetupOpen(false);
   }
 
   const stateLines: string[] = [];
@@ -1516,6 +1542,14 @@ export function PageUser({
       {provider.id === "whatsapp" && (
         <WhatsAppDrawer onClose={() => undefined} inline />
       )}
+      {isTelegramSession && telegramSetupOpen && (
+        <div className="mt-1" data-user-telegram-drawer="true">
+          <TelegramDrawer
+            ownerEntityId={credential.identity}
+            onClose={closeTelegramSetup}
+          />
+        </div>
+      )}
 
       {/* Cross-references */}
       <CrossRefFooter
@@ -1677,11 +1711,13 @@ export function PageUser({
             )}
             {credential.state === "expiring" && (
               <PillBtn
+                ref={isTelegramSession ? telegramSetupTriggerRef : undefined}
                 variant="commit"
-                onClick={() => { setRotateOpen(true); setDisconnectConfirm(false); }}
-                disabled={rotateOpen}
+                onClick={isTelegramSession ? openTelegramSetup : () => { setRotateOpen(true); setDisconnectConfirm(false); }}
+                disabled={isTelegramSession ? telegramSetupOpen : rotateOpen}
+                data-user-setup-telegram={isTelegramSession ? "true" : undefined}
               >
-                rotate
+                {isTelegramSession ? "set up Telegram" : "rotate"}
               </PillBtn>
             )}
             {isMissing && (
@@ -1699,10 +1735,12 @@ export function PageUser({
                 handleProbe action. */}
             {!isMissing && !sick && (
               <PillBtn
-                onClick={() => { setRotateOpen(true); setDisconnectConfirm(false); }}
-                disabled={rotateOpen}
+                ref={isTelegramSession ? telegramSetupTriggerRef : undefined}
+                onClick={isTelegramSession ? openTelegramSetup : () => { setRotateOpen(true); setDisconnectConfirm(false); }}
+                disabled={isTelegramSession ? telegramSetupOpen : rotateOpen}
+                data-user-setup-telegram={isTelegramSession ? "true" : undefined}
               >
-                rotate
+                {isTelegramSession ? "set up Telegram" : "rotate"}
               </PillBtn>
             )}
           </>

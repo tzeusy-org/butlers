@@ -884,6 +884,12 @@ _USER_TYPE_PREFIX_ALIASES: dict[str, str] = {
     "telegram": "telegram_bot",
 }
 
+# These values are persisted only by their provider-specific setup flows.  The
+# generic credential mutation API may fetch them through an aliased provider
+# group (for example, telegram_api_hash via telegram_bot), so guard the
+# resolved row rather than only the path parameter.
+_GUIDED_ROTATE_ONLY_USER_TYPES = frozenset({"telegram_api_hash"})
+
 
 def _infer_provider_from_type(entity_type: str) -> str:
     """Best-effort mapping from entity_info.type to a display provider slug.
@@ -3832,6 +3838,13 @@ async def rotate_user_credential(
     detail = await _fetch_single_user_secret(shared_pool, provider=provider, identity=identity)
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
+    if detail.type in _GUIDED_ROTATE_ONLY_USER_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "telegram_api_hash can only be updated through the guided Telegram session setup."
+            ),
+        )
 
     # Capture the old raw value before we overwrite it.  We need it for provider revocation.
     # _fetch_single_user_secret returns a UserSecretDetail which does NOT expose the raw value
