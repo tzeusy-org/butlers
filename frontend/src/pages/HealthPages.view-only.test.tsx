@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 
@@ -431,6 +431,30 @@ describe("Health Overview page (bu-w7b18.1)", () => {
   it("renders the attention index section", () => {
     renderInRouter(<HealthOverviewPage />);
     expect(screen.getByTestId("health-attention-index")).toBeTruthy();
+  });
+
+  it("renders six health ledger destinations as semantic list links", () => {
+    renderInRouter(<HealthOverviewPage />);
+
+    const ledger = screen.getByRole("list", { name: "Health ledger" });
+    const destinations = [
+      ["Measurements", "/health/measurements"],
+      ["Medications", "/health/medications"],
+      ["Conditions", "/health/conditions"],
+      ["Symptoms", "/health/symptoms"],
+      ["Meals", "/health/meals"],
+      ["Research", "/health/research"],
+    ] as const;
+
+    expect(within(ledger).getAllByRole("listitem")).toHaveLength(destinations.length);
+
+    for (const [label, path] of destinations) {
+      const link = within(ledger).getByRole("link", { name: `View ${label}` });
+      expect(link).toBeInstanceOf(HTMLAnchorElement);
+      expect(link.getAttribute("href")).toBe(path);
+      expect(link.getAttribute("role")).toBeNull();
+      expect(link.parentElement).toBeInstanceOf(HTMLLIElement);
+    }
   });
 
   it("renders the insight message in the attention list", () => {

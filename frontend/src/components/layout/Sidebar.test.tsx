@@ -162,8 +162,13 @@ describe("Sidebar", () => {
 
       expect(container.textContent).toContain("Overview");
       expect(container.textContent).toContain("Calendar");
-      // Health renders as a ButlerMark icon (not a text label) — check for the link, not text content.
-      expect(container.querySelector('a[href="/health"]')).toBeInstanceOf(HTMLAnchorElement);
+      // Health is an expandable group rather than a flat item. In the
+      // expanded sidebar its visible label supplies the button's accessible
+      // name, so it has no redundant aria-label attribute.
+      const healthGroup = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Health"),
+      );
+      expect(healthGroup).toBeInstanceOf(HTMLButtonElement);
     });
 
     it("renders Butlers brand label by default", () => {
@@ -226,6 +231,34 @@ describe("Sidebar", () => {
       );
       expect(footerEl).toBeTruthy();
       expect(footerEl?.textContent).toContain("$26.27 today");
+    });
+
+    it("auto-expands Health into its overview and six ledger destinations for a direct sub-page visit", () => {
+      setButlersState({
+        data: {
+          data: [{ name: "health", status: "ok", port: 40109, type: "butler" as const, sessions_24h: 0 }],
+          meta: {},
+        },
+      });
+      renderExpanded("/health/measurements");
+
+      const healthGroup = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Health"),
+      );
+      expect(healthGroup).toBeInstanceOf(HTMLButtonElement);
+      expect(healthGroup?.getAttribute("aria-expanded")).toBe("true");
+
+      for (const path of [
+        "/health",
+        "/health/measurements",
+        "/health/medications",
+        "/health/conditions",
+        "/health/symptoms",
+        "/health/meals",
+        "/health/research",
+      ]) {
+        expect(container.querySelector(`a[href="${path}"]`)).toBeInstanceOf(HTMLAnchorElement);
+      }
     });
   });
 

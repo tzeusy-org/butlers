@@ -85,8 +85,22 @@ export const navSections: NavSection[] = [
       { path: '/education', label: 'Education', butler: 'education' },
       // chord: 'h' — fixed bu-86c4c.7 drift (used to point g-h at the
       // pre-redesign /health/measurements route; now points at the actual
-      // Health overview page it's declared on).
-      { path: '/health', label: 'Health', butler: 'health', chord: 'h' },
+      // Health overview page it is declared on). The child routes are the
+      // stable Health ledger surfaces exposed from that overview.
+      {
+        kind: 'group',
+        label: 'Health',
+        butler: 'health',
+        children: [
+          { path: '/health', label: 'Overview', end: true, chord: 'h' },
+          { path: '/health/measurements', label: 'Measurements' },
+          { path: '/health/medications', label: 'Medications' },
+          { path: '/health/conditions', label: 'Conditions' },
+          { path: '/health/symptoms', label: 'Symptoms' },
+          { path: '/health/meals', label: 'Meals' },
+          { path: '/health/research', label: 'Research' },
+        ],
+      },
       { path: '/calendar', label: 'Calendar' },
       { path: '/chronicles', label: 'Chronicles', butler: 'chronicler', tooltip: 'Retrospective lived-time reconstruction' },
     ],

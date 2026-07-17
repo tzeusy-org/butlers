@@ -14,7 +14,8 @@
  *     sourced from GET /api/health/measurements/latest
  *   - Data-freshness chip from GET /api/health/measurements/sources
  *
- * Right column (index):
+ * Right column (indexes):
+ *   - HealthLedgerIndex offers stable links to all six Health record surfaces
  *   - AttentionList sourced from GET /api/switchboard/insights?butler=health&status=pending
  *     Each item links to its signal; zero items → single serif-italic line
  *
@@ -48,6 +49,7 @@ import type { InsightCandidate } from "@/api/types.ts";
 
 import { AttentionList } from "@/components/overview/AttentionList.tsx";
 import type { AttentionListItem } from "@/components/overview/AttentionList.tsx";
+import { HealthLedgerIndex } from "@/components/health/HealthLedgerIndex.tsx";
 import { BriefingStatus } from "@/components/overview/BriefingStatus.tsx";
 import { DateEyebrow } from "@/components/overview/DateEyebrow.tsx";
 import { Elaboration } from "@/components/overview/Elaboration.tsx";
@@ -485,12 +487,13 @@ export default function HealthOverviewPage() {
           )}
         </div>
 
-        {/* ===================== RIGHT COLUMN — index ===================== */}
+        {/* ===================== RIGHT COLUMN — indexes ===================== */}
         <div
           style={{ display: "flex", flexDirection: "column", gap: "32px" }}
-          aria-label="Health attention index"
+          aria-label="Health indexes"
           data-testid="health-attention-index"
         >
+          <HealthLedgerIndex />
           <Section eyebrow="Needs attention">
             <AttentionList items={attentionItems} />
           </Section>
