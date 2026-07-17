@@ -75,8 +75,10 @@ type Server struct {
 	// normal live messages. It is consumed by the first subscriber drain, so
 	// later subscribers never receive a second replay of those live events.
 	liveHandoffArmed bool
-	// afterBackfillSnapshot is an internal-test barrier invoked after a
-	// backfill request selects its snapshot. It is nil in production.
+	// afterBackfillSnapshot is an internal-test barrier invoked while the
+	// subscriber and replay transition locks are held, immediately after a
+	// backfill request selects its snapshot and before it hands that snapshot
+	// off. It is nil in production.
 	afterBackfillSnapshot func()
 
 	// Pairing state
@@ -347,6 +349,9 @@ func (s *Server) requestBackfill(windowHours int) []*bridgeEvents.BridgeEvent {
 			replay = append(replay, cloneBridgeEvent(evt))
 		}
 	}
+	if s.afterBackfillSnapshot != nil {
+		s.afterBackfillSnapshot()
+	}
 
 	if len(s.subscribers) == 0 {
 		s.appendPendingReplayLocked(replay)
@@ -522,9 +527,6 @@ func (s *Server) handleBackfill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	replay := s.requestBackfill(req.WindowHours)
-	if s.afterBackfillSnapshot != nil {
-		s.afterBackfillSnapshot()
-	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"schema_version":     backfillSchemaVersion,

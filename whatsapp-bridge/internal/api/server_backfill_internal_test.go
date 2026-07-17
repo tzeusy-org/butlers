@@ -162,8 +162,23 @@ func TestServer_Backfill_QueuesLivePublishBetweenSnapshotAndHandoffExactlyOnce(t
 	}
 	srv.RecordHistoryEvent(historical)
 
-	snapshotTaken := make(chan struct{})
+	live := &bridgeEvents.BridgeEvent{
+		Type:      "text",
+		MessageID: "between-snapshot-and-handoff",
+		ChatJID:   "chat@s.whatsapp.net",
+		Timestamp: now.Unix(),
+	}
+
+	type snapshotBarrierObservation struct {
+		subsMuHeld         bool
+		replayMuHeld       bool
+		pendingReplayCount int
+		liveHandoffArmed   bool
+	}
+	barrierReached := make(chan snapshotBarrierObservation, 1)
 	releaseHandoff := make(chan struct{})
+	publisherAttempted := make(chan struct{})
+	publisherDone := make(chan struct{})
 	defer func() {
 		select {
 		case <-releaseHandoff:
@@ -172,7 +187,30 @@ func TestServer_Backfill_QueuesLivePublishBetweenSnapshotAndHandoffExactlyOnce(t
 		}
 	}()
 	srv.afterBackfillSnapshot = func() {
-		close(snapshotTaken)
+		subsMuHeld := !srv.subsMu.TryLock()
+		if !subsMuHeld {
+			srv.subsMu.Unlock()
+		}
+		replayMuHeld := !srv.replayMu.TryLock()
+		pendingReplayCount := len(srv.pendingReplay)
+		liveHandoffArmed := srv.liveHandoffArmed
+		if !replayMuHeld {
+			srv.replayMu.Unlock()
+		}
+		barrierReached <- snapshotBarrierObservation{
+			subsMuHeld:         subsMuHeld,
+			replayMuHeld:       replayMuHeld,
+			pendingReplayCount: pendingReplayCount,
+			liveHandoffArmed:   liveHandoffArmed,
+		}
+		go func() {
+			close(publisherAttempted)
+			srv.PublishEvent(live)
+			// This HistorySync duplicate cannot restore a lost handoff: the
+			// replay cache already contains the live event.
+			srv.RecordHistoryEvent(live)
+			close(publisherDone)
+		}()
 		<-releaseHandoff
 	}
 
@@ -189,26 +227,45 @@ func TestServer_Backfill_QueuesLivePublishBetweenSnapshotAndHandoffExactlyOnce(t
 	}()
 
 	select {
-	case <-snapshotTaken:
+	case observation := <-barrierReached:
+		if !observation.subsMuHeld || !observation.replayMuHeld {
+			t.Fatalf(
+				"snapshot barrier must hold the subscriber and replay transition locks: subsMuHeld=%t replayMuHeld=%t",
+				observation.subsMuHeld,
+				observation.replayMuHeld,
+			)
+		}
+		if observation.pendingReplayCount != 0 || observation.liveHandoffArmed {
+			t.Fatalf(
+				"snapshot barrier must precede pending replay and handoff arm: pendingReplayCount=%d liveHandoffArmed=%t",
+				observation.pendingReplayCount,
+				observation.liveHandoffArmed,
+			)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("backfill did not reach the snapshot barrier")
 	}
 
-	// Pause at the former snapshot-to-handoff seam. The corrected implementation
-	// has already installed the matching pending replay and handoff state before
-	// this barrier releases the live publisher.
-	live := &bridgeEvents.BridgeEvent{
-		Type:      "text",
-		MessageID: "between-snapshot-and-handoff",
-		ChatJID:   "chat@s.whatsapp.net",
-		Timestamp: now.Unix(),
+	// The publisher is started while the snapshot transition is still paused.
+	// It must wait for the transition locks before making its first-subscriber
+	// handoff choice; otherwise splitting snapshot/pending/arm reopens the loss
+	// window this test covers.
+	select {
+	case <-publisherAttempted:
+	case <-time.After(time.Second):
+		t.Fatal("live publisher did not attempt the snapshot-to-handoff seam")
 	}
-	// A repeated HistorySync cannot repair a lost live event: the replay cache
-	// deduplicates it before RecordHistoryEvent can enqueue it again.
-	srv.PublishEvent(live)
-	srv.RecordHistoryEvent(live)
 	close(releaseHandoff)
-	<-backfillDone
+	select {
+	case <-backfillDone:
+	case <-time.After(time.Second):
+		t.Fatal("backfill did not complete after releasing the transition barrier")
+	}
+	select {
+	case <-publisherDone:
+	case <-time.After(time.Second):
+		t.Fatal("live publisher did not complete after backfill handoff")
+	}
 	if acknowledgement.Code != http.StatusOK {
 		t.Fatalf("POST /backfill status: got %d want %d", acknowledgement.Code, http.StatusOK)
 	}
