@@ -27,6 +27,7 @@ from butlers.api.fleet_events_bridge import (
     _on_notify,
     run_fleet_events_listener,
 )
+from butlers.db import Database
 
 pytestmark = pytest.mark.unit
 
@@ -104,6 +105,82 @@ def test_on_notify_defaults_non_dict_data_to_empty():
 # ---------------------------------------------------------------------------
 # _connect_listener — environment target selection
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("database_url", "postgres_db", "fallback_db", "expected_database"),
+    [
+        pytest.param(
+            "postgresql://fleet_user:fleet_password@db.example:5432/url_fleet_events",
+            "ignored_postgres_database",
+            "butlers",
+            "url_fleet_events",
+            id="database-url-overrides-postgres-db-and-roster-fallback",
+        ),
+        pytest.param(
+            "postgresql://fleet_user:fleet_password@db.example:5432/encoded%5Ffleet%2Dtarget",
+            None,
+            "butlers",
+            "encoded_fleet-target",
+            id="database-url-path-is-percent-decoded",
+        ),
+        pytest.param(
+            None,
+            "configured_postgres_database",
+            "butlers",
+            "configured_postgres_database",
+            id="postgres-db-fallback",
+        ),
+        pytest.param(
+            None,
+            None,
+            "butlers",
+            "butlers",
+            id="shared-default-fallback",
+        ),
+    ],
+)
+async def test_listener_and_daemon_publisher_resolve_the_same_database_target(
+    monkeypatch: pytest.MonkeyPatch,
+    database_url: str | None,
+    postgres_db: str | None,
+    fallback_db: str,
+    expected_database: str,
+) -> None:
+    """Publisher pools and LISTEN must share one database-scoped NOTIFY target."""
+    captured_kwargs: dict[str, object] = {}
+    sentinel = object()
+
+    async def capture_connect(**kwargs: Any) -> object:
+        captured_kwargs.update(kwargs)
+        return sentinel
+
+    if database_url is None:
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("DATABASE_URL", database_url)
+    if postgres_db is None:
+        monkeypatch.delenv("POSTGRES_DB", raising=False)
+    else:
+        monkeypatch.setenv("POSTGRES_DB", postgres_db)
+    monkeypatch.setattr(fleet_events_bridge.asyncpg, "connect", capture_connect)
+
+    publisher_db = Database.from_env(fallback_db)
+
+    assert publisher_db.db_name == expected_database
+    assert await _connect_listener() is sentinel
+    assert captured_kwargs["database"] == publisher_db.db_name
+
+
+def test_daemon_publisher_rejects_pathless_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A supplied URL cannot silently send publishers to a different database."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://db.example:5432/")
+    monkeypatch.setenv("POSTGRES_DB", "not_a_url_fallback")
+
+    with pytest.raises(ValueError, match="must include a database path"):
+        Database.from_env("butlers")
 
 
 async def test_connect_listener_uses_decoded_database_url_path_without_network(

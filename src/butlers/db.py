@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import asyncpg
 
@@ -288,6 +288,25 @@ def db_params_from_env() -> dict[str, str | int | None]:
         "password": os.environ.get("POSTGRES_PASSWORD", "butlers"),
         "ssl": _normalize_ssl_mode(os.environ.get("POSTGRES_SSLMODE")),
     }
+
+
+def database_name_from_env(fallback_db_name: str) -> str:
+    """Resolve the canonical PostgreSQL target for pools and dedicated connections.
+
+    ``DATABASE_URL`` is a complete connection target, so its decoded database
+    path takes precedence over ``POSTGRES_DB`` and a caller's configured
+    fallback. A supplied URL without a path is invalid rather than silently
+    selecting a different database; PostgreSQL LISTEN/NOTIFY is scoped to the
+    database, so divergent target selection would silently break event delivery.
+    """
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        database_name = unquote(urlparse(database_url).path).removeprefix("/")
+        if not database_name:
+            raise ValueError("DATABASE_URL must include a database path")
+        return database_name
+
+    return os.environ.get("POSTGRES_DB", fallback_db_name)
 
 
 class Database:
@@ -572,9 +591,10 @@ class Database:
     def from_env(cls, db_name: str) -> Database:
         """Create Database instance from environment variables.
 
-        Checks DATABASE_URL first (spec requirement), then falls back to
-        individual POSTGRES_* vars for backward compatibility. Supports
-        ``sslmode`` in DATABASE_URL query params and ``POSTGRES_SSLMODE``.
+        ``DATABASE_URL`` supplies both the connection parameters and, when set,
+        the decoded database path. Without it, ``POSTGRES_DB`` overrides the
+        caller's ``db_name`` fallback. Supports ``sslmode`` in DATABASE_URL
+        query params and ``POSTGRES_SSLMODE``.
 
         DATABASE_URL format: postgres://user:password@host:port/database
         Default: postgres://butlers:butlers@localhost/postgres
@@ -586,7 +606,7 @@ class Database:
             default_max=10,
         )
         return cls(
-            db_name=db_name,
+            db_name=database_name_from_env(db_name),
             host=str(params["host"]),
             port=int(params["port"]),
             user=str(params["user"]),

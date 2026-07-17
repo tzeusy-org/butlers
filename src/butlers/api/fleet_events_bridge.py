@@ -16,14 +16,12 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 import asyncpg
 
-from butlers.db import db_params_from_env, should_retry_with_ssl_disable
+from butlers.db import database_name_from_env, db_params_from_env, should_retry_with_ssl_disable
 from butlers.fleet_events import FLEET_EVENTS_CHANNEL
 
 logger = logging.getLogger(__name__)
@@ -36,33 +34,21 @@ _RECONNECT_BACKOFF_S = 5.0
 _HEALTH_POLL_INTERVAL_S = 5.0
 
 
-def _listener_database_name_from_env() -> str:
-    """Resolve the dedicated listener's database with URL-first precedence."""
-    database_url = os.environ.get("DATABASE_URL")
-    if database_url:
-        database_name = unquote(urlparse(database_url).path).removeprefix("/")
-        if not database_name:
-            raise ValueError("DATABASE_URL must include a database path for fleet-events listener")
-        return database_name
-
-    return os.environ.get("POSTGRES_DB", "butlers")
-
-
 async def _connect_listener() -> asyncpg.Connection:
     """Open a dedicated (non-pooled) connection for LISTEN.
 
     LISTEN registrations are connection-scoped in Postgres, so this
     connection must be held for the lifetime of the listener rather than
     borrowed from a pool that recycles/closes connections underneath it.
-    Uses the standard URL-first database target plus the same env-derived
-    host/auth/SSL params as the daemon's pools, without depending on
+    Uses the same canonical database-target resolver and env-derived
+    host/auth/SSL params as the daemon publisher pools, without depending on
     ``DatabaseManager``'s per-butler,
     schema-scoped pools (LISTEN/NOTIFY is database-scoped, not
     schema-scoped, so any single connection to the shared database sees
     every schema's NOTIFYs).
     """
     params = db_params_from_env()
-    database = _listener_database_name_from_env()
+    database = database_name_from_env("butlers")
     connect_kwargs: dict[str, Any] = {**params, "database": database}
     try:
         return await asyncpg.connect(**connect_kwargs)
