@@ -88,8 +88,11 @@ strong engine mapping free-text statements into consistent backend predicates.
 ## Error handling
 
 - **Switchboard unreachable (MCP 503):** SSE `error` event; widget shows "Switchboard
-  offline — retry". Message is persisted before submission; retry re-submits the same
-  `request_id` (pipeline ingress dedupe makes it idempotent).
+  offline — retry". Message is persisted before submission. Retry starts a fresh
+  submission attempt with the same `message_id`; it does not replay the original
+  HTTP/SSE request or envelope. For details, see:
+
+  [Chat send retry semantics](2026-07-17-chat-send-retry-semantics.md).
 - **Reply timeout:** graceful timeout event with session link; thread stays open; late
   replies are caught by the unread poll.
 - **Unroutable:** Switchboard dead-letter tooling; owner told in-thread.
