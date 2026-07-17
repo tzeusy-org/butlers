@@ -445,7 +445,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             pricingMap={pricingMap}
           />
 
-          {isLoadingMessages && activeConversationId ? (
+          {isLoadingMessages && activeConversationId && localMessages.length === 0 ? (
             <MessageThreadSkeleton />
           ) : (
             <MessageThread

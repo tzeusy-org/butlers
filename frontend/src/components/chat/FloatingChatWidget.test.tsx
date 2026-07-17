@@ -18,7 +18,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 
@@ -125,6 +125,13 @@ const MESSAGES_BY_CONV: Record<string, Message[]> = {
   "conv-1": [],
 };
 
+const NEXT_THREAD_MESSAGE: Message = {
+  ...MESSAGES_BY_CONV["conv-2"][0],
+  id: "msg-older-thread",
+  conversation_id: "conv-1",
+  content: "Rendered when the older thread arrives",
+};
+
 function mockHooksWithConversations() {
   vi.mocked(useConversations).mockReturnValue({
     data: { data: CONVERSATIONS, meta: {} },
@@ -176,6 +183,47 @@ function mockHooksEmpty() {
     data: { data: [], meta: {} },
     isLoading: false,
   } as unknown as ReturnType<typeof useConversationSearch>);
+}
+
+function mockHooksForConversationRefetchGap() {
+  const conversationsResult = {
+    data: { data: CONVERSATIONS, meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversations>;
+  const emptyMessagesResult = {
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  const currentMessagesResult = {
+    data: { data: MESSAGES_BY_CONV["conv-2"], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  let olderMessagesResult = {
+    data: undefined,
+    isLoading: true,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+
+  vi.mocked(useConversations).mockReturnValue(conversationsResult);
+  vi.mocked(useConversationMessages).mockImplementation(
+    (_butlerName: string, conversationId: string | null) => {
+      if (conversationId === "conv-2") return currentMessagesResult;
+      if (conversationId === "conv-1") return olderMessagesResult;
+      return emptyMessagesResult;
+    },
+  );
+  vi.mocked(useConversationSearch).mockReturnValue({
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationSearch>);
+
+  return {
+    resolveOlderThread() {
+      olderMessagesResult = {
+        data: { data: [NEXT_THREAD_MESSAGE], meta: {} },
+        isLoading: false,
+      } as unknown as ReturnType<typeof useConversationMessages>;
+    },
+  };
 }
 
 function buildWidgetTree(queryClient: QueryClient, initialPath: string) {
@@ -325,6 +373,28 @@ describe("FloatingChatWidget — history view", () => {
 
     expect(screen.queryByTestId("chat-widget-back-button")).toBeNull();
     expect(screen.getByTestId("chat-widget-history-button")).toBeDefined();
+  });
+
+  it("keeps the current thread visible while loading, then synchronizes the selected thread", async () => {
+    const { resolveOlderThread } = mockHooksForConversationRefetchGap();
+    const view = renderWidget();
+
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+    expect(screen.getByText("Alice is child-of Bob")).toBeDefined();
+
+    fireEvent.click(screen.getByTestId("chat-widget-history-button"));
+    fireEvent.click(screen.getByText("Older thread"));
+
+    expect(screen.getByText("Alice is child-of Bob")).toBeDefined();
+    expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
+
+    resolveOlderThread();
+    view.rerenderWidget();
+
+    await waitFor(() => {
+      expect(screen.getByText("Rendered when the older thread arrives")).toBeDefined();
+    });
+    expect(screen.queryByText("Alice is child-of Bob")).toBeNull();
   });
 
   it("New button from history resets to a fresh conversation in thread view", () => {
