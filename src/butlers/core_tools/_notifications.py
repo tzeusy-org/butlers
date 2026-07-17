@@ -310,6 +310,41 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     )
                 ),
             ] = None,
+            _why: Annotated[
+                Any | None,
+                Field(
+                    description=(
+                        "Required non-empty rationale for a non-owner recipient that "
+                        "requires approval. Owner-directed notifications may omit it."
+                    )
+                ),
+            ] = None,
+            _evidence: Annotated[
+                Any | None,
+                Field(
+                    description=(
+                        "Optional typed evidence list. Each item must contain exactly "
+                        "type, ref, and note."
+                    )
+                ),
+            ] = None,
+            _blast_radius: Annotated[
+                Any | None,
+                Field(
+                    description=(
+                        "Optional affected-scope classification: none, self, contact, or external."
+                    )
+                ),
+            ] = None,
+            _reversibility: Annotated[
+                Any | None,
+                Field(
+                    description=(
+                        "Optional reversibility classification: reversible, compensable, "
+                        "or irreversible."
+                    )
+                ),
+            ] = None,
         ) -> dict:
             """Send a `notify.v1` envelope through Switchboard `deliver()`.
 
@@ -326,6 +361,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react` | `insight`
             - `emoji` (string): required when `intent="react"`
+            - `_why` (string): required for a non-owner recipient that enters approval gating;
+              owner-directed notifications may omit it
+            - `_evidence` (list): optional typed evidence objects with `type`, `ref`, and `note`
+            - `_blast_radius` (string enum): optional `none` | `self` | `contact` | `external`
+            - `_reversibility` (string enum): optional `reversible` | `compensable` | `irreversible`
             - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
               include `request_id`, `source_channel`, `source_endpoint_identity`,
               `source_sender_identity` plus `source_thread_identity` for
@@ -717,6 +757,50 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     # No matching entity_facts triple — park as pending_action and notify owner
                     action_id: uuid.UUID | None = None
                     pool = daemon.db.pool if daemon.db is not None else None
+                    from butlers.core.approvals_hooks import (
+                        validate_non_owner_dossier,
+                        validate_owner_dossier,
+                    )
+
+                    # No channel identity exists to resolve through the normal recipient
+                    # guard, so resolve the target entity's owner role directly before
+                    # applying the dossier rule. A failed lookup is conservative: it
+                    # remains a non-owner path and therefore requires `_why`.
+                    is_owner_target = False
+                    if pool is not None:
+                        from butlers.core.owner import fetch_owner_entity_id
+
+                        try:
+                            owner_entity_id = await fetch_owner_entity_id(pool)
+                            is_owner_target = owner_entity_id is not None and str(
+                                owner_entity_id
+                            ) == str(entity_id)
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "notify() could not resolve owner for missing identifier; "
+                                "requiring a non-owner decision dossier",
+                                exc_info=True,
+                            )
+
+                    dossier_or_error = (
+                        validate_owner_dossier(
+                            raw_why=_why,
+                            raw_evidence=_evidence,
+                            raw_blast_radius=_blast_radius,
+                            raw_reversibility=_reversibility,
+                        )
+                        if is_owner_target
+                        else validate_non_owner_dossier(
+                            raw_why=_why,
+                            raw_evidence=_evidence,
+                            raw_blast_radius=_blast_radius,
+                            raw_reversibility=_reversibility,
+                        )
+                    )
+                    if isinstance(dossier_or_error, dict):
+                        return dossier_or_error
+                    dossier = dossier_or_error
+
                     if pool is not None:
                         import datetime as _dt
 
@@ -749,8 +833,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         await pool.execute(
                             "INSERT INTO pending_actions "
                             "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                            "requested_at, expires_at) "
-                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                            "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                             action_id,
                             "notify",
                             safe_park_tool_args,
@@ -759,6 +843,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             "pending",  # ActionStatus.PENDING — literal avoids approvals import
                             now,
                             expires_at,
+                            dossier.why,
+                            dossier.evidence,
+                            dossier.blast_radius,
+                            dossier.reversibility,
                         )
                         logger.warning(
                             "notify() parked as pending_missing_identifier: "
@@ -876,7 +964,14 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         ),
                         session_id=get_current_runtime_session_id(),
                         msg_context=msg_context,
+                        why=_why,
+                        evidence=_evidence,
+                        blast_radius=_blast_radius,
+                        reversibility=_reversibility,
+                        enforce_dossier=True,
                     )
+                    if _decision.dossier_error is not None:
+                        return _decision.dossier_error
                     if not _decision.allowed:
                         return {
                             "status": "pending_approval",
@@ -926,7 +1021,14 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         ),
                         session_id=get_current_runtime_session_id(),
                         butler_name=butler_name,
+                        why=_why,
+                        evidence=_evidence,
+                        blast_radius=_blast_radius,
+                        reversibility=_reversibility,
+                        enforce_dossier=True,
                     )
+                    if _decision.dossier_error is not None:
+                        return _decision.dossier_error
                     if not _decision.allowed:
                         return {
                             "status": "pending_approval",

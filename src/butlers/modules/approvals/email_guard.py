@@ -27,6 +27,11 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.approvals_hooks import (
+    DecisionDossier,
+    validate_non_owner_dossier,
+    validate_owner_dossier,
+)
 from butlers.modules.approvals._shared import is_primary_contact
 
 logger = logging.getLogger(__name__)
@@ -98,10 +103,11 @@ class EmailGuardDecision:
     """Result of an email recipient guard check."""
 
     allowed: bool
-    reason: str  # "owner", "rule", "parked"
+    reason: str  # "owner", "rule", "parked", "dossier_error"
     action_id: uuid.UUID | None = None
     rule_id: uuid.UUID | None = None
     contact_desc: str | None = None  # "known non-owner contact" | "unknown contact"
+    dossier_error: dict[str, Any] | None = None
 
 
 async def check_email_recipient(
@@ -117,6 +123,11 @@ async def check_email_recipient(
     expiry_hours: int = 72,
     msg_context: str | None = None,
     butler_name: str | None = None,
+    why: Any = None,
+    evidence: Any = None,
+    blast_radius: Any = None,
+    reversibility: Any = None,
+    enforce_dossier: bool = False,
 ) -> EmailGuardDecision:
     """Check whether an outbound email to *email_target* is permitted.
 
@@ -184,6 +195,7 @@ async def check_email_recipient(
     from butlers.identity import resolve_contact_by_channel
 
     contact = await resolve_contact_by_channel(pool, "email", email_target)
+    dossier = DecisionDossier(None, [], None, None)
 
     # Owner primary address → always allowed (no further checks needed)
     if contact is not None and "owner" in contact.roles:
@@ -199,7 +211,38 @@ async def check_email_recipient(
                 email_target,
             )
         if is_primary:
+            if enforce_dossier:
+                dossier_or_error = validate_owner_dossier(
+                    raw_why=why,
+                    raw_evidence=evidence,
+                    raw_blast_radius=blast_radius,
+                    raw_reversibility=reversibility,
+                )
+                if isinstance(dossier_or_error, dict):
+                    return EmailGuardDecision(
+                        allowed=False,
+                        reason="dossier_error",
+                        dossier_error=dossier_or_error,
+                    )
             return EmailGuardDecision(allowed=True, reason="owner")
+
+    # A non-owner (including a non-primary owner email) must supply its dossier
+    # before any rule lookup or pending-action persistence, including the
+    # email-context mismatch park path below.
+    if enforce_dossier:
+        dossier_or_error = validate_non_owner_dossier(
+            raw_why=why,
+            raw_evidence=evidence,
+            raw_blast_radius=blast_radius,
+            raw_reversibility=reversibility,
+        )
+        if isinstance(dossier_or_error, dict):
+            return EmailGuardDecision(
+                allowed=False,
+                reason="dossier_error",
+                dossier_error=dossier_or_error,
+            )
+        dossier = dossier_or_error
 
     # Context mismatch check: park if the declared message context conflicts
     # with the address's tagged context.  This applies to non-primary owner
@@ -227,8 +270,8 @@ async def check_email_recipient(
                 await pool.execute(
                     "INSERT INTO pending_actions "
                     "(id, tool_name, tool_args, agent_summary, session_id, status, "
-                    "requested_at, expires_at) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                     action_id,
                     park_tool_name,
                     safe_park_tool_args,
@@ -237,6 +280,10 @@ async def check_email_recipient(
                     ActionStatus.PENDING.value,
                     now,
                     expires_at,
+                    dossier.why,
+                    dossier.evidence,
+                    dossier.blast_radius,
+                    dossier.reversibility,
                 )
                 await _emit_created(action_id, ActionStatus.PENDING.value)
                 logger.warning(
@@ -308,8 +355,8 @@ async def check_email_recipient(
         await pool.execute(
             "INSERT INTO pending_actions "
             "(id, tool_name, tool_args, agent_summary, session_id, status, "
-            "requested_at, expires_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
             action_id,
             park_tool_name,
             safe_park_tool_args,
@@ -318,6 +365,10 @@ async def check_email_recipient(
             ActionStatus.PENDING.value,
             now,
             expires_at,
+            dossier.why,
+            dossier.evidence,
+            dossier.blast_radius,
+            dossier.reversibility,
         )
         await _emit_created(action_id, ActionStatus.PENDING.value)
         logger.warning(
@@ -354,6 +405,11 @@ async def check_recipient(
     session_id: str | uuid.UUID | None = None,
     expiry_hours: int = 72,
     butler_name: str | None = None,
+    why: Any = None,
+    evidence: Any = None,
+    blast_radius: Any = None,
+    reversibility: Any = None,
+    enforce_dossier: bool = False,
 ) -> EmailGuardDecision:
     """Channel-general outbound recipient guard (telegram, etc.).
 
@@ -400,7 +456,36 @@ async def check_recipient(
 
     # Owner-directed outbound: auto-approve on any active, verified owner channel.
     if contact is not None and "owner" in contact.roles:
+        if enforce_dossier:
+            dossier_or_error = validate_owner_dossier(
+                raw_why=why,
+                raw_evidence=evidence,
+                raw_blast_radius=blast_radius,
+                raw_reversibility=reversibility,
+            )
+            if isinstance(dossier_or_error, dict):
+                return EmailGuardDecision(
+                    allowed=False,
+                    reason="dossier_error",
+                    dossier_error=dossier_or_error,
+                )
         return EmailGuardDecision(allowed=True, reason="owner")
+
+    dossier = DecisionDossier(None, [], None, None)
+    if enforce_dossier:
+        dossier_or_error = validate_non_owner_dossier(
+            raw_why=why,
+            raw_evidence=evidence,
+            raw_blast_radius=blast_radius,
+            raw_reversibility=reversibility,
+        )
+        if isinstance(dossier_or_error, dict):
+            return EmailGuardDecision(
+                allowed=False,
+                reason="dossier_error",
+                dossier_error=dossier_or_error,
+            )
+        dossier = dossier_or_error
 
     contact_desc = "known non-owner contact" if contact is not None else "unknown contact"
 
@@ -473,8 +558,8 @@ async def check_recipient(
         await pool.execute(
             "INSERT INTO pending_actions "
             "(id, tool_name, tool_args, agent_summary, session_id, status, "
-            "requested_at, expires_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
             action_id,
             park_tool_name,
             safe_park_tool_args,
@@ -483,6 +568,10 @@ async def check_recipient(
             ActionStatus.PENDING.value,
             now,
             expires_at,
+            dossier.why,
+            dossier.evidence,
+            dossier.blast_radius,
+            dossier.reversibility,
         )
         await _emit_created(action_id, ActionStatus.PENDING.value)
         logger.warning(

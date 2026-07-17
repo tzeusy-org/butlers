@@ -53,6 +53,11 @@ OWNER_TELEGRAM = "100200300"
 KNOWN_NON_OWNER_TELEGRAM = "900800700"
 UNKNOWN_TELEGRAM = "555555555"
 
+_NON_OWNER_DOSSIER = {
+    "_why": "The recipient needs this requested notification.",
+    "_evidence": [],
+}
+
 
 def _owner_contact() -> ResolvedContact:
     return ResolvedContact(
@@ -438,6 +443,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Your Google AI Pro plan has ended.",
                 recipient=HALLUCINATED_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (
@@ -463,6 +469,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Follow up on Nutrition Kitchen subscription",
                 recipient=UNKNOWN_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval"
@@ -512,6 +519,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Hello friend",
                 recipient=KNOWN_NON_OWNER_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (
@@ -555,6 +563,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Hello friend",
                 recipient=KNOWN_NON_OWNER_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "ok", (
@@ -598,6 +607,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Permitted message",
                 recipient=UNKNOWN_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "ok", (
@@ -626,6 +636,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Should be blocked",
                 recipient=UNKNOWN_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval"
@@ -765,6 +776,7 @@ class TestNotifyTelegramRecipientValidation:
                 channel="telegram",
                 message="Hello friend",
                 recipient=KNOWN_NON_OWNER_TELEGRAM,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (
@@ -810,6 +822,7 @@ class TestNotifyTelegramRecipientValidation:
                 channel="telegram",
                 message="Hello friend",
                 recipient=KNOWN_NON_OWNER_TELEGRAM,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "ok", (
@@ -843,6 +856,7 @@ class TestNotifyTelegramRecipientValidation:
                 channel="telegram",
                 message="Who are you",
                 recipient=UNKNOWN_TELEGRAM,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval"
@@ -1113,6 +1127,7 @@ class TestIncidentReplay:
                     "for March 14, 2026 at 6:30 PM SGT."
                 ),
                 recipient="jo@reallylesson.com",
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (
@@ -1222,6 +1237,7 @@ class TestEntityIdBypassFix:
                 channel="email",
                 message="Card transaction alert details requested",
                 entity_id=str(TEMP_ENTITY_ID),
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (

@@ -92,6 +92,8 @@ async def pending_actions_pool(provisioned_postgres_pool):
                 execution_result JSONB,
                 why TEXT,
                 evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+                blast_radius TEXT,
+                reversibility TEXT,
                 approval_rule_id UUID,
                 CONSTRAINT pending_actions_status_check
                     CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed'))
@@ -403,6 +405,16 @@ class TestNotifyParkPath:
             message="hello there",
             intent="send",
             entity_id=entity_id,
+            _why="The contact needs this delivery after their channel is configured.",
+            _evidence=[
+                {
+                    "type": "entity",
+                    "ref": str(entity_id),
+                    "note": "The target entity lacks a telegram identifier.",
+                }
+            ],
+            _blast_radius="contact",
+            _reversibility="compensable",
         )
         assert result["status"] == "pending_missing_identifier"
 
@@ -415,6 +427,25 @@ class TestNotifyParkPath:
         assert stored["message"] == "hello there"
         assert stored["entity_id"] == str(entity_id)
         assert stored["intent"] == "send"
+        dossier = await pool.fetchrow(
+            "SELECT why, evidence, blast_radius, reversibility "
+            "FROM pending_actions WHERE tool_name = $1 "
+            "ORDER BY requested_at DESC LIMIT 1",
+            "notify",
+        )
+        assert dossier is not None
+        assert (
+            dossier["why"] == "The contact needs this delivery after their channel is configured."
+        )
+        assert dossier["evidence"] == [
+            {
+                "type": "entity",
+                "ref": str(entity_id),
+                "note": "The target entity lacks a telegram identifier.",
+            }
+        ]
+        assert dossier["blast_radius"] == "contact"
+        assert dossier["reversibility"] == "compensable"
 
 
 class TestApprovalsEditsUpdateFragment:

@@ -28,10 +28,10 @@ import inspect
 import json
 import logging
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import butlers.core.approvals_hooks as approval_hooks
 from butlers.config import ApprovalConfig, ApprovalRiskTier
 from butlers.identity import (
     ResolvedContact,
@@ -40,7 +40,7 @@ from butlers.identity import (
 )
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
-from butlers.modules.approvals.models import ActionStatus, EvidenceReference
+from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.rules import (
     constraint_pins_value,
     match_rules_from_list,
@@ -51,41 +51,6 @@ from butlers.modules.base import ToolMeta
 logger = logging.getLogger(__name__)
 
 _MISSING = object()
-_BLAST_RADIUS_VALUES = ("none", "self", "contact", "external")
-_REVERSIBILITY_VALUES = ("reversible", "compensable", "irreversible")
-_EVIDENCE_TYPES = ("fact", "entity", "url", "text")
-_WHY_MAX_CHARS = 2000
-_EVIDENCE_MAX_ITEMS = 50
-_EVIDENCE_VALUE_MAX_CHARS = 2000
-
-
-@dataclass(frozen=True)
-class DecisionDossier:
-    """Validated optional approval context persisted with an action."""
-
-    why: str | None
-    evidence: list[EvidenceReference]
-    blast_radius: str | None
-    reversibility: str | None
-
-
-def _dossier_error(
-    *,
-    field: str,
-    code: str,
-    message: str,
-    allowed_values: tuple[str, ...] | None = None,
-) -> dict[str, Any]:
-    """Return a retryable, structured boundary error without parking an action."""
-    error: dict[str, Any] = {
-        "code": code,
-        "field": field,
-        "message": message,
-        "retryable": True,
-    }
-    if allowed_values is not None:
-        error["allowed_values"] = list(allowed_values)
-    return {"status": "error", "error": error, "retryable": True}
 
 
 def _pop_dossier_value(tool_args: dict[str, Any], private_name: str, public_name: str) -> Any:
@@ -97,188 +62,9 @@ def _pop_dossier_value(tool_args: dict[str, Any], private_name: str, public_name
     """
     private_value = tool_args.pop(private_name, _MISSING)
     public_value = tool_args.pop(public_name, _MISSING)
-    return private_value if private_value is not _MISSING else public_value
-
-
-def _validate_optional_enum(
-    value: Any,
-    *,
-    field: str,
-    allowed_values: tuple[str, ...],
-) -> str | None | dict[str, Any]:
-    """Validate a nullable dossier enum without coercing malformed values."""
-    if value is _MISSING or value is None:
+    if private_value is _MISSING and public_value is _MISSING:
         return None
-    if not isinstance(value, str) or value not in allowed_values:
-        return _dossier_error(
-            field=field,
-            code="invalid_dossier_value",
-            message=(f"{field} must be one of {', '.join(allowed_values)} when provided."),
-            allowed_values=allowed_values,
-        )
-    return value
-
-
-def _validate_dossier(
-    *,
-    raw_why: Any,
-    raw_evidence: Any,
-    raw_blast_radius: Any,
-    raw_reversibility: Any,
-    require_why: bool,
-) -> DecisionDossier | dict[str, Any]:
-    """Strictly validate supplied dossier metadata without coercing it.
-
-    The migration is responsible for historic plain-string evidence.  This
-    runtime boundary deliberately refuses legacy-shaped or malformed inputs
-    instead of converting, trimming, or otherwise making an ambiguous action
-    look reviewable.
-    """
-    if raw_why is _MISSING or raw_why is None:
-        if require_why:
-            return _dossier_error(
-                field="why",
-                code="missing_required_dossier_field",
-                message="why is required for a gated non-owner action; retry with _why.",
-            )
-        why: str | None = None
-    elif not isinstance(raw_why, str) or not raw_why.strip():
-        return _dossier_error(
-            field="why",
-            code="invalid_dossier_value",
-            message="why must be a non-empty human-readable string.",
-        )
-    elif len(raw_why) > _WHY_MAX_CHARS:
-        return _dossier_error(
-            field="why",
-            code="invalid_dossier_value",
-            message=f"why must not exceed {_WHY_MAX_CHARS} characters.",
-        )
-    else:
-        why = raw_why
-
-    blast_radius = _validate_optional_enum(
-        raw_blast_radius,
-        field="blast_radius",
-        allowed_values=_BLAST_RADIUS_VALUES,
-    )
-    if isinstance(blast_radius, dict):
-        return blast_radius
-
-    reversibility = _validate_optional_enum(
-        raw_reversibility,
-        field="reversibility",
-        allowed_values=_REVERSIBILITY_VALUES,
-    )
-    if isinstance(reversibility, dict):
-        return reversibility
-
-    if raw_evidence is _MISSING or raw_evidence is None:
-        evidence: list[EvidenceReference] = []
-    elif not isinstance(raw_evidence, list):
-        return _dossier_error(
-            field="evidence",
-            code="invalid_dossier_value",
-            message="evidence must be a list of typed evidence references.",
-        )
-    elif len(raw_evidence) > _EVIDENCE_MAX_ITEMS:
-        return _dossier_error(
-            field="evidence",
-            code="invalid_dossier_value",
-            message=f"evidence may contain at most {_EVIDENCE_MAX_ITEMS} entries.",
-        )
-    else:
-        evidence = []
-        for index, item in enumerate(raw_evidence):
-            field = f"evidence[{index}]"
-            if not isinstance(item, dict):
-                return _dossier_error(
-                    field=field,
-                    code="invalid_dossier_value",
-                    message=(
-                        f"{field} must be an object with type, ref, and note; "
-                        "plain-string evidence is no longer accepted."
-                    ),
-                )
-            if set(item) != {"type", "ref", "note"}:
-                return _dossier_error(
-                    field=field,
-                    code="invalid_dossier_value",
-                    message=f"{field} must contain exactly type, ref, and note.",
-                )
-            evidence_type = item["type"]
-            ref = item["ref"]
-            note = item["note"]
-            if not isinstance(evidence_type, str) or evidence_type not in _EVIDENCE_TYPES:
-                return _dossier_error(
-                    field=f"{field}.type",
-                    code="invalid_dossier_value",
-                    message=f"{field}.type must be one of {', '.join(_EVIDENCE_TYPES)}.",
-                    allowed_values=_EVIDENCE_TYPES,
-                )
-            if not isinstance(ref, str) or not ref:
-                return _dossier_error(
-                    field=f"{field}.ref",
-                    code="invalid_dossier_value",
-                    message=f"{field}.ref must be a non-empty string.",
-                )
-            if not isinstance(note, str):
-                return _dossier_error(
-                    field=f"{field}.note",
-                    code="invalid_dossier_value",
-                    message=f"{field}.note must be a string.",
-                )
-            if len(ref) > _EVIDENCE_VALUE_MAX_CHARS or len(note) > _EVIDENCE_VALUE_MAX_CHARS:
-                return _dossier_error(
-                    field=field,
-                    code="invalid_dossier_value",
-                    message=(
-                        f"{field}.ref and {field}.note must not exceed "
-                        f"{_EVIDENCE_VALUE_MAX_CHARS} characters."
-                    ),
-                )
-            evidence.append({"type": evidence_type, "ref": ref, "note": note})
-
-    return DecisionDossier(
-        why=why,
-        evidence=evidence,
-        blast_radius=blast_radius,
-        reversibility=reversibility,
-    )
-
-
-def _validate_non_owner_dossier(
-    *,
-    raw_why: Any,
-    raw_evidence: Any,
-    raw_blast_radius: Any,
-    raw_reversibility: Any,
-) -> DecisionDossier | dict[str, Any]:
-    """Require a complete, typed dossier before a non-owner call proceeds."""
-    return _validate_dossier(
-        raw_why=raw_why,
-        raw_evidence=raw_evidence,
-        raw_blast_radius=raw_blast_radius,
-        raw_reversibility=raw_reversibility,
-        require_why=True,
-    )
-
-
-def _validate_owner_dossier(
-    *,
-    raw_why: Any,
-    raw_evidence: Any,
-    raw_blast_radius: Any,
-    raw_reversibility: Any,
-) -> DecisionDossier | dict[str, Any]:
-    """Validate supplied owner metadata without making any field mandatory."""
-    return _validate_dossier(
-        raw_why=raw_why,
-        raw_evidence=raw_evidence,
-        raw_blast_radius=raw_blast_radius,
-        raw_reversibility=raw_reversibility,
-        require_why=False,
-    )
+    return private_value if private_value is not _MISSING else public_value
 
 
 def _add_dossier_metadata_to_tool_schema(tool_obj: Any) -> None:
@@ -297,12 +83,12 @@ def _add_dossier_metadata_to_tool_schema(tool_obj: Any) -> None:
             },
             "_blast_radius": {
                 "type": "string",
-                "enum": list(_BLAST_RADIUS_VALUES),
+                "enum": list(approval_hooks.BLAST_RADIUS_VALUES),
                 "description": "Optional scope affected if this action executes.",
             },
             "_reversibility": {
                 "type": "string",
-                "enum": list(_REVERSIBILITY_VALUES),
+                "enum": list(approval_hooks.REVERSIBILITY_VALUES),
                 "description": "Optional reversibility classification for this action.",
             },
             "_evidence": {
@@ -313,7 +99,7 @@ def _add_dossier_metadata_to_tool_schema(tool_obj: Any) -> None:
                     "additionalProperties": False,
                     "required": ["type", "ref", "note"],
                     "properties": {
-                        "type": {"type": "string", "enum": list(_EVIDENCE_TYPES)},
+                        "type": {"type": "string", "enum": list(approval_hooks.EVIDENCE_TYPES)},
                         "ref": {"type": "string"},
                         "note": {"type": "string"},
                     },
@@ -790,7 +576,7 @@ def _make_gate_wrapper(
             # returns a row for an active, verified owner channel — so this
             # covers ANY such channel, not just the primary one (bu-nd5me).
             # entity_id dispatch and non-primary owner channels all land here.
-            dossier_or_error = _validate_owner_dossier(
+            dossier_or_error = approval_hooks.validate_owner_dossier(
                 raw_why=raw_why,
                 raw_evidence=raw_evidence,
                 raw_blast_radius=raw_blast_radius,
@@ -874,7 +660,7 @@ def _make_gate_wrapper(
         # they can be matched against a rule or parked.  Returning here is
         # intentionally before every database write, so a session can repair the
         # request and retry rather than leave an unreviewable action pending.
-        dossier_or_error = _validate_non_owner_dossier(
+        dossier_or_error = approval_hooks.validate_non_owner_dossier(
             raw_why=raw_why,
             raw_evidence=raw_evidence,
             raw_blast_radius=raw_blast_radius,

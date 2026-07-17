@@ -231,6 +231,16 @@ def _known_contact_patch(email: str = "user@example.com") -> Any:
         yield
 
 
+def _non_owner_contact() -> ResolvedContact:
+    """Return a resolved non-owner target for notify approval-boundary tests."""
+    return ResolvedContact(
+        contact_id=None,
+        name="Test Contact",
+        roles=["contact"],
+        entity_id=uuid.UUID("00000000-0000-0000-0000-dddddddddddd"),
+    )
+
+
 def _make_mock_client(*, is_error: bool = False) -> Any:
     """Create a mock switchboard client."""
     mock_call_result = MagicMock()
@@ -553,7 +563,13 @@ class TestNotifyMissingIdentifierAndOwner:
                 new=AsyncMock(return_value="owner@example.com"),
             ),
         ):
-            result = await notify_fn(channel="email", message="Hello contact", entity_id=entity_id)
+            result = await notify_fn(
+                channel="email",
+                message="Hello contact",
+                entity_id=entity_id,
+                _why="The contact needs this delivery after their channel is configured.",
+                _evidence=[],
+            )
         assert result["status"] == "pending_missing_identifier"
         assert result["entity_id"] == str(entity_id)
         mock_client.call_tool.assert_awaited_once()
@@ -570,7 +586,11 @@ class TestNotifyMissingIdentifierAndOwner:
             ),
         ):
             result2 = await notify_fn(
-                channel="email", message="Cannot deliver", entity_id=entity_id
+                channel="email",
+                message="Cannot deliver",
+                entity_id=entity_id,
+                _why="The contact needs this delivery after their channel is configured.",
+                _evidence=[],
             )
         assert result2["status"] == "pending_missing_identifier"
         mock_client2.call_tool.assert_not_awaited()
@@ -636,6 +656,18 @@ def register_email_guard_hook():
     _hooks._email_guard_hook = orig
 
 
+@pytest.fixture(autouse=False)
+def register_recipient_guard_hook():
+    """Register the channel-general approval guard for notify-boundary tests."""
+    import butlers.core.approvals_hooks as _hooks
+    from butlers.modules.approvals.email_guard import check_recipient as _real_check
+
+    orig = _hooks._recipient_guard_hook
+    _hooks._recipient_guard_hook = _real_check
+    yield
+    _hooks._recipient_guard_hook = orig
+
+
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("register_email_guard_hook")
 class TestNotifyEmailRecipientValidation:
@@ -651,7 +683,11 @@ class TestNotifyEmailRecipientValidation:
         daemon.switchboard_client = _make_mock_client()
         with patch("butlers.identity.resolve_contact_by_channel", new=AsyncMock(return_value=None)):
             result = await notify_fn(
-                channel="email", message="Hello stranger", recipient="hallucinated@example.com"
+                channel="email",
+                message="Hello stranger",
+                recipient="hallucinated@example.com",
+                _why="The recipient asked for this update.",
+                _evidence=[],
             )
         assert result["status"] == "pending_approval"
 
@@ -677,8 +713,216 @@ class TestNotifyEmailRecipientValidation:
                 channel="email",
                 message="Hello via entity_id",
                 entity_id=uuid.UUID("00000000-0000-0000-0000-000000000099"),
+                _why="The recipient asked for this update.",
+                _evidence=[],
             )
         assert result3["status"] == "pending_approval"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("register_recipient_guard_hook")
+class TestNotifyDecisionDossierBoundary:
+    """notify() must apply the dossier contract before non-owner park/rule paths."""
+
+    async def test_owner_target_remains_exempt_from_required_why(self, butler_dir: Path) -> None:
+        """A resolved owner recipient still delivers without a decision dossier."""
+        mock_pool, _ = _make_pool_with_entity_facts_conn()
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+
+        with _known_contact_patch():
+            result = await notify_fn(
+                channel="telegram",
+                message="Owner-only status update",
+                recipient="12345",
+            )
+
+        assert result["status"] == "ok"
+        pending_inserts = [
+            call
+            for call in mock_pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        ]
+        assert pending_inserts == []
+
+    async def test_owner_missing_identifier_remains_exempt_from_required_why(
+        self, butler_dir: Path
+    ) -> None:
+        """An owner entity still parks for its missing channel without requiring why."""
+        entity_id = uuid.UUID("00000000-0000-0000-0000-aaaaaaaaaaaa")
+        mock_pool, _ = _make_pool_with_entity_facts_conn()
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+
+        with (
+            patch.object(
+                daemon,
+                "_resolve_entity_channel_identifier",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                daemon,
+                "_resolve_default_notify_recipient",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.core.owner.fetch_owner_entity_id",
+                new=AsyncMock(return_value=entity_id),
+            ),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Owner delivery awaiting channel configuration",
+                entity_id=entity_id,
+            )
+
+        assert result["status"] == "pending_missing_identifier"
+        pending_insert = next(
+            call
+            for call in mock_pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        )
+        assert pending_insert.args[-4:] == (None, [], None, None)
+
+    @pytest.mark.parametrize(
+        ("dossier_kwargs", "expected_code"),
+        [
+            ({}, "missing_required_dossier_field"),
+            ({"_why": "   "}, "invalid_dossier_value"),
+        ],
+    )
+    async def test_non_owner_invalid_why_retries_without_rule_or_persistence(
+        self,
+        butler_dir: Path,
+        dossier_kwargs: dict[str, Any],
+        expected_code: str,
+    ) -> None:
+        """Missing or malformed why stops notify() before any approval side effect."""
+        mock_pool, _ = _make_pool_with_entity_facts_conn()
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+        match_rules = AsyncMock(side_effect=AssertionError("rules must not be queried"))
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch("butlers.modules.approvals.rules.match_rules", new=match_rules),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Non-owner update",
+                recipient="900800700",
+                **dossier_kwargs,
+            )
+
+        assert result["status"] == "error"
+        assert result["retryable"] is True
+        assert result["error"] == {
+            "code": expected_code,
+            "field": "why",
+            "message": (
+                "why is required for a gated non-owner action; retry with _why."
+                if expected_code == "missing_required_dossier_field"
+                else "why must be a non-empty human-readable string."
+            ),
+            "retryable": True,
+        }
+        match_rules.assert_not_awaited()
+        pending_inserts = [
+            call
+            for call in mock_pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        ]
+        assert pending_inserts == []
+
+    async def test_non_owner_missing_identifier_requires_dossier_before_park(
+        self, butler_dir: Path
+    ) -> None:
+        """A missing channel identifier cannot bypass the non-owner dossier gate."""
+        mock_pool, _ = _make_pool_with_entity_facts_conn()
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+
+        with patch.object(
+            daemon,
+            "_resolve_entity_channel_identifier",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Awaiting a target channel",
+                entity_id=uuid.UUID("00000000-0000-0000-0000-bbbbbbbbbbbb"),
+            )
+
+        assert result["status"] == "error"
+        assert result["error"]["code"] == "missing_required_dossier_field"
+        pending_inserts = [
+            call
+            for call in mock_pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        ]
+        assert pending_inserts == []
+
+    async def test_non_owner_valid_dossier_is_persisted_on_park(self, butler_dir: Path) -> None:
+        """A typed dossier survives notify()'s recipient guard into the parked action."""
+        mock_pool, _ = _make_pool_with_entity_facts_conn()
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        daemon.switchboard_client = _make_mock_client()
+        evidence = [
+            {
+                "type": "text",
+                "ref": "request-900800700",
+                "note": "The recipient asked for this update.",
+            }
+        ]
+
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch("butlers.modules.approvals.rules.match_rules", new=AsyncMock(return_value=None)),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Non-owner update",
+                recipient="900800700",
+                _why="The recipient asked for this update.",
+                _evidence=evidence,
+                _blast_radius="contact",
+                _reversibility="compensable",
+            )
+
+        assert result["status"] == "pending_approval"
+        pending_insert = next(
+            call
+            for call in mock_pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        )
+        assert "why, evidence, blast_radius, reversibility" in pending_insert.args[0]
+        assert pending_insert.args[-4:] == (
+            "The recipient asked for this update.",
+            evidence,
+            "contact",
+            "compensable",
+        )
 
 
 @pytest.mark.asyncio
