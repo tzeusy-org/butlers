@@ -42,8 +42,8 @@ Security requirements:
 - Never commit credentials or session artifacts to version control
 - Store session material in secret manager or encrypted storage
 - Rotate/revoke sessions after credential exposure
-- Explicit user consent before enabling account-wide ingestion
-- Clear disclosure of chat/sender scope (allow/deny lists)
+- Require the versioned explicit user-consent grant before enabling account-wide ingestion
+- Disclose that current account-wide ingestion has no per-chat or per-sender controls
 """
 
 from __future__ import annotations
@@ -70,6 +70,10 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
+from butlers.connectors.telegram_user_client_consent import (
+    is_account_wide_ingestion_consent_granted,
+    load_account_wide_ingestion_consent,
+)
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     resolve_owner_entity_info,
@@ -2230,6 +2234,62 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
             await pool.close()
 
 
+async def _create_shared_control_pool() -> Any:
+    """Create the shared-DB pool used for Telegram consent control state.
+
+    Checkpoint cursors may live in ``CONNECTOR_BUTLER_DB_NAME``, while owner
+    credentials and account-wide consent belong to ``BUTLER_SHARED_DB_NAME``.
+    Keep those topologies separate instead of reading consent through the
+    cursor pool.
+    """
+    import asyncpg as _asyncpg
+
+    from butlers.db import register_jsonb_codec, should_retry_with_ssl_disable
+
+    db_params = db_params_from_env()
+    shared_db_name = shared_db_name_from_env()
+    pool_kwargs: dict[str, Any] = {
+        "host": str(db_params.get("host") or "localhost"),
+        "port": int(db_params.get("port") or 5432),
+        "user": str(db_params.get("user") or "butlers"),
+        "password": str(db_params.get("password") or "butlers"),
+        "database": shared_db_name,
+        "min_size": 1,
+        "max_size": 2,
+        "command_timeout": 5,
+        "server_settings": {"search_path": "public"},
+        "setup": connector_setup_role,
+        "init": register_jsonb_codec,
+    }
+    ssl = db_params.get("ssl")
+    if ssl is not None:
+        pool_kwargs["ssl"] = ssl
+
+    try:
+        return await _asyncpg.create_pool(**pool_kwargs)
+    except Exception as exc:
+        if should_retry_with_ssl_disable(exc, pool_kwargs.get("ssl")):
+            pool_kwargs["ssl"] = "disable"
+            return await _asyncpg.create_pool(**pool_kwargs)
+        raise
+
+
+async def _has_account_wide_ingestion_consent(control_pool: Any) -> bool:
+    """Read the durable consent grant from shared connector control state.
+
+    This is deliberately fail-closed: an unavailable or malformed control row
+    is indistinguishable from a missing grant and must not start live ingestion.
+    """
+    try:
+        settings = await load_account_wide_ingestion_consent(control_pool)
+    except Exception:
+        logger.warning(
+            "Telegram user-client connector: could not verify account-wide ingestion consent"
+        )
+        return False
+    return is_account_wide_ingestion_consent_granted(settings)
+
+
 async def _resolve_endpoint_identity(
     api_id: int,
     api_hash: str,
@@ -2356,6 +2416,10 @@ async def run_telegram_user_client_connector() -> None:
     in the database.  Non-credential configuration (SWITCHBOARD_MCP_URL,
     CONNECTOR_* env vars) is read from environment variables.
 
+    A current explicit account-wide ingestion consent grant is resolved from
+    shared connector control state and is required before this function creates a
+    Telegram client.
+
     The endpoint identity is auto-inferred from ``get_me()``.
     """
     configure_logging(level="INFO", butler_name="telegram-user-client")
@@ -2374,61 +2438,82 @@ async def run_telegram_user_client_connector() -> None:
             "and telegram_user_session on the owner entity via the dashboard."
         )
 
+    # Consent lives with shared owner credentials, not checkpoint cursors. Read
+    # it before creating any Telegram client or runtime connector.
+    control_pool = await _create_shared_control_pool()
     try:
-        api_id = int(db_creds["TELEGRAM_API_ID"])
-    except ValueError as exc:
-        raise ValueError(
-            f"Telegram user-client connector: invalid TELEGRAM_API_ID from credentials: {exc}"
-        ) from exc
+        if not await _has_account_wide_ingestion_consent(control_pool):
+            logger.warning(
+                "Telegram user-client connector not started: explicit informed consent for "
+                "account-wide ingestion is missing or invalid"
+            )
+            raise RuntimeError(
+                "Telegram user-client connector requires explicit informed consent for "
+                "account-wide ingestion. Complete the Telegram setup acknowledgement first."
+            )
+    finally:
+        await control_pool.close()
 
-    api_hash = db_creds["TELEGRAM_API_HASH"]
-    session_string = db_creds["TELEGRAM_USER_SESSION"]
-
-    # Step 3: Resolve endpoint identity from get_me().
-    endpoint_identity = await _resolve_endpoint_identity(api_id, api_hash, session_string)
-
-    config = replace(
-        config,
-        telegram_api_id=api_id,
-        telegram_api_hash=api_hash,
-        telegram_user_session=session_string,
-        endpoint_identity=endpoint_identity,
-    )
-
-    # Create cursor pool for DB-backed checkpoint persistence.
+    # Checkpoint cursors remain on the connector-local pool, which can target a
+    # different database from the shared credential/control-state database.
     from butlers.connectors.cursor_store import create_cursor_pool_from_env
 
     cursor_pool = await create_cursor_pool_from_env()
     logger.info("Telegram user-client connector: cursor pool created for DB-backed checkpoints")
-
-    connector = TelegramUserClientConnector(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
-
-    # Restore the shared codex CLI-auth token from the credential DB to disk so
-    # this connector's discretion-tier codex calls find ~/.codex/auth.json instead
-    # of 401-ing and silently failing closed (bu-wzbu9). Non-fatal, logs loudly on
-    # failure; degraded state also surfaces via the discretion-auth health hook.
-    from butlers.cli_auth.persistence import restore_connector_cli_auth
-
-    await restore_connector_cli_auth(cursor_pool, context="telegram_user_client")
-
-    health_task = asyncio.create_task(
-        _run_health_server(config.health_port, connector),
-        name="tg-user-health-server",
-    )
-
     try:
-        await connector.start()
-    except KeyboardInterrupt:
-        logger.info("Received interrupt, stopping connector")
-    finally:
-        health_task.cancel()
         try:
-            await health_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        await connector.stop()
-        if cursor_pool is not None:
-            await cursor_pool.close()
+            api_id = int(db_creds["TELEGRAM_API_ID"])
+        except ValueError as exc:
+            raise ValueError(
+                f"Telegram user-client connector: invalid TELEGRAM_API_ID from credentials: {exc}"
+            ) from exc
+
+        api_hash = db_creds["TELEGRAM_API_HASH"]
+        session_string = db_creds["TELEGRAM_USER_SESSION"]
+
+        # Step 3: Resolve endpoint identity from get_me().
+        endpoint_identity = await _resolve_endpoint_identity(api_id, api_hash, session_string)
+
+        config = replace(
+            config,
+            telegram_api_id=api_id,
+            telegram_api_hash=api_hash,
+            telegram_user_session=session_string,
+            endpoint_identity=endpoint_identity,
+        )
+
+        connector = TelegramUserClientConnector(
+            config,
+            db_pool=cursor_pool,
+            cursor_pool=cursor_pool,
+        )
+
+        # Restore the shared codex CLI-auth token from the credential DB to disk so
+        # this connector's discretion-tier codex calls find ~/.codex/auth.json instead
+        # of 401-ing and silently failing closed (bu-wzbu9). Non-fatal, logs loudly on
+        # failure; degraded state also surfaces via the discretion-auth health hook.
+        from butlers.cli_auth.persistence import restore_connector_cli_auth
+
+        await restore_connector_cli_auth(cursor_pool, context="telegram_user_client")
+
+        health_task = asyncio.create_task(
+            _run_health_server(config.health_port, connector),
+            name="tg-user-health-server",
+        )
+
+        try:
+            await connector.start()
+        except KeyboardInterrupt:
+            logger.info("Received interrupt, stopping connector")
+        finally:
+            health_task.cancel()
+            try:
+                await health_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            await connector.stop()
+    finally:
+        await cursor_pool.close()
 
 
 if __name__ == "__main__":

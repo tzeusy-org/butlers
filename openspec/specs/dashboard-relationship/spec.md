@@ -259,7 +259,9 @@ human-friendly labels for all supported types.
 
 The User tab on the Secrets page MUST support all secured credential types for
 the owner entity (`email_password`, `telegram_api_id`, `telegram_api_hash`,
-`home_assistant_token`).
+`home_assistant_token`). Telegram API hash entry MUST remain exclusive to the
+guided Telegram session setup; the generic raw-credential mutation MUST NOT
+receive it.
 
 > **Design rationale (deliberate product decision):** Secured credentials are
 > intentionally managed on the dedicated Secrets page, not through the "Add
@@ -333,9 +335,11 @@ credential management.
 
 - **WHEN** the owner setup dialog is opened
 - **THEN** a collapsible "Credentials" section MUST be available for
-  optionally setting Telegram API ID, Telegram API hash, Home Assistant URL,
-  and Home Assistant token
-- **AND** credential fields (API hash, API ID, Home Assistant token) MUST
+  optionally setting Telegram API ID, Home Assistant URL, and Home Assistant
+  token
+- **AND** the Telegram API hash MUST NOT be accepted by this generic dialog;
+  it is entered only through the guided Telegram session setup
+- **AND** credential fields (API ID and Home Assistant token) MUST
   create secured `entity_info` entries
 
 ---
@@ -1140,4 +1144,3 @@ of `/api/relationship/entities/search`.
 - **THEN** the handler MUST NOT call any LLM provider
 - **AND** the handler MUST NOT call any embedding service
 - **AND** ranking MUST be computed purely from string-matching and `last_seen / tier` tie-breaks
-

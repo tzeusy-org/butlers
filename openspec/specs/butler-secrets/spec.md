@@ -108,6 +108,15 @@ The User-tab's six bespoke provider Setup cards SHALL be replaced by one row tem
 - **THEN** the drawer renders the webhook URL and the regen-secret affordance; no other provider's row renders these fields
 - **AND** the drawer is implemented as a per-provider component dispatched by `provider` slug, not by branching the row template
 
+#### Scenario: Guided Telegram user-session setup
+- **WHEN** the owner chooses `set up Telegram` from the Passport User credential flow
+- **THEN** Passport opens a labelled Telegram setup region with API ID, password-masked API hash, and phone-number fields, plus a link to `my.telegram.org/apps`
+- **AND** the region clearly discloses that it enables ingestion of new account-visible direct messages, groups, supergroups, and channels; that no per-chat or per-sender exclusion exists yet; that messages flow through normal Switchboard classification and routing; and that any history is only the separately configured optional backfill
+- **AND** the `send code` control remains disabled until the owner acknowledges that account-wide scope, and the server rejects a bypassed request without that acknowledgement
+- **AND** the API hash is sent only to the Telegram session-auth flow; the generic raw-credential mutation MUST NOT receive it
+- **AND** the authenticated session flow persists a versioned non-secret consent grant and the API ID, API hash, and user session only after successful verification
+- **AND** dismissing the inline setup region returns keyboard focus to its `set up Telegram` trigger
+
 ### Requirement: Owner-Default Inventory Surfaces Primary Google Account
 
 The owner-default `/secrets` inventory (`GET /api/secrets/inventory` without `?identity=`) SHALL include the primary Google account's `google_oauth_refresh` credential entry in the `user` array. This entry SHALL be present whenever at least one Google account with `is_primary = true` exists in `public.google_accounts`, regardless of `status`. This includes `status = 'expired'` and `status = 'revoked'` accounts so the owner can reach the scope-set picker and reauth CTA without needing a manual `?identity=` parameter; hiding a revoked primary would make the reauthorize flow unreachable.

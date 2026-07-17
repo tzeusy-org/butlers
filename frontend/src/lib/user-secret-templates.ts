@@ -116,8 +116,7 @@ export function userSecretProvenanceForTypes(
  * (telegram_api_id, home_assistant_url) are addable here. */
 export const ENTITY_INFO_TYPES = [
   "telegram_api_id",
-  "telegram_api_hash",
-  // telegram_user_session — managed via the interactive Telegram Session Setup card
+  // Telegram API hash and user session — managed via the interactive Telegram Session Setup card
   "home_assistant_url",
   "home_assistant_token",
   "email_password",

@@ -821,21 +821,23 @@ export function ProbeResult({
 
 // ── Pill button ───────────────────────────────────────────────────────────────
 
+type PillBtnProps = {
+  children: React.ReactNode;
+  variant?: "pill" | "commit" | "danger";
+  onClick?: () => void;
+  disabled?: boolean;
+  className?: string;
+} & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "type" | "onClick" | "disabled" | "className">;
+
 /** Dispatch commit/pill/danger button per §4c. */
-export function PillBtn({
+export const PillBtn = React.forwardRef<HTMLButtonElement, PillBtnProps>(function PillBtn({
   children,
   variant = "pill",
   onClick,
   disabled,
   className,
   ...rest
-}: {
-  children: React.ReactNode;
-  variant?: "pill" | "commit" | "danger";
-  onClick?: () => void;
-  disabled?: boolean;
-  className?: string;
-} & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "type" | "onClick" | "disabled" | "className">) {
+}, ref) {
   const base = cn(
     "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-mono text-[11px] cursor-pointer border transition-colors leading-tight",
     "disabled:pointer-events-none disabled:opacity-40",
@@ -844,6 +846,7 @@ export function PillBtn({
   if (variant === "commit") {
     return (
       <button
+        ref={ref}
         type="button"
         onClick={onClick}
         disabled={disabled}
@@ -857,6 +860,7 @@ export function PillBtn({
   if (variant === "danger") {
     return (
       <button
+        ref={ref}
         type="button"
         onClick={onClick}
         disabled={disabled}
@@ -869,6 +873,7 @@ export function PillBtn({
   }
   return (
     <button
+      ref={ref}
       type="button"
       onClick={onClick}
       disabled={disabled}
@@ -878,7 +883,7 @@ export function PillBtn({
       {children}
     </button>
   );
-}
+});
 
 // ── KV pair ─────────────────────────────────────────────────────────────────
 

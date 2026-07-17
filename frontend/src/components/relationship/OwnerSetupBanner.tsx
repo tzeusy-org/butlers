@@ -10,8 +10,9 @@
  * relationship graph as has-handle contact facts (entity_facts) so the owner
  * becomes resolvable via resolve_contact_by_channel — telegram values are
  * stored in the canonical "telegram:<bare>" form by the backend. ONLY secured
- * credentials (Telegram API hash/ID, Home Assistant token) and whitelisted
- * technical config (Home Assistant URL) go to the entity_info secret store.
+ * credentials (Home Assistant token) and whitelisted technical config (Home
+ * Assistant URL) go to the entity_info secret store. Telegram user-client
+ * credentials are created only by the guided session setup flow.
  *
  * An expandable "Credentials" section lets the user optionally set those
  * credentials.
@@ -60,7 +61,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
 
   // Credential fields (collapsible)
   const [showCredentials, setShowCredentials] = useState(false);
-  const [telegramApiHash, setTelegramApiHash] = useState("");
   const [telegramApiId, setTelegramApiId] = useState("");
   // telegram_user_session — now managed via the interactive Telegram Session Setup card
   const [homeAssistantUrl, setHomeAssistantUrl] = useState("");
@@ -102,7 +102,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
     const trimmedName = canonicalName.trim();
     const trimmedTelegram = telegram.trim();
     const trimmedChatId = telegramChatId.trim();
-    const trimmedApiHash = telegramApiHash.trim();
     const trimmedApiId = telegramApiId.trim();
     const trimmedHomeAssistantUrl = homeAssistantUrl.trim();
     const trimmedHomeAssistantToken = homeAssistantToken.trim();
@@ -111,7 +110,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
       !trimmedName &&
       !trimmedTelegram &&
       !trimmedChatId &&
-      !trimmedApiHash &&
       !trimmedApiId &&
       !trimmedHomeAssistantUrl &&
       !trimmedHomeAssistantToken
@@ -168,20 +166,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
 
       // --- Secured credential fields ---
 
-      if (trimmedApiHash) {
-        promises.push(
-          createInfo.mutateAsync({
-            entityId,
-            request: {
-              type: "telegram_api_hash",
-              value: trimmedApiHash,
-              is_primary: true,
-              secured: true,
-            },
-          }),
-        );
-      }
-
       if (trimmedApiId) {
         promises.push(
           createInfo.mutateAsync({
@@ -229,7 +213,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
       setCanonicalName("");
       setTelegram("");
       setTelegramChatId("");
-      setTelegramApiHash("");
       setTelegramApiId("");
       setHomeAssistantUrl("");
       setHomeAssistantToken("");
@@ -347,17 +330,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
                       <p className="text-xs text-muted-foreground">
                         From my.telegram.org, used for user-client (MTProto) connections.
                       </p>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="owner-tg-api-hash">Telegram API hash</Label>
-                      <Input
-                        id="owner-tg-api-hash"
-                        type="password"
-                        placeholder="••••••••"
-                        value={telegramApiHash}
-                        onChange={(e) => setTelegramApiHash(e.target.value)}
-                        disabled={isSaving}
-                      />
                     </div>
                     <p className="text-xs text-muted-foreground">
                       Telegram user session is generated interactively via the Telegram Session

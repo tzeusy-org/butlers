@@ -29,6 +29,8 @@ vi.mock("@/api/client.ts", async (importOriginal) => {
     probeUserCredential: vi.fn(),
     rotateUserCredential: vi.fn(),
     disconnectUserCredential: vi.fn(),
+    getTelegramSessionStatus: vi.fn(),
+    telegramSendCode: vi.fn(),
     // ConfirmImpact (bu-cyyi3) fetches the breaks catalogue whenever the
     // disconnect confirm panel opens. Mock it so it resolves immediately
     // instead of hitting the real network in jsdom — the "yes, disconnect"
@@ -46,12 +48,16 @@ import {
   probeUserCredential,
   rotateUserCredential,
   disconnectUserCredential,
+  getTelegramSessionStatus,
+  telegramSendCode,
   getBreaksCatalogue,
 } from "@/api/client.ts"
 const mockReauth = vi.mocked(reauthorizeUserCredential)
 const mockProbe = vi.mocked(probeUserCredential)
 const mockRotate = vi.mocked(rotateUserCredential)
 const mockDisconnect = vi.mocked(disconnectUserCredential)
+const mockTelegramSessionStatus = vi.mocked(getTelegramSessionStatus)
+const mockTelegramSendCode = vi.mocked(telegramSendCode)
 const mockGetBreaksCatalogue = vi.mocked(getBreaksCatalogue)
 
 beforeEach(() => {
@@ -59,6 +65,13 @@ beforeEach(() => {
   // ConfirmImpact "loading" gate on the disconnect confirm button
   // synchronously after the panel opens.
   mockGetBreaksCatalogue.mockResolvedValue({ data: [], meta: {} })
+  mockTelegramSessionStatus.mockResolvedValue({
+    has_api_id: false,
+    has_api_hash: false,
+    has_session: false,
+    has_scope_consent: false,
+    ready: false,
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -232,13 +245,57 @@ describe("PageUser: rotate button (value-entry panel)", () => {
     expect(link.getAttribute("rel")).toBe("noopener noreferrer")
   })
 
-  it("links to Telegram API development tools when the grouped fields agree", () => {
+  it("routes Telegram to guided setup without exposing raw rotation", async () => {
+    mockTelegramSendCode.mockResolvedValue({
+      session_token: "telegram-session-token",
+      phone_code_hash: "phone-code-hash",
+    })
     renderTelegram()
 
-    fireEvent.click(getBtn("rotate"))
+    expect(queryBtn("rotate")).toBeNull()
+    expect(screen.queryByPlaceholderText("paste token here")).toBeNull()
 
-    const link = screen.getByRole("link", { name: "Telegram API development tools" })
-    expect(link.getAttribute("href")).toBe("https://my.telegram.org/apps")
+    const setupTrigger = getBtn("set up Telegram")
+    fireEvent.click(setupTrigger)
+
+    const apiIdInput = await screen.findByLabelText("Telegram API ID")
+    const apiHashInput = screen.getByLabelText("Telegram API hash")
+    const phoneInput = screen.getByLabelText("Telegram phone number")
+    const sendCode = getBtn("Send code")
+
+    expect(apiHashInput.getAttribute("type")).toBe("password")
+    expect(sendCode.disabled).toBe(true)
+
+    fireEvent.change(apiIdInput, { target: { value: "123456" } })
+    fireEvent.change(apiHashInput, { target: { value: "guided-api-hash" } })
+    fireEvent.change(phoneInput, { target: { value: "+15551234567" } })
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: "I acknowledge the account-wide Telegram ingestion scope described above.",
+      }),
+    )
+
+    await waitFor(() => {
+      expect(sendCode.disabled).toBe(false)
+    })
+
+    await act(async () => {
+      fireEvent.click(sendCode)
+    })
+
+    expect(mockTelegramSendCode).toHaveBeenCalledOnce()
+    expect(mockTelegramSendCode.mock.calls[0]?.[0]).toEqual({
+      api_id: 123456,
+      api_hash: "guided-api-hash",
+      phone: "+15551234567",
+      scope_consent: true,
+    })
+    expect(mockRotate).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss Telegram setup" }))
+    await waitFor(() => {
+      expect(document.activeElement).toBe(setupTrigger)
+    })
   })
 
   it("does not show a provenance link for an unmapped credential type", () => {

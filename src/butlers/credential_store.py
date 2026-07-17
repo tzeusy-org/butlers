@@ -864,37 +864,14 @@ async def upsert_owner_entity_info(
         whitelist of non-secret technical identifiers.  Non-secret channel
         handles must go to ``relationship.entity_facts`` instead.
     """
-    assert_entity_info_secured(info_type, secured)
     try:
         async with _acquire_conn(pool) as conn:
-            owner = await conn.fetchrow(
-                """
-                SELECT e.id
-                FROM public.entities e
-                WHERE 'owner' = ANY(e.roles)
-                LIMIT 1
-                """,
-            )
-            if owner is None:
-                logger.debug("upsert_owner_entity_info: no owner entity found")
-                return False
-            entity_id = owner["id"]
-            await conn.execute(
-                """
-                INSERT INTO public.entity_info (entity_id, type, value, secured, is_primary)
-                VALUES ($1, $2, $3, $4, true)
-                ON CONFLICT (entity_id, type) DO UPDATE SET
-                    value = EXCLUDED.value,
-                    secured = EXCLUDED.secured,
-                    is_primary = EXCLUDED.is_primary
-                """,
-                entity_id,
+            return await upsert_owner_entity_info_on_connection(
+                conn,
                 info_type,
                 value,
-                secured,
+                secured=secured,
             )
-            logger.info("Upserted owner entity_info type=%r (secured=%s)", info_type, secured)
-            return True
     except Exception as exc:  # noqa: BLE001
         if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
             logger.debug(
@@ -904,6 +881,50 @@ async def upsert_owner_entity_info(
             )
             return False
         raise
+
+
+async def upsert_owner_entity_info_on_connection(
+    conn: Any,
+    info_type: str,
+    value: str,
+    *,
+    secured: bool = True,
+) -> bool:
+    """Upsert owner credential state using a caller-owned DB connection.
+
+    This lets workflows that update several owner credentials make those
+    writes part of one transaction. Callers own transaction/rollback behavior;
+    this helper deliberately does not acquire a new connection.
+    """
+    assert_entity_info_secured(info_type, secured)
+    owner = await conn.fetchrow(
+        """
+        SELECT e.id
+        FROM public.entities e
+        WHERE 'owner' = ANY(e.roles)
+        LIMIT 1
+        """,
+    )
+    if owner is None:
+        logger.debug("upsert_owner_entity_info: no owner entity found")
+        return False
+    entity_id = owner["id"]
+    await conn.execute(
+        """
+        INSERT INTO public.entity_info (entity_id, type, value, secured, is_primary)
+        VALUES ($1, $2, $3, $4, true)
+        ON CONFLICT (entity_id, type) DO UPDATE SET
+            value = EXCLUDED.value,
+            secured = EXCLUDED.secured,
+            is_primary = EXCLUDED.is_primary
+        """,
+        entity_id,
+        info_type,
+        value,
+        secured,
+    )
+    logger.info("Upserted owner entity_info type=%r (secured=%s)", info_type, secured)
+    return True
 
 
 async def delete_owner_entity_info(

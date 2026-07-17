@@ -4926,6 +4926,7 @@ export interface TelegramSendCodeRequest {
   api_id: number;
   api_hash: string;
   phone: string;
+  scope_consent: true;
 }
 
 /** Response from POST /api/telegram/session/send-code */
@@ -4953,6 +4954,7 @@ export interface TelegramSessionStatusResponse {
   has_api_id: boolean;
   has_api_hash: boolean;
   has_session: boolean;
+  has_scope_consent: boolean;
   ready: boolean;
 }
 

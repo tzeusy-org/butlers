@@ -89,6 +89,7 @@ import {
   OwnTracksDrawer,
   SteamDrawer,
   SpotifyDrawer,
+  TelegramDrawer,
   WhatsAppDrawer,
 } from "./ProviderConfigDrawer.tsx";
 import { GoogleAppCredentials } from "./GoogleAppCredentials.tsx";
@@ -1175,6 +1176,7 @@ export function PageUser({
   const allScopes = Array.from(new Set([...credential.scopesGranted, ...credential.scopesRequired]));
   const isOauth = provider.kind === "oauth";
   const isWebhook = provider.kind === "webhook";
+  const isTelegramSession = provider.id === "telegram_bot";
   const isMissing = credential.state === "never_set";
   const sick = credential.state !== "ok" && credential.state !== "never_set";
   const provenance = userSecretProvenanceForTypes(credential.sourceTypes);
@@ -1279,6 +1281,31 @@ export function PageUser({
   function handleDisconnectCancel() {
     setDisconnectConfirm(false);
     disconnectMutation.reset();
+  }
+
+  // Telegram API credentials belong to the guided OTP flow, which commits the
+  // API ID, API hash, session, and consent grant together.  Never offer its
+  // grouped passport row the generic raw-value rotate panel.
+  const [telegramSetupOpen, setTelegramSetupOpen] = React.useState(false);
+  const telegramSetupTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const restoreTelegramSetupTriggerFocusRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!telegramSetupOpen && restoreTelegramSetupTriggerFocusRef.current) {
+      restoreTelegramSetupTriggerFocusRef.current = false;
+      telegramSetupTriggerRef.current?.focus();
+    }
+  }, [telegramSetupOpen]);
+
+  function openTelegramSetup() {
+    setTelegramSetupOpen(true);
+    setRotateOpen(false);
+    setDisconnectConfirm(false);
+  }
+
+  function closeTelegramSetup() {
+    restoreTelegramSetupTriggerFocusRef.current = true;
+    setTelegramSetupOpen(false);
   }
 
   const stateLines: string[] = [];
@@ -1515,6 +1542,14 @@ export function PageUser({
       {provider.id === "whatsapp" && (
         <WhatsAppDrawer onClose={() => undefined} inline />
       )}
+      {isTelegramSession && telegramSetupOpen && (
+        <div className="mt-1" data-user-telegram-drawer="true">
+          <TelegramDrawer
+            ownerEntityId={credential.identity}
+            onClose={closeTelegramSetup}
+          />
+        </div>
+      )}
 
       {/* Cross-references */}
       <CrossRefFooter
@@ -1676,11 +1711,13 @@ export function PageUser({
             )}
             {credential.state === "expiring" && (
               <PillBtn
+                ref={isTelegramSession ? telegramSetupTriggerRef : undefined}
                 variant="commit"
-                onClick={() => { setRotateOpen(true); setDisconnectConfirm(false); }}
-                disabled={rotateOpen}
+                onClick={isTelegramSession ? openTelegramSetup : () => { setRotateOpen(true); setDisconnectConfirm(false); }}
+                disabled={isTelegramSession ? telegramSetupOpen : rotateOpen}
+                data-user-setup-telegram={isTelegramSession ? "true" : undefined}
               >
-                rotate
+                {isTelegramSession ? "set up Telegram" : "rotate"}
               </PillBtn>
             )}
             {isMissing && (
@@ -1698,10 +1735,12 @@ export function PageUser({
                 handleProbe action. */}
             {!isMissing && !sick && (
               <PillBtn
-                onClick={() => { setRotateOpen(true); setDisconnectConfirm(false); }}
-                disabled={rotateOpen}
+                ref={isTelegramSession ? telegramSetupTriggerRef : undefined}
+                onClick={isTelegramSession ? openTelegramSetup : () => { setRotateOpen(true); setDisconnectConfirm(false); }}
+                disabled={isTelegramSession ? telegramSetupOpen : rotateOpen}
+                data-user-setup-telegram={isTelegramSession ? "true" : undefined}
               >
-                rotate
+                {isTelegramSession ? "set up Telegram" : "rotate"}
               </PillBtn>
             )}
           </>
@@ -3170,6 +3209,7 @@ export function PassportAddPanel({
     setProviderSlug(null);
     setUserAdvanced(false);
     setUserHaDrawerOpen(false);
+    setUserTelegramDrawerOpen(false);
     setOauthError(null);
   }
 
@@ -3221,7 +3261,22 @@ export function PassportAddPanel({
   const [userLabel, setUserLabel] = React.useState("");
   const [userAdvanced, setUserAdvanced] = React.useState(false);
   const [userHaDrawerOpen, setUserHaDrawerOpen] = React.useState(false);
+  const [userTelegramDrawerOpen, setUserTelegramDrawerOpen] = React.useState(false);
+  const userTelegramTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const restoreTelegramTriggerFocusRef = React.useRef(false);
   const userMutation = useCreateUserSecret();
+
+  React.useEffect(() => {
+    if (!userTelegramDrawerOpen && restoreTelegramTriggerFocusRef.current) {
+      restoreTelegramTriggerFocusRef.current = false;
+      userTelegramTriggerRef.current?.focus();
+    }
+  }, [userTelegramDrawerOpen]);
+
+  function closeUserTelegramDrawer() {
+    restoreTelegramTriggerFocusRef.current = true;
+    setUserTelegramDrawerOpen(false);
+  }
 
   // entity_info type → OAuth provider slug, for types with a live OAuth dance
   // (same start route the reauthorize CTA uses). Only google_oauth_refresh
@@ -3233,7 +3288,11 @@ export function PassportAddPanel({
   // entity_info types with a guided provider-config drawer covering the same
   // credential (bu-ayp6v.8/.9) — the raw form should never be the default
   // entry point for these.
-  const USER_TYPE_HAS_DRAWER = new Set(["home_assistant_token", "home_assistant_url"]);
+  const USER_TYPE_HAS_DRAWER = new Set([
+    "home_assistant_token",
+    "home_assistant_url",
+    "telegram_api_id",
+  ]);
 
   // Auto-fill label from type template suggestion
   function handleUserTypeChange(t: string) {
@@ -3514,6 +3573,14 @@ export function PassportAddPanel({
                 >
                   set up Home Assistant
                 </PillBtn>
+                <PillBtn
+                  ref={userTelegramTriggerRef}
+                  onClick={() => setUserTelegramDrawerOpen(true)}
+                  disabled={!ownerEntityId || userTelegramDrawerOpen}
+                  data-user-setup-telegram="true"
+                >
+                  set up Telegram
+                </PillBtn>
               </div>
 
               {!ownerEntityId && (
@@ -3531,6 +3598,15 @@ export function PassportAddPanel({
               {userHaDrawerOpen && (
                 <div className="mt-1" data-user-ha-drawer="true">
                   <HomeAssistantDrawer onClose={() => setUserHaDrawerOpen(false)} />
+                </div>
+              )}
+
+              {userTelegramDrawerOpen && ownerEntityId && (
+                <div className="mt-1" data-user-telegram-drawer="true">
+                  <TelegramDrawer
+                    ownerEntityId={ownerEntityId}
+                    onClose={closeUserTelegramDrawer}
+                  />
                 </div>
               )}
 

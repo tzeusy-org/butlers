@@ -199,6 +199,34 @@ def test_rotate_404_on_missing_credential():
     assert resp.status_code == 404
 
 
+def test_rotate_rejects_telegram_api_hash_via_telegram_bot_alias_before_update():
+    """The generic rotate route must not bypass Telegram's guided setup.
+
+    Passport groups the legacy ``telegram_api_hash`` row under the
+    ``telegram_bot`` provider alias.  Reject after resolving that row but
+    before any write, so an alias request cannot replace the hash directly.
+    """
+    row = _make_entity_info_row(
+        info_type="telegram_api_hash",
+        value="old-api-hash",
+        last_test_ok=True,
+    )
+    mock_db = _make_db(user_row=row)
+    shared_pool = mock_db.credential_shared_pool.return_value
+    client = _build_app(mock_db)
+
+    resp = client.post(
+        "/api/secrets/user/telegram_bot/rotate",
+        json={"value": "replacement-api-hash"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == (
+        "telegram_api_hash can only be updated through the guided Telegram session setup."
+    )
+    shared_pool.execute.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Tests: POST /api/secrets/user/<provider>/disconnect
 # ---------------------------------------------------------------------------

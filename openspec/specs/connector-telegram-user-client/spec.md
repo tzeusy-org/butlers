@@ -128,9 +128,13 @@ The connector authenticates with Telegram using personal account credentials (no
 Because this connector reads a user's personal Telegram messages, strict privacy safeguards are required.
 
 #### Scenario: Explicit user consent
-- **WHEN** the user client connector is deployed
-- **THEN** explicit user consent must be obtained before enabling account-wide ingestion
-- **AND** clear scope disclosure must explain which chats/types are included
+- **WHEN** the owner configures a Telegram user session in Passport
+- **THEN** setup clearly discloses that the connector ingests new messages visible to the account in direct messages, groups, supergroups, and channels, with no current per-chat or per-sender exclusions
+- **AND** setup explains that ingested messages flow through the normal Switchboard classification and routing pipeline and that any historical replay is limited to the separately configured optional backfill
+- **AND** the owner MUST explicitly acknowledge that account-wide scope before the setup flow can send an OTP request
+- **AND** the API MUST reject a missing or false acknowledgement, even if a client bypasses the disabled setup control
+- **AND** successful verification MUST persist a versioned non-secret consent grant in the connector control plane before persisting the owner credentials
+- **AND** the connector MUST reject a missing, malformed, or superseded grant before creating a Telegram client or starting ingestion
 
 #### Scenario: [TARGET-STATE] Scope controls
 - **WHEN** the user client connector is configured
@@ -261,7 +265,7 @@ The user client connector runs as a dedicated daemon, separate from butler daemo
 
 #### Scenario: [TARGET-STATE] v2-only gaps
 - **WHEN** evaluating for production deployment with real user accounts
-- **THEN** the following remain unimplemented: privacy/consent guardrails (Section 8 of docs), explicit feature flag enforcement, per-chat/per-sender filtering, content redaction, structured metrics export, lag monitoring and alerting
+- **THEN** the following remain unimplemented: per-chat/per-sender filtering, content redaction, structured metrics export, lag monitoring and alerting
 
 ---
 
