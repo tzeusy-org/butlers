@@ -21,6 +21,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import asyncpg
 
@@ -504,6 +505,18 @@ def _serialize(value: Any) -> str:
     return json.dumps(value, default=str, indent=2, sort_keys=True)
 
 
+def _measurement_database_name_from_env() -> str:
+    """Resolve the CLI's target database with URL-first environment precedence."""
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        database_name = unquote(urlparse(database_url).path).removeprefix("/")
+        if not database_name:
+            raise ValueError("DATABASE_URL must include a database path for catalog measurement")
+        return database_name
+
+    return os.environ.get("POSTGRES_DB", "butlers")
+
+
 async def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
     request = CatalogMeasurementRequest(
         tenant_id=args.tenant_id,
@@ -515,7 +528,7 @@ async def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
         query_timeout_seconds=args.query_timeout_seconds,
     )
     pool = await asyncpg.create_pool(
-        database=os.environ.get("POSTGRES_DB", "butlers"),
+        database=_measurement_database_name_from_env(),
         min_size=1,
         max_size=1,
         **db_params_from_env(),

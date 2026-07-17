@@ -440,3 +440,102 @@ async def test_cli_rejects_invalid_inputs_before_creating_database_pool(
         await catalog_measurement._run_cli(args)
 
     assert pool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cli_uses_database_url_path_for_pool_target(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A standard DATABASE_URL must select the catalog it names, without connecting."""
+    vectors_json = tmp_path / "vectors.json"
+    vectors_json.write_text(json.dumps([_vector()]))
+    captured_kwargs: dict[str, object] = {}
+
+    class _PoolCreationObserved(RuntimeError):
+        pass
+
+    async def capture_pool(*args: object, **kwargs: object) -> None:
+        captured_kwargs.update(kwargs)
+        raise _PoolCreationObserved
+
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://measurement_user:measurement_password@db.example:5432/intended_measurement_db",
+    )
+    monkeypatch.delenv("POSTGRES_DB", raising=False)
+    monkeypatch.setattr(catalog_measurement.asyncpg, "create_pool", capture_pool)
+    args = argparse.Namespace(
+        tenant_id="shared",
+        memory_type=None,
+        max_sensitivity="normal",
+        limit=1,
+        vectors_json=vectors_json,
+        exact_candidate_cap=DEFAULT_EXACT_CANDIDATE_CAP,
+        query_timeout_seconds=10.0,
+    )
+
+    with pytest.raises(_PoolCreationObserved):
+        await catalog_measurement._run_cli(args)
+
+    assert captured_kwargs["database"] == "intended_measurement_db"
+
+
+def test_measurement_database_url_takes_precedence_over_postgres_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured POSTGRES_DB cannot override a DATABASE_URL target."""
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://measurement_user:measurement_password@db.example:5432/url_target",
+    )
+    monkeypatch.setenv("POSTGRES_DB", "ignored_fallback_target")
+
+    assert catalog_measurement._measurement_database_name_from_env() == "url_target"
+
+
+def test_measurement_database_url_requires_database_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A supplied URL cannot silently fall back to a different database."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://db.example:5432/")
+    monkeypatch.setenv("POSTGRES_DB", "not_a_url_fallback")
+
+    with pytest.raises(ValueError, match="must include a database path"):
+        catalog_measurement._measurement_database_name_from_env()
+
+
+@pytest.mark.asyncio
+async def test_cli_uses_postgres_db_as_pool_target_without_database_url(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POSTGRES_DB remains the CLI's explicit database fallback without a URL."""
+    vectors_json = tmp_path / "vectors.json"
+    vectors_json.write_text(json.dumps([_vector()]))
+    captured_kwargs: dict[str, object] = {}
+
+    class _PoolCreationObserved(RuntimeError):
+        pass
+
+    async def capture_pool(*args: object, **kwargs: object) -> None:
+        captured_kwargs.update(kwargs)
+        raise _PoolCreationObserved
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("POSTGRES_DB", "configured_measurement_db")
+    monkeypatch.setattr(catalog_measurement.asyncpg, "create_pool", capture_pool)
+    args = argparse.Namespace(
+        tenant_id="shared",
+        memory_type=None,
+        max_sensitivity="normal",
+        limit=1,
+        vectors_json=vectors_json,
+        exact_candidate_cap=DEFAULT_EXACT_CANDIDATE_CAP,
+        query_timeout_seconds=10.0,
+    )
+
+    with pytest.raises(_PoolCreationObserved):
+        await catalog_measurement._run_cli(args)
+
+    assert captured_kwargs["database"] == "configured_measurement_db"
