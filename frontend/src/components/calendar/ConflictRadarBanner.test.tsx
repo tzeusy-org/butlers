@@ -130,6 +130,9 @@ describe("ConflictRadarBanner", () => {
     expect(acceptFix.classList.contains("bg-fg")).toBe(true);
     expect(acceptFix.classList.contains("text-bg")).toBe(true);
     expect(acceptFix.classList.contains("border-fg")).toBe(true);
+    expect(acceptFix.classList.contains("focus-visible:outline-none")).toBe(true);
+    expect(acceptFix.classList.contains("focus-visible:ring-2")).toBe(true);
+    expect(acceptFix.classList.contains("focus-visible:ring-fg/30")).toBe(true);
     expect(acceptFix.className).not.toMatch(
       /\b(?:bg|text|border)-(?:red|green|emerald|amber|yellow|orange)-(?:50|100|150|200|300|400|500|600|700|800|900|950)\b/,
     );
