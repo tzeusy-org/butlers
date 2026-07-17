@@ -22,15 +22,19 @@ interface; modules own the implementation.
 
 Thread safety
 -------------
-The hooks are module-level globals mutated during daemon startup (single-
-threaded phase).  They are read-only during concurrent session dispatch, so no
-locking is required.
+Best-effort session hooks remain module-level registrations.  Durable
+maintenance runtimes are keyed by butler identity and selected through a
+``ContextVar`` bound for each scheduler dispatch, so concurrent daemons cannot
+cross-resolve their pools or Spawners.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -55,16 +59,36 @@ _memory_store_episode_hook: Callable[..., Coroutine[Any, Any, bool]] | None = No
 #: Registered by modules.memory on startup.
 _catalog_search_hook: Callable[..., Coroutine[Any, Any, list[dict[str, Any]]]] | None = None
 
-#: ``async (*, spawner, batch_size, enable_shared_catalog) -> dict``
-#: Registered by modules.memory on startup.  The module-owned closure resolves
-#: its configured pool and embedding engine at dispatch time.
-_memory_consolidation_hook: Callable[..., Coroutine[Any, Any, dict[str, Any]]] | None = None
 
-#: ``() -> asyncpg.Pool``
-#: Registered by modules.memory on startup.  Deterministic maintenance jobs use
-#: this resolver so private ``memory_schema`` configuration remains authoritative
-#: instead of falling back to the daemon's domain pool.
-_memory_runtime_pool_hook: Callable[[], Any] | None = None
+@dataclass(frozen=True)
+class MemoryMaintenanceRuntime:
+    """One started memory module's maintenance-only runtime hooks.
+
+    The owner key lives outside this value so a module can replace its own
+    registration atomically while an older instance shuts down without
+    clearing the replacement.
+    """
+
+    pool_resolver: Callable[[], Any]
+    consolidation: Callable[..., Coroutine[Any, Any, dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class _MemoryMaintenanceDispatch:
+    """Ambient scheduler identity for one deterministic handler invocation."""
+
+    butler_name: str
+    spawner: Any
+
+
+# Maintenance is intentionally not a single process-global hook.  Multiple
+# daemons run in one process during development/tests, and each can own a
+# different memory schema and embedding lifecycle (notably chronicler_mem).
+_memory_maintenance_runtimes: dict[str, MemoryMaintenanceRuntime] = {}
+_memory_maintenance_dispatch: ContextVar[_MemoryMaintenanceDispatch | None] = ContextVar(
+    "memory_maintenance_dispatch",
+    default=None,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,39 +148,66 @@ def register_catalog_search(
     _catalog_search_hook = fn
 
 
-def register_memory_consolidation(
-    fn: Callable[..., Coroutine[Any, Any, dict[str, Any]]],
+def register_memory_maintenance_runtime(
+    butler_name: str,
+    *,
+    pool_resolver: Callable[[], Any],
+    consolidation: Callable[..., Coroutine[Any, Any, dict[str, Any]]],
+) -> MemoryMaintenanceRuntime:
+    """Register one butler's started memory-maintenance runtime.
+
+    ``butler_name`` is the daemon's schema-backed identity.  Scheduler
+    dispatch binds that same identity with a ContextVar, so maintenance work
+    cannot borrow a runtime pool, configured embedding engine, or Spawner from
+    the most recently started daemon.
+    """
+    if not isinstance(butler_name, str) or not butler_name.strip():
+        raise ValueError("memory maintenance runtime requires a non-empty butler name")
+
+    runtime = MemoryMaintenanceRuntime(
+        pool_resolver=pool_resolver,
+        consolidation=consolidation,
+    )
+    _memory_maintenance_runtimes[butler_name.strip()] = runtime
+    return runtime
+
+
+def unregister_memory_maintenance_runtime(
+    butler_name: str,
+    runtime: MemoryMaintenanceRuntime,
 ) -> None:
-    """Register scheduled consolidation against the started memory module.
+    """Remove *runtime* only when it is still the owner registration.
 
-    The concrete hook owns the module-specific pool and embedding-engine
-    lifecycle.  Core supplies only the daemon Spawner and bounded batch size.
+    An older module instance may finish shutdown after a replacement has
+    started.  Identity comparison preserves the newer registration instead of
+    clearing another daemon's maintenance path.
     """
-    global _memory_consolidation_hook
-    _memory_consolidation_hook = fn
+    if _memory_maintenance_runtimes.get(butler_name) is runtime:
+        del _memory_maintenance_runtimes[butler_name]
 
 
-def register_memory_runtime_pool(fn: Callable[[], Any]) -> None:
-    """Register the active memory module's runtime-pool resolver.
+@contextmanager
+def bind_memory_maintenance_dispatch(
+    *,
+    butler_name: str,
+    spawner: Any,
+) -> Iterator[None]:
+    """Bind one scheduler invocation to its daemon's memory runtime.
 
-    Scheduled maintenance is durable work over memory-owned tables.  The
-    resolver deliberately belongs to the module lifecycle so a configured
-    private schema (for example ``chronicler_mem``) stays authoritative.
+    The scheduler owns the live Spawner and the butler name.  Context-local
+    binding keeps concurrent deterministic handlers isolated without widening
+    every maintenance-handler signature.
     """
-    global _memory_runtime_pool_hook
-    _memory_runtime_pool_hook = fn
+    if not isinstance(butler_name, str) or not butler_name.strip():
+        raise ValueError("memory maintenance dispatch requires a non-empty butler name")
 
-
-def clear_memory_consolidation() -> None:
-    """Clear the scheduled-consolidation hook during module shutdown."""
-    global _memory_consolidation_hook
-    _memory_consolidation_hook = None
-
-
-def clear_memory_runtime_pool() -> None:
-    """Clear the memory runtime-pool resolver during module shutdown."""
-    global _memory_runtime_pool_hook
-    _memory_runtime_pool_hook = None
+    token = _memory_maintenance_dispatch.set(
+        _MemoryMaintenanceDispatch(butler_name=butler_name.strip(), spawner=spawner)
+    )
+    try:
+        yield
+    finally:
+        _memory_maintenance_dispatch.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -233,32 +284,54 @@ async def search_memory_catalog(
     return await _catalog_search_hook(pool, query, limit=limit, mode=mode)
 
 
+def _resolve_memory_maintenance_runtime() -> tuple[
+    MemoryMaintenanceRuntime, _MemoryMaintenanceDispatch
+]:
+    """Return the runtime selected by the current scheduler dispatch.
+
+    Direct execution is deliberately rejected: the deterministic scheduler is
+    the only layer that can establish the owner identity and live Spawner.
+    Falling back to a process-global or supplied daemon pool would silently
+    target the wrong schema after another daemon starts.
+    """
+    dispatch = _memory_maintenance_dispatch.get()
+    if dispatch is None:
+        raise RuntimeError(
+            "memory maintenance requires a dispatch-scoped runtime context from the scheduler"
+        )
+
+    runtime = _memory_maintenance_runtimes.get(dispatch.butler_name)
+    if runtime is None:
+        raise RuntimeError(
+            f"memory maintenance runtime is not registered for butler {dispatch.butler_name!r}"
+        )
+    return runtime, dispatch
+
+
 async def consolidate_memory(
     *,
-    spawner: Any,
     batch_size: int,
     enable_shared_catalog: bool,
 ) -> dict[str, Any]:
-    """Run consolidation through the active memory module runtime.
+    """Run consolidation through this dispatch's started memory module.
 
     Unlike best-effort memory context/search hooks, scheduled consolidation is
     durable work.  Missing runtime wiring therefore fails closed so the
     scheduler records a diagnostic error instead of claiming the wrong schema
     or silently leaving episodes pending.
     """
-    if _memory_consolidation_hook is None:
-        raise RuntimeError(
-            "memory_consolidation requires the memory module runtime hook to be registered"
-        )
-    return await _memory_consolidation_hook(
-        spawner=spawner,
+    runtime, dispatch = _resolve_memory_maintenance_runtime()
+    if dispatch.spawner is None:
+        raise RuntimeError("memory_consolidation requires the dispatching daemon's live Spawner")
+    return await runtime.consolidation(
+        spawner=dispatch.spawner,
         batch_size=batch_size,
         enable_shared_catalog=enable_shared_catalog,
     )
 
 
 def resolve_memory_runtime_pool() -> Any:
-    """Return the active MemoryModule's authoritative storage pool.
+    """Return this dispatch's MemoryModule authoritative storage pool.
 
     The scheduler gives every deterministic job the daemon/domain pool, but
     memory maintenance may instead need a module-private schema.  Do not fall
@@ -267,11 +340,8 @@ def resolve_memory_runtime_pool() -> Any:
     lets the scheduler record a diagnostic error and retry after startup
     wiring is restored.
     """
-    if _memory_runtime_pool_hook is None:
-        raise RuntimeError(
-            "memory maintenance requires the memory module runtime pool hook to be registered"
-        )
-    pool = _memory_runtime_pool_hook()
+    runtime, _dispatch = _resolve_memory_maintenance_runtime()
+    pool = runtime.pool_resolver()
     if pool is None:
         raise RuntimeError("memory module runtime pool resolver returned no pool")
     return pool

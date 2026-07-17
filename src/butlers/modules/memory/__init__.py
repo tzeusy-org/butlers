@@ -290,6 +290,9 @@ class MemoryModule(Module):
         # live in a private schema instead of colliding with a same-named domain
         # table in the butler's own schema (bu-93y4rt / bu-w6jca decision).
         self._memory_db: Any = None
+        # Opaque lifecycle token for the per-butler scheduled-maintenance runtime.
+        self._maintenance_runtime: Any = None
+        self._maintenance_runtime_owner: str | None = None
 
     @property
     def name(self) -> str:
@@ -322,11 +325,11 @@ class MemoryModule(Module):
         # (dependency inversion: core owns the interface, modules supply the impl).
         from butlers.core.memory_hooks import (
             register_catalog_search,
-            register_memory_consolidation,
             register_memory_context,
             register_memory_forget,
-            register_memory_runtime_pool,
+            register_memory_maintenance_runtime,
             register_memory_store_episode,
+            unregister_memory_maintenance_runtime,
         )
         from butlers.modules.memory.tools import context as _context
         from butlers.modules.memory.tools._helpers import _search as _search_helper
@@ -432,8 +435,28 @@ class MemoryModule(Module):
         register_memory_store_episode(_store_episode_hook)
         register_memory_forget(_memory_forget)
         register_catalog_search(_catalog_search_hook)
-        register_memory_consolidation(_consolidation_hook)
-        register_memory_runtime_pool(module._get_pool)
+
+        if self._maintenance_runtime_owner is not None and self._maintenance_runtime is not None:
+            unregister_memory_maintenance_runtime(
+                self._maintenance_runtime_owner,
+                self._maintenance_runtime,
+            )
+            self._maintenance_runtime = None
+            self._maintenance_runtime_owner = None
+
+        runtime_owner = getattr(db, "schema", None)
+        if isinstance(runtime_owner, str) and runtime_owner.strip():
+            self._maintenance_runtime_owner = runtime_owner.strip()
+            self._maintenance_runtime = register_memory_maintenance_runtime(
+                self._maintenance_runtime_owner,
+                pool_resolver=module._get_pool,
+                consolidation=_consolidation_hook,
+            )
+        else:
+            logger.warning(
+                "MemoryModule maintenance runtime was not registered because the DB schema "
+                "owner is unavailable"
+            )
 
         await self._register_default_maintenance_schedules(db)
 
@@ -481,13 +504,15 @@ class MemoryModule(Module):
 
     async def on_shutdown(self) -> None:
         """Clear state references."""
-        from butlers.core.memory_hooks import (
-            clear_memory_consolidation,
-            clear_memory_runtime_pool,
-        )
+        from butlers.core.memory_hooks import unregister_memory_maintenance_runtime
 
-        clear_memory_consolidation()
-        clear_memory_runtime_pool()
+        if self._maintenance_runtime_owner is not None and self._maintenance_runtime is not None:
+            unregister_memory_maintenance_runtime(
+                self._maintenance_runtime_owner,
+                self._maintenance_runtime,
+            )
+        self._maintenance_runtime = None
+        self._maintenance_runtime_owner = None
         self._db = None
         self._embedding_engine = None
         if self._memory_db is not None:

@@ -23,23 +23,17 @@ from __future__ import annotations
 
 import shutil
 from types import SimpleNamespace
+from typing import Any
 from urllib.parse import urlparse
 
 import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
 
-from butlers.core.spawn_hooks import clear_spawner, register_spawner
+from butlers.background import dispatch_scheduled_task
 from butlers.db import Database, register_jsonb_codec
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.memory.storage import store_fact
-from butlers.scheduled_jobs import (
-    _run_memory_catalog_backfill_job,
-    _run_memory_consolidation_job,
-    _run_memory_decay_sweep_job,
-    _run_memory_episode_cleanup_job,
-    _run_memory_purge_superseded_job,
-)
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.modules.memory._test_helpers import make_embedding_engine_mock
 
@@ -95,6 +89,24 @@ def _columns(db_url: str, schema: str, table: str) -> set[str]:
             return {str(r[0]) for r in rows}
     finally:
         engine.dispose()
+
+
+async def _dispatch_chronicler_memory_job(
+    *,
+    pool: Any,
+    spawner: Any,
+    job_name: str,
+    job_args: dict[str, Any] | None = None,
+) -> Any:
+    """Run a Chronicler memory job through the production scheduler boundary."""
+    return await dispatch_scheduled_task(
+        butler_name="chronicler",
+        pool=pool,
+        spawner=spawner,
+        trigger_source=f"schedule:{job_name}",
+        job_name=job_name,
+        job_args=job_args,
+    )
 
 
 def test_memory_tables_land_in_chronicler_mem_not_chronicler(isolated_db_url: str) -> None:
@@ -184,6 +196,7 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
     await domain_db.connect()
     module = MemoryModule()
     engine = make_embedding_engine_mock()
+    spawner = object()
     try:
         await module.on_startup(
             MemoryModuleConfig(memory_schema="chronicler_mem"),
@@ -194,7 +207,11 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
 
         # Decay reaches ``memory_policies``, ``facts``, and ``rules``. None of
         # those memory tables exist in the chronicler domain schema.
-        decay_result = await _run_memory_decay_sweep_job(pool=domain_db.pool, job_args=None)
+        decay_result = await _dispatch_chronicler_memory_job(
+            pool=domain_db.pool,
+            spawner=spawner,
+            job_name="memory_decay_sweep",
+        )
         assert {"facts_checked", "rules_checked"} <= set(decay_result)
 
         # Cleanup requires the memory table's ``expires_at`` column, which the
@@ -203,7 +220,11 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
             "INSERT INTO episodes (butler, content, expires_at) "
             "VALUES ('chronicler', 'expired scheduled maintenance episode', now() - interval '1 day')"
         )
-        cleanup_result = await _run_memory_episode_cleanup_job(pool=domain_db.pool, job_args=None)
+        cleanup_result = await _dispatch_chronicler_memory_job(
+            pool=domain_db.pool,
+            spawner=spawner,
+            job_name="memory_episode_cleanup",
+        )
         assert cleanup_result["expired_deleted"] == 1
         assert (
             await memory_pool.fetchval(
@@ -223,9 +244,10 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
             engine,
             source_butler="chronicler",
         )
-        catalog_result = await _run_memory_catalog_backfill_job(
+        catalog_result = await _dispatch_chronicler_memory_job(
             pool=domain_db.pool,
-            job_args=None,
+            spawner=spawner,
+            job_name="memory_catalog_backfill",
         )
         assert catalog_result["source_schema"] == "chronicler_mem"
         assert catalog_result["facts_backfilled"] >= 1
@@ -255,7 +277,11 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
             "created_at = now() - interval '8 days' WHERE id = $1",
             purge_fact["id"],
         )
-        purge_result = await _run_memory_purge_superseded_job(pool=domain_db.pool, job_args=None)
+        purge_result = await _dispatch_chronicler_memory_job(
+            pool=domain_db.pool,
+            spawner=spawner,
+            job_name="memory_purge_superseded",
+        )
         assert purge_result["deleted"] == 1
         assert (
             await memory_pool.fetchval("SELECT count(*) FROM facts WHERE id = $1", purge_fact["id"])
@@ -307,7 +333,6 @@ async def test_scheduled_consolidation_uses_chronicler_memory_runtime(
         _configured_engine,
     )
     spawner = _SuccessfulSpawner()
-    register_spawner(spawner)
     try:
         await module.on_startup(
             MemoryModuleConfig(
@@ -321,8 +346,10 @@ async def test_scheduled_consolidation_uses_chronicler_memory_runtime(
             "INSERT INTO episodes (butler, content) VALUES ('chronicler', 'pending memory')"
         )
 
-        result = await _run_memory_consolidation_job(
+        result = await _dispatch_chronicler_memory_job(
             pool=domain_db.pool,
+            spawner=spawner,
+            job_name="memory_consolidation",
             job_args={"batch_size": 1},
         )
 
@@ -337,6 +364,5 @@ async def test_scheduled_consolidation_uses_chronicler_memory_runtime(
             == "consolidated"
         )
     finally:
-        clear_spawner()
         await module.on_shutdown()
         await domain_db.close()

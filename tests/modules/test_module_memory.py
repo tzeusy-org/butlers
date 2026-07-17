@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -75,6 +76,80 @@ class TestLifecycle:
         assert mod._db is None
         assert mod._embedding_engine is None
 
+    async def test_started_modules_scope_maintenance_runtime_and_shutdown_independently(
+        self, monkeypatch
+    ) -> None:
+        """Concurrent modules retain their own runtime pool until their own shutdown.
+
+        Memory maintenance dispatch is keyed by the daemon/butler that owns
+        the schedule.  A chronicler module can therefore keep its private
+        ``chronicler_mem`` pool even while another memory-enabled daemon is
+        started or stopped in the same process.
+        """
+        from butlers.core.memory_hooks import (
+            bind_memory_maintenance_dispatch,
+            resolve_memory_runtime_pool,
+        )
+
+        general = MemoryModule()
+        chronicler = MemoryModule()
+        general_pool = object()
+        chronicler_memory_pool = object()
+        general_db = SimpleNamespace(schema="general", pool=general_pool)
+        chronicler_db = SimpleNamespace(schema="chronicler", pool=object())
+
+        monkeypatch.setattr(
+            general,
+            "_register_default_maintenance_schedules",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            chronicler,
+            "_register_default_maintenance_schedules",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(chronicler, "_ensure_memory_schema_pool", AsyncMock())
+        monkeypatch.setattr(chronicler, "_get_pool", lambda: chronicler_memory_pool)
+
+        general_started = False
+        chronicler_started = False
+        try:
+            await asyncio.gather(
+                general.on_startup(config=None, db=general_db),
+                chronicler.on_startup(
+                    config=MemoryModuleConfig(memory_schema="chronicler_mem"),
+                    db=chronicler_db,
+                ),
+            )
+            general_started = True
+            chronicler_started = True
+
+            async def _resolve_for(butler_name: str) -> object:
+                with bind_memory_maintenance_dispatch(
+                    butler_name=butler_name,
+                    spawner=object(),
+                ):
+                    await asyncio.sleep(0)
+                    return resolve_memory_runtime_pool()
+
+            assert await asyncio.gather(
+                _resolve_for("general"),
+                _resolve_for("chronicler"),
+            ) == [general_pool, chronicler_memory_pool]
+
+            await general.on_shutdown()
+            general_started = False
+
+            assert await _resolve_for("chronicler") is chronicler_memory_pool
+            with bind_memory_maintenance_dispatch(butler_name="general", spawner=object()):
+                with pytest.raises(RuntimeError, match="general"):
+                    resolve_memory_runtime_pool()
+        finally:
+            if general_started:
+                await general.on_shutdown()
+            if chronicler_started:
+                await chronicler.on_shutdown()
+
     def test_get_pool_raises_when_uninitialised(self):
         mod = MemoryModule()
         with pytest.raises(RuntimeError, match="not initialised"):
@@ -134,16 +209,23 @@ class TestLifecycle:
         memory_pool = MagicMock(name="memory_pool")
         fake_db = MagicMock()
         fake_db.pool = daemon_pool
+        fake_db.schema = "general"
         configured_engine = MagicMock(name="configured_engine")
         spawner = MagicMock(name="spawner")
         captured_hook: dict[str, Any] = {}
 
         monkeypatch.setattr(mod, "_get_pool", lambda: memory_pool)
         monkeypatch.setattr(mod, "_get_embedding_engine", lambda: configured_engine)
+
+        def _register_runtime(owner, *, pool_resolver, consolidation):
+            captured_hook["owner"] = owner
+            captured_hook["pool_resolver"] = pool_resolver
+            captured_hook["hook"] = consolidation
+            return MagicMock(name="maintenance_runtime")
+
         monkeypatch.setattr(
-            "butlers.core.memory_hooks.register_memory_consolidation",
-            lambda fn: captured_hook.setdefault("hook", fn),
-            raising=False,
+            "butlers.core.memory_hooks.register_memory_maintenance_runtime",
+            _register_runtime,
         )
         run_consolidation = AsyncMock(return_value={"episodes_consolidated": 2})
         monkeypatch.setattr(
@@ -158,6 +240,8 @@ class TestLifecycle:
             db=fake_db,
         )
 
+        assert captured_hook["owner"] == "general"
+        assert captured_hook["pool_resolver"]() is memory_pool
         result = await captured_hook["hook"](
             spawner=spawner,
             batch_size=7,
@@ -179,39 +263,45 @@ class TestLifecycle:
         mod = MemoryModule()
         fake_db = MagicMock()
         fake_db.pool = MagicMock(name="daemon_pool")
+        fake_db.schema = "chronicler"
         memory_pool = MagicMock(name="memory_pool")
         captured_hook: dict[str, Any] = {}
 
         monkeypatch.setattr(mod, "_get_pool", lambda: memory_pool)
+
+        def _register_runtime(owner, *, pool_resolver, consolidation):
+            captured_hook["owner"] = owner
+            captured_hook["pool_resolver"] = pool_resolver
+            captured_hook["consolidation"] = consolidation
+            return MagicMock(name="maintenance_runtime")
+
         monkeypatch.setattr(
-            "butlers.core.memory_hooks.register_memory_runtime_pool",
-            lambda fn: captured_hook.setdefault("hook", fn),
+            "butlers.core.memory_hooks.register_memory_maintenance_runtime",
+            _register_runtime,
         )
         monkeypatch.setattr(mod, "_register_default_maintenance_schedules", AsyncMock())
 
         await mod.on_startup(config=None, db=fake_db)
 
-        assert captured_hook["hook"]() is memory_pool
+        assert captured_hook["owner"] == "chronicler"
+        assert captured_hook["pool_resolver"]() is memory_pool
 
-    async def test_on_shutdown_clears_memory_runtime_hooks(self, monkeypatch) -> None:
+    async def test_on_shutdown_unregisters_only_its_runtime(self, monkeypatch) -> None:
         mod = MemoryModule()
-        clear_consolidation_hook = MagicMock()
-        clear_runtime_pool_hook = MagicMock()
+        runtime = MagicMock(name="maintenance_runtime")
+        mod._maintenance_runtime_owner = "chronicler"
+        mod._maintenance_runtime = runtime
+        unregister_runtime = MagicMock()
         monkeypatch.setattr(
-            "butlers.core.memory_hooks.clear_memory_consolidation",
-            clear_consolidation_hook,
-            raising=False,
-        )
-        monkeypatch.setattr(
-            "butlers.core.memory_hooks.clear_memory_runtime_pool",
-            clear_runtime_pool_hook,
-            raising=False,
+            "butlers.core.memory_hooks.unregister_memory_maintenance_runtime",
+            unregister_runtime,
         )
 
         await mod.on_shutdown()
 
-        clear_consolidation_hook.assert_called_once_with()
-        clear_runtime_pool_hook.assert_called_once_with()
+        unregister_runtime.assert_called_once_with("chronicler", runtime)
+        assert mod._maintenance_runtime is None
+        assert mod._maintenance_runtime_owner is None
 
 
 # ---------------------------------------------------------------------------

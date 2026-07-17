@@ -300,11 +300,12 @@ async def _run_memory_consolidation_job(
     schedule (larger batch size, tighter cadence) registered against the same
     ``job_name`` — see ``MemoryModule.on_startup``'s default schedules.
 
-    The daemon registers its fully configured ``Spawner`` in ``spawn_hooks``
-    during startup. Reusing that instance keeps model selection, spend routing,
-    quotas, failover, and session timeouts under the authoritative model-catalog
-    path. ``run_consolidation`` only invokes it when the bounded claim produced
-    at least one ``(tenant_id, butler)`` group, so an empty backlog is a no-op.
+    Scheduler dispatch binds the dispatching daemon's fully configured
+    ``Spawner`` with the maintenance runtime. Reusing that exact instance keeps
+    model selection, spend routing, quotas, failover, and session timeouts under
+    the authoritative model-catalog path. ``run_consolidation`` only invokes it
+    when the bounded claim produced at least one ``(tenant_id, butler)`` group,
+    so an empty backlog is a no-op.
 
     ``enable_shared_catalog=True`` is passed through regardless — it matches
     the memory module's own default (see the memory-discovery-catalog spec's
@@ -319,7 +320,6 @@ async def _run_memory_consolidation_job(
     del pool
 
     from butlers.core.memory_hooks import consolidate_memory
-    from butlers.core.spawn_hooks import get_spawner
     from butlers.modules.memory.consolidation import DEFAULT_BATCH_SIZE
 
     batch_size = DEFAULT_BATCH_SIZE
@@ -342,14 +342,7 @@ async def _run_memory_consolidation_job(
                 )
             batch_size = raw_batch_size
 
-    spawner = get_spawner()
-    if spawner is None:
-        raise RuntimeError(
-            "memory_consolidation requires the daemon Spawner to be registered before dispatch"
-        )
-
     return await consolidate_memory(
-        spawner=spawner,
         batch_size=batch_size,
         enable_shared_catalog=True,
     )

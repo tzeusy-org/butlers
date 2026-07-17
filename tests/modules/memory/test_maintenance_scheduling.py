@@ -235,29 +235,21 @@ class TestMemoryMaintenanceRuntimePool:
         self, monkeypatch
     ) -> None:
         """A stopped or missing MemoryModule must surface a scheduler error."""
-        import butlers.core.memory_hooks as memory_hooks
-
-        monkeypatch.setattr(memory_hooks, "_memory_runtime_pool_hook", None, raising=False)
         monkeypatch.setattr(
             "butlers.modules.memory.storage.run_decay_sweep",
             AsyncMock(return_value={"facts_checked": 0}),
         )
 
-        with pytest.raises(RuntimeError, match="memory module runtime pool hook"):
+        with pytest.raises(RuntimeError, match="dispatch-scoped runtime context"):
             await _run_memory_decay_sweep_job(pool=object(), job_args=None)
 
 
 class TestJobArgsValidation:
-    async def test_ann_observability_rejects_job_args_and_requires_runtime_pool(
-        self, monkeypatch
-    ) -> None:
-        import butlers.core.memory_hooks as memory_hooks
-
+    async def test_ann_observability_rejects_job_args_and_requires_runtime_pool(self) -> None:
         with pytest.raises(RuntimeError, match="does not accept job_args"):
             await _run_memory_ann_observability_job(pool=object(), job_args={"sample_queries": 1})
 
-        monkeypatch.setattr(memory_hooks, "_memory_runtime_pool_hook", None)
-        with pytest.raises(RuntimeError, match="memory module runtime pool hook"):
+        with pytest.raises(RuntimeError, match="dispatch-scoped runtime context"):
             await _run_memory_ann_observability_job(pool=object(), job_args=None)
 
     async def test_ann_observability_uses_registered_runtime_pool(self, monkeypatch) -> None:
@@ -295,18 +287,15 @@ class TestJobArgsValidation:
         assert result == {"facts_checked": 0}
 
     async def test_consolidation_batch_size_override_is_validated(self, monkeypatch) -> None:
-        spawner = object()
         consolidate_memory = AsyncMock(return_value={"episodes_processed": 0})
 
         monkeypatch.setattr("butlers.core.memory_hooks.consolidate_memory", consolidate_memory)
-        monkeypatch.setattr("butlers.core.spawn_hooks.get_spawner", lambda: spawner)
 
         # No job_args -> DEFAULT_BATCH_SIZE.
         from butlers.modules.memory.consolidation import DEFAULT_BATCH_SIZE
 
         await _run_memory_consolidation_job(pool=object(), job_args=None)
         consolidate_memory.assert_awaited_once_with(
-            spawner=spawner,
             batch_size=DEFAULT_BATCH_SIZE,
             enable_shared_catalog=True,
         )
@@ -315,7 +304,6 @@ class TestJobArgsValidation:
         consolidate_memory.reset_mock()
         await _run_memory_consolidation_job(pool=object(), job_args={"batch_size": 500})
         consolidate_memory.assert_awaited_once_with(
-            spawner=spawner,
             batch_size=500,
             enable_shared_catalog=True,
         )
@@ -329,13 +317,14 @@ class TestJobArgsValidation:
             await _run_memory_consolidation_job(pool=object(), job_args={"unknown": 1})
 
     async def test_consolidation_requires_registered_runtime_hooks(self, monkeypatch) -> None:
-        import butlers.core.memory_hooks as memory_hooks
+        from butlers.core.memory_hooks import bind_memory_maintenance_dispatch
 
-        monkeypatch.setattr("butlers.core.spawn_hooks.get_spawner", lambda: object())
-        monkeypatch.setattr(memory_hooks, "_memory_consolidation_hook", None)
-
-        with pytest.raises(RuntimeError, match="memory module runtime hook"):
-            await _run_memory_consolidation_job(pool=object(), job_args=None)
+        with bind_memory_maintenance_dispatch(
+            butler_name="missing-memory-runtime",
+            spawner=object(),
+        ):
+            with pytest.raises(RuntimeError, match="not registered"):
+                await _run_memory_consolidation_job(pool=object(), job_args=None)
 
 
 class TestCatalogBackfillJobArgsValidation:
@@ -1001,7 +990,6 @@ async def test_run_decay_sweep_expiry_marks_catalog_entry_stale(core_memory_db_u
 @pytest.mark.integration
 async def test_consolidation_backfill_batch_size_bounds_claim_and_skips_dead_letter(
     core_memory_db_url: str,
-    monkeypatch,
 ) -> None:
     """The memory_consolidation_backfill schedule's larger batch_size only ever
     processes up to that many *pending* episodes per run, and never reclaims
@@ -1018,13 +1006,14 @@ async def test_consolidation_backfill_batch_size_bounds_claim_and_skips_dead_let
             return SimpleNamespace(success=True, output="{}", error=None)
 
     spawner = _SuccessfulSpawner()
-    monkeypatch.setattr("butlers.core.spawn_hooks.get_spawner", lambda: spawner)
 
     pool = await _pool_for(core_memory_db_url)
+    runtime = None
     try:
         from butlers.core.memory_hooks import (
-            clear_memory_consolidation,
-            register_memory_consolidation,
+            bind_memory_maintenance_dispatch,
+            register_memory_maintenance_runtime,
+            unregister_memory_maintenance_runtime,
         )
         from butlers.modules.memory.consolidation import run_consolidation
 
@@ -1037,7 +1026,11 @@ async def test_consolidation_backfill_batch_size_bounds_claim_and_skips_dead_let
                 enable_shared_catalog=enable_shared_catalog,
             )
 
-        register_memory_consolidation(_consolidate_memory)
+        runtime = register_memory_maintenance_runtime(
+            "switchboard",
+            pool_resolver=lambda: pool,
+            consolidation=_consolidate_memory,
+        )
         for i in range(12):
             await pool.execute(
                 "INSERT INTO episodes (butler, content) VALUES ('switchboard', $1)",
@@ -1050,7 +1043,8 @@ async def test_consolidation_backfill_batch_size_bounds_claim_and_skips_dead_let
             "'dead_letter', 'exceeded max attempts')"
         )
 
-        result = await _run_memory_consolidation_job(pool=pool, job_args={"batch_size": 5})
+        with bind_memory_maintenance_dispatch(butler_name="switchboard", spawner=spawner):
+            result = await _run_memory_consolidation_job(pool=pool, job_args={"batch_size": 5})
         assert result["episodes_processed"] == 5
         assert result["episodes_consolidated"] == 5
         assert spawner.trigger_sources == ["schedule:consolidation"]
@@ -1071,5 +1065,6 @@ async def test_consolidation_backfill_batch_size_bounds_claim_and_skips_dead_let
         )
         assert still_pending == 7  # 12 - 5 claimed this run
     finally:
-        clear_memory_consolidation()
+        if runtime is not None:
+            unregister_memory_maintenance_runtime("switchboard", runtime)
         await pool.close()

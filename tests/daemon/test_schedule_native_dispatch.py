@@ -133,26 +133,31 @@ class TestNativeScheduleDispatch:
         )
         assert mock_spawner.trigger.call_args.kwargs["complexity"] is Complexity.WORKHORSE
 
-    async def test_memory_consolidation_job_reuses_daemon_spawner(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """The deterministic handler reaches consolidation with the live catalog-backed Spawner."""
+    async def test_memory_consolidation_job_reuses_daemon_spawner(self, tmp_path) -> None:
+        """The deterministic handler binds this daemon's live Spawner to memory runtime."""
+        from butlers.core.memory_hooks import (
+            register_memory_maintenance_runtime,
+            unregister_memory_maintenance_runtime,
+        )
+
         daemon, mock_spawner = self._make_daemon(tmp_path, "general", 41101)
         consolidate_memory = AsyncMock(
             return_value={"episodes_processed": 2, "groups_consolidated": 1}
         )
-
-        monkeypatch.setattr("butlers.core.spawn_hooks.get_spawner", lambda: mock_spawner)
-        monkeypatch.setattr(
-            "butlers.core.memory_hooks.consolidate_memory",
-            consolidate_memory,
+        runtime = register_memory_maintenance_runtime(
+            "general",
+            pool_resolver=lambda: daemon.db.pool,
+            consolidation=consolidate_memory,
         )
 
-        result = await daemon._dispatch_scheduled_task(
-            trigger_source="schedule:memory_consolidation",
-            job_name="memory_consolidation",
-            job_args={"batch_size": 7},
-        )
+        try:
+            result = await daemon._dispatch_scheduled_task(
+                trigger_source="schedule:memory_consolidation",
+                job_name="memory_consolidation",
+                job_args={"batch_size": 7},
+            )
+        finally:
+            unregister_memory_maintenance_runtime("general", runtime)
 
         assert result == {"episodes_processed": 2, "groups_consolidated": 1}
         consolidate_memory.assert_awaited_once_with(
