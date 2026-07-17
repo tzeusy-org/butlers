@@ -347,6 +347,10 @@ def test_reclassify_stale_ok_state_preserves_more_severe_states():
         == "warn"
     )
     assert (
+        _reclassify_stale_ok_state(state="ok", last_verified=now - timedelta(hours=24), now=now)
+        == "warn"
+    )
+    assert (
         _reclassify_stale_ok_state(state="ok", last_verified=now - timedelta(hours=23), now=now)
         == "ok"
     )
