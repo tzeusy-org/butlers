@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import secrets
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -51,7 +52,6 @@ def _compiled(pattern: str) -> re.Pattern[str]:
 
 
 _CLAUDE_CODE_SESSION_URL = r"claude\.ai/code/session[_-][A-Za-z0-9]+"
-_COMMIT_TRAILER_LINE = _compiled(r"[A-Za-z0-9-]+:[ \t]+\S.*")
 _ALLOWED_CLAUDE_SESSION_TRAILER = _compiled(
     rf"Claude-Session:[ \t]+https://{_CLAUDE_CODE_SESSION_URL}[ \t]*"
 )
@@ -116,28 +116,40 @@ def _strip_allowed_claude_session_commit_trailers(message: str) -> str:
 
     The generic matcher remains intentionally strict. This source-specific
     preprocessing runs only for commit messages and only removes exact HTTPS
-    Claude session lines in a final trailer block separated from commit prose
-    by a blank line. A matching line in the subject/body, or with arbitrary
-    text after it, therefore remains visible to ``find_session_links``.
+    Claude session lines that ``git interpret-trailers`` recognizes. Git owns
+    the trailer grammar, including separator whitespace, folded values, and
+    its terminal-block rules. A matching line in the subject/body, or with a
+    folded continuation, therefore remains visible to ``find_session_links``.
     """
-    lines = message.splitlines(keepends=True)
-    end = len(lines)
-    while end and not lines[end - 1].strip():
-        end -= 1
+    original_lines = message.splitlines(keepends=True)
+    parse_lines = original_lines.copy()
+    candidate_markers: dict[int, str] = {}
 
-    start = end
-    while start and _COMMIT_TRAILER_LINE.fullmatch(lines[start - 1].rstrip("\r\n")):
-        start -= 1
+    for index, line in enumerate(original_lines):
+        if not _ALLOWED_CLAUDE_SESSION_TRAILER.fullmatch(line.rstrip("\r\n")):
+            continue
 
-    # A Git trailer block must terminate the message and be separated from
-    # regular commit prose by a blank line (unless the whole message is trailers).
-    if start == end or (start and lines[start - 1].strip()):
+        marker = f"sessionlinkguard{secrets.token_hex(16)}"
+        line_ending = line[len(line.rstrip("\r\n")) :]
+        parse_lines[index] = f"Claude-Session: {marker}{line_ending}"
+        candidate_markers[index] = marker
+
+    if not candidate_markers:
         return message
 
-    for index in range(start, end):
-        if _ALLOWED_CLAUDE_SESSION_TRAILER.fullmatch(lines[index].rstrip("\r\n")):
-            lines[index] = ""
-    return "".join(lines)
+    proc = subprocess.run(
+        ["git", "interpret-trailers", "--parse", "--no-divider"],
+        input="".join(parse_lines),
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    parsed_trailers = {line.casefold() for line in proc.stdout.splitlines()}
+
+    for index, marker in candidate_markers.items():
+        if f"claude-session: {marker}" in parsed_trailers:
+            original_lines[index] = ""
+    return "".join(original_lines)
 
 
 def scan_sources(named_texts: dict[str, str]) -> list[Finding]:

@@ -91,6 +91,76 @@ def test_scan_sources_allows_exact_claude_session_commit_trailer() -> None:
     assert findings == []
 
 
+@pytest.mark.parametrize(
+    "terminal_context",
+    [
+        "Other-Key : valid Git trailer with space before the separator\n",
+        "Other-Key: a folded trailer value\n continuation text\n",
+        (
+            "ordinary terminal prose accepted by Git's 25-percent trailer rule\n"
+            "Signed-off-by: Example <example@example.invalid>\n"
+        ),
+    ],
+)
+def test_scan_sources_allows_claude_footer_in_git_terminal_trailer_context(
+    terminal_context: str,
+) -> None:
+    findings = slg.scan_sources(
+        {
+            "commit abc123": (
+                f"fix: retain valid Git trailer semantics\n\n"
+                f"{terminal_context}"
+                f"Claude-Session: {_CLAUDE_EXAMPLE_URL}\n"
+            )
+        }
+    )
+
+    assert findings == []
+
+
+def test_scan_sources_rejects_claude_footer_without_git_trailer_separator() -> None:
+    findings = slg.scan_sources({"commit abc123": f"Claude-Session: {_CLAUDE_EXAMPLE_URL}\n"})
+
+    assert {finding.pattern_name for finding in findings} == {
+        "claude-session-footer-label",
+        "claude-code-session-url",
+    }
+
+
+def test_scan_sources_rejects_folded_claude_footer_value() -> None:
+    findings = slg.scan_sources(
+        {
+            "commit abc123": (
+                f"fix: reject a non-exact trailer value\n\n"
+                f"Claude-Session: {_CLAUDE_EXAMPLE_URL}\n"
+                " continuation text\n"
+            )
+        }
+    )
+
+    assert {finding.pattern_name for finding in findings} == {
+        "claude-session-footer-label",
+        "claude-code-session-url",
+    }
+
+
+def test_scan_sources_keeps_nonterminal_footer_when_a_terminal_footer_is_valid() -> None:
+    findings = slg.scan_sources(
+        {
+            "commit abc123": (
+                f"Claude-Session: {_CLAUDE_EXAMPLE_URL}\n\n"
+                "fix: terminal trailer remains valid\n\n"
+                f"Claude-Session: {_CLAUDE_EXAMPLE_URL}\n"
+            )
+        }
+    )
+
+    assert {finding.pattern_name for finding in findings} == {
+        "claude-session-footer-label",
+        "claude-code-session-url",
+    }
+
+
 def test_scan_sources_rejects_claude_session_outside_terminal_trailer_block() -> None:
     findings = slg.scan_sources(
         {
