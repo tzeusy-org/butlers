@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 import pytest
 
+from butlers.api import fleet_events_bridge
 from butlers.api.fleet_events_bridge import (
     FLEET_EVENTS_CHANNEL,
+    _connect_listener,
     _on_notify,
     run_fleet_events_listener,
 )
@@ -96,6 +99,94 @@ def test_on_notify_defaults_non_dict_data_to_empty():
 
     assert len(_events_ring) == 1
     assert _events_ring[-1]["data"] == {}
+
+
+# ---------------------------------------------------------------------------
+# _connect_listener — environment target selection
+# ---------------------------------------------------------------------------
+
+
+async def test_connect_listener_uses_decoded_database_url_path_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dedicated LISTEN connection must target DATABASE_URL's database."""
+    captured_kwargs: dict[str, object] = {}
+    sentinel = object()
+
+    async def capture_connect(**kwargs: Any) -> object:
+        captured_kwargs.update(kwargs)
+        return sentinel
+
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://fleet_user:fleet_password@db.example:5432/fleet%5Fevents%2Dtarget",
+    )
+    monkeypatch.delenv("POSTGRES_DB", raising=False)
+    monkeypatch.setattr(fleet_events_bridge.asyncpg, "connect", capture_connect)
+
+    assert await _connect_listener() is sentinel
+    assert captured_kwargs["database"] == "fleet_events-target"
+
+
+async def test_connect_listener_database_url_overrides_postgres_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POSTGRES_DB cannot redirect a listener when DATABASE_URL is supplied."""
+    captured_kwargs: dict[str, object] = {}
+
+    async def capture_connect(**kwargs: Any) -> object:
+        captured_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://fleet_user:fleet_password@db.example:5432/url_fleet_events",
+    )
+    monkeypatch.setenv("POSTGRES_DB", "ignored_fallback_database")
+    monkeypatch.setattr(fleet_events_bridge.asyncpg, "connect", capture_connect)
+
+    await _connect_listener()
+
+    assert captured_kwargs["database"] == "url_fleet_events"
+
+
+async def test_connect_listener_uses_postgres_db_without_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POSTGRES_DB remains the explicit fallback when DATABASE_URL is absent."""
+    captured_kwargs: dict[str, object] = {}
+
+    async def capture_connect(**kwargs: Any) -> object:
+        captured_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("POSTGRES_DB", "configured_fleet_events_database")
+    monkeypatch.setattr(fleet_events_bridge.asyncpg, "connect", capture_connect)
+
+    await _connect_listener()
+
+    assert captured_kwargs["database"] == "configured_fleet_events_database"
+
+
+async def test_connect_listener_rejects_database_url_without_database_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pathless URL must not silently connect the listener elsewhere."""
+    connect_calls: list[dict[str, Any]] = []
+
+    async def unexpected_connect(**kwargs: Any) -> object:
+        connect_calls.append(kwargs)
+        raise AssertionError("pathless DATABASE_URL opened a listener connection")
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://db.example:5432/")
+    monkeypatch.setenv("POSTGRES_DB", "not_a_url_fallback")
+    monkeypatch.setattr(fleet_events_bridge.asyncpg, "connect", unexpected_connect)
+
+    with pytest.raises(ValueError, match="must include a database path"):
+        await _connect_listener()
+
+    assert connect_calls == []
 
 
 # ---------------------------------------------------------------------------
