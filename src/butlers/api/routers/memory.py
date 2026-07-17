@@ -88,7 +88,11 @@ def _any_pool(db: DatabaseManager) -> object:
     raise HTTPException(status_code=503, detail="No database pools available")
 
 
-def _is_missing_memory_schema_error(exc: Exception) -> bool:
+def _is_missing_memory_schema_error(
+    exc: Exception,
+    *,
+    expected_absent_columns: tuple[str, ...] = (),
+) -> bool:
     """Return whether *exc* indicates the pool simply lacks memory tables.
 
     This is the expected, common case for a butler that has not opted into
@@ -100,7 +104,17 @@ def _is_missing_memory_schema_error(exc: Exception) -> bool:
     if isinstance(exc, UndefinedTableError):
         return True
     msg = str(exc).lower()
-    return "does not exist" in msg and ("relation" in msg or "table" in msg)
+    if "does not exist" in msg and ("relation" in msg or "table" in msg):
+        return True
+    # Re-embedding probes columns that only memory-enabled schemas own.  Keep
+    # this exemption opt-in per query so a missing column elsewhere remains a
+    # genuine query fault rather than silently looking like an absent schema.
+    return (
+        bool(expected_absent_columns)
+        and "column" in msg
+        and "does not exist" in msg
+        and any(f'"{column.lower()}"' in msg for column in expected_absent_columns)
+    )
 
 
 async def _fan_out_memory_queries(
@@ -109,7 +123,8 @@ async def _fan_out_memory_queries(
     query_name: str,
     query_fn: Callable[[str, object], Awaitable[object | None]],
     butler_filter: str | None = None,
-    tracker: DegradedSources | None = None,
+    tracker: DegradedSources,
+    expected_absent_columns: tuple[str, ...] = (),
 ) -> list[object]:
     """Run a query across candidate pools and skip pools without memory schema.
 
@@ -117,11 +132,11 @@ async def _fan_out_memory_queries(
     pool owned by that butler.  If that butler is unknown the function returns
     immediately with an empty list, avoiding unnecessary pool probing.
 
-    When *tracker* is provided, a pool failing for any reason OTHER than
+    Every caller supplies *tracker*. A pool failing for any reason OTHER than
     "this pool has no memory tables" (see ``_is_missing_memory_schema_error``)
-    is recorded on it -- callers should surface ``tracker.names`` in the
-    response envelope (e.g. ``ApiMeta(pools_failed=...)``) so a genuinely
-    unreachable pool is never indistinguishable from a truthful empty result.
+    is recorded on it -- callers surface ``tracker.names`` in the response
+    envelope or choose an honest error response, so a genuinely unreachable
+    pool is never indistinguishable from a truthful empty result.
     """
     if butler_filter is not None:
         # Narrow to exactly one pool; return early when the butler is unknown.
@@ -144,7 +159,10 @@ async def _fan_out_memory_queries(
         try:
             return await query_fn(name, pool)
         except Exception as exc:
-            if tracker is not None and not _is_missing_memory_schema_error(exc):
+            if not _is_missing_memory_schema_error(
+                exc,
+                expected_absent_columns=expected_absent_columns,
+            ):
                 tracker.mark(name, msg=f"memory query {query_name!r} failed")
             logger.debug(
                 "Skipping pool %s for memory query %s (pool lacks memory tables or query failed)",
@@ -156,6 +174,25 @@ async def _fan_out_memory_queries(
 
     results = await asyncio.gather(*(_run(name, pool) for name, pool in pools))
     return [result for result in results if result is not None]
+
+
+def _raise_memory_detail_miss(
+    *,
+    resource: str,
+    tracker: DegradedSources,
+) -> None:
+    """Raise a truthful error for an unresolved cross-pool detail lookup."""
+    if tracker.failed:
+        names = ", ".join(tracker.names)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"{resource} detail unavailable: {len(tracker.names)} butler database(s) "
+                f"unreachable ({names}); the {resource.lower()} may live in a pool "
+                "that could not be queried."
+            ),
+        )
+    raise HTTPException(status_code=404, detail=f"{resource} not found")
 
 
 def _parse_jsonb(value):
@@ -514,13 +551,15 @@ async def get_episode(
             episode_id,
         )
 
+    tracker = DegradedSources(logger)
     rows = await _fan_out_memory_queries(
         db,
         query_name="episode_by_id",
         query_fn=_query_pool,
+        tracker=tracker,
     )
     if not rows:
-        raise HTTPException(status_code=404, detail="Episode not found")
+        _raise_memory_detail_miss(resource="Episode", tracker=tracker)
 
     return ApiResponse[Episode](data=_row_to_episode(rows[0]))
 
@@ -663,13 +702,15 @@ async def get_fact(
         )
         return (row, superseder)
 
+    tracker = DegradedSources(logger)
     results = await _fan_out_memory_queries(
         db,
         query_name="fact_by_id",
         query_fn=_query_pool,
+        tracker=tracker,
     )
     if not results:
-        raise HTTPException(status_code=404, detail="Fact not found")
+        _raise_memory_detail_miss(resource="Fact", tracker=tracker)
 
     row, superseder = results[0]
     fact = _row_to_fact(row)
@@ -926,13 +967,15 @@ async def get_rule(
             rule_id,
         )
 
+    tracker = DegradedSources(logger)
     rows = await _fan_out_memory_queries(
         db,
         query_name="rule_by_id",
         query_fn=_query_pool,
+        tracker=tracker,
     )
     if not rows:
-        raise HTTPException(status_code=404, detail="Rule not found")
+        _raise_memory_detail_miss(resource="Rule", tracker=tracker)
 
     return ApiResponse[Rule](data=_row_to_rule(rows[0]))
 
@@ -1425,8 +1468,12 @@ async def get_entity(
         )
         return count, list(rows)
 
+    tracker = DegradedSources(logger)
     per_pool = await _fan_out_memory_queries(
-        db, query_name="entity_facts", query_fn=_query_entity_facts
+        db,
+        query_name="entity_facts",
+        query_fn=_query_entity_facts,
+        tracker=tracker,
     )
     fact_count = sum(c for c, _ in per_pool)
     merged_fact_rows: list[object] = []
@@ -1483,7 +1530,10 @@ async def get_entity(
         entity_info=entity_info,
     )
 
-    return ApiResponse[EntityDetail](data=detail)
+    meta_fields: dict[str, object] = {}
+    if tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
+    return ApiResponse[EntityDetail](data=detail, meta=ApiMeta(**meta_fields))
 
 
 # ---------------------------------------------------------------------------
@@ -1636,9 +1686,22 @@ async def set_linked_contact(
         # asyncpg returns 'UPDATE N' — extract the count
         return int(result.split()[-1]) if result else 0
 
+    tracker = DegradedSources(logger)
     counts = await _fan_out_memory_queries(
-        db, query_name="migrate_contact_facts", query_fn=_migrate_facts
+        db,
+        query_name="migrate_contact_facts",
+        query_fn=_migrate_facts,
+        tracker=tracker,
     )
+    if tracker.failed:
+        names = ", ".join(tracker.names)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Contact fact migration incomplete: {len(tracker.names)} butler database(s) "
+                f"unreachable ({names}); one or more pools may not have migrated their facts."
+            ),
+        )
     migrated = sum(c for c in counts if c)
 
     return {"entity_id": str(eid), "contact_id": str(cid), "facts_migrated": migrated}
@@ -1704,11 +1767,22 @@ async def delete_entity(
             or 0
         )
 
+    precheck_tracker = DegradedSources(logger)
     per_pool_counts = await _fan_out_memory_queries(
         db,
         query_name="delete_entity_fact_check",
         query_fn=_count_active_facts,
+        tracker=precheck_tracker,
     )
+    if precheck_tracker.failed:
+        names = ", ".join(precheck_tracker.names)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Entity deletion unavailable: {len(precheck_tracker.names)} butler database(s) "
+                f"unreachable ({names}); unable to verify whether the entity has active facts."
+            ),
+        )
     total_active_facts = sum(per_pool_counts)
     if total_active_facts > 0:
         if not retire_facts:
@@ -1729,11 +1803,22 @@ async def delete_entity(
             )
             return 0
 
+        retire_tracker = DegradedSources(logger)
         await _fan_out_memory_queries(
             db,
             query_name="delete_entity_retire_facts",
             query_fn=_retire_facts,
+            tracker=retire_tracker,
         )
+        if retire_tracker.failed:
+            names = ", ".join(retire_tracker.names)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Entity deletion incomplete: {len(retire_tracker.names)} butler database(s) "
+                    f"unreachable ({names}); fact retirement may have only partially completed."
+                ),
+            )
 
     deleted_at = datetime.now(UTC).isoformat()
     await pool.execute(
@@ -2390,7 +2475,13 @@ async def inspect_memory(
                 )
         return results
 
-    per_pool = await _fan_out_memory_queries(db, query_name="inspect", query_fn=_query_pool)
+    tracker = DegradedSources(logger)
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="inspect",
+        query_fn=_query_pool,
+        tracker=tracker,
+    )
 
     merged: list[dict] = []
     for pool_results in per_pool:
@@ -2421,10 +2512,10 @@ async def inspect_memory(
         )
         for r in page
     ]
-    return PaginatedResponse[MemoryInspectResult](
-        data=data,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
-    )
+    meta_fields: dict[str, object] = {"total": total, "offset": offset, "limit": limit}
+    if tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
+    return PaginatedResponse[MemoryInspectResult](data=data, meta=PaginationMeta(**meta_fields))
 
 
 # ---------------------------------------------------------------------------
@@ -2460,6 +2551,7 @@ async def get_reembed_pending(
     """
     from butlers.modules.memory import reembedding as _reembedding
 
+    tracker = DegradedSources(logger)
     if butler is not None:
         try:
             pool = db.pool(butler)
@@ -2474,18 +2566,24 @@ async def get_reembed_pending(
             db,
             query_name="reembed_pending",
             query_fn=lambda _name, pool: _reembedding.count_pending(pool, current_model),
+            tracker=tracker,
+            expected_absent_columns=("embedding", "embedding_model_version"),
         )
         counts = dict.fromkeys(_reembedding.ALL_TIERS, 0)
         for result in results:
             for tier, count in result.items():
                 counts[tier] = counts.get(tier, 0) + count
 
+    meta_fields: dict[str, object] = {}
+    if butler is None and tracker.failed:
+        meta_fields["pools_failed"] = tracker.names
     return ApiResponse[ReembedPendingCounts](
         data=ReembedPendingCounts(
             counts=counts,
             total=sum(counts.values()),
             current_model=current_model,
-        )
+        ),
+        meta=ApiMeta(**meta_fields),
     )
 
 

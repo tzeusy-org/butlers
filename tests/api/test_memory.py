@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.routers.memory import _get_db_manager
 
@@ -1031,8 +1032,36 @@ async def test_reembed_pending_without_butler_skips_non_memory_pools(app, monkey
     data = resp.json()["data"]
     assert data["counts"] == {"episodes": 5, "facts": 7, "rules": 9}
     assert data["total"] == 21
+    assert "pools_failed" not in resp.json()["meta"]
     queried_names = {call.args[0] for call in db_mock.pool.call_args_list}
     assert queried_names == {"chronicler", "general", "health"}
+
+
+async def test_reembed_pending_reports_genuine_failed_pool(app, monkeypatch):
+    """A failed count source is named instead of looking like zero stale embeddings."""
+    from butlers.modules.memory import reembedding as _reembedding
+
+    healthy_pool = object()
+    failed_pool = object()
+    db = _MemoryFanOutDB({"general": healthy_pool, "health": failed_pool})
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async def _fake_count_pending(pool, current_model, tier=None):
+        if pool is failed_pool:
+            raise RuntimeError("connection reset by peer")
+        return {"episodes": 0, "facts": 0, "rules": 0}
+
+    monkeypatch.setattr(_reembedding, "count_pending", _fake_count_pending)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/reembed/pending")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["total"] == 0
+    assert body["meta"]["pools_failed"] == ["health"]
 
 
 async def test_reembed_pending_404_for_unknown_butler(app):
@@ -1539,6 +1568,309 @@ def _make_rule_row(
     }
 
 
+# ---------------------------------------------------------------------------
+# Cross-butler memory failure semantics (bu-25a6k)
+# ---------------------------------------------------------------------------
+
+
+class _MemoryDetailPool:
+    """Minimal per-tier pool for detail lookup degraded-mode tests."""
+
+    def __init__(
+        self,
+        *,
+        episode: dict | None = None,
+        fact: dict | None = None,
+        rule: dict | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._episode = episode
+        self._fact = fact
+        self._rule = rule
+        self._error = error
+
+    async def fetchrow(self, query: str, *args: object):
+        if self._error is not None:
+            raise self._error
+        if "WHERE supersedes_id" in query:
+            return None
+        if "FROM episodes" in query:
+            return _make_record(self._episode) if self._episode is not None else None
+        if "FROM facts" in query:
+            return _make_record(self._fact) if self._fact is not None else None
+        if "FROM rules" in query:
+            return _make_record(self._rule) if self._rule is not None else None
+        return None
+
+    async def fetch(self, query: str, *args: object) -> list[object]:
+        if self._error is not None:
+            raise self._error
+        return []
+
+
+def _detail_fixture(kind: str) -> tuple[str, _MemoryDetailPool]:
+    if kind == "episode":
+        row = _make_episode_row()
+        return f"/api/memory/episodes/{row['id']}", _MemoryDetailPool(episode=row)
+    if kind == "fact":
+        row = _make_fact_row(fact_id=uuid.uuid4())
+        return f"/api/memory/facts/{row['id']}", _MemoryDetailPool(fact=row)
+    if kind == "rule":
+        row = _make_rule_row(rule_id=uuid.uuid4())
+        return f"/api/memory/rules/{row['id']}", _MemoryDetailPool(rule=row)
+    raise AssertionError(f"Unexpected memory detail kind: {kind}")
+
+
+@pytest.mark.parametrize("kind", ["episode", "fact", "rule"])
+async def test_memory_detail_miss_reports_degraded_source_instead_of_false_404(
+    kind: str, app
+) -> None:
+    """A failed detail source leaves ownership unknown, so the miss is a 503."""
+    path, _ = _detail_fixture(kind)
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _MemoryDetailPool(),
+            "finance": _MemoryDetailPool(error=RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(path)
+
+    assert resp.status_code == 503
+    assert "finance" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("kind", ["episode", "fact", "rule"])
+async def test_memory_detail_found_row_wins_over_degraded_sibling(kind: str, app) -> None:
+    """A reachable detail row is useful even while another schema is down."""
+    path, holding_pool = _detail_fixture(kind)
+    db = _MemoryFanOutDB(
+        {
+            "atlas": holding_pool,
+            "finance": _MemoryDetailPool(error=RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(path)
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["id"] == path.rsplit("/", 1)[-1]
+
+
+@pytest.mark.parametrize("kind", ["episode", "fact", "rule"])
+async def test_memory_detail_missing_schema_stays_a_truthful_404(kind: str, app) -> None:
+    """A non-memory schema is skipped rather than being reported as degraded."""
+    path, _ = _detail_fixture(kind)
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _MemoryDetailPool(),
+            "switchboard": _MemoryDetailPool(error=UndefinedTableError("relation does not exist")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(path)
+
+    assert resp.status_code == 404
+
+
+def _make_entity_row(entity_id: uuid.UUID) -> dict:
+    return {
+        "id": entity_id,
+        "canonical_name": "Atlas",
+        "entity_type": "person",
+        "aliases": [],
+        "roles": [],
+        "linked_contact_roles": [],
+        "metadata": {},
+        "unidentified": False,
+        "created_at": _NOW,
+        "updated_at": _NOW,
+    }
+
+
+class _EntityMemoryPool:
+    """Pool fake separating shared-entity reads from per-schema fact work."""
+
+    def __init__(
+        self,
+        *,
+        entity: dict | None = None,
+        fact_count: int = 0,
+        fact_error: Exception | None = None,
+        fact_update_error: Exception | None = None,
+    ) -> None:
+        self._entity = entity
+        self._fact_count = fact_count
+        self._fact_error = fact_error
+        self._fact_update_error = fact_update_error
+        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def fetchrow(self, query: str, *args: object):
+        if "FROM public.entities" in query:
+            return _make_record(self._entity) if self._entity is not None else None
+        return None
+
+    async def fetchval(self, query: str, *args: object):
+        if "FROM public.entities" in query:
+            return self._entity["id"] if self._entity is not None else None
+        if "FROM facts" in query:
+            if self._fact_error is not None:
+                raise self._fact_error
+            return self._fact_count
+        return 0
+
+    async def fetch(self, query: str, *args: object) -> list[object]:
+        if "FROM facts" in query and self._fact_error is not None:
+            raise self._fact_error
+        return []
+
+    async def execute(self, query: str, *args: object) -> str:
+        self.execute_calls.append((query, args))
+        if "UPDATE facts" in query:
+            if self._fact_update_error is not None:
+                raise self._fact_update_error
+            return f"UPDATE {self._fact_count}"
+        return "UPDATE 1"
+
+
+async def test_entity_detail_names_failed_fact_pool(app) -> None:
+    """An entity's partial fact ledger is explicitly marked as degraded."""
+    entity_id = uuid.uuid4()
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
+            "finance": _EntityMemoryPool(fact_error=RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/memory/entities/{entity_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"]["fact_count"] == 0
+    assert body["meta"]["pools_failed"] == ["finance"]
+
+
+async def test_entity_detail_skips_absent_fact_schema_without_degraded_flag(app) -> None:
+    """A legitimate non-memory schema does not taint an otherwise complete entity view."""
+    entity_id = uuid.uuid4()
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
+            "switchboard": _EntityMemoryPool(
+                fact_error=UndefinedTableError("relation does not exist")
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/memory/entities/{entity_id}")
+
+    assert resp.status_code == 200
+    assert "pools_failed" not in resp.json()["meta"]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (RuntimeError("connection reset by peer"), 503),
+        (UndefinedTableError("relation does not exist"), 200),
+    ],
+)
+async def test_migrate_contact_facts_does_not_claim_success_after_failed_source(
+    error: Exception | None, expected_status: int, app
+) -> None:
+    """Contact migration succeeds only when every memory-capable source answered."""
+    entity_id = uuid.uuid4()
+    contact_id = uuid.uuid4()
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
+            "finance": _EntityMemoryPool(fact_update_error=error),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put(
+            f"/api/memory/entities/{entity_id}/linked-contact",
+            json={"contact_id": str(contact_id)},
+        )
+
+    assert resp.status_code == expected_status
+    if expected_status == 200:
+        assert resp.json()["facts_migrated"] == 0
+    else:
+        assert "finance" in resp.json()["detail"]
+
+
+async def test_delete_entity_stops_on_failed_fact_precheck(app) -> None:
+    """A failed precheck cannot be treated as proof that an entity has no facts."""
+    entity_id = uuid.uuid4()
+    atlas = _EntityMemoryPool(entity=_make_entity_row(entity_id))
+    db = _MemoryFanOutDB(
+        {
+            "atlas": atlas,
+            "finance": _EntityMemoryPool(fact_error=RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.delete(f"/api/memory/entities/{entity_id}")
+
+    assert resp.status_code == 503
+    assert not any("UPDATE public.entities" in query for query, _ in atlas.execute_calls)
+
+
+async def test_delete_entity_does_not_soft_delete_after_failed_fact_retirement(app) -> None:
+    """A partial retirement failure must not be reported as a completed entity deletion."""
+    entity_id = uuid.uuid4()
+    atlas = _EntityMemoryPool(entity=_make_entity_row(entity_id), fact_count=1)
+    db = _MemoryFanOutDB(
+        {
+            "atlas": atlas,
+            "finance": _EntityMemoryPool(
+                fact_update_error=RuntimeError("connection reset by peer")
+            ),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.delete(
+            f"/api/memory/entities/{entity_id}", params={"retire_facts": True}
+        )
+
+    assert resp.status_code == 503
+    assert not any("UPDATE public.entities" in query for query, _ in atlas.execute_calls)
+
+
 class _InspectPool:
     """Fake pool for the inspect endpoint.
 
@@ -1576,6 +1908,27 @@ class _InspectPool:
 def _inspect_db(pool: _InspectPool) -> _FactsDB:
     """Single-butler DatabaseManager stand-in for inspect tests."""
     return _FactsDB({"atlas": pool})  # type: ignore[arg-type]
+
+
+async def test_inspect_reports_genuine_failed_pool(app) -> None:
+    """Inspect never renders a partial empty ledger as a complete result."""
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _InspectPool(),
+            "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["pools_failed"] == ["finance"]
 
 
 async def test_inspect_fact_result_carries_full_register_fields(app):

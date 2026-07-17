@@ -112,6 +112,10 @@ from tests.api.test_calendar_workspace import (
 from tests.api.test_memory import (
     _EmptyMemoryPool,
     _EntityListPool,
+    _EntityMemoryPool,
+    _InspectPool,
+    _make_entity_row,
+    _MemoryDetailPool,
     _MemoryFanOutDB,
     _RaisingMemoryPool,
     _RaisingStatsPool,
@@ -456,6 +460,82 @@ def _case_memory_entities() -> DegradedCase:
     return DegradedCase("memory_entities", _run)
 
 
+def _case_memory_detail() -> DegradedCase:
+    async def _run() -> None:
+        db = _MemoryFanOutDB(
+            {
+                "atlas": _MemoryDetailPool(),
+                "finance": _MemoryDetailPool(error=RuntimeError("connection reset by peer")),
+            }
+        )
+        app = create_app()
+        app.dependency_overrides[_memory_get_db] = lambda: db
+        resp = await _request(app, "GET", f"/api/memory/episodes/{uuid4()}")
+        assert resp.status_code == 503
+        assert "finance" in resp.json()["detail"]
+
+    return DegradedCase("memory_detail", _run)
+
+
+def _case_memory_entity_detail() -> DegradedCase:
+    async def _run() -> None:
+        entity_id = uuid4()
+        db = _MemoryFanOutDB(
+            {
+                "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
+                "finance": _EntityMemoryPool(fact_error=RuntimeError("connection reset by peer")),
+            }
+        )
+        app = create_app()
+        app.dependency_overrides[_memory_get_db] = lambda: db
+        resp = await _request(app, "GET", f"/api/memory/entities/{entity_id}")
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["pools_failed"] == ["finance"]
+
+    return DegradedCase("memory_entity_detail", _run)
+
+
+def _case_memory_inspect() -> DegradedCase:
+    async def _run() -> None:
+        db = _MemoryFanOutDB(
+            {
+                "atlas": _InspectPool(),
+                "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
+            }
+        )
+        app = create_app()
+        app.dependency_overrides[_memory_get_db] = lambda: db
+        resp = await _request(app, "GET", "/api/memory/inspect")
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["pools_failed"] == ["finance"]
+
+    return DegradedCase("memory_inspect", _run)
+
+
+def _case_memory_reembed_pending() -> DegradedCase:
+    async def _run() -> None:
+        from butlers.modules.memory import reembedding as reembedding
+
+        healthy_pool = object()
+        failed_pool = object()
+        db = _MemoryFanOutDB({"general": healthy_pool, "health": failed_pool})
+        app = create_app()
+        app.dependency_overrides[_memory_get_db] = lambda: db
+
+        async def _count_pending(pool: object, *_args: object) -> dict[str, int]:
+            if pool is failed_pool:
+                raise RuntimeError("connection reset by peer")
+            return {"episodes": 0, "facts": 0, "rules": 0}
+
+        with patch.object(reembedding, "count_pending", _count_pending):
+            resp = await _request(app, "GET", "/api/memory/reembed/pending")
+
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["pools_failed"] == ["health"]
+
+    return DegradedCase("memory_reembed_pending", _run)
+
+
 # ---------------------------------------------------------------------------
 # approvals (bu-qvnce.1)
 # ---------------------------------------------------------------------------
@@ -618,6 +698,10 @@ REGISTRY: list[DegradedCase] = [
     _case_memory_list("/api/memory/rules", "memory_rules"),
     _case_memory_list("/api/memory/activity", "memory_activity"),
     _case_memory_entities(),
+    _case_memory_detail(),
+    _case_memory_entity_detail(),
+    _case_memory_inspect(),
+    _case_memory_reembed_pending(),
     _case_approvals_list(),
     _case_secrets_catalogue(),
     _case_spend_summary(),
