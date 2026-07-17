@@ -107,6 +107,23 @@ def test_scan_sources_rejects_claude_session_outside_terminal_trailer_block() ->
     }
 
 
+@pytest.mark.parametrize("indent", [" ", "\t"])
+def test_scan_sources_rejects_indented_claude_session_terminal_line(indent: str) -> None:
+    findings = slg.scan_sources(
+        {
+            "commit abc123": (
+                f"fix: avoid an indented session leak\n\n"
+                f"{indent}Claude-Session: {_CLAUDE_EXAMPLE_URL}\n"
+            )
+        }
+    )
+
+    assert {finding.pattern_name for finding in findings} == {
+        "claude-session-footer-label",
+        "claude-code-session-url",
+    }
+
+
 def test_format_findings_reports_clean_when_empty() -> None:
     assert "clean" in slg.format_findings([]).lower()
 

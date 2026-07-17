@@ -126,7 +126,7 @@ def _strip_allowed_claude_session_commit_trailers(message: str) -> str:
         end -= 1
 
     start = end
-    while start and _COMMIT_TRAILER_LINE.fullmatch(lines[start - 1].strip()):
+    while start and _COMMIT_TRAILER_LINE.fullmatch(lines[start - 1].rstrip("\r\n")):
         start -= 1
 
     # A Git trailer block must terminate the message and be separated from
@@ -135,7 +135,7 @@ def _strip_allowed_claude_session_commit_trailers(message: str) -> str:
         return message
 
     for index in range(start, end):
-        if _ALLOWED_CLAUDE_SESSION_TRAILER.fullmatch(lines[index].strip()):
+        if _ALLOWED_CLAUDE_SESSION_TRAILER.fullmatch(lines[index].rstrip("\r\n")):
             lines[index] = ""
     return "".join(lines)
 
