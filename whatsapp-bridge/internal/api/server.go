@@ -80,6 +80,9 @@ type Server struct {
 	// backfill request selects its snapshot and before it hands that snapshot
 	// off. It is nil in production.
 	afterBackfillSnapshot func()
+	// beforeReplayRecordLock is an internal-test hook invoked immediately before
+	// recordReplayEvent calls replayMu.Lock. It is nil in production.
+	beforeReplayRecordLock func()
 
 	// Pairing state
 	pairMu     sync.Mutex
@@ -302,6 +305,9 @@ func (s *Server) recordReplayEvent(evt *bridgeEvents.BridgeEvent) bool {
 	}
 
 	key := replayEventKey(evt)
+	if s.beforeReplayRecordLock != nil {
+		s.beforeReplayRecordLock()
+	}
 	s.replayMu.Lock()
 	defer s.replayMu.Unlock()
 	if _, exists := s.replayEventIDs[key]; exists {

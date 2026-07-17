@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -177,15 +178,40 @@ func TestServer_Backfill_QueuesLivePublishBetweenSnapshotAndHandoffExactlyOnce(t
 	}
 	barrierReached := make(chan snapshotBarrierObservation, 1)
 	releaseHandoff := make(chan struct{})
-	publisherAttempted := make(chan struct{})
+	publisherAtReplayLockBoundary := make(chan struct{})
+	publisherReplayLockContended := make(chan bool, 1)
+	allowPublisherReplayLock := make(chan struct{})
+	publisherReleasedToReplayLock := make(chan struct{})
 	publisherDone := make(chan struct{})
 	defer func() {
+		select {
+		case <-allowPublisherReplayLock:
+		default:
+			close(allowPublisherReplayLock)
+		}
 		select {
 		case <-releaseHandoff:
 		default:
 			close(releaseHandoff)
 		}
 	}()
+	var publisherReplayLockOnce sync.Once
+	srv.beforeReplayRecordLock = func() {
+		publisherReplayLockOnce.Do(func() {
+			// This runs in PublishEvent's recordReplayEvent call immediately
+			// before its production replayMu.Lock. A failed TryLock is the
+			// deterministic proof that the publisher made a real attempt on
+			// the exact transition mutex while requestBackfill still owns it.
+			contended := !srv.replayMu.TryLock()
+			if !contended {
+				srv.replayMu.Unlock()
+			}
+			publisherReplayLockContended <- contended
+			close(publisherAtReplayLockBoundary)
+			<-allowPublisherReplayLock
+			close(publisherReleasedToReplayLock)
+		})
+	}
 	srv.afterBackfillSnapshot = func() {
 		subsMuHeld := !srv.subsMu.TryLock()
 		if !subsMuHeld {
@@ -204,7 +230,6 @@ func TestServer_Backfill_QueuesLivePublishBetweenSnapshotAndHandoffExactlyOnce(t
 			liveHandoffArmed:   liveHandoffArmed,
 		}
 		go func() {
-			close(publisherAttempted)
 			srv.PublishEvent(live)
 			// This HistorySync duplicate cannot restore a lost handoff: the
 			// replay cache already contains the live event.
@@ -246,14 +271,23 @@ func TestServer_Backfill_QueuesLivePublishBetweenSnapshotAndHandoffExactlyOnce(t
 		t.Fatal("backfill did not reach the snapshot barrier")
 	}
 
-	// The publisher is started while the snapshot transition is still paused.
-	// It must wait for the transition locks before making its first-subscriber
-	// handoff choice; otherwise splitting snapshot/pending/arm reopens the loss
-	// window this test covers.
+	// PublishEvent must make a real failed lock attempt at
+	// recordReplayEvent's replay-lock boundary while the request still owns both
+	// transition locks. A goroutine launch alone would let a serial post-arm
+	// schedule pass without exercising this interleaving.
 	select {
-	case <-publisherAttempted:
+	case <-publisherAtReplayLockBoundary:
 	case <-time.After(time.Second):
-		t.Fatal("live publisher did not attempt the snapshot-to-handoff seam")
+		t.Fatal("live publisher did not reach the recordReplayEvent replay-lock boundary")
+	}
+	if contended := <-publisherReplayLockContended; !contended {
+		t.Fatal("live publisher reached an unlocked replay mutex before the handoff transition")
+	}
+	close(allowPublisherReplayLock)
+	select {
+	case <-publisherReleasedToReplayLock:
+	case <-time.After(time.Second):
+		t.Fatal("live publisher did not advance from the contended replay-lock boundary")
 	}
 	close(releaseHandoff)
 	select {
