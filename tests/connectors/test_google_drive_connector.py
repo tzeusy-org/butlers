@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 from butlers.connectors.google_drive import (
@@ -21,7 +22,11 @@ from butlers.connectors.google_drive import (
     _CHANGE_TYPE_RENAMED,
     _CHANGE_TYPE_SHARING_CHANGED,
     _CHANGE_TYPE_TRASHED,
+    GDriveAccountConfig,
+    GDriveAccountLoop,
+    GDriveConnectorManager,
     _build_ingest_envelope,
+    _classify_source_api_error,
     _detect_change_type,
     _FileMetadata,
     _make_idempotency_key,
@@ -276,3 +281,117 @@ async def test_run_connector_threads_health_overrides_into_manager(
 
     assert captured["health_port"] == 45321
     assert captured["heartbeat_interval_s"] == 53
+
+
+# ---------------------------------------------------------------------------
+# Source API health classification (bu-q2m3n)
+# ---------------------------------------------------------------------------
+
+
+def _google_token_http_error(payload: dict[str, Any], status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://oauth2.googleapis.com/token")
+    response = httpx.Response(status_code, json=payload, request=request)
+    return httpx.HTTPStatusError("error", request=request, response=response)
+
+
+@pytest.mark.parametrize(
+    ("payload", "status_code", "is_auth_revocation"),
+    [
+        (
+            {"error": "invalid_grant", "error_description": "Token expired or revoked"},
+            400,
+            True,
+        ),
+        (
+            {"error": "unauthorized_client", "error_description": "Client is not authorized"},
+            400,
+            True,
+        ),
+        ({"error": {"code": 401, "message": "Invalid Credentials"}}, 401, False),
+        ({"error": {"code": 403, "message": "Insufficient Permission"}}, 403, False),
+        ({"error": {"code": 503, "message": "Backend Error"}}, 503, False),
+    ],
+)
+def test_classify_source_api_error_distinguishes_google_revocation_from_api_failure(
+    payload: dict[str, Any], status_code: int, is_auth_revocation: bool
+) -> None:
+    """Drive follows the Google token contract without coupling to Gmail internals."""
+    classified, detail = _classify_source_api_error(_google_token_http_error(payload, status_code))
+
+    assert classified is is_auth_revocation
+    if is_auth_revocation:
+        assert payload["error"] in detail
+    else:
+        assert str(status_code) in detail
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.googleapis.com/drive/v3/changes",
+        "https://oauth2.googleapis.com/token",
+    ],
+)
+def test_drive_non_post_token_response_never_proves_token_revocation(url: str) -> None:
+    """Drive data APIs must not promote a payload-shaped transient failure."""
+    request = httpx.Request("GET", url)
+    response = httpx.Response(
+        403,
+        json={"error": "invalid_grant", "error_description": "Synthetic resource failure"},
+        request=request,
+    )
+    error = httpx.HTTPStatusError("resource API failure", request=request, response=response)
+
+    classified, _ = _classify_source_api_error(error)
+
+    assert classified is False
+
+
+def test_drive_account_health_reports_revocation_as_error_and_api_failure_as_degraded() -> None:
+    config = GDriveAccountConfig(
+        email=_FAKE_EMAIL,
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+        switchboard_mcp_url="http://switchboard.test/mcp",
+    )
+    account = GDriveAccountLoop(_FAKE_EMAIL, config)
+    account._record_source_api_failure(
+        _google_token_http_error({"error": {"code": 503, "message": "Backend Error"}}, 503)
+    )
+
+    health = account.get_health()
+    assert health.status == "degraded"
+    assert health.error == "code=503, message=Backend Error"
+
+    account._record_source_api_failure(
+        _google_token_http_error(
+            {"error": "invalid_grant", "error_description": "Token expired or revoked"}, 400
+        )
+    )
+
+    health = account.get_health()
+    assert health.status == "error"
+    assert health.error == "error=invalid_grant, description=Token expired or revoked"
+
+
+def test_drive_manager_heartbeat_preserves_degraded_source_error() -> None:
+    """A recoverable Drive outage remains diagnosable in the dashboard heartbeat."""
+    config = GDriveAccountConfig(
+        email=_FAKE_EMAIL,
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+        switchboard_mcp_url="http://switchboard.test/mcp",
+    )
+    account = GDriveAccountLoop(_FAKE_EMAIL, config)
+    account._record_source_api_failure(
+        _google_token_http_error({"error": {"code": 503, "message": "Backend Error"}}, 503)
+    )
+    manager = GDriveConnectorManager(db_pool=None, credential_store=object())
+    manager._loops[_FAKE_EMAIL] = account
+
+    assert manager._get_health_state_for_heartbeat() == (
+        "degraded",
+        "code=503, message=Backend Error",
+    )

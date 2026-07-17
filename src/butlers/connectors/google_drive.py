@@ -97,6 +97,89 @@ _RATE_LIMIT_MAX_RETRIES = 5
 _RATE_LIMIT_BASE_DELAY_S = 1.0
 _RATE_LIMIT_MAX_DELAY_S = 60.0
 
+_OAUTH_ACTION_REQUIRED_ERROR_CODES = frozenset({"invalid_grant", "unauthorized_client"})
+
+
+def _format_google_error(response: httpx.Response | None) -> str | None:
+    """Return compact Google OAuth/API error detail without leaking request secrets."""
+    if response is None:
+        return None
+
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            parts: list[str] = []
+            code = error.get("code")
+            if code is not None:
+                parts.append(f"code={code}")
+            status = error.get("status")
+            if isinstance(status, str) and status:
+                parts.append(f"status={status}")
+            message = error.get("message")
+            if isinstance(message, str) and message:
+                parts.append(f"message={message}")
+            if parts:
+                return ", ".join(parts)
+        if isinstance(error, str) and error:
+            description = payload.get("error_description")
+            if isinstance(description, str) and description:
+                return f"error={error}, description={description}"
+            return f"error={error}"
+
+    body = response.text.strip()
+    if body:
+        return f"HTTP {response.status_code}: {body[:200]}"
+    return f"HTTP {response.status_code}"
+
+
+def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
+    """Classify Drive source failures without treating data API failures as revocation.
+
+    The shared Google refresh token is action-required only when its token
+    endpoint responds with a top-level ``invalid_grant``/``unauthorized_client``
+    error.  Drive API 401/403, quotas, and transport faults remain connector-
+    local degraded states so they neither overstate the alert nor revoke the
+    account shared by Drive, Calendar, Gmail, and Health.
+    """
+    response = getattr(exc, "response", None)
+    detail = _format_google_error(response) if isinstance(response, httpx.Response) else None
+    is_auth_revocation = False
+    if isinstance(response, httpx.Response):
+        try:
+            request = response.request
+        except RuntimeError:
+            request = None
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if (
+            request is not None
+            and request.method == "POST"
+            and str(request.url) == _GOOGLE_TOKEN_URL
+            and isinstance(payload, dict)
+        ):
+            error_code = payload.get("error")
+            if isinstance(error_code, str) and error_code in _OAUTH_ACTION_REQUIRED_ERROR_CODES:
+                is_auth_revocation = True
+
+    return is_auth_revocation, detail or f"{type(exc).__name__}: {exc}"
+
+
+def _http_status_error(response: httpx.Response, message: str) -> httpx.HTTPStatusError:
+    """Attach a response to a status error even when a unit-test response lacks a request."""
+    try:
+        request = response.request
+    except RuntimeError:
+        request = httpx.Request("POST", _GOOGLE_TOKEN_URL)
+    return httpx.HTTPStatusError(message, request=request, response=response)
+
+
 # Google API 403 error reasons that are NOT retryable (permanent auth/config errors).
 # Retryable 403 reasons (rateLimitExceeded, userRateLimitExceeded) are not listed here.
 _NON_RETRYABLE_403_REASONS: frozenset[str] = frozenset(
@@ -828,6 +911,8 @@ class GDriveAccountLoop:
         self._last_checkpoint_save: float | None = None
         self._last_ingest_submit: float | None = None
         self._source_api_ok: bool | None = None
+        self._source_api_error_message: str | None = None
+        self._auth_error: bool = False
         # Monotonic counter per poll cycle for external_event_id uniqueness (task 10.3)
         self._change_sequence: int = 0
 
@@ -864,6 +949,17 @@ class GDriveAccountLoop:
         # Batch buffer — accumulates changes when batch_window_s > 0
         self._pending_batch: list[_PendingChange] = []
         self._batch_window_opened_at: float | None = None
+
+    def _record_source_api_success(self) -> None:
+        """Clear source-API health failures after a successful Google call."""
+        self._source_api_ok = True
+        self._source_api_error_message = None
+        self._auth_error = False
+
+    def _record_source_api_failure(self, exc: Exception) -> None:
+        """Capture the latest source failure without revoking the shared account."""
+        self._source_api_ok = False
+        self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
 
     def start(self) -> None:
         """Launch the per-account poll loop as an asyncio task."""
@@ -910,7 +1006,7 @@ class GDriveAccountLoop:
                     self.email,
                     exc,
                 )
-                self._source_api_ok = False
+                self._record_source_api_failure(exc)
                 self._metrics.record_error(
                     error_type=type(exc).__name__.lower(),
                     operation="poll_cycle",
@@ -958,22 +1054,21 @@ class GDriveAccountLoop:
                 timeout=15,
             )
         except Exception as exc:
-            raise RuntimeError(
-                f"Drive: token refresh network error for {self.email!r}: {exc}"
-            ) from exc
+            error = RuntimeError(f"Drive: token refresh network error for {self.email!r}: {exc}")
+            self._record_source_api_failure(error)
+            raise error from exc
 
         if resp.status_code != 200:
-            # Redact secret from error message
-            raise RuntimeError(
-                f"Drive: token refresh failed for ***@{self.email.split('@')[-1]}: "
-                f"HTTP {resp.status_code}"
-            )
+            error = _http_status_error(resp, "Drive token refresh failed")
+            self._record_source_api_failure(error)
+            raise error
 
         data = resp.json()
         self._access_token = data["access_token"]
         expires_in = int(data.get("expires_in", 3600))
         self._token_expires_at = now + timedelta(seconds=expires_in)
         self._metrics.record_source_api_call(api_method="token_refresh", status="success")
+        self._record_source_api_success()
         logger.debug("Drive: token refreshed for email=%s", self.email)
         return self._access_token
 
@@ -1044,13 +1139,12 @@ class GDriveAccountLoop:
             self._metrics.record_source_api_call(
                 api_method="changes.getStartPageToken", status="error"
             )
-            detail = _extract_google_error_message(resp)
-            raise RuntimeError(
-                f"Drive: getStartPageToken failed for email={self.email!r}: "
-                f"HTTP {resp.status_code}" + (f" — {detail}" if detail else "")
-            )
+            error = _http_status_error(resp, "Drive changes.getStartPageToken request failed")
+            self._record_source_api_failure(error)
+            raise error
 
         self._metrics.record_source_api_call(api_method="changes.getStartPageToken", status="ok")
+        self._record_source_api_success()
 
         data = resp.json()
         start_token = data.get("startPageToken")
@@ -1091,20 +1185,20 @@ class GDriveAccountLoop:
             self._access_token = None
             self._token_expires_at = None
             self._metrics.record_source_api_call(api_method="changes.list", status="error")
-            raise RuntimeError(
+            error = RuntimeError(
                 f"Drive: changes.list 401 for email={self.email!r} — will refresh token"
             )
+            self._record_source_api_failure(error)
+            raise error
 
         if resp.status_code != 200:
             self._metrics.record_source_api_call(api_method="changes.list", status="error")
-            detail = _extract_google_error_message(resp)
-            raise RuntimeError(
-                f"Drive: changes.list failed for email={self.email!r}: HTTP {resp.status_code}"
-                + (f" — {detail}" if detail else "")
-            )
+            error = _http_status_error(resp, "Drive changes.list request failed")
+            self._record_source_api_failure(error)
+            raise error
 
         self._metrics.record_source_api_call(api_method="changes.list", status="ok")
-        self._source_api_ok = True
+        self._record_source_api_success()
         return resp.json()
 
     async def _load_metadata_cache_from_store(self) -> None:
@@ -1658,11 +1752,12 @@ class GDriveAccountLoop:
         else:
             connectivity = "disconnected"
 
-        error_msg = self._error
-        if not self.is_running and error_msg:
+        terminal_error = self._error
+        error_msg = terminal_error or self._source_api_error_message
+        if not self.is_running and terminal_error:
             account_status: Literal["healthy", "degraded", "error"] = "error"
         elif self._source_api_ok is False:
-            account_status = "error"
+            account_status = "error" if self._auth_error else "degraded"
         else:
             account_status = "healthy"
 
@@ -2005,8 +2100,8 @@ class GDriveConnectorManager:
         """Return (state, error_message) tuple for heartbeat reporting (task 12.5)."""
         health = self.get_health()
         error_msg: str | None = None
-        if health.status == "error":
-            # Aggregate first error message from account loops
+        if health.status in {"degraded", "error"}:
+            # Surface the first unhealthy account's diagnostic in the aggregate heartbeat.
             for account in health.account_health:
                 if account.error:
                     error_msg = account.error
@@ -2086,7 +2181,7 @@ class GDriveConnectorManager:
                     for account in health.account_health:
                         endpoint_id = account.endpoint_identity
                         state = account.status
-                        error_msg = account.error if state == "error" else None
+                        error_msg = account.error if state in {"degraded", "error"} else None
                         await conn.execute(
                             """
                             UPDATE switchboard.connector_registry

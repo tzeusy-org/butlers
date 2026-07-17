@@ -429,7 +429,7 @@ class ListeningSessionTracker:
 
 
 class SpotifyCredentialError(Exception):
-    """Raised when Spotify credentials are missing or invalid."""
+    """Raised when Spotify credentials need operator action before polling can resume."""
 
 
 class SpotifyRateLimitError(Exception):
@@ -438,6 +438,83 @@ class SpotifyRateLimitError(Exception):
     def __init__(self, retry_after: float) -> None:
         super().__init__(f"Rate limited, retry after {retry_after}s")
         self.retry_after = retry_after
+
+
+_SPOTIFY_ACTION_REQUIRED_ERROR_CODES = frozenset({"invalid_grant", "invalid_client"})
+
+
+def _format_spotify_error(response: httpx.Response | None) -> str | None:
+    """Return compact, safe Spotify OAuth/API error detail when available."""
+    if response is None:
+        return None
+
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict):
+        parts: list[str] = []
+        error = payload.get("error")
+        if isinstance(error, str) and error:
+            parts.append(f"error={error}")
+        description = payload.get("error_description")
+        if isinstance(description, str) and description:
+            parts.append(f"description={description}")
+        if parts:
+            return ", ".join(parts)
+
+    body = response.text.strip()
+    if body:
+        return f"HTTP {response.status_code}: {body[:200]}"
+    return f"HTTP {response.status_code}"
+
+
+def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
+    """Classify Spotify source failures for actionable heartbeat health.
+
+    Returns ``(requires_operator_action, detail)``.  Only a structured OAuth
+    token-endpoint error that proves a revoked refresh token (``invalid_grant``)
+    or invalid app credential (``invalid_client``), plus locally detected
+    missing credentials, should be an ``error``.  API, rate-limit, and
+    transport failures are recoverable and therefore ``degraded``.
+    """
+    response = getattr(exc, "response", None)
+    detail = _format_spotify_error(response) if isinstance(response, httpx.Response) else None
+
+    if isinstance(exc, SpotifyCredentialError):
+        return True, detail or str(exc) or "Spotify credentials require attention"
+
+    requires_operator_action = False
+    if isinstance(response, httpx.Response):
+        try:
+            request = response.request
+        except RuntimeError:
+            request = None
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if (
+            request is not None
+            and request.method == "POST"
+            and str(request.url) == _SPOTIFY_TOKEN_URL
+            and isinstance(payload, dict)
+        ):
+            error_code = payload.get("error")
+            if isinstance(error_code, str) and error_code in _SPOTIFY_ACTION_REQUIRED_ERROR_CODES:
+                requires_operator_action = True
+
+    return requires_operator_action, detail or f"{type(exc).__name__}: {exc}"
+
+
+def _http_status_error(response: httpx.Response, message: str) -> httpx.HTTPStatusError:
+    """Attach a response to a status error even when a test response lacks a request."""
+    try:
+        request = response.request
+    except RuntimeError:
+        request = httpx.Request("POST", _SPOTIFY_TOKEN_URL)
+    return httpx.HTTPStatusError(message, request=request, response=response)
 
 
 def _clean_context_name(value: Any) -> str | None:
@@ -860,6 +937,7 @@ class SpotifyConnector:
         self._start_time = time.time()
         self._last_ingest_submit: float | None = None
         self._source_api_ok: bool | None = None
+        self._source_api_error_message: str | None = None
 
         # Heartbeat (initialized after identity resolution)
         self._heartbeat: ConnectorHeartbeat | None = None
@@ -876,6 +954,19 @@ class SpotifyConnector:
         # Health server
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
+
+    def _record_source_api_success(self) -> None:
+        """Clear source-API health failures after a successful Spotify call."""
+        self._source_api_ok = True
+        self._source_api_error_message = None
+        self._auth_error = False
+        self._auth_error_message = None
+
+    def _record_source_api_failure(self, exc: Exception) -> None:
+        """Capture the latest source failure without conflating it with revocation."""
+        self._source_api_ok = False
+        self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
+        self._auth_error_message = self._source_api_error_message if self._auth_error else None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1050,7 +1141,7 @@ class SpotifyConnector:
         """Refresh the Spotify access token via POST to the token endpoint.
 
         Updates CredentialStore with new tokens.
-        Raises SpotifyCredentialError on invalid_grant or permanent failure.
+        Raises SpotifyCredentialError when credentials require operator action.
         """
         if not self._refresh_token or not self._client_id:
             raise SpotifyCredentialError("Missing refresh_token or client_id for token refresh")
@@ -1075,7 +1166,9 @@ class SpotifyConnector:
                 spotify_token_refreshes_total.labels(
                     endpoint_identity=self._endpoint_identity, status="error"
                 ).inc()
-            raise RuntimeError(f"Token refresh transport error: {exc}") from exc
+            error = RuntimeError(f"Token refresh transport error: {exc}")
+            self._record_source_api_failure(error)
+            raise error from exc
 
         if resp.status_code == 200:
             data = resp.json()
@@ -1095,26 +1188,21 @@ class SpotifyConnector:
                     endpoint_identity=self._endpoint_identity, status="success"
                 ).inc()
 
+            self._record_source_api_success()
             logger.info("SpotifyConnector: access token refreshed successfully")
             return self._access_token
-
-        # Auth failure — invalid_grant means re-authorization required
-        body_text = resp.text[:200]
-        if resp.status_code == 400:
-            if self._endpoint_identity:
-                spotify_token_refreshes_total.labels(
-                    endpoint_identity=self._endpoint_identity, status="error"
-                ).inc()
-            raise SpotifyCredentialError(
-                f"Spotify authorization expired (HTTP 400): {body_text}. "
-                "Re-connect via dashboard settings."
-            )
 
         if self._endpoint_identity:
             spotify_token_refreshes_total.labels(
                 endpoint_identity=self._endpoint_identity, status="error"
             ).inc()
-        raise RuntimeError(f"Token refresh failed: HTTP {resp.status_code}: {body_text}")
+        error = _http_status_error(resp, "Spotify token refresh failed")
+        self._record_source_api_failure(error)
+        if self._auth_error:
+            raise SpotifyCredentialError(
+                self._source_api_error_message or "Spotify credentials require re-authorization"
+            ) from error
+        raise error
 
     async def _persist_tokens(self) -> None:
         """Write current tokens back to CredentialStore."""
@@ -1273,7 +1361,8 @@ class SpotifyConnector:
         """Call a Spotify API GET endpoint with token refresh and rate-limit handling.
 
         Returns the parsed JSON response body.
-        Raises SpotifyCredentialError on unrecoverable auth failure.
+        Raises SpotifyCredentialError only when locally detected credentials or a
+        token-endpoint response require operator action.
         Raises SpotifyRateLimitError on HTTP 429.
         Raises RuntimeError on other unrecoverable errors.
         """
@@ -1294,18 +1383,20 @@ class SpotifyConnector:
             except httpx.TransportError as exc:
                 if self._endpoint_identity:
                     self._metrics.record_source_api_call(api_method, "error")
-                raise RuntimeError(f"Spotify API transport error: {exc}") from exc
+                error = RuntimeError(f"Spotify API transport error: {exc}")
+                self._record_source_api_failure(error)
+                raise error from exc
 
             if self._endpoint_identity:
                 self._metrics.record_source_api_call(api_method, str(resp.status_code))
 
             if resp.status_code == 200:
-                self._source_api_ok = True
+                self._record_source_api_success()
                 return resp.json()
 
             if resp.status_code == 204:
                 # No content — e.g. nothing currently playing
-                self._source_api_ok = True
+                self._record_source_api_success()
                 return {}
 
             if resp.status_code == 401 and attempt == 1:
@@ -1313,27 +1404,29 @@ class SpotifyConnector:
                 logger.info("SpotifyConnector: received 401, refreshing token and retrying")
                 self._access_token = None
                 self._token_expires_at = None
-                try:
-                    await self._refresh_access_token()
-                except SpotifyCredentialError:
-                    self._source_api_ok = False
-                    raise
+                await self._refresh_access_token()
                 continue
 
             if resp.status_code == 401:
-                self._source_api_ok = False
-                raise SpotifyCredentialError(
-                    "Spotify authorization failed after token refresh. "
-                    "Re-connect via dashboard settings."
+                # A resource-API 401 after a successful refresh is not proof
+                # that the refresh token was revoked. Preserve its response so
+                # source health remains degraded unless the token endpoint
+                # itself returned an action-required OAuth error.
+                error = _http_status_error(
+                    resp, "Spotify API authorization failed after token refresh"
                 )
+                self._record_source_api_failure(error)
+                raise error
 
             if resp.status_code == 429:
-                self._source_api_ok = False
                 retry_after = float(resp.headers.get("Retry-After", _RATE_LIMIT_INITIAL_S))
-                raise SpotifyRateLimitError(retry_after)
+                error = SpotifyRateLimitError(retry_after)
+                self._record_source_api_failure(error)
+                raise error
 
-            self._source_api_ok = False
-            raise RuntimeError(f"Spotify API error: HTTP {resp.status_code}: {resp.text[:200]}")
+            error = _http_status_error(resp, "Spotify API request failed")
+            self._record_source_api_failure(error)
+            raise error
 
         # Should not be reachable
         raise RuntimeError("Spotify API: exhausted retry attempts")
@@ -1475,17 +1568,8 @@ class SpotifyConnector:
             poll_start = time.monotonic()
             try:
                 await self._execute_poll_cycle()
-            except SpotifyCredentialError as exc:
-                logger.error(
-                    "SpotifyConnector: auth error — stopping poll, will re-check in %ds: %s",
-                    _CREDENTIAL_RECHECK_S,
-                    exc,
-                )
-                self._auth_error = True
-                self._auth_error_message = str(exc)
-                self._source_api_ok = False
-                continue
             except SpotifyRateLimitError as exc:
+                self._record_source_api_failure(exc)
                 logger.warning("SpotifyConnector: rate limited — sleeping %.1fs", exc.retry_after)
                 if self._endpoint_identity:
                     spotify_polls_total.labels(
@@ -1498,6 +1582,14 @@ class SpotifyConnector:
                     pass
                 continue
             except Exception as exc:
+                self._record_source_api_failure(exc)
+                if self._auth_error:
+                    logger.error(
+                        "SpotifyConnector: credential error; re-checking in %ds: %s",
+                        _CREDENTIAL_RECHECK_S,
+                        self._source_api_error_message,
+                    )
+                    continue
                 logger.warning(
                     "SpotifyConnector: poll cycle error (non-fatal): %s", exc, exc_info=True
                 )
@@ -1934,7 +2026,6 @@ class SpotifyConnector:
 
                 self._metrics.record_ingest_submission(status, latency)
                 self._last_ingest_submit = time.time()
-                self._source_api_ok = True
 
             except Exception as exc:
                 latency = time.perf_counter() - start_t
@@ -1995,12 +2086,17 @@ class SpotifyConnector:
     def _get_health_state(self) -> tuple[str, str | None]:
         """Return (state, error_message) for heartbeat."""
         if self._auth_error:
-            return "error", self._auth_error_message
+            return (
+                "error",
+                self._source_api_error_message
+                or self._auth_error_message
+                or "Spotify credentials require attention",
+            )
         if self._source_api_ok is None:
             return "starting", None
         if self._source_api_ok:
             return "healthy", None
-        return "degraded", "Spotify API not reachable"
+        return "degraded", self._source_api_error_message or "Spotify API not reachable"
 
     def _get_checkpoint_info(self) -> tuple[str | None, datetime | None]:
         """Return (cursor, updated_at) for heartbeat."""

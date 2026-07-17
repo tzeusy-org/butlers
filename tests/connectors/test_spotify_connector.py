@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from butlers.connectors.spotify import (
@@ -25,6 +26,7 @@ from butlers.connectors.spotify import (
     ListeningSessionTracker,
     SpotifyConnector,
     SpotifyConnectorConfig,
+    _classify_source_api_error,
     build_context_start_envelope,
     build_listening_digest_envelope,
     build_session_summary_envelope,
@@ -762,3 +764,120 @@ async def test_submission_error_retains_raw_payload() -> None:
     row = rows[0]
     assert row[8] == "error"
     assert row[9]["payload"]["raw"] == expected_raw
+
+
+# ---------------------------------------------------------------------------
+# Source API health classification (bu-q2m3n)
+# ---------------------------------------------------------------------------
+
+
+def _spotify_http_error(payload: dict[str, Any], status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://accounts.spotify.com/api/token")
+    response = httpx.Response(status_code, json=payload, request=request)
+    return httpx.HTTPStatusError("error", request=request, response=response)
+
+
+@pytest.mark.parametrize(
+    ("payload", "status_code", "is_auth_revocation"),
+    [
+        (
+            {"error": "invalid_grant", "error_description": "Refresh token revoked"},
+            400,
+            True,
+        ),
+        (
+            {"error": "invalid_client", "error_description": "Client authentication failed"},
+            401,
+            True,
+        ),
+        ({"error": "server_error", "error_description": "Try again later"}, 503, False),
+    ],
+)
+def test_classify_source_api_error_distinguishes_spotify_revocation_from_transient_failure(
+    payload: dict[str, Any], status_code: int, is_auth_revocation: bool
+) -> None:
+    """Only Spotify's structured action-required token errors stop polling."""
+    classified, detail = _classify_source_api_error(_spotify_http_error(payload, status_code))
+
+    assert classified is is_auth_revocation
+    assert payload["error"] in detail
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.spotify.com/v1/me",
+        "https://accounts.spotify.com/api/token",
+    ],
+)
+def test_spotify_non_post_token_response_never_proves_token_revocation(url: str) -> None:
+    """A resource response cannot enter the credential-recheck state by shape alone."""
+    request = httpx.Request("GET", url)
+    response = httpx.Response(
+        401,
+        json={"error": "invalid_grant", "error_description": "Synthetic resource failure"},
+        request=request,
+    )
+    error = httpx.HTTPStatusError("resource API failure", request=request, response=response)
+
+    classified, _ = _classify_source_api_error(error)
+
+    assert classified is False
+
+
+def test_spotify_health_reports_revocation_as_error_and_api_failure_as_degraded() -> None:
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._record_source_api_failure(
+        _spotify_http_error({"error": "server_error", "error_description": "Try again later"}, 503)
+    )
+
+    assert connector._get_health_state() == (
+        "degraded",
+        "error=server_error, description=Try again later",
+    )
+
+    connector._record_source_api_failure(
+        _spotify_http_error(
+            {"error": "invalid_grant", "error_description": "Refresh token revoked"}, 400
+        )
+    )
+
+    assert connector._get_health_state() == (
+        "error",
+        "error=invalid_grant, description=Refresh token revoked",
+    )
+
+
+@pytest.mark.asyncio
+async def test_spotify_resource_401_after_successful_refresh_stays_degraded() -> None:
+    """A resource-API rejection is not token-endpoint proof of revocation."""
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._access_token = "old-access-token"
+    connector._token_expires_at = datetime.now(UTC) + timedelta(hours=1)
+
+    request = httpx.Request("GET", "https://api.spotify.com/v1/me/player/currently-playing")
+    response = httpx.Response(
+        401,
+        json={"error": {"status": 401, "message": "The access token expired"}},
+        request=request,
+    )
+    connector._http_client = AsyncMock()
+    connector._http_client.get = AsyncMock(side_effect=[response, response])
+
+    async def _refresh() -> str:
+        connector._access_token = "refreshed-access-token"
+        connector._token_expires_at = datetime.now(UTC) + timedelta(hours=1)
+        return connector._access_token
+
+    connector._refresh_access_token = AsyncMock(side_effect=_refresh)  # type: ignore[method-assign]
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await connector._spotify_get("/me/player/currently-playing")
+
+    state, detail = connector._get_health_state()
+    assert state == "degraded"
+    assert detail is not None and "401" in detail

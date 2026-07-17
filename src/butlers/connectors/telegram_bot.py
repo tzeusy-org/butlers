@@ -60,6 +60,34 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
+
+def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
+    """Classify Telegram source failures for actionable heartbeat health.
+
+    A Bot API 401 proves that the configured bot token is no longer accepted
+    and requires operator action.  Telegram 403s are privacy/authorization
+    responses for a particular operation, while 409 conflicts, 429 limits,
+    transport errors, and service failures can recover on the next poll.
+    """
+    response = getattr(exc, "response", None)
+    if isinstance(response, httpx.Response):
+        description: str | None = None
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            raw_description = payload.get("description")
+            if isinstance(raw_description, str) and raw_description.strip():
+                description = raw_description.strip()
+        detail = f"HTTP {response.status_code}"
+        if description:
+            detail = f"{detail}: {description}"
+        return response.status_code == 401, detail
+
+    return False, f"{type(exc).__name__}: {exc}"
+
+
 # Owner-facing toasts for a gap-interview (bu-whhll.12) inline-button tap,
 # keyed by the resolve endpoint's returned status. Kept tiny and deterministic
 # — the connector only turns a status into a short acknowledgement.
@@ -272,6 +300,8 @@ class TelegramBotConnector:
         self._last_checkpoint_save: float | None = None
         self._last_ingest_submit: float | None = None
         self._source_api_ok: bool | None = None
+        self._source_api_error_message: str | None = None
+        self._auth_error: bool = False
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
 
@@ -301,6 +331,17 @@ class TelegramBotConnector:
             connector_type=config.provider,
             endpoint_identity=config.endpoint_identity,
         )
+
+    def _record_source_api_success(self) -> None:
+        """Clear source-API health failures after a successful Telegram call."""
+        self._source_api_ok = True
+        self._source_api_error_message = None
+        self._auth_error = False
+
+    def _record_source_api_failure(self, exc: Exception) -> None:
+        """Capture the latest source failure without mistaking recovery paths for revocation."""
+        self._source_api_ok = False
+        self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
 
     @property
     def _telegram_api_base(self) -> str:
@@ -404,10 +445,10 @@ class TelegramBotConnector:
             "healthy", "degraded", "error"
         """
         if self._source_api_ok is False:
-            error_msg = "Telegram API unreachable or authentication failed"
+            error_msg = self._source_api_error_message or "Telegram API request failed"
             if self._consecutive_failures > 0:
                 error_msg += f" (consecutive_failures={self._consecutive_failures})"
-            return ("error", error_msg)
+            return ("error" if self._auth_error else "degraded", error_msg)
 
         if self._consecutive_failures > 0:
             return (
@@ -592,16 +633,17 @@ class TelegramBotConnector:
             if updates:
                 self._last_update_id = updates[-1]["update_id"]
 
-            # Mark API as connected on success
-            self._source_api_ok = True
+            # Mark API as connected on success.
+            self._record_source_api_success()
 
             # Record successful API call
             self._metrics.record_source_api_call(api_method="getUpdates", status="success")
 
             return updates
         except Exception as exc:
-            # Mark API as disconnected on failure
-            self._source_api_ok = False
+            # Preserve the source error so heartbeats distinguish a bad bot
+            # token from recoverable polling/API failures.
+            self._record_source_api_failure(exc)
 
             response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
             if response is not None:
@@ -733,16 +775,17 @@ class TelegramBotConnector:
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
 
-            # Mark API as connected on success
-            self._source_api_ok = True
+            # Mark API as connected on success.
+            self._record_source_api_success()
 
             # Record successful API call
             self._metrics.record_source_api_call(api_method="setWebhook", status="success")
 
             return data
         except Exception as exc:
-            # Mark API as disconnected on failure
-            self._source_api_ok = False
+            # Preserve the source error so heartbeats distinguish a bad bot
+            # token from recoverable API failures.
+            self._record_source_api_failure(exc)
 
             # Record failed API call
             self._metrics.record_source_api_call(api_method="setWebhook", status="error")

@@ -153,7 +153,9 @@ The connector SHALL report health state based on source API connectivity and rec
 
 #### Scenario: Health states
 - **WHEN** the connector's health is queried
-- **THEN** `error` when `_source_api_ok=False` (cannot reach Telegram API), `degraded` when `_consecutive_failures > 0` (recent failures but recovering), `healthy` otherwise
+- **THEN** `error` only when Telegram rejects the configured bot token with HTTP 401
+- **AND** `degraded` when the source API is unavailable or returns a recoverable API failure (including HTTP 403, 409, or 429), or when `_consecutive_failures > 0` (recent failures but recovering)
+- **AND** `healthy` otherwise
 
 #### Scenario: Health and metrics server
 - **WHEN** the connector is running
@@ -214,4 +216,3 @@ The connector SHALL guarantee at-least-once delivery with crash-safe resume.
 - **AND** the checkpoint advances only after ingest acceptance
 - **AND** messages blocked by source filters also have their `update_id` acknowledged (checkpoint advanced) so they are not re-delivered
 - **AND** on restart, it replays from the last safe checkpoint (harmless due to Switchboard dedup)
-
