@@ -195,43 +195,46 @@ def _recommended_action(*, health: str, recall: dict[str, Any], churn: dict[str,
 
 async def _load_table_stats(conn: Connection, *, table: str, index_name: str) -> Any:
     """Read catalog and stats views only; never inspect memory content."""
-    return await conn.fetchrow(
-        """
-        SELECT
-            c.reltuples::bigint AS estimated_rows,
-            c.relpages,
-            COALESCE(s.n_live_tup, 0)::bigint AS n_live_tup,
-            COALESCE(s.n_dead_tup, 0)::bigint AS n_dead_tup,
-            COALESCE(s.n_tup_ins, 0)::bigint AS n_tup_ins,
-            COALESCE(s.n_tup_upd, 0)::bigint AS n_tup_upd,
-            COALESCE(s.n_tup_del, 0)::bigint AS n_tup_del,
-            COALESCE(s.n_mod_since_analyze, 0)::bigint AS n_mod_since_analyze,
-            s.last_analyze,
-            s.last_autoanalyze,
-            s.last_vacuum,
-            s.last_autovacuum,
-            EXISTS (
-                SELECT 1
-                FROM pg_index AS i
-                JOIN pg_class AS idx ON idx.oid = i.indexrelid
-                JOIN pg_am AS am ON am.oid = idx.relam
-                WHERE i.indrelid = c.oid
-                  AND idx.relname = $2
-                  AND am.amname = 'hnsw'
-                  AND EXISTS (
-                      SELECT 1
-                      FROM unnest(i.indclass) AS indclass(opclass_oid)
-                      JOIN pg_opclass AS opclass ON opclass.oid = indclass.opclass_oid
-                      WHERE opclass.opcname = 'vector_cosine_ops'
-                  )
-            ) AS has_hnsw
-        FROM pg_class AS c
-        LEFT JOIN pg_stat_user_tables AS s ON s.relid = c.oid
-        WHERE c.oid = to_regclass($1)
-        """,
-        table,
-        index_name,
-    )
+    async with conn.transaction(readonly=True):
+        await conn.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_MS}ms'")
+        await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'")
+        return await conn.fetchrow(
+            """
+            SELECT
+                c.reltuples::bigint AS estimated_rows,
+                c.relpages,
+                COALESCE(s.n_live_tup, 0)::bigint AS n_live_tup,
+                COALESCE(s.n_dead_tup, 0)::bigint AS n_dead_tup,
+                COALESCE(s.n_tup_ins, 0)::bigint AS n_tup_ins,
+                COALESCE(s.n_tup_upd, 0)::bigint AS n_tup_upd,
+                COALESCE(s.n_tup_del, 0)::bigint AS n_tup_del,
+                COALESCE(s.n_mod_since_analyze, 0)::bigint AS n_mod_since_analyze,
+                s.last_analyze,
+                s.last_autoanalyze,
+                s.last_vacuum,
+                s.last_autovacuum,
+                EXISTS (
+                    SELECT 1
+                    FROM pg_index AS i
+                    JOIN pg_class AS idx ON idx.oid = i.indexrelid
+                    JOIN pg_am AS am ON am.oid = idx.relam
+                    WHERE i.indrelid = c.oid
+                      AND idx.relname = $2
+                      AND am.amname = 'hnsw'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM unnest(i.indclass) AS indclass(opclass_oid)
+                          JOIN pg_opclass AS opclass ON opclass.oid = indclass.opclass_oid
+                          WHERE opclass.opcname = 'vector_cosine_ops'
+                      )
+                ) AS has_hnsw
+            FROM pg_class AS c
+            LEFT JOIN pg_stat_user_tables AS s ON s.relid = c.oid
+            WHERE c.oid = to_regclass($1)
+            """,
+            table,
+            index_name,
+        )
 
 
 async def _sample_query(

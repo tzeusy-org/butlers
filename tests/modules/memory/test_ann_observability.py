@@ -12,10 +12,17 @@ from butlers.modules.memory.ann_observability import (
 
 
 class _Transaction:
+    def __init__(self, connection: _Connection) -> None:
+        self._connection = connection
+
     async def __aenter__(self):
+        self._connection.readonly_transaction_depth += 1
+        self._connection.lock_timeout_set = False
+        self._connection.statement_timeout_set = False
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
+        self._connection.readonly_transaction_depth -= 1
         return False
 
 
@@ -31,19 +38,37 @@ class _Acquire:
 
 
 class _Connection:
-    def __init__(self, *, estimated_rows: int, relpages: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        estimated_rows: int,
+        relpages: int = 1,
+        catalog_lock_contended: bool = False,
+    ) -> None:
         self.estimated_rows = estimated_rows
         self.relpages = relpages
+        self.catalog_lock_contended = catalog_lock_contended
+        self.catalog_preflight_guarded = False
         self.executed: list[str] = []
         self.mode: str | None = None
         self.samples_returned = 0
+        self.readonly_transaction_depth = 0
+        self.lock_timeout_set = False
+        self.statement_timeout_set = False
 
     def transaction(self, *, readonly: bool = False):
         assert readonly is True
-        return _Transaction()
+        return _Transaction(self)
 
     async def fetchrow(self, query: str, *args):
         if "FROM pg_class AS c" in query:
+            self.catalog_preflight_guarded = (
+                self.readonly_transaction_depth > 0
+                and self.lock_timeout_set
+                and self.statement_timeout_set
+            )
+            if self.catalog_lock_contended and self.catalog_preflight_guarded:
+                raise TimeoutError("catalog preflight lock timeout")
             return {
                 "estimated_rows": self.estimated_rows,
                 "relpages": self.relpages,
@@ -80,7 +105,11 @@ class _Connection:
 
     async def execute(self, query: str, *args):
         self.executed.append(query)
-        if "enable_indexscan = off" in query:
+        if "SET LOCAL lock_timeout" in query:
+            self.lock_timeout_set = True
+        elif "SET LOCAL statement_timeout" in query:
+            self.statement_timeout_set = True
+        elif "enable_indexscan = off" in query:
             self.mode = "exact"
         elif "enable_seqscan = off" in query:
             self.mode = "approx"
@@ -160,3 +189,23 @@ async def test_large_physical_relation_never_uses_stale_row_estimates_for_exact_
         "reason": "corpus_exceeds_exact_page_cap",
     }
     assert connection.samples_returned == 0
+
+
+async def test_catalog_preflight_is_read_only_timeout_bounded_and_degrades_on_lock_contention() -> (
+    None
+):
+    """A locked catalog read must return degraded health rather than stall the scheduler."""
+    connection = _Connection(estimated_rows=100, catalog_lock_contended=True)
+
+    result = await run_ann_observability(
+        _Pool(connection),
+        tables=("facts",),
+        now=datetime(2026, 7, 17, tzinfo=UTC),
+    )
+
+    assert connection.catalog_preflight_guarded is True
+    assert result["health"] == "degraded"
+    assert result["tables"]["facts"] == {
+        "health": "degraded",
+        "reason": "catalog_query_failed",
+    }
