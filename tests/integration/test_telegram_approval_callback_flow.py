@@ -220,6 +220,85 @@ async def test_owner_reject_tap_transitions_and_audits_via_standard_approval_rou
         )
 
 
+async def test_expired_owner_reject_tap_expires_without_human_decision_provenance(
+    approval_pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await approval_pool.execute(
+        "UPDATE pending_actions SET expires_at = now() - interval '1 minute' WHERE id = $1",
+        _ACTION_ID,
+    )
+    app = _protected_approvals_app(approval_pool)
+    connector = TelegramBotConnector(
+        TelegramBotConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity="telegram:bot:1",
+            telegram_token="test-token",
+            internal_api_url="http://dashboard-api:41200",
+            approval_callback_secret=_SECRET,
+            approval_callback_connector_token=_CALLBACK_CONNECTOR_TOKEN,
+        ),
+        db_pool=MagicMock(),
+        cursor_pool=MagicMock(),
+    )
+    http_client = _CallbackHttpClient(app)
+    connector._http_client = http_client
+    monkeypatch.setattr(
+        telegram_bot_module,
+        "resolve_owner_channel_via_definer",
+        AsyncMock(return_value=(SimpleNamespace(roles=["owner"]), True)),
+    )
+    token = mint_approval_callback_token(
+        action_id=_ACTION_ID,
+        verb="r",
+        requested_at=_REQUESTED_AT,
+        secret=_SECRET,
+    )
+
+    try:
+        handled = await connector._maybe_handle_approval_callback(
+            {
+                "callback_query": {
+                    "id": "cbq1",
+                    "data": token,
+                    "from": {"id": 9001},
+                    "message": {"chat": {"id": 9001}, "message_id": 44},
+                }
+            }
+        )
+    finally:
+        await http_client.close()
+
+    assert handled is True
+    action = await approval_pool.fetchrow(
+        "SELECT status, decided_by FROM pending_actions WHERE id = $1", _ACTION_ID
+    )
+    assert dict(action) == {"status": "expired", "decided_by": "system:expiry"}
+    events = await approval_pool.fetch(
+        "SELECT event_type, actor FROM approval_events WHERE action_id = $1 ORDER BY occurred_at",
+        _ACTION_ID,
+    )
+    assert [dict(event) for event in events] == [
+        {"event_type": "action_expired", "actor": "system:expiry"}
+    ]
+    audit_rows = await approval_pool.fetch(
+        "SELECT actor, action FROM public.audit_log WHERE target = $1", str(_ACTION_ID)
+    )
+    assert audit_rows == []
+    assert [url.rsplit("/", 1)[-1] for url, _ in http_client.telegram_calls] == [
+        "answerCallbackQuery",
+        "editMessageText",
+        "editMessageReplyMarkup",
+    ]
+    assert http_client.telegram_calls[0][1]["text"] == "Already handled."
+    assert [method for method, _, _ in http_client.dashboard_calls] == ["GET", "POST", "GET"]
+    assert http_client.dashboard_calls[1][1].endswith(f"/api/approvals/{_ACTION_ID}/deny")
+    for _, _, call_kwargs in http_client.dashboard_calls:
+        assert call_kwargs["headers"][APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER] == (
+            _CALLBACK_CONNECTOR_TOKEN
+        )
+
+
 @pytest.mark.parametrize(
     "callback_headers",
     [

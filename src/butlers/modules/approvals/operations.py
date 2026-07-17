@@ -340,6 +340,15 @@ async def reject_action(
         return {"error": f"Cannot transition from '{action.status.value}' to 'rejected'"}
 
     now = datetime.now(UTC)
+    expired_result = await expire_pending_action_if_stale(
+        pool,
+        action,
+        now=now,
+        target_action=ActionStatus.REJECTED.value,
+    )
+    if expired_result is not None:
+        return expired_result
+
     escaped_reason = html.escape(reason, quote=True) if reason else None
     decided_by = f"human:{actor_id}"
     if escaped_reason:

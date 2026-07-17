@@ -2122,14 +2122,15 @@ async def approve_approval(
             actor_id=actor_id,
             create_rule=False,
         )
-        edits_note = json.dumps(request.edits) if request.edits else None
-        await audit_router.append(
-            conn,
-            _decision_audit_actor(actor_id),
-            "approval.approve",
-            target=action_id,
-            note=edits_note,
-        )
+        if "error" not in result:
+            edits_note = json.dumps(request.edits) if request.edits else None
+            await audit_router.append(
+                conn,
+                _decision_audit_actor(actor_id),
+                "approval.approve",
+                target=action_id,
+                note=edits_note,
+            )
 
     if "error" in result:
         error_msg = result["error"]
@@ -2223,13 +2224,14 @@ async def deny_approval(
             reason=request.reason,
             actor_id=actor_id,
         )
-        await audit_router.append(
-            conn,
-            _decision_audit_actor(actor_id),
-            "approval.deny",
-            target=action_id,
-            note=request.reason,
-        )
+        if "error" not in result:
+            await audit_router.append(
+                conn,
+                _decision_audit_actor(actor_id),
+                "approval.deny",
+                target=action_id,
+                note=request.reason,
+            )
 
     if "error" in result:
         error_msg = result["error"]
