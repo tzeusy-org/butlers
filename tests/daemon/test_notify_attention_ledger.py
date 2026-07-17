@@ -21,6 +21,7 @@ rather than re-testing the pure helpers in isolation (see
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -224,6 +225,24 @@ def _make_mock_client() -> Any:
     return mock_client
 
 
+@contextmanager
+def _configured_owner_default_recipient(daemon: ButlerDaemon):
+    """Model a configured owner channel for default-recipient notify tests."""
+    owner_contact = MagicMock(roles=["owner"])
+    with (
+        patch.object(
+            daemon,
+            "_resolve_default_notify_recipient",
+            new=AsyncMock(return_value="123456789"),
+        ),
+        patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=owner_contact),
+        ),
+    ):
+        yield
+
+
 def _ledger_insert_calls(mock_pool: AsyncMock) -> list[tuple[Any, ...]]:
     """Return fetchval call args whose query targets public.attention_ledger."""
     return [
@@ -273,8 +292,18 @@ class TestQuietHoursLedgerRecording:
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = _make_mock_client()
 
-        with patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])):
-            result = await notify_fn(channel="telegram", message="Weekly report")
+        # The original call keeps recipient=None so the approvals-policy gate
+        # applies after owner-default resolution.
+        with (
+            _configured_owner_default_recipient(daemon),
+            patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Weekly report",
+                _why="The owner needs the scheduled weekly report.",
+                _evidence=[],
+            )
 
         assert result["status"] == "suppressed_quiet_hours"
         daemon.switchboard_client.call_tool.assert_not_awaited()
@@ -302,6 +331,53 @@ class TestQuietHoursLedgerRecording:
         assert outcome == "suppressed"
         assert reason == "quiet_hours"
 
+    async def test_non_owner_without_dossier_retries_without_persistence_or_ledger(
+        self, butler_dir: Path
+    ) -> None:
+        """A dossier error wins before quiet-hours or any approval side effect."""
+        import butlers.core.approvals_hooks as approval_hooks
+        from butlers.modules.approvals.email_guard import check_recipient
+
+        mock_pool = _make_mock_pool(approvals_policy_row=_ALL_DAY_QUIET_POLICY)
+        patches = _patch_infra(mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = _make_mock_client()
+        match_rules = AsyncMock(side_effect=AssertionError("rules must not be queried"))
+
+        with (
+            patch.object(approval_hooks, "_recipient_guard_hook", new=check_recipient),
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=MagicMock(roles=["contact"])),
+            ),
+            patch("butlers.modules.approvals.rules.match_rules", new=match_rules),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Weekly report",
+                recipient="900800700",
+            )
+
+        assert result == {
+            "status": "error",
+            "error": {
+                "code": "missing_required_dossier_field",
+                "field": "why",
+                "message": "why is required for a gated non-owner action; retry with _why.",
+                "retryable": True,
+            },
+            "retryable": True,
+        }
+        match_rules.assert_not_awaited()
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        assert _ledger_insert_calls(mock_pool) == []
+        approval_persistence = [
+            call
+            for call in mock_pool.execute.await_args_list
+            if "approval_rules" in call.args[0] or "pending_actions" in call.args[0]
+        ]
+        assert approval_persistence == []
+
     async def test_context_bus_dnd_suppresses_when_no_quiet_hours(self, butler_dir: Path) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
@@ -316,8 +392,11 @@ class TestQuietHoursLedgerRecording:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             confidence=1.0,
         )
-        with patch(
-            "butlers.context_bus.get_active_context", new=AsyncMock(return_value=[dnd_signal])
+        with (
+            patch(
+                "butlers.context_bus.get_active_context", new=AsyncMock(return_value=[dnd_signal])
+            ),
+            _configured_owner_default_recipient(daemon),
         ):
             result = await notify_fn(channel="telegram", message="Weekly report")
 
@@ -349,13 +428,9 @@ class TestQuietHoursLedgerRecording:
             confidence=1.0,
         )
         with (
+            _configured_owner_default_recipient(daemon),
             patch(
                 "butlers.context_bus.get_active_context", new=AsyncMock(return_value=[dnd_signal])
-            ),
-            patch.object(
-                daemon,
-                "_resolve_default_notify_recipient",
-                new=AsyncMock(return_value="123456789"),
             ),
         ):
             result = await notify_fn(channel="telegram", message="Urgent!", priority="high")
@@ -375,12 +450,8 @@ class TestQuietHoursLedgerRecording:
         daemon.switchboard_client = _make_mock_client()
 
         with (
+            _configured_owner_default_recipient(daemon),
             patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
-            patch.object(
-                daemon,
-                "_resolve_default_notify_recipient",
-                new=AsyncMock(return_value="123456789"),
-            ),
         ):
             result = await notify_fn(channel="telegram", message="All good")
 
@@ -445,12 +516,8 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = client
         with (
+            _configured_owner_default_recipient(daemon),
             patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
-            patch.object(
-                daemon,
-                "_resolve_default_notify_recipient",
-                new=AsyncMock(return_value="123456789"),
-            ),
         ):
             result = await notify_fn(channel="telegram", message="Report")
         return result, mock_pool
@@ -542,12 +609,8 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
             }
         )
         with (
+            _configured_owner_default_recipient(daemon),
             patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
-            patch.object(
-                daemon,
-                "_resolve_default_notify_recipient",
-                new=AsyncMock(return_value="123456789"),
-            ),
             patch(
                 "butlers.tools.switchboard.notification.deliver.deliver",
                 new=deliver_mock,
@@ -574,12 +637,8 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
 
         deliver_mock = AsyncMock(side_effect=RuntimeError("kaboom"))
         with (
+            _configured_owner_default_recipient(daemon),
             patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
-            patch.object(
-                daemon,
-                "_resolve_default_notify_recipient",
-                new=AsyncMock(return_value="123456789"),
-            ),
             patch(
                 "butlers.tools.switchboard.notification.deliver.deliver",
                 new=deliver_mock,
