@@ -18,9 +18,8 @@ Flow:
      - Signs in with the OTP code (and 2FA if needed).
      - On success, exports the ``StringSession``, stores ``telegram_api_id``,
        ``telegram_api_hash``, and ``telegram_user_session`` on the owner
-       entity via ``upsert_owner_entity_info()``, stores the versioned
-       non-secret consent grant in connector control settings, and disconnects
-       the client.
+       entity and the versioned non-secret consent grant in one shared-DB
+       transaction, then disconnects the client.
 
   3. GET /api/telegram/session/status
      - Reports whether all three Telegram user credentials and the current
@@ -46,22 +45,21 @@ import logging
 import secrets
 import time
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.connectors.telegram_user_client_consent import (
-    CONNECTOR_TYPE,
-    CONSENT_ENDPOINT_IDENTITY,
-    account_wide_ingestion_consent_settings,
     is_account_wide_ingestion_consent_granted,
+    load_account_wide_ingestion_consent,
+    save_account_wide_ingestion_consent,
 )
 from butlers.credential_store import (
     CredentialStore,
     resolve_owner_entity_info,
-    upsert_owner_entity_info,
+    upsert_owner_entity_info_on_connection,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,6 +121,14 @@ _PENDING_KEY_PREFIX = "_tg_auth_pending:"
 _SESSION_TTL = 1800  # 30 minutes
 
 
+class _CredentialPersistenceError(RuntimeError):
+    """A verified session could not be durably written to owner credentials."""
+
+    def __init__(self, info_type: str) -> None:
+        self.info_type = info_type
+        super().__init__(f"Credential upsert returned false for {info_type}")
+
+
 def _pending_key(token: str) -> str:
     return f"{_PENDING_KEY_PREFIX}{token}"
 
@@ -139,17 +145,6 @@ def _get_pool(db: DatabaseManager):
                 detail="No database pool available.",
             )
         return db.pool(butler_names[0])
-
-
-def _get_switchboard_pool(db: DatabaseManager):
-    """Return the connector control-plane pool or fail closed for setup."""
-    try:
-        return db.pool("switchboard")
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Telegram setup cannot persist account-wide ingestion consent.",
-        ) from exc
 
 
 async def _save_pending(
@@ -191,6 +186,42 @@ async def _delete_pending(store: CredentialStore, token: str) -> None:
         await store.delete(_pending_key(token))
     except Exception:
         pass
+
+
+async def _persist_verified_telegram_session(
+    pool: Any,
+    *,
+    token: str,
+    pending: dict[str, Any],
+    session_string: str,
+) -> None:
+    """Atomically commit consent, owner credentials, and pending-state deletion.
+
+    Final Telethon session material is staged in the pending record before this
+    function runs. If any write here fails, the transaction rolls back and the
+    staged record remains available for a safe retry without another OTP.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await save_account_wide_ingestion_consent(conn, datetime.now(UTC))
+            for info_type, value, secured in (
+                ("telegram_api_id", str(pending["api_id"]), False),
+                ("telegram_api_hash", pending["api_hash"], True),
+                ("telegram_user_session", session_string, True),
+            ):
+                persisted = await upsert_owner_entity_info_on_connection(
+                    conn,
+                    info_type,
+                    value,
+                    secured=secured,
+                )
+                if not persisted:
+                    raise _CredentialPersistenceError(info_type)
+
+            await conn.execute(
+                "DELETE FROM butler_secrets WHERE secret_key = $1",
+                _pending_key(token),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +300,6 @@ async def verify_code(
         raise HTTPException(status_code=503, detail="Telethon is not installed.")
 
     pool = _get_pool(db)
-    switchboard_pool = _get_switchboard_pool(db)
     store = CredentialStore(pool)
     pending = await _load_pending(store, req.session_token)
     if pending.get("scope_consent") is not True:
@@ -281,56 +311,61 @@ async def verify_code(
             ),
         )
 
-    # Reconstruct the client from the saved intermediate session.
-    session = StringSession(pending["session"])
+    # A final session is written to pending state before any credential writes.
+    # If a later write fails, repeating verification can safely resume from this
+    # verified session rather than consuming another one-time code.
+    verified_session = pending.get("verified_session")
+    auth_completed = isinstance(verified_session, str) and bool(verified_session)
+    resuming_verified_session = auth_completed
+    session = StringSession(verified_session if auth_completed else pending["session"])
     client = TelegramClient(session, pending["api_id"], pending["api_hash"])
 
     try:
         await client.connect()
 
-        if req.password:
-            # Second call: user is providing the 2FA password
-            await client.sign_in(password=req.password)
-        else:
-            try:
-                await client.sign_in(
-                    phone=pending["phone"],
-                    code=req.code,
-                    phone_code_hash=pending["phone_code_hash"],
-                )
-            except SessionPasswordNeededError:
-                # Save updated session state (auth progressed past OTP)
-                # so the 2FA call can continue from this point.
-                updated_session = StringSession.save(client.session)
-                pending["session"] = updated_session
-                await _save_pending(store, req.session_token, pending)
-                return VerifyCodeResponse(
-                    success=False,
-                    message="Two-factor authentication is enabled. "
-                    "Please provide your 2FA password.",
-                )
+        if not auth_completed:
+            if req.password:
+                # Second call: user is providing the 2FA password.
+                await client.sign_in(password=req.password)
+            else:
+                try:
+                    await client.sign_in(
+                        phone=pending["phone"],
+                        code=req.code,
+                        phone_code_hash=pending["phone_code_hash"],
+                    )
+                except SessionPasswordNeededError:
+                    # Save updated session state (auth progressed past OTP)
+                    # so the 2FA call can continue from this point.
+                    updated_session = StringSession.save(client.session)
+                    pending["session"] = updated_session
+                    await _save_pending(store, req.session_token, pending)
+                    return VerifyCodeResponse(
+                        success=False,
+                        message="Two-factor authentication is enabled. "
+                        "Please provide your 2FA password.",
+                    )
 
-        # Auth succeeded — export final session string
+        # Authentication succeeded — export and durably stage the final session
+        # before the atomic credential/control-state commit. This makes a failed
+        # commit explicitly retryable and preserves the authenticated session.
         me = await client.get_me()
-        session_string = StringSession.save(client.session)
-
-        from butlers.connectors.cursor_store import save_connector_settings
-
-        await save_connector_settings(
-            switchboard_pool,
-            CONNECTOR_TYPE,
-            CONSENT_ENDPOINT_IDENTITY,
-            account_wide_ingestion_consent_settings(datetime.now(UTC)),
+        session_string = (
+            verified_session if resuming_verified_session else StringSession.save(client.session)
         )
+        if not isinstance(session_string, str) or not session_string:
+            raise RuntimeError("Telegram authentication produced an empty session")
+        if not resuming_verified_session:
+            pending["verified_session"] = session_string
+            auth_completed = True
+            await _save_pending(store, req.session_token, pending)
 
-        await upsert_owner_entity_info(
-            pool, "telegram_api_id", str(pending["api_id"]), secured=False
+        await _persist_verified_telegram_session(
+            pool,
+            token=req.session_token,
+            pending=pending,
+            session_string=session_string,
         )
-        await upsert_owner_entity_info(pool, "telegram_api_hash", pending["api_hash"], secured=True)
-        await upsert_owner_entity_info(pool, "telegram_user_session", session_string, secured=True)
-
-        # Clean up pending state
-        await _delete_pending(store, req.session_token)
 
         user_name = None
         if me:
@@ -347,7 +382,28 @@ async def verify_code(
 
     except HTTPException:
         raise
+    except _CredentialPersistenceError as exc:
+        logger.warning(
+            "Telegram authentication verified but credential persistence failed for type=%s",
+            exc.info_type,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Telegram authentication succeeded, but credentials could not be saved. "
+                "Retry verification."
+            ),
+        ) from exc
     except Exception as exc:
+        if auth_completed:
+            logger.warning("Telegram authentication verified but persistence failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Telegram authentication succeeded, but setup data could not be persisted. "
+                    "Retry verification."
+                ),
+            ) from exc
         logger.warning("Telegram sign_in failed: %s", exc)
         # Clean up on hard failure
         await _delete_pending(store, req.session_token)
@@ -373,13 +429,7 @@ async def session_status(
     has_api_hash = await resolve_owner_entity_info(pool, "telegram_api_hash") is not None
     has_session = await resolve_owner_entity_info(pool, "telegram_user_session") is not None
     try:
-        from butlers.connectors.cursor_store import load_connector_settings
-
-        settings = await load_connector_settings(
-            db.pool("switchboard"),
-            CONNECTOR_TYPE,
-            CONSENT_ENDPOINT_IDENTITY,
-        )
+        settings = await load_account_wide_ingestion_consent(pool)
         has_scope_consent = is_account_wide_ingestion_consent_granted(settings)
     except Exception:
         logger.warning("Telegram session status could not verify account-wide ingestion consent")

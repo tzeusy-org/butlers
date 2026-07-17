@@ -3254,7 +3254,6 @@ export function PassportAddPanel({
     "home_assistant_token",
     "home_assistant_url",
     "telegram_api_id",
-    "telegram_api_hash",
   ]);
 
   // Auto-fill label from type template suggestion

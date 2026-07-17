@@ -54,6 +54,8 @@ from butlers.tools.relationship.merge_review import (
     write_merge_review as _write_merge_review_shared,
 )
 
+_GUIDED_ENTITY_INFO_ONLY_TYPES = frozenset({"telegram_api_hash"})
+
 # Load local models module
 _api_dir = Path(__file__).parent
 _models_path = _api_dir / "models.py"
@@ -2615,6 +2617,14 @@ async def create_entity_info(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> CreateEntityInfoResponse:
     """Add an entity_info entry to an entity."""
+    if request.type in _GUIDED_ENTITY_INFO_ONLY_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "telegram_api_hash can only be stored through the guided Telegram session setup."
+            ),
+        )
+
     pool = _pool(db)
 
     # Seam-law guard (RFC 0004 Amendment 3, bu-oluyt.1): entity_info is a
@@ -2685,15 +2695,30 @@ async def patch_entity_info(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> EntityInfoEntry:
     """Update an entity_info entry (type, value, label, is_primary)."""
+    if request.type in _GUIDED_ENTITY_INFO_ONLY_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "telegram_api_hash can only be stored through the guided Telegram session setup."
+            ),
+        )
+
     pool = _pool(db)
 
     row = await pool.fetchrow(
-        "SELECT id FROM public.entity_info WHERE id = $1 AND entity_id = $2",
+        "SELECT id, type FROM public.entity_info WHERE id = $1 AND entity_id = $2",
         info_id,
         entity_id,
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Entity info entry not found")
+    if row["type"] in _GUIDED_ENTITY_INFO_ONLY_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "telegram_api_hash can only be updated through the guided Telegram session setup."
+            ),
+        )
 
     updates: list[str] = []
     args: list[Any] = []

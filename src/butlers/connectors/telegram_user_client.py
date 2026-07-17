@@ -71,9 +71,8 @@ from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
 from butlers.connectors.telegram_user_client_consent import (
-    CONNECTOR_TYPE,
-    CONSENT_ENDPOINT_IDENTITY,
     is_account_wide_ingestion_consent_granted,
+    load_account_wide_ingestion_consent,
 )
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
@@ -2235,20 +2234,54 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
             await pool.close()
 
 
-async def _has_account_wide_ingestion_consent(cursor_pool: Any) -> bool:
-    """Read the durable consent grant from connector control settings.
+async def _create_shared_control_pool() -> Any:
+    """Create the shared-DB pool used for Telegram consent control state.
+
+    Checkpoint cursors may live in ``CONNECTOR_BUTLER_DB_NAME``, while owner
+    credentials and account-wide consent belong to ``BUTLER_SHARED_DB_NAME``.
+    Keep those topologies separate instead of reading consent through the
+    cursor pool.
+    """
+    import asyncpg as _asyncpg
+
+    from butlers.db import register_jsonb_codec, should_retry_with_ssl_disable
+
+    db_params = db_params_from_env()
+    shared_db_name = shared_db_name_from_env()
+    pool_kwargs: dict[str, Any] = {
+        "host": str(db_params.get("host") or "localhost"),
+        "port": int(db_params.get("port") or 5432),
+        "user": str(db_params.get("user") or "butlers"),
+        "password": str(db_params.get("password") or "butlers"),
+        "database": shared_db_name,
+        "min_size": 1,
+        "max_size": 2,
+        "command_timeout": 5,
+        "server_settings": {"search_path": "public"},
+        "setup": connector_setup_role,
+        "init": register_jsonb_codec,
+    }
+    ssl = db_params.get("ssl")
+    if ssl is not None:
+        pool_kwargs["ssl"] = ssl
+
+    try:
+        return await _asyncpg.create_pool(**pool_kwargs)
+    except Exception as exc:
+        if should_retry_with_ssl_disable(exc, pool_kwargs.get("ssl")):
+            pool_kwargs["ssl"] = "disable"
+            return await _asyncpg.create_pool(**pool_kwargs)
+        raise
+
+
+async def _has_account_wide_ingestion_consent(control_pool: Any) -> bool:
+    """Read the durable consent grant from shared connector control state.
 
     This is deliberately fail-closed: an unavailable or malformed control row
     is indistinguishable from a missing grant and must not start live ingestion.
     """
     try:
-        from butlers.connectors.cursor_store import load_connector_settings
-
-        settings = await load_connector_settings(
-            cursor_pool,
-            CONNECTOR_TYPE,
-            CONSENT_ENDPOINT_IDENTITY,
-        )
+        settings = await load_account_wide_ingestion_consent(control_pool)
     except Exception:
         logger.warning(
             "Telegram user-client connector: could not verify account-wide ingestion consent"
@@ -2384,7 +2417,7 @@ async def run_telegram_user_client_connector() -> None:
     CONNECTOR_* env vars) is read from environment variables.
 
     A current explicit account-wide ingestion consent grant is resolved from
-    connector control settings and is required before this function creates a
+    shared connector control state and is required before this function creates a
     Telegram client.
 
     The endpoint identity is auto-inferred from ``get_me()``.
@@ -2405,14 +2438,11 @@ async def run_telegram_user_client_connector() -> None:
             "and telegram_user_session on the owner entity via the dashboard."
         )
 
-    # Create cursor pool before any Telegram client connection so the consent
-    # gate can fail closed before account-wide ingestion begins.
-    from butlers.connectors.cursor_store import create_cursor_pool_from_env
-
-    cursor_pool = await create_cursor_pool_from_env()
-    logger.info("Telegram user-client connector: cursor pool created for DB-backed checkpoints")
+    # Consent lives with shared owner credentials, not checkpoint cursors. Read
+    # it before creating any Telegram client or runtime connector.
+    control_pool = await _create_shared_control_pool()
     try:
-        if not await _has_account_wide_ingestion_consent(cursor_pool):
+        if not await _has_account_wide_ingestion_consent(control_pool):
             logger.warning(
                 "Telegram user-client connector not started: explicit informed consent for "
                 "account-wide ingestion is missing or invalid"
@@ -2421,7 +2451,16 @@ async def run_telegram_user_client_connector() -> None:
                 "Telegram user-client connector requires explicit informed consent for "
                 "account-wide ingestion. Complete the Telegram setup acknowledgement first."
             )
+    finally:
+        await control_pool.close()
 
+    # Checkpoint cursors remain on the connector-local pool, which can target a
+    # different database from the shared credential/control-state database.
+    from butlers.connectors.cursor_store import create_cursor_pool_from_env
+
+    cursor_pool = await create_cursor_pool_from_env()
+    logger.info("Telegram user-client connector: cursor pool created for DB-backed checkpoints")
+    try:
         try:
             api_id = int(db_creds["TELEGRAM_API_ID"])
         except ValueError as exc:

@@ -597,4 +597,11 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
     expect(document.querySelector('[data-user-guided-connect="true"]')).toBeTruthy();
     expect(document.querySelector('[data-user-raw-form="true"]')).toBeFalsy();
   });
+
+  it("does not offer Telegram API hash in the advanced raw credential selector", () => {
+    renderUserFamily("entity-uuid-123");
+    fireEvent.click(screen.getByText(/advanced: paste raw credential/i));
+
+    expect(screen.queryByRole("option", { name: "Telegram API Hash" })).toBeNull();
+  });
 });

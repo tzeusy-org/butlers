@@ -236,6 +236,13 @@ async def _post(app: FastAPI, path: str, body: dict | None = None) -> httpx.Resp
         return await client.post(path, json=body or {})
 
 
+async def _patch(app: FastAPI, path: str, body: dict | None = None) -> httpx.Response:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=BASE_URL
+    ) as client:
+        return await client.patch(path, json=body or {})
+
+
 async def _delete(app: FastAPI, path: str) -> httpx.Response:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url=BASE_URL
@@ -2925,3 +2932,61 @@ class TestQueueDismissedPairSuppression:
         assert router_src.count("_dismissed_pair_suppression_sql(") >= 3
         assert "merge_reviews mr" in router_src
         assert "jsonb_array_elements(mr.shared_facts)" in router_src
+
+
+class TestEntityInfoGuidedCredentialBoundary:
+    """Raw entity-info creation cannot bypass verified credential setup."""
+
+    async def test_generic_endpoint_rejects_raw_telegram_api_hash_before_database_access(self):
+        pool = AsyncMock()
+        app = _wire_app(pool)
+
+        resp = await _post(
+            app,
+            f"{_ENTITY_PATH}/info",
+            {
+                "type": "telegram_api_hash",
+                "value": "raw-telegram-api-hash",
+                "secured": True,
+            },
+        )
+
+        assert resp.status_code == 422, resp.text
+        assert "guided Telegram session setup" in resp.json()["detail"]
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_generic_endpoint_cannot_retype_an_entry_to_raw_telegram_api_hash(self):
+        pool = AsyncMock()
+        app = _wire_app(pool)
+
+        resp = await _patch(
+            app,
+            f"{_ENTITY_PATH}/info/{uuid4()}",
+            {
+                "type": "telegram_api_hash",
+                "value": "raw-telegram-api-hash",
+            },
+        )
+
+        assert resp.status_code == 422, resp.text
+        assert "guided Telegram session setup" in resp.json()["detail"]
+        pool.fetchrow.assert_not_awaited()
+
+    async def test_generic_endpoint_cannot_edit_an_existing_raw_telegram_api_hash(self):
+        row = MagicMock()
+        row.__getitem__ = MagicMock(
+            side_effect=lambda key: {"id": uuid4(), "type": "telegram_api_hash"}[key]
+        )
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=row)
+        app = _wire_app(pool)
+
+        resp = await _patch(
+            app,
+            f"{_ENTITY_PATH}/info/{uuid4()}",
+            {"value": "raw-telegram-api-hash"},
+        )
+
+        assert resp.status_code == 422, resp.text
+        assert "guided Telegram session setup" in resp.json()["detail"]
+        pool.execute.assert_not_awaited()
