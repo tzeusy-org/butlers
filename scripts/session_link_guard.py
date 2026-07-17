@@ -52,7 +52,10 @@ def _compiled(pattern: str) -> re.Pattern[str]:
 
 
 _CLAUDE_CODE_SESSION_URL = r"claude\.ai/code/session[_-][A-Za-z0-9]+"
-_ALLOWED_CLAUDE_SESSION_TRAILER = _compiled(
+# The sole exemption is case-sensitive: only the exact terminal Git trailer
+# spelling `Claude-Session:` may be removed. Detection patterns stay
+# case-insensitive via `_compiled()` below.
+_ALLOWED_CLAUDE_SESSION_TRAILER = re.compile(
     rf"Claude-Session:[ \t]+https://{_CLAUDE_CODE_SESSION_URL}[ \t]*"
 )
 

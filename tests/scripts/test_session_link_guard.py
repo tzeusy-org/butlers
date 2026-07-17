@@ -35,8 +35,9 @@ def test_find_session_links_matches_claude_code_session_url() -> None:
     assert [p.name for p, _ in hits] == ["claude-code-session-url"]
 
 
-def test_find_session_links_matches_claude_session_footer_label() -> None:
-    text = f"Body text.\n\nClaude-Session: {_CLAUDE_EXAMPLE_URL}\n"
+@pytest.mark.parametrize("label", ["Claude-Session", "claude-session", "CLAUDE-SESSION"])
+def test_find_session_links_matches_claude_session_footer_label(label: str) -> None:
+    text = f"Body text.\n\n{label}: {_CLAUDE_EXAMPLE_URL}\n"
     hits = slg.find_session_links(text)
     names = {p.name for p, _ in hits}
     assert "claude-session-footer-label" in names
@@ -250,6 +251,37 @@ def test_iter_commit_messages_allows_exact_claude_session_trailer(tmp_path: Path
     assert len(messages) == 2
     findings = slg.scan_sources(messages)
     assert findings == []
+
+
+@pytest.mark.parametrize(
+    ("trailer_line", "expected_exit_code"),
+    [
+        (f"Claude-Session: {_CLAUDE_EXAMPLE_URL}", 0),
+        (f"claude-session: {_CLAUDE_EXAMPLE_URL}", 1),
+        (f"CLAUDE-SESSION: {_CLAUDE_EXAMPLE_URL}", 1),
+        (f"ClAuDe-SeSsIoN: {_CLAUDE_EXAMPLE_URL}", 1),
+        (f" Claude-Session: {_CLAUDE_EXAMPLE_URL}", 1),
+        (f"Claude-Session : {_CLAUDE_EXAMPLE_URL}", 1),
+    ],
+    ids=("canonical", "lowercase", "uppercase", "mixed-case", "indented", "spaced"),
+)
+def test_main_commit_range_only_exempts_exact_claude_session_trailer(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    trailer_line: str,
+    expected_exit_code: int,
+) -> None:
+    _init_repo(tmp_path)
+    base_sha = _commit(tmp_path, "chore: base commit", "a.txt")
+    head_sha = _commit(tmp_path, f"fix: trailer check\n\n{trailer_line}\n", "b.txt")
+
+    exit_code = slg.main(["--commit-range", f"{base_sha}..{head_sha}", "--repo", str(tmp_path)])
+
+    assert exit_code == expected_exit_code
+    if expected_exit_code:
+        assert "claude-code-session-url" in capsys.readouterr().out
+    else:
+        assert "clean" in capsys.readouterr().out.lower()
 
 
 def test_main_rejects_claude_session_after_git_divider_in_commit_range(
