@@ -25,7 +25,7 @@ The page is rendered in the binding **Dispatch** design language specified in `o
 - **WHEN** the spine renders
 - **THEN** rows are grouped in this exact order: `needs-hand` (pinned, act-now), `stale` (quiet, unverified — bu-976n0), `CLI runtimes`, `System`, `User`
 - **AND** the `needs-hand` group contains ONLY genuinely broken or imminently-expiring credentials (`expired`, `revoked`, `failed`, `scope_mismatch`, `expiring`) and is always pinned and severity-sorted regardless of the `?sort=` mode
-- **AND** the `stale` group contains credentials in the `warn` state (set, but with no successful probe on record) — a `warn` credential is an unknown, not a failure, and MUST NOT appear in `needs-hand`
+- **AND** the `stale` group contains credentials in the `warn` state (set, but either never successfully probed or no longer freshly verified) — a `warn` credential is an unknown, not a failure, and MUST NOT appear in `needs-hand`
 - **AND** group eyebrows render in mono 10px uppercase with tracking 0.14em
 
 #### Scenario: Empty `needs-hand` group

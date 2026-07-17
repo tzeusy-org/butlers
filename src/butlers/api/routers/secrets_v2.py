@@ -124,7 +124,7 @@ Design decisions
 - meta.failing_count / meta.unverified_count (bu-976n0) are computed
   server-side from a deduplicated row set before the response is serialised —
   failing_count = genuinely broken/imminently-expiring rows, unverified_count
-  = set-but-never-probed rows. Deduplication matters because the System
+  = rows without a current successful verification. Deduplication matters because the System
   family returns one row per butler schema and User can return more than one
   entity_info row per provider; the frontend already collapses both before
   rendering, so the aggregate must be computed over that same collapsed
@@ -188,6 +188,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
+import os
 import secrets as _secrets_mod
 import time
 from collections.abc import Callable
@@ -525,6 +527,41 @@ def _fingerprint(value: str | None) -> str | None:
 # overridden below.
 DEFAULT_EXPIRING_LEAD_TIME = timedelta(days=7)
 
+#: Default verification freshness window shared with the background re-probe
+#: loop. A successful probe older than this remains useful evidence, but not
+#: a current healthy verdict for the Passport.
+DEFAULT_STALENESS_S: float = 24 * 60 * 60
+
+#: The background re-probe loop and read-side passport classification must use
+#: this same configured freshness window.
+SECRETS_STALENESS_WINDOW_ENV = "SECRETS_STALENESS_WINDOW_S"
+
+
+def resolve_staleness_window_s(*, warn_invalid: bool = False) -> float:
+    """Return the configured credential-verification freshness window.
+
+    The value is static process configuration in normal deployments.  Read-side
+    classification calls this without warning so an invalid setting does not
+    log once per credential; API startup passes ``warn_invalid=True`` and logs
+    the fallback once while configuring the background re-probe loop.
+    """
+    raw = os.environ.get(SECRETS_STALENESS_WINDOW_ENV, str(DEFAULT_STALENESS_S))
+    try:
+        value = float(raw)
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("value must be a positive number")
+    except ValueError:
+        if warn_invalid:
+            logger.warning(
+                "%s=%r is not a valid positive number; falling back to default %s",
+                SECRETS_STALENESS_WINDOW_ENV,
+                raw,
+                DEFAULT_STALENESS_S,
+            )
+        return DEFAULT_STALENESS_S
+    return value
+
+
 # Per-category override, keyed on butler_secrets.category (system/cli families)
 # or the resolved provider slug (user family — see _expiring_lead_time_for_provider).
 # Empty today: every known category/provider is well served by the 7-day
@@ -582,6 +619,34 @@ def _derive_state(
     if last_test_ok is None:
         return "warn"
     return "ok"
+
+
+def _reclassify_stale_ok_state(
+    *,
+    state: str,
+    last_verified: datetime | None,
+    now: datetime | None = None,
+    staleness_s: float | None = None,
+) -> str:
+    """Return ``warn`` when a previously-ok credential is no longer fresh.
+
+    Keep ``_derive_state`` focused on the persisted probe/expiry state machine.
+    This read-side reclassification mirrors the background verifier's 24-hour
+    boundary without letting stale evidence override a current failure, expiry,
+    or other more-severe state. Rows with no verification timestamp retain
+    their derived state for backward compatibility with legacy probe records.
+    """
+    if state != "ok" or last_verified is None:
+        return state
+
+    effective_last_verified = (
+        last_verified if last_verified.tzinfo else last_verified.replace(tzinfo=UTC)
+    )
+    effective_now = now or datetime.now(tz=UTC)
+    effective_staleness_s = resolve_staleness_window_s() if staleness_s is None else staleness_s
+    if (effective_now - effective_last_verified) >= timedelta(seconds=effective_staleness_s):
+        return "warn"
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -1201,11 +1266,14 @@ async def _fetch_system_secrets(
         expires_at: datetime | None = row["expires_at"]
         last_test_ok: bool | None = row["last_test_ok"]
 
-        state = _derive_state(
-            is_set=bool(secret_value),
-            last_test_ok=last_test_ok,
-            expires_at=expires_at,
-            expiring_lead_time=_expiring_lead_time(row["category"]),
+        state = _reclassify_stale_ok_state(
+            state=_derive_state(
+                is_set=bool(secret_value),
+                last_test_ok=last_test_ok,
+                expires_at=expires_at,
+                expiring_lead_time=_expiring_lead_time(row["category"]),
+            ),
+            last_verified=row["last_verified"],
         )
         fp = _fingerprint(secret_value)
 
@@ -1424,10 +1492,13 @@ async def _fetch_user_secrets(
         entity_id = str(row["entity_id"])
         expires_at = google_expiry_map.get(entity_id) if provider == "google" else None
 
-        state = _derive_state(
-            is_set=bool(value),
-            last_test_ok=last_test_ok,
-            expires_at=expires_at,
+        state = _reclassify_stale_ok_state(
+            state=_derive_state(
+                is_set=bool(value),
+                last_test_ok=last_test_ok,
+                expires_at=expires_at,
+            ),
+            last_verified=row["last_verified"],
         )
         fp = _fingerprint(value)
 
@@ -1509,11 +1580,14 @@ async def _fetch_cli_secrets(
         expires_at: datetime | None = row["expires_at"]
         last_test_ok: bool | None = row["last_test_ok"]
 
-        state = _derive_state(
-            is_set=bool(value),
-            last_test_ok=last_test_ok,
-            expires_at=expires_at,
-            expiring_lead_time=_expiring_lead_time(row["category"]),
+        state = _reclassify_stale_ok_state(
+            state=_derive_state(
+                is_set=bool(value),
+                last_test_ok=last_test_ok,
+                expires_at=expires_at,
+                expiring_lead_time=_expiring_lead_time(row["category"]),
+            ),
+            last_verified=row["last_verified"],
         )
         fp = _fingerprint(value)
 
@@ -1621,9 +1695,8 @@ def _count_severity(items: list[Any]) -> dict[str, int]:
 
 # Most-to-least severe, mirroring the frontend's STATE_RANK
 # (frontend/src/hooks/use-secrets-inventory.ts) closely enough for merge
-# tie-breaking purposes. Only states _derive_state can actually emit appear
-# here — "expiring" ranks ahead of "warn"/"ok" so a merged row surfaces the
-# more urgent of the two when duplicates disagree.
+# tie-breaking purposes. "expiring" ranks ahead of "warn"/"ok" so a merged
+# row surfaces the more urgent of the two when duplicates disagree.
 _STATE_SEVERITY_RANK: dict[str, int] = {
     "expired": 0,
     "failing": 1,
@@ -1704,8 +1777,8 @@ def _dedupe_display_families(
 
 #: Backend states that count as "genuinely needs hand" — mirrors the
 #: frontend's NEEDS_HAND_STATES (constants.ts) restricted to the subset
-#: _derive_state can actually emit. Excludes "warn": set-but-never-probed is
-#: an unknown, not a failure (bu-976n0 — this exclusion is the actual fix;
+#: this router can emit. Excludes "warn": an unverified credential is an
+#: unknown, not a failure (bu-976n0 — this exclusion is the actual fix;
 #: previously 'warn' was lumped in with genuine failures).
 _FAILING_STATES = frozenset({"expired", "failing", "expiring"})
 
@@ -1717,8 +1790,7 @@ def _failing_count(items: list[Any]) -> int:
 
 
 def _unverified_count(items: list[Any]) -> int:
-    """Count credentials that are merely unverified: set, but with no
-    successful probe on record (bu-976n0's 'warn' state)."""
+    """Count credentials that are merely unverified (the ``warn`` state)."""
     return sum(1 for item in items if getattr(item, "state", "warn") == "warn")
 
 
@@ -1761,8 +1833,9 @@ async def get_inventory(
 
     meta.failing_count / meta.unverified_count are computed server-side from
     a deduplicated row set (bu-976n0): failing_count counts genuinely broken
-    or imminently-expiring rows, unverified_count counts set-but-never-probed
-    rows. See _dedupe_most_severe / _failing_count / _unverified_count.
+    or imminently-expiring rows, unverified_count counts rows without a
+    current successful verification. See _dedupe_most_severe /
+    _failing_count / _unverified_count.
     """
     # --- Resolve the shared credential pool (public schema) ---
     try:
@@ -1977,7 +2050,10 @@ async def _fetch_single_user_secret(
         expiry_map = await _fetch_google_test_mode_expiry(pool, [entity_id])
         expires_at = expiry_map.get(entity_id)
 
-    state = _derive_state(is_set=bool(value), last_test_ok=last_test_ok, expires_at=expires_at)
+    state = _reclassify_stale_ok_state(
+        state=_derive_state(is_set=bool(value), last_test_ok=last_test_ok, expires_at=expires_at),
+        last_verified=row["last_verified"],
+    )
     fp = _fingerprint(value)
     test = await _fetch_probe_log(pool, "user", row["type"])
     capability_map = await _fetch_capability_probe_logs_bulk(pool, "user", [row["type"]])
@@ -2042,11 +2118,14 @@ async def _fetch_single_system_secret(
     expires_at: datetime | None = row["expires_at"]
     last_test_ok: bool | None = row["last_test_ok"]
 
-    state = _derive_state(
-        is_set=bool(secret_value),
-        last_test_ok=last_test_ok,
-        expires_at=expires_at,
-        expiring_lead_time=_expiring_lead_time(row["category"]),
+    state = _reclassify_stale_ok_state(
+        state=_derive_state(
+            is_set=bool(secret_value),
+            last_test_ok=last_test_ok,
+            expires_at=expires_at,
+            expiring_lead_time=_expiring_lead_time(row["category"]),
+        ),
+        last_verified=row["last_verified"],
     )
     fp = _fingerprint(secret_value)
     test = await _fetch_probe_log(pool, "system", key)
@@ -2111,11 +2190,14 @@ async def _fetch_single_cli_secret(
     expires_at: datetime | None = row["expires_at"]
     last_test_ok: bool | None = row["last_test_ok"]
 
-    state = _derive_state(
-        is_set=bool(value),
-        last_test_ok=last_test_ok,
-        expires_at=expires_at,
-        expiring_lead_time=_expiring_lead_time(row["category"]),
+    state = _reclassify_stale_ok_state(
+        state=_derive_state(
+            is_set=bool(value),
+            last_test_ok=last_test_ok,
+            expires_at=expires_at,
+            expiring_lead_time=_expiring_lead_time(row["category"]),
+        ),
+        last_verified=row["last_verified"],
     )
     fp = _fingerprint(value)
     test = await _fetch_probe_log(pool, "cli", credential_id)

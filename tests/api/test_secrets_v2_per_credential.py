@@ -275,6 +275,17 @@ def test_user_credential_hit_returns_200_envelope():
     int(fp, 16)  # validates it's hex
 
 
+def test_user_credential_stale_successful_probe_is_warn():
+    """A stale successful user probe is an unknown, not a healthy verdict."""
+    row = _make_entity_info_row(last_verified=_NOW - timedelta(days=2), last_test_ok=True)
+    mock_db = _make_db_manager_for_per_credential(user_row=row)
+
+    response = _build_app(mock_db).get("/api/secrets/user/google")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["state"] == "warn"
+
+
 def test_user_credential_hit_with_probe_test_result():
     """Hit case: test field populated from probe_log when probe exists."""
     row = _make_entity_info_row(last_test_ok=True)
@@ -372,6 +383,19 @@ def test_system_credential_hit_state_warn_no_probe():
     assert resp.json()["data"]["state"] == "warn"
 
 
+def test_system_credential_stale_successful_probe_is_warn():
+    """A stale successful system probe is an unknown, not a healthy verdict."""
+    row = _make_system_row(
+        key="STALE_SYSTEM_KEY", last_verified=_NOW - timedelta(days=2), last_test_ok=True
+    )
+    mock_db = _make_db_manager_for_per_credential(system_row=row)
+
+    response = _build_app(mock_db).get("/api/secrets/system/STALE_SYSTEM_KEY")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["state"] == "warn"
+
+
 def test_system_credential_hit_with_probe():
     """Hit case: test field populated from probe_log."""
     row = _make_system_row(key="TESTED_KEY", last_test_ok=False)
@@ -461,6 +485,17 @@ def test_cli_credential_hit_state_expired():
 
     resp = client.get("/api/secrets/cli/cli-exp")
     assert resp.json()["data"]["state"] == "expired"
+
+
+def test_cli_credential_stale_successful_probe_is_warn():
+    """A stale successful CLI probe is an unknown, not a healthy verdict."""
+    row = _make_cli_row(key="cli-stale", last_verified=_NOW - timedelta(days=2), last_test_ok=True)
+    mock_db = _make_db_manager_for_per_credential(cli_row=row)
+
+    response = _build_app(mock_db).get("/api/secrets/cli/cli-stale")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["state"] == "warn"
 
 
 def test_cli_credential_hit_with_probe():
