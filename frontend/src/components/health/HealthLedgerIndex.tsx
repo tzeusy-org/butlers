@@ -44,64 +44,68 @@ const HEALTH_LEDGER_ENTRIES = [
 export function HealthLedgerIndex() {
   return (
     <Section eyebrow="Health ledger">
-      <div data-testid="health-ledger-index" role="list" aria-label="Health ledger">
+      <ul
+        data-testid="health-ledger-index"
+        aria-label="Health ledger"
+        style={{ listStyle: "none", margin: 0, padding: 0 }}
+      >
         {HEALTH_LEDGER_ENTRIES.map((entry, index) => (
-          <RowLink
-            key={entry.path}
-            to={entry.path}
-            role="listitem"
-            aria-label={`View ${entry.label}`}
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 1fr) auto",
-              alignItems: "center",
-              gap: "8px",
-              paddingTop: "10px",
-              paddingBottom: "10px",
-              borderTop: index === 0 ? "1px solid var(--border)" : undefined,
-              borderBottom: "1px solid var(--border)",
-              color: "inherit",
-              textDecoration: "none",
-            }}
-          >
-            <div style={{ minWidth: 0 }}>
-              <p
-                style={{
-                  fontFamily: "var(--font-sans)",
-                  fontSize: "13px",
-                  fontWeight: 400,
-                  color: "var(--foreground)",
-                  lineHeight: 1.4,
-                  margin: 0,
-                }}
-              >
-                {entry.label}
-              </p>
-              <p
-                style={{
-                  fontFamily: "var(--font-serif)",
-                  fontSize: "12px",
-                  color: "var(--muted-foreground)",
-                  lineHeight: 1.4,
-                  margin: "2px 0 0",
-                }}
-              >
-                {entry.description}
-              </p>
-            </div>
-            <span
-              aria-hidden="true"
+          <li key={entry.path}>
+            <RowLink
+              to={entry.path}
+              aria-label={`View ${entry.label}`}
               style={{
-                color: "var(--muted-foreground)",
-                fontSize: "16px",
-                lineHeight: 1,
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) auto",
+                alignItems: "center",
+                gap: "8px",
+                paddingTop: "10px",
+                paddingBottom: "10px",
+                borderTop: index === 0 ? "1px solid var(--border)" : undefined,
+                borderBottom: "1px solid var(--border)",
+                color: "inherit",
+                textDecoration: "none",
               }}
             >
-              →
-            </span>
-          </RowLink>
+              <div style={{ minWidth: 0 }}>
+                <p
+                  style={{
+                    fontFamily: "var(--font-sans)",
+                    fontSize: "13px",
+                    fontWeight: 400,
+                    color: "var(--foreground)",
+                    lineHeight: 1.4,
+                    margin: 0,
+                  }}
+                >
+                  {entry.label}
+                </p>
+                <p
+                  style={{
+                    fontFamily: "var(--font-serif)",
+                    fontSize: "12px",
+                    color: "var(--muted-foreground)",
+                    lineHeight: 1.4,
+                    margin: "2px 0 0",
+                  }}
+                >
+                  {entry.description}
+                </p>
+              </div>
+              <span
+                aria-hidden="true"
+                style={{
+                  color: "var(--muted-foreground)",
+                  fontSize: "16px",
+                  lineHeight: 1,
+                }}
+              >
+                →
+              </span>
+            </RowLink>
+          </li>
         ))}
-      </div>
+      </ul>
     </Section>
   );
 }

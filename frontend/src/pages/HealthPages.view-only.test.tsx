@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 
@@ -433,21 +433,27 @@ describe("Health Overview page (bu-w7b18.1)", () => {
     expect(screen.getByTestId("health-attention-index")).toBeTruthy();
   });
 
-  it("renders the six-destination health ledger without inventing live status", () => {
+  it("renders six health ledger destinations as semantic list links", () => {
     renderInRouter(<HealthOverviewPage />);
 
-    const ledger = screen.getByTestId("health-ledger-index");
-    expect(ledger.getAttribute("aria-label")).toBe("Health ledger");
+    const ledger = screen.getByRole("list", { name: "Health ledger" });
+    const destinations = [
+      ["Measurements", "/health/measurements"],
+      ["Medications", "/health/medications"],
+      ["Conditions", "/health/conditions"],
+      ["Symptoms", "/health/symptoms"],
+      ["Meals", "/health/meals"],
+      ["Research", "/health/research"],
+    ] as const;
 
-    for (const path of [
-      "/health/measurements",
-      "/health/medications",
-      "/health/conditions",
-      "/health/symptoms",
-      "/health/meals",
-      "/health/research",
-    ]) {
-      expect(ledger.querySelector(`a[href="${path}"]`)).toBeInstanceOf(HTMLAnchorElement);
+    expect(within(ledger).getAllByRole("listitem")).toHaveLength(destinations.length);
+
+    for (const [label, path] of destinations) {
+      const link = within(ledger).getByRole("link", { name: `View ${label}` });
+      expect(link).toBeInstanceOf(HTMLAnchorElement);
+      expect(link.getAttribute("href")).toBe(path);
+      expect(link.getAttribute("role")).toBeNull();
+      expect(link.parentElement).toBeInstanceOf(HTMLLIElement);
     }
   });
 
