@@ -406,11 +406,11 @@ describe("PassportAddPanel: USER family — guided connect is the default", () =
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
   });
 
-  it("links to the selected Telegram API field source in the raw user form", () => {
+  it("links to the selected Telegram API ID source in the raw user form", () => {
     renderUserFamily("entity-uuid-123");
     fireEvent.click(screen.getByText(/advanced: paste raw credential/i));
     fireEvent.change(document.querySelector('[data-user-type-select="true"]')!, {
-      target: { value: "telegram_api_hash" },
+      target: { value: "telegram_api_id" },
     });
 
     const link = screen.getByRole("link", { name: "Telegram API development tools" });
