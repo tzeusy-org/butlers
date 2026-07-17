@@ -359,7 +359,7 @@ async def _measure_one(
 
 
 async def _filtered_candidate_count(connection: Any, request: CatalogMeasurementRequest) -> int:
-    """Count the fixed filter once, before deciding whether exact work is safe."""
+    """Count the fixed filter within a measurement snapshot before exact work."""
 
     params, conditions = _catalog_filter(
         tenant_id=request.tenant_id,
@@ -388,9 +388,11 @@ async def measure_catalog_ivfflat(
 
     observations: list[QueryObservation] = []
     async with pool.acquire() as connection:
-        async with connection.transaction(isolation="repeatable_read", readonly=True):
-            candidate_count = await _filtered_candidate_count(connection, request)
-            for vector in request.query_vectors:
+        for vector in request.query_vectors:
+            # Keep count, approximate query, plan observation, and exact comparator
+            # coherent without retaining one snapshot for the entire vector batch.
+            async with connection.transaction(isolation="repeatable_read", readonly=True):
+                candidate_count = await _filtered_candidate_count(connection, request)
                 observations.append(
                     await _measure_one(
                         connection,

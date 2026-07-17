@@ -7,11 +7,14 @@ running database.
 
 from __future__ import annotations
 
+import argparse
+import json
 from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
 
+from butlers.modules.memory import catalog_measurement
 from butlers.modules.memory.catalog_measurement import (
     DEFAULT_EXACT_CANDIDATE_CAP,
     MIN_EVIDENCE_SAMPLES,
@@ -32,10 +35,17 @@ def _vector() -> list[float]:
 
 
 class _Transaction:
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.events = events
+
     async def __aenter__(self) -> None:
+        if self.events is not None:
+            self.events.append("transaction:start")
         return None
 
     async def __aexit__(self, *_: object) -> None:
+        if self.events is not None:
+            self.events.append("transaction:end")
         return None
 
 
@@ -61,19 +71,22 @@ class _Connection:
         ]
         self.exact_distances = exact_distances or [default_distances[item] for item in exact_ids]
         self.calls: list[tuple[str, tuple[object, ...], float | None]] = []
+        self.events: list[str] = []
         self.readonly: bool | None = None
         self.transaction_kwargs: list[dict[str, object]] = []
 
     def transaction(self, *, isolation: str | None = None, readonly: bool = False) -> _Transaction:
         self.readonly = readonly
         self.transaction_kwargs.append({"isolation": isolation, "readonly": readonly})
-        return _Transaction()
+        return _Transaction(self.events)
 
     async def fetchval(self, sql: str, *args: object, timeout: float | None = None) -> Any:
         self.calls.append((sql, args, timeout))
         if "COUNT(*)" in sql:
+            self.events.append("candidate_count")
             return self.candidate_count
         if "EXPLAIN" in sql:
+            self.events.append("approximate_plan")
             return [
                 [
                     {
@@ -91,11 +104,13 @@ class _Connection:
     ) -> list[dict[str, object]]:
         self.calls.append((sql, args, timeout))
         if "WITH candidates AS MATERIALIZED" in sql:
+            self.events.append("exact")
             return [
                 {"id": item, "distance": distance}
                 for item, distance in zip(self.exact_ids, self.exact_distances, strict=True)
             ]
         if "ORDER BY embedding <=> $1" in sql:
+            self.events.append("approximate")
             return [
                 {"id": item, "distance": distance}
                 for item, distance in zip(
@@ -174,14 +189,32 @@ async def test_measurement_reports_overlap_without_exposing_result_ids() -> None
         memory_type="fact",
         allowed_sensitivities=("normal",),
         limit=3,
-        query_vectors=(_vector(),),
+        query_vectors=(_vector(), _vector()),
     )
 
     report = await measure_catalog_ivfflat(_Pool(connection), request)
 
     observation = report.observations[0]
     assert connection.readonly is True
-    assert connection.transaction_kwargs == [{"isolation": "repeatable_read", "readonly": True}]
+    assert connection.transaction_kwargs == [
+        {"isolation": "repeatable_read", "readonly": True},
+        {"isolation": "repeatable_read", "readonly": True},
+    ]
+    assert connection.events == [
+        "transaction:start",
+        "candidate_count",
+        "approximate",
+        "approximate_plan",
+        "exact",
+        "transaction:end",
+        "transaction:start",
+        "candidate_count",
+        "approximate",
+        "approximate_plan",
+        "exact",
+        "transaction:end",
+    ]
+    assert len(report.observations) == 2
     assert observation.filtered_candidate_count == 8
     assert observation.approximate_result_count == 2
     assert observation.exact_result_count == 3
@@ -356,3 +389,48 @@ def test_request_rejects_non_numeric_vector_values_before_database_access(
             limit=1,
             query_vectors=(vector,),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "limit", "match"),
+    [
+        ("not-a-list", 1, "top-level list"),
+        ([], 1, "at most"),
+        ([[_vector()[0]] * 383], 1, "384 dimensions"),
+        ([[True] + [0.0] * 383], 1, "numeric"),
+        ([[float("nan")] + [0.0] * 383], 1, "finite"),
+        ([_vector()], 0, "limit must be between"),
+    ],
+)
+async def test_cli_rejects_invalid_inputs_before_creating_database_pool(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: object,
+    limit: int,
+    match: str,
+) -> None:
+    """Validation errors must be raised before the CLI opens a database pool."""
+    vectors_json = tmp_path / "vectors.json"
+    vectors_json.write_text(json.dumps(payload))
+    pool_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def unexpected_create_pool(*args: object, **kwargs: object) -> None:
+        pool_calls.append((args, kwargs))
+        raise AssertionError("invalid catalog measurement input opened a database pool")
+
+    monkeypatch.setattr(catalog_measurement.asyncpg, "create_pool", unexpected_create_pool)
+    args = argparse.Namespace(
+        tenant_id="shared",
+        memory_type=None,
+        max_sensitivity="normal",
+        limit=limit,
+        vectors_json=vectors_json,
+        exact_candidate_cap=DEFAULT_EXACT_CANDIDATE_CAP,
+        query_timeout_seconds=10.0,
+    )
+
+    with pytest.raises(ValueError, match=match):
+        await catalog_measurement._run_cli(args)
+
+    assert pool_calls == []
