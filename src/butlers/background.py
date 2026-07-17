@@ -264,6 +264,9 @@ async def scheduler_loop(
             if result.is_error:
                 error_text = str(result.content[0].text) if result.content else "Unknown error"
                 raise RuntimeError(f"Deferred notification delivery failed: {error_text}")
+            if isinstance(result.data, dict) and result.data.get("status") == "failed":
+                error_text = str(result.data.get("error") or "Unknown error")
+                raise RuntimeError(f"Deferred notification delivery failed: {error_text}")
 
     logger.info(
         "Scheduler loop started (tick_interval_seconds=%d) for butler %s",
