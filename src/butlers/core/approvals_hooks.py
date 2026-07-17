@@ -35,7 +35,226 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Interface types (owned by core)
+# Decision-dossier boundary (owned by core)
+# ---------------------------------------------------------------------------
+
+
+BLAST_RADIUS_VALUES = ("none", "self", "contact", "external")
+REVERSIBILITY_VALUES = ("reversible", "compensable", "irreversible")
+EVIDENCE_TYPES = ("fact", "entity", "url", "text")
+_WHY_MAX_CHARS = 2000
+_EVIDENCE_MAX_ITEMS = 50
+_EVIDENCE_VALUE_MAX_CHARS = 2000
+
+EvidenceReference = dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionDossier:
+    """Strictly validated approval context persisted with a pending action."""
+
+    why: str | None
+    evidence: list[EvidenceReference]
+    blast_radius: str | None
+    reversibility: str | None
+
+
+def _dossier_error(
+    *,
+    field: str,
+    code: str,
+    message: str,
+    allowed_values: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """Return a retryable boundary error without parking an action."""
+    error: dict[str, Any] = {
+        "code": code,
+        "field": field,
+        "message": message,
+        "retryable": True,
+    }
+    if allowed_values is not None:
+        error["allowed_values"] = list(allowed_values)
+    return {"status": "error", "error": error, "retryable": True}
+
+
+def _validate_optional_enum(
+    value: Any,
+    *,
+    field: str,
+    allowed_values: tuple[str, ...],
+) -> str | None | dict[str, Any]:
+    """Validate a nullable dossier enum without coercing malformed values."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in allowed_values:
+        return _dossier_error(
+            field=field,
+            code="invalid_dossier_value",
+            message=(f"{field} must be one of {', '.join(allowed_values)} when provided."),
+            allowed_values=allowed_values,
+        )
+    return value
+
+
+def _validate_dossier(
+    *,
+    raw_why: Any,
+    raw_evidence: Any,
+    raw_blast_radius: Any,
+    raw_reversibility: Any,
+    require_why: bool,
+) -> DecisionDossier | dict[str, Any]:
+    """Strictly validate supplied dossier metadata without coercing it."""
+    if raw_why is None:
+        if require_why:
+            return _dossier_error(
+                field="why",
+                code="missing_required_dossier_field",
+                message="why is required for a gated non-owner action; retry with _why.",
+            )
+        why: str | None = None
+    elif not isinstance(raw_why, str) or not raw_why.strip():
+        return _dossier_error(
+            field="why",
+            code="invalid_dossier_value",
+            message="why must be a non-empty human-readable string.",
+        )
+    elif len(raw_why) > _WHY_MAX_CHARS:
+        return _dossier_error(
+            field="why",
+            code="invalid_dossier_value",
+            message=f"why must not exceed {_WHY_MAX_CHARS} characters.",
+        )
+    else:
+        why = raw_why
+
+    blast_radius = _validate_optional_enum(
+        raw_blast_radius,
+        field="blast_radius",
+        allowed_values=BLAST_RADIUS_VALUES,
+    )
+    if isinstance(blast_radius, dict):
+        return blast_radius
+
+    reversibility = _validate_optional_enum(
+        raw_reversibility,
+        field="reversibility",
+        allowed_values=REVERSIBILITY_VALUES,
+    )
+    if isinstance(reversibility, dict):
+        return reversibility
+
+    if raw_evidence is None:
+        evidence: list[EvidenceReference] = []
+    elif not isinstance(raw_evidence, list):
+        return _dossier_error(
+            field="evidence",
+            code="invalid_dossier_value",
+            message="evidence must be a list of typed evidence references.",
+        )
+    elif len(raw_evidence) > _EVIDENCE_MAX_ITEMS:
+        return _dossier_error(
+            field="evidence",
+            code="invalid_dossier_value",
+            message=f"evidence may contain at most {_EVIDENCE_MAX_ITEMS} entries.",
+        )
+    else:
+        evidence = []
+        for index, item in enumerate(raw_evidence):
+            field = f"evidence[{index}]"
+            if not isinstance(item, dict):
+                return _dossier_error(
+                    field=field,
+                    code="invalid_dossier_value",
+                    message=(
+                        f"{field} must be an object with type, ref, and note; "
+                        "plain-string evidence is no longer accepted."
+                    ),
+                )
+            if set(item) != {"type", "ref", "note"}:
+                return _dossier_error(
+                    field=field,
+                    code="invalid_dossier_value",
+                    message=f"{field} must contain exactly type, ref, and note.",
+                )
+            evidence_type = item["type"]
+            ref = item["ref"]
+            note = item["note"]
+            if not isinstance(evidence_type, str) or evidence_type not in EVIDENCE_TYPES:
+                return _dossier_error(
+                    field=f"{field}.type",
+                    code="invalid_dossier_value",
+                    message=f"{field}.type must be one of {', '.join(EVIDENCE_TYPES)}.",
+                    allowed_values=EVIDENCE_TYPES,
+                )
+            if not isinstance(ref, str) or not ref:
+                return _dossier_error(
+                    field=f"{field}.ref",
+                    code="invalid_dossier_value",
+                    message=f"{field}.ref must be a non-empty string.",
+                )
+            if not isinstance(note, str):
+                return _dossier_error(
+                    field=f"{field}.note",
+                    code="invalid_dossier_value",
+                    message=f"{field}.note must be a string.",
+                )
+            if len(ref) > _EVIDENCE_VALUE_MAX_CHARS or len(note) > _EVIDENCE_VALUE_MAX_CHARS:
+                return _dossier_error(
+                    field=field,
+                    code="invalid_dossier_value",
+                    message=(
+                        f"{field}.ref and {field}.note must not exceed "
+                        f"{_EVIDENCE_VALUE_MAX_CHARS} characters."
+                    ),
+                )
+            evidence.append({"type": evidence_type, "ref": ref, "note": note})
+
+    return DecisionDossier(
+        why=why,
+        evidence=evidence,
+        blast_radius=blast_radius,
+        reversibility=reversibility,
+    )
+
+
+def validate_non_owner_dossier(
+    *,
+    raw_why: Any,
+    raw_evidence: Any,
+    raw_blast_radius: Any,
+    raw_reversibility: Any,
+) -> DecisionDossier | dict[str, Any]:
+    """Require a typed dossier before a non-owner action can proceed."""
+    return _validate_dossier(
+        raw_why=raw_why,
+        raw_evidence=raw_evidence,
+        raw_blast_radius=raw_blast_radius,
+        raw_reversibility=raw_reversibility,
+        require_why=True,
+    )
+
+
+def validate_owner_dossier(
+    *,
+    raw_why: Any,
+    raw_evidence: Any,
+    raw_blast_radius: Any,
+    raw_reversibility: Any,
+) -> DecisionDossier | dict[str, Any]:
+    """Validate supplied owner metadata without making any field mandatory."""
+    return _validate_dossier(
+        raw_why=raw_why,
+        raw_evidence=raw_evidence,
+        raw_blast_radius=raw_blast_radius,
+        raw_reversibility=raw_reversibility,
+        require_why=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Recipient-guard interface types (owned by core)
 # ---------------------------------------------------------------------------
 
 
@@ -48,10 +267,11 @@ class EmailGuardDecision:
     """
 
     allowed: bool
-    reason: str  # "owner" | "rule" | "parked"
+    reason: str  # "owner" | "rule" | "parked" | "dossier_error"
     action_id: uuid.UUID | None = None
     rule_id: uuid.UUID | None = None
     contact_desc: str | None = None
+    dossier_error: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +301,7 @@ def register_email_guard(
     The registered callable must have the same keyword-argument signature as
     ``modules.approvals.email_guard.check_email_recipient``.  The return value
     must be compatible with ``EmailGuardDecision`` (allowed, reason, action_id,
-    rule_id, contact_desc attributes).
+    rule_id, contact_desc, dossier_error attributes).
 
     Args:
         fn: Async callable implementing the email-guard check.
@@ -124,6 +344,11 @@ async def check_email_recipient(
     expiry_hours: int = 72,
     msg_context: str | None = None,
     butler_name: str | None = None,
+    why: Any = None,
+    evidence: Any = None,
+    blast_radius: Any = None,
+    reversibility: Any = None,
+    enforce_dossier: bool = False,
 ) -> EmailGuardDecision:
     """Check whether an outbound email to *email_target* is permitted.
 
@@ -149,6 +374,11 @@ async def check_email_recipient(
         expiry_hours=expiry_hours,
         msg_context=msg_context,
         butler_name=butler_name,
+        why=why,
+        evidence=evidence,
+        blast_radius=blast_radius,
+        reversibility=reversibility,
+        enforce_dossier=enforce_dossier,
     )
     # Coerce to core's EmailGuardDecision (modules returns the approvals-local type).
     return EmailGuardDecision(
@@ -157,6 +387,7 @@ async def check_email_recipient(
         action_id=result.action_id,
         rule_id=result.rule_id,
         contact_desc=result.contact_desc,
+        dossier_error=getattr(result, "dossier_error", None),
     )
 
 
@@ -173,6 +404,11 @@ async def check_recipient(
     session_id: str | uuid.UUID | None = None,
     expiry_hours: int = 72,
     butler_name: str | None = None,
+    why: Any = None,
+    evidence: Any = None,
+    blast_radius: Any = None,
+    reversibility: Any = None,
+    enforce_dossier: bool = False,
 ) -> EmailGuardDecision:
     """Channel-general outbound recipient guard for ``notify()``.
 
@@ -203,6 +439,11 @@ async def check_recipient(
         session_id=session_id,
         expiry_hours=expiry_hours,
         butler_name=butler_name,
+        why=why,
+        evidence=evidence,
+        blast_radius=blast_radius,
+        reversibility=reversibility,
+        enforce_dossier=enforce_dossier,
     )
     # Coerce to core's EmailGuardDecision (modules returns the approvals-local type).
     return EmailGuardDecision(
@@ -211,4 +452,5 @@ async def check_recipient(
         action_id=result.action_id,
         rule_id=result.rule_id,
         contact_desc=result.contact_desc,
+        dossier_error=getattr(result, "dossier_error", None),
     )

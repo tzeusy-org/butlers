@@ -2,11 +2,11 @@
 
 ## 1. Structured decision dossier
 
-- [ ] 1.1 Approvals-chain migration `approvals_003`: add `blast_radius TEXT` and `reversibility TEXT` (nullable, CHECK enums) to `pending_actions`; migrate legacy plain-string evidence entries to typed `text` entries
-- [ ] 1.2 Extend gate metadata extraction: accept `_blast_radius`/`_reversibility`, validate enums; typed-evidence entries `{type, ref, note}` with strict validation and no runtime coercion
-- [ ] 1.3 Enforce required `why` for non-owner-target gated calls with structured retryable error; exempt owner-role bypass path
-- [ ] 1.4 Surface dossier fields in `ApprovalDetail` + approvals API responses; render in dashboard action detail
-- [ ] 1.5 Update roster skills/prompts that call gated tools to supply the dossier kwargs
+- [x] 1.1 Approvals-chain migration `approvals_003` (implemented safely as `approvals_005` because historical `003`/`004` identifiers were already used): add `blast_radius TEXT` and `reversibility TEXT` (nullable, CHECK enums) to `pending_actions`; migrate legacy plain-string evidence entries to typed `text` entries
+- [x] 1.2 Extend gate metadata extraction: accept `_blast_radius`/`_reversibility`, validate enums; typed-evidence entries `{type, ref, note}` with strict validation and no runtime coercion
+- [x] 1.3 Enforce required `why` for non-owner-target gated calls with structured retryable error; exempt owner-role bypass path
+- [x] 1.4 Surface dossier fields in `ApprovalDetail` + approvals API responses; render in dashboard action detail
+- [x] 1.5 Update roster skills/prompts that call gated tools to supply the dossier kwargs
 
 ## 2. Push on park (approval_request notify intent)
 

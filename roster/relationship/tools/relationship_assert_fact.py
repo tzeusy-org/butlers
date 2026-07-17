@@ -55,6 +55,23 @@ logger = logging.getLogger(__name__)
 
 # Pending actions expire after 72 hours (mirrors contact_info.py).
 _PENDING_ACTION_EXPIRY_HOURS = 72
+_EvidenceReference = dict[str, str]
+_EVIDENCE_TYPES = {"fact", "entity", "url", "text"}
+
+
+def _validate_typed_evidence(evidence: list[_EvidenceReference]) -> None:
+    """Reject malformed evidence before a pending-action writer can persist it."""
+    for index, item in enumerate(evidence):
+        if not isinstance(item, dict) or set(item) != {"type", "ref", "note"}:
+            raise ValueError(
+                f"evidence[{index}] must be a typed reference with type, ref, and note."
+            )
+        if item["type"] not in _EVIDENCE_TYPES:
+            raise ValueError(f"evidence[{index}].type is not a supported evidence type.")
+        if not isinstance(item["ref"], str) or not item["ref"]:
+            raise ValueError(f"evidence[{index}].ref must be a non-empty string.")
+        if not isinstance(item["note"], str):
+            raise ValueError(f"evidence[{index}].note must be a string.")
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +333,7 @@ async def _create_pending_action(
     *,
     dedup_match: dict[str, Any] | None = None,
     why: str | None = None,
-    evidence: list[str] | None = None,
+    evidence: list[_EvidenceReference] | None = None,
 ) -> uuid.UUID:
     """Insert a pending_actions row (or return an existing pending match).
 
@@ -328,10 +345,9 @@ async def _create_pending_action(
     re-asserted on successive sweeps before the owner has acted on the prior
     request.
 
-    *why* and *evidence* populate the ``pending_actions.why`` and
-    ``pending_actions.evidence`` columns added in migration ``core_097`` so the
-    Dispatch dossier UI can render a human-readable rationale for each pending
-    approval rather than showing it blank.
+    *why* and typed *evidence* populate the ``pending_actions`` dossier columns
+    so the approvals UI can render a human-readable rationale and inspectable
+    references rather than an untyped evidence string list.
     """
     if dedup_match is not None:
         existing = await conn.fetchval(
@@ -583,7 +599,7 @@ async def _assert_on_conn(
     primary: bool | None,
     wrap_transaction: bool,
     why: str | None = None,
-    evidence: list[str] | None = None,
+    evidence: list[_EvidenceReference] | None = None,
 ) -> AssertResult:
     """Execute the full assert logic on *conn*.
 
@@ -595,7 +611,8 @@ async def _assert_on_conn(
         transaction to avoid nested-transaction errors.
     why, evidence:
         Forwarded to the pending_actions row on owner carve-out so the
-        Dispatch dossier UI can render a rationale instead of a blank cell.
+        Dispatch dossier UI can render a rationale and typed evidence instead
+        of a blank cell.
     """
     # Predicate validation (fast indexed lookup, runs on every call).
     await _validate_predicate(conn, predicate)
@@ -646,14 +663,14 @@ async def _assert_on_conn(
             "fact unrecorded; you can also approve once and create a standing "
             "rule for this source."
         )
-        effective_evidence: list[str] = (
+        effective_evidence: list[_EvidenceReference] = (
             list(evidence)
             if evidence
             else [
-                f"subject={subject}",
-                f"predicate={predicate}",
-                f"object={object}",
-                f"src={src}",
+                {"type": "entity", "ref": str(subject), "note": "Subject entity."},
+                {"type": "fact", "ref": predicate, "note": "Predicate."},
+                {"type": "text", "ref": object, "note": "Proposed object value."},
+                {"type": "text", "ref": src, "note": "Assertion source."},
             ]
         )
 
@@ -716,15 +733,19 @@ async def _assert_on_conn(
             "confirmed before a hard entity edge is written. Approve if the relationship "
             "is correct; reject if this was a mis-extraction."
         )
-        gate_evidence: list[str] = (
+        gate_evidence: list[_EvidenceReference] = (
             list(evidence)
             if evidence
             else [
-                f"subject={subject}",
-                f"predicate={predicate}",
-                f"object={object}",
-                f"conf={conf:g} (threshold={_FAMILY_GATE_CONF:g})",
-                f"src={src}",
+                {"type": "entity", "ref": str(subject), "note": "Subject entity."},
+                {"type": "fact", "ref": predicate, "note": "Predicate."},
+                {"type": "text", "ref": object, "note": "Proposed object value."},
+                {
+                    "type": "text",
+                    "ref": f"conf={conf:g} (threshold={_FAMILY_GATE_CONF:g})",
+                    "note": "Confidence gate evidence.",
+                },
+                {"type": "text", "ref": src, "note": "Assertion source."},
             ]
         )
         gate_summary = (
@@ -795,7 +816,7 @@ async def relationship_assert_fact(
     primary: bool | None = None,
     conn: asyncpg.Connection | None = None,
     why: str | None = None,
-    evidence: list[str] | None = None,
+    evidence: list[_EvidenceReference] | None = None,
 ) -> AssertResult:
     """Assert a fact triple in ``relationship.entity_facts``.
 
@@ -843,8 +864,9 @@ async def relationship_assert_fact(
         Human-readable rationale shown to the owner in the approvals UI when
         the owner carve-out fires.  Falls back to a generated sentence.
     evidence:
-        Ordered list of evidence strings shown to the owner in the approvals
-        UI under the rationale.  Falls back to a minimal identity summary.
+        Ordered typed evidence references (`type`, `ref`, `note`) shown to the
+        owner in the approvals UI under the rationale. Falls back to a minimal
+        identity summary.
 
     Returns
     -------
@@ -863,6 +885,8 @@ async def relationship_assert_fact(
         raise ValueError(f"Invalid object_kind {object_kind!r}: must be 'literal' or 'entity'.")
     if not (0.0 <= conf <= 1.0):
         raise ValueError(f"conf must be in [0.0, 1.0]; got {conf!r}.")
+    if evidence is not None:
+        _validate_typed_evidence(evidence)
 
     # Normalise legacy underscore predicate aliases to canonical hyphenated names.
     predicate = _PREDICATE_ALIAS_MAP.get(predicate, predicate)

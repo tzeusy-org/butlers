@@ -12,9 +12,12 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import asyncpg
@@ -26,6 +29,45 @@ from butlers.testing.migration import create_migrated_test_db, migration_db_name
 pytestmark = [pytest.mark.unit]
 
 docker_available = shutil.which("docker") is not None
+
+
+async def _capture_scheduler_notify_fn(pool, client):
+    """Capture the real scheduler wrapper passed into its deferred tick."""
+    from butlers.background import scheduler_loop
+
+    captured: dict[str, object] = {}
+    notify_fn_ready = asyncio.Event()
+    release_tick = asyncio.Event()
+
+    async def capture_tick(_pool, _dispatch_fn, *, notify_fn, **_kwargs):
+        captured["notify_fn"] = notify_fn
+        notify_fn_ready.set()
+        await release_tick.wait()
+        return 0
+
+    async def noop_dispatch(**_kwargs):
+        return None
+
+    loop_task = asyncio.create_task(
+        scheduler_loop(
+            pool=pool,
+            dispatch_fn=noop_dispatch,
+            interval=0,
+            butler_name="health",
+            tick_fn=capture_tick,
+            get_switchboard_client=lambda: client,
+            get_db=lambda: None,
+        )
+    )
+    await asyncio.wait_for(notify_fn_ready.wait(), timeout=1)
+    return captured["notify_fn"], loop_task, release_tick
+
+
+async def _stop_scheduler_notify_capture(loop_task, release_tick) -> None:
+    release_tick.set()
+    loop_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await loop_task
 
 
 class TestDeliveryUnit:
@@ -236,6 +278,129 @@ class TestDeliveryPreferencesDB:
         # Cancel: invalid UUID raises
         with pytest.raises(ValueError, match="Invalid notification_id"):
             await cancel_deferred_notification(pool, "not-a-uuid", butler_name=butler)
+
+    async def test_scheduler_wrapper_keeps_nested_failed_delivery_pending_without_ledger(
+        self, pool
+    ):
+        """A transport-successful nested delivery failure must remain retryable."""
+        from butlers.core.scheduler import _tick_deferred_notification_pass
+        from butlers.core.temporal.delivery_db import insert_deferred_notification
+
+        now = datetime.now(UTC)
+        envelope = {
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": "Retry the decision-dossier delivery.",
+                "recipient": "non-owner-recipient",
+            },
+        }
+        client = SimpleNamespace(
+            call_tool=AsyncMock(
+                return_value=SimpleNamespace(
+                    is_error=False,
+                    data={
+                        "status": "failed",
+                        "error": "decision dossier rejected",
+                        "retryable": True,
+                    },
+                    content=[],
+                )
+            )
+        )
+        notify_fn, scheduler_task, release_tick = await _capture_scheduler_notify_fn(pool, client)
+        notification_id = await insert_deferred_notification(
+            pool,
+            butler_name="health",
+            channel="telegram",
+            message="Retry the decision-dossier delivery.",
+            priority="medium",
+            envelope=envelope,
+            deliver_at=now - timedelta(minutes=1),
+        )
+
+        try:
+            flushed = await _tick_deferred_notification_pass(pool, now, notify_fn=notify_fn)
+        finally:
+            await _stop_scheduler_notify_capture(scheduler_task, release_tick)
+
+        assert flushed == 0
+        row = await pool.fetchrow(
+            "SELECT status, delivered_at FROM deferred_notifications WHERE id = $1",
+            uuid.UUID(notification_id),
+        )
+        assert row["status"] == "pending"
+        assert row["delivered_at"] is None
+        assert (
+            await pool.fetchval(
+                "SELECT COUNT(*) FROM public.attention_ledger WHERE notification_ref = $1",
+                notification_id,
+            )
+            == 0
+        )
+        client.call_tool.assert_awaited_once_with(
+            "deliver",
+            {"source_butler": "health", "notify_request": envelope},
+        )
+
+    async def test_scheduler_wrapper_marks_sent_delivery_delivered_once(self, pool):
+        """A successful nested delivery completes one deferred row and ledger event."""
+        from butlers.core.scheduler import _tick_deferred_notification_pass
+        from butlers.core.temporal.delivery_db import insert_deferred_notification
+
+        now = datetime.now(UTC)
+        envelope = {
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": "Deliver the decision-dossier notification.",
+                "recipient": "owner-recipient",
+            },
+        }
+        client = SimpleNamespace(
+            call_tool=AsyncMock(
+                return_value=SimpleNamespace(is_error=False, data={"status": "sent"}, content=[])
+            )
+        )
+        notify_fn, scheduler_task, release_tick = await _capture_scheduler_notify_fn(pool, client)
+        notification_id = await insert_deferred_notification(
+            pool,
+            butler_name="health",
+            channel="telegram",
+            message="Deliver the decision-dossier notification.",
+            priority="medium",
+            envelope=envelope,
+            deliver_at=now - timedelta(minutes=1),
+        )
+
+        try:
+            flushed = await _tick_deferred_notification_pass(pool, now, notify_fn=notify_fn)
+        finally:
+            await _stop_scheduler_notify_capture(scheduler_task, release_tick)
+
+        assert flushed == 1
+        row = await pool.fetchrow(
+            "SELECT status, delivered_at FROM deferred_notifications WHERE id = $1",
+            uuid.UUID(notification_id),
+        )
+        assert row["status"] == "delivered"
+        assert row["delivered_at"] == now
+        assert (
+            await pool.fetchval(
+                "SELECT COUNT(*) FROM public.attention_ledger "
+                "WHERE notification_ref = $1 AND outcome = 'delivered'",
+                notification_id,
+            )
+            == 1
+        )
+        client.call_tool.assert_awaited_once_with(
+            "deliver",
+            {"source_butler": "health", "notify_request": envelope},
+        )
 
     async def test_cancel_pending_matching_line_boundaries_and_supersede(self, pool):
         """bu-id0fh: cancel_pending_notifications_matching_line supersedes prior

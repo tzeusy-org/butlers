@@ -70,3 +70,19 @@ def test_fingerprint_v2_migration_backfills_versioned_history_and_suggestions() 
     assert "autonomy_suggestions" in normalized
     assert "fingerprint_version" in normalized
     assert "set fingerprint_version = 1" in normalized
+
+
+def test_decision_dossier_migration_uses_next_safe_revision_and_upgrades_evidence() -> None:
+    """The RFC 0021 dossier migration follows the fingerprint-v2 revision."""
+    mod = _load_migration("005_decision_dossier.py")
+    sqls = _collect_sqls(mod)
+    normalized = " ".join("\n".join(sqls).lower().split())
+
+    assert mod.revision == "approvals_005"
+    assert mod.down_revision == "approvals_003"
+    assert "add column if not exists blast_radius text" in normalized
+    assert "add column if not exists reversibility text" in normalized
+    assert "pending_actions_blast_radius_check" in normalized
+    assert "pending_actions_reversibility_check" in normalized
+    assert "jsonb_array_elements(evidence)" in normalized
+    assert "jsonb_build_object('type', 'text'" in normalized

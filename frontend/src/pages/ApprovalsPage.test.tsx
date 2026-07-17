@@ -545,6 +545,53 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(toast.warning).not.toHaveBeenCalled();
   });
 
+  it("renders the typed decision dossier risk labels and evidence", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("dossier-1")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        id: "dossier-1",
+        title: "Send Email (general)",
+        butler: "general",
+        created_at: "2026-05-17T10:00:00Z",
+        expires_at: null,
+        why: "The recipient asked for the account update.",
+        blast_radius: "contact",
+        reversibility: "irreversible",
+        evidence: [
+          {
+            type: "url",
+            ref: "https://example.test/request/42",
+            note: "Original request",
+          },
+        ],
+        proposed_action: {
+          tool_name: "send_email",
+          tool_args: {},
+          agent_summary: null,
+        },
+        status: "pending",
+        decided_by: null,
+        decided_at: null,
+        target_contact: null,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-dossier-risk"]') !== null,
+    );
+
+    const risk = container.querySelector('[data-testid="approval-dossier-risk"]');
+    expect(risk?.textContent).toContain("contact");
+    expect(risk?.textContent).toContain("irreversible");
+    expect(container.querySelector('[data-testid="approval-evidence-item"]')?.textContent).toContain(
+      "Original request",
+    );
+    expect(container.textContent).toContain("https://example.test/request/42");
+  });
+
   it("denies in a single click — no 'Confirm Deny' step (optimistic)", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("d1")]) as AnyMock,

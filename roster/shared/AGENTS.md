@@ -71,6 +71,10 @@ When a scheduled task fires with `dispatch_mode="prompt"`, you are running in an
 - Use `intent="send"` for proactive scheduled messages (no `request_context` needed)
 - Use `channel="telegram"` unless the prompt specifies otherwise
 - If the task produces no actionable output (e.g., a cleanup with nothing to clean), you may exit silently without calling `notify()`
+- If a prompt invokes an approval-gated direct outbound tool for a non-owner,
+  include its advertised `_why`, optional risk labels, and typed `_evidence`.
+  Owner-target delivery is exempt; do not invent metadata fields on an
+  unadvertised tool surface.
 
 **Example:**
 ```python
@@ -89,6 +93,8 @@ Include in the prompt:
 - The exact `notify()` call with `channel` and `intent="send"` parameters
 - What data to gather and include in the message
 - When to skip notification (no-op path)
+- For a gated non-owner direct delivery, an explicit `_why` and typed evidence
+  instruction based on the facts the future session will gather
 
 **Good (explicit notify() in prompt):**
 ```python

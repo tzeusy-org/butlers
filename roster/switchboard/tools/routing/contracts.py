@@ -596,6 +596,10 @@ class NotifyRequestV1(BaseModel):
     origin_butler: NonEmptyStr
     delivery: NotifyDeliveryV1
     request_context: NotifyRequestContextV1 | None = None
+    # Strict dossier validation remains owned by the recipient guard: this
+    # envelope only preserves the already-validated context across deferred
+    # delivery so Messenger can validate it again against the flush-time target.
+    decision_dossier: dict[str, Any] | None = None
 
     @field_validator("schema_version")
     @classmethod

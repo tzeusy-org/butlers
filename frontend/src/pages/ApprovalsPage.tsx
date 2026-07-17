@@ -175,9 +175,16 @@ const HOUR_MS = 3_600_000;
 const HIGH_BLAST_RADIUS = /notify|send|message|email|telegram|delete|revoke/i;
 const LOW_BLAST_RADIUS = /assert|store|write|update|create/i;
 
-function blastRadius(toolName: string): number {
-  if (HIGH_BLAST_RADIUS.test(toolName)) return 3;
-  if (LOW_BLAST_RADIUS.test(toolName)) return 1;
+function blastRadius(summary: ApprovalSummary): number {
+  const declaredRadius = {
+    none: 0,
+    self: 1,
+    contact: 2,
+    external: 3,
+  } as const;
+  if (summary.blast_radius) return declaredRadius[summary.blast_radius];
+  if (HIGH_BLAST_RADIUS.test(summary.tool_name)) return 3;
+  if (LOW_BLAST_RADIUS.test(summary.tool_name)) return 1;
   return 2;
 }
 
@@ -196,7 +203,7 @@ function expiryUrgency(expiresAt: string | null | undefined): number {
 function rankScore(summary: ApprovalSummary): number {
   // Expiry dominates the sort (it is time-bounded and irreversible once
   // missed); blast radius breaks ties among similarly-urgent items.
-  return expiryUrgency(summary.expires_at) * 10 + blastRadius(summary.tool_name);
+  return expiryUrgency(summary.expires_at) * 10 + blastRadius(summary);
 }
 
 /** Countdown chip text + whether it should render in warning color (<=1h). */
@@ -704,6 +711,37 @@ function Dossier({
           )}
         </div>
 
+        <section
+          data-testid="approval-dossier-risk"
+          aria-labelledby="approval-decision-impact-heading"
+          className="border-t border-border pt-4"
+        >
+          <h3
+            id="approval-decision-impact-heading"
+            className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2"
+          >
+            Decision impact
+          </h3>
+          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+            <div>
+              <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                Blast radius
+              </dt>
+              <dd className="mt-0.5 text-sm text-foreground">
+                {detail.blast_radius ?? "Not classified"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                Reversibility
+              </dt>
+              <dd className="mt-0.5 text-sm text-foreground">
+                {detail.reversibility ?? "Not classified"}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
         {/* Referenced entities — resolve UUIDs in the action to canonical names.
           For pending approvals these are surfaced in the floating cluster above;
           here we keep the fuller list (with id prefixes) for decided actions. */}
@@ -741,26 +779,43 @@ function Dossier({
             </div>
           )}
 
-        {/* Evidence — mono lines, rule-separated */}
+        {/* Evidence — type, reference, and human context stay together so a
+            reviewer can audit why the action was proposed without inference. */}
         {detail.evidence && detail.evidence.length > 0 && (
-          <div className="border-t border-border pt-4">
-            <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
+          <section className="border-t border-border pt-4" aria-labelledby="approval-evidence-heading">
+            <h3
+              id="approval-evidence-heading"
+              className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2"
+            >
               Evidence
-            </div>
+            </h3>
             <div>
-              {detail.evidence.map((line, i) => (
+              {detail.evidence.map((entry, i) => (
                 <div
-                  key={i}
+                  key={`${entry.type}:${entry.ref}:${i}`}
+                  data-testid="approval-evidence-item"
                   className={[
-                    "py-1.5 font-mono text-xs text-foreground",
+                    "py-1.5 text-xs text-foreground",
                     i > 0 ? "border-t border-border/50" : "",
                   ].join(" ")}
                 >
-                  {line}
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {entry.type}
+                    </span>
+                    <code className="min-w-0 break-all font-mono text-xs text-foreground">
+                      {entry.ref}
+                    </code>
+                  </div>
+                  {entry.note && (
+                    <p className="mt-1 text-sm leading-snug text-muted-foreground">
+                      {entry.note}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
-          </div>
+          </section>
         )}
 
         {/* Proposed action */}

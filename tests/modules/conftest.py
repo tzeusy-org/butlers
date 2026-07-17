@@ -31,9 +31,19 @@ async def approvals_pool(provisioned_postgres_pool):
                 execution_result JSONB,
                 why TEXT,
                 evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+                blast_radius TEXT,
+                reversibility TEXT,
                 approval_rule_id UUID,
                 CONSTRAINT pending_actions_status_check
-                    CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed'))
+                    CHECK (status IN ('pending', 'approved', 'rejected', 'expired', 'executed')),
+                CONSTRAINT pending_actions_blast_radius_check
+                    CHECK (blast_radius IS NULL OR blast_radius IN (
+                        'none', 'self', 'contact', 'external'
+                    )),
+                CONSTRAINT pending_actions_reversibility_check
+                    CHECK (reversibility IS NULL OR reversibility IN (
+                        'reversible', 'compensable', 'irreversible'
+                    ))
             )
         """)
 

@@ -33,6 +33,15 @@ Messenger owns outbound send/reply execution for channel surfaces:
 
 Non-messenger butlers should never call channel send/reply tools directly.
 
+## Approval dossier on direct egress
+
+The direct channel tools are approval-gated. When sending to a non-owner or an
+unresolvable recipient, include the advertised `_why` rationale and, when
+known, `_blast_radius`, `_reversibility`, and typed `_evidence` entries
+(`{type, ref, note}`). Evidence strings are invalid. A retryable dossier error
+means fix the named dossier field and retry without attempting delivery. A
+verified owner-target call remains exempt from this requirement.
+
 ## Routing and Notify Rules
 
 - Accept Switchboard-dispatched routed execution (target state: `route.execute`).

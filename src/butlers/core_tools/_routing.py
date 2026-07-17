@@ -313,15 +313,18 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             error_class: str,
             message: str,
             notify_response: dict[str, Any] | None = None,
+            retryable: bool | None = None,
         ) -> dict[str, Any]:
-            retryable = _ROUTE_ERROR_RETRYABLE.get(error_class, False)
+            resolved_retryable = (
+                _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
+            )
             response: dict[str, Any] = {
                 "schema_version": "route_response.v1",
                 "status": "error",
                 "error": {
                     "class": error_class,
                     "message": message,
-                    "retryable": retryable,
+                    "retryable": resolved_retryable,
                 },
                 "timing": {"duration_ms": _elapsed_ms()},
             }
@@ -350,14 +353,18 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             channel: str | None,
             error_class: str,
             message: str,
+            retryable: bool | None = None,
         ) -> dict[str, Any]:
+            resolved_retryable = (
+                _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
+            )
             notify_payload: dict[str, Any] = {
                 "schema_version": "notify_response.v1",
                 "status": "error",
                 "error": {
                     "class": error_class,
                     "message": message,
-                    "retryable": _ROUTE_ERROR_RETRYABLE.get(error_class, False),
+                    "retryable": resolved_retryable,
                 },
             }
             if request_id is not None:
@@ -365,6 +372,33 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             if channel is not None:
                 notify_payload["delivery"] = {"channel": channel}
             return notify_payload
+
+        def _dossier_error_response(
+            *,
+            context_payload: dict[str, Any],
+            request_id: str,
+            channel: str,
+            dossier_error: dict[str, Any],
+        ) -> dict[str, Any]:
+            """Preserve a gate-issued dossier error across route response envelopes."""
+            error = dossier_error.get("error")
+            if not isinstance(error, dict):
+                error = {}
+            message = "Delivery rejected: " + str(error.get("message", "invalid decision dossier."))
+            retryable = error.get("retryable") is True
+            return _route_error_response(
+                context_payload=context_payload,
+                error_class="validation_error",
+                message=message,
+                retryable=retryable,
+                notify_response=_notify_error_response(
+                    request_id=request_id,
+                    channel=channel,
+                    error_class="validation_error",
+                    message=message,
+                    retryable=retryable,
+                ),
+            )
 
         route_payload: dict[str, Any] = {
             "schema_version": schema_version,
@@ -688,6 +722,13 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         )
         notify_prefix = f"[{origin}]"
         modules_by_name = {module.name: module for module in daemon._modules}
+        decision_dossier = notify_request.decision_dossier or {}
+        dossier_kwargs = {
+            "why": decision_dossier.get("why"),
+            "evidence": decision_dossier.get("evidence"),
+            "blast_radius": decision_dossier.get("blast_radius"),
+            "reversibility": decision_dossier.get("reversibility"),
+        }
 
         try:
             # Channel-general role-based approval gating for NON-email channels
@@ -759,7 +800,16 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             ),
                             session_id=get_current_runtime_session_id(),
                             butler_name=origin,
+                            **dossier_kwargs,
+                            enforce_dossier=True,
                         )
+                        if decision.dossier_error is not None:
+                            return _dossier_error_response(
+                                context_payload=route_context,
+                                request_id=notify_request_id,
+                                channel=channel,
+                                dossier_error=decision.dossier_error,
+                            )
                         if not decision.allowed:
                             raise ValueError(
                                 f"Delivery blocked: {channel} target '{gate_target}' is a "
@@ -898,7 +948,16 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"Message: {message_text!r}"
                             ),
                             session_id=get_current_runtime_session_id(),
+                            **dossier_kwargs,
+                            enforce_dossier=True,
                         )
+                        if decision.dossier_error is not None:
+                            return _dossier_error_response(
+                                context_payload=route_context,
+                                request_id=notify_request_id,
+                                channel=channel,
+                                dossier_error=decision.dossier_error,
+                            )
                         if not decision.allowed:
                             raise ValueError(
                                 f"Delivery blocked: email target '{email_target}' is a "

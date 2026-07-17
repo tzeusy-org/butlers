@@ -2918,6 +2918,19 @@ export interface EntityRef {
   roles: string[];
 }
 
+/** Typed reference supplied with an approval decision dossier. */
+export interface ApprovalEvidence {
+  type: "fact" | "entity" | "url" | "text";
+  ref: string;
+  note: string;
+}
+
+export type ApprovalBlastRadius = "none" | "self" | "contact" | "external";
+export type ApprovalReversibility =
+  | "reversible"
+  | "compensable"
+  | "irreversible";
+
 export interface ApprovalAction {
   id: string;
   butler: string;
@@ -2934,7 +2947,9 @@ export interface ApprovalAction {
   approval_rule_id?: string | null;
   target_contact?: TargetContact | null;
   why?: string | null;
-  evidence?: string[];
+  evidence?: ApprovalEvidence[];
+  blast_radius?: ApprovalBlastRadius | null;
+  reversibility?: ApprovalReversibility | null;
   /**
    * True when the approved action was actually dispatched and executed
    * (status "executed"). False when it was approved but not yet run (e.g. no
@@ -2954,6 +2969,8 @@ export interface ApprovalSummary {
   created_at: string;
   expires_at?: string | null;
   why?: string | null;
+  blast_radius?: ApprovalBlastRadius | null;
+  reversibility?: ApprovalReversibility | null;
 }
 
 /**
@@ -2986,7 +3003,9 @@ export interface ApprovalDetail {
   created_at: string;
   expires_at?: string | null;
   why?: string | null;
-  evidence?: string[];
+  evidence?: ApprovalEvidence[];
+  blast_radius?: ApprovalBlastRadius | null;
+  reversibility?: ApprovalReversibility | null;
   proposed_action: {
     tool_name: string;
     tool_args: Record<string, unknown>;

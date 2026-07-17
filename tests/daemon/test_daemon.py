@@ -1623,6 +1623,136 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path) -> None:
     assert result3["error"]["class"] == "validation_error"
 
 
+async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path) -> None:
+    """Messenger receives and rechecks dossier metadata from a deferred envelope."""
+    import butlers.core.approvals_hooks as approval_hooks
+    from butlers.modules.approvals.email_guard import check_recipient
+
+    butler_dir = _make_butler_toml(
+        tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
+    patches = _patch_infra()
+    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    assert route_execute_fn is not None
+    telegram_module = next(module for module in daemon._modules if module.name == "telegram")
+    telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
+    non_owner = MagicMock(roles=["contact"])
+    standing_rule = MagicMock(id="rule-123")
+    match_rules = AsyncMock(return_value=standing_rule)
+    original_hook = approval_hooks._recipient_guard_hook
+    approval_hooks._recipient_guard_hook = check_recipient
+    try:
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=non_owner),
+            ),
+            patch("butlers.modules.approvals.rules.match_rules", new=match_rules),
+        ):
+            result = await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={
+                    "prompt": "Deliver.",
+                    "context": {
+                        "notify_request": {
+                            "schema_version": "notify.v1",
+                            "origin_butler": "health",
+                            "delivery": {
+                                "intent": "send",
+                                "channel": "telegram",
+                                "message": "Requested update.",
+                                "recipient": "900800700",
+                            },
+                            "decision_dossier": {
+                                "why": "The recipient asked for this update.",
+                                "evidence": [
+                                    {
+                                        "type": "text",
+                                        "ref": "request-900800700",
+                                        "note": "The original request.",
+                                    }
+                                ],
+                                "blast_radius": "contact",
+                                "reversibility": "compensable",
+                            },
+                        }
+                    },
+                },
+            )
+    finally:
+        approval_hooks._recipient_guard_hook = original_hook
+
+    assert result["status"] == "ok"
+    match_rules.assert_awaited_once()
+    telegram_module._send_message.assert_awaited_once()
+
+
+async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path: Path) -> None:
+    """A direct or legacy deferred envelope cannot park/deliver without why."""
+    import butlers.core.approvals_hooks as approval_hooks
+    from butlers.modules.approvals.email_guard import check_recipient
+
+    butler_dir = _make_butler_toml(
+        tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
+    patches = _patch_infra()
+    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    assert route_execute_fn is not None
+    telegram_module = next(module for module in daemon._modules if module.name == "telegram")
+    telegram_module._send_message = AsyncMock()
+    non_owner = MagicMock(roles=["contact"])
+    match_rules = AsyncMock(side_effect=AssertionError("rules must not be queried"))
+    original_hook = approval_hooks._recipient_guard_hook
+    approval_hooks._recipient_guard_hook = check_recipient
+    try:
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=non_owner),
+            ),
+            patch("butlers.modules.approvals.rules.match_rules", new=match_rules),
+        ):
+            result = await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={
+                    "prompt": "Deliver.",
+                    "context": {
+                        "notify_request": {
+                            "schema_version": "notify.v1",
+                            "origin_butler": "health",
+                            "delivery": {
+                                "intent": "send",
+                                "channel": "telegram",
+                                "message": "Undocumented update.",
+                                "recipient": "900800700",
+                            },
+                        }
+                    },
+                },
+            )
+    finally:
+        approval_hooks._recipient_guard_hook = original_hook
+
+    assert result["status"] == "error"
+    assert result["error"]["class"] == "validation_error"
+    assert result["error"]["retryable"] is True
+    assert "why is required" in result["error"]["message"]
+    notify_error = result["result"]["notify_response"]["error"]
+    assert notify_error["class"] == "validation_error"
+    assert notify_error["retryable"] is True
+    assert "why is required" in notify_error["message"]
+    match_rules.assert_not_awaited()
+    telegram_module._send_message.assert_not_awaited()
+    pending_inserts = [
+        call
+        for call in patches["mock_pool"].execute.await_args_list
+        if "INSERT INTO pending_actions" in call.args[0]
+    ]
+    assert pending_inserts == []
+
+
 # ---------------------------------------------------------------------------
 # Non-fatal module startup
 # ---------------------------------------------------------------------------

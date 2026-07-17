@@ -53,6 +53,17 @@ OWNER_TELEGRAM = "100200300"
 KNOWN_NON_OWNER_TELEGRAM = "900800700"
 UNKNOWN_TELEGRAM = "555555555"
 
+_NON_OWNER_DOSSIER = {
+    "_why": "The recipient needs this requested notification.",
+    "_evidence": [],
+}
+_ROUTE_NON_OWNER_DOSSIER = {
+    "why": "The recipient needs this requested notification.",
+    "evidence": [],
+    "blast_radius": "contact",
+    "reversibility": "compensable",
+}
+
 
 def _owner_contact() -> ResolvedContact:
     return ResolvedContact(
@@ -438,6 +449,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Your Google AI Pro plan has ended.",
                 recipient=HALLUCINATED_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (
@@ -463,6 +475,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Follow up on Nutrition Kitchen subscription",
                 recipient=UNKNOWN_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval"
@@ -512,6 +525,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Hello friend",
                 recipient=KNOWN_NON_OWNER_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (
@@ -555,6 +569,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Hello friend",
                 recipient=KNOWN_NON_OWNER_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "ok", (
@@ -598,6 +613,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Permitted message",
                 recipient=UNKNOWN_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "ok", (
@@ -626,6 +642,7 @@ class TestNotifyRecipientValidation:
                 channel="email",
                 message="Should be blocked",
                 recipient=UNKNOWN_EMAIL,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval"
@@ -765,6 +782,7 @@ class TestNotifyTelegramRecipientValidation:
                 channel="telegram",
                 message="Hello friend",
                 recipient=KNOWN_NON_OWNER_TELEGRAM,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (
@@ -810,6 +828,7 @@ class TestNotifyTelegramRecipientValidation:
                 channel="telegram",
                 message="Hello friend",
                 recipient=KNOWN_NON_OWNER_TELEGRAM,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "ok", (
@@ -843,6 +862,7 @@ class TestNotifyTelegramRecipientValidation:
                 channel="telegram",
                 message="Who are you",
                 recipient=UNKNOWN_TELEGRAM,
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval"
@@ -940,7 +960,13 @@ class TestMessengerApprovalGate:
 
         # Now call the gated tool with an unknown email
         tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(to=UNKNOWN_EMAIL, subject="Test", body="Hello")
+        result = await tool.fn(
+            to=UNKNOWN_EMAIL,
+            subject="Test",
+            body="Hello",
+            _why="The recipient requested this test delivery.",
+            _evidence=[],
+        )
 
         assert result["status"] == "pending_approval", (
             f"email_send_message to unknown address MUST be parked, got: {result}"
@@ -1001,6 +1027,8 @@ class TestMessengerApprovalGate:
             to="notification-thealbatrossfile@nlb.gov.sg",
             thread_id="thread-abc",
             body="I've recorded your booking",
+            _why="The recipient requested this booking confirmation.",
+            _evidence=[],
         )
 
         assert result["status"] == "pending_approval", (
@@ -1030,7 +1058,13 @@ class TestMessengerApprovalGate:
         await apply_approval_gates(mcp, config, pool)
 
         tool = await mcp.get_tool("email_send_message")
-        result = await tool.fn(to=KNOWN_NON_OWNER_EMAIL, subject="Hi", body="Hello friend")
+        result = await tool.fn(
+            to=KNOWN_NON_OWNER_EMAIL,
+            subject="Hi",
+            body="Hello friend",
+            _why="The recipient requested this update.",
+            _evidence=[],
+        )
 
         assert result["status"] == "pending_approval", (
             "Known non-owner WITHOUT a standing rule MUST be parked for approval"
@@ -1099,6 +1133,7 @@ class TestIncidentReplay:
                     "for March 14, 2026 at 6:30 PM SGT."
                 ),
                 recipient="jo@reallylesson.com",
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (
@@ -1141,6 +1176,8 @@ class TestIncidentReplay:
                 "I've recorded your Albatross File Exhibition booking "
                 "for March 14, 2026 at 6:30 PM SGT."
             ),
+            _why="The recipient requested this booking confirmation.",
+            _evidence=[],
         )
 
         assert result["status"] == "pending_approval", (
@@ -1206,6 +1243,7 @@ class TestEntityIdBypassFix:
                 channel="email",
                 message="Card transaction alert details requested",
                 entity_id=str(TEMP_ENTITY_ID),
+                **_NON_OWNER_DOSSIER,
             )
 
         assert result["status"] == "pending_approval", (
@@ -1297,6 +1335,7 @@ def _make_route_envelope(
     message: str = "Test message",
     origin_butler: str = "relationship",
     source_sender_identity: str = DBS_ALERT_EMAIL,
+    decision_dossier: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a route.v1 envelope with embedded notify.v1 request."""
     from butlers.core.utils import generate_uuid7_string
@@ -1314,6 +1353,8 @@ def _make_route_envelope(
     }
     if recipient and intent == "send":
         notify_request["delivery"]["recipient"] = recipient
+    if decision_dossier is not None:
+        notify_request["decision_dossier"] = decision_dossier
     if intent == "reply":
         notify_request["request_context"] = {
             "request_id": request_id,
@@ -1362,11 +1403,18 @@ class TestRouteExecuteApprovalGate:
             intent="reply",
             source_sender_identity=DBS_ALERT_EMAIL,
             message="I received the DBS Card Transaction Alert but the body was empty.",
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=None),
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1374,11 +1422,9 @@ class TestRouteExecuteApprovalGate:
             f"route.execute reply to non-owner email MUST be blocked, got: {result.get('status')}"
         )
         error_obj = result.get("error", {})
-        error_class = error_obj.get("class", "") if isinstance(error_obj, dict) else ""
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
-        assert error_class == "validation_error" or "blocked" in error_message.lower(), (
-            f"Error must be a validation_error about blocking: {result}"
-        )
+        assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
+        assert result["error"]["retryable"] is False
 
     async def test_send_to_owner_email_is_allowed(self, tmp_path: Path) -> None:
         """route.execute send to owner email → MUST be allowed through."""
@@ -1424,17 +1470,26 @@ class TestRouteExecuteApprovalGate:
             recipient=KNOWN_NON_OWNER_EMAIL,
             message="Hello friend",
             origin_butler="relationship",
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
 
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_non_owner_contact()),
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             result = await route_execute_fn(**envelope)
 
         assert result.get("status") == "error", (
             f"route.execute send to non-owner without standing rule MUST be blocked, got: {result}"
         )
+        assert "blocked" in result["error"]["message"].lower()
+        assert result["error"]["retryable"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1491,6 +1546,7 @@ class TestRouteExecuteTelegramApprovalGate:
             recipient=KNOWN_NON_OWNER_TELEGRAM,
             message="Hello friend",
             origin_butler="relationship",
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
 
         # Spy on the real delivery method to prove it is NEVER reached when blocked.
@@ -1516,6 +1572,13 @@ class TestRouteExecuteTelegramApprovalGate:
         error_obj = result.get("error", {})
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
         assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
+        assert result["error"]["retryable"] is False
+        pending_inserts = [
+            call
+            for call in daemon.db.pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        ]
+        assert len(pending_inserts) == 1
         send_spy.assert_not_awaited()
 
     async def test_send_to_owner_telegram_is_allowed(self, tmp_path: Path) -> None:
@@ -1588,6 +1651,7 @@ class TestRouteExecuteTelegramApprovalGate:
                             # Fallback target: a non-owner chat.
                             "recipient": KNOWN_NON_OWNER_TELEGRAM,
                         },
+                        "decision_dossier": _ROUTE_NON_OWNER_DOSSIER,
                         "request_context": {
                             "request_id": request_id,
                             "source_channel": "telegram_bot",
@@ -1703,12 +1767,19 @@ class TestDBSIncidentReplay:
                 "Please forward the full alert."
             ),
             origin_butler="relationship",
+            decision_dossier=_ROUTE_NON_OWNER_DOSSIER,
         )
 
         # DBS email resolves to a temp contact (no owner role, no standing rule)
-        with patch(
-            "butlers.identity.resolve_contact_by_channel",
-            new=AsyncMock(return_value=_temp_contact()),
+        with (
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_temp_contact()),
+            ),
+            patch(
+                "butlers.modules.approvals.rules.match_rules",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             result = await route_execute_fn(**envelope)
 
@@ -1717,3 +1788,4 @@ class TestDBSIncidentReplay:
             f"ibanking.alert@dbs.com is NOT an owner-associated email. "
             f"Got: {result}"
         )
+        assert "blocked" in result["error"]["message"].lower()

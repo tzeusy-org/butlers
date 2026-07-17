@@ -335,6 +335,8 @@ def _pending_action_to_api(
         target_contact=target_contact,
         why=action.why,
         evidence=action.evidence,
+        blast_radius=action.blast_radius,
+        reversibility=action.reversibility,
     )
 
 
@@ -359,6 +361,8 @@ def _pending_action_to_detail(
         expires_at=action.expires_at,
         why=action.why,
         evidence=action.evidence,
+        blast_radius=action.blast_radius,
+        reversibility=action.reversibility,
         proposed_action=proposed_action,
         status=action.status.value,
         decided_by=action.decided_by,
@@ -379,6 +383,8 @@ def _pending_action_to_summary(action: PendingAction, butler_name: str) -> Appro
         created_at=action.requested_at,
         expires_at=action.expires_at,
         why=action.why,
+        blast_radius=action.blast_radius,
+        reversibility=action.reversibility,
     )
 
 
