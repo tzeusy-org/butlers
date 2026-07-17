@@ -375,6 +375,7 @@ def owner_connector() -> TelegramUserClientConnector:
         provider="telegram",
         channel="telegram_user_client",
         endpoint_identity=_OWNER_ENDPOINT,
+        backfill_window_h=24,
     )
     conn = TelegramUserClientConnector(config, db_pool=AsyncMock(), cursor_pool=MagicMock())
     return conn
@@ -451,6 +452,62 @@ async def test_missing_message_date_does_not_record(
         await owner_connector._record_owner_outbound_if_applicable(msg)
 
     mock_record.assert_not_awaited()
+
+
+async def test_backfill_records_owner_points_with_live_replay_dedup_and_no_content(
+    owner_connector: TelegramUserClientConnector,
+) -> None:
+    """Startup replay preserves the live recorder's owner/privacy/dedup contract."""
+    owner_message = _make_message(
+        msg_id=42,
+        chat_id=100,
+        sender_id=999,
+        text="private replay content must never reach the point event",
+    )
+    owner_message.date = datetime(2026, 7, 5, 10, 0, 0, tzinfo=UTC)
+    non_owner_message = _make_message(
+        msg_id=43,
+        chat_id=100,
+        sender_id=111,
+        text="other participant content must not create an owner point",
+    )
+    non_owner_message.date = owner_message.date
+
+    async def iter_dialogs():
+        yield SimpleNamespace(id=100)
+
+    async def iter_messages(_dialog, **_kwargs):
+        yield owner_message
+        yield non_owner_message
+
+    telegram_client = MagicMock()
+    telegram_client.iter_dialogs = iter_dialogs
+    telegram_client.iter_messages = iter_messages
+    owner_connector._telegram_client = telegram_client
+    owner_connector._process_message = AsyncMock()  # type: ignore[method-assign]
+
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(side_effect=["live-row", None])
+    owner_connector._db_pool = pool
+
+    # A live observation records the event first.  The replay of the same
+    # message must use the same hashed key, so SQL ON CONFLICT keeps one row.
+    await owner_connector._record_owner_outbound_if_applicable(owner_message)
+    await owner_connector._perform_backfill()
+
+    assert owner_connector._process_message.await_count == 2
+    assert pool.fetchval.await_count == 2
+    live_params = pool.fetchval.await_args_list[0].args[1:]
+    replay_params = pool.fetchval.await_args_list[1].args[1:]
+    assert live_params == replay_params
+    assert len(replay_params) == 4
+    idempotency_key, channel, endpoint_identity, occurred_at = replay_params
+    assert "private replay content" not in idempotency_key
+    assert "other participant content" not in idempotency_key
+    assert channel == "telegram_user_client"
+    assert endpoint_identity == _OWNER_ENDPOINT
+    assert occurred_at == owner_message.date
+    assert "ON CONFLICT (idempotency_key) DO NOTHING" in pool.fetchval.await_args.args[0]
 
 
 # ---------------------------------------------------------------------------

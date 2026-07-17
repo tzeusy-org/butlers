@@ -14,6 +14,7 @@ Verifies:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -591,6 +592,48 @@ async def test_missing_raw_field_does_not_record(
         await owner_connector._record_owner_outbound_if_applicable(event, "chat-abc")
 
     mock_record.assert_not_awaited()
+
+
+async def test_history_replay_sse_event_uses_owner_metadata_dedup_contract() -> None:
+    """A replayed bridge event takes the same privacy-safe path as a live event."""
+    config = WhatsAppUserClientConnectorConfig(
+        switchboard_mcp_url="http://localhost:41100/sse",
+        provider="whatsapp",
+        channel="whatsapp_user_client",
+        endpoint_identity=_ENDPOINT,
+    )
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(side_effect=["live-row", None])
+    connector = WhatsAppUserClientConnector(config, db_pool=pool, cursor_pool=MagicMock())
+    connector._buffer_event = AsyncMock()  # type: ignore[method-assign]
+
+    event: dict[str, Any] = {
+        "message_id": "msg-1",
+        "chat_jid": "chat-abc",
+        "sender_jid": "owner-jid",
+        "timestamp": 1751709600,
+        "type": "text",
+        "text": "private replay content must never reach the point event",
+        "raw": {"is_from_me": True, "is_group": False},
+    }
+
+    await connector._handle_bridge_event(event)
+    # A bridge history replay returns through the normal SSE stream, so the
+    # connector receives the same event shape a second time here.
+    await connector._handle_bridge_event(event)
+
+    assert connector._buffer_event.await_count == 2
+    assert pool.fetchval.await_count == 2
+    live_params = pool.fetchval.await_args_list[0].args[1:]
+    replay_params = pool.fetchval.await_args_list[1].args[1:]
+    assert live_params == replay_params
+    assert len(replay_params) == 4
+    idempotency_key, channel, endpoint_identity, occurred_at = replay_params
+    assert "private replay content" not in idempotency_key
+    assert channel == "whatsapp_user_client"
+    assert endpoint_identity == _ENDPOINT
+    assert occurred_at == datetime.fromtimestamp(1751709600, UTC)
+    assert "ON CONFLICT (idempotency_key) DO NOTHING" in pool.fetchval.await_args.args[0]
 
 
 # ---------------------------------------------------------------------------

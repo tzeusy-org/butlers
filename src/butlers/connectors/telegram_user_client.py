@@ -1988,6 +1988,11 @@ class TelegramUserClientConnector:
                         if self._last_message_id and message.id <= self._last_message_id:
                             continue
 
+                        # Backfill bypasses the live NewMessage handler, where
+                        # owner-outbound activity is normally recorded. Record
+                        # it here as well, using the same per-message owner
+                        # check and hashed replay-safe dedup key.
+                        await self._record_owner_outbound_if_applicable(message)
                         await self._process_message(message)
                         backfill_count += 1
 
