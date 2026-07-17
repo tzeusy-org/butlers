@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -144,5 +145,98 @@ func TestServer_Backfill_BoundsAndDeduplicatesLiveHandoffBeforeFirstSubscription
 	})
 	if got := len(srv.pendingReplay); got != 0 {
 		t.Fatalf("later live event was queued after first subscriber drain: got %d want 0", got)
+	}
+}
+
+func TestServer_Backfill_QueuesLivePublishBetweenSnapshotAndHandoffExactlyOnce(t *testing.T) {
+	srv := NewServer("/tmp/test-wa-bridge-snapshot-handoff.sock", func() {})
+	srv.SetState(StateConnected, "+15551234567")
+	srv.SetLivenessFn(func() (bool, bool) { return true, true })
+
+	now := time.Now()
+	historical := &bridgeEvents.BridgeEvent{
+		Type:      "text",
+		MessageID: "snapshot-message",
+		ChatJID:   "chat@s.whatsapp.net",
+		Timestamp: now.Add(-30 * time.Minute).Unix(),
+	}
+	srv.RecordHistoryEvent(historical)
+
+	snapshotTaken := make(chan struct{})
+	releaseHandoff := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseHandoff:
+		default:
+			close(releaseHandoff)
+		}
+	}()
+	srv.afterBackfillSnapshot = func() {
+		close(snapshotTaken)
+		<-releaseHandoff
+	}
+
+	acknowledgement := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/backfill",
+		strings.NewReader(`{"schema_version":"whatsapp.backfill.v1","window_hours":1}`),
+	)
+	backfillDone := make(chan struct{})
+	go func() {
+		srv.handleBackfill(acknowledgement, request)
+		close(backfillDone)
+	}()
+
+	select {
+	case <-snapshotTaken:
+	case <-time.After(time.Second):
+		t.Fatal("backfill did not reach the snapshot barrier")
+	}
+
+	// Pause at the former snapshot-to-handoff seam. The corrected implementation
+	// has already installed the matching pending replay and handoff state before
+	// this barrier releases the live publisher.
+	live := &bridgeEvents.BridgeEvent{
+		Type:      "text",
+		MessageID: "between-snapshot-and-handoff",
+		ChatJID:   "chat@s.whatsapp.net",
+		Timestamp: now.Unix(),
+	}
+	// A repeated HistorySync cannot repair a lost live event: the replay cache
+	// deduplicates it before RecordHistoryEvent can enqueue it again.
+	srv.PublishEvent(live)
+	srv.RecordHistoryEvent(live)
+	close(releaseHandoff)
+	<-backfillDone
+	if acknowledgement.Code != http.StatusOK {
+		t.Fatalf("POST /backfill status: got %d want %d", acknowledgement.Code, http.StatusOK)
+	}
+
+	drainCtx, cancelDrain := context.WithCancel(context.Background())
+	cancelDrain()
+	drainRequest := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(drainCtx)
+	drainRecorder := httptest.NewRecorder()
+	srv.handleEvents(drainRecorder, drainRequest)
+
+	var messageIDs []string
+	for _, line := range strings.Split(drainRecorder.Body.String(), "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event struct {
+			MessageID string `json:"message_id"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			t.Fatalf("decode SSE event: %v", err)
+		}
+		messageIDs = append(messageIDs, event.MessageID)
+	}
+	wantMessageIDs := []string{
+		"snapshot-message",
+		"between-snapshot-and-handoff",
+	}
+	if !slices.Equal(messageIDs, wantMessageIDs) {
+		t.Fatalf("first SSE replay: got %v want %v", messageIDs, wantMessageIDs)
 	}
 }

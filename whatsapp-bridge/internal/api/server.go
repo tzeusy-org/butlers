@@ -75,6 +75,9 @@ type Server struct {
 	// normal live messages. It is consumed by the first subscriber drain, so
 	// later subscribers never receive a second replay of those live events.
 	liveHandoffArmed bool
+	// afterBackfillSnapshot is an internal-test barrier invoked after a
+	// backfill request selects its snapshot. It is nil in production.
+	afterBackfillSnapshot func()
 
 	// Pairing state
 	pairMu     sync.Mutex
@@ -325,6 +328,15 @@ func (s *Server) matchesRequestedBackfill(evt *bridgeEvents.BridgeEvent) bool {
 
 func (s *Server) requestBackfill(windowHours int) []*bridgeEvents.BridgeEvent {
 	cutoff := time.Now().Add(-time.Duration(windowHours) * time.Hour)
+
+	// The request boundary must be linearized against both first-SSE
+	// registration and live publication. In particular, do not expose a
+	// snapshot before its matching pending replay and live handoff state exist:
+	// a live event in that seam could otherwise be in neither path. Keep the
+	// established lock order (subsMu -> replayMu) so handleEvents and live
+	// publication make the same all-or-nothing choice.
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
 	s.replayMu.Lock()
 	defer s.replayMu.Unlock()
 	s.backfillCutoff = &cutoff
@@ -335,6 +347,26 @@ func (s *Server) requestBackfill(windowHours int) []*bridgeEvents.BridgeEvent {
 			replay = append(replay, cloneBridgeEvent(evt))
 		}
 	}
+
+	if len(s.subscribers) == 0 {
+		s.appendPendingReplayLocked(replay)
+		s.liveHandoffArmed = true
+		return replay
+	}
+
+	// A current subscriber receives the snapshot directly while subsMu is held,
+	// so any racing PublishEvent is ordered after this replay instead of being
+	// queued for a later subscriber.
+	for ch := range s.subscribers {
+		for _, evt := range replay {
+			select {
+			case ch <- evt:
+			default:
+				// Preserve the existing slow-consumer behavior for replay frames.
+			}
+		}
+	}
+	s.liveHandoffArmed = false
 	return replay
 }
 
@@ -384,17 +416,6 @@ func (s *Server) appendPendingReplayLocked(events []*bridgeEvents.BridgeEvent) {
 		s.pendingReplay = append(s.pendingReplay, cloneBridgeEvent(evt))
 		s.pendingReplayIDs[key] = struct{}{}
 	}
-}
-
-// armLiveHandoff enables one bounded handoff only when no subscriber was
-// already present at the accepted backfill boundary. The first later /events
-// connection consumes the flag and drains the shared pending queue.
-func (s *Server) armLiveHandoff() {
-	s.subsMu.Lock()
-	defer s.subsMu.Unlock()
-	s.replayMu.Lock()
-	s.liveHandoffArmed = len(s.subscribers) == 0
-	s.replayMu.Unlock()
 }
 
 func cloneBridgeEvent(evt *bridgeEvents.BridgeEvent) *bridgeEvents.BridgeEvent {
@@ -501,8 +522,9 @@ func (s *Server) handleBackfill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	replay := s.requestBackfill(req.WindowHours)
-	s.enqueueReplay(replay)
-	s.armLiveHandoff()
+	if s.afterBackfillSnapshot != nil {
+		s.afterBackfillSnapshot()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"schema_version":     backfillSchemaVersion,
