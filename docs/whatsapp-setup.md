@@ -361,7 +361,7 @@ hours. A hard ban results in permanent account suspension.
 | `WA_FLUSH_INTERVAL_S` | `600` | Seconds between per-chat buffer flushes |
 | `WA_BUFFER_MAX_MESSAGES` | `50` | Max buffered messages before force-flush |
 | `CONNECTOR_HEALTH_PORT` | `40082` | Port for the connector health endpoint |
-| `CONNECTOR_BACKFILL_WINDOW_H` | — | Backfill window in hours on startup |
+| `CONNECTOR_BACKFILL_WINDOW_H` | — | Optional 1-168 hour replay window for already-received bridge history on startup |
 
 ### butler.toml (Messenger butler)
 

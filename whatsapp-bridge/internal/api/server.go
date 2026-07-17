@@ -1,6 +1,6 @@
 // Package api implements the Unix socket HTTP server for the WhatsApp bridge.
-// It exposes SSE /events, POST /send, GET /status, POST /disconnect,
-// POST /pair/start, and GET /pair/poll endpoints.
+// It exposes SSE /events, POST /send, POST /backfill, GET /status,
+// POST /disconnect, POST /pair/start, and GET /pair/poll endpoints.
 package api
 
 import (
@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/skip2/go-qrcode"
 	bridgeEvents "github.com/butlers/whatsapp-bridge/internal/events"
+	"github.com/skip2/go-qrcode"
 )
 
 // BridgeState represents the current connection state of the bridge.
@@ -28,6 +28,13 @@ const (
 	StateConnecting   BridgeState = "connecting"
 	StateDisconnected BridgeState = "disconnected"
 	StatePairRequired BridgeState = "pair_required"
+)
+
+const (
+	backfillSchemaVersion  = "whatsapp.backfill.v1"
+	maxBackfillWindowHours = 24 * 7
+	maxReplayEvents        = 1024
+	sseSubscriberBuffer    = maxReplayEvents + 32
 )
 
 // PairStatus is the status for pair/poll responses.
@@ -54,6 +61,28 @@ type Server struct {
 	// SSE subscriber management
 	subsMu      sync.Mutex
 	subscribers map[chan *bridgeEvents.BridgeEvent]struct{}
+
+	// Replay state is deliberately in-memory and bounded. The bridge only
+	// replays normalised message events it has already received; it never asks
+	// WhatsApp for history as a consequence of an HTTP request.
+	replayMu         sync.Mutex
+	replayEvents     []*bridgeEvents.BridgeEvent
+	replayEventIDs   map[string]struct{}
+	pendingReplay    []*bridgeEvents.BridgeEvent
+	pendingReplayIDs map[string]struct{}
+	backfillCutoff   *time.Time
+	// liveHandoffArmed closes the accepted-/backfill-to-first-/events gap for
+	// normal live messages. It is consumed by the first subscriber drain, so
+	// later subscribers never receive a second replay of those live events.
+	liveHandoffArmed bool
+	// afterBackfillSnapshot is an internal-test barrier invoked while the
+	// subscriber and replay transition locks are held, immediately after a
+	// backfill request selects its snapshot and before it hands that snapshot
+	// off. It is nil in production.
+	afterBackfillSnapshot func()
+	// beforeReplayRecordLock is an internal-test hook invoked immediately before
+	// recordReplayEvent calls replayMu.Lock. It is nil in production.
+	beforeReplayRecordLock func()
 
 	// Pairing state
 	pairMu     sync.Mutex
@@ -84,15 +113,18 @@ type Server struct {
 // NewServer creates a new API server but does not start it.
 func NewServer(socketPath string, shutdownFn func()) *Server {
 	s := &Server{
-		socketPath:  socketPath,
-		state:       StateConnecting,
-		startTime:   time.Now(),
-		subscribers: make(map[chan *bridgeEvents.BridgeEvent]struct{}),
-		shutdownFn:  shutdownFn,
+		socketPath:       socketPath,
+		state:            StateConnecting,
+		startTime:        time.Now(),
+		subscribers:      make(map[chan *bridgeEvents.BridgeEvent]struct{}),
+		replayEventIDs:   make(map[string]struct{}),
+		pendingReplayIDs: make(map[string]struct{}),
+		shutdownFn:       shutdownFn,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /events", s.handleEvents)
 	mux.HandleFunc("POST /send", s.handleSend)
+	mux.HandleFunc("POST /backfill", s.handleBackfill)
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("POST /disconnect", s.handleDisconnect)
 	mux.HandleFunc("POST /pair/start", s.handlePairStart)
@@ -154,12 +186,24 @@ func (s *Server) SetState(state BridgeState, phone string) {
 
 // PublishEvent sends an event to all SSE subscribers.
 func (s *Server) PublishEvent(evt *bridgeEvents.BridgeEvent) {
+	recorded := s.recordReplayEvent(evt)
+
 	s.mu.Lock()
 	now := time.Now()
 	s.lastEventAt = &now
 	s.mu.Unlock()
 
-	s.fanout(evt)
+	s.publishLiveEvent(evt, recorded)
+}
+
+// RecordHistoryEvent retains a normalised history-sync message for a later,
+// explicit /backfill request. It intentionally does not emit the event live:
+// consuming historical content requires the connector to opt in first.
+func (s *Server) RecordHistoryEvent(evt *bridgeEvents.BridgeEvent) {
+	if !s.recordReplayEvent(evt) || !s.matchesRequestedBackfill(evt) {
+		return
+	}
+	s.enqueueReplay([]*bridgeEvents.BridgeEvent{evt})
 }
 
 // publishKeepalive fans a keepalive frame out to subscribers WITHOUT advancing
@@ -174,12 +218,40 @@ func (s *Server) publishKeepalive(evt *bridgeEvents.BridgeEvent) {
 func (s *Server) fanout(evt *bridgeEvents.BridgeEvent) {
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
+	s.fanoutLocked(evt)
+}
+
+// fanoutLocked delivers an event while subsMu is held.
+func (s *Server) fanoutLocked(evt *bridgeEvents.BridgeEvent) {
 	for ch := range s.subscribers {
 		select {
 		case ch <- evt:
 		default:
 			// Subscriber is slow; drop the event rather than blocking.
 		}
+	}
+}
+
+// publishLiveEvent atomically chooses between immediate fanout and the
+// one-shot first-subscriber handoff. Holding subsMu across the choice prevents
+// a subscriber from both draining a queued event and receiving it through
+// ordinary fanout.
+func (s *Server) publishLiveEvent(evt *bridgeEvents.BridgeEvent, recorded bool) {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+
+	if len(s.subscribers) != 0 {
+		s.fanoutLocked(evt)
+		return
+	}
+	if !recorded {
+		return
+	}
+
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
+	if s.liveHandoffArmed {
+		s.appendPendingReplayLocked([]*bridgeEvents.BridgeEvent{evt})
 	}
 }
 
@@ -224,6 +296,149 @@ func (s *Server) SetLivenessFn(fn func() (connected bool, loggedIn bool)) {
 	s.livenessFn = fn
 }
 
+// recordReplayEvent adds a valid, normalised message to the bounded replay
+// cache. Stable chat/message identifiers are used only to avoid replay-buffer
+// duplication; downstream Switchboard idempotency remains authoritative.
+func (s *Server) recordReplayEvent(evt *bridgeEvents.BridgeEvent) bool {
+	if evt == nil || evt.MessageID == "" || evt.ChatJID == "" || evt.Timestamp <= 0 {
+		return false
+	}
+
+	key := replayEventKey(evt)
+	if s.beforeReplayRecordLock != nil {
+		s.beforeReplayRecordLock()
+	}
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
+	if _, exists := s.replayEventIDs[key]; exists {
+		return false
+	}
+
+	s.replayEvents = append(s.replayEvents, cloneBridgeEvent(evt))
+	s.replayEventIDs[key] = struct{}{}
+	if len(s.replayEvents) > maxReplayEvents {
+		evicted := s.replayEvents[0]
+		delete(s.replayEventIDs, evicted.ChatJID+"\x00"+evicted.MessageID)
+		s.replayEvents = s.replayEvents[1:]
+	}
+	return true
+}
+
+func replayEventKey(evt *bridgeEvents.BridgeEvent) string {
+	return evt.ChatJID + "\x00" + evt.MessageID
+}
+
+func (s *Server) matchesRequestedBackfill(evt *bridgeEvents.BridgeEvent) bool {
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
+	return s.backfillCutoff != nil && evt.Timestamp >= s.backfillCutoff.Unix()
+}
+
+func (s *Server) requestBackfill(windowHours int) []*bridgeEvents.BridgeEvent {
+	cutoff := time.Now().Add(-time.Duration(windowHours) * time.Hour)
+
+	// The request boundary must be linearized against both first-SSE
+	// registration and live publication. In particular, do not expose a
+	// snapshot before its matching pending replay and live handoff state exist:
+	// a live event in that seam could otherwise be in neither path. Keep the
+	// established lock order (subsMu -> replayMu) so handleEvents and live
+	// publication make the same all-or-nothing choice.
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
+	s.backfillCutoff = &cutoff
+
+	replay := make([]*bridgeEvents.BridgeEvent, 0, len(s.replayEvents))
+	for _, evt := range s.replayEvents {
+		if evt.Timestamp >= cutoff.Unix() {
+			replay = append(replay, cloneBridgeEvent(evt))
+		}
+	}
+	if s.afterBackfillSnapshot != nil {
+		s.afterBackfillSnapshot()
+	}
+
+	if len(s.subscribers) == 0 {
+		s.appendPendingReplayLocked(replay)
+		s.liveHandoffArmed = true
+		return replay
+	}
+
+	// A current subscriber receives the snapshot directly while subsMu is held,
+	// so any racing PublishEvent is ordered after this replay instead of being
+	// queued for a later subscriber.
+	for ch := range s.subscribers {
+		for _, evt := range replay {
+			select {
+			case ch <- evt:
+			default:
+				// Preserve the existing slow-consumer behavior for replay frames.
+			}
+		}
+	}
+	s.liveHandoffArmed = false
+	return replay
+}
+
+// enqueueReplay sends replay events to current SSE consumers. If the connector
+// has requested replay before it subscribes, the events are held until that
+// first subscription is established.
+func (s *Server) enqueueReplay(events []*bridgeEvents.BridgeEvent) {
+	if len(events) == 0 {
+		return
+	}
+
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	if len(s.subscribers) == 0 {
+		s.replayMu.Lock()
+		s.appendPendingReplayLocked(events)
+		s.replayMu.Unlock()
+		return
+	}
+
+	for ch := range s.subscribers {
+		for _, evt := range events {
+			select {
+			case ch <- evt:
+			default:
+				// Preserve the existing slow-consumer behavior for replay frames.
+			}
+		}
+	}
+}
+
+// appendPendingReplayLocked adds valid replay or live-handoff events while
+// replayMu is held. The shared cap and identity map preserve the existing
+// first-subscriber queue bounds and deduplication semantics.
+func (s *Server) appendPendingReplayLocked(events []*bridgeEvents.BridgeEvent) {
+	for _, evt := range events {
+		if evt == nil || evt.MessageID == "" || evt.ChatJID == "" {
+			continue
+		}
+		key := replayEventKey(evt)
+		if _, exists := s.pendingReplayIDs[key]; exists {
+			continue
+		}
+		if len(s.pendingReplay) >= maxReplayEvents {
+			break
+		}
+		s.pendingReplay = append(s.pendingReplay, cloneBridgeEvent(evt))
+		s.pendingReplayIDs[key] = struct{}{}
+	}
+}
+
+func cloneBridgeEvent(evt *bridgeEvents.BridgeEvent) *bridgeEvents.BridgeEvent {
+	if evt == nil {
+		return nil
+	}
+	clone := *evt
+	clone.Content = append([]byte(nil), evt.Content...)
+	clone.Raw = append([]byte(nil), evt.Raw...)
+	return &clone
+}
+
 // ------------------------------------------------------------------
 // Handlers
 // ------------------------------------------------------------------
@@ -241,9 +456,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch := make(chan *bridgeEvents.BridgeEvent, 32)
+	// A complete bounded replay must fit alongside the ordinary live-event
+	// allowance; otherwise a request from an already-subscribed connector could
+	// silently lose frames to the normal slow-consumer drop policy.
+	ch := make(chan *bridgeEvents.BridgeEvent, sseSubscriberBuffer)
 	s.subsMu.Lock()
 	s.subscribers[ch] = struct{}{}
+	s.replayMu.Lock()
+	pendingReplay := s.pendingReplay
+	s.pendingReplay = nil
+	s.pendingReplayIDs = make(map[string]struct{})
+	s.liveHandoffArmed = false
+	s.replayMu.Unlock()
 	s.subsMu.Unlock()
 
 	defer func() {
@@ -251,6 +475,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		delete(s.subscribers, ch)
 		s.subsMu.Unlock()
 	}()
+
+	for _, evt := range pendingReplay {
+		writeSSEEvent(w, evt)
+		flusher.Flush()
+	}
 
 	for {
 		select {
@@ -264,6 +493,59 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// handleBackfill schedules already-received normalised history for replay over
+// /events. The owner-only Unix socket is the authentication boundary; the
+// connected/logged-in checks additionally prevent replay from a stale session.
+func (s *Server) handleBackfill(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	state := s.state
+	s.mu.RUnlock()
+	connected := state == StateConnected
+	loggedIn := state == StateConnected
+	if s.livenessFn != nil {
+		connected, loggedIn = s.livenessFn()
+	}
+	if !connected || !loggedIn {
+		writeBackfillError(w, http.StatusServiceUnavailable, "not connected")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024)
+	var req struct {
+		SchemaVersion string `json:"schema_version"`
+		WindowHours   int    `json:"window_hours"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeBackfillError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.SchemaVersion != backfillSchemaVersion {
+		writeBackfillError(w, http.StatusBadRequest, "unsupported schema_version")
+		return
+	}
+	if req.WindowHours < 1 || req.WindowHours > maxBackfillWindowHours {
+		writeBackfillError(w, http.StatusBadRequest, "window_hours must be between 1 and 168")
+		return
+	}
+
+	replay := s.requestBackfill(req.WindowHours)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"schema_version":     backfillSchemaVersion,
+		"status":             "accepted",
+		"window_hours":       req.WindowHours,
+		"replay_event_count": len(replay),
+	})
+}
+
+func writeBackfillError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
 // handleSend relays an outbound message via the whatsmeow send function injected
