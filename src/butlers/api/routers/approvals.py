@@ -226,6 +226,7 @@ class _DecisionMemorySettings:
     """Static configuration the dashboard needs for a direct memory write."""
 
     memory_schema: str | None
+    embedding_model: str
     tool_metadata: dict[str, ToolMeta]
 
 
@@ -235,12 +236,14 @@ def _decision_memory_settings_for(butler_name: str) -> _DecisionMemorySettings |
     try:
         from butlers.api.deps import _DEFAULT_ROSTER_DIR
         from butlers.config import load_config
+        from butlers.modules.memory import MemoryModuleConfig
         from butlers.modules.registry import default_registry
 
         config = load_config(_DEFAULT_ROSTER_DIR / butler_name)
         memory_config = config.modules.get("memory")
         if not isinstance(memory_config, dict):
             return None
+        validated_memory_config = MemoryModuleConfig.model_validate(memory_config)
 
         tool_metadata: dict[str, ToolMeta] = {}
         configured_modules = set(config.modules)
@@ -256,10 +259,11 @@ def _decision_memory_settings_for(butler_name: str) -> _DecisionMemorySettings |
                     exc_info=True,
                 )
 
-        raw_schema = memory_config.get("memory_schema")
+        raw_schema = validated_memory_config.memory_schema
         memory_schema = raw_schema.strip() if isinstance(raw_schema, str) else None
         return _DecisionMemorySettings(
             memory_schema=memory_schema or None,
+            embedding_model=validated_memory_config.embedding_model,
             tool_metadata=tool_metadata,
         )
     except Exception:  # noqa: BLE001 -- direct memory writeback is fail-open
@@ -297,7 +301,7 @@ def _decision_memory_writer_for(
     def _embedding_engine_provider() -> Any:
         from butlers.modules.memory.tools import get_embedding_engine
 
-        return get_embedding_engine()
+        return get_embedding_engine(settings.embedding_model)
 
     return DecisionMemoryWriter(
         butler_name=butler_name,
