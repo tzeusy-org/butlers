@@ -189,21 +189,23 @@ def format_findings(findings: list[Finding]) -> str:
 def iter_commit_messages(commit_range: str, cwd: Path | None = None) -> dict[str, str]:
     """Return {"commit <short-sha>": full message} for every commit in commit_range."""
     proc = subprocess.run(
-        ["git", "log", "--format=%H%x1f%B%x1e", commit_range],
+        ["git", "log", "--format=%H", commit_range],
         cwd=cwd,
         capture_output=True,
         check=True,
         text=True,
     )
     out: dict[str, str] = {}
-    for record in proc.stdout.split("\x1e"):
-        record = record.strip("\n")
-        if not record:
-            continue
-        sha, _, body = record.partition("\x1f")
-        if not sha:
-            continue
-        out[f"commit {sha[:12]}"] = body
+    for sha in proc.stdout.splitlines():
+        # Commit bodies can contain arbitrary control bytes, so retrieve each
+        # one separately instead of framing bodies with an in-band delimiter.
+        body_proc = subprocess.run(
+            ["git", "show", "-s", "--format=%B", sha],
+            cwd=cwd,
+            capture_output=True,
+            check=True,
+        )
+        out[f"commit {sha[:12]}"] = body_proc.stdout.decode("utf-8", errors="surrogateescape")
     return out
 
 

@@ -284,6 +284,23 @@ def test_main_commit_range_only_exempts_exact_claude_session_trailer(
         assert "clean" in capsys.readouterr().out.lower()
 
 
+def test_main_rejects_session_url_after_embedded_record_separator_in_commit_range(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _init_repo(tmp_path)
+    base_sha = _commit(tmp_path, "chore: base commit", "a.txt")
+    head_sha = _commit(
+        tmp_path,
+        f"fix: do not split commit bodies\n\n\x1ehidden {_CLAUDE_EXAMPLE_URL}\n",
+        "b.txt",
+    )
+
+    exit_code = slg.main(["--commit-range", f"{base_sha}..{head_sha}", "--repo", str(tmp_path)])
+
+    assert exit_code == 1
+    assert "claude-code-session-url" in capsys.readouterr().out
+
+
 def test_main_rejects_claude_session_after_git_divider_in_commit_range(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
