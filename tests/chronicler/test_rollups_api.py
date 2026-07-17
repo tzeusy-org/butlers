@@ -2,9 +2,9 @@
 distillation bead 5, design doc §6.5).
 
 Mocked-pool tests: the endpoint's storage calls
-(``list_daily_rollups_range``/``list_daily_rollup_flags_range``) are
-monkeypatched directly on the dynamically-loaded router module, so these
-tests exercise parameter validation, per-day status derivation
+(``list_daily_rollups_range``/``list_daily_rollup_flags_range``) are scoped
+with pytest's ``monkeypatch`` fixture on the dynamically-loaded router module,
+so these tests exercise parameter validation, per-day status derivation
 (``materialized``/``not_yet_materialized``/``unknown``), the
 ``feeder_dark``-marks-lane-unavailable cross-reference, and the
 ``rollups_source_error`` degraded-envelope flag without a real database.
@@ -45,6 +45,7 @@ def _find_chronicler_router_module(app: Any) -> Any:
 
 
 def _build_app(
+    monkeypatch: pytest.MonkeyPatch,
     *,
     rollups: list[DailyRollup] | None = None,
     flags: list[DailyRollupFlag] | None = None,
@@ -52,10 +53,10 @@ def _build_app(
 ):
     """Wire a FastAPI test app with the range-query storage calls stubbed.
 
-    Patches the names directly on the router module's namespace (it imports
-    ``list_daily_rollups_range``/``list_daily_rollup_flags_range`` by value
-    at module load time), rather than mocking ``pool.fetch`` — simpler than
-    replicating asyncpg Record mocking for two distinct queries.
+    Scopes patches of the router module's imported names with ``monkeypatch``
+    (router discovery caches that module across tests), rather than mocking
+    ``pool.fetch`` — simpler than replicating asyncpg Record mocking for two
+    distinct queries.
     """
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = MagicMock()
@@ -74,8 +75,8 @@ def _build_app(
             raise RuntimeError("simulated query failure")
         return flags or []
 
-    router_module.list_daily_rollups_range = fake_rollups_range
-    router_module.list_daily_rollup_flags_range = fake_flags_range
+    monkeypatch.setattr(router_module, "list_daily_rollups_range", fake_rollups_range)
+    monkeypatch.setattr(router_module, "list_daily_rollup_flags_range", fake_flags_range)
 
     return app
 
@@ -134,8 +135,8 @@ _ALL_LANES = ("butler_ops", "eat", "exercise", "play", "rest", "sleep", "social"
 # ---------------------------------------------------------------------------
 
 
-async def test_no_params_returns_400():
-    app = _build_app()
+async def test_no_params_returns_400(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch)
     resp = await _get(app, {})
     assert resp.status_code == 400
     body = resp.json()
@@ -143,8 +144,8 @@ async def test_no_params_returns_400():
     assert body["error"]["butler"] == "chronicler"
 
 
-async def test_date_and_range_conflict_returns_400():
-    app = _build_app()
+async def test_date_and_range_conflict_returns_400(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch)
     resp = await _get(
         app, {"date": "2026-07-05", "start_date": "2026-07-01", "end_date": "2026-07-05"}
     )
@@ -152,36 +153,36 @@ async def test_date_and_range_conflict_returns_400():
     assert resp.json()["error"]["code"] == "conflicting_parameters"
 
 
-async def test_start_date_without_end_date_returns_400():
-    app = _build_app()
+async def test_start_date_without_end_date_returns_400(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch)
     resp = await _get(app, {"start_date": "2026-07-01"})
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "missing_parameter"
 
 
-async def test_end_date_without_start_date_returns_400():
-    app = _build_app()
+async def test_end_date_without_start_date_returns_400(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch)
     resp = await _get(app, {"end_date": "2026-07-05"})
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "missing_parameter"
 
 
-async def test_end_before_start_returns_400():
-    app = _build_app()
+async def test_end_before_start_returns_400(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch)
     resp = await _get(app, {"start_date": "2026-07-05", "end_date": "2026-07-01"})
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "invalid_time_range"
 
 
-async def test_range_too_large_returns_400():
-    app = _build_app()
+async def test_range_too_large_returns_400(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch)
     resp = await _get(app, {"start_date": "2026-01-01", "end_date": "2026-12-31"})
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "range_too_large"
 
 
-async def test_range_at_cap_is_accepted():
-    app = _build_app()
+async def test_range_at_cap_is_accepted(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch)
     resp = await _get(app, {"start_date": "2026-01-01", "end_date": "2026-04-02"})  # 92 days
     assert resp.status_code == 200
 
@@ -191,8 +192,8 @@ async def test_range_at_cap_is_accepted():
 # ---------------------------------------------------------------------------
 
 
-async def test_absent_day_is_not_yet_materialized_not_degraded():
-    app = _build_app(rollups=[], flags=[])
+async def test_absent_day_is_not_yet_materialized_not_degraded(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch, rollups=[], flags=[])
     resp = await _get(app, {"date": "2026-07-05"})
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -211,9 +212,9 @@ async def test_absent_day_is_not_yet_materialized_not_degraded():
 # ---------------------------------------------------------------------------
 
 
-async def test_materialized_day_zero_fills_every_lane():
+async def test_materialized_day_zero_fills_every_lane(monkeypatch: pytest.MonkeyPatch):
     rollups = [_rollup(_DAY, "work", 3600, episode_count=2)]
-    app = _build_app(rollups=rollups, flags=[])
+    app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp = await _get(app, {"date": "2026-07-05"})
     assert resp.status_code == 200
     day = resp.json()["data"]["days"][0]
@@ -234,7 +235,9 @@ async def test_materialized_day_zero_fills_every_lane():
 # ---------------------------------------------------------------------------
 
 
-async def test_feeder_dark_marks_only_the_affected_lane_unavailable():
+async def test_feeder_dark_marks_only_the_affected_lane_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+):
     rollups = [_rollup(_DAY, "sleep", 0, episode_count=0), _rollup(_DAY, "work", 3600)]
     flags = [
         _flag(
@@ -244,7 +247,7 @@ async def test_feeder_dark_marks_only_the_affected_lane_unavailable():
             detail={"dark_sources": ["google_health.measurements"]},
         )
     ]
-    app = _build_app(rollups=rollups, flags=flags)
+    app = _build_app(monkeypatch, rollups=rollups, flags=flags)
     resp = await _get(app, {"date": "2026-07-05"})
     assert resp.status_code == 200
     day = resp.json()["data"]["days"][0]
@@ -257,9 +260,9 @@ async def test_feeder_dark_marks_only_the_affected_lane_unavailable():
     assert "feeder_dark" in flag_types
 
 
-async def test_no_feeder_dark_flag_leaves_every_lane_available():
+async def test_no_feeder_dark_flag_leaves_every_lane_available(monkeypatch: pytest.MonkeyPatch):
     rollups = [_rollup(_DAY, "sleep", 0, episode_count=0)]
-    app = _build_app(rollups=rollups, flags=[])
+    app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp = await _get(app, {"date": "2026-07-05"})
     day = resp.json()["data"]["days"][0]
     lanes_by_name = {lane_row["lane"]: lane_row for lane_row in day["lanes"]}
@@ -267,10 +270,10 @@ async def test_no_feeder_dark_flag_leaves_every_lane_available():
     assert lanes_by_name["sleep"]["unavailable"] is False
 
 
-async def test_non_feeder_dark_flags_pass_through():
+async def test_non_feeder_dark_flags_pass_through(monkeypatch: pytest.MonkeyPatch):
     rollups = [_rollup(_DAY, "work", 3600)]
     flags = [_flag(_DAY, "routine_break", severity="info", detail={"routines": [{"label": "gym"}]})]
-    app = _build_app(rollups=rollups, flags=flags)
+    app = _build_app(monkeypatch, rollups=rollups, flags=flags)
     resp = await _get(app, {"date": "2026-07-05"})
     day = resp.json()["data"]["days"][0]
     assert len(day["flags"]) == 1
@@ -288,21 +291,21 @@ async def test_non_feeder_dark_flags_pass_through():
 # ---------------------------------------------------------------------------
 
 
-async def test_day_narrative_surfaced_when_present():
+async def test_day_narrative_surfaced_when_present(monkeypatch: pytest.MonkeyPatch):
     # The narration job writes the same day summary onto every lane row for the
     # date; the endpoint reads it off the first rollup row.
     rollups = [
         _rollup(_DAY, "work", 3600, narrative="A busy work day with a long focus block."),
         _rollup(_DAY, "sleep", 25200, narrative="A busy work day with a long focus block."),
     ]
-    app = _build_app(rollups=rollups, flags=[])
+    app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp = await _get(app, {"date": "2026-07-05"})
     assert resp.status_code == 200
     day = resp.json()["data"]["days"][0]
     assert day["narrative"] == "A busy work day with a long focus block."
 
 
-async def test_flag_narrative_surfaced_when_present():
+async def test_flag_narrative_surfaced_when_present(monkeypatch: pytest.MonkeyPatch):
     rollups = [_rollup(_DAY, "work", 3600)]
     flags = [
         _flag(
@@ -313,18 +316,18 @@ async def test_flag_narrative_surfaced_when_present():
             narrative="Skipped the usual morning gym session.",
         )
     ]
-    app = _build_app(rollups=rollups, flags=flags)
+    app = _build_app(monkeypatch, rollups=rollups, flags=flags)
     resp = await _get(app, {"date": "2026-07-05"})
     day = resp.json()["data"]["days"][0]
     assert day["flags"][0]["narrative"] == "Skipped the usual morning gym session."
 
 
-async def test_absent_narrative_is_null_not_error():
+async def test_absent_narrative_is_null_not_error(monkeypatch: pytest.MonkeyPatch):
     # Pre-feature / labeling-skipped day: rows exist and are materialized, but no
     # narration ran. Absent narrative is a legitimate None, never a degraded state.
     rollups = [_rollup(_DAY, "work", 3600)]
     flags = [_flag(_DAY, "routine_break", severity="info")]
-    app = _build_app(rollups=rollups, flags=flags)
+    app = _build_app(monkeypatch, rollups=rollups, flags=flags)
     resp = await _get(app, {"date": "2026-07-05"})
     data = resp.json()["data"]
     assert data["rollups_source_error"] is False
@@ -334,9 +337,9 @@ async def test_absent_narrative_is_null_not_error():
     assert day["flags"][0]["narrative"] is None
 
 
-async def test_not_yet_materialized_day_has_null_narrative():
+async def test_not_yet_materialized_day_has_null_narrative(monkeypatch: pytest.MonkeyPatch):
     # No rows for the day → no lane row to carry a day summary.
-    app = _build_app(rollups=[], flags=[])
+    app = _build_app(monkeypatch, rollups=[], flags=[])
     resp = await _get(app, {"date": "2026-07-05"})
     day = resp.json()["data"]["days"][0]
     assert day["status"] == "not_yet_materialized"
@@ -349,8 +352,8 @@ async def test_not_yet_materialized_day_has_null_narrative():
 # ---------------------------------------------------------------------------
 
 
-async def test_query_failure_sets_source_error_and_unknown_status():
-    app = _build_app(raise_error=True)
+async def test_query_failure_sets_source_error_and_unknown_status(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch, raise_error=True)
     resp = await _get(app, {"date": "2026-07-05"})
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -361,17 +364,50 @@ async def test_query_failure_sets_source_error_and_unknown_status():
     assert day["flags"] == []
 
 
+async def test_range_query_stubs_do_not_leak_from_the_dynamic_router(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = create_app()
+    router_module = _find_chronicler_router_module(app)
+    original_rollups_range = router_module.list_daily_rollups_range
+    original_flags_range = router_module.list_daily_rollup_flags_range
+
+    with monkeypatch.context() as scoped_monkeypatch:
+        failed_app = _build_app(scoped_monkeypatch, raise_error=True)
+        failed_response = await _get(failed_app, {"date": _DAY.isoformat()})
+        assert failed_response.status_code == 200
+        assert failed_response.json()["data"]["days"][0]["status"] == "unknown"
+        assert router_module.list_daily_rollups_range is not original_rollups_range
+        assert router_module.list_daily_rollup_flags_range is not original_flags_range
+
+    assert router_module.list_daily_rollups_range is original_rollups_range
+    assert router_module.list_daily_rollup_flags_range is original_flags_range
+
+    with monkeypatch.context() as scoped_monkeypatch:
+        materialized_app = _build_app(
+            scoped_monkeypatch,
+            rollups=[_rollup(_DAY, "work", 3600)],
+            flags=[],
+        )
+        materialized_response = await _get(materialized_app, {"date": _DAY.isoformat()})
+        assert materialized_response.status_code == 200
+        assert materialized_response.json()["data"]["days"][0]["status"] == "materialized"
+
+    assert router_module.list_daily_rollups_range is original_rollups_range
+    assert router_module.list_daily_rollup_flags_range is original_flags_range
+
+
 # ---------------------------------------------------------------------------
 # Multi-day range
 # ---------------------------------------------------------------------------
 
 
-async def test_range_returns_one_entry_per_day_ascending():
+async def test_range_returns_one_entry_per_day_ascending(monkeypatch: pytest.MonkeyPatch):
     rollups = [
         _rollup(date(2026, 7, 1), "work", 1000),
         _rollup(date(2026, 7, 3), "work", 2000),
     ]
-    app = _build_app(rollups=rollups, flags=[])
+    app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp = await _get(app, {"start_date": "2026-07-01", "end_date": "2026-07-03"})
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -384,16 +420,16 @@ async def test_range_returns_one_entry_per_day_ascending():
     assert days[2]["status"] == "materialized"
 
 
-async def test_single_day_range_via_start_end_matches_date_param():
+async def test_single_day_range_via_start_end_matches_date_param(monkeypatch: pytest.MonkeyPatch):
     rollups = [_rollup(_DAY, "work", 500)]
-    app = _build_app(rollups=rollups, flags=[])
+    app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp_date = await _get(app, {"date": "2026-07-05"})
     resp_range = await _get(app, {"start_date": "2026-07-05", "end_date": "2026-07-05"})
     assert resp_date.status_code == resp_range.status_code == 200
     assert resp_date.json()["data"]["days"] == resp_range.json()["data"]["days"]
 
 
-async def test_response_echoes_timezone():
-    app = _build_app(rollups=[], flags=[])
+async def test_response_echoes_timezone(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch, rollups=[], flags=[])
     resp = await _get(app, {"date": "2026-07-05"})
     assert resp.json()["data"]["tz"] == "Asia/Singapore"

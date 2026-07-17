@@ -2,8 +2,9 @@
 (IEA, tasks.md S9b, bu-jc6htw.2).
 
 Mocked-pool tests: storage calls (list_daily_rollups_range /
-list_daily_rollup_flags_range) are monkeypatched directly on the
-dynamically-loaded router module, mirroring test_rollups_api.py. Exercises
+list_daily_rollup_flags_range) are scoped with pytest's ``monkeypatch``
+fixture on the dynamically-loaded router module, mirroring
+test_rollups_api.py. Exercises
 parameter validation, the vs-baseline math end-to-end through the HTTP
 surface, the feeder_dark-marks-lane-unavailable cross-reference, and the
 degraded-envelope (*_source_error) flags without a real database.
@@ -37,6 +38,7 @@ def _find_chronicler_router_module(app: Any) -> Any:
 
 
 def _build_app(
+    monkeypatch: pytest.MonkeyPatch,
     *,
     rollups: list[DailyRollup] | None = None,
     flags: list[DailyRollupFlag] | None = None,
@@ -59,8 +61,8 @@ def _build_app(
             raise RuntimeError("simulated query failure")
         return [f for f in (flags or []) if start_date <= f.local_date <= end_date]
 
-    router_module.list_daily_rollups_range = fake_rollups_range
-    router_module.list_daily_rollup_flags_range = fake_flags_range
+    monkeypatch.setattr(router_module, "list_daily_rollups_range", fake_rollups_range)
+    monkeypatch.setattr(router_module, "list_daily_rollup_flags_range", fake_flags_range)
 
     return app
 
@@ -101,14 +103,16 @@ def _flag(
 # ---------------------------------------------------------------------------
 
 
-async def test_balance_missing_date_returns_422():
-    app = _build_app()
+async def test_balance_missing_date_returns_422(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch)
     resp = await _get(app, _BALANCE_ENDPOINT, {})
     assert resp.status_code == 422  # FastAPI required-query-param validation
 
 
-async def test_balance_not_yet_materialized_day_returns_empty_lanes():
-    app = _build_app(rollups=[], flags=[])
+async def test_balance_not_yet_materialized_day_returns_empty_lanes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = _build_app(monkeypatch, rollups=[], flags=[])
     resp = await _get(app, _BALANCE_ENDPOINT, {"date": "2026-07-05"})
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -117,13 +121,15 @@ async def test_balance_not_yet_materialized_day_returns_empty_lanes():
     assert data["balance_source_error"] is False
 
 
-async def test_balance_materialized_day_zero_fills_lane_with_no_activity_but_keeps_baseline():
+async def test_balance_materialized_day_zero_fills_lane_with_no_activity_but_keeps_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+):
     rollups = [
         _rollup(date(2026, 7, 5), "sleep", 25200),
         _rollup(date(2026, 6, 20), "sleep", 28800),
         _rollup(date(2026, 6, 21), "sleep", 30600),
     ]
-    app = _build_app(rollups=rollups, flags=[])
+    app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp = await _get(app, _BALANCE_ENDPOINT, {"date": "2026-07-05"})
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -144,12 +150,12 @@ async def test_balance_materialized_day_zero_fills_lane_with_no_activity_but_kee
     assert work["baseline_sample_days"] == 0
 
 
-async def test_balance_feeder_dark_marks_lane_unavailable():
+async def test_balance_feeder_dark_marks_lane_unavailable(monkeypatch: pytest.MonkeyPatch):
     rollups = [_rollup(date(2026, 7, 5), "travel", 0)]
     flags = [
         _flag(date(2026, 7, 5), "feeder_dark", detail={"dark_sources": ["owntracks.points"]}),
     ]
-    app = _build_app(rollups=rollups, flags=flags)
+    app = _build_app(monkeypatch, rollups=rollups, flags=flags)
     resp = await _get(app, _BALANCE_ENDPOINT, {"date": "2026-07-05"})
     data = resp.json()["data"]
     lanes_by_name = {row["lane"]: row for row in data["lanes"]}
@@ -157,8 +163,8 @@ async def test_balance_feeder_dark_marks_lane_unavailable():
     assert lanes_by_name["sleep"]["unavailable"] is False
 
 
-async def test_balance_source_error_sets_unknown_status_and_flag():
-    app = _build_app(raise_error=True)
+async def test_balance_source_error_sets_unknown_status_and_flag(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch, raise_error=True)
     resp = await _get(app, _BALANCE_ENDPOINT, {"date": "2026-07-05"})
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -167,8 +173,9 @@ async def test_balance_source_error_sets_unknown_status_and_flag():
     assert data["balance_source_error"] is True
 
 
-async def test_balance_lookback_days_param_is_honoured():
+async def test_balance_lookback_days_param_is_honoured(monkeypatch: pytest.MonkeyPatch):
     app = _build_app(
+        monkeypatch,
         rollups=[
             _rollup(date(2026, 7, 5), "work", 3600),
             _rollup(date(2026, 7, 4), "work", 7200),
@@ -188,15 +195,15 @@ async def test_balance_lookback_days_param_is_honoured():
 # ---------------------------------------------------------------------------
 
 
-async def test_trends_invalid_window_returns_400():
-    app = _build_app()
+async def test_trends_invalid_window_returns_400(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch)
     resp = await _get(app, _TRENDS_ENDPOINT, {"window": "year", "end_date": "2026-07-05"})
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "invalid_parameter"
 
 
-async def test_trends_week_window_spans_seven_days():
-    app = _build_app(rollups=[], flags=[])
+async def test_trends_week_window_spans_seven_days(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch, rollups=[], flags=[])
     resp = await _get(app, _TRENDS_ENDPOINT, {"window": "week", "end_date": "2026-07-05"})
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -207,15 +214,15 @@ async def test_trends_week_window_spans_seven_days():
     assert all(d["status"] == "not_yet_materialized" for d in work_series["days"])
 
 
-async def test_trends_month_window_spans_thirty_days():
-    app = _build_app(rollups=[], flags=[])
+async def test_trends_month_window_spans_thirty_days(monkeypatch: pytest.MonkeyPatch):
+    app = _build_app(monkeypatch, rollups=[], flags=[])
     resp = await _get(app, _TRENDS_ENDPOINT, {"window": "month", "end_date": "2026-07-05"})
     data = resp.json()["data"]
     work_series = next(s for s in data["lanes"] if s["lane"] == "work")
     assert len(work_series["days"]) == 30
 
 
-async def test_trends_streak_counts_trailing_nonzero_days():
+async def test_trends_streak_counts_trailing_nonzero_days(monkeypatch: pytest.MonkeyPatch):
     rollups = [
         _rollup(date(2026, 6, 29), "work", 0),
         _rollup(date(2026, 6, 30), "work", 3600),
@@ -225,19 +232,19 @@ async def test_trends_streak_counts_trailing_nonzero_days():
         _rollup(date(2026, 7, 4), "work", 3600),
         _rollup(date(2026, 7, 5), "work", 3600),
     ]
-    app = _build_app(rollups=rollups, flags=[])
+    app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp = await _get(app, _TRENDS_ENDPOINT, {"window": "week", "end_date": "2026-07-05"})
     data = resp.json()["data"]
     work_series = next(s for s in data["lanes"] if s["lane"] == "work")
     assert work_series["streak_days"] == 6
 
 
-async def test_trends_flags_anomaly_when_delta_clears_thresholds():
+async def test_trends_flags_anomaly_when_delta_clears_thresholds(monkeypatch: pytest.MonkeyPatch):
     rollups = [_rollup(date(2026, 7, 5), "work", 36000)]
     # 8 baseline days at 7200s each -> anomaly-eligible sample size.
     for i in range(1, 9):
         rollups.append(_rollup(date(2026, 7, 5) - timedelta(days=i), "work", 7200))
-    app = _build_app(rollups=rollups, flags=[])
+    app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp = await _get(app, _TRENDS_ENDPOINT, {"window": "week", "end_date": "2026-07-05"})
     data = resp.json()["data"]
     anomalies = [
@@ -247,8 +254,10 @@ async def test_trends_flags_anomaly_when_delta_clears_thresholds():
     assert anomalies[0]["direction"] == "spike"
 
 
-async def test_trends_source_error_sets_unknown_status_for_every_day():
-    app = _build_app(raise_error=True)
+async def test_trends_source_error_sets_unknown_status_for_every_day(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    app = _build_app(monkeypatch, raise_error=True)
     resp = await _get(app, _TRENDS_ENDPOINT, {"window": "week", "end_date": "2026-07-05"})
     data = resp.json()["data"]
     assert data["trends_source_error"] is True
