@@ -107,6 +107,12 @@ All API responses SHALL use consistent wrapper types. Backend Pydantic models an
 - **THEN** a separate pool is created for the shared credential database
 - **AND** `credential_shared_pool()` returns it (or raises `KeyError` if not configured)
 
+#### Scenario: Canonical database target registration
+- **WHEN** dashboard API startup configures per-butler and shared credential pools
+- **THEN** each `DatabaseManager` registration receives the resolved `Database.db_name`
+- **AND** a non-empty `DATABASE_URL` uses its decoded database path ahead of `POSTGRES_DB` or the roster fallback
+- **AND** a `DATABASE_URL` without a database path fails startup before any manager pool is opened
+
 #### Scenario: Pool lookup
 - **WHEN** `pool(butler_name)` is called
 - **THEN** the cached asyncpg pool for that butler is returned
