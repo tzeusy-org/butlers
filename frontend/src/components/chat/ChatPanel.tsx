@@ -39,6 +39,10 @@ import { SendErrorBanner } from "./send-error.tsx";
 import { classifySendError, type SendError } from "./send-error-utils.ts";
 import { createClientMessageId } from "./message-id.ts";
 import {
+  optimisticUserMessageId,
+  reconcileConversationMessages,
+} from "./message-reconciliation.ts";
+import {
   conversationKeys,
   useConversations,
   useConversationMessages,
@@ -111,8 +115,10 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   useEffect(() => {
     if (streaming) return;
     const msgs = messagesData?.data ?? [];
-    setLocalMessages(msgs);
-  }, [messagesData, streaming]);
+    setLocalMessages((previous) =>
+      reconcileConversationMessages(msgs, previous, activeConversationId),
+    );
+  }, [activeConversationId, messagesData, streaming]);
 
   // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations. Migrated
   // onto the shared page-scoped shortcut registry (bu-qvnce.11), which also
@@ -222,7 +228,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       const userMessage: Message = {
         // The backend retry identity also identifies this local optimistic
         // bubble, so retrying one logical message cannot add another bubble.
-        id: `optimistic-user-${messageId}`,
+        id: optimisticUserMessageId(messageId),
         conversation_id: activeConversationId ?? "",
         role: "user",
         content: trimmed,

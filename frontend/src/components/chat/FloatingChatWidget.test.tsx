@@ -434,10 +434,22 @@ describe("FloatingChatWidget — unread badge", () => {
 // ---------------------------------------------------------------------------
 
 describe("FloatingChatWidget — send-error classification", () => {
-  it("shows a retryable offline banner on SWITCHBOARD_UNAVAILABLE", async () => {
+  it("keeps a failed optimistic message visible and retryable through an empty server sync", async () => {
     mockHooksEmpty();
     sendMessageMock.mockResolvedValue({ ok: true } as Response);
     createConversationMock.mockResolvedValue({ ok: true } as Response);
+    // The create event changes the active conversation id. Return a distinct,
+    // stable empty result for that conversation so the real sync effect runs
+    // after the SSE error (rather than accidentally reusing the initial
+    // no-conversation result object from this mock).
+    const noConversationMessages = { data: { data: [], meta: {} }, isLoading: false };
+    const emptyConversationMessages = { data: { data: [], meta: {} }, isLoading: false };
+    vi.mocked(useConversationMessages).mockImplementation(
+      (_butlerName: string, conversationId: string | null) =>
+        (conversationId === "conv-retry-1"
+          ? emptyConversationMessages
+          : noConversationMessages) as unknown as ReturnType<typeof useConversationMessages>,
+    );
     scriptedEvents = [
       { event: "conversation_created", data: { conversation_id: "conv-retry-1", title: null } },
       {
@@ -461,6 +473,14 @@ describe("FloatingChatWidget — send-error classification", () => {
     expect(screen.getByTestId("chat-widget-error-banner").textContent).toContain(
       "Switchboard offline",
     );
+
+    // The error transition clears `streaming`, which permits the message-query
+    // sync effect to run. A stale/empty server response must not erase the
+    // uncommitted optimistic user bubble before the owner can act on it.
+    expect(screen.getAllByText("hello switchboard")).toHaveLength(1);
+    const retryButton = screen.getByRole("button", { name: "Retry" });
+    expect((retryButton as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByTestId("chat-widget-error-banner").getAttribute("role")).toBe("alert");
 
     const firstPayload = createConversationMock.mock.calls[0][1] as {
       message_id: string;
