@@ -169,9 +169,9 @@ class MockDB:
                     ):
                         row["status"] = a
                         break
-                # Apply decided_by and decided_at if present
+                # Apply decision provenance and time if present.
                 for i, a in enumerate(args):
-                    if isinstance(a, str) and "user:" in a:
+                    if isinstance(a, str) and ("user:" in a or a == "system:expiry"):
                         row["decided_by"] = a
                     elif hasattr(a, "tzinfo") and not isinstance(a, str):
                         if "decided_at" not in row or row.get("decided_at") is None:
@@ -464,6 +464,45 @@ class TestApproveLifecycle:
         assert mock_db.pending_actions[action_id]["status"] == "expired"
         event_types = [call["args"][0] for call in mock_db.approval_events]
         assert "action_expired" in event_types
+
+    async def test_reject_expired_pending_action_expires_instead_of_rejecting(
+        self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="email_send",
+            status="pending",
+            expires_at=datetime.now(UTC) - timedelta(minutes=30),
+        )
+
+        result = await module._reject_action(str(action_id), actor=human_actor)
+
+        assert "error" in result
+        assert "expired" in result["error"]
+        assert mock_db.pending_actions[action_id]["status"] == "expired"
+        assert mock_db.pending_actions[action_id]["decided_by"] == "system:expiry"
+        event_types = [call["args"][0] for call in mock_db.approval_events]
+        assert event_types == ["action_expired"]
+
+    async def test_rest_reject_expired_pending_action_expires_instead_of_rejecting(
+        self, mock_db: MockDB
+    ):
+        from butlers.modules.approvals import operations
+
+        action_id = mock_db._insert_action(
+            tool_name="email_send",
+            status="pending",
+            expires_at=datetime.now(UTC) - timedelta(minutes=30),
+        )
+
+        result = await operations.reject_action(mock_db, str(action_id))
+
+        assert "error" in result
+        assert "expired" in result["error"]
+        assert mock_db.pending_actions[action_id]["status"] == "expired"
+        assert mock_db.pending_actions[action_id]["decided_by"] == "system:expiry"
+        event_types = [call["args"][0] for call in mock_db.approval_events]
+        assert event_types == ["action_expired"]
 
     async def test_approve_invalid_uuid_returns_error(
         self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]

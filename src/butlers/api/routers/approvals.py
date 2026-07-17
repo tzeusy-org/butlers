@@ -24,7 +24,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -1595,6 +1595,30 @@ _DECIDED_STATUSES = {"approved", "rejected", "expired", "executed"}
 _WAITING_STATUSES = {"pending"}
 
 _ACTOR_DASHBOARD = "dashboard:rest-api"
+_TELEGRAM_CALLBACK_ACTOR = "owner@telegram"
+
+
+def _decision_actor_id(callback_actor: str | None, *, callback_authenticated: bool) -> str:
+    """Accept Telegram provenance only from the authenticated callback route."""
+    if callback_authenticated:
+        if callback_actor != _TELEGRAM_CALLBACK_ACTOR:
+            raise HTTPException(
+                status_code=403,
+                detail="Connector decisions require Telegram provenance.",
+            )
+        return _TELEGRAM_CALLBACK_ACTOR
+    if callback_actor == _TELEGRAM_CALLBACK_ACTOR:
+        raise HTTPException(
+            status_code=401,
+            detail="Telegram decision provenance requires callback authentication.",
+        )
+    return _ACTOR_DASHBOARD
+
+
+def _decision_audit_actor(actor_id: str) -> str:
+    if actor_id == _TELEGRAM_CALLBACK_ACTOR:
+        return f"human:{actor_id}"
+    return _ACTOR_DASHBOARD
 
 
 @router.get("")
@@ -2165,9 +2189,11 @@ async def get_approval_detail(
 @router.post("/{action_id}/approve")
 async def approve_approval(
     action_id: str,
+    http_request: Request,
     request: ApprovalApproveRequest = Body(default=ApprovalApproveRequest()),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
+    callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
     """Approve a pending action — POST /api/approvals/{id}/approve {edits?: object}.
 
@@ -2177,6 +2203,19 @@ async def approve_approval(
         parsed_id = UUID(action_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    callback_authenticated = bool(
+        getattr(http_request.state, "approval_callback_authenticated", False)
+    )
+    actor_id = _decision_actor_id(
+        callback_actor,
+        callback_authenticated=callback_authenticated,
+    )
+    if callback_authenticated and request.edits:
+        raise HTTPException(
+            status_code=403,
+            detail="Connector decisions cannot edit approval arguments.",
+        )
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -2212,12 +2251,18 @@ async def approve_approval(
         result = await approvals_ops.approve_action(
             conn,
             action_id=action_id,
+            actor_id=actor_id,
             create_rule=False,
         )
-        edits_note = json.dumps(request.edits) if request.edits else None
-        await audit_router.append(
-            conn, _ACTOR_DASHBOARD, "approval.approve", target=action_id, note=edits_note
-        )
+        if "error" not in result:
+            edits_note = json.dumps(request.edits) if request.edits else None
+            await audit_router.append(
+                conn,
+                _decision_audit_actor(actor_id),
+                "approval.approve",
+                target=action_id,
+                note=edits_note,
+            )
 
     if "error" in result:
         error_msg = result["error"]
@@ -2271,14 +2316,29 @@ async def approve_approval(
 @router.post("/{action_id}/deny")
 async def deny_approval(
     action_id: str,
+    http_request: Request,
     request: ApprovalDenyRequest = Body(default=ApprovalDenyRequest()),
     db_mgr: DatabaseManager = Depends(_get_db_manager),
+    callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
     """Deny (reject) a pending action — POST /api/approvals/{id}/deny {reason?: str}."""
     try:
         parsed_id = UUID(action_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    callback_authenticated = bool(
+        getattr(http_request.state, "approval_callback_authenticated", False)
+    )
+    actor_id = _decision_actor_id(
+        callback_actor,
+        callback_authenticated=callback_authenticated,
+    )
+    if callback_authenticated and request.reason:
+        raise HTTPException(
+            status_code=403,
+            detail="Connector decisions cannot add a denial reason.",
+        )
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -2295,10 +2355,16 @@ async def deny_approval(
             conn,
             action_id=action_id,
             reason=request.reason,
+            actor_id=actor_id,
         )
-        await audit_router.append(
-            conn, _ACTOR_DASHBOARD, "approval.deny", target=action_id, note=request.reason
-        )
+        if "error" not in result:
+            await audit_router.append(
+                conn,
+                _decision_audit_actor(actor_id),
+                "approval.deny",
+                target=action_id,
+                note=request.reason,
+            )
 
     if "error" in result:
         error_msg = result["error"]

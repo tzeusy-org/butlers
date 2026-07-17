@@ -925,6 +925,14 @@ class ApprovalsModule(Module):
             return {"error": str(exc)}
 
         now = datetime.now(UTC)
+        expired_result = await expire_pending_action_if_stale(
+            self._db,
+            action,
+            now=now,
+            target_action=ActionStatus.REJECTED.value,
+        )
+        if expired_result is not None:
+            return expired_result
 
         # Build decided_by with optional reason
         escaped_reason = html.escape(reason, quote=True) if reason else None

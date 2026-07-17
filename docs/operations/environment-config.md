@@ -99,6 +99,21 @@ roster/{butler}/
 | `CONNECTOR_HEARTBEAT_INTERVAL_S` | All connectors | Heartbeat interval (default: 120) |
 | `SWITCHBOARD_API_TOKEN` | All connectors | Bearer token for Switchboard auth |
 
+## Telegram Approval Callback Credentials
+
+Store these Tier-1 values in the Dashboard Secrets page's shared-public credential
+store, never in Compose or a connector environment file. The Telegram bot connector
+and dashboard API load them independently from that store.
+
+| Key | Purpose |
+|-----|---------|
+| `APPROVAL_CALLBACK_SECRET` | HMAC secret that binds an inline Telegram button to its pending approval action. |
+| `APPROVAL_CALLBACK_CONNECTOR_TOKEN` | Dedicated connector credential for only `GET /api/approvals/{id}` and `POST /api/approvals/{id}/approve|deny`, sent as `X-Butlers-Approval-Callback-Token`. |
+
+`DASHBOARD_API_KEY`, when enabled, continues to protect every other dashboard API
+route. The callback connector token is not a substitute for it and does not grant
+general dashboard access.
+
 ## Service Ports
 
 | Service | Port |

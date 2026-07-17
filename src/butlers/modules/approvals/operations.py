@@ -37,6 +37,15 @@ from butlers.modules.approvals.sensitivity import suggest_constraints
 
 logger = logging.getLogger(__name__)
 
+_TELEGRAM_CALLBACK_ACTOR = "owner@telegram"
+
+
+def _decision_event_actor(actor_id: str) -> str:
+    """Keep the verified Telegram decision provenance intact in the event spine."""
+    if actor_id == _TELEGRAM_CALLBACK_ACTOR:
+        return f"human:{actor_id}"
+    return f"user:{actor_id}"
+
 
 # ---------------------------------------------------------------------------
 # Approve action
@@ -174,7 +183,7 @@ async def approve_action(
     await record_approval_event(
         pool,
         ApprovalEventType.ACTION_APPROVED,
-        actor=f"user:{actor_id}",
+        actor=_decision_event_actor(actor_id),
         action_id=parsed_id,
         reason="approved via REST API",
         metadata={"tool_name": action.tool_name},
@@ -340,6 +349,15 @@ async def reject_action(
         return {"error": f"Cannot transition from '{action.status.value}' to 'rejected'"}
 
     now = datetime.now(UTC)
+    expired_result = await expire_pending_action_if_stale(
+        pool,
+        action,
+        now=now,
+        target_action=ActionStatus.REJECTED.value,
+    )
+    if expired_result is not None:
+        return expired_result
+
     escaped_reason = html.escape(reason, quote=True) if reason else None
     decided_by = f"human:{actor_id}"
     if escaped_reason:
@@ -365,7 +383,7 @@ async def reject_action(
     await record_approval_event(
         pool,
         ApprovalEventType.ACTION_REJECTED,
-        actor=f"user:{actor_id}",
+        actor=_decision_event_actor(actor_id),
         action_id=parsed_id,
         reason=reason or "rejected via REST API",
         metadata={"tool_name": action.tool_name},

@@ -1100,6 +1100,8 @@ _SYSTEM_KEY_USED_BY: dict[str, tuple[str, ...]] = {
     # Telegram module bot-scope credential (TelegramBotCredentialsConfig
     # default, modules/telegram.py).
     "BUTLER_TELEGRAM_TOKEN": ("telegram",),
+    "APPROVAL_CALLBACK_SECRET": ("approvals", "telegram"),
+    "APPROVAL_CALLBACK_CONNECTOR_TOKEN": ("approvals", "telegram"),
     # S3-compatible blob storage — core infra wired at butler startup
     # (lifecycle.py, api/routers/blob_storage.py), not a single opt-in module.
     "BLOB_S3_ENDPOINT_URL": ("blob_storage",),

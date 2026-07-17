@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from uuid import UUID
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -47,12 +48,40 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from butlers.api.deps import ButlerNotFoundError, ButlerUnreachableError
 from butlers.api.models import ErrorDetail, ErrorResponse
 from butlers.api.routers.audit import AuditTableNotAvailableError
+from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER
 
 logger = logging.getLogger(__name__)
 
 # Paths that are always public regardless of API-key configuration.
 # These are used by liveness/readiness probes and must never require auth.
 _PUBLIC_PATHS: frozenset[str] = frozenset({"/api/health", "/health"})
+
+
+def _is_approval_callback_route(request: Request) -> bool:
+    """Return whether the request is one of the connector's three callback routes.
+
+    The connector credential is deliberately narrower than the dashboard API
+    key: it can read one approval detail or transition it through the established
+    approve/deny routes, and nothing else under ``/api``.
+    """
+    segments = request.url.path.split("/")
+    if len(segments) not in {4, 5} or segments[:3] != ["", "api", "approvals"]:
+        return False
+    try:
+        UUID(segments[3])
+    except ValueError:
+        return False
+    if request.method == "GET":
+        return len(segments) == 4
+    return (
+        request.method == "POST"
+        and len(segments) == 5
+        and segments[4]
+        in {
+            "approve",
+            "deny",
+        }
+    )
 
 
 async def _handle_butler_unreachable(
@@ -190,6 +219,21 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
             )
 
     async def dispatch(self, request: Request, call_next):
+        # A dedicated DB-backed service credential authenticates the Telegram
+        # callback's tightly scoped approval detail/decision flow. It is not a
+        # general API-key bypass, and the route validates its provenance marker
+        # before attributing a mutation to the owner on Telegram.
+        callback_token = getattr(request.app.state, "approval_callback_connector_token", None)
+        provided_callback_token = request.headers.get(APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER, "")
+        if (
+            callback_token
+            and _is_approval_callback_route(request)
+            and provided_callback_token
+            and hmac.compare_digest(provided_callback_token, callback_token)
+        ):
+            request.state.approval_callback_authenticated = True
+            return await call_next(request)
+
         # Auth disabled — pass through unconditionally.
         if not self._api_key:
             return await call_next(request)

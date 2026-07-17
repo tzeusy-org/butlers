@@ -123,6 +123,8 @@ from butlers.api.routers.timeline import router as timeline_router
 from butlers.api.routers.timeline_saved_views import router as timeline_saved_views_router
 from butlers.api.routers.webhooks import router as webhooks_router
 from butlers.api.routers.whatsapp import router as whatsapp_router
+from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY
+from butlers.credential_store import CredentialStore
 from butlers.db import (
     check_infra_default_creds,
     has_insecure_infra_defaults,
@@ -253,10 +255,30 @@ async def lifespan(app: FastAPI):
         wire_db_dependencies(app, dynamic_modules=dynamic_modules)
         logger.info("DatabaseManager initialized for %d butler(s)", len(butler_configs))
 
+        # The Telegram connector authenticates only the approval-callback
+        # detail/decision routes with this Tier-1 DB credential. It is separate
+        # from the optional generic dashboard API key and never falls back to
+        # an environment variable.
+        try:
+            shared_pool = get_db_manager().credential_shared_pool()
+            app.state.approval_callback_connector_token = await CredentialStore(
+                shared_pool
+            ).resolve(APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY, env_fallback=False)
+            if not app.state.approval_callback_connector_token:
+                logger.warning(
+                    "Telegram approval callback connector credential is not configured: %s",
+                    APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY,
+                )
+        except Exception:
+            app.state.approval_callback_connector_token = None
+            logger.warning(
+                "Telegram approval callback connector credential could not be loaded",
+                exc_info=True,
+            )
+
         # Restore CLI auth tokens from DB to filesystem
         try:
             from butlers.cli_auth.persistence import restore_tokens
-            from butlers.credential_store import CredentialStore
 
             db_mgr = get_db_manager()
             shared_pool = db_mgr.credential_shared_pool()
@@ -546,6 +568,7 @@ def create_app(
     )
     # Health endpoints return 503 until lifespan startup sets this True.
     app.state.ready = False
+    app.state.approval_callback_connector_token = None
     app.router.redirect_slashes = False
 
     # OTel instrumentation (only when OTLP endpoint is configured)
