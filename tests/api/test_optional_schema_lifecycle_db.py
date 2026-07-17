@@ -18,11 +18,20 @@ import shutil
 from urllib.parse import urlparse
 
 import pytest
+from fastapi import HTTPException
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.routers.memory import _fan_out_memory_queries
-from butlers.api.routers.secrets_v2 import _fetch_system_secrets
+from butlers.api.routers.secrets_v2 import (
+    SystemSetRequest,
+    _fetch_system_secrets,
+    _system_probe_timestamps,
+    delete_system_credential,
+    get_system_credential,
+    probe_system_credential,
+    set_system_credential,
+)
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
@@ -47,7 +56,13 @@ def migrated_db_url(postgres_container) -> str:
     )
 
 
-async def _manager_for_schema(db_url: str, *, butler_name: str, schema: str) -> DatabaseManager:
+async def _manager_for_schema(
+    db_url: str,
+    *,
+    butler_name: str,
+    schema: str,
+    with_shared_pool: bool = False,
+) -> DatabaseManager:
     """Create a real dashboard pool scoped to *schema*."""
     parsed = urlparse(db_url)
     manager = DatabaseManager(
@@ -63,12 +78,34 @@ async def _manager_for_schema(db_url: str, *, butler_name: str, schema: str) -> 
         db_name=parsed.path.lstrip("/"),
         db_schema=schema,
     )
+    if with_shared_pool:
+        await manager.set_credential_shared_pool(
+            parsed.path.lstrip("/"),
+            db_schema="public",
+        )
     return manager
 
 
 async def _memory_fact_count(_: str, pool: object) -> int:
     """A real memory-table query used by the fan-out lifecycle assertions."""
     return await pool.fetchval("SELECT count(*) FROM facts") or 0  # type: ignore[attr-defined]
+
+
+async def _seed_public_secret(
+    manager: DatabaseManager,
+    *,
+    key: str,
+    value: str = "public-secret",
+) -> None:
+    """Seed the shared public relation that a private schema must never shadow."""
+    await manager.credential_shared_pool().execute(
+        """
+        INSERT INTO public.butler_secrets (secret_key, secret_value, category, updated_at)
+        VALUES ($1, $2, 'general', now())
+        """,
+        key,
+        value,
+    )
 
 
 async def test_absent_at_startup_is_an_expected_optional_schema(
@@ -163,5 +200,179 @@ async def test_dropped_after_startup_is_a_degraded_source(
         assert secrets_tracker.names == ["lifecycle"]
         assert memory_rows == []
         assert memory_tracker.names == ["lifecycle"]
+    finally:
+        await manager.close()
+
+
+async def test_boot_time_private_absence_can_use_a_public_system_secret(
+    migrated_db_url: str,
+) -> None:
+    """An optional private table absent at boot may legitimately defer to public."""
+    bootstrap = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    manager: DatabaseManager | None = None
+    key = "BOOT_ABSENT_PUBLIC_KEY"
+    try:
+        await bootstrap.pool("lifecycle").execute("CREATE SCHEMA boot_absent")
+        manager = await _manager_for_schema(
+            migrated_db_url,
+            butler_name="boot_absent",
+            schema="boot_absent",
+            with_shared_pool=True,
+        )
+        await manager.snapshot_relation_presence("boot_absent", _TRACKED_RELATIONS)
+        assert manager.relation_observed_since_start("boot_absent", "butler_secrets") is False
+        await _seed_public_secret(manager, key=key)
+
+        detail = await get_system_credential(key, db=manager)
+
+        assert detail.data.source == "shared-public"
+        assert detail.data.key == key
+        _system_probe_timestamps.pop(key, None)
+        probe = await probe_system_credential(key, db=manager)
+        assert probe.data.ok is True
+        assert (
+            await manager.credential_shared_pool().fetchval(
+                """
+            SELECT last_test_ok
+            FROM public.butler_secrets
+            WHERE secret_key = $1
+            """,
+                key,
+            )
+            is True
+        )
+    finally:
+        _system_probe_timestamps.pop(key, None)
+        if manager is not None:
+            await manager.close()
+        await bootstrap.close()
+
+
+async def test_post_boot_private_loss_blocks_get_and_probe_public_fallback(
+    migrated_db_url: str,
+) -> None:
+    """A dropped private table is degraded, never a route to a public credential."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+        with_shared_pool=True,
+    )
+    key = "DROPPED_PRIVATE_PUBLIC_KEY"
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        assert manager.relation_observed_since_start("lifecycle", "butler_secrets") is True
+        await _seed_public_secret(manager, key=key)
+        pool = manager.pool("lifecycle")
+        await pool.execute("DROP TABLE butler_secrets")
+
+        with pytest.raises(HTTPException) as get_error:
+            await get_system_credential(key, db=manager)
+        assert get_error.value.status_code == 503
+
+        _system_probe_timestamps.pop(key, None)
+        with pytest.raises(HTTPException) as probe_error:
+            await probe_system_credential(key, db=manager)
+        assert probe_error.value.status_code == 503
+
+        shared_pool = manager.credential_shared_pool()
+        assert (
+            await shared_pool.fetchval(
+                """
+            SELECT count(*)
+            FROM public.secret_probe_log
+            WHERE credential_scope = 'system' AND credential_key = $1
+            """,
+                key,
+            )
+            == 0
+        )
+        cache = await shared_pool.fetchrow(
+            """
+            SELECT last_test_ok, last_verified
+            FROM public.butler_secrets
+            WHERE secret_key = $1
+            """,
+            key,
+        )
+        assert cache is not None
+        assert cache["last_test_ok"] is None
+        assert cache["last_verified"] is None
+    finally:
+        _system_probe_timestamps.pop(key, None)
+        await manager.close()
+
+
+async def test_unknown_private_absence_blocks_public_fallback(
+    migrated_db_url: str,
+) -> None:
+    """Without a startup marker, a missing private relation is never an optional absence."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+        with_shared_pool=True,
+    )
+    key = "UNKNOWN_PRIVATE_PUBLIC_KEY"
+    try:
+        await _seed_public_secret(manager, key=key)
+        await manager.pool("lifecycle").execute("DROP TABLE butler_secrets")
+        assert manager.relation_observed_since_start("lifecycle", "butler_secrets") is None
+
+        with pytest.raises(HTTPException) as error:
+            await get_system_credential(key, db=manager)
+        assert error.value.status_code == 503
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_private_loss_cannot_set_or_delete_public_secret(
+    migrated_db_url: str,
+) -> None:
+    """Per-butler mutations must target the private relation, never search_path public."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+        with_shared_pool=True,
+    )
+    insert_key = "DROPPED_PRIVATE_SET_KEY"
+    delete_key = "DROPPED_PRIVATE_DELETE_KEY"
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        await _seed_public_secret(manager, key=delete_key, value="must-survive")
+        await manager.pool("lifecycle").execute("DROP TABLE butler_secrets")
+
+        with pytest.raises(HTTPException) as set_error:
+            await set_system_credential(
+                insert_key,
+                SystemSetRequest(value="must-not-write", target="lifecycle"),
+                db=manager,
+            )
+        assert set_error.value.status_code == 503
+
+        shared_pool = manager.credential_shared_pool()
+        assert (
+            await shared_pool.fetchval(
+                "SELECT secret_value FROM public.butler_secrets WHERE secret_key = $1",
+                insert_key,
+            )
+            is None
+        )
+
+        with pytest.raises(HTTPException) as delete_error:
+            await delete_system_credential(delete_key, target="lifecycle", db=manager)
+        assert delete_error.value.status_code == 503
+        assert (
+            await shared_pool.fetchval(
+                "SELECT secret_value FROM public.butler_secrets WHERE secret_key = $1",
+                delete_key,
+            )
+            == "must-survive"
+        )
     finally:
         await manager.close()

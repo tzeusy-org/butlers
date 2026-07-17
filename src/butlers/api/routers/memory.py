@@ -92,9 +92,11 @@ def _any_pool(db: DatabaseManager) -> object:
 
 def _memory_schema_absent_at_start(db: DatabaseManager, butler_name: str) -> bool:
     """Return whether every required memory relation was absent at startup."""
+    relation_marker = getattr(db, "relation_observed_since_start", None)
+    if not callable(relation_marker):
+        return False
     return all(
-        db.relation_observed_since_start(butler_name, relation) is False
-        for relation in _MEMORY_SCHEMA_RELATIONS
+        relation_marker(butler_name, relation) is False for relation in _MEMORY_SCHEMA_RELATIONS
     )
 
 

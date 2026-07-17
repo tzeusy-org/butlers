@@ -1174,10 +1174,11 @@ def _is_missing_secrets_schema_error(
     """
     if not schema_absent_at_start:
         return False
-    if isinstance(exc, UndefinedTableError):
-        return True
-    msg = str(exc).lower()
-    return "does not exist" in msg and ("relation" in msg or "table" in msg)
+    return isinstance(exc, UndefinedTableError)
+
+
+class _SystemSecretSourceUnavailableError(RuntimeError):
+    """A private system-secret source failed after (or without) startup evidence."""
 
 
 # ---------------------------------------------------------------------------
@@ -2151,10 +2152,14 @@ async def _fetch_single_system_secret(
     key: str,
     *,
     source_schema: str | None = None,
+    schema_absent_at_start: bool = False,
 ) -> SystemSecretDetail | None:
     """Fetch a single butler_secrets row matching the given key.
 
-    Returns None when no matching row exists or when the table doesn't exist.
+    Returns ``None`` when no matching row exists, or when a private table was
+    known to be absent at dashboard startup.  A private query failure without
+    that startup marker is raised so callers cannot silently fall through to
+    ``public.butler_secrets`` after local-schema loss.
     """
     relation = _qualified_relation(source_schema, "butler_secrets")
     try:
@@ -2177,8 +2182,17 @@ async def _fetch_single_system_secret(
             key,
         )
     except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "does not exist" in msg or "undefined" in msg.lower():
+        if source_schema is not None and _is_missing_secrets_schema_error(
+            exc,
+            schema_absent_at_start=schema_absent_at_start,
+        ):
+            logger.debug("butler_secrets not found for butler %s", butler_name)
+            return None
+        if source_schema is not None:
+            raise _SystemSecretSourceUnavailableError(
+                f"System credential source unavailable for butler {butler_name!r}"
+            ) from exc
+        if isinstance(exc, UndefinedTableError):
             logger.debug("butler_secrets not found for butler %s", butler_name)
             return None
         logger.warning("Failed to fetch system secret key=%s butler=%s: %s", key, butler_name, exc)
@@ -2355,12 +2369,20 @@ async def get_system_credential(
         except KeyError:
             continue
 
-        detail = await _fetch_single_system_secret(
-            pool,
-            butler_name,
-            key,
-            source_schema=_secrets_source_schema(db, butler_name),
-        )
+        try:
+            detail = await _fetch_single_system_secret(
+                pool,
+                butler_name,
+                key,
+                source_schema=_secrets_source_schema(db, butler_name),
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
+            )
+        except _SystemSecretSourceUnavailableError as exc:
+            logger.warning("System credential source unavailable for butler %s", butler_name)
+            raise HTTPException(
+                status_code=503,
+                detail=f"System credential source unavailable for butler {butler_name!r}",
+            ) from exc
         if detail is not None:
             return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
 
@@ -4754,15 +4776,19 @@ async def set_system_credential(
                 status_code=503,
                 detail="Switchboard pool is not available",
             ) from exc
+        relation = _qualified_relation(_secrets_source_schema(db, "switchboard"), "butler_secrets")
 
         # Check if an existing shared row exists.
         try:
             existing = await pool.fetchrow(
-                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                f"SELECT secret_key FROM {relation} WHERE secret_key = $1",
                 key,
             )
-        except UndefinedTableError:
-            existing = None
+        except UndefinedTableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="butler_secrets table not available — migration may not have run",
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             logger.warning("set_system_credential: fetchrow failed key=%s: %s", key, exc)
             raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
@@ -4771,8 +4797,8 @@ async def set_system_credential(
             # First-time create.
             try:
                 await pool.execute(
-                    """
-                    INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
+                    f"""
+                    INSERT INTO {relation} (secret_key, secret_value, category, updated_at)
                     VALUES ($1, $2, $3, now())
                     """,
                     key,
@@ -4788,8 +4814,8 @@ async def set_system_credential(
             # Row exists — rotate the value.
             try:
                 await pool.execute(
-                    """
-                    UPDATE butler_secrets
+                    f"""
+                    UPDATE {relation}
                     SET secret_value = $1, updated_at = now()
                     WHERE secret_key = $2
                     """,
@@ -4912,14 +4938,18 @@ async def set_system_credential(
                 status_code=404,
                 detail=f"Butler {butler_name!r} is not registered",
             ) from exc
+        relation = _qualified_relation(
+            _secrets_source_schema(db, butler_name),
+            "butler_secrets",
+        )
 
         # Override row: UPSERT into the butler's butler_secrets table.
         # We always treat this as "overrode" regardless of whether a prior
         # override existed, per spec §System credential mutations.
         try:
             await pool.execute(
-                """
-                INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
+                f"""
+                INSERT INTO {relation} (secret_key, secret_value, category, updated_at)
                 VALUES ($1, $2, $3, now())
                 ON CONFLICT (secret_key) DO UPDATE
                     SET secret_value = EXCLUDED.secret_value,
@@ -5019,12 +5049,20 @@ async def probe_system_credential(
         except KeyError:
             continue
         source_schema = _secrets_source_schema(db, butler_name)
-        detail = await _fetch_single_system_secret(
-            pool,
-            butler_name,
-            key,
-            source_schema=source_schema,
-        )
+        try:
+            detail = await _fetch_single_system_secret(
+                pool,
+                butler_name,
+                key,
+                source_schema=source_schema,
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
+            )
+        except _SystemSecretSourceUnavailableError as exc:
+            logger.warning("System credential source unavailable for butler %s", butler_name)
+            raise HTTPException(
+                status_code=503,
+                detail=f"System credential source unavailable for butler {butler_name!r}",
+            ) from exc
         if detail is not None:
             found_pool = pool
             found_butler = butler_name
@@ -5232,11 +5270,12 @@ async def delete_system_credential(
                 status_code=503,
                 detail="Switchboard pool is not available",
             ) from exc
+        relation = _qualified_relation(_secrets_source_schema(db, "switchboard"), "butler_secrets")
 
         # Verify the row exists before deleting.
         try:
             existing = await pool.fetchrow(
-                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                f"SELECT secret_key FROM {relation} WHERE secret_key = $1",
                 key,
             )
         except UndefinedTableError as exc:
@@ -5252,7 +5291,7 @@ async def delete_system_credential(
 
         try:
             await pool.execute(
-                "DELETE FROM butler_secrets WHERE secret_key = $1",
+                f"DELETE FROM {relation} WHERE secret_key = $1",
                 key,
             )
         except Exception as exc:
@@ -5331,11 +5370,15 @@ async def delete_system_credential(
                 status_code=404,
                 detail=f"Butler {butler_name!r} is not registered",
             ) from exc
+        relation = _qualified_relation(
+            _secrets_source_schema(db, butler_name),
+            "butler_secrets",
+        )
 
         # Verify the override row exists.
         try:
             existing = await pool.fetchrow(
-                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                f"SELECT secret_key FROM {relation} WHERE secret_key = $1",
                 key,
             )
         except UndefinedTableError as exc:
@@ -5351,7 +5394,7 @@ async def delete_system_credential(
 
         try:
             await pool.execute(
-                "DELETE FROM butler_secrets WHERE secret_key = $1",
+                f"DELETE FROM {relation} WHERE secret_key = $1",
                 key,
             )
         except Exception as exc:

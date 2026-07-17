@@ -560,8 +560,14 @@ class _RaisingMemoryPool:
 class _MemoryFanOutDB:
     """Minimal two-pool database fixture for degraded memory list contracts."""
 
-    def __init__(self, pools: dict[str, object]) -> None:
+    def __init__(
+        self,
+        pools: dict[str, object],
+        *,
+        memory_schema_absent: set[str] | None = None,
+    ) -> None:
         self._pools = pools
+        self._memory_schema_absent = memory_schema_absent or set()
         self.butler_names = list(pools)
 
     def pool(self, name: str) -> object:
@@ -569,6 +575,11 @@ class _MemoryFanOutDB:
             return self._pools[name]
         except KeyError:
             raise KeyError(f"No pool for butler: {name}") from None
+
+    def relation_observed_since_start(self, name: str, relation: str) -> bool | None:
+        if name in self._memory_schema_absent:
+            return False
+        return None
 
 
 @pytest.mark.parametrize(
@@ -1686,7 +1697,8 @@ async def test_memory_detail_missing_schema_stays_a_truthful_404(kind: str, app)
         {
             "atlas": _MemoryDetailPool(),
             "switchboard": _MemoryDetailPool(error=UndefinedTableError("relation does not exist")),
-        }
+        },
+        memory_schema_absent={"switchboard"},
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 
@@ -1696,6 +1708,26 @@ async def test_memory_detail_missing_schema_stays_a_truthful_404(kind: str, app)
         resp = await client.get(path)
 
     assert resp.status_code == 404
+
+
+async def test_memory_detail_unknown_schema_state_is_degraded(app) -> None:
+    """An unrecorded missing schema is never silently treated as optional."""
+    path, _ = _detail_fixture("fact")
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _MemoryDetailPool(),
+            "switchboard": _MemoryDetailPool(error=UndefinedTableError("relation does not exist")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(path)
+
+    assert resp.status_code == 503
+    assert "switchboard" in resp.json()["detail"]
 
 
 def _make_entity_row(entity_id: uuid.UUID) -> dict:
@@ -1789,7 +1821,8 @@ async def test_entity_detail_skips_absent_fact_schema_without_degraded_flag(app)
             "switchboard": _EntityMemoryPool(
                 fact_error=UndefinedTableError("relation does not exist")
             ),
-        }
+        },
+        memory_schema_absent={"switchboard"},
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 
@@ -1819,7 +1852,8 @@ async def test_migrate_contact_facts_does_not_claim_success_after_failed_source(
         {
             "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
             "finance": _EntityMemoryPool(fact_update_error=error),
-        }
+        },
+        memory_schema_absent={"finance"} if isinstance(error, UndefinedTableError) else None,
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 

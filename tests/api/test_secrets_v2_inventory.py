@@ -58,6 +58,7 @@ from butlers.api.routers.secrets_v2 import (
     _fetch_probe_log,
     _fetch_probe_logs_bulk,
     _fetch_scopes_required_by_provider,
+    _fetch_single_system_secret,
     _fetch_system_secrets,
     _fetch_user_secrets,
     _fingerprint,
@@ -696,6 +697,28 @@ def test_classifier_connection_error_is_degraded():
     """A dropped connection / generic Postgres error is a genuine failure."""
     exc = Exception("connection reset by peer")
     assert _is_missing_secrets_schema_error(exc, schema_absent_at_start=True) is False
+
+
+def test_classifier_generic_relation_message_is_degraded():
+    """Only asyncpg's typed missing-table error may be a benign absence."""
+    exc = Exception('relation "butler_secrets" does not exist')
+    assert _is_missing_secrets_schema_error(exc, schema_absent_at_start=True) is False
+
+
+async def test_fetch_single_system_secret_missing_column_logs_warning(caplog):
+    """Legacy pools must not hide schema drift behind error-message matching."""
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        side_effect=UndefinedColumnError('column "last_verified" does not exist')
+    )
+
+    with caplog.at_level("DEBUG", logger="butlers.api.routers.secrets_v2"):
+        detail = await _fetch_single_system_secret(pool, "legacy", "SYSTEM_KEY")
+
+    assert detail is None
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert warnings
+    assert "SYSTEM_KEY" in warnings[0].getMessage()
 
 
 async def test_fetch_system_secrets_missing_table_does_not_mark_tracker():
