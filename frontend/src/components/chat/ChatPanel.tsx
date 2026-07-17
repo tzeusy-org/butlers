@@ -103,8 +103,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // Avoid overwriting optimistic/streaming messages while an SSE stream is active.
   useEffect(() => {
     if (streaming) return;
-    const msgs = messagesData?.data ?? [];
-    setLocalMessages(msgs);
+    // A conversation-key switch can briefly expose `messagesData` as undefined
+    // before the next query result lands. Keep the rendered thread during that
+    // gap rather than treating it as a successful empty conversation.
+    if (messagesData?.data) {
+      setLocalMessages(messagesData.data);
+    }
   }, [messagesData, streaming]);
 
   // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations. Migrated
@@ -382,7 +386,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           pricingMap={pricingMap}
         />
 
-        {isLoadingMessages && activeConversationId ? (
+        {isLoadingMessages && activeConversationId && localMessages.length === 0 ? (
           <MessageThreadSkeleton />
         ) : (
           <MessageThread

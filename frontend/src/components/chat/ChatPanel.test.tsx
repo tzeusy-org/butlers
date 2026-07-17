@@ -16,10 +16,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ChatContent } from "./ChatPanel";
+import type { Message } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -84,11 +85,16 @@ function mockHooksEmpty() {
 
 function renderChatContent() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const content = () => (
     <QueryClientProvider client={queryClient}>
       <ChatContent butlerName="switchboard" />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const view = render(content());
+  return {
+    ...view,
+    rerenderChatContent: () => view.rerender(content()),
+  };
 }
 
 beforeEach(() => {
@@ -235,6 +241,127 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
     // never reset.
     expect(screen.getAllByText("calendar thread")).toHaveLength(2);
     expect(screen.queryByText("New conversation")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retained thread during conversation-key refetch (bu-zu265)
+// ---------------------------------------------------------------------------
+
+const SWITCHING_CONVERSATIONS = [
+  {
+    id: "conv-current",
+    butler_name: "switchboard",
+    title: "Current thread",
+    status: "active",
+    created_at: "2026-07-03T12:00:00.000Z",
+    updated_at: "2026-07-04T12:00:00.000Z",
+    message_count: 1,
+    total_input_tokens: 5,
+    total_output_tokens: 5,
+    total_duration_ms: 200,
+    routed_butler: null,
+  },
+  {
+    id: "conv-next",
+    butler_name: "switchboard",
+    title: "Next thread",
+    status: "active",
+    created_at: "2026-07-02T12:00:00.000Z",
+    updated_at: "2026-07-03T12:00:00.000Z",
+    message_count: 1,
+    total_input_tokens: 5,
+    total_output_tokens: 5,
+    total_duration_ms: 200,
+    routed_butler: null,
+  },
+];
+
+const CURRENT_THREAD_MESSAGE: Message = {
+  id: "current-thread-message",
+  conversation_id: "conv-current",
+  role: "user",
+  content: "Retained while the next thread refetches",
+  tool_calls: null,
+  error: null,
+  model: null,
+  input_tokens: null,
+  output_tokens: null,
+  duration_ms: null,
+  session_id: null,
+  request_id: null,
+  created_at: "2026-07-04T12:00:00.000Z",
+};
+
+const NEXT_THREAD_MESSAGE: Message = {
+  ...CURRENT_THREAD_MESSAGE,
+  id: "next-thread-message",
+  conversation_id: "conv-next",
+  content: "Rendered when the next thread arrives",
+};
+
+function mockHooksForConversationRefetchGap() {
+  const conversationsResult = {
+    data: { data: SWITCHING_CONVERSATIONS, meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversations>;
+  const emptyMessagesResult = {
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  const currentMessagesResult = {
+    data: { data: [CURRENT_THREAD_MESSAGE], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+  let nextMessagesResult = {
+    data: undefined,
+    isLoading: true,
+  } as unknown as ReturnType<typeof useConversationMessages>;
+
+  vi.mocked(useConversations).mockReturnValue(conversationsResult);
+  vi.mocked(useConversationMessages).mockImplementation(
+    (_butlerName: string, conversationId: string | null) => {
+      if (conversationId === "conv-current") return currentMessagesResult;
+      if (conversationId === "conv-next") return nextMessagesResult;
+      return emptyMessagesResult;
+    },
+  );
+  vi.mocked(useConversationSearch).mockReturnValue({
+    data: { data: [], meta: {} },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useConversationSearch>);
+
+  return {
+    resolveNextThread() {
+      nextMessagesResult = {
+        data: { data: [NEXT_THREAD_MESSAGE], meta: {} },
+        isLoading: false,
+      } as unknown as ReturnType<typeof useConversationMessages>;
+    },
+  };
+}
+
+describe("ChatContent — conversation switch refetch floor (bu-zu265)", () => {
+  it("keeps the current thread visible while loading, then synchronizes the next thread", async () => {
+    const { resolveNextThread } = mockHooksForConversationRefetchGap();
+    const view = renderChatContent();
+
+    expect(screen.getByText("Retained while the next thread refetches")).toBeDefined();
+
+    fireEvent.click(screen.getByText("Next thread"));
+
+    // The conversation selection changes immediately and TanStack Query's
+    // pending result has no data. Retain the rendered thread instead of
+    // replacing it with a loading skeleton during that gap.
+    expect(screen.getAllByText("Next thread")).toHaveLength(2);
+    expect(screen.getByText("Retained while the next thread refetches")).toBeDefined();
+    expect(screen.queryByText("No messages yet. Start the conversation below.")).toBeNull();
+
+    resolveNextThread();
+    view.rerenderChatContent();
+
+    await waitFor(() => expect(screen.getByText("Rendered when the next thread arrives")).toBeDefined());
+    expect(screen.queryByText("Retained while the next thread refetches")).toBeNull();
   });
 });
 
