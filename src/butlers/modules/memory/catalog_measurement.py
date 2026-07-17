@@ -28,6 +28,7 @@ from butlers.db import db_params_from_env
 from butlers.modules.memory.search import resolve_allowed_sensitivities
 
 CATALOG_EMBEDDING_DIMENSIONS = 384
+MAX_FLOAT32_COMPONENT = 3.4028234663852886e38
 MAX_QUERY_VECTORS = 25
 MAX_LIMIT = 50
 DEFAULT_EXACT_CANDIDATE_CAP = 50_000
@@ -84,8 +85,11 @@ class CatalogMeasurementRequest:
                 isinstance(value, (int, float)) and not isinstance(value, bool) for value in vector
             ):
                 raise ValueError("each query vector value must be numeric")
-            if not all(math.isfinite(float(value)) for value in vector):
-                raise ValueError("each query vector value must be finite")
+            if not all(
+                -MAX_FLOAT32_COMPONENT <= value <= MAX_FLOAT32_COMPONENT and math.isfinite(value)
+                for value in vector
+            ):
+                raise ValueError("each query vector value must be finite and float32-representable")
 
 
 @dataclass(frozen=True)

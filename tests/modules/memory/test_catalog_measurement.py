@@ -400,6 +400,12 @@ def test_request_rejects_non_numeric_vector_values_before_database_access(
         ([[_vector()[0]] * 383], 1, "384 dimensions"),
         ([[True] + [0.0] * 383], 1, "numeric"),
         ([[float("nan")] + [0.0] * 383], 1, "finite"),
+        pytest.param(
+            [[1e39] + [0.0] * 383],
+            1,
+            "float32",
+            id="float32-overflow",
+        ),
         ([_vector()], 0, "limit must be between"),
     ],
 )
