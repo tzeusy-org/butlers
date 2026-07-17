@@ -1573,12 +1573,22 @@ def _group_due_deferred_notifications(
     recipient (resolve the owner's default channel identifier) is its own
     group key, distinct from any explicit recipient, so an explicitly-targeted
     send is never silently folded into an owner-default digest or vice versa.
+
+    A decision dossier is bound to one non-owner delivery decision. Do not
+    fold such rows into a rewritten digest envelope: each must retain its own
+    validated context for flush-time recipient-gate revalidation.
     """
-    groups: dict[tuple[str | None, str | None], list[dict[str, Any]]] = {}
-    order: list[tuple[str | None, str | None]] = []
+    groups: dict[tuple[str | None, str | None, str | None], list[dict[str, Any]]] = {}
+    order: list[tuple[str | None, str | None, str | None]] = []
     for row in rows:
-        delivery = (row["envelope"] or {}).get("delivery", {}) or {}
-        key = (delivery.get("channel") or row["channel"], delivery.get("recipient"))
+        envelope = row["envelope"] or {}
+        delivery = envelope.get("delivery", {}) or {}
+        dossier_row_id = str(row["id"]) if envelope.get("decision_dossier") is not None else None
+        key = (
+            delivery.get("channel") or row["channel"],
+            delivery.get("recipient"),
+            dossier_row_id,
+        )
         if key not in groups:
             groups[key] = []
             order.append(key)

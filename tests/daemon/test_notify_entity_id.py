@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager, contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -845,6 +846,133 @@ class TestNotifyDecisionDossierBoundary:
             if "INSERT INTO pending_actions" in call.args[0]
         ]
         assert pending_inserts == []
+
+    async def test_quiet_hours_reject_non_owner_missing_why_before_deferral(
+        self, butler_dir: Path
+    ) -> None:
+        """Quiet-hours storage cannot bypass the non-owner dossier boundary."""
+        mock_pool, _ = _make_pool_with_entity_facts_conn()
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        deferred_insert = AsyncMock(return_value=uuid.uuid4())
+        match_rules = AsyncMock(side_effect=AssertionError("rules must not be queried"))
+
+        with (
+            patch(
+                "butlers.core.temporal.delivery_db.get_delivery_preferences",
+                new=AsyncMock(return_value={"timezone": "UTC"}),
+            ),
+            patch(
+                "butlers.core.temporal.delivery.should_defer_notification",
+                return_value=True,
+            ),
+            patch(
+                "butlers.core.temporal.delivery.compute_deliver_at",
+                return_value=datetime.now(UTC),
+            ),
+            patch(
+                "butlers.core.temporal.delivery_db.insert_deferred_notification",
+                new=deferred_insert,
+            ),
+            patch(
+                "butlers.core_tools._notifications.record_attention_event",
+                new=AsyncMock(),
+            ),
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch("butlers.modules.approvals.rules.match_rules", new=match_rules),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Non-owner update",
+                recipient="900800700",
+                priority="medium",
+            )
+
+        assert result["status"] == "error"
+        assert result["error"]["code"] == "missing_required_dossier_field"
+        assert result["retryable"] is True
+        deferred_insert.assert_not_awaited()
+        match_rules.assert_not_awaited()
+        pending_inserts = [
+            call
+            for call in mock_pool.execute.await_args_list
+            if "INSERT INTO pending_actions" in call.args[0]
+        ]
+        assert pending_inserts == []
+
+    async def test_quiet_hours_preserves_valid_dossier_in_deferred_envelope(
+        self, butler_dir: Path
+    ) -> None:
+        """A valid non-owner dossier survives a delayed route.execute delivery."""
+        mock_pool, _ = _make_pool_with_entity_facts_conn()
+        patches = _patch_infra()
+        _patch_db_in_patches(patches, mock_pool)
+        daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+        deferred_insert = AsyncMock(return_value=uuid.uuid4())
+        evidence = [
+            {
+                "type": "text",
+                "ref": "request-900800700",
+                "note": "The recipient asked for this update.",
+            }
+        ]
+        standing_rule = MagicMock(id=uuid.uuid4())
+        match_rules = AsyncMock(return_value=standing_rule)
+
+        with (
+            patch(
+                "butlers.core.temporal.delivery_db.get_delivery_preferences",
+                new=AsyncMock(return_value={"timezone": "UTC"}),
+            ),
+            patch(
+                "butlers.core.temporal.delivery.should_defer_notification",
+                return_value=True,
+            ),
+            patch(
+                "butlers.core.temporal.delivery.compute_deliver_at",
+                return_value=datetime.now(UTC),
+            ),
+            patch(
+                "butlers.core.temporal.delivery_db.insert_deferred_notification",
+                new=deferred_insert,
+            ),
+            patch(
+                "butlers.core_tools._notifications.record_attention_event",
+                new=AsyncMock(),
+            ),
+            patch(
+                "butlers.identity.resolve_contact_by_channel",
+                new=AsyncMock(return_value=_non_owner_contact()),
+            ),
+            patch("butlers.modules.approvals.rules.match_rules", new=match_rules),
+        ):
+            result = await notify_fn(
+                channel="telegram",
+                message="Non-owner update",
+                recipient="900800700",
+                priority="medium",
+                _why="The recipient asked for this update.",
+                _evidence=evidence,
+                _blast_radius="contact",
+                _reversibility="compensable",
+            )
+
+        assert result["status"] == "deferred"
+        match_rules.assert_awaited_once()
+        envelope = deferred_insert.await_args.kwargs["envelope"]
+        assert envelope["delivery"]["recipient"] == "900800700"
+        assert envelope["decision_dossier"] == {
+            "why": "The recipient asked for this update.",
+            "evidence": evidence,
+            "blast_radius": "contact",
+            "reversibility": "compensable",
+        }
 
     async def test_non_owner_missing_identifier_requires_dossier_before_park(
         self, butler_dir: Path

@@ -387,6 +387,33 @@ def test_notify_contracts():
     )
     assert result3.delivery.intent == "insight" and result3.request_context is None
 
+    dossier = {
+        "why": "The recipient asked for this update.",
+        "evidence": [
+            {
+                "type": "text",
+                "ref": "request-123",
+                "note": "The original request.",
+            }
+        ],
+        "blast_radius": "contact",
+        "reversibility": "compensable",
+    }
+    result4 = parse_notify_request(
+        {
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": "Requested update.",
+                "recipient": "123456789",
+            },
+            "decision_dossier": dossier,
+        }
+    )
+    assert result4.decision_dossier == dossier
+
     # Empty/whitespace message rejected for insight
     for msg in ["", "   "]:
         with pytest.raises(ValidationError):

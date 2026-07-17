@@ -527,220 +527,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     ),
                 }
 
-            # Quiet-hours gate: check delivery preferences and defer if needed
             _notify_pool = daemon.db.pool if daemon.db is not None else None
-            if _notify_pool is not None and intent in {"send", "insight"}:
-                from datetime import UTC as _UTC
-                from datetime import datetime as _datetime
-                from zoneinfo import ZoneInfo as _ZoneInfo
-
-                from butlers.core.temporal.delivery import (
-                    compute_deliver_at,
-                    should_defer_notification,
-                )
-                from butlers.core.temporal.delivery_db import (
-                    get_delivery_preferences,
-                    insert_deferred_notification,
-                )
-
-                try:
-                    _prefs = await get_delivery_preferences(_notify_pool, butler_name)
-                except Exception:
-                    # Table may not exist yet or pool unavailable; deliver immediately
-                    logger.exception(
-                        "notify() failed to fetch delivery preferences; delivering immediately"
-                    )
-                    _prefs = None
-                if _prefs is not None:
-                    _tz_name = _prefs.get("timezone", "UTC")
-                    try:
-                        _tz = _ZoneInfo(_tz_name)
-                    except Exception:
-                        _tz = _ZoneInfo("UTC")
-                    _now_utc = _datetime.now(_UTC)
-                    _now_local = _now_utc.astimezone(_tz).time()
-
-                    if should_defer_notification(
-                        priority=priority,
-                        current_time=_now_local,
-                        prefs=_prefs,
-                        channel=channel,
-                    ):
-                        # Build notify.v1 envelope to persist
-                        _envelope: dict[str, Any] = {
-                            "schema_version": "notify.v1",
-                            "origin_butler": butler_name,
-                            "delivery": {
-                                "intent": intent,
-                                "channel": channel,
-                                "message": message or "",
-                            },
-                        }
-                        if subject is not None:
-                            _envelope["delivery"]["subject"] = subject
-                        if recipient is not None:
-                            _envelope["delivery"]["recipient"] = recipient
-                        if request_context is not None:
-                            _envelope["request_context"] = request_context
-
-                        _deliver_at = compute_deliver_at(prefs=_prefs, now=_now_utc)
-                        try:
-                            _notif_id = await insert_deferred_notification(
-                                _notify_pool,
-                                butler_name=butler_name,
-                                channel=channel,
-                                message=message or "",
-                                priority=priority,
-                                envelope=_envelope,
-                                deliver_at=_deliver_at,
-                                deferred_at=_now_utc,
-                            )
-                            logger.info(
-                                "notify() deferred notification %s (priority=%s) to %s",
-                                _notif_id,
-                                priority,
-                                _deliver_at.isoformat(),
-                            )
-                            await record_attention_event(
-                                _notify_pool,
-                                origin_butler=butler_name,
-                                source="notify",
-                                outcome="deferred",
-                                channel=channel,
-                                intent=intent,
-                                priority=priority,
-                                reason="delivery_preferences_quiet_hours",
-                                notification_ref=_notif_id,
-                            )
-                            return {
-                                "status": "deferred",
-                                "notification_id": _notif_id,
-                                "deliver_at": _deliver_at.isoformat(),
-                                "channel": channel,
-                                "priority": priority,
-                            }
-                        except Exception:
-                            # If we can't persist, fall through to immediate delivery
-                            logger.exception(
-                                "notify() failed to defer notification; delivering immediately"
-                            )
-
-            # Approvals-policy quiet-hours gate: suppress owner-default pages.
-            # Applies only when no explicit entity_id or recipient is given
-            # (i.e. the notification is destined for the owner via the default
-            # resolution path), the intent is send/insight, and priority is not
-            # high (high-priority always delivers immediately, per §8.6 spec).
-            if (
-                _notify_pool is not None
-                and entity_id is None
-                and recipient is None
-                and intent in {"send", "insight"}
-                and priority != "high"
-            ):
-                from datetime import UTC as _PUTC
-                from datetime import datetime as _pdatetime
-                from zoneinfo import ZoneInfo as _PZoneInfo
-
-                from butlers.core.approvals_policy import (
-                    get_approvals_policy_quiet_hours,
-                    should_suppress_by_policy,
-                )
-
-                try:
-                    _policy = await get_approvals_policy_quiet_hours(_notify_pool)
-                except Exception:
-                    logger.debug(
-                        "notify() failed to fetch approvals_policy; delivering immediately",
-                        exc_info=True,
-                    )
-                    _policy = None
-
-                _quiet_hours_suppress = False
-                _policy_tz_name = "UTC"
-                if _policy is not None:
-                    _policy_tz_name = _policy.get("timezone", "UTC")
-                    try:
-                        _policy_tz = _PZoneInfo(_policy_tz_name)
-                    except Exception:
-                        _policy_tz = _PZoneInfo("UTC")
-                    _policy_now_local = _pdatetime.now(_PUTC).astimezone(_policy_tz)
-                    _policy_current_hour = _policy_now_local.hour
-                    _quiet_hours_suppress = should_suppress_by_policy(
-                        _policy, current_hour=_policy_current_hour
-                    )
-
-                if _quiet_hours_suppress:
-                    logger.info(
-                        "notify() suppressed owner page during quiet hours "
-                        "(policy tz=%s hour=%d quiet=%s-%s channel=%s butler=%s)",
-                        _policy_tz_name,
-                        _policy_current_hour,
-                        _policy.get("quiet_start_hour"),
-                        _policy.get("quiet_end_hour"),
-                        channel,
-                        butler_name,
-                    )
-                    await record_attention_event(
-                        _notify_pool,
-                        origin_butler=butler_name,
-                        source="notify",
-                        outcome="suppressed",
-                        channel=channel,
-                        intent=intent,
-                        priority=priority,
-                        reason="quiet_hours",
-                    )
-                    return {
-                        "status": "suppressed_quiet_hours",
-                        "channel": channel,
-                        "quiet_start_hour": _policy.get("quiet_start_hour"),
-                        "quiet_end_hour": _policy.get("quiet_end_hour"),
-                        "timezone": _policy_tz_name,
-                    }
-
-                # Context-bus gating (bu-qvnce.8 slice 2): deterministic dnd/sleeping
-                # check, only reached when quiet hours did NOT already suppress
-                # (avoids a redundant DB round-trip on the already-decided path).
-                # Scoped identically to the quiet-hours gate above: owner-default
-                # path only, send/insight intents, non-high priority (fail-open
-                # for urgent traffic).
-                _context_signal = await get_suppressing_context_signal(_notify_pool)
-                if _context_signal is not None:
-                    logger.info(
-                        "notify() suppressed owner page: context bus signal %r active "
-                        "(channel=%s butler=%s)",
-                        _context_signal,
-                        channel,
-                        butler_name,
-                    )
-                    await record_attention_event(
-                        _notify_pool,
-                        origin_butler=butler_name,
-                        source="notify",
-                        outcome="suppressed",
-                        channel=channel,
-                        intent=intent,
-                        priority=priority,
-                        reason=f"context_bus:{_context_signal}",
-                    )
-                    return {
-                        "status": "suppressed_context_bus",
-                        "channel": channel,
-                        "context_signal": _context_signal,
-                    }
-
             client = daemon.switchboard_client
-            if client is None and butler_name != "switchboard":
-                return {
-                    "status": "error",
-                    "error": (
-                        "Switchboard is not connected. Cannot deliver notification. "
-                        "The Switchboard butler may not be running — this is a transient "
-                        "infrastructure issue, not a parameter error. Retry after a delay "
-                        "or check butler status."
-                    ),
-                    "retryable": True,
-                }
 
             # Resolution priority:
             # (1) entity_id → query relationship.entity_facts keyed on the entity;
@@ -1061,6 +849,209 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 notify_request["delivery"]["subject"] = subject
             if request_context is not None:
                 notify_request["request_context"] = request_context
+            if any(value is not None for value in (_why, _evidence, _blast_radius, _reversibility)):
+                # The recipient guards above have already validated every supplied
+                # value. Keep the validated call context on the immutable delivery
+                # envelope so a deferred flush is rechecked with the same dossier.
+                notify_request["decision_dossier"] = {
+                    "why": _why,
+                    "evidence": _evidence if _evidence is not None else [],
+                    "blast_radius": _blast_radius,
+                    "reversibility": _reversibility,
+                }
+
+            # Quiet-hours delivery is a persistence boundary. Resolve the
+            # recipient and enforce the decision dossier before enqueuing so a
+            # deferred non-owner send cannot bypass the approval guard.
+            if _notify_pool is not None and intent in {"send", "insight"}:
+                from datetime import UTC as _UTC
+                from datetime import datetime as _datetime
+                from zoneinfo import ZoneInfo as _ZoneInfo
+
+                from butlers.core.temporal.delivery import (
+                    compute_deliver_at,
+                    should_defer_notification,
+                )
+                from butlers.core.temporal.delivery_db import (
+                    get_delivery_preferences,
+                    insert_deferred_notification,
+                )
+
+                try:
+                    _prefs = await get_delivery_preferences(_notify_pool, butler_name)
+                except Exception:
+                    # Table may not exist yet or pool unavailable; deliver immediately.
+                    logger.exception(
+                        "notify() failed to fetch delivery preferences; delivering immediately"
+                    )
+                    _prefs = None
+                if _prefs is not None:
+                    _tz_name = _prefs.get("timezone", "UTC")
+                    try:
+                        _tz = _ZoneInfo(_tz_name)
+                    except Exception:
+                        _tz = _ZoneInfo("UTC")
+                    _now_utc = _datetime.now(_UTC)
+                    _now_local = _now_utc.astimezone(_tz).time()
+
+                    if should_defer_notification(
+                        priority=priority,
+                        current_time=_now_local,
+                        prefs=_prefs,
+                        channel=channel,
+                    ):
+                        _deliver_at = compute_deliver_at(prefs=_prefs, now=_now_utc)
+                        try:
+                            _notif_id = await insert_deferred_notification(
+                                _notify_pool,
+                                butler_name=butler_name,
+                                channel=channel,
+                                message=delivery_message,
+                                priority=priority,
+                                envelope=notify_request,
+                                deliver_at=_deliver_at,
+                                deferred_at=_now_utc,
+                            )
+                            logger.info(
+                                "notify() deferred notification %s (priority=%s) to %s",
+                                _notif_id,
+                                priority,
+                                _deliver_at.isoformat(),
+                            )
+                            await record_attention_event(
+                                _notify_pool,
+                                origin_butler=butler_name,
+                                source="notify",
+                                outcome="deferred",
+                                channel=channel,
+                                intent=intent,
+                                priority=priority,
+                                reason="delivery_preferences_quiet_hours",
+                                notification_ref=_notif_id,
+                            )
+                            return {
+                                "status": "deferred",
+                                "notification_id": _notif_id,
+                                "deliver_at": _deliver_at.isoformat(),
+                                "channel": channel,
+                                "priority": priority,
+                            }
+                        except Exception:
+                            # If we cannot persist, fall through to immediate delivery.
+                            logger.exception(
+                                "notify() failed to defer notification; delivering immediately"
+                            )
+
+            # Approvals-policy quiet-hours gate: suppress owner-default pages.
+            # It remains after delivery-preference deferral: the former drops
+            # owner-default pages, while the latter preserves authorised sends for
+            # a later flush.
+            if (
+                _notify_pool is not None
+                and entity_id is None
+                and recipient is None
+                and intent in {"send", "insight"}
+                and priority != "high"
+            ):
+                from datetime import UTC as _PUTC
+                from datetime import datetime as _pdatetime
+                from zoneinfo import ZoneInfo as _PZoneInfo
+
+                from butlers.core.approvals_policy import (
+                    get_approvals_policy_quiet_hours,
+                    should_suppress_by_policy,
+                )
+
+                try:
+                    _policy = await get_approvals_policy_quiet_hours(_notify_pool)
+                except Exception:
+                    logger.debug(
+                        "notify() failed to fetch approvals_policy; delivering immediately",
+                        exc_info=True,
+                    )
+                    _policy = None
+
+                _quiet_hours_suppress = False
+                _policy_tz_name = "UTC"
+                if _policy is not None:
+                    _policy_tz_name = _policy.get("timezone", "UTC")
+                    try:
+                        _policy_tz = _PZoneInfo(_policy_tz_name)
+                    except Exception:
+                        _policy_tz = _PZoneInfo("UTC")
+                    _policy_now_local = _pdatetime.now(_PUTC).astimezone(_policy_tz)
+                    _policy_current_hour = _policy_now_local.hour
+                    _quiet_hours_suppress = should_suppress_by_policy(
+                        _policy, current_hour=_policy_current_hour
+                    )
+
+                if _quiet_hours_suppress:
+                    logger.info(
+                        "notify() suppressed owner page during quiet hours "
+                        "(policy tz=%s hour=%d quiet=%s-%s channel=%s butler=%s)",
+                        _policy_tz_name,
+                        _policy_current_hour,
+                        _policy.get("quiet_start_hour"),
+                        _policy.get("quiet_end_hour"),
+                        channel,
+                        butler_name,
+                    )
+                    await record_attention_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="suppressed",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        reason="quiet_hours",
+                    )
+                    return {
+                        "status": "suppressed_quiet_hours",
+                        "channel": channel,
+                        "quiet_start_hour": _policy.get("quiet_start_hour"),
+                        "quiet_end_hour": _policy.get("quiet_end_hour"),
+                        "timezone": _policy_tz_name,
+                    }
+
+                # Context-bus gating is only reached when policy quiet hours did
+                # not suppress the owner-default notification.
+                _context_signal = await get_suppressing_context_signal(_notify_pool)
+                if _context_signal is not None:
+                    logger.info(
+                        "notify() suppressed owner page: context bus signal %r active "
+                        "(channel=%s butler=%s)",
+                        _context_signal,
+                        channel,
+                        butler_name,
+                    )
+                    await record_attention_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="suppressed",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        reason=f"context_bus:{_context_signal}",
+                    )
+                    return {
+                        "status": "suppressed_context_bus",
+                        "channel": channel,
+                        "context_signal": _context_signal,
+                    }
+
+            if client is None and butler_name != "switchboard":
+                return {
+                    "status": "error",
+                    "error": (
+                        "Switchboard is not connected. Cannot deliver notification. "
+                        "The Switchboard butler may not be running — this is a transient "
+                        "infrastructure issue, not a parameter error. Retry after a delay "
+                        "or check butler status."
+                    ),
+                    "retryable": True,
+                }
 
             deliver_args: dict[str, Any] = {
                 "source_butler": butler_name,
