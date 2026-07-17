@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Detect tool-session URLs leaking into PR bodies, commit messages, or review comments.
+"""Detect tool-session URLs leaking into PR titles/bodies, commits, or review comments.
 
 Background (bu-mr5t5): a PR merged externally before a scrubbing pass on its
 body completed, leaving a session-attribution line permanently baked into a
 merge commit on `main`. This module gives CI, and the `butler-qa-pr-review`
 validator, a deterministic, fail-closed way to catch that class of leakage
 *before* merge instead of after.
+
+The sole exception is an exact ``Claude-Session: https://claude.ai/code/session_...``
+line in a terminal Git commit-trailer block. The owner's Claude Code setup adds
+that provenance trailer automatically; it remains forbidden in all PR and
+review surfaces, and anywhere else in a commit message.
 
 Scope and self-match-safety, by design: this module only ever inspects text
 handed to it by the caller (a PR body string, git commit messages, review
@@ -27,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import secrets
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -45,6 +51,14 @@ def _compiled(pattern: str) -> re.Pattern[str]:
     return re.compile(pattern, re.IGNORECASE)
 
 
+_CLAUDE_CODE_SESSION_URL = r"claude\.ai/code/session[_-][A-Za-z0-9]+"
+# The sole exemption is case-sensitive: only the exact terminal Git trailer
+# spelling `Claude-Session:` may be removed. Detection patterns stay
+# case-insensitive via `_compiled()` below.
+_ALLOWED_CLAUDE_SESSION_TRAILER = re.compile(
+    rf"Claude-Session:[ \t]+https://{_CLAUDE_CODE_SESSION_URL}[ \t]*"
+)
+
 # Maintainable constant: one entry per known tool-session link/footer shape.
 # Assembled from a survey of this repo's merged PR bodies and commit history
 # (bu-mr5t5) plus the other LLM CLI runtimes this codebase already spawns
@@ -57,7 +71,7 @@ SESSION_LINK_PATTERNS: tuple[SessionLinkPattern, ...] = (
     ),
     SessionLinkPattern(
         name="claude-code-session-url",
-        regex=_compiled(r"claude\.ai/code/session[_-][A-Za-z0-9]+"),
+        regex=_compiled(_CLAUDE_CODE_SESSION_URL),
         description="Claude Code hosted session URL",
     ),
     SessionLinkPattern(
@@ -100,11 +114,59 @@ def find_session_links(text: str) -> list[tuple[SessionLinkPattern, str]]:
     return hits
 
 
+def _strip_allowed_claude_session_commit_trailers(message: str) -> str:
+    """Remove exact Claude session trailers from a terminal Git trailer block.
+
+    The generic matcher remains intentionally strict. This source-specific
+    preprocessing runs only for commit messages and only removes exact HTTPS
+    Claude session lines that ``git interpret-trailers`` recognizes. Git owns
+    the trailer grammar, including separator whitespace, folded values, and
+    its terminal-block rules. A matching line in the subject/body, or with a
+    folded continuation, therefore remains visible to ``find_session_links``.
+    """
+    original_lines = message.splitlines(keepends=True)
+    parse_lines = original_lines.copy()
+    candidate_markers: dict[int, str] = {}
+
+    for index, line in enumerate(original_lines):
+        if not _ALLOWED_CLAUDE_SESSION_TRAILER.fullmatch(line.rstrip("\r\n")):
+            continue
+
+        marker = f"sessionlinkguard{secrets.token_hex(16)}"
+        line_ending = line[len(line.rstrip("\r\n")) :]
+        parse_lines[index] = f"Claude-Session: {marker}{line_ending}"
+        candidate_markers[index] = marker
+
+    if not candidate_markers:
+        return message
+
+    # Keep Git's default divider handling: text after `---` is commit text,
+    # not an exempt trailer block.
+    proc = subprocess.run(
+        ["git", "interpret-trailers", "--parse"],
+        input="".join(parse_lines),
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    parsed_trailers = {line.casefold() for line in proc.stdout.splitlines()}
+
+    for index, marker in candidate_markers.items():
+        if f"claude-session: {marker}" in parsed_trailers:
+            original_lines[index] = ""
+    return "".join(original_lines)
+
+
 def scan_sources(named_texts: dict[str, str]) -> list[Finding]:
     """Scan a {source_label: text} map. Returns findings in source-then-pattern order."""
     findings: list[Finding] = []
     for source, text in named_texts.items():
-        for pattern, matched_text in find_session_links(text):
+        scan_text = (
+            _strip_allowed_claude_session_commit_trailers(text)
+            if source.startswith("commit ")
+            else text
+        )
+        for pattern, matched_text in find_session_links(scan_text):
             findings.append(Finding(source, pattern.name, pattern.description, matched_text))
     return findings
 
@@ -119,7 +181,7 @@ def format_findings(findings: list[Finding]) -> str:
         )
     lines.append(
         "Strip the offending line(s) before merge — session/task URLs must never "
-        "reach the PR body, a commit message, or a review reply."
+        "reach a PR title/body, review reply, or non-trailer commit text."
     )
     return "\n".join(lines)
 
@@ -127,21 +189,23 @@ def format_findings(findings: list[Finding]) -> str:
 def iter_commit_messages(commit_range: str, cwd: Path | None = None) -> dict[str, str]:
     """Return {"commit <short-sha>": full message} for every commit in commit_range."""
     proc = subprocess.run(
-        ["git", "log", "--format=%H%x1f%B%x1e", commit_range],
+        ["git", "log", "--format=%H", commit_range],
         cwd=cwd,
         capture_output=True,
         check=True,
         text=True,
     )
     out: dict[str, str] = {}
-    for record in proc.stdout.split("\x1e"):
-        record = record.strip("\n")
-        if not record:
-            continue
-        sha, _, body = record.partition("\x1f")
-        if not sha:
-            continue
-        out[f"commit {sha[:12]}"] = body
+    for sha in proc.stdout.splitlines():
+        # Commit bodies can contain arbitrary control bytes, so retrieve each
+        # one separately instead of framing bodies with an in-band delimiter.
+        body_proc = subprocess.run(
+            ["git", "show", "-s", "--format=%B", sha],
+            cwd=cwd,
+            capture_output=True,
+            check=True,
+        )
+        out[f"commit {sha[:12]}"] = body_proc.stdout.decode("utf-8", errors="surrogateescape")
     return out
 
 
@@ -175,9 +239,12 @@ def _load_review_comments(path: Path) -> dict[str, str]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Fail closed when a PR body, commit message, or review comment "
+            "Fail closed when a PR title/body, commit message, or review comment "
             "contains a tool-session link/footer pattern (see SESSION_LINK_PATTERNS)."
         )
+    )
+    parser.add_argument(
+        "--pr-title-file", type=Path, help="Path to a file containing the PR title text"
     )
     parser.add_argument(
         "--pr-body-file", type=Path, help="Path to a file containing the PR body text"
@@ -217,9 +284,14 @@ def main(argv: list[str] | None = None) -> int:
     # to scan, so it's clean" outcome, not the same as "no input was requested
     # at all" — the two need different messages even though both end up with
     # an empty (or empty-valued) named_texts dict.
-    requested_any_input = bool(args.pr_body_stdin or args.pr_body_file or args.commit_range)
+    requested_any_input = bool(
+        args.pr_title_file or args.pr_body_stdin or args.pr_body_file or args.commit_range
+    )
 
     named_texts: dict[str, str] = {}
+
+    if args.pr_title_file:
+        named_texts["pr_title"] = args.pr_title_file.read_text()
 
     if args.pr_body_stdin:
         named_texts["pr_body"] = sys.stdin.read()
@@ -248,8 +320,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if not requested_any_input:
         print(
-            "session_link_guard: no input provided (need --pr-body-file/--pr-body-stdin "
-            "and/or --commit-range); nothing to scan.",
+            "session_link_guard: no input provided (need --pr-title-file, "
+            "--pr-body-file/--pr-body-stdin, and/or --commit-range); nothing to scan.",
             file=sys.stderr,
         )
         return 0

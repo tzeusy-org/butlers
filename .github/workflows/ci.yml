@@ -13,10 +13,11 @@ concurrency:
 jobs:
   session-link-guard:
     # Fast, dependency-free gate (bu-mr5t5): fails the PR when a tool-session
-    # link/footer (see scripts/session_link_guard.py) leaks into the PR body
-    # or any commit message on the current head. Review-comment coverage is
-    # best-effort (falls back to an empty set on any API hiccup) so a GitHub
-    # API blip never blocks the mandatory body/commit checks. Advisory like
+    # link/footer (see scripts/session_link_guard.py) leaks into the PR title,
+    # body, review comments, or non-trailer commit text on the current head.
+    # Review-comment coverage is best-effort (falls back to an empty set on
+    # any API hiccup) so a GitHub API blip never blocks the mandatory
+    # title/body/commit checks. Advisory like
     # every other check in this workflow: see docs note below on required-check
     # status.
     runs-on: ubuntu-latest
@@ -35,10 +36,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Write PR body to file
+      - name: Write PR title and body to files
         env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: printf '%s' "$PR_BODY" > "${RUNNER_TEMP}/pr_body.txt"
+        run: |
+          printf '%s' "$PR_TITLE" > "${RUNNER_TEMP}/pr_title.txt"
+          printf '%s' "$PR_BODY" > "${RUNNER_TEMP}/pr_body.txt"
 
       - name: Fetch review comments (best-effort)
         env:
@@ -66,6 +70,7 @@ jobs:
       - name: Scan for tool-session links
         run: |
           python3 scripts/session_link_guard.py \
+            --pr-title-file "${RUNNER_TEMP}/pr_title.txt" \
             --pr-body-file "${RUNNER_TEMP}/pr_body.txt" \
             --commit-range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
             --review-comments-file "${RUNNER_TEMP}/review_comments.json"

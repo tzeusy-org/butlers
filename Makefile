@@ -89,8 +89,8 @@ check: lint check-for-update-joins check-integration-coverage check-em-dashes te
 
 # Local dry run of the session-link-guard CI job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage
-# before you push. No PR body or review comments to check locally, so this
-# is a strict subset of what CI enforces — treat it as a pre-push sanity
+# before you push. No PR title/body or review comments to check locally, so
+# this is a strict subset of what CI enforces — treat it as a pre-push sanity
 # check, not a full substitute for the CI job.
 check-session-links:
 	python3 scripts/session_link_guard.py --commit-range "origin/main..HEAD"

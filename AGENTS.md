@@ -207,19 +207,21 @@ All code changes must go through a pull request — never `git push origin main`
 and should be kept enabled. Do branch work in a dedicated worktree; keep the repo
 root on `main` (see CLAUDE.md "Repo Root Discipline"). See bu-ue37d.
 
-### No session-attribution footers in commits or PR bodies (session-link-guard)
+### Session-link privacy guard (session-link-guard)
 The `session-link-guard` CI gate (bu-mr5t5, a session-link leak/privacy gate)
-blocks any commit message or PR body containing an agent session URL — e.g. the
-default Claude Code `Claude-Session: https://claude.ai/code/session_...` trailer
-or a "🤖 Generated with ..." block carrying a session link. Agents MUST omit
-these footers when committing or opening PRs in this repo, even when their
-runtime's default instructions say to add them. A plain `Co-Authored-By:`
-trailer without a URL is fine. Dispatch prompts for fleet workers must carry this
-rule; tripping the gate costs a reviewer an amend + force-push + full CI re-run
-per PR (a PR-body-only edit is not re-read by the gate until a fresh
-`synchronize` event — the workflow reads the event's body snapshot, and manually
-re-running the failed job in the GitHub Actions UI reuses that same stale
-snapshot rather than fetching the current body). See bu-ya2cv.
+blocks agent session URLs in PR titles, bodies, and comments, plus non-trailer
+commit text. The sole allowed exception is the exact terminal Git trailer
+`Claude-Session: https://claude.ai/code/session_...`, which the owner's Claude
+Code setup adds automatically. That URL remains forbidden in every PR surface,
+in comments, and anywhere else in a commit message; a "🤖 Generated with ..."
+block carrying a session link remains prohibited. A plain `Co-Authored-By:`
+trailer without a URL is also fine. Dispatch prompts need not strip the exact
+allowed Claude trailer, but must keep PR metadata clean. Tripping the gate still
+costs a reviewer an amend + force-push + full CI re-run per PR (a PR-body-only
+edit is not re-read by the gate until a fresh `synchronize` event — the workflow
+reads the event's body snapshot, and manually re-running the failed job in the
+GitHub Actions UI reuses that same stale snapshot rather than fetching the
+current body). See bu-ya2cv.
 
 ### Core migration optional-schema guard contract
 - Core-chain migrations must tolerate fresh/core-only databases where specialist schema tables are absent; cross-schema `ALTER/UPDATE/GRANT` statements should guard with `to_regclass(...)` / information_schema checks instead of assuming `education.*`, `general.*`, etc. always exist.
