@@ -71,6 +71,10 @@ type Server struct {
 	pendingReplay    []*bridgeEvents.BridgeEvent
 	pendingReplayIDs map[string]struct{}
 	backfillCutoff   *time.Time
+	// liveHandoffArmed closes the accepted-/backfill-to-first-/events gap for
+	// normal live messages. It is consumed by the first subscriber drain, so
+	// later subscribers never receive a second replay of those live events.
+	liveHandoffArmed bool
 
 	// Pairing state
 	pairMu     sync.Mutex
@@ -174,14 +178,14 @@ func (s *Server) SetState(state BridgeState, phone string) {
 
 // PublishEvent sends an event to all SSE subscribers.
 func (s *Server) PublishEvent(evt *bridgeEvents.BridgeEvent) {
-	s.recordReplayEvent(evt)
+	recorded := s.recordReplayEvent(evt)
 
 	s.mu.Lock()
 	now := time.Now()
 	s.lastEventAt = &now
 	s.mu.Unlock()
 
-	s.fanout(evt)
+	s.publishLiveEvent(evt, recorded)
 }
 
 // RecordHistoryEvent retains a normalised history-sync message for a later,
@@ -206,12 +210,40 @@ func (s *Server) publishKeepalive(evt *bridgeEvents.BridgeEvent) {
 func (s *Server) fanout(evt *bridgeEvents.BridgeEvent) {
 	s.subsMu.Lock()
 	defer s.subsMu.Unlock()
+	s.fanoutLocked(evt)
+}
+
+// fanoutLocked delivers an event while subsMu is held.
+func (s *Server) fanoutLocked(evt *bridgeEvents.BridgeEvent) {
 	for ch := range s.subscribers {
 		select {
 		case ch <- evt:
 		default:
 			// Subscriber is slow; drop the event rather than blocking.
 		}
+	}
+}
+
+// publishLiveEvent atomically chooses between immediate fanout and the
+// one-shot first-subscriber handoff. Holding subsMu across the choice prevents
+// a subscriber from both draining a queued event and receiving it through
+// ordinary fanout.
+func (s *Server) publishLiveEvent(evt *bridgeEvents.BridgeEvent, recorded bool) {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+
+	if len(s.subscribers) != 0 {
+		s.fanoutLocked(evt)
+		return
+	}
+	if !recorded {
+		return
+	}
+
+	s.replayMu.Lock()
+	defer s.replayMu.Unlock()
+	if s.liveHandoffArmed {
+		s.appendPendingReplayLocked([]*bridgeEvents.BridgeEvent{evt})
 	}
 }
 
@@ -318,20 +350,7 @@ func (s *Server) enqueueReplay(events []*bridgeEvents.BridgeEvent) {
 	defer s.subsMu.Unlock()
 	if len(s.subscribers) == 0 {
 		s.replayMu.Lock()
-		for _, evt := range events {
-			if evt == nil || evt.MessageID == "" || evt.ChatJID == "" {
-				continue
-			}
-			key := replayEventKey(evt)
-			if _, exists := s.pendingReplayIDs[key]; exists {
-				continue
-			}
-			if len(s.pendingReplay) >= maxReplayEvents {
-				break
-			}
-			s.pendingReplay = append(s.pendingReplay, cloneBridgeEvent(evt))
-			s.pendingReplayIDs[key] = struct{}{}
-		}
+		s.appendPendingReplayLocked(events)
 		s.replayMu.Unlock()
 		return
 	}
@@ -345,6 +364,37 @@ func (s *Server) enqueueReplay(events []*bridgeEvents.BridgeEvent) {
 			}
 		}
 	}
+}
+
+// appendPendingReplayLocked adds valid replay or live-handoff events while
+// replayMu is held. The shared cap and identity map preserve the existing
+// first-subscriber queue bounds and deduplication semantics.
+func (s *Server) appendPendingReplayLocked(events []*bridgeEvents.BridgeEvent) {
+	for _, evt := range events {
+		if evt == nil || evt.MessageID == "" || evt.ChatJID == "" {
+			continue
+		}
+		key := replayEventKey(evt)
+		if _, exists := s.pendingReplayIDs[key]; exists {
+			continue
+		}
+		if len(s.pendingReplay) >= maxReplayEvents {
+			break
+		}
+		s.pendingReplay = append(s.pendingReplay, cloneBridgeEvent(evt))
+		s.pendingReplayIDs[key] = struct{}{}
+	}
+}
+
+// armLiveHandoff enables one bounded handoff only when no subscriber was
+// already present at the accepted backfill boundary. The first later /events
+// connection consumes the flag and drains the shared pending queue.
+func (s *Server) armLiveHandoff() {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	s.replayMu.Lock()
+	s.liveHandoffArmed = len(s.subscribers) == 0
+	s.replayMu.Unlock()
 }
 
 func cloneBridgeEvent(evt *bridgeEvents.BridgeEvent) *bridgeEvents.BridgeEvent {
@@ -384,6 +434,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	pendingReplay := s.pendingReplay
 	s.pendingReplay = nil
 	s.pendingReplayIDs = make(map[string]struct{})
+	s.liveHandoffArmed = false
 	s.replayMu.Unlock()
 	s.subsMu.Unlock()
 
@@ -451,6 +502,7 @@ func (s *Server) handleBackfill(w http.ResponseWriter, r *http.Request) {
 
 	replay := s.requestBackfill(req.WindowHours)
 	s.enqueueReplay(replay)
+	s.armLiveHandoff()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"schema_version":     backfillSchemaVersion,

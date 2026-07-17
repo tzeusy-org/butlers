@@ -339,6 +339,123 @@ func TestServer_Backfill_ReplaysBufferedMessagesViaSSE(t *testing.T) {
 	}
 }
 
+func TestServer_Backfill_HandoffsLiveEventBeforeFirstSSESubscription(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "bridge.sock")
+	srv := api.NewServer(sockPath, func() {})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		srv.Stop(shutCtx)
+	}()
+
+	srv.SetState(api.StateConnected, "+15551234567")
+	srv.SetLivenessFn(func() (bool, bool) { return true, true })
+	now := time.Now()
+	historical := &bridgeEvents.BridgeEvent{
+		Type:      "text",
+		MessageID: "backfill-message",
+		ChatJID:   "chat@s.whatsapp.net",
+		SenderJID: "sender@s.whatsapp.net",
+		Timestamp: now.Add(-30 * time.Minute).Unix(),
+		Content:   json.RawMessage(`{"text":"replay first"}`),
+	}
+	srv.RecordHistoryEvent(historical)
+
+	client := dialUnix(sockPath)
+	resp, err := client.Post(
+		"http://localhost/backfill",
+		"application/json",
+		strings.NewReader(`{"schema_version":"whatsapp.backfill.v1","window_hours":1}`),
+	)
+	if err != nil {
+		t.Fatalf("POST /backfill: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST /backfill status: got %d want %d; body: %s", resp.StatusCode, http.StatusOK, body)
+	}
+	var acknowledgement map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&acknowledgement); err != nil {
+		t.Fatalf("decode backfill acknowledgement: %v", err)
+	}
+	if acknowledgement["status"] != "accepted" || acknowledgement["replay_event_count"] != float64(1) {
+		t.Fatalf("unexpected backfill acknowledgement: %v", acknowledgement)
+	}
+
+	live := &bridgeEvents.BridgeEvent{
+		Type:      "text",
+		MessageID: "live-gap-message",
+		ChatJID:   "chat@s.whatsapp.net",
+		SenderJID: "sender@s.whatsapp.net",
+		Timestamp: now.Unix(),
+		Content:   json.RawMessage(`{"text":"hold through SSE subscribe"}`),
+	}
+	// This is the acknowledged-backfill-to-first-subscription gap. A later
+	// HistorySync copy is deduplicated, so it cannot be relied on to recover a
+	// live message that was not handed off here.
+	srv.PublishEvent(live)
+	srv.RecordHistoryEvent(live)
+
+	streamCtx, streamCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer streamCancel()
+	streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet, "http://localhost/events", nil)
+	if err != nil {
+		t.Fatalf("new SSE request: %v", err)
+	}
+	streamResp, err := client.Do(streamReq)
+	if err != nil {
+		t.Fatalf("GET /events: %v", err)
+	}
+	defer streamResp.Body.Close()
+
+	// The first subscription must drain each pending item once, then carry on
+	// with ordinary live delivery. This sentinel distinguishes a missing gap
+	// handoff from a stalled SSE stream.
+	srv.PublishEvent(&bridgeEvents.BridgeEvent{
+		Type:      "text",
+		MessageID: "after-subscribe-message",
+		ChatJID:   "chat@s.whatsapp.net",
+		SenderJID: "sender@s.whatsapp.net",
+		Timestamp: now.Unix(),
+		Content:   json.RawMessage(`{"text":"normal live delivery"}`),
+	})
+
+	scanner := bufio.NewScanner(streamResp.Body)
+	var messageIDs []string
+	for len(messageIDs) < 3 && scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+			t.Fatalf("decode SSE event: %v", err)
+		}
+		messageID, ok := event["message_id"].(string)
+		if !ok {
+			t.Fatalf("SSE message_id: got %v", event["message_id"])
+		}
+		messageIDs = append(messageIDs, messageID)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read SSE events: %v", err)
+	}
+	if got, want := messageIDs, []string{
+		"backfill-message",
+		"live-gap-message",
+		"after-subscribe-message",
+	}; !slices.Equal(got, want) {
+		t.Errorf("SSE message order: got %v want %v", got, want)
+	}
+}
+
 func TestServer_Backfill_RequiresConnectedV1Request(t *testing.T) {
 	sockPath := "/tmp/test-wa-bridge-backfill-validation.sock"
 	srv := api.NewServer(sockPath, func() {})
