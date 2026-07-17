@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 from butlers.connectors.whatsapp_user_client import (
@@ -54,6 +56,47 @@ async def test_request_backfill_uses_versioned_request_and_requires_accepted_ack
         "window_hours": 24,
     }
     assert int(headers.split(b"Content-Length: ")[1].split(b"\r\n", 1)[0]) == len(body)
+
+
+async def test_request_backfill_accepts_fragmented_http_acknowledgement(
+    monkeypatch,
+    caplog,
+) -> None:
+    """A valid HTTP/1.0 acknowledgement may arrive over more than one stream read."""
+    connector = WhatsAppUserClientConnector(
+        WhatsAppUserClientConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            endpoint_identity="whatsapp:+12025551234",
+            backfill_window_h=24,
+        ),
+        cursor_pool=MagicMock(),
+    )
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n"
+        b'{"schema_version":"whatsapp.backfill.v1","status":"accepted",'
+    )
+
+    async def feed_remaining_response() -> None:
+        await asyncio.sleep(0)
+        reader.feed_data(b'"window_hours":24,"replay_event_count":2}')
+        reader.feed_eof()
+
+    remaining_response = asyncio.create_task(feed_remaining_response())
+    writer = MagicMock()
+    writer.drain = AsyncMock()
+    writer.wait_closed = AsyncMock()
+    monkeypatch.setattr(
+        "butlers.connectors.whatsapp_user_client.asyncio.open_unix_connection",
+        AsyncMock(return_value=(reader, writer)),
+    )
+    caplog.set_level(logging.INFO, logger="butlers.connectors.whatsapp_user_client")
+
+    await connector._request_backfill()
+    await remaining_response
+
+    assert "Backfill request accepted by bridge" in caplog.text
+    assert "Failed to request backfill from bridge" not in caplog.text
 
 
 async def test_request_backfill_rejects_nonaccepted_ack_without_raising(

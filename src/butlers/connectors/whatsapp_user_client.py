@@ -1990,7 +1990,7 @@ class WhatsAppUserClientConnector:
                 )
                 writer.write(request.encode() + body)
                 await writer.drain()
-                raw_response = await asyncio.wait_for(reader.read(4096), timeout=10.0)
+                raw_response = await asyncio.wait_for(reader.read(), timeout=10.0)
             finally:
                 writer.close()
                 try:
