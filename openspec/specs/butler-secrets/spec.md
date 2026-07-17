@@ -197,12 +197,13 @@ The `/secrets` page SHALL accept a `?focus=<key>` URL parameter that opens the r
 - `s:<KEY>` for System secrets (e.g. `s:BUTLER_TELEGRAM_TOKEN`)
 - `c:<id>` for CLI runtimes (e.g. `c:claude`)
 
-Focus keys SHALL be URL-safe (no encoded colons; the `:` separator is permitted in URL fragments and query values per RFC 3986 §3.4).
+Focus keys SHALL be interpreted as decoded values (for example, `u:spotify`); the `:` separator is permitted in query values per RFC 3986 §3.4. OAuth callback `Location` headers SHALL retain that raw form (for example, `focus=u:spotify`), while browser URL updates through `URLSearchParams` MAY present the equivalent serialization `focus=u%3Aspotify`.
 
 #### Scenario: Deep-link to a User credential
 - **WHEN** the owner clicks a link of the form `/secrets?focus=u:google` from `/ingestion/connectors` or anywhere else
 - **THEN** the spine renders with the `u:google` row highlighted
 - **AND** the right page renders the focused User credential editorial body
+- **AND** browser-serialized `focus=u%3Agoogle` SHALL resolve to the same decoded `u:google` focus key
 - **AND** the page does NOT render a tab top, a flat table, or any deprecated chrome
 
 #### Scenario: Unknown focus key
