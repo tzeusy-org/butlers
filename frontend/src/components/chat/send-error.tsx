@@ -50,6 +50,8 @@ export function SendErrorBanner({ error, onRetry, onCheckAgain, onDismiss }: Sen
   return (
     <div
       className="flex items-center justify-between gap-2 border-t bg-muted/40 px-3 py-2 text-xs"
+      role="alert"
+      aria-atomic="true"
       data-testid="chat-widget-error-banner"
     >
       <span className="text-destructive">{error.message}</span>

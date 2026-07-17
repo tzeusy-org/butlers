@@ -66,6 +66,10 @@ import { SendErrorBanner } from "./send-error.tsx";
 import { classifySendError, type SendError } from "./send-error-utils.ts";
 import { createClientMessageId } from "./message-id.ts";
 import {
+  optimisticUserMessageId,
+  reconcileConversationMessages,
+} from "./message-reconciliation.ts";
+import {
   conversationKeys,
   useConversations,
   useConversationMessages,
@@ -169,9 +173,11 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     // `localMessages` to `[]`, flashing an empty thread before the real
     // messages land.
     if (messagesData?.data) {
-      setLocalMessages(messagesData.data);
+      setLocalMessages((previous) =>
+        reconcileConversationMessages(messagesData.data, previous, activeConversationId),
+      );
     }
-  }, [messagesData, streaming]);
+  }, [activeConversationId, messagesData, streaming]);
 
   // Resume the most recent open conversation ONCE per mount (== once per
   // reopen, since WidgetPanel unmounts entirely on close) — gated by
@@ -203,7 +209,9 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
       abortRef.current = controller;
 
       const userMessage: Message = {
-        id: `optimistic-user-${Date.now()}`,
+        // The backend retry identity also identifies this local optimistic
+        // bubble, so retrying one logical message cannot add another bubble.
+        id: optimisticUserMessageId(messageId),
         conversation_id: activeConversationId ?? "",
         role: "user",
         content: trimmed,
@@ -217,7 +225,9 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
         request_id: null,
         created_at: new Date().toISOString(),
       };
-      setLocalMessages((prev) => [...prev, userMessage]);
+      setLocalMessages((prev) =>
+        prev.some((message) => message.id === userMessage.id) ? prev : [...prev, userMessage],
+      );
 
       let currentConversationId = activeConversationId;
 

@@ -38,6 +38,10 @@ import { SendErrorBanner } from "./send-error.tsx";
 import { classifySendError, type SendError } from "./send-error-utils.ts";
 import { createClientMessageId } from "./message-id.ts";
 import {
+  optimisticUserMessageId,
+  reconcileConversationMessages,
+} from "./message-reconciliation.ts";
+import {
   conversationKeys,
   useConversations,
   useConversationMessages,
@@ -107,9 +111,11 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     // before the next query result lands. Keep the rendered thread during that
     // gap rather than treating it as a successful empty conversation.
     if (messagesData?.data) {
-      setLocalMessages(messagesData.data);
+      setLocalMessages((previous) =>
+        reconcileConversationMessages(messagesData.data, previous, activeConversationId),
+      );
     }
-  }, [messagesData, streaming]);
+  }, [activeConversationId, messagesData, streaming]);
 
   // Keyboard shortcut: Ctrl+Shift+Up/Down to switch conversations. Migrated
   // onto the shared page-scoped shortcut registry (bu-qvnce.11), which also
@@ -217,7 +223,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
       // Optimistic user message
       const userMessage: Message = {
-        id: `optimistic-user-${Date.now()}`,
+        // The backend retry identity also identifies this local optimistic
+        // bubble, so retrying one logical message cannot add another bubble.
+        id: optimisticUserMessageId(messageId),
         conversation_id: activeConversationId ?? "",
         role: "user",
         content: trimmed,
@@ -231,7 +239,9 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         request_id: null,
         created_at: new Date().toISOString(),
       };
-      setLocalMessages((prev) => [...prev, userMessage]);
+      setLocalMessages((prev) =>
+        prev.some((message) => message.id === userMessage.id) ? prev : [...prev, userMessage],
+      );
 
       let currentConversationId = activeConversationId;
 
