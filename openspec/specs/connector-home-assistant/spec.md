@@ -115,7 +115,11 @@ The connector implements a three-layer filtering pipeline to reduce HA event noi
 - **THEN** the connector SHALL check if the entity's domain (prefix of `entity_id` before the first `.`) is in the configured domain allowlist
 - **AND** the default allowlist SHALL be: `light`, `switch`, `sensor`, `climate`, `lock`, `cover`, `binary_sensor`, `automation`, `script`, `person`
 - **AND** events from domains not in the allowlist SHALL be dropped immediately and recorded as filtered with `filter_reason = "domain_excluded:<domain>"`
-- **AND** the allowlist SHALL be configurable via `HA_DOMAIN_ALLOWLIST` (comma-separated) or `connector_registry.settings.domain_allowlist` (JSON array)
+- **AND** `HA_DOMAIN_ALLOWLIST` SHALL add comma-separated domains to, rather than replace, the default allowlist
+- **AND** after resolving its endpoint identity, the connector SHALL read `connector_registry.settings.domain_allowlist` for that `home_assistant` endpoint at startup
+- **AND** a valid JSON array there SHALL replace only environment-supplied additions while retaining every default domain
+- **AND** an absent value SHALL retain the environment-derived allowlist
+- **AND** a malformed or unreadable value SHALL retain the environment-derived allowlist and log a warning
 
 #### Scenario: Layer 2 — Significance filter
 - **WHEN** an event passes the domain allowlist
@@ -225,7 +229,7 @@ Configuration via environment variables extending the base connector variables.
 
 #### Scenario: Optional variables
 - **WHEN** the connector starts
-- **THEN** the following SHALL be optionally configurable: `HA_DOMAIN_ALLOWLIST` (comma-separated, default: `light,switch,sensor,climate,lock,cover,binary_sensor,automation,script,person`), `HA_POLL_INTERVAL_S` (default: 60), `HA_CHECKPOINT_OVERLAP_S` (default: 30), `HA_WS_PING_INTERVAL_S` (default: 30), `HA_WS_PONG_TIMEOUT_S` (default: 10), `HA_DISCRETION_TIMEOUT_S` (default: 5), `HA_EVENT_QUEUE_MAX` (default: 100)
+- **THEN** the following SHALL be optionally configurable: `HA_DOMAIN_ALLOWLIST` (comma-separated additions; the effective allowlist always retains `light,switch,sensor,climate,lock,cover,binary_sensor,automation,script,person`), `HA_POLL_INTERVAL_S` (default: 60), `HA_CHECKPOINT_OVERLAP_S` (default: 30), `HA_WS_PING_INTERVAL_S` (default: 30), `HA_WS_PONG_TIMEOUT_S` (default: 10), `HA_DISCRETION_TIMEOUT_S` (default: 5), `HA_EVENT_QUEUE_MAX` (default: 100)
 - **AND** the wellness-promotion knobs SHALL be optionally configurable: `HA_WELLNESS_PROMOTION_ENABLED` (default: `true`), `HA_WELLNESS_RULES_EXTRA` (JSON list of `{device_class?, unit?, entity_token?, metric}` rules appended to the default table; malformed JSON fails connector startup with a clear error), `HA_WELLNESS_ENTITY_DENYLIST` (comma-separated entity_ids never promoted)
 
 ### Requirement: Wellness channel promotion for health-shaped sensor events
