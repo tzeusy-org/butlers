@@ -206,6 +206,59 @@ class TestLifecycle:
         _, kwargs = context_mock.call_args
         assert kwargs.get("include_fleet_knowledge") is True
 
+    async def test_on_startup_episode_hook_uses_private_memory_pool(self, monkeypatch) -> None:
+        """Completed session episodes use the configured module pool, not the daemon pool."""
+        mod = MemoryModule()
+        domain_pool = MagicMock(name="chronicler_domain_pool")
+        private_memory_pool = MagicMock(name="chronicler_mem_pool")
+        fake_db = MagicMock(pool=domain_pool, schema="chronicler")
+        captured_hook: dict[str, Any] = {}
+
+        monkeypatch.setattr(mod, "_ensure_memory_schema_pool", AsyncMock())
+        monkeypatch.setattr(mod, "_get_pool", lambda: private_memory_pool)
+        monkeypatch.setattr(mod, "_register_default_maintenance_schedules", AsyncMock())
+        monkeypatch.setattr("butlers.core.memory_hooks.register_memory_context", lambda fn: None)
+        monkeypatch.setattr("butlers.core.memory_hooks.register_memory_forget", lambda fn: None)
+        monkeypatch.setattr("butlers.core.memory_hooks.register_catalog_search", lambda fn: None)
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.register_memory_maintenance_runtime",
+            lambda *args, **kwargs: MagicMock(),
+        )
+
+        def _register_episode_hook(fn):
+            captured_hook["hook"] = fn
+
+        monkeypatch.setattr(
+            "butlers.core.memory_hooks.register_memory_store_episode",
+            _register_episode_hook,
+        )
+        episode_store = AsyncMock(return_value={"id": "episode-id"})
+        monkeypatch.setattr(
+            "butlers.modules.memory.tools.writing.memory_store_episode",
+            episode_store,
+        )
+
+        await mod.on_startup(
+            config=MemoryModuleConfig(memory_schema="chronicler_mem"),
+            db=fake_db,
+        )
+
+        assert (
+            await captured_hook["hook"](
+                domain_pool,
+                "chronicler",
+                "completed session output",
+                "session-id",
+            )
+            is True
+        )
+        episode_store.assert_awaited_once_with(
+            private_memory_pool,
+            "completed session output",
+            "chronicler",
+            session_id="session-id",
+        )
+
     async def test_consolidation_hook_uses_module_pool_and_configured_engine(
         self, monkeypatch
     ) -> None:
