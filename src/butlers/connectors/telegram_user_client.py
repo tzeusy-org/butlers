@@ -53,6 +53,7 @@ import html
 import json
 import logging
 import os
+import socket
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -2352,6 +2353,36 @@ class _ConsentPendingHealth:
         return "error", _CONSENT_PENDING_MESSAGE
 
 
+def _is_transient_control_pool_failure(exc: BaseException) -> bool:
+    """Return whether an unavailable shared consent-control pool may be retried.
+
+    Pending-consent operation retries indefinitely, unlike the bounded CLI
+    startup retry. Preserve the CLI classifier for ordinary transport errors,
+    but narrow DNS to ``EAI_AGAIN`` and explicitly allow the PostgreSQL
+    availability states that can occur while a shared database is starting or
+    temporarily saturated.
+    """
+    import asyncpg as _asyncpg
+
+    saw_temporary_dns = False
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, socket.gaierror):
+            if current.errno != socket.EAI_AGAIN:
+                return False
+            saw_temporary_dns = True
+        elif isinstance(
+            current,
+            _asyncpg.CannotConnectNowError | _asyncpg.TooManyConnectionsError,
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+
+    return saw_temporary_dns or is_db_unreachable(exc)
+
+
 async def _wait_for_account_wide_ingestion_consent() -> None:
     """Wait in a visible disabled state until a valid consent grant is present.
 
@@ -2364,7 +2395,7 @@ async def _wait_for_account_wide_ingestion_consent() -> None:
         try:
             control_pool = await _create_shared_control_pool()
         except Exception as exc:
-            if not is_db_unreachable(exc):
+            if not _is_transient_control_pool_failure(exc):
                 raise
             logger.warning(
                 "Telegram user-client cannot reach the shared control DB while pending "

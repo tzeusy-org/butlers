@@ -16,8 +16,10 @@ from __future__ import annotations
 import asyncio
 import errno
 import logging
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.cli_auth.persistence import restore_connector_cli_auth
@@ -326,8 +328,30 @@ async def test_telegram_user_entrypoint_waits_for_missing_account_wide_scope_con
     assert pending_health._config.endpoint_identity == "telegram:user:pending-consent"
 
 
+@pytest.mark.parametrize(
+    "transient_error",
+    [
+        pytest.param(
+            ConnectionRefusedError(errno.ECONNREFUSED, "shared DB is starting"),
+            id="connection-refused",
+        ),
+        pytest.param(
+            socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure"),
+            id="temporary-dns",
+        ),
+        pytest.param(
+            asyncpg.CannotConnectNowError("shared DB is starting"),
+            id="postgres-starting",
+        ),
+        pytest.param(
+            asyncpg.TooManyConnectionsError("shared DB connection capacity exhausted"),
+            id="postgres-capacity",
+        ),
+    ],
+)
 async def test_telegram_user_entrypoint_retries_transient_control_pool_failure_while_pending_consent(
     monkeypatch: pytest.MonkeyPatch,
+    transient_error: Exception,
 ) -> None:
     """A transient control-DB outage stays pending until consent can be verified.
 
@@ -370,7 +394,7 @@ async def test_telegram_user_entrypoint_retries_transient_control_pool_failure_w
         if pool_attempts == 1:
             await asyncio.wait_for(pending_health_started.wait(), timeout=1)
             startup_order.append("pool-transient-failure")
-            raise ConnectionRefusedError(errno.ECONNREFUSED, "shared DB is starting")
+            raise transient_error
         startup_order.append("pool-ready")
         return control_pool
 
@@ -462,16 +486,39 @@ async def test_telegram_user_entrypoint_retries_transient_control_pool_failure_w
     control_pool.close.assert_awaited_once()
 
 
-async def test_telegram_wait_for_consent_reraises_nontransient_control_pool_failure() -> None:
+@pytest.mark.parametrize(
+    ("pool_error", "match"),
+    [
+        pytest.param(
+            ValueError("invalid shared DB configuration"),
+            "invalid shared DB configuration",
+            id="invalid-configuration",
+        ),
+        pytest.param(
+            socket.gaierror(socket.EAI_NONAME, "configured host does not exist"),
+            "configured host does not exist",
+            id="permanent-dns",
+        ),
+    ],
+)
+async def test_telegram_wait_for_consent_reraises_nontransient_control_pool_failure(
+    pool_error: Exception,
+    match: str,
+) -> None:
     """Configuration/auth-like pool failures remain visible instead of retrying forever."""
     import butlers.connectors.telegram_user_client as tg
 
-    create_pool = AsyncMock(side_effect=ValueError("invalid shared DB configuration"))
-    with patch.object(tg, "_create_shared_control_pool", new=create_pool):
-        with pytest.raises(ValueError, match="invalid shared DB configuration"):
+    create_pool = AsyncMock(side_effect=pool_error)
+    retry_sleep = AsyncMock(side_effect=AssertionError("permanent pool failure was retried"))
+    with (
+        patch.object(tg, "_create_shared_control_pool", new=create_pool),
+        patch.object(tg.asyncio, "sleep", new=retry_sleep),
+    ):
+        with pytest.raises(type(pool_error), match=match):
             await tg._wait_for_account_wide_ingestion_consent()
 
     create_pool.assert_awaited_once()
+    retry_sleep.assert_not_awaited()
 
 
 async def test_telegram_user_entrypoint_waits_for_malformed_scope_grant_before_client_startup(
