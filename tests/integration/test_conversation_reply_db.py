@@ -34,6 +34,7 @@ from butlers.api.conversations import (
     conversation_create,
     conversation_list,
     conversation_reply_create,
+    conversation_search,
     conversation_set_routed_butler,
     message_create_idempotent,
     message_find_reply_since,
@@ -216,3 +217,40 @@ async def test_conversation_list_exposes_latest_assistant_reply_at(
         rows, _ = await conversation_list(pool, butler_name="switchboard")
         assert rows[0]["latest_assistant_reply_at"] == second_reply["created_at"]
         assert second_reply["created_at"] > first_reply["created_at"]
+
+
+async def test_conversation_search_exposes_latest_assistant_reply_at(
+    migrated_core_postgres_pool,
+) -> None:
+    """Search results retain the summary watermark for unread-reply detection."""
+    async with migrated_core_postgres_pool() as pool:
+        conv = await conversation_create(
+            pool,
+            butler_name="switchboard",
+            first_message="Find the needle in this conversation",
+        )
+        _, is_new = await message_create_idempotent(
+            pool,
+            message_id=uuid.uuid4(),
+            conversation_id=conv["id"],
+            role="user",
+            content="Find the needle in this conversation",
+        )
+        assert is_new is True
+        reply = await conversation_reply_create(
+            pool,
+            conv["id"],
+            message="The matching response does not repeat the search term.",
+        )
+        assert reply is not None
+
+        rows, total = await conversation_search(
+            pool,
+            butler_name="switchboard",
+            query="needle",
+        )
+
+        assert total == 1
+        assert len(rows) == 1
+        assert rows[0]["snippet"] == "Find the needle in this conversation"
+        assert rows[0]["latest_assistant_reply_at"] == reply["created_at"]

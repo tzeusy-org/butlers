@@ -128,6 +128,43 @@ async def test_list_conversations_200_and_503(app):
 
 
 # ---------------------------------------------------------------------------
+# Search conversations — summary contract + snippet
+# ---------------------------------------------------------------------------
+
+
+async def test_search_conversations_returns_summary_fields_and_matching_snippet(app):
+    latest_reply_at = _NOW + timedelta(minutes=1)
+    row = _make_conversation_row(
+        routed_butler="relationship",
+        latest_assistant_reply_at=latest_reply_at,
+        snippet="Alice is Bob's sister",
+    )
+    _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/butlers/{_BUTLER}/conversations/search?q=Alice")
+
+    assert resp.status_code == 200
+    result = resp.json()["data"][0]
+    assert set(result) == {
+        "id",
+        "butler_name",
+        "title",
+        "status",
+        "created_at",
+        "updated_at",
+        "message_count",
+        "routed_butler",
+        "latest_assistant_reply_at",
+        "snippet",
+    }
+    assert datetime.fromisoformat(result["latest_assistant_reply_at"]) == latest_reply_at
+    assert result["snippet"] == "Alice is Bob's sister"
+
+
+# ---------------------------------------------------------------------------
 # Error paths (parametrized)
 # ---------------------------------------------------------------------------
 
