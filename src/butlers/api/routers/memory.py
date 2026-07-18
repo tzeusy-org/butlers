@@ -103,12 +103,20 @@ def _memory_schema_absent_at_start(db: DatabaseManager, butler_name: str) -> boo
 
 
 def _memory_source_schema(db: DatabaseManager, butler_name: str) -> str | None:
-    """Return a validated configured schema for a memory-owning pool."""
-    schema_for_butler = getattr(db, "schema_for_butler", None)
-    if not callable(schema_for_butler):
+    """Return the validated effective schema that owns memory relations.
+
+    New dashboard managers retain a private ``modules.memory.memory_schema``
+    override separately from the butler's domain pool schema.  The fallback
+    keeps compatibility with older manager doubles and callers that only
+    expose ``schema_for_butler``.
+    """
+    schema_for_memory = getattr(db, "memory_schema_for_butler", None)
+    if not callable(schema_for_memory):
+        schema_for_memory = getattr(db, "schema_for_butler", None)
+    if not callable(schema_for_memory):
         return None
     try:
-        schema = schema_for_butler(butler_name)
+        schema = schema_for_memory(butler_name)
     except KeyError:
         return None
     if not isinstance(schema, str):

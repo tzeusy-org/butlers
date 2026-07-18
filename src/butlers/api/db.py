@@ -64,6 +64,10 @@ class DatabaseManager:
         # own per-butler tables must use this rather than falling through to
         # ``public`` via the pool's search_path after local schema loss.
         self._butler_schemas: dict[str, str | None] = {}
+        # Optional private memory-schema overrides.  Most butlers keep memory
+        # tables in their domain schema, while Chronicler owns memory in
+        # ``chronicler_mem`` so its domain ``episodes`` relation stays distinct.
+        self._butler_memory_schema_overrides: dict[str, str | None] = {}
         # Relation presence captured when the dashboard pool becomes available.
         # Optional-schema readers use this lifecycle marker to distinguish a
         # deliberately uninstalled table from one that disappears later.
@@ -116,6 +120,7 @@ class DatabaseManager:
         db_name: str | None = None,
         db_schema: str | None = None,
         modules: frozenset[str] | None = None,
+        memory_schema: str | None = None,
     ) -> None:
         """Add a butler database connection pool.
 
@@ -127,6 +132,10 @@ class DatabaseManager:
             The database name. Defaults to butler_name if not provided.
         db_schema:
             Optional schema name for one-db multi-schema topology.
+        memory_schema:
+            Optional private schema that owns this butler's memory relations.
+            When omitted, memory relations use ``db_schema`` (or legacy
+            unqualified lookup when no schema is configured).
         modules:
             Optional set of module names enabled for this butler (e.g.
             ``frozenset({"calendar", "email"})``). Used by
@@ -143,6 +152,10 @@ class DatabaseManager:
         # keeps ``public`` available for cross-butler reads.
         search_path = schema_search_path(db_schema)
         local_schema = search_path.split(",", maxsplit=1)[0] if search_path is not None else None
+        memory_search_path = schema_search_path(memory_schema)
+        local_memory_schema = (
+            memory_search_path.split(",", maxsplit=1)[0] if memory_search_path is not None else None
+        )
         pool = await self._create_pool(
             database=effective_db,
             log_name=f"butler {butler_name}",
@@ -150,13 +163,15 @@ class DatabaseManager:
         )
         self._pools[butler_name] = pool
         self._butler_schemas[butler_name] = local_schema
+        self._butler_memory_schema_overrides[butler_name] = local_memory_schema
         if modules is not None:
             self._butler_modules[butler_name] = modules
         logger.info(
-            "Added pool for butler: %s (db=%s, schema=%s)",
+            "Added pool for butler: %s (db=%s, schema=%s, memory_schema=%s)",
             butler_name,
             effective_db,
             db_schema or "<default>",
+            local_memory_schema or local_schema or "<legacy>",
         )
 
     async def set_credential_shared_pool(self, db_name: str, db_schema: str | None = None) -> None:
@@ -196,6 +211,21 @@ class DatabaseManager:
             raise KeyError(f"No pool for butler: {butler_name}")
         return self._butler_schemas.get(butler_name)
 
+    def memory_schema_for_butler(self, butler_name: str) -> str | None:
+        """Return the effective schema that owns a butler's memory relations.
+
+        A configured ``[modules.memory] memory_schema`` override takes
+        precedence over the domain pool schema.  Without an override, memory
+        remains colocated with the butler's domain schema; only a legacy pool
+        with neither schema configured keeps unqualified-table semantics.
+        """
+        if butler_name not in self._pools:
+            raise KeyError(f"No pool for butler: {butler_name}")
+        memory_schema = self._butler_memory_schema_overrides.get(butler_name)
+        if memory_schema is not None:
+            return memory_schema
+        return self._butler_schemas.get(butler_name)
+
     async def snapshot_relation_presence(
         self,
         source_name: str,
@@ -203,7 +233,49 @@ class DatabaseManager:
         *,
         pool: asyncpg.Pool | None = None,
     ) -> None:
-        """Record whether unqualified relations exist when API startup completes.
+        """Record whether domain relations exist when API startup completes.
+
+        Domain relations use the source pool's configured schema.  Use
+        :meth:`snapshot_memory_relation_presence` for memory-owned relations,
+        because those may live in a private schema distinct from the domain.
+
+        ``to_regclass`` respects the pool's schema-scoped ``search_path``.  A
+        later ``UndefinedTableError`` is a normal optional-schema absence only
+        when this snapshot explicitly recorded the relation as absent.  A
+        failed snapshot intentionally leaves the value unknown so callers
+        fail closed rather than hiding a potentially dropped table.
+        """
+        await self._snapshot_relation_presence(
+            source_name,
+            relation_names,
+            source_schema=self._butler_schemas.get(source_name),
+            pool=pool,
+        )
+
+    async def snapshot_memory_relation_presence(
+        self,
+        source_name: str,
+        relation_names: tuple[str, ...],
+        *,
+        pool: asyncpg.Pool | None = None,
+    ) -> None:
+        """Record memory relation presence against its effective owner schema."""
+        await self._snapshot_relation_presence(
+            source_name,
+            relation_names,
+            source_schema=self.memory_schema_for_butler(source_name),
+            pool=pool,
+        )
+
+    async def _snapshot_relation_presence(
+        self,
+        source_name: str,
+        relation_names: tuple[str, ...],
+        *,
+        source_schema: str | None,
+        pool: asyncpg.Pool | None,
+    ) -> None:
+        """Record relation presence with an explicit source-schema decision.
 
         ``to_regclass`` respects the pool's schema-scoped ``search_path``.  A
         later ``UndefinedTableError`` is a normal optional-schema absence only
@@ -215,7 +287,6 @@ class DatabaseManager:
             return
         try:
             target_pool = pool if pool is not None else self.pool(source_name)
-            source_schema = self._butler_schemas.get(source_name)
             if source_schema is None:
                 rows = await target_pool.fetch(
                     "SELECT requested.relation_name, "
@@ -241,9 +312,9 @@ class DatabaseManager:
             return
 
         observed = {str(row["relation_name"]): bool(row["present"]) for row in rows}
-        self._relation_presence_at_start[source_name] = {
-            relation: observed[relation] for relation in relation_names if relation in observed
-        }
+        self._relation_presence_at_start.setdefault(source_name, {}).update(
+            {relation: observed[relation] for relation in relation_names if relation in observed}
+        )
 
     def relation_observed_since_start(self, source_name: str, relation_name: str) -> bool | None:
         """Return the startup-presence marker for a relation, if it was recorded.
@@ -360,4 +431,5 @@ class DatabaseManager:
                 logger.warning("Error closing pool for butler: %s", name, exc_info=True)
         self._pools.clear()
         self._butler_schemas.clear()
+        self._butler_memory_schema_overrides.clear()
         self._relation_presence_at_start.clear()

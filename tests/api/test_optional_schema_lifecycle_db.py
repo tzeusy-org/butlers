@@ -62,6 +62,7 @@ pytestmark = [
 
 _LOGGER = logging.getLogger("test_optional_schema_lifecycle_db")
 _TRACKED_RELATIONS = ("butler_secrets", "episodes", "facts", "rules")
+_MEMORY_RELATIONS = ("episodes", "facts", "rules")
 
 
 @pytest.fixture
@@ -75,11 +76,38 @@ def migrated_db_url(postgres_container) -> str:
     )
 
 
+@pytest.fixture
+def chronicler_memory_db_url(postgres_container) -> str:
+    """Provision Chronicler's domain and private memory schemas separately."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "chronicler", "memory"],
+        schemas={
+            "core": "chronicler",
+            "chronicler": "chronicler",
+            "memory": "chronicler_mem",
+        },
+    )
+
+
+@pytest.fixture
+def chronicler_domain_only_db_url(postgres_container) -> str:
+    """Provision Chronicler without its optional private memory schema."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "chronicler"],
+        schemas={"core": "chronicler", "chronicler": "chronicler"},
+    )
+
+
 async def _manager_for_schema(
     db_url: str,
     *,
     butler_name: str,
     schema: str,
+    memory_schema: str | None = None,
     with_shared_pool: bool = False,
 ) -> DatabaseManager:
     """Create a real dashboard pool scoped to *schema*."""
@@ -92,10 +120,15 @@ async def _manager_for_schema(
         min_pool_size=1,
         max_pool_size=2,
     )
+    add_kwargs = {
+        "db_name": parsed.path.lstrip("/"),
+        "db_schema": schema,
+    }
+    if memory_schema is not None:
+        add_kwargs["memory_schema"] = memory_schema
     await manager.add_butler(
         butler_name,
-        db_name=parsed.path.lstrip("/"),
-        db_schema=schema,
+        **add_kwargs,
     )
     if with_shared_pool:
         await manager.set_credential_shared_pool(
@@ -227,6 +260,260 @@ async def _shadow_episode_in_public(pool: object, episode_id: object) -> None:
         "INSERT INTO public.episodes SELECT * FROM lifecycle.episodes WHERE id = $1",
         episode_id,
     )
+
+
+async def _snapshot_chronicler_memory_relations(manager: DatabaseManager) -> None:
+    """Capture domain secrets separately from Chronicler's effective memory source."""
+    await manager.snapshot_relation_presence("chronicler", ("butler_secrets",))
+    await manager.snapshot_memory_relation_presence("chronicler", _MEMORY_RELATIONS)
+
+
+async def _seed_chronicler_memory(
+    pool: object,
+    owner_id: object,
+) -> tuple[object, object]:
+    """Seed distinct private facts and episodes for dashboard read assertions."""
+    fact_id = uuid4()
+    episode_id = uuid4()
+    await pool.execute(  # type: ignore[attr-defined]
+        """
+        INSERT INTO chronicler_mem.facts (
+            id, subject, predicate, content, importance, source_butler,
+            entity_id, scope, permanence
+        )
+        VALUES (
+            $1, 'owner', 'preferences:general_timezone', 'Asia/Singapore', 8.0,
+            'chronicler', $2, 'global', 'stable'
+        )
+        """,
+        fact_id,
+        owner_id,
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        """
+        INSERT INTO chronicler_mem.episodes (id, butler, content, importance)
+        VALUES ($1, 'chronicler', 'private chronicler memory episode', 5.0)
+        """,
+        episode_id,
+    )
+    return fact_id, episode_id
+
+
+async def _create_chronicler_public_memory_shadows(
+    pool: object,
+    owner_id: object,
+) -> tuple[object, object]:
+    """Create public shadows that a configured private source must never read."""
+    fact_id = uuid4()
+    episode_id = uuid4()
+    await pool.execute(  # type: ignore[attr-defined]
+        """
+        CREATE TABLE public.facts (
+            id UUID PRIMARY KEY,
+            predicate TEXT NOT NULL,
+            content TEXT NOT NULL,
+            scope TEXT,
+            importance DOUBLE PRECISION,
+            permanence TEXT,
+            created_at TIMESTAMPTZ,
+            confidence DOUBLE PRECISION,
+            decay_rate DOUBLE PRECISION,
+            last_confirmed_at TIMESTAMPTZ,
+            entity_id UUID,
+            validity TEXT NOT NULL
+        )
+        """
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        """
+        INSERT INTO public.facts (
+            id, predicate, content, scope, importance, permanence, created_at,
+            confidence, decay_rate, entity_id, validity
+        )
+        VALUES (
+            $1, 'preferences:general_timezone', 'public-shadow', 'global', 8.0,
+            'stable', now(), 1.0, 0.0, $2, 'active'
+        )
+        """,
+        fact_id,
+        owner_id,
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        """
+        CREATE TABLE public.episodes (
+            id UUID PRIMARY KEY,
+            content TEXT,
+            importance DOUBLE PRECISION,
+            consolidation_status TEXT,
+            created_at TIMESTAMPTZ,
+            session_id UUID
+        )
+        """
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        """
+        INSERT INTO public.episodes (
+            id, content, importance, consolidation_status, created_at
+        )
+        VALUES ($1, 'public-shadow', 5.0, 'pending', now())
+        """,
+        episode_id,
+    )
+    return fact_id, episode_id
+
+
+async def _copy_chronicler_memory_to_public_shadows(
+    pool: object,
+    fact_id: object,
+    episode_id: object,
+) -> None:
+    """Copy private rows into public shadow tables with distinguishable values."""
+    await pool.execute(  # type: ignore[attr-defined]
+        "CREATE TABLE public.facts AS TABLE chronicler_mem.facts WITH NO DATA"
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "INSERT INTO public.facts SELECT * FROM chronicler_mem.facts WHERE id = $1",
+        fact_id,
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "UPDATE public.facts SET content = 'public-shadow' WHERE id = $1",
+        fact_id,
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "CREATE TABLE public.episodes AS TABLE chronicler_mem.episodes WITH NO DATA"
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "INSERT INTO public.episodes SELECT * FROM chronicler_mem.episodes WHERE id = $1",
+        episode_id,
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "UPDATE public.episodes SET content = 'public-shadow' WHERE id = $1",
+        episode_id,
+    )
+
+
+async def test_configured_chronicler_memory_schema_serves_preferences_and_activity(
+    chronicler_memory_db_url: str,
+) -> None:
+    """Dashboard reads Chronicler memory from ``chronicler_mem``, not its domain schema."""
+    manager = await _manager_for_schema(
+        chronicler_memory_db_url,
+        butler_name="chronicler",
+        schema="chronicler",
+        memory_schema="chronicler_mem",
+    )
+    try:
+        assert manager.schema_for_butler("chronicler") == "chronicler"
+        assert manager.memory_schema_for_butler("chronicler") == "chronicler_mem"
+        await _snapshot_chronicler_memory_relations(manager)
+        assert manager.relation_observed_since_start("chronicler", "butler_secrets") is True
+        assert manager.relation_observed_since_start("chronicler", "facts") is True
+        assert manager.relation_observed_since_start("chronicler", "episodes") is True
+
+        pool = manager.pool("chronicler")
+        owner_id = await _seed_owner(pool)
+        fact_id, episode_id = await _seed_chronicler_memory(pool, owner_id)
+
+        preferences = await get_preferences(predicate=None, db=manager)
+        activity = await get_activity_feed("chronicler", limit=50, db=manager)
+
+        assert [(entry.predicate, entry.value) for entry in preferences.data] == [
+            ("preferences:general_timezone", "Asia/Singapore"),
+        ]
+        memory_events = [event for event in activity.events if event.event_type == "memory_write"]
+        assert [(event.entity_id, event.summary) for event in memory_events] == [
+            (str(episode_id), "private chronicler memory episode"),
+        ]
+        assert (
+            await pool.fetchval("SELECT count(*) FROM chronicler_mem.facts WHERE id = $1", fact_id)
+            == 1
+        )
+    finally:
+        await manager.close()
+
+
+async def test_configured_chronicler_memory_absent_at_boot_skips_public_shadows(
+    chronicler_domain_only_db_url: str,
+) -> None:
+    """An optional private schema absent at boot is empty, never public-backed."""
+    manager = await _manager_for_schema(
+        chronicler_domain_only_db_url,
+        butler_name="chronicler",
+        schema="chronicler",
+        memory_schema="chronicler_mem",
+    )
+    try:
+        pool = manager.pool("chronicler")
+        owner_id = await _seed_owner(pool)
+        public_fact_id, public_episode_id = await _create_chronicler_public_memory_shadows(
+            pool,
+            owner_id,
+        )
+        await _snapshot_chronicler_memory_relations(manager)
+        assert manager.relation_observed_since_start("chronicler", "facts") is False
+        assert manager.relation_observed_since_start("chronicler", "episodes") is False
+
+        preferences = await get_preferences(predicate=None, db=manager)
+        activity = await get_activity_feed("chronicler", limit=50, db=manager)
+
+        assert preferences.data == []
+        assert activity.events == []
+        assert await pool.fetchval(
+            "SELECT content FROM public.facts WHERE id = $1", public_fact_id
+        ) == ("public-shadow")
+        assert (
+            await pool.fetchval(
+                "SELECT content FROM public.episodes WHERE id = $1", public_episode_id
+            )
+            == "public-shadow"
+        )
+    finally:
+        await manager.close()
+
+
+@pytest.mark.parametrize("snapshot_memory", [True, False], ids=["post-start-loss", "unknown"])
+async def test_configured_chronicler_memory_loss_fails_closed_without_public_fallback(
+    chronicler_memory_db_url: str,
+    snapshot_memory: bool,
+) -> None:
+    """A dropped or unsnapshotted private source must return 503 instead of public data."""
+    manager = await _manager_for_schema(
+        chronicler_memory_db_url,
+        butler_name="chronicler",
+        schema="chronicler",
+        memory_schema="chronicler_mem",
+    )
+    try:
+        pool = manager.pool("chronicler")
+        owner_id = await _seed_owner(pool)
+        fact_id, episode_id = await _seed_chronicler_memory(pool, owner_id)
+        await _copy_chronicler_memory_to_public_shadows(pool, fact_id, episode_id)
+        if snapshot_memory:
+            await _snapshot_chronicler_memory_relations(manager)
+            assert manager.relation_observed_since_start("chronicler", "facts") is True
+            assert manager.relation_observed_since_start("chronicler", "episodes") is True
+        else:
+            assert manager.relation_observed_since_start("chronicler", "facts") is None
+            assert manager.relation_observed_since_start("chronicler", "episodes") is None
+
+        await pool.execute("DROP TABLE chronicler_mem.facts CASCADE")
+        await pool.execute("DROP TABLE chronicler_mem.episodes CASCADE")
+
+        with pytest.raises(HTTPException) as preferences_error:
+            await get_preferences(predicate=None, db=manager)
+        with pytest.raises(HTTPException) as activity_error:
+            await get_activity_feed("chronicler", limit=50, db=manager)
+
+        assert preferences_error.value.status_code == 503
+        assert activity_error.value.status_code == 503
+        assert await pool.fetchval("SELECT content FROM public.facts WHERE id = $1", fact_id) == (
+            "public-shadow"
+        )
+        assert await pool.fetchval(
+            "SELECT content FROM public.episodes WHERE id = $1", episode_id
+        ) == ("public-shadow")
+    finally:
+        await manager.close()
 
 
 async def test_absent_at_startup_is_an_expected_optional_schema(
