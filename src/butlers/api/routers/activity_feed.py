@@ -12,10 +12,12 @@ time-ordered list:
 - ``pending_actions`` (requested_at DESC) → ``event_type = "approval_raised"``
 - ``episodes`` (created_at DESC) → ``event_type = "memory_write"``
 
-Each source is queried independently; missing tables are silently skipped
-so the endpoint degrades gracefully when a butler does not have the
-approvals or memory modules enabled. Results are merged and sorted in
-application code, then capped at ``limit``.
+Each source is queried independently. Missing session or approval tables are
+silently skipped. A missing memory episodes table is skipped only when the
+entire memory schema was absent at API startup; post-start or unknown memory
+source loss returns an unavailable response rather than reading a same-named
+public shadow. Results are merged and sorted in application code, then capped
+at ``limit``.
 
 SQL column projections and query functions are versioned in
 :mod:`butlers.api.read_models.activity_v1`.
@@ -37,6 +39,11 @@ from butlers.api.read_models.activity_v1 import (
     query_activity_actions,
     query_activity_episodes,
     query_activity_sessions,
+)
+from butlers.api.routers.memory import (
+    _is_missing_memory_schema_error,
+    _memory_relation,
+    _memory_schema_absent_at_start,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,14 +158,18 @@ async def get_activity_feed(
     - Pending actions / approval requests (``approval_raised``)
     - Memory episodes (``memory_write``)
 
-    Each source is queried independently and missing tables are silently
-    skipped.  Results are merged in application code, sorted by ``ts``
-    descending, and capped at ``limit`` (default 10, max 50).
+    Each source is queried independently. Missing sessions and pending-actions
+    tables are skipped. A missing episodes table is skipped only when the
+    memory schema was absent at startup; later or unknown source loss returns
+    503 so the raw feed cannot look healthy while omitting memory writes.
+    Results are merged in application code, sorted by ``ts`` descending, and
+    capped at ``limit`` (default 10, max 50).
 
     SQL projections are governed by the v1 read-model contract in
     :mod:`butlers.api.read_models.activity_v1`.
 
-    Returns 503 when the butler's database pool is not registered.
+    Returns 503 when the butler's database pool is not registered or its
+    memory episode source is unavailable.
     """
     try:
         pool = db.pool(name)
@@ -181,7 +192,37 @@ async def get_activity_feed(
         events.append(_action_to_event(row))
 
     # --- Memory episodes ---
-    episode_rows = await query_activity_episodes(pool, limit)
+    try:
+        episode_rows = await query_activity_episodes(
+            pool,
+            limit,
+            episodes_relation=_memory_relation(db, name, "episodes"),
+            suppress_undefined_table=False,
+        )
+    except Exception as exc:
+        if _is_missing_memory_schema_error(
+            exc,
+            schema_absent_at_start=_memory_schema_absent_at_start(db, name),
+        ):
+            logger.debug(
+                "Skipping activity memory source for %s; memory schema was absent at startup",
+                name,
+                exc_info=True,
+            )
+            episode_rows = []
+        else:
+            logger.warning(
+                "Activity feed memory episode source for %s is unavailable",
+                name,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Butler '{name}' activity feed is unavailable because its memory episode "
+                    "source could not be queried"
+                ),
+            ) from exc
     for row in episode_rows:
         events.append(_episode_to_event(row))
 

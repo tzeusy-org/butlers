@@ -342,6 +342,21 @@ async def test_query_activity_episodes_passes_limit():
     assert call_args[0][1] == 3
 
 
+async def test_query_activity_episodes_uses_caller_owned_relation():
+    """The caller can pin the query to a private memory relation."""
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    await query_activity_episodes(
+        mock_pool,
+        limit=3,
+        episodes_relation='"lifecycle"."episodes"',
+    )
+
+    call_args = mock_pool.fetch.call_args
+    assert 'FROM "lifecycle"."episodes"' in call_args[0][0]
+
+
 async def test_query_activity_episodes_skips_undefined_table():
     """UndefinedTableError is caught and returns an empty list."""
     mock_pool = AsyncMock()
@@ -350,3 +365,17 @@ async def test_query_activity_episodes_skips_undefined_table():
     result = await query_activity_episodes(mock_pool, limit=10)
 
     assert result == []
+
+
+async def test_query_activity_episodes_can_surface_undefined_table():
+    """The route can classify a missing pinned relation against lifecycle state."""
+    mock_pool = AsyncMock()
+    mock_pool.fetch = AsyncMock(side_effect=UndefinedTableError("episodes"))
+
+    with pytest.raises(UndefinedTableError):
+        await query_activity_episodes(
+            mock_pool,
+            limit=10,
+            episodes_relation='"lifecycle"."episodes"',
+            suppress_undefined_table=False,
+        )

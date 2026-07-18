@@ -1670,8 +1670,9 @@ async def get_dispatch_attempts(
       default ``desc``). Used by the dashboard to answer "how many dispatches has
       the fleet denied recently" without a session id in hand (bu-7o89u.3).
 
-    Exactly one of ``session_id``, ``logical_session_id``, or ``outcome`` must be
-    provided.
+    Callers choose exactly one mode: session mode accepts ``session_id`` and/or
+    ``logical_session_id``, while fleet mode requires ``outcome``. Fleet mode
+    cannot be combined with either session selector.
 
     Each row answers one of these questions:
     - Which model was skipped before invocation (``quota_skip``)?
@@ -1682,6 +1683,14 @@ async def get_dispatch_attempts(
     When the table does not exist (migration not yet applied) returns an empty
     page rather than 503.
     """
+    if outcome is not None and (session_id is not None or logical_session_id is not None):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "'outcome' fleet mode cannot be combined with 'session_id' or 'logical_session_id'."
+            ),
+        )
+
     if session_id is None and logical_session_id is None and outcome is None:
         raise HTTPException(
             status_code=422,

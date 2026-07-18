@@ -107,10 +107,22 @@ together. Operators read it via `GET /api/dispatch/attempts` and
 - **AND** `meta.total` SHALL be the full count matching the filter (`outcome` +
   `reason_prefix` + `since`), independent of `limit`, so a caller can read an
   accurate count without fetching every row
-- **AND** exactly one of `session_id`, `logical_session_id`, or `outcome` SHALL be
-  required; a request with none of the three SHALL return `422`
+- **AND** callers SHALL select exactly one query mode: session mode accepts
+  `session_id` and/or `logical_session_id`, while fleet mode requires `outcome`
+- **AND** a request with neither session selector nor `outcome` SHALL return `422`
 - **AND** this mode SHALL power the `/spend` fleet-halt state (dashboard-spend-dashboard
   spec) rather than requiring a new dedicated endpoint
+
+#### Scenario: Mixed fleet and session mode is rejected
+- **WHEN** a caller requests `GET /api/dispatch/attempts` with `outcome` and either
+  `session_id` or `logical_session_id`
+- **THEN** the endpoint SHALL return `422` before querying attempt provenance
+
+#### Scenario: Session selectors may be combined
+- **WHEN** a caller requests `GET /api/dispatch/attempts` with both `session_id` and
+  `logical_session_id`, without `outcome`
+- **THEN** the endpoint SHALL use session mode and return rows matching either selector
+  in `attempt_index ASC` order
 
 #### Scenario: Malformed session identifier is rejected at the API boundary
 - **WHEN** a caller supplies a blank or non-UUID `session_id`, with or without an

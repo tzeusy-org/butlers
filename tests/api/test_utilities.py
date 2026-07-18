@@ -27,6 +27,7 @@ from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
     MCPClientManager,
+    discover_butlers,
     init_db_manager,
 )
 from butlers.api.routers.secrets import _get_db_manager as _secrets_get_db
@@ -51,6 +52,17 @@ class TestDatabaseAndDeps:
         mgr = DatabaseManager(host="localhost", port=5432, user="pg", password="secret")
         await mgr.add_butler("switchboard")
         assert mgr.pool("switchboard") is pool
+        assert mgr.memory_schema_for_butler("switchboard") is None
+
+        await mgr.add_butler("general", db_schema="general")
+        await mgr.add_butler(
+            "chronicler",
+            db_schema="chronicler",
+            memory_schema="chronicler_mem",
+        )
+
+        assert mgr.memory_schema_for_butler("general") == "general"
+        assert mgr.memory_schema_for_butler("chronicler") == "chronicler_mem"
 
     async def test_mcp_manager_raises_for_unregistered_and_lists_registered(self):
         mgr = MCPClientManager()
@@ -94,7 +106,7 @@ class TestDatabaseAndDeps:
         )
 
     async def test_init_db_manager_snapshots_optional_relation_presence(self, monkeypatch):
-        """Startup records the optional-relation lifecycle boundary for every pool."""
+        """Startup snapshots domain and effective-memory relation families separately."""
         import butlers.api.deps as _deps_module
 
         monkeypatch.setattr(_deps_module, "_db_manager", None)
@@ -103,13 +115,16 @@ class TestDatabaseAndDeps:
             port=41101,
             db_name="butlers",
             db_schema="general",
+            memory_schema="general_mem",
         )
         db = MagicMock()
+        db.db_name = "butlers"
         db.provision = AsyncMock()
         manager = MagicMock()
         manager.add_butler = AsyncMock()
         manager.set_credential_shared_pool = AsyncMock()
         manager.snapshot_relation_presence = AsyncMock()
+        manager.snapshot_memory_relation_presence = AsyncMock()
         shared_pool = MagicMock()
         manager.credential_shared_pool.return_value = shared_pool
 
@@ -121,10 +136,29 @@ class TestDatabaseAndDeps:
         ):
             await init_db_manager([cfg])
 
+        assert manager.add_butler.await_args_list == [
+            call(
+                "general",
+                db_name="butlers",
+                db_schema="general",
+                memory_schema="general_mem",
+                modules=frozenset(),
+            )
+        ]
         assert manager.snapshot_relation_presence.await_args_list == [
-            call("general", ("butler_secrets", "episodes", "facts", "rules")),
+            call("general", ("butler_secrets",)),
             call("shared-public", ("butler_secrets",), pool=shared_pool),
         ]
+        assert manager.snapshot_memory_relation_presence.await_args_list == [
+            call("general", ("episodes", "facts", "rules")),
+        ]
+
+    def test_discover_butlers_retains_configured_memory_schema_override(self):
+        """Dashboard discovery preserves Chronicler's private memory location."""
+        chronicler = next(config for config in discover_butlers() if config.name == "chronicler")
+
+        assert chronicler.db_schema == "chronicler"
+        assert chronicler.memory_schema == "chronicler_mem"
 
     def test_database_manager_uses_api_pool_size_overrides(self, monkeypatch):
         """Dashboard pools can be capped independently from daemon pools."""

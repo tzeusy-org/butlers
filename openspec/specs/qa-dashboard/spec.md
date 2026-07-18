@@ -161,10 +161,9 @@ The dashboard API SHALL expose endpoints under `/api/qa/` to support the fronten
 #### Scenario: POST /api/qa/force-patrol
 - **WHEN** `POST /api/qa/force-patrol` is called
 - **THEN** the endpoint accepts the request (HTTP 202) and attempts to trigger a patrol cycle immediately, regardless of the schedule
-- **AND** returns `ApiResponse` wrapping `{ accepted, triggered, message }`:
+- **AND** returns `ApiResponse` wrapping `{ triggered, message }`:
   - `triggered` is the honest signal for whether a cycle was actually kicked off (in-process or via the QA daemon MCP tool); it is `false` when no patrol could be started (no in-process callable AND no reachable daemon, or a cycle is already running)
   - `message` names the outcome (why a patrol did or did not run)
-  - `accepted` mirrors `triggered` and is retained only for backward compatibility with existing dashboard clients; callers MUST branch on `triggered`, never treat a 2xx accept as proof a patrol ran
 
 #### Scenario: GET /api/qa/circuit-breaker
 - **WHEN** `GET /api/qa/circuit-breaker` is called
