@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-07-12
-**Amended:** 2026-07-18 — ingestion producers plus Calendar and Chronicler projection producers; see [Amendments](#amendments).
+**Amended:** 2026-07-18 — ingestion producers plus Calendar and Chronicler projection producers; 2026-07-19 — isolated OS-process delivery proof for those two producers; see [Amendments](#amendments).
 
 ## Summary
 
@@ -165,10 +165,13 @@ The calendar cache patch invalidates the workspace, its derived views, metadata,
 and audit feed; each of those bus-covered queries reconciles every five minutes
 while the bus is open and falls back to 30-second polling while it is not.
 
-The tests for this amendment exercise the producer and cache-patch seams. They
-do not claim a live cross-container PostgreSQL LISTEN-to-WebSocket end-to-end
-delivery; the durable projection rows and the bus-aware poll fallback remain the
-correctness path when that best-effort signal is unavailable.
+The original tests for this amendment exercise the producer and cache-patch
+seams. They do not claim a live cross-container PostgreSQL
+LISTEN-to-WebSocket end-to-end delivery. The later isolated OS-process proof
+described below exercises this producer's actual transport path without
+claiming Compose/container wiring; the durable projection rows and the
+bus-aware poll fallback remain the correctness path when that best-effort
+signal is unavailable.
 
 ### 2026-07-18 — Chronicler projection freshness bridge (bu-v6uas)
 
@@ -179,6 +182,36 @@ or closed episodes). The aggregate envelope carries counts rather than source
 content, and it invalidates the existing Chronicles query prefix. Empty and
 skipped adapter runs emit nothing.
 
-This producer is likewise verified at its deterministic job/bridge seam, not by
-an asserted live cross-process WebSocket E2E. Its durable episode, point-event,
-and checkpoint writes remain authoritative when a best-effort NOTIFY is missed.
+The original producer tests verify its deterministic job/bridge seam. The later
+isolated OS-process proof described below reaches a real WebSocket route, but
+does not claim a Compose/container E2E. Its durable episode, point-event, and
+checkpoint writes remain authoritative when a best-effort NOTIFY is missed.
+
+### 2026-07-19 — Calendar and Chronicler isolated OS-process delivery proof (bu-jw33x)
+
+`tests/integration/test_fleet_events_notify_bridge.py::test_calendar_and_chronicler_child_processes_reach_websocket`
+is the repeatable live-boundary proof for the two projection producers. It
+creates an isolated testcontainer PostgreSQL database migrated with the
+Chronicler chain, starts the real `run_fleet_events_listener()` alongside the
+real `WS /api/events/stream` router, and waits for `add_listener()` to complete
+before publishing. It then launches **two fresh child Python processes**:
+
+- the Calendar child calls `CalendarModule._publish_calendar_fleet_event()`;
+- the Chronicler child runs `jobs._run_adapter()` with a fixture adapter that
+  writes a canonical `point_events` row before it reports a material
+  projection.
+
+The test asserts that each child PID differs from the dashboard test process,
+then consumes the resulting `calendar` and `chronicles` frames from the actual
+WebSocket route with their production payload shapes.
+The listener and WebSocket handler intentionally share the dashboard process,
+as they do in production; the boundary under test is each producer process to
+that dashboard process through PostgreSQL `NOTIFY`/`LISTEN`.
+
+This is deliberately **not** a live Docker Compose/container or browser E2E:
+it starts no shared dev stack, full dashboard lifespan, daemon scheduler, or
+React client. It therefore does not certify Compose mounts, service discovery,
+or browser WebSocket connectivity. The frontend's downstream cache patches are
+separately covered by `frontend/src/hooks/event-cache-registry.test.ts`; this
+harness proves the preceding producer-to-WebSocket transport delivery without
+overstating that coverage.
