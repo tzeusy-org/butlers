@@ -36,6 +36,7 @@ from butlers.api.routers.secrets_v2 import (
     _fetch_system_secrets,
     _system_probe_timestamps,
     delete_system_credential,
+    get_cli_credential,
     get_system_credential,
     probe_system_credential,
     set_system_credential,
@@ -440,6 +441,107 @@ async def test_post_boot_private_loss_blocks_get_and_probe_public_fallback(
         assert cache["last_verified"] is None
     finally:
         _system_probe_timestamps.pop(key, None)
+        await manager.close()
+
+
+async def test_post_boot_shared_public_loss_blocks_system_credential_get(
+    migrated_db_url: str,
+) -> None:
+    """A shared credential table lost after boot is unavailable, not absent."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+        with_shared_pool=True,
+    )
+    key = "DROPPED_SHARED_PUBLIC_GET_KEY"
+    try:
+        shared_pool = manager.credential_shared_pool()
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        await manager.snapshot_relation_presence(
+            "shared-public",
+            ("butler_secrets",),
+            pool=shared_pool,
+        )
+        assert manager.relation_observed_since_start("shared-public", "butler_secrets") is True
+        await _seed_public_secret(manager, key=key)
+        await shared_pool.execute("DROP TABLE public.butler_secrets")
+
+        with pytest.raises(HTTPException) as error:
+            await get_system_credential(key, db=manager)
+
+        assert error.value.status_code == 503
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_shared_public_loss_blocks_system_credential_probe(
+    migrated_db_url: str,
+) -> None:
+    """A shared credential table lost after boot cannot be probed as missing."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+        with_shared_pool=True,
+    )
+    key = "DROPPED_SHARED_PUBLIC_PROBE_KEY"
+    try:
+        shared_pool = manager.credential_shared_pool()
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        await manager.snapshot_relation_presence(
+            "shared-public",
+            ("butler_secrets",),
+            pool=shared_pool,
+        )
+        assert manager.relation_observed_since_start("shared-public", "butler_secrets") is True
+        await _seed_public_secret(manager, key=key)
+        await shared_pool.execute("DROP TABLE public.butler_secrets")
+        _system_probe_timestamps.pop(key, None)
+
+        with pytest.raises(HTTPException) as error:
+            await probe_system_credential(key, db=manager)
+
+        assert error.value.status_code == 503
+    finally:
+        _system_probe_timestamps.pop(key, None)
+        await manager.close()
+
+
+async def test_post_boot_shared_public_loss_blocks_cli_credential_get(
+    migrated_db_url: str,
+) -> None:
+    """A shared CLI credential table lost after boot is unavailable, not absent."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+        with_shared_pool=True,
+    )
+    key = "DROPPED_SHARED_PUBLIC_CLI_KEY"
+    try:
+        shared_pool = manager.credential_shared_pool()
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        await manager.snapshot_relation_presence(
+            "shared-public",
+            ("butler_secrets",),
+            pool=shared_pool,
+        )
+        assert manager.relation_observed_since_start("shared-public", "butler_secrets") is True
+        await shared_pool.execute(
+            """
+            INSERT INTO public.butler_secrets (secret_key, secret_value, category, updated_at)
+            VALUES ($1, 'cli-secret', 'cli', now())
+            """,
+            key,
+        )
+        await shared_pool.execute("DROP TABLE public.butler_secrets")
+
+        with pytest.raises(HTTPException) as error:
+            await get_cli_credential(key, db=manager)
+
+        assert error.value.status_code == 503
+    finally:
         await manager.close()
 
 

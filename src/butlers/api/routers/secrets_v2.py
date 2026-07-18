@@ -1178,7 +1178,11 @@ def _is_missing_secrets_schema_error(
 
 
 class _SystemSecretSourceUnavailableError(RuntimeError):
-    """A private system-secret source failed after (or without) startup evidence."""
+    """A schema-qualified system-secret source failed after startup evidence."""
+
+
+class _CliSecretSourceUnavailableError(RuntimeError):
+    """The shared CLI-secret source failed after (or without) startup evidence."""
 
 
 # ---------------------------------------------------------------------------
@@ -2156,10 +2160,10 @@ async def _fetch_single_system_secret(
 ) -> SystemSecretDetail | None:
     """Fetch a single butler_secrets row matching the given key.
 
-    Returns ``None`` when no matching row exists, or when a private table was
-    known to be absent at dashboard startup.  A private query failure without
-    that startup marker is raised so callers cannot silently fall through to
-    ``public.butler_secrets`` after local-schema loss.
+    Returns ``None`` when no matching row exists, or when a schema-qualified
+    table was known to be absent at dashboard startup. A schema-qualified query
+    failure without that startup marker is raised so callers cannot silently
+    turn schema loss into an absent credential.
     """
     relation = _qualified_relation(source_schema, "butler_secrets")
     try:
@@ -2235,12 +2239,16 @@ async def _fetch_single_system_secret(
 async def _fetch_single_cli_secret(
     pool: Any,
     credential_id: str,
+    *,
+    schema_absent_at_start: bool | None = None,
 ) -> CliRuntimeDetail | None:
     """Fetch a single CLI runtime token by key (id).
 
     CLI tokens are stored in butler_secrets with category='cli' or
     'cli-auth' (see _fetch_cli_secrets for why both spellings are one
-    family).  Returns None when no matching row exists.
+    family). Returns None when no matching row exists. When a caller supplies
+    a lifecycle marker, an unavailable shared table is only an expected absence
+    if it was absent at startup; otherwise the source failure is raised.
     """
     try:
         row = await pool.fetchrow(
@@ -2263,6 +2271,16 @@ async def _fetch_single_cli_secret(
             credential_id,
         )
     except Exception as exc:  # noqa: BLE001
+        if schema_absent_at_start is not None:
+            if _is_missing_secrets_schema_error(
+                exc,
+                schema_absent_at_start=schema_absent_at_start,
+            ):
+                logger.debug("butler_secrets (cli) not found in shared pool")
+                return None
+            raise _CliSecretSourceUnavailableError(
+                "CLI credential source unavailable for shared-public"
+            ) from exc
         msg = str(exc).lower()
         if "does not exist" in msg or "undefined" in msg.lower():
             logger.debug("butler_secrets (cli) not found in shared pool")
@@ -2389,11 +2407,25 @@ async def get_system_credential(
     # Also search the shared credential pool (public.butler_secrets).
     try:
         shared_pool = db.credential_shared_pool()
-        detail = await _fetch_single_system_secret(shared_pool, "shared-public", key)
-        if detail is not None:
-            return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
     except KeyError:
         pass
+    else:
+        try:
+            detail = await _fetch_single_system_secret(
+                shared_pool,
+                "shared-public",
+                key,
+                source_schema="public",
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+            )
+        except _SystemSecretSourceUnavailableError as exc:
+            logger.warning("System credential source unavailable for shared-public")
+            raise HTTPException(
+                status_code=503,
+                detail="System credential source unavailable for shared-public",
+            ) from exc
+        if detail is not None:
+            return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
 
     raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -2426,7 +2458,18 @@ async def get_cli_credential(
     if shared_pool is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    detail = await _fetch_single_cli_secret(shared_pool, credential_id)
+    try:
+        detail = await _fetch_single_cli_secret(
+            shared_pool,
+            credential_id,
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+        )
+    except _CliSecretSourceUnavailableError as exc:
+        logger.warning("CLI credential source unavailable for shared-public")
+        raise HTTPException(
+            status_code=503,
+            detail="CLI credential source unavailable for shared-public",
+        ) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -5078,10 +5121,24 @@ async def probe_system_credential(
         pass
 
     if found_pool is None and shared_pool is not None:
-        detail = await _fetch_single_system_secret(shared_pool, "shared-public", key)
+        try:
+            detail = await _fetch_single_system_secret(
+                shared_pool,
+                "shared-public",
+                key,
+                source_schema="public",
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+            )
+        except _SystemSecretSourceUnavailableError as exc:
+            logger.warning("System credential source unavailable for shared-public")
+            raise HTTPException(
+                status_code=503,
+                detail="System credential source unavailable for shared-public",
+            ) from exc
         if detail is not None:
             found_pool = shared_pool
             found_butler = "shared-public"
+            found_schema = "public"
 
     if found_pool is None or found_butler is None or detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
