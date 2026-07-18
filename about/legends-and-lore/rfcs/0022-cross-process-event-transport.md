@@ -2,11 +2,11 @@
 
 **Status:** Accepted
 **Date:** 2026-07-12
-**Amended:** 2026-07-18 — Switchboard ingestion events; see [Amendments](#amendments).
+**Amended:** 2026-07-18 — ingestion producers; see [Amendments](#amendments).
 
 ## Summary
 
-Daemon-originated live events (session lifecycle, per-call spend, `notify()` deliveries, approval gate decisions, and accepted Switchboard ingests) are published from the `butlers-up` container via `SELECT pg_notify(channel, payload)` on the daemon's own database pool. The dashboard-api container LISTENs on that same Postgres channel and bridges every NOTIFY back into its existing in-process fleet event bus (`butlers.api.routers.events.emit_event`, `WS /api/events/stream`), so every existing WebSocket consumer keeps working unchanged. The original producers publish additively alongside their pre-existing in-process `emit_event()` / `emit_spend_event()` / `emit_approvals_event()` calls; the later `ingestion` producer is bridge-only because its former daemon-local `emit_event()` call was known to be inert (see the 2026-07-18 amendment).
+Cross-process live events (session lifecycle, per-call spend, `notify()` deliveries, approval gate decisions, accepted Switchboard ingests, and committed connector filtered-event batches) are published from their owning process via `SELECT pg_notify(channel, payload)` on its database pool. The dashboard-api container LISTENs on that same Postgres channel and bridges every NOTIFY back into its existing in-process fleet event bus (`butlers.api.routers.events.emit_event`, `WS /api/events/stream`), so every existing WebSocket consumer keeps working unchanged. The original producers publish additively alongside their pre-existing in-process `emit_event()` / `emit_spend_event()` / `emit_approvals_event()` calls; the later Switchboard `ingestion` producer is bridge-only because its daemon-local `emit_event()` call was known to be inert, and connector batches likewise publish only through the bridge (see the 2026-07-18 amendments).
 
 ## Motivation
 
@@ -24,7 +24,10 @@ Every one of these runs inside the daemon process. Calling `emit_event()` there 
 `roster/switchboard/tools/ingestion/ingest.py` is a later daemon-side producer: a
 new committed `public.ingestion_events` row emits an `ingestion` event through
 the bridge only, because its former direct `emit_event()` call had the same
-unobserved-process failure mode.
+unobserved-process failure mode. `FilteredEventBuffer.flush()` is the other
+write path for the unified ingestion feed: after its `connectors.filtered_events`
+batch INSERT succeeds, it publishes the same event type from the connector
+process so the dashboard invalidates the merged feed immediately.
 
 Some call sites *also* emit onto older, per-feature dedicated streams (`/api/approvals/stream`, `/api/spend/stream`) via `emit_approvals_event()` / `emit_spend_event()`. Those are equally broken when invoked from the daemon process, for the identical reason — and are separately known to have zero remaining WS consumers now that the unified bus exists (bu-01r64.2 deletes those routes and the now-fully-dead upward `from butlers.api.routers.X import emit_Y_event` imports once this RFC's bridge supersedes them).
 
@@ -46,7 +49,7 @@ The alternative considered — an HTTP callback from daemon to dashboard-api —
 {"type": "session", "data": {"phase": "started", "session_id": "...", "butler": "general", "trigger_source": "tick", "model": "..."}}
 ```
 
-`type` is one of the values in `butlers.api.routers.events.EVENT_TYPES` that a daemon process can originate: `session`, `spend`, `notification`, `approval`, or `ingestion`. `data` is whatever dict the original in-process `emit_event(event_type, data)` call would have carried — the bridge does not transform or re-shape it, so a bridged event is indistinguishable on the wire from one emitted natively inside the dashboard-api process (e.g. `header_delta`/`issue`/`attention_*`, which originate in-process and are unaffected by this RFC). An `ingestion` payload contains only `request_id`, `source_channel`, `triage_decision`, and `triage_target`; it never includes the raw ingest payload.
+`type` is one of the values in `butlers.api.routers.events.EVENT_TYPES` that a daemon process can originate: `session`, `spend`, `notification`, `approval`, or `ingestion`. `data` is whatever dict the original in-process `emit_event(event_type, data)` call would have carried — the bridge does not transform or re-shape it, so a bridged event is indistinguishable on the wire from one emitted natively inside the dashboard-api process (e.g. `header_delta`/`issue`/`attention_*`, which originate in-process and are unaffected by this RFC). An `ingestion` payload from `ingest_v1()` contains only `request_id`, `source_channel`, `triage_decision`, and `triage_target`; it never includes the raw ingest payload. A filtered-event batch has no canonical Switchboard request ID, so it emits an empty `data` object; the dashboard's ingestion patch intentionally keys only on `type`.
 
 **Timestamp:** intentionally *not* part of the envelope. `emit_event()` stamps `ts` itself at the moment it runs inside the dashboard-api process (arrival time), consistent with how every other event on the bus is stamped — this RFC does not introduce a second, origin-side clock that could drift or arrive out of order relative to it.
 
@@ -59,7 +62,7 @@ async def publish_fleet_event(pool, event_type: str, data: dict | None = None) -
 A single shared, best-effort helper: JSON-encodes the envelope and runs `SELECT pg_notify($1, $2)` on the caller's own `asyncpg.Pool`/`Connection`. It is deliberately symmetrical with the existing `emit_event()` call sites — same call shape, same "never raise, never block the caller's real work" contract:
 
 - **Never raises.** Every failure mode (oversized payload, non-serializable `data`, connection loss, pool exhaustion) is caught, logged at `warning` (payload-shape problems) or `debug` (transient delivery problems), and reported back only via a `bool` return value that call sites are free to ignore.
-- **Payload size guard.** Postgres hard-caps a single NOTIFY payload at 8000 bytes (server-enforced — exceeding it raises `payload string too long`). `publish_fleet_event` checks the encoded size against a 7800-byte budget *before* attempting the NOTIFY and drops (logs + returns `False`) rather than risking that exception. The `ingestion` shape is intentionally bounded to identifiers and triage values, not raw content; a future event type carrying unbounded user content would need to publish a reference (e.g. a row id) rather than the full payload, not raise the cap.
+- **Payload size guard.** Postgres hard-caps a single NOTIFY payload at 8000 bytes (server-enforced — exceeding it raises `payload string too long`). `publish_fleet_event` checks the encoded size against a 7800-byte budget *before* attempting the NOTIFY and drops (logs + returns `False`) rather than risking that exception. The `ingestion` shape is intentionally bounded to identifiers and triage values (or empty for filtered-event batches), never raw content; a future event type carrying unbounded user content would need to publish a reference (e.g. a row id) rather than the full payload, not raise the cap.
 - **No queuing, no replay, no delivery guarantee.** A NOTIFY sent while nobody is LISTENing (dashboard-api restarting, bridge not yet started) is simply not delivered — Postgres does not persist or queue NOTIFYs for later delivery to a channel with zero current listeners. This matches the pre-existing behavior of the in-process bus itself (a WS client that isn't connected when an event fires misses it; the ring-buffer snapshot-on-connect only covers events that *did* reach the bus) and is an acceptable loss profile for a live-UI freshness signal that is always backed by a poll-based fallback (bu-01r64.3) and the underlying durable row (the `sessions` table, `pending_actions` table, etc.) as source of truth.
 
 The original call sites publish *additively*, alongside their existing (silently-inert-from-the-daemon) `emit_event()`/`emit_spend_event()`/`emit_approvals_event()` calls, each independently wrapped so a NOTIFY failure can never affect the other. The later bridge-only `ingestion` producer is the documented exception:
@@ -89,7 +92,7 @@ A background `asyncio.Task` started from the dashboard-api `lifespan` handler (`
 3. `_on_notify` parses the JSON envelope and calls the real `butlers.api.routers.events.emit_event(event_type, data)` — the exact function every in-process, same-container caller already uses. From this point on, a bridged event is handled identically to a native one: ring buffer, subscriber fan-out, WS delivery.
 4. **Self-healing.** The task polls `conn.is_closed()` on a short interval and, on any connection loss (server restart, network blip) or connect failure, closes/discards the dead connection and reconnects after a fixed backoff — looping forever until cancelled at shutdown. A bridge that silently stopped after one connection blip would recreate the exact "indicator says connected, nothing arrives" failure mode this RFC exists to fix, so staying down is not an acceptable failure mode; only process shutdown (task cancellation) stops it.
 5. Malformed payloads (bad JSON, non-object, missing/non-string `type`) are logged and dropped rather than raised — a malformed NOTIFY must not tear down the listener connection.
-6. Startup is wrapped in its own `try/except` in `lifespan()`, independent of `DatabaseManager` initialization: a bridge failure degrades to "daemon-originated live events don't arrive" (the pre-existing bug, unchanged), not to the dashboard-api failing to start.
+6. Startup is wrapped in its own `try/except` in `lifespan()`, independent of `DatabaseManager` initialization: a bridge failure degrades to "cross-process live events don't arrive" (the pre-existing bug, unchanged), not to the dashboard-api failing to start.
 
 ## Delivery Semantics and Failure Modes
 
@@ -102,7 +105,7 @@ A background `asyncio.Task` started from the dashboard-api `lifespan` handler (`
 | Malformed/foreign-channel NOTIFY reaches `_on_notify` | Dropped and logged; listener connection stays up. |
 | `publish_fleet_event()` itself raises for any reason | It doesn't — every internal step is caught; worst case is a debug-level log and a `False` return. |
 
-None of these failure modes affect the durable record each event describes (the `sessions` row, the `pending_actions` row, the delivered notification) — this transport only carries a **best-effort live freshness signal** layered on top of state that already persists correctly. bu-01r64.3's bus-aware poll intervals are the deliberate backstop for the "live signal was lost" case.
+None of these failure modes affect the durable record each event describes (the `sessions` row, the `pending_actions` row, the delivered notification, or a `connectors.filtered_events` row) — this transport only carries a **best-effort live freshness signal** layered on top of state that already persists correctly. bu-01r64.3's bus-aware poll intervals are the deliberate backstop for the "live signal was lost" case.
 
 ## Integration
 
@@ -110,6 +113,7 @@ None of these failure modes affect the durable record each event describes (the 
 - `src/butlers/api/fleet_events_bridge.py` — bridge implementation, started/stopped from `src/butlers/api/app.py`'s `lifespan()`.
 - `src/butlers/core/sessions.py`, `src/butlers/core/spawner.py`, `src/butlers/core_tools/_notifications.py`, `src/butlers/modules/approvals/gate.py`, `src/butlers/modules/approvals/email_guard.py` — original daemon-side `publish_fleet_event()` call sites, added alongside their pre-existing (now cross-process-dead) `emit_event()`/`emit_spend_event()`/`emit_approvals_event()` calls.
 - `roster/switchboard/tools/ingestion/ingest.py` — daemon-side bridge-only `ingestion` publish immediately after its `public.ingestion_events` transaction commits.
+- `src/butlers/connectors/filtered_event_buffer.py` — connector-side bridge-only `ingestion` publish after its `connectors.filtered_events` batch INSERT commits.
 - No frontend changes: `WS /api/events/stream`, its ring-buffer snapshot, and every existing cache-invalidation consumer are unaware the event's origin process changed.
 - No schema/migration changes: `pg_notify` requires no table.
 
@@ -135,9 +139,15 @@ WebSocket clients, so retaining it would preserve known-dead code rather than
 provide compatibility. The durable row remains authoritative and the
 publication remains best-effort.
 
-The unified ingestion feed retains its 30-second primary poll despite this
-live signal: its API query also UNIONs `connectors.filtered_events`, whose
-`FilteredEventBuffer` batch writes do not pass through `ingest_v1()` and are
-therefore not covered by this NOTIFY. The bridge accelerates committed
-`public.ingestion_events`; polling remains the correctness path for the full
-unified feed and for missed best-effort notifications.
+### 2026-07-18 — Connector filtered-event batch bridge (bu-rqk6w)
+
+`FilteredEventBuffer.flush()` is the production choke point that writes batches
+to `connectors.filtered_events`. After its batch INSERT succeeds, it publishes
+one empty-data `ingestion` envelope through `publish_fleet_event()`. It clears
+the buffer before the best-effort publication, so a NOTIFY failure cannot cause
+a later flush to duplicate the durable rows or their signal.
+
+The unified ingestion feed retains its 30-second primary poll despite both live
+signals. `NOTIFY` remains best-effort, and the merged durable rows remain the
+correctness path when the dashboard listener is unavailable or a notification is
+missed.
