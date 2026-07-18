@@ -749,12 +749,10 @@ class ForcePatrolResponse(BaseModel):
     ``False`` only when no patrol could be started (no in-process callable AND no
     reachable daemon, or the patrol was skipped — e.g. one is already running).
 
-    ``accepted`` mirrors ``triggered`` for backward compatibility with existing
-    dashboard clients.  Callers MUST surface ``triggered`` honestly instead of
-    claiming a patrol ran when it did not (the latent no-op fixed in bu-lcbzw).
+    Callers MUST surface ``triggered`` honestly instead of claiming a patrol ran
+    when it did not (the latent no-op fixed in bu-lcbzw).
     """
 
-    accepted: bool
     triggered: bool = False
     message: str
 
@@ -2867,9 +2865,7 @@ async def force_patrol(
         try:
             result = await force_patrol_fn()
             triggered, message = _force_patrol_message(result)
-            return ApiResponse(
-                data=ForcePatrolResponse(accepted=triggered, triggered=triggered, message=message)
-            )
+            return ApiResponse(data=ForcePatrolResponse(triggered=triggered, message=message))
         except Exception as exc:  # noqa: BLE001
             error_code = uuid.uuid4().hex
             logger.exception("force-patrol callable raised [error_code=%s]", error_code)
@@ -2884,9 +2880,7 @@ async def force_patrol(
     result = await _force_patrol_via_daemon(mcp_mgr)
     if result is not None:
         triggered, message = _force_patrol_message(result)
-        return ApiResponse(
-            data=ForcePatrolResponse(accepted=triggered, triggered=triggered, message=message)
-        )
+        return ApiResponse(data=ForcePatrolResponse(triggered=triggered, message=message))
 
     # The QA daemon could not be reached (e.g. butler not running) or rejected
     # the call.  Report triggered=False so the UI does not falsely claim a patrol
@@ -2897,7 +2891,6 @@ async def force_patrol(
     )
     return ApiResponse(
         data=ForcePatrolResponse(
-            accepted=False,
             triggered=False,
             message=("Force patrol unavailable — QA daemon unreachable, no patrol triggered."),
         )

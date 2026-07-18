@@ -1363,11 +1363,12 @@ class TestForcePatrol:
         with status in message. Raising fn: 503."""
         # Standalone mode — no in-process fn AND no reachable daemon.
         r = await _call(_build_app()[0], "post", "/api/qa/force-patrol")
+        body = r.json()["data"]
         assert (
             r.status_code == 202
-            and r.json()["data"]["accepted"] is False
-            and r.json()["data"]["triggered"] is False
-            and "message" in r.json()["data"]
+            and body["triggered"] is False
+            and "accepted" not in body
+            and "message" in body
         )
 
         async def _fake_force_patrol() -> dict:
@@ -1383,10 +1384,11 @@ class TestForcePatrol:
         app2, _ = _build_app()
         app2.dependency_overrides[_get_force_patrol_fn] = lambda: _fake_force_patrol
         r2 = await _call(app2, "post", "/api/qa/force-patrol")
+        body2 = r2.json()["data"]
         assert (
-            r2.json()["data"]["accepted"] is True
-            and r2.json()["data"]["triggered"] is True
-            and "findings_dispatched" in r2.json()["data"]["message"]
+            body2["triggered"] is True
+            and "accepted" not in body2
+            and "findings_dispatched" in body2["message"]
         )
 
         async def _failing() -> dict:
@@ -1401,7 +1403,7 @@ class TestForcePatrol:
         force_patrol MCP tool and reports triggered=True on success.
 
         Pre-fix this endpoint was a silent no-op in the standalone dashboard process
-        (it returned accepted=False without ever calling the daemon). Post-fix it
+        (it returned triggered=False without ever calling the daemon). Post-fix it
         crosses the process boundary via MCPClientManager.call_tool.
         """
         mgr, client_mock = _make_mcp_manager_with_tool_result(
@@ -1422,7 +1424,7 @@ class TestForcePatrol:
         assert r.status_code == 202
         body = r.json()["data"]
         assert body["triggered"] is True
-        assert body["accepted"] is True
+        assert "accepted" not in body
         assert "findings_dispatched" in body["message"]
 
         # The regression assertion: the daemon force_patrol tool was actually
@@ -1440,7 +1442,7 @@ class TestForcePatrol:
         assert r.status_code == 202
         body = r.json()["data"]
         assert body["triggered"] is False
-        assert body["accepted"] is False
+        assert "accepted" not in body
         assert "unreachable" in body["message"].lower()
         # We attempted to reach the QA daemon before giving up.
         mgr.get_client.assert_awaited()

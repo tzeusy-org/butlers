@@ -756,7 +756,6 @@ describe("QaOverviewPage -- force-patrol toast honesty", () => {
     act(() => {
       opts.onSuccess?.({
         data: {
-          accepted: false,
           triggered: false,
           message: "Force patrol unavailable — QA daemon unreachable, no patrol triggered.",
         },
@@ -774,7 +773,7 @@ describe("QaOverviewPage -- force-patrol toast honesty", () => {
   it("warns when `triggered` is absent (treat unknown as not-triggered)", () => {
     const opts = clickForcePatrol();
     act(() => {
-      opts.onSuccess?.({ data: { accepted: false, message: "Patrol skipped: already running" } });
+      opts.onSuccess?.({ data: { message: "Patrol skipped: already running" } });
     });
 
     expect(toast.warning).toHaveBeenCalledWith("Patrol skipped: already running");
@@ -785,7 +784,7 @@ describe("QaOverviewPage -- force-patrol toast honesty", () => {
     const opts = clickForcePatrol();
     act(() => {
       opts.onSuccess?.({
-        data: { accepted: true, triggered: true, message: "Patrol triggered: clean (0 findings)" },
+        data: { triggered: true, message: "Patrol triggered: clean (0 findings)" },
       });
     });
 
