@@ -6,7 +6,7 @@ The Telegram User Client connector provides **readonly access to the user's pers
 ## Requirements
 
 ### Requirement: Readonly Contextualization Role
-The user client connector exists to give butlers passive awareness of the user's Telegram activity. It is strictly ingestion-only and readonly.
+The user client connector SHALL give butlers passive awareness of the user's Telegram activity. It SHALL be strictly ingestion-only and readonly.
 
 #### Scenario: Readonly access to user's Telegram
 - **WHEN** the Telegram user client connector runs
@@ -33,7 +33,7 @@ The user client connector exists to give butlers passive awareness of the user's
 - **AND** both operate independently — the contacts provider runs periodic sync via the Contacts module's polling loop, while this connector maintains a persistent live session
 
 ### Requirement: Live-Stream First Ingestion
-The user client connector maintains a persistent Telegram session for near-real-time message ingestion.
+The user client connector SHALL maintain a persistent Telegram session for near-real-time message ingestion.
 
 #### Scenario: Live event subscription
 - **WHEN** the connector starts
@@ -57,7 +57,7 @@ The user client connector maintains a persistent Telegram session for near-real-
 - **AND** the `TELETHON_AVAILABLE` flag allows conditional import without crashing the module
 
 ### Requirement: Scope of Ingestion
-The connector ingests from all message sources visible to the user's Telegram account.
+The connector SHALL ingest from all message sources visible to the user's Telegram account.
 
 #### Scenario: Ingested message sources
 - **WHEN** the user client connector is running
@@ -74,7 +74,7 @@ The connector ingests from all message sources visible to the user's Telegram ac
 - **AND** this gives butlers full conversational context, not just one side
 
 ### Requirement: ingest.v1 Field Mapping
-Each user-client message is normalized to the canonical `ingest.v1` envelope.
+Each user-client message SHALL be normalized to the canonical `ingest.v1` envelope.
 
 #### Scenario: Field mapping
 - **WHEN** a user-client message is normalized
@@ -91,7 +91,7 @@ Each user-client message is normalized to the canonical `ingest.v1` envelope.
   - `control.idempotency_key` = derived from message ID + endpoint identity
 
 ### Requirement: Bounded Backfill on Startup
-The connector supports optional historical message replay on startup to fill gaps from downtime.
+The connector SHALL support optional historical message replay on startup to fill gaps from downtime.
 
 #### Scenario: Backfill window configuration
 - **WHEN** `CONNECTOR_BACKFILL_WINDOW_H` is configured (e.g., 24 for last 24 hours)
@@ -108,7 +108,7 @@ The connector supports optional historical message replay on startup to fill gap
 - **AND** there is no webhook or polling mode — only live subscription
 
 ### Requirement: MTProto Credential Requirements
-The connector authenticates with Telegram using personal account credentials (not a bot token).
+The connector SHALL authenticate with Telegram using personal account credentials (not a bot token).
 
 #### Scenario: Required credentials
 - **WHEN** the user client connector starts
@@ -125,7 +125,7 @@ The connector authenticates with Telegram using personal account credentials (no
 - **AND** sessions must be rotated/revoked promptly after credential exposure
 
 ### Requirement: Privacy, Consent, and Data Minimization
-Because this connector reads a user's personal Telegram messages, strict privacy safeguards are required.
+Because this connector reads a user's personal Telegram messages, it SHALL enforce strict privacy safeguards.
 
 #### Scenario: Explicit user consent
 - **WHEN** the owner configures a Telegram user session in Passport
@@ -163,7 +163,7 @@ Because this connector reads a user's personal Telegram messages, strict privacy
 - **AND** outbound messaging goes through the Telegram Bot connector and Messenger butler
 
 ### Requirement: Discretion Layer Integration
-The Telegram user client connector uses the shared discretion layer (`butlers.connectors.discretion`) with identity-based weight resolution to filter noise before Switchboard ingestion.
+The Telegram user client connector SHALL use the shared discretion layer (`butlers.connectors.discretion`) with identity-based weight resolution to filter noise before Switchboard ingestion.
 
 #### Scenario: Discretion gate position
 - **WHEN** a message passes the ingestion policy gates (connector-scope and global-scope)
@@ -204,6 +204,7 @@ expanding the connector's transport surface beyond the local process.
 - **AND** `GET /metrics` returns Prometheus text format
 
 ### Requirement: Environment Variables
+The connector SHALL support the required and optional environment-variable configuration described below.
 
 #### Scenario: Required variables
 - **WHEN** the Telegram user client connector starts
@@ -252,7 +253,7 @@ The connector SHALL tag batch envelopes with `control.payload_type = "conversati
 - **THEN** the `payload_type` field is not set
 
 ### Requirement: Deployment Model
-The user client connector runs as a dedicated daemon, separate from butler daemons.
+The user client connector SHALL run as a dedicated daemon, separate from butler daemons.
 
 #### Scenario: Dedicated daemon process
 - **WHEN** the user client connector is deployed
@@ -266,6 +267,7 @@ The user client connector runs as a dedicated daemon, separate from butler daemo
 - **AND** the connector verifies accepted ingest events and lag metrics after startup
 
 ### Requirement: Implementation Status
+This specification SHALL record the connector's completed capabilities and target-state gaps as described below.
 
 #### Scenario: Completed features
 - **WHEN** evaluating the connector for deployment
