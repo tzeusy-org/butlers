@@ -35,6 +35,8 @@ export interface ConflictRadarBannerProps {
   onAcceptProposal?: (proposalId: string) => void;
   /** Decline a pending fix proposal (existing proposals dismiss surface). */
   onDismissProposal?: (proposalId: string) => void;
+  /** Whether a proposal accept or dismiss mutation is active. */
+  isProposalActionPending?: boolean;
   className?: string;
 }
 
@@ -43,6 +45,13 @@ const KIND_LABEL: Record<ConflictIssue["kind"], string> = {
   back_to_back: "back-to-back run",
   overloaded_day: "overloaded day",
 };
+
+/** Pill geometry shared with the calendar proposal controls (Design Language §4c). */
+const PILL =
+  "inline-flex items-center justify-center gap-1.5 h-7 rounded-[3px] border px-2.5 " +
+  "font-mono text-[11px] leading-none transition-colors " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30 " +
+  "disabled:pointer-events-none disabled:opacity-40";
 
 /** Pluralise a count + noun: `(2, "overlap") => "2 overlaps"`. */
 function plural(count: number, noun: string): string {
@@ -85,10 +94,12 @@ function IssueCard({
   issue,
   onAcceptProposal,
   onDismissProposal,
+  isProposalActionPending,
 }: {
   issue: ConflictIssue;
   onAcceptProposal?: (proposalId: string) => void;
   onDismissProposal?: (proposalId: string) => void;
+  isProposalActionPending: boolean;
 }) {
   const hasFix = issue.proposal_ids.length > 0;
   return (
@@ -129,14 +140,19 @@ function IssueCard({
             <span key={proposalId} className="flex gap-1">
               <button
                 type="button"
-                className="rounded border border-fg bg-fg px-2 py-0.5 text-xs font-medium text-bg hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg/30"
+                disabled={isProposalActionPending}
+                className={cn(PILL, "border-fg bg-fg text-bg hover:opacity-90")}
                 onClick={() => onAcceptProposal?.(proposalId)}
               >
                 Accept fix
               </button>
               <button
                 type="button"
-                className="rounded border border-border px-2 py-0.5 text-xs text-fg hover:bg-muted"
+                disabled={isProposalActionPending}
+                className={cn(
+                  PILL,
+                  "border-[var(--border-strong)] text-[var(--mfg)] hover:text-fg",
+                )}
                 onClick={() => onDismissProposal?.(proposalId)}
               >
                 Decline
@@ -161,6 +177,7 @@ export function ConflictRadarBanner({
   error = null,
   onAcceptProposal,
   onDismissProposal,
+  isProposalActionPending = false,
   className,
 }: ConflictRadarBannerProps) {
   const [expanded, setExpanded] = useState(false);
@@ -236,6 +253,7 @@ export function ConflictRadarBanner({
               issue={issue}
               onAcceptProposal={onAcceptProposal}
               onDismissProposal={onDismissProposal}
+              isProposalActionPending={isProposalActionPending}
             />
           ))}
         </ul>

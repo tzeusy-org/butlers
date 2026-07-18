@@ -5452,6 +5452,9 @@ export default function CalendarWorkspacePage() {
                   conflictsQuery.error instanceof Error ? conflictsQuery.error : null
                 }
                 className="mb-2"
+                isProposalActionPending={
+                  acceptProposalMutation.isPending || dismissProposalMutation.isPending
+                }
                 onAcceptProposal={(proposalId) => {
                   acceptProposalMutation.mutate(
                     { proposalId },

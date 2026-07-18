@@ -126,16 +126,53 @@ describe("ConflictRadarBanner", () => {
     const acceptFix = screen.getByRole("button", { name: "Accept fix" });
 
     expect(acceptFix.getAttribute("type")).toBe("button");
+    expect(acceptFix.classList.contains("inline-flex")).toBe(true);
+    expect(acceptFix.classList.contains("items-center")).toBe(true);
+    expect(acceptFix.classList.contains("justify-center")).toBe(true);
+    expect(acceptFix.classList.contains("h-7")).toBe(true);
+    expect(acceptFix.classList.contains("rounded-[3px]")).toBe(true);
     expect(acceptFix.classList.contains("border")).toBe(true);
+    expect(acceptFix.classList.contains("px-2.5")).toBe(true);
+    expect(acceptFix.classList.contains("font-mono")).toBe(true);
+    expect(acceptFix.classList.contains("text-[11px]")).toBe(true);
+    expect(acceptFix.classList.contains("leading-none")).toBe(true);
+    expect(acceptFix.classList.contains("transition-colors")).toBe(true);
     expect(acceptFix.classList.contains("bg-fg")).toBe(true);
     expect(acceptFix.classList.contains("text-bg")).toBe(true);
     expect(acceptFix.classList.contains("border-fg")).toBe(true);
     expect(acceptFix.classList.contains("focus-visible:outline-none")).toBe(true);
     expect(acceptFix.classList.contains("focus-visible:ring-2")).toBe(true);
     expect(acceptFix.classList.contains("focus-visible:ring-fg/30")).toBe(true);
+    expect(acceptFix.classList.contains("disabled:pointer-events-none")).toBe(true);
+    expect(acceptFix.classList.contains("disabled:opacity-40")).toBe(true);
     expect(acceptFix.className).not.toMatch(
       /\b(?:bg|text|border)-(?:red|green|emerald|amber|yellow|orange)-(?:50|100|150|200|300|400|500|600|700|800|900|950)\b/,
     );
+  });
+
+  it("disables proposal actions while a proposal mutation is pending", () => {
+    const onAccept = vi.fn();
+    const onDismiss = vi.fn();
+    render(
+      <ConflictRadarBanner
+        issues={[overlapIssue({ proposal_ids: ["p1"] })]}
+        available
+        isProposalActionPending
+        onAcceptProposal={onAccept}
+        onDismissProposal={onDismiss}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Review"));
+    const acceptFix = screen.getByRole("button", { name: "Accept fix" });
+    const decline = screen.getByRole("button", { name: "Decline" });
+
+    expect((acceptFix as HTMLButtonElement).disabled).toBe(true);
+    expect((decline as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(acceptFix);
+    fireEvent.click(decline);
+    expect(onAccept).not.toHaveBeenCalled();
+    expect(onDismiss).not.toHaveBeenCalled();
   });
 
   it("is informational (no fix button) when no proposal exists yet", () => {

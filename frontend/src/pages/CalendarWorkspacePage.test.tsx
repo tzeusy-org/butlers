@@ -763,6 +763,57 @@ describe("CalendarWorkspacePage", () => {
     expect(getSearchText()).toContain("range=list");
   });
 
+  it("disables conflict proposal actions while accepting a fix", async () => {
+    vi.mocked(useAcceptCalendarProposal).mockReturnValue({
+      mutate: vi.fn(),
+      mutateAsync: vi.fn(),
+      isPending: true,
+    } as unknown as ReturnType<typeof useAcceptCalendarProposal>);
+    vi.mocked(useCalendarConflicts).mockReturnValue({
+      isLoading: false,
+      isError: false,
+      error: null,
+      data: {
+        data: {
+          issues: [
+            {
+              kind: "overlap",
+              date: "2026-07-01",
+              summary: "Two meetings overlap",
+              severity: "warning",
+              events: [
+                {
+                  entry_id: "entry-1",
+                  title: "Morning planning",
+                  start_at: "2026-07-01T09:00:00Z",
+                  end_at: "2026-07-01T10:00:00Z",
+                  timezone: "UTC",
+                  status: "confirmed",
+                },
+              ],
+              proposal_ids: ["proposal-1"],
+            },
+          ],
+          scan_window: {
+            start: "2026-07-01T00:00:00Z",
+            end: "2026-07-08T00:00:00Z",
+          },
+          issues_available: true,
+        },
+      },
+    } as unknown as ReturnType<typeof useCalendarConflicts>);
+
+    renderPage("/calendar?view=user&range=week&anchor=2026-07-01");
+
+    await act(async () => {
+      findButton("Review")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(findButton("Accept fix")?.disabled).toBe(true);
+    expect(findButton("Decline")?.disabled).toBe(true);
+  });
+
   it("shows an error toast when accepting a conflict fix fails", async () => {
     const acceptMutate = vi.fn(
       (_vars: { proposalId: string }, options?: { onError?: (error: Error) => void }) => {
