@@ -41,6 +41,7 @@ from butlers.identity import (
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus
+from butlers.modules.approvals.notifications import ApprovalPushRuntime, emit_approval_push
 from butlers.modules.approvals.rules import (
     constraint_pins_value,
     match_rules_from_list,
@@ -406,6 +407,7 @@ async def apply_approval_gates(
     butler_name: str | None = None,
     tool_metadata: dict[str, ToolMeta] | None = None,
     decision_memory_writer: DecisionMemoryWriter | None = None,
+    approval_push_runtime: ApprovalPushRuntime | None = None,
 ) -> dict[str, Any]:
     """Wrap gated tools on the FastMCP server with approval interception.
 
@@ -433,6 +435,10 @@ async def apply_approval_gates(
     decision_memory_writer:
         Optional owning-memory writer passed to auto-approved executions after
         their terminal execution outcome has been committed.
+    approval_push_runtime:
+        Deterministic daemon dependencies used to notify the owner when this
+        gate parks an action. ``None`` preserves the standalone gate behavior
+        for callers that do not run a Switchboard delivery plane.
 
     Returns
     -------
@@ -477,6 +483,7 @@ async def apply_approval_gates(
             butler_name=butler_name,
             tool_meta=metadata.get(tool_name),
             decision_memory_writer=decision_memory_writer,
+            approval_push_runtime=approval_push_runtime,
         )
 
         # Replace the tool's handler on the MCP server
@@ -496,6 +503,7 @@ def _make_gate_wrapper(
     butler_name: str | None = None,
     tool_meta: ToolMeta | None = None,
     decision_memory_writer: DecisionMemoryWriter | None = None,
+    approval_push_runtime: ApprovalPushRuntime | None = None,
 ) -> Any:
     """Create an async wrapper function that intercepts gated tool calls.
 
@@ -822,6 +830,27 @@ def _make_gate_wrapper(
             metadata={"tool_name": tool_name, "path": "pending", "reason": pend_reason},
             occurred_at=now,
         )
+
+        # A parked action gets one deterministic owner-facing control-plane
+        # notification. The helper reserves the action id before dispatch,
+        # applies quiet-hours deferral/burst collapse, and never changes this
+        # action's expiry or approval state if delivery is unavailable.
+        if approval_push_runtime is not None and butler_name:
+            await emit_approval_push(
+                pool=pool,
+                action={
+                    "id": action_id,
+                    "tool_name": tool_name,
+                    "requested_at": now,
+                    "expires_at": expires_at,
+                    "why": dossier.why,
+                    "blast_radius": dossier.blast_radius,
+                    "reversibility": dossier.reversibility,
+                },
+                origin_butler=butler_name,
+                runtime=approval_push_runtime,
+                now=now,
+            )
 
         logger.info(
             "Parked gated tool %r for approval (action=%s, risk_tier=%s, reason=%s)",

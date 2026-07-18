@@ -229,6 +229,46 @@ async def test_validate_notify_insight_request_context_optional():
     assert result["valid"] is True
 
 
+async def test_validate_notify_approval_request_requires_typed_actions():
+    """Control-plane approval pushes retain their decision affordances."""
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": "Approval needed",
+            "recipient": "123456789",
+        },
+        "actions": [
+            {
+                "verb": "approve",
+                "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:a:0123456789abcdef",
+                "dashboard_url": "https://dashboard.example.test/approvals/aaaaaaaa",
+            },
+            {
+                "verb": "reject",
+                "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:r:0123456789abcdef",
+                "dashboard_url": "https://dashboard.example.test/approvals/aaaaaaaa",
+            },
+            {
+                "verb": "open_dashboard",
+                "dashboard_url": "https://dashboard.example.test/approvals/aaaaaaaa",
+            },
+        ],
+    }
+
+    result = await messenger_validate_notify(request)
+
+    assert result["valid"] is True
+    assert result["errors"] == []
+
+    request.pop("actions")
+    invalid = await messenger_validate_notify(request)
+    assert invalid["valid"] is False
+    assert any(error["field"] == "actions" for error in invalid["errors"])
+
+
 async def test_validate_notify_missing_message():
     """Missing message fails validation."""
     request = {
@@ -359,6 +399,32 @@ async def test_dry_run_valid_insight():
     assert result["channel_adapter"] == "telegram.bot"
     assert result["intent"] == "insight"
     assert result["would_be_admitted"] is True
+
+
+async def test_dry_run_approval_request_uses_the_explicit_owner_target():
+    """Approval-request dry runs must not replace the owner target with a default."""
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": "Approval needed",
+            "recipient": "123456789",
+        },
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "dashboard_url": "https://dashboard.example.test/approvals",
+            }
+        ],
+    }
+
+    result = await messenger_dry_run(request)
+
+    assert result["valid"] is True
+    assert result["target_identity"] == "123456789"
+    assert result["intent"] == "approval_request"
 
 
 async def test_dry_run_invalid_request():

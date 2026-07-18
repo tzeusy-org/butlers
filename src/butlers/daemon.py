@@ -1422,6 +1422,7 @@ class ButlerDaemon:
             self.config.name,
             tool_metadata=tool_metadata,
             decision_memory_writer=decision_memory_writer,
+            approval_push_runtime=self._build_approval_push_runtime(),
         )
 
         if approvals_module is not None and hasattr(approvals_module, "set_approval_policy"):
@@ -1456,6 +1457,76 @@ class ButlerDaemon:
             )
 
         return originals
+
+    def _build_approval_push_runtime(self) -> Any | None:
+        """Build the deterministic park → Switchboard delivery boundary.
+
+        Approval pushes originate at the daemon gate rather than a model-facing
+        ``notify()`` tool.  The resulting control-plane envelope still travels
+        through Switchboard and Messenger, preserving their delivery logging and
+        owner-channel validation while deliberately avoiding the insight broker.
+        """
+        from butlers.modules.approvals.notifications import ApprovalPushRuntime
+
+        pool = self.db.pool if self.db is not None else None
+        if pool is None or self._credential_store is None:
+            logger.warning(
+                "Approval push runtime unavailable; parked actions will remain dashboard-only "
+                "(butler=%s)",
+                self.config.name,
+            )
+            return None
+
+        async def _resolve_owner_recipient() -> str | None:
+            return await self._resolve_default_notify_recipient(
+                channel="telegram",
+                intent="send",
+                recipient=None,
+            )
+
+        async def _dispatch(envelope: dict[str, Any]) -> None:
+            deliver_args = {
+                "source_butler": self.config.name,
+                "notify_request": envelope,
+            }
+            client = self.switchboard_client
+            if client is None:
+                if self.config.name != "switchboard":
+                    raise RuntimeError(
+                        "Switchboard client not connected; cannot deliver approval request"
+                    )
+                from butlers.tools.switchboard.notification.deliver import (
+                    deliver as switchboard_deliver,
+                )
+
+                result = await switchboard_deliver(
+                    pool,
+                    source_butler=self.config.name,
+                    notify_request=envelope,
+                )
+                if result.get("status") == "failed":
+                    raise RuntimeError(
+                        "Approval request delivery failed: "
+                        f"{result.get('error') or 'unknown error'}"
+                    )
+                return
+
+            result = await asyncio.wait_for(
+                client.call_tool("deliver", deliver_args),
+                timeout=_background._DEFERRED_NOTIFY_TIMEOUT_S,
+            )
+            if result.is_error:
+                error_text = str(result.content[0].text) if result.content else "Unknown error"
+                raise RuntimeError(f"Approval request delivery failed: {error_text}")
+            if isinstance(result.data, dict) and result.data.get("status") == "failed":
+                error_text = str(result.data.get("error") or "Unknown error")
+                raise RuntimeError(f"Approval request delivery failed: {error_text}")
+
+        return ApprovalPushRuntime(
+            dispatch=_dispatch,
+            resolve_owner_recipient=_resolve_owner_recipient,
+            credential_store=self._credential_store,
+        )
 
     def _wire_calendar_approval_enqueuer(self) -> None:
         """Wire calendar overlap-approval enqueuer when both modules are loaded.

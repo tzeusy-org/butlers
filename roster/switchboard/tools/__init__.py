@@ -35,6 +35,7 @@ from butlers.tools.switchboard.registry.registry import (
 )
 from butlers.tools.switchboard.registry.sweep import run_eligibility_sweep
 from butlers.tools.switchboard.routing.contracts import (
+    ApprovalRequestActionV1,
     IngestEnvelopeV1,
     NotifyRequestV1,
     RouteEnvelopeV1,
@@ -59,6 +60,7 @@ __all__ = [
     "ELIGIBILITY_ACTIVE",
     "ELIGIBILITY_QUARANTINED",
     "ELIGIBILITY_STALE",
+    "ApprovalRequestActionV1",
     "IngestAcceptedResponse",
     "IngestEnvelopeV1",
     "NotifyRequestV1",

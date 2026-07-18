@@ -10,11 +10,11 @@
 
 ## 2. Push on park (approval_request notify intent)
 
-- [ ] 2.1 Extend `notify.v1` envelope + validation with `intent = "approval_request"` and `actions` payload (verb, token, deep link)
-- [ ] 2.2 Emit deterministic templated push from the gate park path via Switchboard `deliver`; one push per action (dedup by action_id)
-- [ ] 2.3 Quiet-hours deferral reusing `core/approvals_policy.py`; deferred pushes flush after the window; expiry clock unaffected
-- [ ] 2.4 Burst collapse: >3 parks in 10 min → single digest message with dashboard deep link
-- [ ] 2.5 Messenger channel rendering: telegram inline keyboard; email/WhatsApp fallback = summary + dashboard link
+- [x] 2.1 Extend `notify.v1` envelope + validation with `intent = "approval_request"` and `actions` payload (verb, token, deep link)
+- [x] 2.2 Emit deterministic templated push from the gate park path via Switchboard `deliver`; one push per action (dedup by action_id)
+- [x] 2.3 Quiet-hours deferral reusing `core/approvals_policy.py`; deferred pushes flush after the window; expiry clock unaffected
+- [x] 2.4 Burst collapse: >3 parks in 10 min → single digest message with dashboard deep link
+- [x] 2.5 Messenger channel rendering: telegram inline keyboard; email/WhatsApp fallback = summary + dashboard link
 
 ## 3. One-tap Telegram decisions
 

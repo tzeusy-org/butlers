@@ -86,3 +86,16 @@ def test_decision_dossier_migration_uses_next_safe_revision_and_upgrades_evidenc
     assert "pending_actions_reversibility_check" in normalized
     assert "jsonb_array_elements(evidence)" in normalized
     assert "jsonb_build_object('type', 'text'" in normalized
+
+
+def test_approval_push_emissions_migration_reserves_one_row_per_action() -> None:
+    """A durable action-id row makes park pushes idempotent across retries."""
+    mod = _load_migration("006_approval_push_emissions.py")
+    normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
+
+    assert mod.revision == "approvals_006"
+    assert mod.down_revision == "approvals_005"
+    assert "create table if not exists approval_push_emissions" in normalized
+    assert "action_id uuid primary key" in normalized
+    assert "references pending_actions(id)" in normalized
+    assert "emission_kind" in normalized

@@ -33,6 +33,7 @@ from butlers.core.spawner import Spawner
 from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
+from butlers.identity import resolve_owner_channel_via_definer
 from butlers.tools.switchboard.routing.contracts import parse_notify_request, parse_route_envelope
 
 logger = logging.getLogger(__name__)
@@ -237,6 +238,32 @@ def _extract_delivery_id(
     if fallback_request_id:
         return f"{channel}:{fallback_request_id}"
     return f"{channel}:{uuid.uuid4()}"
+
+
+def _approval_request_reply_markup(actions: Any) -> dict[str, Any]:
+    """Translate typed approval affordances into Telegram's inline keyboard."""
+    by_verb = {action.verb: action for action in actions}
+    decision_buttons: list[dict[str, str]] = []
+    approve = by_verb.get("approve")
+    if approve is not None:
+        if approve.callback_token is None:
+            raise ValueError("approval_request approve action is missing callback_token.")
+        decision_buttons.append({"text": "Approve", "callback_data": approve.callback_token})
+    reject = by_verb.get("reject")
+    if reject is not None:
+        if reject.callback_token is None:
+            raise ValueError("approval_request reject action is missing callback_token.")
+        decision_buttons.append({"text": "Reject", "callback_data": reject.callback_token})
+
+    open_dashboard = by_verb.get("open_dashboard")
+    if open_dashboard is None:
+        raise ValueError("approval_request actions are missing open_dashboard.")
+
+    keyboard: list[list[dict[str, str]]] = []
+    if decision_buttons:
+        keyboard.append(decision_buttons)
+    keyboard.append([{"text": "Open dashboard", "url": open_dashboard.dashboard_url}])
+    return {"inline_keyboard": keyboard}
 
 
 def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -729,8 +756,33 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             "blast_radius": decision_dossier.get("blast_radius"),
             "reversibility": decision_dossier.get("reversibility"),
         }
+        approval_recipient: str | None = None
 
         try:
+            # approval_request is a daemon-owned control-plane envelope.  Its
+            # recipient must resolve to the owner before any transport module
+            # is touched; ordinary recipient gates deliberately do not park or
+            # recurse this already-pending decision notification.
+            if intent == "approval_request":
+                approval_recipient = notify_request.delivery.recipient
+                if not approval_recipient:
+                    raise ValueError("approval_request requires an explicit recipient.")
+                approval_pool = daemon.db.pool if daemon.db is not None else None
+                if approval_pool is None:
+                    raise ValueError(
+                        "approval_request owner validation requires an initialized database pool."
+                    )
+                owner_channel_type = "whatsapp_jid" if channel == "whatsapp" else channel
+                owner_channel = await resolve_owner_channel_via_definer(
+                    approval_pool,
+                    owner_channel_type,
+                    approval_recipient,
+                )
+                if owner_channel is None:
+                    raise ValueError(
+                        "approval_request recipient does not resolve to a verified owner channel."
+                    )
+
             # Channel-general role-based approval gating for NON-email channels
             # (telegram, whatsapp, and any future channel).  route.execute calls
             # module delivery methods directly (not MCP tools), so the MCP-level
@@ -876,6 +928,14 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             fallback_recipient,
                             rendered_text,
                         )
+                elif intent == "approval_request":
+                    if approval_recipient is None:
+                        raise ValueError("approval_request owner recipient was not resolved.")
+                    adapter_result = await telegram_module._send_message(
+                        approval_recipient,
+                        rendered_text,
+                        reply_markup=_approval_request_reply_markup(notify_request.actions or ()),
+                    )
                 elif intent == "react":
                     thread_identity = (
                         notify_context.source_thread_identity if notify_context else None
@@ -912,12 +972,12 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 # so MCP-level approval wrappers are not in the path.
                 # Enforce role-based email delivery gating here.
                 email_target: str | None = None
-                if intent == "send":
+                if intent in {"send", "approval_request"}:
                     email_target = notify_request.delivery.recipient
                 elif notify_context is not None:
                     email_target = notify_context.source_sender_identity
 
-                if email_target:
+                if email_target and intent != "approval_request":
                     approval_pool = daemon.db.pool if daemon.db is not None else None
                     if approval_pool is not None:
                         from butlers.core.approvals_hooks import check_email_recipient
@@ -966,17 +1026,23 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                                 f"(action_id={decision.action_id})."
                             )
 
-                raw_subject = notify_request.delivery.subject or "Notification"
+                raw_subject = notify_request.delivery.subject or (
+                    "Approval requested" if intent == "approval_request" else "Notification"
+                )
                 normalized_subject = (
                     raw_subject
                     if notify_prefix.lower() in raw_subject.lower()
                     else f"{notify_prefix} {raw_subject}"
                 )
-                if intent == "send":
-                    recipient = notify_request.delivery.recipient
+                if intent in {"send", "approval_request"}:
+                    recipient = (
+                        approval_recipient
+                        if intent == "approval_request"
+                        else notify_request.delivery.recipient
+                    )
                     if not recipient:
                         raise ValueError(
-                            "notify_request.delivery.recipient is required for send intent."
+                            "notify_request.delivery.recipient is required for owner delivery."
                         )
                     adapter_result = await email_module._send_email(
                         recipient,
@@ -1007,17 +1073,21 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     if message_text.lstrip().startswith(notify_prefix)
                     else f"{notify_prefix} {message_text}"
                 )
-                if intent == "send":
-                    recipient = notify_request.delivery.recipient
+                if intent in {"send", "approval_request"}:
+                    recipient = (
+                        approval_recipient
+                        if intent == "approval_request"
+                        else notify_request.delivery.recipient
+                    )
                     if not recipient:
                         raise ValueError(
                             "notify_request.delivery.recipient is required for "
-                            "whatsapp send intent."
+                            "whatsapp owner delivery."
                         )
                     send_tool = getattr(whatsapp_module, "_send_message", None)
                     if send_tool is None or not callable(send_tool):
                         raise RuntimeError("WhatsApp module does not expose _send_message method.")
-                    adapter_result = await send_tool(recipient, rendered_text)
+                    adapter_result = await send_tool(recipient=recipient, text=rendered_text)
                 elif intent == "reply":
                     thread_identity = (
                         notify_context.source_thread_identity if notify_context else None
@@ -1099,6 +1169,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             if intent == "react" and notify_context:
                 _tid = notify_context.source_thread_identity or ""
                 _effective_target = _tid.partition(":")[0] or None
+            elif intent == "approval_request":
+                _effective_target = approval_recipient
             else:
                 _effective_target = notify_request.delivery.recipient
             if hasattr(exc, "response"):
