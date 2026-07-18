@@ -31,6 +31,7 @@ from fastapi import FastAPI
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
     conversation_reply_create,
+    conversation_search,
     conversation_set_routed_butler,
     message_create_idempotent,
     message_find_reply_since,
@@ -162,6 +163,19 @@ async def test_search_conversations_returns_summary_fields_and_matching_snippet(
     }
     assert datetime.fromisoformat(result["latest_assistant_reply_at"]) == latest_reply_at
     assert result["snippet"] == "Alice is Bob's sister"
+
+
+async def test_conversation_search_paginates_before_latest_reply_aggregate() -> None:
+    """The assistant-reply lookup runs only for the final search page."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+    pool.fetchval = AsyncMock(return_value=0)
+
+    await conversation_search(pool, butler_name=_BUTLER, query="Alice")
+
+    query = pool.fetch.await_args.args[0]
+    assert query.index("MAX(reply.created_at)") < query.index("FROM (")
+    assert "reply.conversation_id = sub.id" in query
 
 
 # ---------------------------------------------------------------------------
