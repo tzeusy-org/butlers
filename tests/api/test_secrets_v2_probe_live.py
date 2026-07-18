@@ -830,13 +830,17 @@ def test_provider_like_patterns_alias_homeassistant():
     ]
 
 
-def test_provider_like_patterns_alias_telegram_bot():
-    """'telegram_bot' must match telegram_* rows (api hash, user session)."""
-    from butlers.api.routers.secrets_v2 import _provider_like_patterns
+def test_provider_like_patterns_alias_telegram_bot_includes_compact_resolver_type():
+    """The compact Telegram Bot type round-trips through an exact reverse pattern."""
+    from butlers.api.routers.secrets_v2 import _infer_provider_from_type, _provider_like_patterns
 
-    assert _provider_like_patterns("telegram_bot") == [
+    provider = _infer_provider_from_type("telegrambot_oauth_refresh")
+
+    assert provider == "telegram_bot"
+    assert _provider_like_patterns(provider) == [
         "telegram\\_bot\\_%",
         "telegram\\_%",
+        "telegrambot\\_%",
     ]
 
 

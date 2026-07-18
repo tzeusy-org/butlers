@@ -2592,6 +2592,25 @@ def test_infer_provider_from_type_exact_and_prefix_and_alias():
     assert _infer_provider_from_type("mystery_thing") == "mystery"
 
 
+def test_infer_provider_from_type_normalizes_catalog_prefixes():
+    """Provider IDs with omitted separators resolve to the display slug."""
+    assert _infer_provider_from_type("telegrambot_oauth_refresh") == "telegram_bot"
+
+
+def test_infer_provider_from_type_normalized_prefix_requires_type_boundary():
+    """An unrelated compact prefix must not be classified as Telegram Bot."""
+    assert _infer_provider_from_type("telegrambotanical_token") == "telegrambotanical"
+
+
+def test_infer_provider_from_type_prefers_longest_normalized_provider_prefix():
+    """Normalized fallback is independent of catalog insertion order."""
+    with patch(
+        "butlers.api.routers.secrets_v2.PROVIDER_CATALOG",
+        {"telegram": object(), "telegram_bot": object()},
+    ):
+        assert _infer_provider_from_type("telegrambot_oauth_refresh") == "telegram_bot"
+
+
 def test_infer_provider_from_type_bridges_catalogue_alias_spellings():
     """_infer_provider_from_type resolves catalogue-raw provider spellings too.
 

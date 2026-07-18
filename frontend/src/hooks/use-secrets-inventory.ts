@@ -159,11 +159,10 @@ function extractProvider(type: string, providers: Record<string, SecretsProvider
     }
   }
 
-  const normalizedType = normalizeProviderId(type);
   const normalizedPrefix = providerIds
     .slice()
     .sort((a, b) => b.length - a.length)
-    .find((providerId) => normalizedType.startsWith(normalizeProviderId(providerId)));
+    .find((providerId) => type.startsWith(`${normalizeProviderId(providerId)}_`));
   if (normalizedPrefix) return normalizedPrefix;
 
   const idx = type.indexOf("_");

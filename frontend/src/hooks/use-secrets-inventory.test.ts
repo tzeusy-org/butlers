@@ -221,6 +221,44 @@ describe("adaptInventoryResponse: user provider derivation", () => {
     }
   });
 
+  it("requires a boundary after compact provider IDs", () => {
+    const providers = {
+      telegram: { ...backendProviders.telegram_bot, id: "telegram", label: "Telegram" },
+      ...backendProviders,
+    };
+    const result = adaptInventoryResponse({
+      cli: [],
+      system: [],
+      user: [
+        makeUser({
+          id: "tg-compact",
+          entity_id: "tze",
+          state: "ok",
+          type: "telegrambot_oauth_refresh",
+        }),
+        makeUser({
+          id: "tg-botanical",
+          entity_id: "tze",
+          state: "ok",
+          type: "telegrambotanical_token",
+        }),
+      ],
+      identities: [],
+      providers,
+    });
+
+    expect(result.user).toEqual([
+      expect.objectContaining({
+        provider: "telegram_bot",
+        sourceTypes: ["telegrambot_oauth_refresh"],
+      }),
+      expect.objectContaining({
+        provider: "telegrambotanical",
+        sourceTypes: ["telegrambotanical_token"],
+      }),
+    ]);
+  });
+
   it("adds generic provider metadata for unknown credential families", () => {
     const result = adaptInventoryResponse({
       cli: [],
