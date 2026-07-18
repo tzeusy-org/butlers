@@ -206,6 +206,11 @@ connector rechecks consent every 60 seconds and automatically starts normal
 ingestion after a valid versioned grant is persisted; no manual restart is
 needed.
 
+A transient shared-control database connection failure before that check uses
+the same visible disabled state and retry cadence. Authentication,
+configuration, and other non-connectivity pool failures remain startup errors
+so they are not hidden behind an indefinite pending-consent retry.
+
 ### Credential Rotation
 
 - **Session strings:** Every 90 days (production) or immediately after suspected compromise.

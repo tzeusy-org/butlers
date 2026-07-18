@@ -79,7 +79,7 @@ from butlers.credential_store import (
     resolve_owner_entity_info,
     shared_db_name_from_env,
 )
-from butlers.db import db_params_from_env
+from butlers.db import db_params_from_env, is_db_unreachable
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 
 # Telethon is marked as optional dependency - handle import gracefully
@@ -2353,20 +2353,42 @@ class _ConsentPendingHealth:
 
 
 async def _wait_for_account_wide_ingestion_consent() -> None:
-    """Wait in a visible disabled state until a valid consent grant is present."""
-    control_pool = await _create_shared_control_pool()
-    try:
-        while not await _has_account_wide_ingestion_consent(control_pool):
+    """Wait in a visible disabled state until a valid consent grant is present.
+
+    A transient inability to create the shared control pool is still an
+    unverified grant, so retain the disabled state and retry. Authentication,
+    configuration, and other non-connectivity failures remain visible by
+    propagating instead of being retried indefinitely.
+    """
+    while True:
+        try:
+            control_pool = await _create_shared_control_pool()
+        except Exception as exc:
+            if not is_db_unreachable(exc):
+                raise
             logger.warning(
-                "Telegram user-client account-wide ingestion is disabled pending explicit "
-                "informed consent; complete the Telegram setup acknowledgement before "
-                "ingestion can start (rechecking in %.0fs)",
+                "Telegram user-client cannot reach the shared control DB while pending "
+                "account-wide ingestion consent; staying disabled and retrying in %.0fs: %s",
                 _CONSENT_RECHECK_S,
+                exc,
                 extra={"connector_state": "disabled_pending_consent"},
             )
             await asyncio.sleep(_CONSENT_RECHECK_S)
-    finally:
-        await control_pool.close()
+            continue
+
+        try:
+            while not await _has_account_wide_ingestion_consent(control_pool):
+                logger.warning(
+                    "Telegram user-client account-wide ingestion is disabled pending explicit "
+                    "informed consent; complete the Telegram setup acknowledgement before "
+                    "ingestion can start (rechecking in %.0fs)",
+                    _CONSENT_RECHECK_S,
+                    extra={"connector_state": "disabled_pending_consent"},
+                )
+                await asyncio.sleep(_CONSENT_RECHECK_S)
+            return
+        finally:
+            await control_pool.close()
 
 
 async def _run_health_server(
