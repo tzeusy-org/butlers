@@ -208,7 +208,9 @@ async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
 
 
 @pytest.mark.timeout(30)
-async def test_calendar_and_chronicler_child_processes_reach_websocket(shared_db_url):
+async def test_calendar_and_chronicler_child_processes_reach_websocket(
+    shared_db_url, monkeypatch: pytest.MonkeyPatch
+):
     """Prove both production producers cross an OS-process boundary to WS.
 
     This intentionally starts neither ``scripts/compose.sh`` nor a dashboard
@@ -226,9 +228,13 @@ async def test_calendar_and_chronicler_child_processes_reach_websocket(shared_db
     dashboard_app = FastAPI(lifespan=_dashboard_events_lifespan(shared_db_url))
     dashboard_app.include_router(router)
     dashboard_process_id = os.getpid()
+    dashboard_api_key = "fleet-events-test-api-key"
+    monkeypatch.setenv("DASHBOARD_API_KEY", dashboard_api_key)
 
     with TestClient(dashboard_app) as client:
-        with client.websocket_connect("/api/events/stream") as websocket:
+        with client.websocket_connect(
+            f"/api/events/stream?api_key={dashboard_api_key}"
+        ) as websocket:
             snapshot = json.loads(websocket.receive_text())
             assert snapshot["type"] == "snapshot"
             assert snapshot["events"] == []
