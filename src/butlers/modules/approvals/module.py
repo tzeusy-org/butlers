@@ -806,6 +806,7 @@ class ApprovalsModule(Module):
                     tool_name=action.tool_name,
                     tool_args=action.tool_args,
                     config=self._config,
+                    action_id=updated_action.id,
                     tool_meta=tool_meta,
                 )
                 # Compute and persist approval velocity so the dashboard

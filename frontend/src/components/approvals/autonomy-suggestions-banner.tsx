@@ -8,6 +8,7 @@
  */
 
 import { AlertTriangle, CheckCircle, Clock, TrendingUp, X } from "lucide-react";
+import { Link } from "react-router";
 import { Time } from "@/components/ui/time";
 import type { AutonomySuggestion } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -43,6 +44,19 @@ function VelocityIndicator({ suggestion }: { suggestion: AutonomySuggestion }) {
       {label && <span>{label} approval time</span>}
       <span className="text-muted-foreground/60">({velocity.sample_count} samples)</span>
     </div>
+  );
+}
+
+function ApprovalLink({ actionId }: { actionId: string | null | undefined }) {
+  if (!actionId) return null;
+
+  return (
+    <Link
+      to={`/approvals/${encodeURIComponent(actionId)}`}
+      className="text-xs font-medium text-foreground underline underline-offset-4 hover:text-primary"
+    >
+      Review approval
+    </Link>
   );
 }
 
@@ -101,6 +115,7 @@ function PromotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggesti
           <X className="h-3.5 w-3.5 mr-1.5" />
           Dismiss
         </Button>
+        <ApprovalLink actionId={suggestion.action_id} />
       </CardFooter>
     </Card>
   );
@@ -154,6 +169,7 @@ function DemotionCard({ suggestion, onConfirm, onDismiss, isPending }: Suggestio
           <X className="h-3.5 w-3.5 mr-1.5" />
           Keep rule
         </Button>
+        <ApprovalLink actionId={suggestion.action_id} />
       </CardFooter>
     </Card>
   );

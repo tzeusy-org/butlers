@@ -73,6 +73,7 @@ async def create_promotion_suggestion(
     representative_args: dict[str, Any],
     approval_count: int,
     *,
+    action_id: uuid.UUID | None = None,
     fingerprint_version: int = 2,
 ) -> dict[str, Any]:
     """Create a pending promotion suggestion.
@@ -112,10 +113,11 @@ async def create_promotion_suggestion(
     safe_representative_args = json.loads(json.dumps(representative_args, default=str))
     await pool.execute(
         "INSERT INTO autonomy_suggestions "
-        "(id, suggestion_type, pattern_fingerprint, tool_name, representative_args, status, "
-        "approval_count_at_creation, created_at, fingerprint_version) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        "(id, action_id, suggestion_type, pattern_fingerprint, tool_name, representative_args, "
+        "status, approval_count_at_creation, created_at, fingerprint_version) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         suggestion_id,
+        action_id,
         "promotion",
         pattern_fingerprint,
         tool_name,
@@ -130,7 +132,7 @@ async def create_promotion_suggestion(
         pool,
         ApprovalEventType.PROMOTION_SUGGESTED,
         actor="system:autonomy-tracker",
-        action_id=None,
+        action_id=action_id,
         rule_id=None,
         reason=scope_description,
         metadata={
@@ -144,6 +146,7 @@ async def create_promotion_suggestion(
 
     return {
         "id": str(suggestion_id),
+        "action_id": str(action_id) if action_id else None,
         "suggestion_type": "promotion",
         "pattern_fingerprint": pattern_fingerprint,
         "fingerprint_version": fingerprint_version,
@@ -215,10 +218,11 @@ async def create_demotion_suggestion(
     safe_representative_args = json.loads(json.dumps(representative_args, default=str))
     await pool.execute(
         "INSERT INTO autonomy_suggestions "
-        "(id, suggestion_type, pattern_fingerprint, tool_name, representative_args, status, "
-        "approval_count_at_creation, created_at, resulting_rule_id, fingerprint_version) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        "(id, action_id, suggestion_type, pattern_fingerprint, tool_name, representative_args, "
+        "status, approval_count_at_creation, created_at, resulting_rule_id, fingerprint_version) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         suggestion_id,
+        action.id,
         "demotion",
         pattern_fingerprint,
         action.tool_name,
@@ -248,6 +252,7 @@ async def create_demotion_suggestion(
 
     return {
         "id": str(suggestion_id),
+        "action_id": str(action.id),
         "suggestion_type": "demotion",
         "pattern_fingerprint": pattern_fingerprint,
         "fingerprint_version": FINGERPRINT_VERSION,

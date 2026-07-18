@@ -182,6 +182,21 @@ class ApprovalRule(BaseModel):
     active: bool = True
 
 
+class ApprovalGatedTool(BaseModel):
+    """Configured approval gate and the active rules that narrow it.
+
+    A configured gate remains present even when ``active_rules`` is empty.
+    That empty state is the dashboard's truthful "always ask" baseline,
+    rather than an absence that can be mistaken for an ungated tool.
+    """
+
+    butler: str
+    tool_name: str
+    risk_tier: Literal["low", "medium", "high", "critical"]
+    expiry_hours: int
+    active_rules: list[ApprovalRule] = Field(default_factory=list)
+
+
 class RuleConstraintSuggestion(BaseModel):
     """Suggested constraints for creating a rule from an action."""
 
@@ -260,6 +275,7 @@ class AutonomySuggestion(BaseModel):
     """
 
     id: str
+    action_id: str | None = None
     suggestion_type: str  # "promotion" or "demotion"
     pattern_fingerprint: str
     fingerprint_version: int = 1

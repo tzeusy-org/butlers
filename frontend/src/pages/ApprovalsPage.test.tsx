@@ -79,7 +79,10 @@ vi.mock("@/api/index.ts", () => ({
   dismissAutonomySuggestion: vi.fn(),
   // AutonomyPanel (bu-86c4c.12) — always rendered alongside the dossier.
   getApprovalRules: vi.fn(),
+  getApprovalGatedTools: vi.fn(() => Promise.resolve({ data: [], meta: {} })),
   createApprovalRule: vi.fn(),
+  getApprovalRuleSuggestions: vi.fn(),
+  createApprovalRuleFromAction: vi.fn(),
   revokeApprovalRule: vi.fn(),
 }));
 
@@ -90,6 +93,8 @@ import {
   denyApproval,
   dismissAutonomySuggestion,
   getApprovalDetail,
+  getApprovalGatedTools,
+  getApprovalRuleSuggestions,
   getApprovalRules,
   getApprovalsFlat,
   getApprovalsHistory,
@@ -97,6 +102,7 @@ import {
   getAutonomySuggestions,
   retryApproval,
   revokeApprovalRule,
+  createApprovalRuleFromAction,
 } from "@/api/index.ts";
 import { toast } from "sonner";
 
@@ -146,6 +152,20 @@ function makeEmptyPolicy() {
   });
 }
 
+function resetPageMocks() {
+  vi.resetAllMocks();
+  vi.mocked(getApprovalGatedTools).mockReturnValue(makeApiResponse([]) as AnyMock);
+  vi.mocked(getApprovalRuleSuggestions).mockImplementation(
+    ((actionId: string) =>
+      makeApiResponse({
+        action_id: actionId,
+        tool_name: "send_email",
+        tool_args: {},
+        suggested_constraints: {},
+      })) as AnyMock,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -193,7 +213,7 @@ describe("ApprovalsPage — load-more", () => {
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     // Default stubs for side-sections; override in individual tests.
     vi.mocked(getApprovalsHistory).mockReturnValue(
       makeEmptyHistory() as AnyMock,
@@ -436,7 +456,7 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     vi.mocked(getApprovalsHistory).mockReturnValue(
       makeEmptyHistory() as AnyMock,
     );
@@ -543,6 +563,116 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
 
     expect(toast.success).toHaveBeenCalledWith("Approved & dispatched");
     expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("offers a second, explicit standing-rule confirmation after approval", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("teach-1")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("teach-1") as AnyMock,
+    );
+    vi.mocked(approveApproval).mockReturnValue(
+      makeApiResponse({
+        id: "teach-1",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "executed",
+        requested_at: "2026-05-17T10:00:00Z",
+        dispatched: true,
+      }) as AnyMock,
+    );
+    vi.mocked(getApprovalRuleSuggestions).mockReturnValue(
+      makeApiResponse({
+        action_id: "teach-1",
+        tool_name: "send_email",
+        tool_args: { to: "alice@example.com" },
+        suggested_constraints: {
+          to: { type: "exact", value: "alice@example.com" },
+        },
+      }) as AnyMock,
+    );
+    vi.mocked(createApprovalRuleFromAction).mockReturnValue(
+      makeApiResponse(makeRule("teach-rule")) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Approve") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Approve")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    await flushUntil(
+      () => container.textContent?.includes("Always allow this shape?") ?? false,
+    );
+    expect(getApprovalRuleSuggestions).toHaveBeenCalledWith("teach-1");
+    expect(createApprovalRuleFromAction).not.toHaveBeenCalled();
+    await flushUntil(
+      () => findButton(container, "Always allow this shape") !== undefined,
+    );
+    expect(findButton(container, "Always allow this shape")).toBeDefined();
+
+    await act(async () => {
+      findButton(container, "Always allow this shape")?.click();
+      await flush();
+    });
+    await flushUntil(
+      () => findButton(container, "Create standing rule") !== undefined,
+    );
+    expect(findButton(container, "Create standing rule")).toBeDefined();
+
+    await act(async () => {
+      findButton(container, "Create standing rule")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      await flush();
+    });
+
+    expect(createApprovalRuleFromAction).toHaveBeenCalledWith({
+      action_id: "teach-1",
+    });
+  });
+
+  it("keeps asking without creating a standing rule", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("teach-keep")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makePendingDetail("teach-keep") as AnyMock,
+    );
+    vi.mocked(approveApproval).mockReturnValue(
+      makeApiResponse({
+        id: "teach-keep",
+        butler: "general",
+        tool_name: "send_email",
+        tool_args: {},
+        status: "executed",
+        requested_at: "2026-05-17T10:00:00Z",
+        dispatched: true,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Approve") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Approve")?.click();
+      await flush();
+    });
+    await flushUntil(() => findButton(container, "Keep asking") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Keep asking")?.click();
+      await flush();
+    });
+
+    expect(createApprovalRuleFromAction).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Always allow this shape?");
   });
 
   it("renders the typed decision dossier risk labels and evidence", async () => {
@@ -846,7 +976,7 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
     vi.mocked(getAutonomySuggestions).mockReturnValue(
@@ -973,7 +1103,7 @@ describe("ApprovalsPage — expiry + blast-radius ranking (bu-86c4c.12)", () => 
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
     vi.mocked(getAutonomySuggestions).mockReturnValue(
@@ -1089,7 +1219,7 @@ describe("ApprovalsPage — stalled (approved-but-undispatched) state (bu-86c4c.
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
     vi.mocked(getAutonomySuggestions).mockReturnValue(
@@ -1166,17 +1296,33 @@ function makeRule(id: string, overrides: Partial<Record<string, unknown>> = {}) 
   };
 }
 
+function makeGatedTool(
+  toolName: string,
+  activeRules: ReturnType<typeof makeRule>[] = [],
+) {
+  return {
+    butler: "messenger",
+    tool_name: toolName,
+    risk_tier: "medium",
+    expiry_hours: 24,
+    active_rules: activeRules,
+  };
+}
+
 describe("ApprovalsPage — Autonomy panel (bu-86c4c.12)", () => {
   let container: HTMLDivElement;
   let root: Root;
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
     vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
     vi.mocked(getAutonomySuggestions).mockReturnValue(
+      makeApiResponse([]) as AnyMock,
+    );
+    vi.mocked(getApprovalGatedTools).mockReturnValue(
       makeApiResponse([]) as AnyMock,
     );
 
@@ -1209,8 +1355,8 @@ describe("ApprovalsPage — Autonomy panel (bu-86c4c.12)", () => {
   }
 
   it("renders standing rules with live use counts, always visible (not behind a route)", async () => {
-    vi.mocked(getApprovalRules).mockReturnValue(
-      makeApiResponse([makeRule("r1")]) as AnyMock,
+    vi.mocked(getApprovalGatedTools).mockReturnValue(
+      makeApiResponse([makeGatedTool("notify", [makeRule("r1")])]) as AnyMock,
     );
 
     renderPage();
@@ -1221,23 +1367,23 @@ describe("ApprovalsPage — Autonomy panel (bu-86c4c.12)", () => {
     expect(container.textContent).toContain("4 uses");
   });
 
-  it("shows a calm empty state when no standing rules exist", async () => {
-    vi.mocked(getApprovalRules).mockReturnValue(makeApiResponse([]) as AnyMock);
+  it("makes a configured zero-rule gate visibly always ask", async () => {
+    vi.mocked(getApprovalGatedTools).mockReturnValue(
+      makeApiResponse([makeGatedTool("telegram_reply_to_message")]) as AnyMock,
+    );
 
     renderPage();
     await flushUntil(
       () =>
-        container.textContent?.includes("No standing rules") ?? false,
+        container.textContent?.includes("telegram_reply_to_message") ?? false,
     );
 
-    expect(container.textContent).toContain(
-      "No standing rules. Every action requires manual approval.",
-    );
+    expect(container.textContent).toContain("always ask");
   });
 
   it("revokes a rule inline (no window.confirm) via a two-step confirm", async () => {
-    vi.mocked(getApprovalRules).mockReturnValue(
-      makeApiResponse([makeRule("r1")]) as AnyMock,
+    vi.mocked(getApprovalGatedTools).mockReturnValue(
+      makeApiResponse([makeGatedTool("notify", [makeRule("r1")])]) as AnyMock,
     );
     vi.mocked(revokeApprovalRule).mockReturnValue(
       makeApiResponse(makeRule("r1", { active: false })) as AnyMock,
@@ -1303,7 +1449,7 @@ describe("ApprovalsPage — autonomy suggestions banner (bu-phy21)", () => {
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
     vi.mocked(getApprovalsHistory).mockReturnValue(
       makeEmptyHistory() as AnyMock,
@@ -1447,7 +1593,7 @@ describe("ApprovalsPage — per-item pending state (bu-86c4c.14)", () => {
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
     vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
@@ -1523,7 +1669,7 @@ describe("ApprovalsPage — rail item focus outline (bu-86c4c.14)", () => {
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);
     vi.mocked(getAutonomySuggestions).mockReturnValue(makeApiResponse([]) as AnyMock);
@@ -1589,7 +1735,7 @@ describe("ApprovalsPage — keyboard triage (bu-86c4c.14)", () => {
   let qc: QueryClient;
 
   beforeEach(() => {
-    vi.resetAllMocks();
+    resetPageMocks();
     vi.useFakeTimers();
     vi.mocked(getApprovalsHistory).mockReturnValue(makeEmptyHistory() as AnyMock);
     vi.mocked(getApprovalsPolicy).mockReturnValue(makeEmptyPolicy() as AnyMock);

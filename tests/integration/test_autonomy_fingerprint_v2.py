@@ -83,7 +83,7 @@ async def test_v2_counts_only_v2_rows_and_pins_the_fingerprinted_args(
     fingerprint = compute_fingerprint("send_telegram", first_args, tool_meta=meta)
 
     await _record(approvals_pool, tool_args=first_args, meta=meta)
-    await _record(approvals_pool, tool_args=second_args, meta=meta)
+    triggering_action = await _record(approvals_pool, tool_args=second_args, meta=meta)
 
     # A legacy row sharing the resulting hash must not count toward v2 promotion.
     await approvals_pool.execute(
@@ -105,6 +105,7 @@ async def test_v2_counts_only_v2_rows_and_pins_the_fingerprinted_args(
         second_args,
         config,
         tool_meta=meta,
+        action_id=triggering_action.id,
     )
 
     suggestion = await approvals_pool.fetchrow(
@@ -114,6 +115,7 @@ async def test_v2_counts_only_v2_rows_and_pins_the_fingerprinted_args(
     assert suggestion["fingerprint_version"] == 2
     assert suggestion["representative_args"] == {"chat_id": "mom_123"}
     assert suggestion["approval_count_at_creation"] == 2
+    assert suggestion["action_id"] == triggering_action.id
 
     confirmed = await confirm_suggestion(approvals_pool, suggestion["id"], actor="owner")
     rule = await approvals_pool.fetchrow(

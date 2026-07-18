@@ -215,7 +215,7 @@ An approval whose backend `status` is `"approved"` (approved but not yet dispatc
 
 ### Requirement: Autonomy Panel
 
-`/approvals` SHALL render an always-visible Autonomy panel listing active standing approval rules (`GET /api/approvals/rules?active=true`), replacing the standalone rules CRUD route.
+`/approvals` SHALL render an always-visible Autonomy panel from `GET /api/approvals/gated-tools`, replacing the standalone rules CRUD route. The endpoint returns every enabled configured gate, including an `active_rules` list that can be empty; each gate also identifies its owning butler, risk tier, and effective expiry.
 
 #### Scenario: Standing rules panel replaces the orphaned rules route
 
@@ -229,10 +229,22 @@ An approval whose backend `status` is `"approved"` (approved but not yet dispatc
 - **THEN** it displays the rule's current `use_count` (and `max_uses` when set)
 - **AND** provides an inline revoke action (two-step confirm within the panel, not a native `window.confirm` dialog) that calls `POST /api/approvals/rules/{id}/revoke`.
 
-#### Scenario: Calm empty state
+#### Scenario: Configured zero-rule gate stays visible
 
-- **WHEN** no active standing rules exist
-- **THEN** the panel displays "No standing rules. Every action requires manual approval." rather than an empty table.
+- **WHEN** a configured gate has no active standing rules
+- **THEN** the panel MUST display that tool with the status "always ask"
+- **AND** it MUST NOT infer that unlisted tools are gated or that every action across the fleet requires manual approval.
+
+#### Scenario: No configured gates
+
+- **WHEN** no enabled approvals configuration declares a gated tool
+- **THEN** the panel displays that no approval-gated tools are configured.
+
+#### Scenario: Gate-rule source is degraded
+
+- **WHEN** the gate baseline is returned with `meta.sources_degraded`
+- **THEN** the panel MUST name the unavailable source
+- **AND** MUST NOT label that source's tools "always ask" when their active-rule state is unknown.
 
 ### Requirement: Approvals Flat List API
 
@@ -282,6 +294,33 @@ The dashboard SHALL expose explicit verb endpoints for approve, deny, and defer.
 - **AND** on success, the action's `expires_at` is extended by `hours` and the notification re-presentation timer is reset to `now + hours`
 - **AND** `audit.append("approval.defer", target=action_id, note=str(hours))` is invoked.
 
+### Requirement: Post-Approval Teaching Digest
+
+After a successful approval, `/approvals` SHALL offer a short, inline opportunity to create a standing rule for the approved action. Approval itself has no implicit rule-creation side effect.
+
+#### Scenario: Show a redacted proposed scope after approval
+
+- **WHEN** `POST /api/approvals/{id}/approve` succeeds
+- **THEN** the dashboard fetches `GET /api/approvals/rules/suggestions/{id}`
+- **AND** displays "Approved. Always allow this shape?" with the redacted proposed constraints.
+
+#### Scenario: A standing rule requires a second confirmation
+
+- **WHEN** the owner selects "Always allow this shape"
+- **THEN** the dashboard presents a distinct "Create standing rule" confirmation
+- **AND** only that confirmation calls `POST /api/approvals/rules/from-action` with the action ID.
+
+#### Scenario: Keep asking does not mutate autonomy
+
+- **WHEN** the owner selects "Keep asking" or dismisses the digest
+- **THEN** no standing-rule mutation is sent.
+
+#### Scenario: Proposed scope is unavailable
+
+- **WHEN** the rule-suggestion preview cannot be fetched
+- **THEN** the dashboard reports that no rule was created
+- **AND** does not offer a create action based on an unknown scope.
+
 ### Requirement: Approvals Policy (Quiet Hours)
 
 The dashboard SHALL expose `GET/PUT /api/approvals/policy` to manage notification quiet hours.
@@ -326,6 +365,7 @@ The endpoint SHALL accept the following query parameters:
 
 The response MUST be a `PaginatedResponse<AutonomySuggestion>` where each `AutonomySuggestion` object contains:
 - `id` -- string UUID identifying the suggestion
+- `action_id` -- optional string UUID of the originating approval action, when retained
 - `suggestion_type` -- `"promotion"` or `"demotion"`
 - `pattern_fingerprint` -- string hash identifying the action pattern
 - `tool_name` -- string name of the tool
@@ -411,6 +451,11 @@ The approvals dashboard page at `/approvals` SHALL include an "Autonomy Suggesti
   - The execution error summary
   - "Revoke rule" and "Keep rule" action buttons
 - **AND** the card MUST use a warning/alert visual style
+
+#### Scenario: Suggestion links back to its source approval
+
+- **WHEN** an autonomy suggestion includes `action_id`
+- **THEN** its card MUST offer a link to `/approvals/{action_id}` so the owner can review the originating dossier.
 
 #### Scenario: No pending suggestions hides section
 

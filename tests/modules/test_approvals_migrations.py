@@ -99,3 +99,15 @@ def test_approval_push_emissions_migration_reserves_one_row_per_action() -> None
     assert "action_id uuid primary key" in normalized
     assert "references pending_actions(id)" in normalized
     assert "emission_kind" in normalized
+
+
+def test_autonomy_suggestion_action_link_follows_approval_push_revision() -> None:
+    """Action deep links are additive and preserve the approvals_006 chain."""
+    mod = _load_migration("007_autonomy_suggestion_action_link.py")
+    normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
+
+    assert mod.revision == "approvals_007"
+    assert mod.down_revision == "approvals_006"
+    assert "alter table autonomy_suggestions" in normalized
+    assert "add column if not exists action_id uuid" in normalized
+    assert "references pending_actions(id) on delete set null" in normalized

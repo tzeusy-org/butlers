@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   confirmAutonomySuggestion,
   createApprovalRule,
+  createApprovalRuleFromAction,
   dismissAutonomySuggestion,
   getApprovalActions,
   getApprovalMetrics,
@@ -12,6 +13,7 @@ import {
 import type {
   ApprovalActionParams,
   ApprovalRuleCreateRequest,
+  ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
@@ -23,6 +25,7 @@ export const approvalKeys = {
   all: ["approvals"] as const,
   actions: (params?: ApprovalActionParams) => ["approvals", "actions", params] as const,
   rules: (params?: ApprovalRuleParams) => ["approvals", "rules", params] as const,
+  gatedTools: () => ["approvals", "gated-tools"] as const,
   metrics: () => ["approvals", "metrics"] as const,
   autonomySuggestions: (params?: AutonomySuggestionParams) =>
     ["approvals", "autonomy-suggestions", params] as const,
@@ -73,6 +76,7 @@ export function useCreateRule() {
     mutationFn: (request: ApprovalRuleCreateRequest) => createApprovalRule(request),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: approvalKeys.rules() });
+      queryClient.invalidateQueries({ queryKey: approvalKeys.gatedTools() });
       queryClient.invalidateQueries({ queryKey: approvalKeys.metrics() });
     },
   });
@@ -84,6 +88,21 @@ export function useRevokeRule() {
     mutationFn: (ruleId: string) => revokeApprovalRule(ruleId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: approvalKeys.rules() });
+      queryClient.invalidateQueries({ queryKey: approvalKeys.gatedTools() });
+      queryClient.invalidateQueries({ queryKey: approvalKeys.metrics() });
+    },
+  });
+}
+
+/** Create the backend-derived rule for one already-approved action. */
+export function useCreateRuleFromAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: ApprovalRuleFromActionRequest) =>
+      createApprovalRuleFromAction(request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: approvalKeys.rules() });
+      queryClient.invalidateQueries({ queryKey: approvalKeys.gatedTools() });
       queryClient.invalidateQueries({ queryKey: approvalKeys.metrics() });
     },
   });
@@ -106,6 +125,7 @@ export function useConfirmAutonomySuggestion() {
       // Invalidate by prefix to catch all autonomy-suggestions queries regardless of params.
       queryClient.invalidateQueries({ queryKey: ["approvals", "autonomy-suggestions"] });
       queryClient.invalidateQueries({ queryKey: approvalKeys.rules() });
+      queryClient.invalidateQueries({ queryKey: approvalKeys.gatedTools() });
       queryClient.invalidateQueries({ queryKey: approvalKeys.metrics() });
     },
   });
