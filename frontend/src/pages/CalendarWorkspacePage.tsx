@@ -5452,10 +5452,23 @@ export default function CalendarWorkspacePage() {
                   conflictsQuery.error instanceof Error ? conflictsQuery.error : null
                 }
                 className="mb-2"
+                isProposalActionPending={
+                  acceptProposalMutation.isPending || dismissProposalMutation.isPending
+                }
                 onAcceptProposal={(proposalId) => {
                   acceptProposalMutation.mutate(
                     { proposalId },
                     {
+                      onSuccess: () =>
+                        toast.success(
+                          "Proposal accepted. Event added to the Butlers calendar.",
+                        ),
+                      onError: (error) =>
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Failed to accept the proposed fix.",
+                        ),
                       onSettled: () =>
                         queryClient.invalidateQueries({ queryKey: ["calendar-conflicts"] }),
                     },
@@ -5465,6 +5478,13 @@ export default function CalendarWorkspacePage() {
                   dismissProposalMutation.mutate(
                     { proposalId },
                     {
+                      onSuccess: () => toast.success("Proposal dismissed."),
+                      onError: (error) =>
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Failed to dismiss the proposed fix.",
+                        ),
                       onSettled: () =>
                         queryClient.invalidateQueries({ queryKey: ["calendar-conflicts"] }),
                     },
