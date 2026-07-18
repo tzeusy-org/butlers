@@ -14,7 +14,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { AttentionLedgerSummaryResponse } from "@/api/index.ts";
@@ -59,6 +59,46 @@ function summaryResponse(
     ...overrides,
   };
 }
+
+describe("AttentionLedgerPanel -- semantic outcome table", () => {
+  it("associates each source's outcome counts with semantic table headers", async () => {
+    vi.mocked(getAttentionLedgerSummary).mockResolvedValue(
+      summaryResponse({
+        by_source: [
+          {
+            origin_butler: "finance",
+            delivered: 5,
+            coalesced: 1,
+            deferred: 2,
+            suppressed: 3,
+            failed: 4,
+            total: 15,
+            suppressed_never_delivered: false,
+          },
+        ],
+      }),
+    );
+
+    renderPanel();
+
+    const table = await screen.findByRole("table", {
+      name: "Attention ledger outcome comparison",
+    });
+    expect(within(table).getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "Source",
+      "Delivered",
+      "Coalesced",
+      "Deferred",
+      "Suppressed",
+      "Failed",
+      "Total",
+    ]);
+
+    const row = within(table).getByRole("row", { name: /finance/ });
+    expect(within(row).getByRole("rowheader", { name: "finance" })).toBeTruthy();
+    expect(within(row).getAllByRole("cell")).toHaveLength(6);
+  });
+});
 
 describe("AttentionLedgerPanel -- suppressed-but-never-delivered flag", () => {
   it("renders the loud banner for a source that is suppressed but never delivered", async () => {
@@ -188,12 +228,9 @@ describe("AttentionLedgerPanel -- failed outcome column (bu-hmdqz.3)", () => {
       expect(screen.getByTestId("attention-source-row")).toBeTruthy();
     });
     const row = screen.getByTestId("attention-source-row");
-    expect(row.textContent).toContain("21");
-    const failedCell = Array.from(row.querySelectorAll("span")).find(
-      (el) => el.textContent === "21",
-    );
-    expect(failedCell).toBeTruthy();
-    expect(failedCell?.className).toContain("text-[var(--red-text)]");
+    const failedCell = within(row).getAllByRole("cell")[4];
+    expect(failedCell.textContent).toBe("21");
+    expect(failedCell.className).toContain("text-[var(--red-text)]");
   });
 
   it("does not red-tone the Failed column when it is zero", async () => {
@@ -221,11 +258,10 @@ describe("AttentionLedgerPanel -- failed outcome column (bu-hmdqz.3)", () => {
       expect(screen.getByTestId("attention-source-row")).toBeTruthy();
     });
     const row = screen.getByTestId("attention-source-row");
-    const zeroCells = Array.from(row.querySelectorAll("span")).filter(
-      (el) => el.textContent === "0",
-    );
+    const failedCell = within(row).getAllByRole("cell")[4];
+    expect(failedCell.textContent).toBe("0");
     // The Failed cell (rendering "0") must not carry the red-text token.
-    expect(zeroCells.some((el) => el.className.includes("text-[var(--red-text)]"))).toBe(false);
+    expect(failedCell.className).not.toContain("text-[var(--red-text)]");
   });
 });
 

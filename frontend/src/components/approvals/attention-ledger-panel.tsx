@@ -80,49 +80,47 @@ function FlaggedSourceBanner({ sources }: { sources: string[] }) {
 
 function SourceRow({ summary }: { summary: AttentionSourceSummary }) {
   return (
-    <div
+    <tr
       data-testid="attention-source-row"
       data-flagged={summary.suppressed_never_delivered}
-      className={cn(
-        "grid grid-cols-[1fr_repeat(6,minmax(0,72px))] items-center gap-2 py-2",
-        "border-t border-border/50 first:border-t-0 font-mono text-xs",
-      )}
+      className="border-t border-border/50 first:border-t-0"
     >
-      <span
+      <th
+        scope="row"
         className={cn(
-          "truncate font-medium",
+          "max-w-0 truncate py-2 pr-2 text-left align-middle font-medium",
           summary.suppressed_never_delivered ? "text-[var(--red-text)]" : "text-foreground",
         )}
       >
         {summary.origin_butler}
-      </span>
-      <span className="text-right text-foreground">{summary.delivered}</span>
-      <span className="text-right text-muted-foreground">{summary.coalesced}</span>
-      <span className="text-right text-muted-foreground">{summary.deferred}</span>
-      <span
+      </th>
+      <td className="px-1 py-2 text-right align-middle text-foreground">{summary.delivered}</td>
+      <td className="px-1 py-2 text-right align-middle text-muted-foreground">{summary.coalesced}</td>
+      <td className="px-1 py-2 text-right align-middle text-muted-foreground">{summary.deferred}</td>
+      <td
         className={cn(
-          "text-right",
+          "px-1 py-2 text-right align-middle",
           summary.suppressed_never_delivered
             ? "text-[var(--red-text)] font-semibold"
             : "text-muted-foreground",
         )}
       >
         {summary.suppressed}
-      </span>
+      </td>
       {/* Genuine terminal failures (bu-hmdqz.3) -- always red-toned when
           non-zero, never rendered as calm/neutral like coalesced/deferred:
           a "failed" row is never automatically retried unless the caller
           explicitly queued a retry envelope. */}
-      <span
+      <td
         className={cn(
-          "text-right",
+          "px-1 py-2 text-right align-middle",
           summary.failed > 0 ? "text-[var(--red-text)] font-semibold" : "text-muted-foreground",
         )}
       >
         {summary.failed}
-      </span>
-      <span className="text-right text-muted-foreground">{summary.total}</span>
-    </div>
+      </td>
+      <td className="px-1 py-2 text-right align-middle text-muted-foreground">{summary.total}</td>
+    </tr>
   );
 }
 
@@ -198,18 +196,43 @@ export function AttentionLedgerPanel() {
 
           <FlaggedSourceBanner sources={summary?.flagged_sources ?? []} />
 
-          <div className="grid grid-cols-[1fr_repeat(6,minmax(0,72px))] gap-2 pb-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-            <span>Source</span>
-            <span className="text-right">Delivered</span>
-            <span className="text-right">Coalesced</span>
-            <span className="text-right">Deferred</span>
-            <span className="text-right">Suppressed</span>
-            <span className="text-right">Failed</span>
-            <span className="text-right">Total</span>
-          </div>
-          {bySource.map((s) => (
-            <SourceRow key={s.origin_butler} summary={s} />
-          ))}
+          <table className="w-full table-fixed border-collapse font-mono text-xs">
+            <caption className="sr-only">Attention ledger outcome comparison</caption>
+            <colgroup>
+              <col className="w-[40%]" />
+              <col span={6} className="w-[10%]" />
+            </colgroup>
+            <thead className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              <tr>
+                <th scope="col" className="pb-1 pr-2 text-left font-normal break-words">
+                  Source
+                </th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal break-words">
+                  Delivered
+                </th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal break-words">
+                  Coalesced
+                </th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal break-words">
+                  Deferred
+                </th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal break-words">
+                  Suppressed
+                </th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal break-words">
+                  Failed
+                </th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal break-words">
+                  Total
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {bySource.map((s) => (
+                <SourceRow key={s.origin_butler} summary={s} />
+              ))}
+            </tbody>
+          </table>
         </QueryBoundary>
       </div>
     </div>
