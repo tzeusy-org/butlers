@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * AuditLogPage — unit tests.
  *
@@ -7,9 +8,11 @@
  * - Table renders new-schema AuditLogEntry rows
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act } from "react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import AuditLogPage from "@/pages/AuditLogPage";
@@ -36,6 +39,7 @@ function makeAuditResponse(entries: AuditLogEntry[] = []) {
       meta: { total: entries.length, offset: 0, limit: 20, has_more: false },
     },
     isLoading: false,
+    isFetching: false,
     isError: false,
   };
 }
@@ -44,6 +48,7 @@ function makeAuditErrorResponse() {
   return {
     data: undefined,
     isLoading: false,
+    isFetching: false,
     isError: true,
   };
 }
@@ -62,6 +67,25 @@ function renderPage(initialPath = "/audit-log"): string {
     </QueryClientProvider>,
   );
 }
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location-search">{location.search}</div>;
+}
+
+function renderInteractivePage(initialPath = "/audit-log") {
+  const qc = new QueryClient();
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <AuditLogPage />
+        <LocationProbe />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+afterEach(cleanup);
 
 // ---------------------------------------------------------------------------
 // Setup defaults
@@ -292,6 +316,43 @@ describe("AuditLogPage — single URL-serialized filter state", () => {
     const html = renderPage("/audit-log?actor=cli-abc123");
     expect(html).toContain('data-testid="actor-filter-chip"');
     expect(html).toContain('value="cli-abc123"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Debounced filter feedback
+// ---------------------------------------------------------------------------
+
+describe("AuditLogPage — debounced filter feedback", () => {
+  it("marks visible rows busy while the URL has a new actor filter before its query is debounced", () => {
+    vi.useFakeTimers();
+    try {
+      setupDefaults([
+        {
+          id: 1,
+          ts: "2026-01-15T10:00:00Z",
+          actor: "owner",
+          action: "credential_set",
+          target: "u:google",
+          note: null,
+          ip: null,
+          request_id: null,
+        },
+      ]);
+      const { container, getByLabelText, getByTestId } = renderInteractivePage();
+
+      fireEvent.change(getByLabelText("Actor"), { target: { value: "owner" } });
+
+      expect(getByTestId("location-search").textContent).toContain("actor=owner");
+      expect(container.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
+
+      act(() => {
+        vi.advanceTimersByTime(299);
+      });
+      expect(container.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

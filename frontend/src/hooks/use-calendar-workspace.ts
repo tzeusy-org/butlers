@@ -34,21 +34,32 @@ import type {
   CalendarAuditParams,
   CalendarDedupRulesUpdateRequest,
   CalendarDuplicatesParams,
+  CalendarDuplicatesResponse,
   ConflictScanParams,
   CalendarKeepSeparateRequest,
+  CalendarKeepSeparateResponse,
   CalendarProposalAcceptRequest,
   CalendarSourceToggleRequest,
+  CalendarSourceToggleResponse,
   CalendarWorkspaceButlerEventPreviewRequest,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceFindTimeRequest,
   CalendarWorkspaceParams,
   CalendarWorkspaceReadResponse,
+  CalendarWorkspaceMetaResponse,
+  CalendarWorkspaceSourceFreshness,
   CalendarWorkspaceSearchParams,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceUserMutationRequest,
   QuickAddParseRequest,
   SetPrimaryCalendarRequest,
 } from "@/api/types.ts";
+import { ApiError } from "@/api/client.ts";
+import {
+  rollbackLists,
+  snapshotAndUpdateQueries,
+  useOptimisticMutation,
+} from "@/hooks/use-optimistic-mutation";
 
 interface CalendarWorkspaceQueryOptions {
   refetchInterval?: number | false;
@@ -59,6 +70,60 @@ interface CalendarWorkspaceQueryOptions {
 const WORKSPACE_PAGE_SIZE = 500;
 /** Safety cap on cursor follows so a runaway window can't loop forever. */
 const WORKSPACE_MAX_PAGES = 20;
+
+interface CalendarSourceSyncEnabledSnapshot {
+  queryKey: readonly unknown[];
+  sourceId: string;
+  sourceKey: string;
+  butlerName: string | null;
+  syncEnabled: boolean;
+}
+
+interface CalendarSourceToggleSnapshot {
+  metaSources: CalendarSourceSyncEnabledSnapshot[];
+  workspaceSources: CalendarSourceSyncEnabledSnapshot[];
+}
+
+interface CalendarDuplicateKeepSeparateSnapshot {
+  queryKey: readonly unknown[];
+  clusterKey: string;
+  keepSeparate: boolean;
+}
+
+function calendarSourceMatchesToggle(
+  source: CalendarWorkspaceSourceFreshness,
+  body: CalendarSourceToggleRequest,
+): boolean {
+  return (
+    source.butler_name === body.butler &&
+    ((body.source_key != null && source.source_key === body.source_key) ||
+      (body.source_id != null && source.source_id === body.source_id))
+  );
+}
+
+function sourceSyncEnabledSnapshot(
+  queryKey: readonly unknown[],
+  source: CalendarWorkspaceSourceFreshness,
+): CalendarSourceSyncEnabledSnapshot {
+  return {
+    queryKey,
+    sourceId: source.source_id,
+    sourceKey: source.source_key,
+    butlerName: source.butler_name,
+    syncEnabled: source.sync_enabled,
+  };
+}
+
+function matchesSourceSnapshot(
+  source: CalendarWorkspaceSourceFreshness,
+  snapshot: CalendarSourceSyncEnabledSnapshot,
+): boolean {
+  return (
+    source.source_id === snapshot.sourceId &&
+    source.source_key === snapshot.sourceKey &&
+    source.butler_name === snapshot.butlerName
+  );
+}
 
 /**
  * Fetch the full workspace window by following the keyset `next_cursor` until
@@ -355,10 +420,33 @@ export function useAcceptCalendarProposal() {
 
 /** Dismiss a calendar proposal (no provider write) and refresh proposal caches. */
 export function useDismissCalendarProposal() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation({
     mutationFn: (vars: { proposalId: string }) => dismissCalendarProposal(vars.proposalId),
-    onSettled: () => invalidateWorkspaceAndProposals(queryClient),
+    cancelQueryKeys: [["calendar-proposals"], ["calendar-workspace"], ["calendar-workspace-meta"]],
+    applyOptimisticUpdate: ({ proposalId }, queryClient) =>
+      snapshotAndUpdateQueries<ApiResponse<CalendarWorkspaceReadResponse>>(
+        queryClient,
+        ["calendar-proposals"],
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: {
+                  ...current.data,
+                  entries: current.data.entries.filter((entry) => entry.entry_id !== proposalId),
+                },
+              }
+            : current,
+      ),
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    // The endpoint is idempotent in the user-visible sense: a 404/409 means
+    // another request already resolved the proposal, so do not resurrect it.
+    shouldRollback: (error) => !(error instanceof ApiError && (error.status === 404 || error.status === 409)),
+    invalidateQueryKeys: [
+      ["calendar-proposals"],
+      ["calendar-workspace"],
+      ["calendar-workspace-meta"],
+    ],
   });
 }
 
@@ -374,14 +462,122 @@ export function useCalendarAccounts(options?: CalendarWorkspaceQueryOptions) {
 
 /** Enable/disable a calendar as a sync source and refresh workspace metadata. */
 export function useToggleCalendarSource() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation<
+    ApiResponse<CalendarSourceToggleResponse>,
+    CalendarSourceToggleRequest,
+    CalendarSourceToggleSnapshot
+  >({
     mutationFn: (body: CalendarSourceToggleRequest) => toggleCalendarSource(body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
-      queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
-      queryClient.invalidateQueries({ queryKey: ["calendar-accounts"] });
+    cancelQueryKeys: [
+      ["calendar-workspace"],
+      ["calendar-workspace-meta"],
+      ["calendar-accounts"],
+    ],
+    applyOptimisticUpdate: (body, queryClient) => {
+      const metaSources = queryClient
+        .getQueriesData<ApiResponse<CalendarWorkspaceMetaResponse>>({
+          queryKey: ["calendar-workspace-meta"],
+        })
+        .flatMap(([queryKey, current]) =>
+          current
+            ? current.data.connected_sources
+                .filter((source) => calendarSourceMatchesToggle(source, body))
+                .map((source) => sourceSyncEnabledSnapshot(queryKey, source))
+            : [],
+        );
+      const workspaceSources = queryClient
+        .getQueriesData<ApiResponse<CalendarWorkspaceReadResponse>>({
+          queryKey: ["calendar-workspace"],
+        })
+        .flatMap(([queryKey, current]) =>
+          current
+            ? current.data.source_freshness
+                .filter((source) => calendarSourceMatchesToggle(source, body))
+                .map((source) => sourceSyncEnabledSnapshot(queryKey, source))
+            : [],
+        );
+
+      queryClient.setQueriesData<ApiResponse<CalendarWorkspaceMetaResponse>>(
+        { queryKey: ["calendar-workspace-meta"] },
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: {
+                  ...current.data,
+                  connected_sources: current.data.connected_sources.map((source) =>
+                    calendarSourceMatchesToggle(source, body)
+                      ? { ...source, sync_enabled: body.enabled }
+                      : source,
+                  ),
+                },
+              }
+            : current,
+      );
+      queryClient.setQueriesData<ApiResponse<CalendarWorkspaceReadResponse>>(
+        { queryKey: ["calendar-workspace"] },
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: {
+                  ...current.data,
+                  source_freshness: current.data.source_freshness.map((source) =>
+                    calendarSourceMatchesToggle(source, body)
+                      ? { ...source, sync_enabled: body.enabled }
+                      : source,
+                  ),
+                },
+              }
+            : current,
+      );
+      return { metaSources, workspaceSources };
     },
+    rollback: (snapshot, queryClient) => {
+      snapshot.metaSources.forEach((sourceSnapshot) => {
+        queryClient.setQueryData<ApiResponse<CalendarWorkspaceMetaResponse>>(
+          sourceSnapshot.queryKey,
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  data: {
+                    ...current.data,
+                    connected_sources: current.data.connected_sources.map((source) =>
+                      matchesSourceSnapshot(source, sourceSnapshot)
+                        ? { ...source, sync_enabled: sourceSnapshot.syncEnabled }
+                        : source,
+                    ),
+                  },
+                }
+              : current,
+        );
+      });
+      snapshot.workspaceSources.forEach((sourceSnapshot) => {
+        queryClient.setQueryData<ApiResponse<CalendarWorkspaceReadResponse>>(
+          sourceSnapshot.queryKey,
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  data: {
+                    ...current.data,
+                    source_freshness: current.data.source_freshness.map((source) =>
+                      matchesSourceSnapshot(source, sourceSnapshot)
+                        ? { ...source, sync_enabled: sourceSnapshot.syncEnabled }
+                        : source,
+                    ),
+                  },
+                }
+              : current,
+        );
+      });
+    },
+    invalidateQueryKeys: [
+      ["calendar-workspace"],
+      ["calendar-workspace-meta"],
+      ["calendar-accounts"],
+    ],
   });
 }
 
@@ -474,10 +670,71 @@ export function usePatchCalendarDedupRules() {
  * no longer collapsed by the workspace read, so both caches are invalidated.
  */
 export function useSetCalendarKeepSeparate() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation<
+    ApiResponse<CalendarKeepSeparateResponse>,
+    CalendarKeepSeparateRequest,
+    CalendarDuplicateKeepSeparateSnapshot[]
+  >({
     mutationFn: (body: CalendarKeepSeparateRequest) => setCalendarKeepSeparate(body),
-    onSuccess: () => invalidateDuplicatesAndWorkspace(queryClient),
+    cancelQueryKeys: [["calendar-duplicates"], ["calendar-workspace"]],
+    applyOptimisticUpdate: (body, queryClient) => {
+      const snapshot = queryClient
+        .getQueriesData<ApiResponse<CalendarDuplicatesResponse>>({
+          queryKey: ["calendar-duplicates"],
+        })
+        .flatMap(([queryKey, current]) =>
+          current
+            ? current.data.clusters
+                .filter((cluster) => cluster.cluster_key === body.cluster_key)
+                .map((cluster) => ({
+                  queryKey,
+                  clusterKey: cluster.cluster_key,
+                  keepSeparate: cluster.keep_separate,
+                }))
+            : [],
+        );
+
+      queryClient.setQueriesData<ApiResponse<CalendarDuplicatesResponse>>(
+        { queryKey: ["calendar-duplicates"] },
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: {
+                  ...current.data,
+                  clusters: current.data.clusters.map((cluster) =>
+                    cluster.cluster_key === body.cluster_key
+                      ? { ...cluster, keep_separate: body.keep_separate }
+                      : cluster,
+                  ),
+                },
+              }
+            : current,
+      );
+      return snapshot;
+    },
+    rollback: (snapshot, queryClient) => {
+      snapshot.forEach((clusterSnapshot) => {
+        queryClient.setQueryData<ApiResponse<CalendarDuplicatesResponse>>(
+          clusterSnapshot.queryKey,
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  data: {
+                    ...current.data,
+                    clusters: current.data.clusters.map((cluster) =>
+                      cluster.cluster_key === clusterSnapshot.clusterKey
+                        ? { ...cluster, keep_separate: clusterSnapshot.keepSeparate }
+                        : cluster,
+                    ),
+                  },
+                }
+              : current,
+        );
+      });
+    },
+    invalidateQueryKeys: [["calendar-duplicates"], ["calendar-workspace"]],
   });
 }
 

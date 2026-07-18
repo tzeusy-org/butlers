@@ -96,6 +96,7 @@ import { HourFlameStrip } from "./timeline/HourFlameStrip";
 import { DispatchTicksCell } from "./timeline/DispatchTicksCell";
 import { EventDrawer } from "./timeline/EventDrawer";
 import { useEventDrawerState } from "./timeline/useEventDrawerState";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { formatCostUsdPrecise } from "@/lib/format-cost";
 
 // ---------------------------------------------------------------------------
@@ -1004,6 +1005,9 @@ function LedgerRow({
         className="min-w-0 pr-2 flex items-baseline gap-2 rounded-sm"
         data-testid="ledger-row-trigger"
         data-event-id={event.id}
+        // The drawer is URL-backed as /ingestion?event=<id>; this maps to
+        // useIngestionEventDetail's exact cache key via the shared registry.
+        prefetchTo={`/ingestion?event=${encodeURIComponent(event.id)}`}
       >
         <span
           className="truncate font-serif text-[13px] leading-[1.5] shrink-0 max-w-[55%]"
@@ -1943,6 +1947,7 @@ export function TimelineTab({
   const {
     data: infiniteData,
     isLoading,
+    isFetching,
     isError,
     hasNextPage,
     isFetchingNextPage,
@@ -2237,6 +2242,7 @@ export function TimelineTab({
       )}
 
       {/* Ledger */}
+      <FetchingDim isFetching={isFetching && !isLoading && !isError && !isFetchingNextPage}>
       <div className="border border-border rounded" data-testid="timeline-ledger">
         <LedgerColumnHeaders />
 
@@ -2289,6 +2295,7 @@ export function TimelineTab({
           </>
         )}
       </div>
+      </FetchingDim>
 
       {/* Footer rollup band — aggregate counts for the active filter window */}
       <FooterRollupBand

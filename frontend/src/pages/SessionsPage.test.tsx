@@ -7,6 +7,7 @@
 
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { render, fireEvent, cleanup } from "@testing-library/react";
+import { act } from "react";
 import { MemoryRouter, useLocation } from "react-router";
 
 import type { KeysetResponse, SessionSummary } from "@/api/types";
@@ -27,10 +28,30 @@ vi.mock("@/hooks/use-butlers", () => ({
 }));
 // Stub the data-heavy children so the page-logic tests stay focused.
 vi.mock("@/components/dashboard/SessionStripeChart", () => ({
-  SessionStripeChart: () => <div data-testid="stripe-stub" />,
+  SessionStripeChart: ({
+    filterParams,
+  }: {
+    filterParams: { trigger_source?: string; request_id?: string };
+  }) => (
+    <div
+      data-testid="stripe-stub"
+      data-trigger-source={filterParams.trigger_source ?? ""}
+      data-request-id={filterParams.request_id ?? ""}
+    />
+  ),
 }));
 vi.mock("@/components/sessions/SessionsKpiStrip", () => ({
-  SessionsKpiStrip: () => <div data-testid="kpi-stub" />,
+  SessionsKpiStrip: ({
+    filterParams,
+  }: {
+    filterParams: { trigger_source?: string; request_id?: string };
+  }) => (
+    <div
+      data-testid="kpi-stub"
+      data-trigger-source={filterParams.trigger_source ?? ""}
+      data-request-id={filterParams.request_id ?? ""}
+    />
+  ),
 }));
 vi.mock("@/components/sessions/SessionDetailDrawer", () => ({
   SessionDetailDrawer: ({
@@ -84,12 +105,14 @@ function keysetResponse(
 function setSessions(result: {
   data?: KeysetResponse<SessionSummary>;
   isLoading?: boolean;
+  isFetching?: boolean;
   isError?: boolean;
   error?: unknown;
 }) {
   mockUseSessions.mockReturnValue({
     data: result.data,
     isLoading: result.isLoading ?? false,
+    isFetching: result.isFetching ?? false,
     isError: result.isError ?? false,
     error: result.error ?? null,
     refetch: vi.fn(),
@@ -160,6 +183,69 @@ describe("SessionsPage — URL state round-trip", () => {
     const search = getByTestId("location-search").textContent ?? "";
     expect(search).toContain("trigger=telegram");
     expect(search).not.toContain("cursor=abc");
+  });
+
+  it("debounces free-text list requests without delaying the URL state", () => {
+    vi.useFakeTimers();
+    try {
+      setSessions({ data: keysetResponse([makeSession()], false, null) });
+      const { container, getByLabelText, getByTestId } = renderPage();
+      const lastListParams = () => mockUseSessions.mock.calls
+        .map(([params]) => params)
+        .filter((params) => (params as { limit?: number })?.limit === 20)
+        .at(-1) as { trigger_source?: string } | undefined;
+
+      fireEvent.change(getByLabelText("Trigger"), { target: { value: "telegram" } });
+
+      expect(getByTestId("location-search").textContent).toContain("trigger=telegram");
+      expect(lastListParams()?.trigger_source).toBeUndefined();
+      expect(container.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
+
+      act(() => {
+        vi.advanceTimersByTime(299);
+      });
+      expect(lastListParams()?.trigger_source).toBeUndefined();
+      expect(container.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
+
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(lastListParams()?.trigger_source).toBe("telegram");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps aggregate and chart scopes aligned with visible free-text filters while the list waits", () => {
+    vi.useFakeTimers();
+    try {
+      setSessions({ data: keysetResponse([makeSession()], false, null) });
+      const { getByLabelText, getByTestId } = renderPage();
+      const lastListParams = () => mockUseSessions.mock.calls
+        .map(([params]) => params)
+        .filter((params) => (params as { limit?: number })?.limit === 20)
+        .at(-1) as { trigger_source?: string; request_id?: string } | undefined;
+
+      fireEvent.change(getByLabelText("Trigger"), { target: { value: "telegram" } });
+      fireEvent.change(getByLabelText("Request ID"), { target: { value: "req-visible" } });
+
+      expect(lastListParams()?.trigger_source).toBeUndefined();
+      expect(lastListParams()?.request_id).toBeUndefined();
+      for (const testId of ["kpi-stub", "stripe-stub"]) {
+        expect(getByTestId(testId).getAttribute("data-trigger-source")).toBe("telegram");
+        expect(getByTestId(testId).getAttribute("data-request-id")).toBe("req-visible");
+      }
+
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+      expect(lastListParams()).toMatchObject({
+        trigger_source: "telegram",
+        request_id: "req-visible",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

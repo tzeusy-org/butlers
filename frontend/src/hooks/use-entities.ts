@@ -56,6 +56,19 @@ import type {
   CreateRelationshipEntityRequest,
   RelationshipEntityListParams,
 } from "@/api/index.ts";
+import type {
+  EntityFactsResponse,
+  LinkedContactSummary,
+  RelationshipEntityListResponse,
+  RelationshipEntitySummary,
+  RelationshipQueueEntry,
+  RelationshipQueueResponse,
+} from "@/api/types.ts";
+import {
+  rollbackLists,
+  snapshotAndUpdateQueries,
+  useOptimisticMutation,
+} from "@/hooks/use-optimistic-mutation";
 
 /** Fetch all contacts linked to a relationship entity. */
 export function useEntityLinkedContacts(entityId: string | undefined) {
@@ -357,6 +370,154 @@ function invalidateRelationshipEntityIndex(queryClient: ReturnType<typeof useQue
   void queryClient.invalidateQueries({ queryKey: ["entity-finder-search"] });
 }
 
+function removeRelationshipEntityFromList(
+  current: RelationshipEntityListResponse | undefined,
+  entityId: string,
+): RelationshipEntityListResponse | undefined {
+  if (!current) return current;
+  const items = current.items.filter((entity) => entity.id !== entityId);
+  if (items.length === current.items.length) return current;
+  return { ...current, items, total: Math.max(0, current.total - (current.items.length - items.length)) };
+}
+
+function removeRelationshipEntityFromQueue(
+  current: RelationshipQueueResponse | undefined,
+  entityIds: ReadonlySet<string>,
+): RelationshipQueueResponse | undefined {
+  if (!current) return current;
+  const items = current.items.filter((entity) => !entityIds.has(entity.entity_id));
+  if (items.length === current.items.length) return current;
+  return { ...current, items, total: Math.max(0, current.total - (current.items.length - items.length)) };
+}
+
+interface ArchivedRelationshipEntityListItem {
+  queryKey: readonly unknown[];
+  entity: RelationshipEntitySummary;
+  index: number;
+  previousId: string | undefined;
+  nextId: string | undefined;
+}
+
+interface ArchivedRelationshipQueueItem {
+  queryKey: readonly unknown[];
+  entry: RelationshipQueueEntry;
+  index: number;
+  previousId: string | undefined;
+  nextId: string | undefined;
+}
+
+interface RelationshipEntityArchiveSnapshot {
+  listItems: ArchivedRelationshipEntityListItem[];
+  queueItems: ArchivedRelationshipQueueItem[];
+}
+
+function archiveRestoreIndex(
+  currentIds: readonly string[],
+  index: number,
+  previousId: string | undefined,
+  nextId: string | undefined,
+): number {
+  if (nextId !== undefined) {
+    const nextIndex = currentIds.indexOf(nextId);
+    if (nextIndex >= 0) return nextIndex;
+  }
+  if (previousId !== undefined) {
+    const previousIndex = currentIds.indexOf(previousId);
+    if (previousIndex >= 0) return previousIndex + 1;
+  }
+  return Math.min(index, currentIds.length);
+}
+
+/**
+ * Capture only the archived entity's inverse updates. A whole-prefix snapshot
+ * would resurrect a later successful concurrent archive when an earlier one
+ * fails and rolls back.
+ */
+function snapshotRelationshipEntityArchive(
+  queryClient: ReturnType<typeof useQueryClient>,
+  entityId: string,
+): RelationshipEntityArchiveSnapshot {
+  const listItems = queryClient
+    .getQueriesData<RelationshipEntityListResponse>({ queryKey: ["relationship-entities"] })
+    .flatMap(([queryKey, current]) => {
+      const index = current?.items.findIndex((entity) => entity.id === entityId);
+      if (current == null || index == null || index < 0) return [];
+      const entity = current.items[index];
+      return entity
+        ? [
+            {
+              queryKey,
+              entity,
+              index,
+              previousId: current.items[index - 1]?.id,
+              nextId: current.items[index + 1]?.id,
+            },
+          ]
+        : [];
+    });
+  const queueItems = queryClient
+    .getQueriesData<RelationshipQueueResponse>({ queryKey: ["relationship-entity-queue"] })
+    .flatMap(([queryKey, current]) => {
+      const index = current?.items.findIndex((entry) => entry.entity_id === entityId);
+      if (current == null || index == null || index < 0) return [];
+      const entry = current.items[index];
+      return entry
+        ? [
+            {
+              queryKey,
+              entry,
+              index,
+              previousId: current.items[index - 1]?.entity_id,
+              nextId: current.items[index + 1]?.entity_id,
+            },
+          ]
+        : [];
+    });
+  return { listItems, queueItems };
+}
+
+function rollbackRelationshipEntityArchive(
+  queryClient: ReturnType<typeof useQueryClient>,
+  snapshot: RelationshipEntityArchiveSnapshot,
+): void {
+  snapshot.listItems.forEach(({ queryKey, entity, index, previousId, nextId }) => {
+    queryClient.setQueryData<RelationshipEntityListResponse>(queryKey, (current) => {
+      if (current == null || current.items.some((item) => item.id === entity.id)) return current;
+      const items = [...current.items];
+      items.splice(
+        archiveRestoreIndex(
+          items.map((item) => item.id),
+          index,
+          previousId,
+          nextId,
+        ),
+        0,
+        entity,
+      );
+      return { ...current, items, total: current.total + 1 };
+    });
+  });
+  snapshot.queueItems.forEach(({ queryKey, entry, index, previousId, nextId }) => {
+    queryClient.setQueryData<RelationshipQueueResponse>(queryKey, (current) => {
+      if (current == null || current.items.some((item) => item.entity_id === entry.entity_id)) {
+        return current;
+      }
+      const items = [...current.items];
+      items.splice(
+        archiveRestoreIndex(
+          items.map((item) => item.entity_id),
+          index,
+          previousId,
+          nextId,
+        ),
+        0,
+        entry,
+      );
+      return { ...current, items, total: current.total + 1 };
+    });
+  });
+}
+
 /** Promote an existing unidentified entity through the relationship API. */
 export function usePromoteRelationshipEntity() {
   const queryClient = useQueryClient();
@@ -409,10 +570,31 @@ export function useCreateRelationshipEntity() {
 
 /** Archive an entity through the relationship API. */
 export function useArchiveRelationshipEntity() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation<void, string, RelationshipEntityArchiveSnapshot>({
     mutationFn: (entityId: string) => archiveRelationshipEntity(entityId),
-    onSuccess: () => invalidateRelationshipEntityIndex(queryClient),
+    cancelQueryKeys: [
+      ["relationship-entities"],
+      ["relationship-entity-queue"],
+    ],
+    applyOptimisticUpdate: (entityId, queryClient) => {
+      const snapshot = snapshotRelationshipEntityArchive(queryClient, entityId);
+      queryClient.setQueriesData<RelationshipEntityListResponse>(
+        { queryKey: ["relationship-entities"] },
+        (current) => removeRelationshipEntityFromList(current, entityId),
+      );
+      queryClient.setQueriesData<RelationshipQueueResponse>(
+        { queryKey: ["relationship-entity-queue"] },
+        (current) => removeRelationshipEntityFromQueue(current, new Set([entityId])),
+      );
+      return snapshot;
+    },
+    rollback: (snapshot, queryClient) => rollbackRelationshipEntityArchive(queryClient, snapshot),
+    invalidateQueryKeys: (entityId) => [
+      ["relationship-entities"],
+      ["relationship-entity-queue"],
+      ["entity-finder-search"],
+      ["relationship-entity", entityId],
+    ],
   });
 }
 
@@ -433,10 +615,21 @@ export function useForgetRelationshipEntity() {
 
 /** Dismiss an entity from the relationship curation queue. */
 export function useDismissRelationshipEntityQueueItem() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation({
     mutationFn: (entityId: string) => dismissRelationshipEntityQueueItem(entityId),
-    onSuccess: () => invalidateRelationshipEntityIndex(queryClient),
+    cancelQueryKeys: [["relationship-entity-queue"]],
+    applyOptimisticUpdate: (entityId, queryClient) =>
+      snapshotAndUpdateQueries<RelationshipQueueResponse>(
+        queryClient,
+        ["relationship-entity-queue"],
+        (current) => removeRelationshipEntityFromQueue(current, new Set([entityId])),
+      ),
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: [
+      ["relationship-entities"],
+      ["relationship-entity-queue"],
+      ["entity-finder-search"],
+    ],
   });
 }
 
@@ -482,12 +675,21 @@ export function useCompareEntities() {
  * arises. Invalidates the curation queue so the dismissed pair disappears.
  */
 export function useDismissEntityPair() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation({
     mutationFn: (request: DismissEntityPairRequest) => dismissRelationshipEntityPair(request),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["relationship-entity-queue"] });
-    },
+    cancelQueryKeys: [["relationship-entity-queue"]],
+    applyOptimisticUpdate: (request, queryClient) =>
+      snapshotAndUpdateQueries<RelationshipQueueResponse>(
+        queryClient,
+        ["relationship-entity-queue"],
+        (current) =>
+          removeRelationshipEntityFromQueue(
+            current,
+            new Set([request.entity_a, request.entity_b]),
+          ),
+      ),
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: [["relationship-entity-queue"]],
   });
 }
 
@@ -648,14 +850,40 @@ export function useUpdateEntityContact() {
  * on success.
  */
 export function useSetPreferredChannel() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation({
     mutationFn: ({ entityId, channel }: { entityId: string; channel: string }) =>
       setEntityPreferredChannel(entityId, { channel }),
-    onSuccess: (_, { entityId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
-      void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
+    cancelQueryKeys: ({ entityId }) => [
+      ["entity-linked-contacts", entityId],
+      ["entity-facts", entityId],
+    ],
+    applyOptimisticUpdate: ({ entityId, channel }, queryClient) => {
+      const contactsSnapshot = snapshotAndUpdateQueries<LinkedContactSummary[]>(
+        queryClient,
+        ["entity-linked-contacts", entityId],
+        (current) =>
+          current?.map((contact) => ({ ...contact, preferred_channel: channel })) ?? current,
+      );
+      const factsSnapshot = snapshotAndUpdateQueries<EntityFactsResponse>(
+        queryClient,
+        ["entity-facts", entityId],
+        (current) =>
+          current
+            ? {
+                ...current,
+                items: current.items.map((fact) =>
+                  fact.predicate === "prefers-channel" ? { ...fact, object: channel } : fact,
+                ),
+              }
+            : current,
+      );
+      return [...contactsSnapshot, ...factsSnapshot];
     },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: ({ entityId }) => [
+      ["entity-linked-contacts", entityId],
+      ["entity-facts", entityId],
+    ],
   });
 }
 
@@ -664,12 +892,36 @@ export function useSetPreferredChannel() {
  * fact. Idempotent. Invalidates entity-linked-contacts and entity-facts.
  */
 export function useClearPreferredChannel() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation({
     mutationFn: ({ entityId }: { entityId: string }) => clearEntityPreferredChannel(entityId),
-    onSuccess: (_, { entityId }) => {
-      void queryClient.invalidateQueries({ queryKey: ["entity-linked-contacts", entityId] });
-      void queryClient.invalidateQueries({ queryKey: ["entity-facts", entityId] });
+    cancelQueryKeys: ({ entityId }) => [
+      ["entity-linked-contacts", entityId],
+      ["entity-facts", entityId],
+    ],
+    applyOptimisticUpdate: ({ entityId }, queryClient) => {
+      const contactsSnapshot = snapshotAndUpdateQueries<LinkedContactSummary[]>(
+        queryClient,
+        ["entity-linked-contacts", entityId],
+        (current) =>
+          current?.map((contact) => ({ ...contact, preferred_channel: null })) ?? current,
+      );
+      const factsSnapshot = snapshotAndUpdateQueries<EntityFactsResponse>(
+        queryClient,
+        ["entity-facts", entityId],
+        (current) =>
+          current
+            ? {
+                ...current,
+                items: current.items.filter((fact) => fact.predicate !== "prefers-channel"),
+              }
+            : current,
+      );
+      return [...contactsSnapshot, ...factsSnapshot];
     },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: ({ entityId }) => [
+      ["entity-linked-contacts", entityId],
+      ["entity-facts", entityId],
+    ],
   });
 }

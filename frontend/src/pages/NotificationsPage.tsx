@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
+import { useDebounce } from "@/hooks/use-debounce";
 import {
   useAcknowledgeAllFailed,
   useMarkNotificationRead,
@@ -35,6 +36,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const PAGE_SIZE = 20;
+const FREE_TEXT_DEBOUNCE_MS = 300;
 
 /** Module-level so Date.now() is not called directly during render (the
  * react-hooks/purity ESLint rule flags impure calls inline in a component/
@@ -117,6 +119,10 @@ export default function NotificationsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = parseFilters(searchParams);
   const page = Number.parseInt(searchParams.get("page") ?? "0", 10) || 0;
+  // Preserve the URL as the visible/shareable source of truth while avoiding
+  // a network request for every keystroke in the butler filter.
+  const debouncedButler = useDebounce(filters.butler, FREE_TEXT_DEBOUNCE_MS);
+  const hasPendingButlerFilter = debouncedButler !== filters.butler;
   // Track which notification IDs are pending individual acks for UX feedback
   const [pendingAckIds, setPendingAckIds] = useState<Set<string>>(new Set());
 
@@ -124,7 +130,7 @@ export default function NotificationsPage() {
   const params: NotificationParams = {
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
-    ...(filters.butler ? { butler: filters.butler } : {}),
+    ...(debouncedButler ? { butler: debouncedButler } : {}),
     ...(filters.channel !== "all" ? { channel: filters.channel } : {}),
     ...(filters.status !== "all" ? { status: filters.status } : {}),
     ...(filters.since ? { since: filters.since } : {}),
@@ -154,6 +160,8 @@ export default function NotificationsPage() {
     isFetching: notificationsFetching,
     isError: notificationsError,
   } = useNotifications(params);
+  const isNotificationsRefreshing =
+    !notificationsLoading && (notificationsFetching || hasPendingButlerFilter);
 
   // Mutation hooks
   const markReadMutation = useMarkNotificationRead();
@@ -438,7 +446,7 @@ export default function NotificationsPage() {
               Failed to load notifications. Please try refreshing the page.
             </p>
           ) : (
-            <FetchingDim isFetching={notificationsFetching}>
+            <FetchingDim isFetching={isNotificationsRefreshing}>
               <NotificationFeed
                 notifications={notifications}
                 isLoading={false}

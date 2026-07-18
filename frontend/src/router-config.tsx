@@ -10,6 +10,7 @@
  * can be hot-reloaded by Vite without triggering a full page refresh.
  */
 
+import { lazy, Suspense } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router'
 import RootLayout from './layouts/RootLayout.tsx'
 import DashboardPage from './pages/DashboardPage.tsx'
@@ -39,7 +40,6 @@ import ResearchPage from './pages/ResearchPage.tsx'
 import ApprovalsPage from './pages/ApprovalsPage.tsx'
 import DecisionsPage from './pages/DecisionsPage.tsx'
 import SecretsPage from './pages/SecretsPage.tsx'
-import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
 import EducationPage from './pages/EducationPage.tsx'
 import { EntitiesIndexPage } from './components/relationship/EntitiesIndexPage.tsx'
 import PlexPage from './components/relationship/PlexPage.tsx'
@@ -52,8 +52,6 @@ import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
 import QaOverviewPage from './pages/QaOverviewPage.tsx'
 import QaPatrolDetailPage from './pages/QaPatrolDetailPage.tsx'
 import QaInvestigationDetailPage from './pages/QaInvestigationDetailPage.tsx'
-import ChroniclesPage from './pages/ChroniclesPage.tsx'
-import SystemPage from './pages/SystemPage.tsx'
 import {
   ColumnsToPlexRedirect,
   ConnectorDetailRedirect,
@@ -62,6 +60,14 @@ import {
   RelationshipContactRedirect,
   RelationshipEntityRedirect,
 } from './router.tsx'
+
+// These are isolated route islands: calendar and chronicles have substantial
+// page-only data/UI dependencies, while System owns the @xyflow topology graph.
+// Keep them out of the first dashboard bundle, but retain a stable, in-place
+// loading boundary so navigation never presents an unframed blank screen.
+const CalendarWorkspacePage = lazy(() => import('./pages/CalendarWorkspacePage.tsx'))
+const ChroniclesPage = lazy(() => import('./pages/ChroniclesPage.tsx'))
+const SystemPage = lazy(() => import('./pages/SystemPage.tsx'))
 
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
@@ -82,7 +88,14 @@ export const router = createBrowserRouter(
         { path: '/approvals', element: <ApprovalsPage /> },
         { path: '/approvals/:id', element: <ApprovalsPage /> },
         { path: '/decisions', element: <DecisionsPage /> },
-        { path: '/calendar', element: <CalendarWorkspacePage /> },
+        {
+          path: '/calendar',
+          element: (
+            <Suspense fallback={<div role="status" className="p-6 text-sm text-muted-foreground">Loading calendar…</div>}>
+              <CalendarWorkspacePage />
+            </Suspense>
+          ),
+        },
         // /contacts → /entities?has=contact (§8.10 entity-redesign redirect)
         { path: '/contacts', element: <Navigate to="/entities/index?has=contact" replace /> },
         // /contacts/:contactId → /entities?has=contact compatibility redirect.
@@ -138,7 +151,14 @@ export const router = createBrowserRouter(
           element: <RelationshipContactRedirect />,
         },
         // Chronicler routes
-        { path: '/chronicles', element: <ChroniclesPage /> },
+        {
+          path: '/chronicles',
+          element: (
+            <Suspense fallback={<div role="status" className="p-6 text-sm text-muted-foreground">Loading chronicles…</div>}>
+              <ChroniclesPage />
+            </Suspense>
+          ),
+        },
         // QA Staffer routes
         { path: '/qa', element: <QaOverviewPage /> },
         { path: '/qa/patrols/:patrolId', element: <QaPatrolDetailPage /> },
@@ -180,7 +200,14 @@ export const router = createBrowserRouter(
           element: <ConnectorDetailPage />,
         },
         // System page
-        { path: '/system', element: <SystemPage /> },
+        {
+          path: '/system',
+          element: (
+            <Suspense fallback={<div role="status" className="p-6 text-sm text-muted-foreground">Loading system…</div>}>
+              <SystemPage />
+            </Suspense>
+          ),
+        },
         // Legacy /connectors redirects → /ingestion equivalents (spec section 3.3)
         {
           path: '/connectors',

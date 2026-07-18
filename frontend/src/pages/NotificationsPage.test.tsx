@@ -16,7 +16,8 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
+import { fireEvent } from "@testing-library/react";
 
 import NotificationsPage, { STATUS_OPTIONS } from "@/pages/NotificationsPage";
 import {
@@ -111,6 +112,11 @@ function renderPage(initialPath = "/"): string {
       <NotificationsPage />
     </MemoryRouter>,
   );
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location-search">{location.search}</div>;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,5 +423,83 @@ describe("NotificationsPage — j/k list-triage (bu-qvnce.11 slice 4)", () => {
 
     expect(markReadMutate).not.toHaveBeenCalled();
     expect(container!.textContent).not.toContain("Mark read");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Debounced filter feedback
+// ---------------------------------------------------------------------------
+
+describe("NotificationsPage — debounced filter feedback", () => {
+  let container: HTMLDivElement | undefined;
+  let root: Root | undefined;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useMarkNotificationRead).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useMarkNotificationRead>);
+    vi.mocked(useAcknowledgeAllFailed).mockReturnValue({
+      mutate: vi.fn(),
+      isPending: false,
+    } as unknown as ReturnType<typeof useAcknowledgeAllFailed>);
+    setStatsState({
+      data: { data: { total: 1, sent: 1, failed: 0, by_channel: {}, by_butler: {} }, meta: {} },
+    });
+    setNotificationsState({
+      data: {
+        data: [NOTIFICATION_1],
+        meta: { total: 1, offset: 0, limit: 20, has_more: false },
+      },
+      isFetching: false,
+    });
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => root!.unmount());
+    }
+    container?.remove();
+    container = undefined;
+    root = undefined;
+  });
+
+  function renderLive(initialPath = "/notifications") {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const renderedRoot = root;
+    act(() => {
+      renderedRoot.render(
+        <MemoryRouter initialEntries={[initialPath]}>
+          <NotificationsPage />
+          <LocationProbe />
+        </MemoryRouter>,
+      );
+    });
+  }
+
+  it("marks visible rows busy while the URL has a new butler filter before its query is debounced", () => {
+    vi.useFakeTimers();
+    try {
+      renderLive();
+      const input = container!.querySelector<HTMLInputElement>("#filter-butler");
+      expect(input).not.toBeNull();
+
+      fireEvent.change(input!, { target: { value: "relationship" } });
+
+      expect(container!.querySelector('[data-testid="location-search"]')?.textContent).toContain(
+        "butler=relationship",
+      );
+      expect(container!.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
+
+      act(() => {
+        vi.advanceTimersByTime(299);
+      });
+      expect(container!.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

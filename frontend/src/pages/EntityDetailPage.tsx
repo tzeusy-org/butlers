@@ -48,6 +48,7 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { usePageContext } from "@/lib/page-context.tsx";
 import { Row } from "@/components/ui/Row";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Voice } from "@/components/ui/Voice";
 import { ProvenanceMarks, StalenessBand } from "@/components/ui/Provenance";
 import {
@@ -177,6 +178,7 @@ function LinkedContactSection({
   const [search, setSearch] = useState("");
   const {
     data: contactsData,
+    isFetching: contactsFetching,
     isError: contactsError,
     refetch: refetchContacts,
   } = useContacts(linking ? { q: search || undefined, limit: 10 } : undefined);
@@ -244,23 +246,25 @@ function LinkedContactSection({
                 onRetry={() => void refetchContacts()}
               />
             ) : contacts.length > 0 ? (
-              <div className="max-h-48 overflow-y-auto rounded border">
-                {contacts.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    className="flex w-full items-center gap-2 px-3 py-1.5 text-sm
-                      hover:bg-muted text-left"
-                    onClick={() => handleLink(c.id)}
-                    disabled={setLinkedContact.isPending}
-                  >
-                    <span className="font-medium">{c.full_name}</span>
-                    {c.email && (
-                      <span className="text-muted-foreground text-xs">{c.email}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
+              <FetchingDim isFetching={contactsFetching}>
+                <div className="max-h-48 overflow-y-auto rounded border">
+                  {contacts.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-sm
+                        hover:bg-muted text-left"
+                      onClick={() => handleLink(c.id)}
+                      disabled={setLinkedContact.isPending}
+                    >
+                      <span className="font-medium">{c.full_name}</span>
+                      {c.email && (
+                        <span className="text-muted-foreground text-xs">{c.email}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </FetchingDim>
             ) : search ? (
               <p className="text-muted-foreground text-xs py-2">No contacts found.</p>
             ) : null}

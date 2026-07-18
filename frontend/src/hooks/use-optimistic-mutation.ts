@@ -50,6 +50,11 @@ export interface UseOptimisticMutationOptions<TData, TVariables, TSnapshot> {
   /** Undo exactly what {@link applyOptimisticUpdate} did, using its snapshot. */
   rollback: (snapshot: TSnapshot, queryClient: QueryClient) => void;
   /**
+   * Return false when an error still proves the desired final state (for
+   * example an idempotent dismiss racing another operator). Defaults to true.
+   */
+  shouldRollback?: (error: Error, variables: TVariables) => boolean;
+  /**
    * Query key(s) to invalidate once the mutation settles (success or
    * error), reconciling the optimistic guess with server truth. Accepts a
    * function of the variables and (if successful) the response data.
@@ -81,6 +86,7 @@ export function useOptimisticMutation<TData, TVariables, TSnapshot>(
     cancelQueryKeys,
     applyOptimisticUpdate,
     rollback,
+    shouldRollback,
     invalidateQueryKeys,
     onSuccess,
     onError,
@@ -96,7 +102,9 @@ export function useOptimisticMutation<TData, TVariables, TSnapshot>(
       return { snapshot };
     },
     onError: (error, variables, context) => {
-      if (context) rollback(context.snapshot, queryClient);
+      if (context && (shouldRollback?.(error as Error, variables) ?? true)) {
+        rollback(context.snapshot, queryClient);
+      }
       onError?.(error as Error, variables);
     },
     onSuccess: (data, variables) => {
@@ -131,6 +139,23 @@ function isListEnvelope<TItem>(value: unknown): value is ListEnvelope<TItem> {
 }
 
 export type ListSnapshot = [QueryKeyLike, unknown][];
+
+/**
+ * Snapshot every cache entry under `keyPrefix`, then apply an arbitrary
+ * structured update to each one. Unlike {@link snapshotAndUpdateLists}, this
+ * is for response shapes such as `{ items, total }` or workspace envelopes
+ * whose mutable collection is not the conventional top-level `data` array.
+ * The returned snapshot is restored with {@link rollbackLists}.
+ */
+export function snapshotAndUpdateQueries<TData>(
+  queryClient: QueryClient,
+  keyPrefix: QueryKeyLike,
+  update: (previous: TData | undefined) => TData | undefined,
+): ListSnapshot {
+  const snapshot = queryClient.getQueriesData({ queryKey: keyPrefix });
+  queryClient.setQueriesData<TData>({ queryKey: keyPrefix }, update);
+  return snapshot;
+}
 
 /**
  * Rewrite every cached query whose key starts with `keyPrefix` (matching

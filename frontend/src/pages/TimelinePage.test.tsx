@@ -223,4 +223,27 @@ describe("TimelinePage — error vs empty state", () => {
     expect(html).toContain('data-testid="live-status-badge-idle"');
     expect(html).not.toContain('data-testid="live-status-badge-down"');
   });
+
+  it("does not dim committed history while an unpinned head poll refreshes", () => {
+    setLedger({
+      pinned: false,
+      isFetching: true,
+      events: [
+        {
+          id: "e1",
+          type: "session",
+          butler: "home",
+          timestamp: "2026-07-04T14:32:00Z",
+          summary: "committed event",
+          is_heartbeat: false,
+          data: {},
+        },
+      ],
+    });
+
+    const html = render();
+
+    expect(html).toContain('aria-busy="false"');
+    expect(html).not.toContain("opacity-60");
+  });
 });

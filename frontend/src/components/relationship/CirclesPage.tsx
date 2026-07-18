@@ -37,6 +37,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -403,7 +404,7 @@ export default function CirclesPage() {
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const { data, isLoading, isError, error, refetch } = useGroups({ offset: 0, limit: FETCH_LIMIT });
+  const { data, isLoading, isFetching, isError, error, refetch } = useGroups({ offset: 0, limit: FETCH_LIMIT });
 
   const groups = useMemo(() => {
     const all = data?.groups ?? [];
@@ -447,35 +448,39 @@ export default function CirclesPage() {
             <Skeleton key={i} className="h-12 w-full" />
           ))}
         </div>
-      ) : isError ? null : total === 0 ? (
-        <EmptyState
-          variant="page"
-          title="No circles yet."
-          description='Ask the relationship butler to create one (e.g. "group my family"); circles appear here as the butler organizes contacts into groups.'
-        />
-      ) : groups.length === 0 ? (
-        <p className="py-8 text-center text-sm text-muted-foreground">
-          No circles match "{search}".
-        </p>
       ) : (
-        <>
-          <div className="rounded-md border border-border">
-            {groups.map((group) => (
-              <CircleRow
-                key={group.id}
-                group={group}
-                expanded={expandedId === group.id}
-                onToggle={() => setExpandedId((cur) => (cur === group.id ? null : group.id))}
-              />
-            ))}
-          </div>
-          {truncated && (
-            <p className="mt-2 text-xs italic text-muted-foreground">
-              Showing the first {FETCH_LIMIT} of {total} circles. Search doesn't reach circles
-              beyond this page yet.
+        <FetchingDim isFetching={isFetching && !isLoading && !isError}>
+          {total === 0 ? (
+            <EmptyState
+              variant="page"
+              title="No circles yet."
+              description='Ask the relationship butler to create one (e.g. "group my family"); circles appear here as the butler organizes contacts into groups.'
+            />
+          ) : groups.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              No circles match "{search}".
             </p>
+          ) : (
+            <>
+              <div className="rounded-md border border-border">
+                {groups.map((group) => (
+                  <CircleRow
+                    key={group.id}
+                    group={group}
+                    expanded={expandedId === group.id}
+                    onToggle={() => setExpandedId((cur) => (cur === group.id ? null : group.id))}
+                  />
+                ))}
+              </div>
+              {truncated && (
+                <p className="mt-2 text-xs italic text-muted-foreground">
+                  Showing the first {FETCH_LIMIT} of {total} circles. Search doesn't reach circles
+                  beyond this page yet.
+                </p>
+              )}
+            </>
           )}
-        </>
+        </FetchingDim>
       )}
     </Page>
   );

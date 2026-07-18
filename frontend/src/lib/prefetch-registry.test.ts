@@ -10,10 +10,11 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/api/index.ts", () => ({
   getSession: vi.fn((id: string) => Promise.resolve({ data: { id } })),
   getApprovalDetail: vi.fn((id: string) => Promise.resolve({ data: { id } })),
+  getIngestionEvent: vi.fn((id: string) => Promise.resolve({ data: { id } })),
   getTimeline: vi.fn((params: unknown) => Promise.resolve({ data: [], meta: { params } })),
 }));
 
-import { getApprovalDetail, getSession, getTimeline } from "@/api/index.ts";
+import { getApprovalDetail, getIngestionEvent, getSession, getTimeline } from "@/api/index.ts";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import { resolvePrefetchTarget } from "./prefetch-registry";
 
@@ -44,6 +45,16 @@ describe("resolvePrefetchTarget", () => {
 
     target!.queryFn();
     expect(getTimeline).toHaveBeenCalledWith({ limit: 50 });
+  });
+
+  it("maps an ingestion drawer URL to the EventDrawer detail query", () => {
+    const target = resolvePrefetchTarget("/ingestion?event=req-123");
+    expect(target).not.toBeNull();
+    expect(target!.queryKey).toEqual(["ingestion", "events", "req-123", "detail"]);
+    expect(target!.staleTime).toBe(POLL_BUS_RECONCILE_MS);
+
+    target!.queryFn();
+    expect(getIngestionEvent).toHaveBeenCalledWith("req-123");
   });
 
   it("strips query-string/hash before matching", () => {

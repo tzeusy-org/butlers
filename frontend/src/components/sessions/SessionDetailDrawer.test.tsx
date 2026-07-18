@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 
 import { ApiError } from "@/api/client";
+import type { SessionSummary } from "@/api/types";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { useGlobalSessionDetail } from "@/hooks/use-sessions";
 
@@ -39,6 +40,22 @@ const SESSION_DETAIL = {
   complexity: null,
   resolution_source: null,
   process_log: null,
+};
+
+const SESSION_SUMMARY: SessionSummary = {
+  id: "sess-123",
+  butler: "switchboard",
+  prompt: "Summarize today's routing failures",
+  trigger_source: "telegram",
+  request_id: null,
+  success: true,
+  started_at: "2026-02-13T00:00:00Z",
+  completed_at: "2026-02-13T00:00:02Z",
+  duration_ms: 1530,
+  input_tokens: 100,
+  output_tokens: 200,
+  model: "claude-3-5-sonnet",
+  complexity: null,
 };
 
 function setQueryState(state: Partial<UseSessionDetailResult>) {
@@ -97,7 +114,27 @@ describe("SessionDetailDrawer", () => {
 
     renderDrawer();
 
-    expect(vi.mocked(useGlobalSessionDetail)).toHaveBeenCalledWith("sess-123");
+    expect(vi.mocked(useGlobalSessionDetail)).toHaveBeenCalledWith("sess-123", undefined);
+  });
+
+  it("passes the selected list row as a detail-query seed", () => {
+    setQueryState({
+      data: { data: SESSION_DETAIL, meta: {} },
+    });
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <SessionDetailDrawer
+            sessionId="sess-123"
+            seed={SESSION_SUMMARY}
+            onClose={() => {}}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(vi.mocked(useGlobalSessionDetail)).toHaveBeenCalledWith("sess-123", SESSION_SUMMARY);
   });
 
   it("renders overlay on open, keeps close behavior, and emits no ref warning", () => {

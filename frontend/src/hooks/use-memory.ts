@@ -31,6 +31,7 @@ import {
   forgetRelationshipEntity,
 } from "@/api/index.ts";
 import type {
+  ApiResponse,
   CreateEntityInfoRequest,
   EntityDetailParams,
   EntityParams,
@@ -38,10 +39,17 @@ import type {
   Fact,
   FactParams,
   MemoryInspectParams,
+  PaginatedResponse,
   RuleParams,
   UpdateEntityRequest,
   UpdateRetentionPoliciesRequest,
 } from "@/api/types.ts";
+import {
+  rollbackLists,
+  snapshotAndUpdateQueries,
+  type ListSnapshot,
+  useOptimisticMutation,
+} from "@/hooks/use-optimistic-mutation";
 
 /** Fetch aggregated memory statistics. */
 export function useMemoryStats() {
@@ -111,14 +119,46 @@ export function useFact(factId: string | null) {
  * (active vs fading facts) do not go stale. bu-awo8k.3, bu-3mxat.
  */
 export function useConfirmFact() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation<ApiResponse<Fact>, string, ListSnapshot>({
     mutationFn: (factId: string) => confirmFact(factId),
-    onSuccess: (_, factId) => {
-      void queryClient.invalidateQueries({ queryKey: ["memory-fact", factId] });
-      void queryClient.invalidateQueries({ queryKey: ["memory-facts"] });
-      void queryClient.invalidateQueries({ queryKey: ["memory-stats"] });
+    cancelQueryKeys: (factId) => [
+      ["memory-fact", factId],
+      ["memory-facts"],
+      ["memory-stats"],
+    ],
+    applyOptimisticUpdate: (factId, queryClient) => {
+      // The precise server timestamp reconciles on settle; a client timestamp
+      // is sufficient to make the commit footer reflect the re-ink immediately.
+      const confirmedAt = new Date().toISOString();
+      const detailSnapshot = snapshotAndUpdateQueries<ApiResponse<Fact>>(
+        queryClient,
+        ["memory-fact", factId],
+        (current) =>
+          current
+            ? { ...current, data: { ...current.data, last_confirmed_at: confirmedAt } }
+            : current,
+      );
+      const listSnapshot = snapshotAndUpdateQueries<PaginatedResponse<Fact>>(
+        queryClient,
+        ["memory-facts"],
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: current.data.map((fact) =>
+                  fact.id === factId ? { ...fact, last_confirmed_at: confirmedAt } : fact,
+                ),
+              }
+            : current,
+      );
+      return [...detailSnapshot, ...listSnapshot];
     },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: (factId) => [
+      ["memory-fact", factId],
+      ["memory-facts"],
+      ["memory-stats"],
+    ],
   });
 }
 
@@ -129,14 +169,41 @@ export function useConfirmFact() {
  * facts drop, the headline numbers stay honest). bu-awo8k.4, bu-3mxat.
  */
 export function useRetractFact() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation<ApiResponse<Fact>, string, ListSnapshot>({
     mutationFn: (factId: string) => retractFact(factId),
-    onSuccess: (_, factId) => {
-      void queryClient.invalidateQueries({ queryKey: ["memory-fact", factId] });
-      void queryClient.invalidateQueries({ queryKey: ["memory-facts"] });
-      void queryClient.invalidateQueries({ queryKey: ["memory-stats"] });
+    cancelQueryKeys: (factId) => [
+      ["memory-fact", factId],
+      ["memory-facts"],
+      ["memory-stats"],
+    ],
+    applyOptimisticUpdate: (factId, queryClient) => {
+      const detailSnapshot = snapshotAndUpdateQueries<ApiResponse<Fact>>(
+        queryClient,
+        ["memory-fact", factId],
+        (current) =>
+          current
+            ? { ...current, data: { ...current.data, validity: "retracted" } }
+            : current,
+      );
+      const listSnapshot = snapshotAndUpdateQueries<PaginatedResponse<Fact>>(
+        queryClient,
+        ["memory-facts"],
+        // A fact that was active before a retraction cannot have been present
+        // in a retracted-only cache. Removing it keeps all active/default list
+        // variants truthful until the settled invalidation rehydrates them.
+        (current) =>
+          current
+            ? { ...current, data: current.data.filter((fact) => fact.id !== factId) }
+            : current,
+      );
+      return [...detailSnapshot, ...listSnapshot];
     },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: (factId) => [
+      ["memory-fact", factId],
+      ["memory-facts"],
+      ["memory-stats"],
+    ],
   });
 }
 

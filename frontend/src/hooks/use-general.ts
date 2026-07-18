@@ -2,7 +2,7 @@
  * TanStack Query hooks for the General butler and Switchboard APIs.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import {
   getGeneralCollections,
@@ -13,10 +13,19 @@ import {
   setButlerEligibility,
 } from "@/api/index.ts";
 import type {
+  ApiResponse,
   GeneralCollectionsParams,
   GeneralEntitiesParams,
+  RegistryEntry,
   RoutingLogParams,
+  SetEligibilityResponse,
 } from "@/api/index.ts";
+import {
+  rollbackLists,
+  snapshotAndUpdateQueries,
+  type ListSnapshot,
+  useOptimisticMutation,
+} from "@/hooks/use-optimistic-mutation";
 
 /** Fetch the switchboard routing log. */
 export function useRoutingLog(params?: RoutingLogParams) {
@@ -38,14 +47,30 @@ export function useRegistry() {
 
 /** Mutation to set a butler's eligibility state. */
 export function useSetEligibility() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+  return useOptimisticMutation<
+    ApiResponse<SetEligibilityResponse>,
+    { name: string; state: string },
+    ListSnapshot
+  >({
     mutationFn: ({ name, state }: { name: string; state: string }) =>
       setButlerEligibility(name, state),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["switchboard-registry"] });
-    },
+    cancelQueryKeys: [["switchboard-registry"]],
+    applyOptimisticUpdate: ({ name, state }, queryClient) =>
+      snapshotAndUpdateQueries<ApiResponse<RegistryEntry[]>>(
+        queryClient,
+        ["switchboard-registry"],
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: current.data.map((entry) =>
+                  entry.name === name ? { ...entry, eligibility_state: state } : entry,
+                ),
+              }
+            : current,
+      ),
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: [["switchboard-registry"]],
   });
 }
 

@@ -6,11 +6,18 @@
  * runtime policy document, not an IngestionRule row.
  */
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import { getChannelDefault, updateChannelDefault } from "@/api/index.ts";
 import type { ChannelDefaultUpdate } from "@/api/index.ts";
+import type { ChannelDefaultEntry } from "@/api/types.ts";
 import { ingestionRuleKeys } from "@/hooks/use-ingestion-rules";
+import {
+  rollbackLists,
+  snapshotAndUpdateQueries,
+  type ListSnapshot,
+  useOptimisticMutation,
+} from "@/hooks/use-optimistic-mutation";
 
 // ---------------------------------------------------------------------------
 // Query key factory
@@ -46,13 +53,28 @@ export function useChannelDefault(channel: string, options?: { enabled?: boolean
 
 /** Upsert a channel's default policy. Invalidates that channel's cache on success. */
 export function useUpdateChannelDefault() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation<
+    ChannelDefaultEntry,
+    { channel: string; body: ChannelDefaultUpdate },
+    ListSnapshot
+  >({
     mutationFn: ({ channel, body }: { channel: string; body: ChannelDefaultUpdate }) =>
       updateChannelDefault(channel, body),
-    onSuccess: (_data, { channel }) => {
-      queryClient.invalidateQueries({ queryKey: channelDefaultKeys.detail(channel) });
-      queryClient.invalidateQueries({ queryKey: ingestionRuleKeys.all });
-    },
+    cancelQueryKeys: ({ channel }) => [channelDefaultKeys.detail(channel), ingestionRuleKeys.all],
+    applyOptimisticUpdate: ({ channel, body }, queryClient) =>
+      snapshotAndUpdateQueries<ChannelDefaultEntry>(
+        queryClient,
+        channelDefaultKeys.detail(channel),
+        (current) =>
+          current
+            ? {
+                ...current,
+                default_policy_json: body.default_policy_json,
+                updated_by: body.updated_by ?? current.updated_by,
+              }
+            : current,
+      ),
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: ({ channel }) => [channelDefaultKeys.detail(channel), ingestionRuleKeys.all],
   });
 }
