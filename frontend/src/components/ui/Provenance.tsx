@@ -159,7 +159,6 @@ export function ProvenanceMarks({
       {verified != null && (
         <span
           aria-label={verified ? "Verified" : "Unverified"}
-          title={verified ? "Verified" : "Unverified"}
           className="font-mono text-[10px] leading-none"
           style={{ color: verified ? "var(--green)" : "var(--dim)" }}
           data-verified={verified ? "true" : "false"}

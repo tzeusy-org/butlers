@@ -190,7 +190,6 @@ export function ButlerMark({ name, tone = "neutral", size = 16, className, type 
     <span
       style={{ ...baseStyle, ...toneStyle }}
       className={className}
-      title={type === "staffer" ? `${name} (staffer)` : name}
       aria-label={type === "staffer" ? `${name} (staffer)` : name}
     >
       {initial}

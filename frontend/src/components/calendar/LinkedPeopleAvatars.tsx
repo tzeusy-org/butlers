@@ -20,7 +20,7 @@ export interface LinkedPeopleAvatarsProps {
  * Compact overlapping avatar cluster for the people linked to an existing
  * calendar event (bu-qs64f). Rendered on event pills so linked-people avatars
  * persist for existing events, not only at creation time in the dialog. The
- * full name list is exposed via the container `title` for hover/AT.
+ * full name list is exposed through the container's accessible name.
  *
  * Renders nothing when there are no linked people (never an empty box).
  */
@@ -39,7 +39,6 @@ export function LinkedPeopleAvatars({
     <span
       data-testid="linked-people-avatars"
       className={cn("inline-flex shrink-0 items-center", className)}
-      title={fullList}
       aria-label={`Linked people: ${fullList}`}
     >
       {shown.map((person, idx) => (

@@ -226,11 +226,10 @@ describe("Sidebar", () => {
     it("shows footer status text in expanded mode", () => {
       renderExpanded();
 
-      const footerEl = Array.from(container.querySelectorAll("[title]")).find(
-        (el) => el.getAttribute("title") === "$26.27 today",
-      );
+      const footerEl = container.querySelector('[aria-label="$26.27 today"]');
       expect(footerEl).toBeTruthy();
       expect(footerEl?.textContent).toContain("$26.27 today");
+      expect(footerEl?.getAttribute("title")).toBeNull();
     });
 
     it("auto-expands Health into its overview and six ledger destinations for a direct sub-page visit", () => {
@@ -490,7 +489,7 @@ describe("Sidebar", () => {
       expect(amberDots.length).toBeGreaterThan(0);
     });
 
-    it("footer title attribute contains status summary", () => {
+    it("footer aria-label contains the status summary without a duplicate title", () => {
       setButlersState({
         data: {
           data: [{ name: "relationship", status: "degraded", port: 40102, type: "butler" as const, sessions_24h: 0 }],
@@ -499,14 +498,15 @@ describe("Sidebar", () => {
       });
       render();
 
-      const footerEl = Array.from(container.querySelectorAll("[title]")).find((el) => {
-        const title = el.getAttribute("title") ?? "";
-        return title.includes("degraded") || title.includes("ok") || title.includes("error");
+      const footerEl = Array.from(container.querySelectorAll("[aria-label]")).find((el) => {
+        const label = el.getAttribute("aria-label") ?? "";
+        return label.includes("degraded") || label.includes("ok") || label.includes("error");
       });
       expect(footerEl).toBeTruthy();
+      expect(footerEl?.getAttribute("title")).toBeNull();
     });
 
-    it("shows neutral dot and loading title while butlers query is loading", () => {
+    it("shows neutral dot and loading aria-label while butlers query is loading", () => {
       setButlersState({ isLoading: true });
       render();
 
@@ -519,14 +519,12 @@ describe("Sidebar", () => {
       const neutralDot = container.querySelector(".bg-muted-foreground\\/40");
       expect(neutralDot).toBeTruthy();
 
-      // Title reflects loading state
-      const footerEl = Array.from(container.querySelectorAll("[title]")).find(
-        (el) => el.getAttribute("title") === "Loading butlers",
-      );
+      const footerEl = container.querySelector('[aria-label="Loading butlers"]');
       expect(footerEl).toBeTruthy();
+      expect(footerEl?.getAttribute("title")).toBeNull();
     });
 
-    it("shows neutral dot and error title when butlers query fails", () => {
+    it("shows neutral dot and error aria-label when butlers query fails", () => {
       setButlersState({ isError: true, error: new Error("network error") });
       render();
 
@@ -539,11 +537,9 @@ describe("Sidebar", () => {
       const neutralDot = container.querySelector(".bg-muted-foreground\\/40");
       expect(neutralDot).toBeTruthy();
 
-      // Title reflects error state
-      const footerEl = Array.from(container.querySelectorAll("[title]")).find(
-        (el) => el.getAttribute("title") === "Butlers query failed",
-      );
+      const footerEl = container.querySelector('[aria-label="Butlers query failed"]');
       expect(footerEl).toBeTruthy();
+      expect(footerEl?.getAttribute("title")).toBeNull();
     });
 
     it("shows red dot when any butler has error status (success path)", () => {
@@ -555,12 +551,13 @@ describe("Sidebar", () => {
       });
       render();
 
-      // Footer title shows error count
-      const footerEl = Array.from(container.querySelectorAll("[title]")).find((el) => {
-        const title = el.getAttribute("title") ?? "";
-        return title.includes("error");
+      // Footer accessible name shows error count without a duplicate native title.
+      const footerEl = Array.from(container.querySelectorAll("[aria-label]")).find((el) => {
+        const label = el.getAttribute("aria-label") ?? "";
+        return label.includes("error");
       });
       expect(footerEl).toBeTruthy();
+      expect(footerEl?.getAttribute("title")).toBeNull();
     });
   });
 

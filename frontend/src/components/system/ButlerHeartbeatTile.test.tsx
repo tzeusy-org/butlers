@@ -265,6 +265,14 @@ describe("ButlerHeartbeatTile -- running/idle butlers", () => {
     expect(healthyDots).toBe(2);
   });
 
+  it("announces liveness without duplicate native titles on the status dots", () => {
+    const html = render();
+    expect(html).toContain('aria-label="Liveness: idle"');
+    expect(html).toContain('aria-label="Liveness: running"');
+    expect(html).not.toContain('title="idle"');
+    expect(html).not.toContain('title="running"');
+  });
+
   it("shows the butler count in the header", () => {
     const html = render();
     expect(html).toContain("2 butlers");

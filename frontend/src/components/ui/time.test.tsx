@@ -56,6 +56,7 @@ function parseTime(html: string) {
   return {
     datetime: el.getAttribute("datetime"),
     title: el.getAttribute("title"),
+    ariaLabel: el.getAttribute("aria-label"),
     text: el.textContent ?? "",
     className: el.getAttribute("class"),
   }
@@ -944,6 +945,14 @@ describe("mode=clock-24h-mono (bu-hb7dh.4)", () => {
       render({ value: FIXED_ISO, mode: "clock-24h-mono" }, SGT),
     )
     expect(datetime).toBe(FIXED_DATE.toISOString())
+  })
+
+  it("does not expose the stale value timestamp as the live clock's aria-label", () => {
+    const { ariaLabel, title } = parseTime(
+      render({ value: FIXED_ISO, mode: "clock-24h-mono" }, SGT),
+    )
+    expect(ariaLabel).toBeNull()
+    expect(title).toBe(FIXED_DATE.toISOString())
   })
 
   it("live: shows correct current time immediately after mount via useState init", async () => {

@@ -96,7 +96,6 @@ function CapabilityProbePip({ status }: { status: CapabilityStatus }) {
       <span
         role="img"
         aria-label={label}
-        title={label}
         className="font-mono text-[11px] font-normal leading-none tabular-nums shrink-0 inline-block w-4 text-center"
         style={{ color: "var(--dim,oklch(0.55_0_0))" }}
       >
@@ -110,7 +109,6 @@ function CapabilityProbePip({ status }: { status: CapabilityStatus }) {
     <span
       role="img"
       aria-label={label}
-      title={label}
       className="font-mono text-[11px] font-normal leading-none tabular-nums shrink-0 inline-block w-4 text-center"
       style={{ color: ok ? "var(--green,oklch(0.65_0.15_145))" : "var(--red)" }}
     >

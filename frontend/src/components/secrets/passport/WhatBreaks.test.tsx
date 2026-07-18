@@ -264,3 +264,25 @@ describe("WhatBreaksRow: ProviderMark (bu-sd0l7.2 reunification)", () => {
     expect(screen.getByLabelText("calendar").getAttribute("data-provider-mark")).toBe("true")
   })
 })
+
+describe("WhatBreaksRow: capability probe glyph", () => {
+  it("uses the probe result as an accessible name without a duplicate title", () => {
+    render(
+      <WhatBreaksRow
+        entry={{
+          butler: "calendar",
+          feature: "event sync",
+          severity: "medium",
+          required_scopes: [],
+          capability: "calendar",
+        }}
+        capabilities={[{
+          capability: "calendar",
+          test: { ok: true, at: "2026-05-03T00:00:00Z" },
+        }]}
+      />,
+    )
+    const pip = screen.getByLabelText("calendar: ok")
+    expect(pip.getAttribute("title")).toBeNull()
+  })
+})
