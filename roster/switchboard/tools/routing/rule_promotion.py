@@ -70,10 +70,12 @@ Bounded scan windows
 The candidate scan is bounded to ``routing_verdict_log`` rows with
 ``verdict_source='llm'`` within a lookback window (default 30 days, via the
 ``ix_routing_verdict_log_llm_only`` partial index), not the full table
-history. Per-candidate evidence lookups are ``LIMIT``-bounded to the
-configured threshold and use the ``(sender_key, source_channel,
-decided_at DESC)`` index. Nothing in this module does an unbounded table
-scan on every run.
+history. Pending promotion suggestions form a separate, indexed lifecycle
+worklist so they can still be reconciled if their original evidence ages out
+of that lookback. Per-candidate evidence lookups are ``LIMIT``-bounded to the
+configured threshold and use the ``(sender_key, source_channel, decided_at
+DESC)`` index. Nothing in this module scans the full verdict history on every
+run.
 """
 
 from __future__ import annotations
@@ -110,6 +112,12 @@ DEFAULT_LOOKBACK_WINDOW = timedelta(days=30)
 """Bounds the candidate-sender scan to recent LLM verdicts only."""
 
 _ROUTE_TO_PREFIX = "route_to:"
+
+# A pending promotion becomes obsolete when the production policy evaluator
+# finds an enabled rule that already takes precedence for the same source.
+# Keep this system actor explicit in the durable audit row; it is neither an
+# owner dismissal nor an auto-applied promotion.
+SUPERSEDED_BY_COVERAGE_ACTOR = "system:rule_promotion_trigger"
 
 _AUTOMATED_LOCAL_PART_PREFIXES = ("noreply", "no-reply", "notifications", "alerts")
 
@@ -269,6 +277,7 @@ class PromotionTriggerResult:
     candidates_scanned: int = 0
     suggestions_created: int = 0
     suggestions_bumped: int = 0
+    suggestions_superseded: int = 0
     skipped_existing_rule: int = 0
     skipped_insufficient_evidence: int = 0
     skipped_no_agreement: int = 0
@@ -282,6 +291,7 @@ class PromotionTriggerResult:
             "candidates_scanned": self.candidates_scanned,
             "suggestions_created": self.suggestions_created,
             "suggestions_bumped": self.suggestions_bumped,
+            "suggestions_superseded": self.suggestions_superseded,
             "skipped_existing_rule": self.skipped_existing_rule,
             "skipped_insufficient_evidence": self.skipped_insufficient_evidence,
             "skipped_no_agreement": self.skipped_no_agreement,
@@ -298,16 +308,22 @@ class PromotionTriggerResult:
 
 
 async def _fetch_candidates(pool: asyncpg.Pool, *, since: datetime) -> list[asyncpg.Record]:
-    """Distinct (sender_key, source_channel) pairs with recent LLM verdicts.
+    """Distinct (sender_key, source_channel) pairs that need reconciliation.
 
-    Bounded by the lookback window and the ``verdict_source='llm'`` partial
-    index — not a full-table scan.
+    Recent LLM verdicts drive new promotions and evidence bumps, bounded by
+    the lookback window and the ``verdict_source='llm'`` partial index. The
+    pending-promotion worklist uses its own partial unique index so an older
+    still-actionable suggestion remains eligible for a coverage recheck.
     """
     return await pool.fetch(
         """
-        SELECT DISTINCT sender_key, source_channel
+        SELECT sender_key, source_channel
         FROM switchboard.routing_verdict_log
         WHERE verdict_source = 'llm' AND decided_at >= $1
+        UNION
+        SELECT sender_key, source_channel
+        FROM switchboard.rule_promotion_suggestions
+        WHERE status = 'pending_review' AND suggestion_kind = 'promotion'
         """,
         since,
     )
@@ -493,6 +509,52 @@ async def _bump_suggestion(
     )
 
 
+async def _supersede_suggestion(pool: asyncpg.Pool, *, suggestion_id: Any) -> bool:
+    """Mark a still-pending suggestion obsolete after a coverage recheck.
+
+    The status predicate makes this transition race-safe: a concurrent owner
+    confirm/dismiss (or another trigger run) cannot be overwritten once it has
+    made the suggestion terminal.
+    """
+    result = await pool.execute(
+        """
+        UPDATE switchboard.rule_promotion_suggestions
+        SET status = 'superseded',
+            decided_at = now(),
+            decided_by = $1
+        WHERE id = $2
+          AND status = 'pending_review'
+        """,
+        SUPERSEDED_BY_COVERAGE_ACTOR,
+        suggestion_id,
+    )
+    return result == "UPDATE 1"
+
+
+async def _evaluate_active_rule_coverage(
+    pool: asyncpg.Pool,
+    evaluator: _CoverageEvaluator,
+    *,
+    sender_key: str,
+    source_channel: str,
+    evidence_rows: Sequence[asyncpg.Record],
+) -> tuple[bool, list[dict[str, str]]]:
+    """Evaluate current policy coverage with representative evidence headers.
+
+    This is the same production evaluator used for initial suppression, kept in
+    one helper so a pending suggestion is retired by exactly the same matching
+    semantics that prevent a new suggestion from being proposed.
+    """
+    evidence_headers = await _fetch_evidence_headers(pool, evidence_rows)
+    coverage_envelope = IngestionEnvelope(
+        sender_address=sender_key,
+        source_channel=source_channel,
+        headers=evidence_headers[0] if evidence_headers else {},
+    )
+    decision = evaluator.evaluate(coverage_envelope)
+    return decision.action != "pass_through", evidence_headers
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -543,6 +605,23 @@ async def _process_candidate(
         pool, sender_key=sender_key, source_channel=source_channel
     )
     if pending is not None:
+        # A covering rule may have been created since the suggestion was
+        # proposed. Recheck before adding more evidence so the approval queue
+        # does not keep presenting an already-obsolete action.
+        latest_evidence = await _fetch_latest_llm_verdicts(
+            pool, sender_key=sender_key, source_channel=source_channel, limit=1
+        )
+        is_covered, _ = await _evaluate_active_rule_coverage(
+            pool,
+            evaluator,
+            sender_key=sender_key,
+            source_channel=source_channel,
+            evidence_rows=latest_evidence,
+        )
+        if is_covered:
+            if await _supersede_suggestion(pool, suggestion_id=pending["id"]):
+                return "suggestions_superseded"
+            return "skipped_race_conflict"
         return await _bump_existing_suggestion(
             pool, pending, sender_key=sender_key, source_channel=source_channel
         )
@@ -568,20 +647,19 @@ async def _process_candidate(
     ):
         return "skipped_insufficient_evidence"
 
-    evidence_headers = await _fetch_evidence_headers(pool, evidence_rows)
-
     # "No enabled ingestion_rules row already covers it" — reuse the real
     # production evaluator (scope='global') so this check stays in lockstep
     # with actual routing behavior instead of a hand-rolled duplicate of the
     # rule-matching logic. The most recent evidence event's headers are used
     # as a representative sample for header_condition rule coverage checks.
-    coverage_envelope = IngestionEnvelope(
-        sender_address=sender_key,
+    is_covered, evidence_headers = await _evaluate_active_rule_coverage(
+        pool,
+        evaluator,
+        sender_key=sender_key,
         source_channel=source_channel,
-        headers=evidence_headers[0] if evidence_headers else {},
+        evidence_rows=evidence_rows,
     )
-    decision = evaluator.evaluate(coverage_envelope)
-    if decision.action != "pass_through":
+    if is_covered:
         return "skipped_existing_rule"
 
     is_automated = compute_is_clearly_automated(sender_key, evidence_headers)

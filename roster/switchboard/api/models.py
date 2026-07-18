@@ -1071,6 +1071,7 @@ class RulePromotionStats(BaseModel):
     suggestions_pending: int = 0
     suggestions_confirmed: int = 0
     suggestions_dismissed: int = 0
+    suggestions_superseded: int = 0
     # Live promoted rules today (created_by='promotion', enabled, not deleted).
     promoted_rules_active: int = 0
     # Events routed by a promoted rule (verdict_source='rule'); each removed one

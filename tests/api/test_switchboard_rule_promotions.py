@@ -151,6 +151,7 @@ async def test_confirm_invalid_id_is_422(app):
 
 async def test_dismiss_pending_suggestion(app):
     _app, mock_pool = _app_with_mock(app, fetchrow_result=_make_row({"status": "pending_review"}))
+    mock_pool.execute = AsyncMock(return_value="UPDATE 1")
     async with _client(app) as client:
         resp = await client.post(
             "/api/switchboard/rule-promotion-suggestions/"
@@ -182,6 +183,23 @@ async def test_dismiss_already_decided_is_409(app):
             json={},
         )
     assert resp.status_code == 409
+
+
+async def test_dismiss_does_not_overwrite_a_concurrent_supersede(app):
+    """The owner dismissal must lose cleanly if the trigger decides first."""
+    _app, mock_pool = _app_with_mock(app, fetchrow_result=_make_row({"status": "pending_review"}))
+    mock_pool.execute = AsyncMock(return_value="UPDATE 0")
+
+    async with _client(app) as client:
+        resp = await client.post(
+            "/api/switchboard/rule-promotion-suggestions/"
+            "11111111-1111-1111-1111-111111111111/dismiss",
+            json={},
+        )
+
+    assert resp.status_code == 409
+    update_sql = mock_pool.execute.await_args.args[0]
+    assert "AND status = 'pending_review'" in update_sql
 
 
 async def test_rule_enabled_toggles_minted_rule(app):
@@ -246,6 +264,7 @@ async def test_stats_happy_path(app):
         _make_row({"suggestion_kind": "promotion", "status": "pending_review", "n": 3}),
         _make_row({"suggestion_kind": "promotion", "status": "confirmed", "n": 7}),
         _make_row({"suggestion_kind": "promotion", "status": "dismissed", "n": 2}),
+        _make_row({"suggestion_kind": "promotion", "status": "superseded", "n": 4}),
         _make_row({"suggestion_kind": "demotion", "status": "pending_review", "n": 1}),
     ]
     ids = [_make_row({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
@@ -264,6 +283,7 @@ async def test_stats_happy_path(app):
     assert d["suggestions_pending"] == 3
     assert d["suggestions_confirmed"] == 7
     assert d["suggestions_dismissed"] == 2
+    assert d["suggestions_superseded"] == 4
     assert d["demotion_pending"] == 1
     assert d["promoted_rules_active"] == 5
     assert d["promoted_rule_matches"] == 128

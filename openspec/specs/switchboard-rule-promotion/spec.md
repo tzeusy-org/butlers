@@ -137,7 +137,8 @@ discriminates the kind of suggestion independent of its lifecycle `status`),
 (TIMESTAMPTZ), `is_clearly_automated` (BOOLEAN, default FALSE), `status`
 (TEXT, one of `pending_review`, `confirmed`, `dismissed`, `superseded` — a
 pure suggestion lifecycle, identical in shape for both `suggestion_kind`
-values; see "Scenario: `superseded` has no defined trigger yet" below),
+values; see "Scenario: Pending promotion becomes superseded when a rule now
+covers it" below),
 `target_rule_id` (UUID, nullable, FK to `ingestion_rules`; the existing rule
 a `demotion` suggestion proposes to revoke), `created_rule_id` (UUID,
 nullable, FK to `ingestion_rules`; the *new* rule minted when a `promotion`
@@ -185,15 +186,19 @@ demotion suggestion can exist per rule at a time.
   `proposed_action` NULL or an empty string
 - **THEN** the CHECK constraint MUST reject the insert
 
-#### Scenario: `superseded` has no defined trigger yet
+#### Scenario: Pending promotion becomes superseded when a rule now covers it
 
-- **WHEN** any currently-specified flow (promotion trigger, confirm, dismiss,
-  or demotion spot-check) runs to completion
-- **THEN** no suggestion's `status` MUST be set to `superseded` —
-  `superseded` is reserved, CHECK-accepted vocabulary with no trigger
-  condition defined by this spec; defining that trigger is tracked
-  separately (bu-2djc4) and MUST NOT be inferred or implemented ahead of
-  that decision
+- **WHEN** a `suggestion_kind='promotion'` suggestion remains
+  `pending_review` and a later promotion-trigger run finds an enabled
+  `ingestion_rules` row that covers the same sender/channel
+- **THEN** the trigger MUST transition that suggestion to `status='superseded'`
+  rather than bump its evidence or mint another rule
+- **AND** it MUST set `decided_at` and the auditable
+  `decided_by='system:rule_promotion_trigger'` marker
+- **AND** the transition MUST be conditional on the row still being
+  `pending_review`, so a concurrent confirm or dismiss is never overwritten
+- **AND** a superseded suggestion MUST not appear in the pending-approval
+  surface, but MUST remain visible through the promotion lifecycle count
 
 ### Requirement: Clearly-Automated Sender Classification
 
@@ -335,4 +340,3 @@ promoted rule based on spot-check disagreement alone.
   confirmation of the demotion suggestion has occurred
 - **THEN** the rule MUST remain `enabled` and continue to be evaluated
   normally
-

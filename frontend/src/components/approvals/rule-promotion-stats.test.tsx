@@ -21,6 +21,7 @@ const STATS: RulePromotionStats = {
   suggestions_pending: 3,
   suggestions_confirmed: 7,
   suggestions_dismissed: 2,
+  suggestions_superseded: 4,
   promoted_rules_active: 5,
   promoted_rule_matches: 128,
   llm_sessions_avoided_estimate: 128,
@@ -41,6 +42,8 @@ describe("RulePromotionStatsTile", () => {
     // Promoted rules + suggestion lifecycle
     expect(screen.getByText("Promoted rules")).toBeTruthy();
     expect(screen.getByText("Pending")).toBeTruthy();
+    expect(screen.getByText("Superseded")).toBeTruthy();
+    expect(screen.getByText("4")).toBeTruthy();
     expect(screen.getByText("Drifting rules")).toBeTruthy();
     // The estimate caveat is present (honest labelling).
     expect(screen.getByText(/Sessions avoided is an estimate/)).toBeTruthy();

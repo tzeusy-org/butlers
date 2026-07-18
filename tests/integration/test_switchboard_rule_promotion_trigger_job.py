@@ -422,6 +422,98 @@ async def test_repeated_evidence_bumps_existing_pending_suggestion(pool: asyncpg
     assert rows[0]["evidence_count"] == 4
 
 
+async def test_pending_suggestion_is_superseded_when_a_manual_rule_now_covers_it(
+    pool: asyncpg.Pool,
+) -> None:
+    """A coverage recheck retires a stale pending card without minting another rule."""
+    sender_key = "manual-rule@supersede-me.com"
+    base = _now() - timedelta(days=3)
+    timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
+    await _seed_evidence(
+        pool,
+        sender_key=sender_key,
+        source_channel="email",
+        timestamps=timestamps,
+        verdict_action="route_to",
+        verdict_target="finance",
+    )
+
+    initial = await run_rule_promotion_trigger(pool)
+    assert initial["suggestions_created"] == 1
+
+    await _insert_enabled_rule(
+        pool,
+        rule_type="sender_address",
+        condition={"address": sender_key},
+        action="skip",
+        priority=5,
+    )
+
+    superseded = await run_rule_promotion_trigger(pool)
+    assert superseded["suggestions_superseded"] == 1
+    row = await pool.fetchrow(
+        "SELECT status, decided_at, decided_by, created_rule_id "
+        "FROM rule_promotion_suggestions WHERE sender_key = $1",
+        sender_key,
+    )
+    assert row is not None
+    assert row["status"] == "superseded"
+    assert row["decided_at"] is not None
+    assert row["decided_by"] == "system:rule_promotion_trigger"
+    assert row["created_rule_id"] is None
+
+    # A later scan sees the active rule and leaves the terminal audit row intact.
+    repeated = await run_rule_promotion_trigger(pool)
+    assert repeated["suggestions_superseded"] == 0
+    # The module-scoped migrated DB retains prior fixtures, so other covered
+    # candidates can contribute too; this sender must at least be suppressed.
+    assert repeated["skipped_existing_rule"] >= 1
+    rows = await pool.fetch(
+        "SELECT status FROM rule_promotion_suggestions WHERE sender_key = $1", sender_key
+    )
+    assert [row["status"] for row in rows] == ["superseded"]
+
+
+async def test_old_pending_suggestion_is_superseded_after_the_verdict_lookback(
+    pool: asyncpg.Pool,
+) -> None:
+    """Pending cards remain reconciliation candidates after their evidence ages out."""
+    sender_key = "old-pending@supersede-me.com"
+    base = _now() - timedelta(days=35)
+    timestamps = [base, base + timedelta(days=1), base + timedelta(days=2)]
+    await _seed_evidence(
+        pool,
+        sender_key=sender_key,
+        source_channel="email",
+        timestamps=timestamps,
+        verdict_action="route_to",
+        verdict_target="finance",
+    )
+
+    # Seed the pending card with a deliberately wider one-off scan, then use
+    # the normal 30-day window for the lifecycle reconciliation below.
+    initial = await run_rule_promotion_trigger(pool, lookback=timedelta(days=40))
+    assert initial["suggestions_created"] >= 1
+
+    await _insert_enabled_rule(
+        pool,
+        rule_type="sender_address",
+        condition={"address": sender_key},
+        action="skip",
+        priority=5,
+    )
+
+    superseded = await run_rule_promotion_trigger(pool)
+    row = await pool.fetchrow(
+        "SELECT status, decided_by FROM rule_promotion_suggestions WHERE sender_key = $1",
+        sender_key,
+    )
+    assert row is not None
+    assert superseded["suggestions_superseded"] >= 1
+    assert row["status"] == "superseded"
+    assert row["decided_by"] == "system:rule_promotion_trigger"
+
+
 async def test_insufficient_evidence_count_creates_nothing(pool: asyncpg.Pool) -> None:
     sender_key = "too-few@sparse-sender.com"
     base = _now() - timedelta(days=2)

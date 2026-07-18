@@ -3692,6 +3692,8 @@ async def get_rule_promotion_stats(
                     stats.suggestions_confirmed = n
                 elif status == "dismissed":
                     stats.suggestions_dismissed = n
+                elif status == "superseded":
+                    stats.suggestions_superseded = n
             elif kind == "demotion" and status == "pending_review":
                 stats.demotion_pending = n
     except Exception:
@@ -3830,7 +3832,7 @@ async def dismiss_rule_promotion_suggestion(
 
     now = datetime.datetime.now(datetime.UTC)
     cooldown_until = now + datetime.timedelta(days=body.cooldown_days)
-    await pool.execute(
+    result = await pool.execute(
         """
         UPDATE switchboard.rule_promotion_suggestions
         SET status = 'dismissed',
@@ -3839,12 +3841,16 @@ async def dismiss_rule_promotion_suggestion(
             decided_at = $3,
             decided_by = 'owner'
         WHERE id = $4
+          AND status = 'pending_review'
         """,
         body.reason,
         cooldown_until,
         now,
         sid,
     )
+    if result != "UPDATE 1":
+        raise HTTPException(status_code=409, detail="suggestion is no longer 'pending_review'")
+
     await emit_dashboard_audit(
         db,
         butler="switchboard",
