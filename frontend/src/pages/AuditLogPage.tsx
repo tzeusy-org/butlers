@@ -60,6 +60,8 @@ export default function AuditLogPage() {
   // predicates so a typed actor/action does not continuously re-query.
   const debouncedActor = useDebounce(filters.actor, FREE_TEXT_DEBOUNCE_MS);
   const debouncedAction = useDebounce(filters.action, FREE_TEXT_DEBOUNCE_MS);
+  const hasPendingFreeTextFilter =
+    debouncedActor !== filters.actor || debouncedAction !== filters.action;
 
   // `key` and `result` are also URL-only deep-link params (no filter-bar
   // input owns them), forwarded straight through.
@@ -105,6 +107,7 @@ export default function AuditLogPage() {
   const meta = auditResponse?.meta;
   const total = meta?.total ?? 0;
   const hasMore = meta?.has_more ?? false;
+  const isListRefreshing = !isLoading && (isFetching || hasPendingFreeTextFilter);
 
   // Pagination helpers
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -293,7 +296,7 @@ export default function AuditLogPage() {
       {/* Audit log table — dims (never blanks) while a filter/page change refetches */}
       <Card>
         <CardContent>
-          <FetchingDim isFetching={isFetching && !isLoading}>
+          <FetchingDim isFetching={isListRefreshing}>
             <AuditLogTable entries={entries} isLoading={isLoading} isError={isError} error={error} />
           </FetchingDim>
         </CardContent>

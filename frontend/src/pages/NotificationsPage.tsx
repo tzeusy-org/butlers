@@ -122,6 +122,7 @@ export default function NotificationsPage() {
   // Preserve the URL as the visible/shareable source of truth while avoiding
   // a network request for every keystroke in the butler filter.
   const debouncedButler = useDebounce(filters.butler, FREE_TEXT_DEBOUNCE_MS);
+  const hasPendingButlerFilter = debouncedButler !== filters.butler;
   // Track which notification IDs are pending individual acks for UX feedback
   const [pendingAckIds, setPendingAckIds] = useState<Set<string>>(new Set());
 
@@ -159,6 +160,8 @@ export default function NotificationsPage() {
     isFetching: notificationsFetching,
     isError: notificationsError,
   } = useNotifications(params);
+  const isNotificationsRefreshing =
+    !notificationsLoading && (notificationsFetching || hasPendingButlerFilter);
 
   // Mutation hooks
   const markReadMutation = useMarkNotificationRead();
@@ -443,7 +446,7 @@ export default function NotificationsPage() {
               Failed to load notifications. Please try refreshing the page.
             </p>
           ) : (
-            <FetchingDim isFetching={notificationsFetching}>
+            <FetchingDim isFetching={isNotificationsRefreshing}>
               <NotificationFeed
                 notifications={notifications}
                 isLoading={false}

@@ -60,12 +60,13 @@ import type {
   EntityFactsResponse,
   LinkedContactSummary,
   RelationshipEntityListResponse,
+  RelationshipEntitySummary,
+  RelationshipQueueEntry,
   RelationshipQueueResponse,
 } from "@/api/types.ts";
 import {
   rollbackLists,
   snapshotAndUpdateQueries,
-  type ListSnapshot,
   useOptimisticMutation,
 } from "@/hooks/use-optimistic-mutation";
 
@@ -389,6 +390,75 @@ function removeRelationshipEntityFromQueue(
   return { ...current, items, total: Math.max(0, current.total - (current.items.length - items.length)) };
 }
 
+interface ArchivedRelationshipEntityListItem {
+  queryKey: readonly unknown[];
+  entity: RelationshipEntitySummary;
+  index: number;
+}
+
+interface ArchivedRelationshipQueueItem {
+  queryKey: readonly unknown[];
+  entry: RelationshipQueueEntry;
+  index: number;
+}
+
+interface RelationshipEntityArchiveSnapshot {
+  listItems: ArchivedRelationshipEntityListItem[];
+  queueItems: ArchivedRelationshipQueueItem[];
+}
+
+/**
+ * Capture only the archived entity's inverse updates. A whole-prefix snapshot
+ * would resurrect a later successful concurrent archive when an earlier one
+ * fails and rolls back.
+ */
+function snapshotRelationshipEntityArchive(
+  queryClient: ReturnType<typeof useQueryClient>,
+  entityId: string,
+): RelationshipEntityArchiveSnapshot {
+  const listItems = queryClient
+    .getQueriesData<RelationshipEntityListResponse>({ queryKey: ["relationship-entities"] })
+    .flatMap(([queryKey, current]) => {
+      const index = current?.items.findIndex((entity) => entity.id === entityId);
+      if (current == null || index == null || index < 0) return [];
+      const entity = current.items[index];
+      return entity ? [{ queryKey, entity, index }] : [];
+    });
+  const queueItems = queryClient
+    .getQueriesData<RelationshipQueueResponse>({ queryKey: ["relationship-entity-queue"] })
+    .flatMap(([queryKey, current]) => {
+      const index = current?.items.findIndex((entry) => entry.entity_id === entityId);
+      if (current == null || index == null || index < 0) return [];
+      const entry = current.items[index];
+      return entry ? [{ queryKey, entry, index }] : [];
+    });
+  return { listItems, queueItems };
+}
+
+function rollbackRelationshipEntityArchive(
+  queryClient: ReturnType<typeof useQueryClient>,
+  snapshot: RelationshipEntityArchiveSnapshot,
+): void {
+  snapshot.listItems.forEach(({ queryKey, entity, index }) => {
+    queryClient.setQueryData<RelationshipEntityListResponse>(queryKey, (current) => {
+      if (current == null || current.items.some((item) => item.id === entity.id)) return current;
+      const items = [...current.items];
+      items.splice(Math.min(index, items.length), 0, entity);
+      return { ...current, items, total: current.total + 1 };
+    });
+  });
+  snapshot.queueItems.forEach(({ queryKey, entry, index }) => {
+    queryClient.setQueryData<RelationshipQueueResponse>(queryKey, (current) => {
+      if (current == null || current.items.some((item) => item.entity_id === entry.entity_id)) {
+        return current;
+      }
+      const items = [...current.items];
+      items.splice(Math.min(index, items.length), 0, entry);
+      return { ...current, items, total: current.total + 1 };
+    });
+  });
+}
+
 /** Promote an existing unidentified entity through the relationship API. */
 export function usePromoteRelationshipEntity() {
   const queryClient = useQueryClient();
@@ -441,26 +511,25 @@ export function useCreateRelationshipEntity() {
 
 /** Archive an entity through the relationship API. */
 export function useArchiveRelationshipEntity() {
-  return useOptimisticMutation<void, string, ListSnapshot>({
+  return useOptimisticMutation<void, string, RelationshipEntityArchiveSnapshot>({
     mutationFn: (entityId: string) => archiveRelationshipEntity(entityId),
     cancelQueryKeys: [
       ["relationship-entities"],
       ["relationship-entity-queue"],
     ],
     applyOptimisticUpdate: (entityId, queryClient) => {
-      const listSnapshot = snapshotAndUpdateQueries<RelationshipEntityListResponse>(
-        queryClient,
-        ["relationship-entities"],
+      const snapshot = snapshotRelationshipEntityArchive(queryClient, entityId);
+      queryClient.setQueriesData<RelationshipEntityListResponse>(
+        { queryKey: ["relationship-entities"] },
         (current) => removeRelationshipEntityFromList(current, entityId),
       );
-      const queueSnapshot = snapshotAndUpdateQueries<RelationshipQueueResponse>(
-        queryClient,
-        ["relationship-entity-queue"],
+      queryClient.setQueriesData<RelationshipQueueResponse>(
+        { queryKey: ["relationship-entity-queue"] },
         (current) => removeRelationshipEntityFromQueue(current, new Set([entityId])),
       );
-      return [...listSnapshot, ...queueSnapshot];
+      return snapshot;
     },
-    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    rollback: (snapshot, queryClient) => rollbackRelationshipEntityArchive(queryClient, snapshot),
     invalidateQueryKeys: (entityId) => [
       ["relationship-entities"],
       ["relationship-entity-queue"],

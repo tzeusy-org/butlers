@@ -46,6 +46,7 @@ import type {
   CalendarWorkspaceParams,
   CalendarWorkspaceReadResponse,
   CalendarWorkspaceMetaResponse,
+  CalendarWorkspaceSourceFreshness,
   CalendarWorkspaceSearchParams,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceUserMutationRequest,
@@ -415,9 +416,10 @@ export function useToggleCalendarSource() {
       ["calendar-accounts"],
     ],
     applyOptimisticUpdate: (body, queryClient) => {
-      const sourceMatches = (source: { source_key: string; source_id: string }) =>
-        (body.source_key != null && source.source_key === body.source_key) ||
-        (body.source_id != null && source.source_id === body.source_id);
+      const sourceMatches = (source: CalendarWorkspaceSourceFreshness) =>
+        source.butler_name === body.butler &&
+        ((body.source_key != null && source.source_key === body.source_key) ||
+          (body.source_id != null && source.source_id === body.source_id));
       const metaSnapshot = snapshotAndUpdateQueries<ApiResponse<CalendarWorkspaceMetaResponse>>(
         queryClient,
         ["calendar-workspace-meta"],

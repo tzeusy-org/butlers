@@ -119,6 +119,9 @@ export default function SessionsPage() {
     FREE_TEXT_DEBOUNCE_MS,
   );
   const debouncedRequestId = useDebounce(filters.request_id, FREE_TEXT_DEBOUNCE_MS);
+  const hasPendingFreeTextFilter =
+    debouncedTriggerSource !== filters.trigger_source ||
+    debouncedRequestId !== filters.request_id;
 
   // History of cursors for pages BEFORE the current one (powers "Newer").
   const [prevCursors, setPrevCursors] = useState<(string | undefined)[]>([]);
@@ -168,6 +171,7 @@ export default function SessionsPage() {
   // calm "No sessions found" (bu-hmdqz.12). Distinct from the aggregate-level
   // flag the KPI strip / verdict opener already read — this is the list surface.
   const listSourcesDegraded = meta?.sources_degraded ?? [];
+  const isListRefreshing = !isLoading && (isFetching || hasPendingFreeTextFilter);
 
   const canGoNewer = cursor != null || prevCursors.length > 0;
 
@@ -555,7 +559,7 @@ export default function SessionsPage() {
       {/* Session table — dims (never blanks) while a filter/cursor change refetches */}
       <Card>
         <CardContent>
-          <FetchingDim isFetching={isFetching && !isLoading}>
+          <FetchingDim isFetching={isListRefreshing}>
             <SessionTable
               sessions={sessions}
               isLoading={isLoading}

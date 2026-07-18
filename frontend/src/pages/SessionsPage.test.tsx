@@ -85,12 +85,14 @@ function keysetResponse(
 function setSessions(result: {
   data?: KeysetResponse<SessionSummary>;
   isLoading?: boolean;
+  isFetching?: boolean;
   isError?: boolean;
   error?: unknown;
 }) {
   mockUseSessions.mockReturnValue({
     data: result.data,
     isLoading: result.isLoading ?? false,
+    isFetching: result.isFetching ?? false,
     isError: result.isError ?? false,
     error: result.error ?? null,
     refetch: vi.fn(),
@@ -167,7 +169,7 @@ describe("SessionsPage — URL state round-trip", () => {
     vi.useFakeTimers();
     try {
       setSessions({ data: keysetResponse([makeSession()], false, null) });
-      const { getByLabelText, getByTestId } = renderPage();
+      const { container, getByLabelText, getByTestId } = renderPage();
       const lastListParams = () => mockUseSessions.mock.calls
         .map(([params]) => params)
         .filter((params) => (params as { limit?: number })?.limit === 20)
@@ -177,11 +179,13 @@ describe("SessionsPage — URL state round-trip", () => {
 
       expect(getByTestId("location-search").textContent).toContain("trigger=telegram");
       expect(lastListParams()?.trigger_source).toBeUndefined();
+      expect(container.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
 
       act(() => {
         vi.advanceTimersByTime(299);
       });
       expect(lastListParams()?.trigger_source).toBeUndefined();
+      expect(container.querySelector("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
 
       act(() => {
         vi.advanceTimersByTime(1);
