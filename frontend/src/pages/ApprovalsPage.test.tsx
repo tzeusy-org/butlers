@@ -722,6 +722,47 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(container.textContent).toContain("https://example.test/request/42");
   });
 
+  it("renders Telegram decision provenance for a resolved approval", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("telegram-provenance")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        id: "telegram-provenance",
+        title: "Send Email (general)",
+        butler: "general",
+        created_at: "2026-05-17T10:00:00Z",
+        expires_at: null,
+        why: "The owner approved this from Telegram.",
+        evidence: [],
+        proposed_action: {
+          tool_name: "send_email",
+          tool_args: {},
+          agent_summary: null,
+        },
+        status: "executed",
+        decided_by: "human:owner@telegram",
+        decided_at: "2026-05-17T10:05:00Z",
+        target_contact: null,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () =>
+        container.querySelector('[data-testid="approval-decision-provenance"]') !== null,
+    );
+
+    const provenance = container.querySelector(
+      '[data-testid="approval-decision-provenance"]',
+    );
+    expect(provenance).not.toBeNull();
+    expect(provenance?.textContent ?? "").toContain("Decision provenance");
+    expect(provenance?.textContent ?? "").toContain("Decided by");
+    expect(provenance?.textContent ?? "").toContain("human:owner@telegram");
+    expect(provenance?.querySelector("time")?.dateTime).toBe("2026-05-17T10:05:00Z");
+  });
+
   it("denies in a single click — no 'Confirm Deny' step (optimistic)", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("d1")]) as AnyMock,

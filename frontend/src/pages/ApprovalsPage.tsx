@@ -684,6 +684,41 @@ function Dossier({
           </span>
         </div>
 
+        {(detail.decided_by || detail.decided_at) && (
+          <section
+            data-testid="approval-decision-provenance"
+            aria-labelledby="approval-decision-provenance-heading"
+            className="border-t border-border pt-4"
+          >
+            <h3
+              id="approval-decision-provenance-heading"
+              className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2"
+            >
+              Decision provenance
+            </h3>
+            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+              {detail.decided_by && (
+                <div>
+                  <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                    Decided by
+                  </dt>
+                  <dd className="mt-0.5 text-sm text-foreground">{detail.decided_by}</dd>
+                </div>
+              )}
+              {detail.decided_at && (
+                <div>
+                  <dt className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                    Decided at
+                  </dt>
+                  <dd className="mt-0.5 text-sm text-foreground">
+                    <time dateTime={detail.decided_at}>{fmtTs(detail.decided_at)}</time>
+                  </dd>
+                </div>
+              )}
+            </dl>
+          </section>
+        )}
+
         {/* Why — serif paragraph, max-width 50ch */}
         <div className="border-t border-border pt-4">
           <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">
