@@ -15,11 +15,17 @@ export const rulePromotionKeys = {
   stats: () => ["rule-promotions", "stats"] as const,
 };
 
+// Not fleet-event-covered: the scheduled promotion trigger can create,
+// supersede, or auto-apply suggestions outside a dashboard mutation. Poll so
+// an already-open approvals page does not leave a stale actionable card up.
+const RULE_PROMOTION_POLL_MS = 30_000;
+
 /** The rule-promotion approvals surface: pending owner-confirm cards + auto-applied info. */
 export function useRulePromotions() {
   return useQuery({
     queryKey: rulePromotionKeys.surface(),
     queryFn: () => getRulePromotionSuggestions(),
+    refetchInterval: RULE_PROMOTION_POLL_MS,
   });
 }
 
@@ -28,6 +34,7 @@ export function useRulePromotionStats() {
   return useQuery({
     queryKey: rulePromotionKeys.stats(),
     queryFn: () => getRulePromotionStats(),
+    refetchInterval: RULE_PROMOTION_POLL_MS,
   });
 }
 
