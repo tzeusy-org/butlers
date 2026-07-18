@@ -10,23 +10,24 @@
  * Topology: about/lay-and-land/frontend.md §Editorial archetype layout
  */
 
+import { formatInTimeZone } from "date-fns-tz";
+
+import { useTimezone } from "@/components/ui/timezone-context";
+
 interface DateEyebrowProps {
   /** Slot for BriefingStatus pill. */
   statusSlot?: React.ReactNode;
 }
 
-function formatEyebrowDate(now: Date): string {
-  const weekday = now.toLocaleDateString("en-GB", { weekday: "short" });
-  const day = now.getDate();
-  const month = now.toLocaleDateString("en-GB", { month: "long" });
-  const year = now.getFullYear();
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mm = String(now.getMinutes()).padStart(2, "0");
-  return `Overview · ${weekday}, ${day} ${month} ${year} · ${hh}:${mm}`;
+function formatEyebrowDate(now: Date, timezone: string): string {
+  const date = formatInTimeZone(now, timezone, "EEE, d MMMM yyyy");
+  const time = formatInTimeZone(now, timezone, "HH:mm");
+  return `Overview · ${date} · ${time}`;
 }
 
 export function DateEyebrow({ statusSlot }: DateEyebrowProps) {
-  const label = formatEyebrowDate(new Date());
+  const timezone = useTimezone();
+  const label = formatEyebrowDate(new Date(), timezone);
 
   return (
     <div className="flex items-center gap-3">
