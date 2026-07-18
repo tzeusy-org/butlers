@@ -26,8 +26,9 @@ bus, and were deleted in bu-01r64.2. ``emit_approvals_event`` (in
 lifecycle transitions; daemon-originated events reach this bus via the
 Postgres LISTEN/NOTIFY bridge (RFC 0022, ``butlers.fleet_events``) instead of
 an upward daemon→api import. A handful of additional choke points (session
-lifecycle, notify() delivery, audit-log errors, ingest_v1's ingestion_events
-insert) call ``emit_event`` directly. See
+lifecycle, notify() delivery, audit-log errors) call ``emit_event`` directly;
+``ingest_v1``'s ingestion-events insert reaches this bus through that bridge.
+See
 ``docs/redesigns/2026-07-03-jarvis-audit.md`` move 5.
 """
 
