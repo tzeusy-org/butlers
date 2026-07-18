@@ -221,4 +221,25 @@ describe("AttentionRail", () => {
     expect(mounted.container.textContent).toContain("Recent activity");
     expect(mounted.container.textContent).toContain("fact stored — Owner");
   });
+
+  it("keeps an initial-only recent-activity row's full butler identity available on hover", () => {
+    prime({
+      stats: healthyStats(),
+      activity: [
+        {
+          id: "e1",
+          type: "episode",
+          summary: "The owner mentioned a quiet morning.",
+          butler: "home",
+          created_at: "2026-06-13T14:21:00Z",
+        },
+      ],
+    });
+    mounted = render();
+
+    const mark = mounted.container.querySelector<HTMLElement>('[aria-label="home"]');
+    expect(mounted.container.textContent).not.toContain("home");
+    expect(mark?.textContent).toBe("H");
+    expect(mark?.getAttribute("title")).toBe("home");
+  });
 });

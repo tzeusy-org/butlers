@@ -279,6 +279,22 @@ describe("EpisodesRegister — the daybook", () => {
     expect(style).toContain("category");
   });
 
+  it("keeps an initial-only episode row's full butler identity available on hover", () => {
+    setEpisodes([
+      makeEpisode({
+        butler: "home",
+        content: "The owner mentioned a quiet morning.",
+      }),
+    ]);
+    mounted = renderRegister();
+
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    const mark = row.querySelector<HTMLElement>('[aria-label="home"]');
+    expect(row.textContent).not.toContain("home");
+    expect(mark?.textContent).toBe("H");
+    expect(mark?.getAttribute("title")).toBe("home");
+  });
+
   it("toggles in-place expansion and reveals an explicit open link", () => {
     setEpisodes([makeEpisode({ id: "ep-x" })]);
     mounted = renderRegister();

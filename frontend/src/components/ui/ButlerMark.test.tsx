@@ -107,10 +107,10 @@ describe("ButlerMark: initial glyph", () => {
     expect(html).toContain("?")
   })
 
-  it("uses the butler name as an aria-label without a duplicate native title", () => {
+  it("uses the full butler name for matching visual-hover and accessible labels", () => {
     const html = renderToStaticMarkup(<ButlerMark name="qa" />)
     expect(html).toContain('aria-label="qa"')
-    expect(html).not.toContain('title="qa"')
+    expect(html).toContain('title="qa"')
   })
 })
 
@@ -150,16 +150,16 @@ describe("ButlerMark: type=staffer vs type=butler", () => {
     expect(html).toContain("border-radius:4px")
   })
 
-  it("exposes type=staffer in its aria-label without a duplicate native title", () => {
+  it("exposes type=staffer in matching visual-hover and accessible labels", () => {
     const html = renderToStaticMarkup(<ButlerMark name="switchboard" type="staffer" />)
     expect(html).toContain('aria-label="switchboard (staffer)"')
-    expect(html).not.toContain('title="switchboard (staffer)"')
+    expect(html).toContain('title="switchboard (staffer)"')
   })
 
-  it("does not append type qualifier for butler (backwards-compatible aria-label)", () => {
+  it("does not append type qualifier for butler visual or accessible labels", () => {
     const html = renderToStaticMarkup(<ButlerMark name="general" type="butler" />)
     expect(html).toContain('aria-label="general"')
-    expect(html).not.toContain('title="general"')
+    expect(html).toContain('title="general"')
   })
 })
 
