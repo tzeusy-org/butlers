@@ -39,8 +39,10 @@ _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
 # These optional relation families drive the dashboard's graceful fan-out
 # surfaces.  Capture their presence once startup has finished wiring each
 # schema so a later UndefinedTableError is never mistaken for a deliberately
-# uninstalled module.
-_OPTIONAL_RELATIONS_TO_SNAPSHOT = ("butler_secrets", "episodes", "facts", "rules")
+# uninstalled module. Memory relations may be privately owned in a schema
+# distinct from a butler's domain tables, so snapshot them separately.
+_OPTIONAL_DOMAIN_RELATIONS_TO_SNAPSHOT = ("butler_secrets",)
+_OPTIONAL_MEMORY_RELATIONS_TO_SNAPSHOT = ("episodes", "facts", "rules")
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class ButlerConnectionInfo:
     db_schema: str | None = None
     modules: frozenset[str] = field(default_factory=frozenset)
     type: str = "butler"  # "butler" or "staffer"
+    memory_schema: str | None = None
 
     @property
     def sse_url(self) -> str:
@@ -270,6 +273,7 @@ def discover_butlers(
 
         try:
             config = load_config(entry)
+            memory_schema = config.modules.get("memory", {}).get("memory_schema")
             butlers.append(
                 ButlerConnectionInfo(
                     name=config.name,
@@ -277,6 +281,7 @@ def discover_butlers(
                     description=config.description,
                     db_name=config.db_name or None,
                     db_schema=config.db_schema or None,
+                    memory_schema=memory_schema,
                     modules=frozenset(config.modules.keys()),
                     type=config.type.value,
                 )
@@ -469,11 +474,16 @@ async def init_db_manager(
                 cfg.name,
                 db_name=db.db_name,
                 db_schema=cfg.db_schema,
+                memory_schema=cfg.memory_schema,
                 modules=cfg.modules,
             )
             await mgr.snapshot_relation_presence(
                 cfg.name,
-                _OPTIONAL_RELATIONS_TO_SNAPSHOT,
+                _OPTIONAL_DOMAIN_RELATIONS_TO_SNAPSHOT,
+            )
+            await mgr.snapshot_memory_relation_presence(
+                cfg.name,
+                _OPTIONAL_MEMORY_RELATIONS_TO_SNAPSHOT,
             )
         except Exception:
             logger.warning(
