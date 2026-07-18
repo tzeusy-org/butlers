@@ -6,7 +6,7 @@ Specifies the operator-facing dashboard surfaces that provide end-to-end visibil
 ## Requirements
 
 ### Requirement: Cross-Butler Session Explorer
-The Sessions page (`/sessions`) provides a paginated, filterable table of session records aggregated across all butlers. This is the primary surface for answering "what work has the system done?" and is the entry point for drill-down into any individual execution.
+The Sessions page (`/sessions`) SHALL provide a paginated, filterable table of session records aggregated across all butlers. This is the primary surface for answering "what work has the system done?" and is the entry point for drill-down into any individual execution.
 
 #### Scenario: Default session listing
 - **WHEN** an operator navigates to `/sessions` with no active filters
@@ -55,7 +55,7 @@ The Sessions page (`/sessions`) provides a paginated, filterable table of sessio
 - **THEN** the page renders an error region with a retry action (not the empty "No sessions found" state), so a failed read is never presented as "no sessions"
 
 ### Requirement: Session Table Visual Treatment
-The session table (`SessionTable`) applies visual affordances to communicate status at a glance without requiring the operator to read every cell.
+The session table (`SessionTable`) SHALL apply visual affordances to communicate status at a glance without requiring the operator to read every cell.
 
 #### Scenario: Failed session row highlighting
 - **WHEN** a session has `success === false`
@@ -88,7 +88,7 @@ The session table (`SessionTable`) applies visual affordances to communicate sta
 - **THEN** it is truncated to 60 characters with a trailing ellipsis, and the full prompt is available in the `title` attribute
 
 ### Requirement: Session Detail Drawer
-The `SessionDetailDrawer` is a slide-over sheet that provides full session context without leaving the sessions list. It is the operator's primary tool for understanding what happened in a single execution.
+The `SessionDetailDrawer` SHALL be a slide-over sheet that provides full session context without leaving the sessions list. It is the operator's primary tool for understanding what happened in a single execution.
 
 #### Scenario: Metadata section
 - **WHEN** the drawer opens for a session
@@ -132,7 +132,7 @@ The `SessionDetailDrawer` is a slide-over sheet that provides full session conte
 - **THEN** a check icon replaces the copy icon for 2 seconds before reverting
 
 ### Requirement: Session Detail Full Page
-The `SessionDetailPage` (`/sessions/:id?butler=<name>`) provides a full-page view of a single session. It serves as the deep-link target for session references from other surfaces (notifications, timeline).
+The `SessionDetailPage` (`/sessions/:id?butler=<name>`) SHALL provide a full-page view of a single session. It serves as the deep-link target for session references from other surfaces (notifications, timeline).
 
 #### Scenario: Butler-scoped vs global session fetch
 - **WHEN** the URL contains a `?butler=<name>` query parameter
@@ -224,7 +224,7 @@ The Timeline page (`/timeline`) SHALL merge events from all butlers into a singl
 - **AND** `event_type=notification` (or an unfiltered stream) is unaffected — it returns notifications of all statuses
 
 ### Requirement: Notification Audit Trail
-The Notifications page (`/notifications`) provides a complete audit trail of every notification sent by any butler across all delivery channels. This surface is essential for verifying that user-facing communications were delivered successfully and diagnosing delivery failures.
+The Notifications page (`/notifications`) SHALL provide a complete audit trail of every notification sent by any butler across all delivery channels. This surface is essential for verifying that user-facing communications were delivered successfully and diagnosing delivery failures.
 
 #### Scenario: Notification stats bar
 - **WHEN** the Notifications page loads
@@ -263,7 +263,7 @@ The Notifications page (`/notifications`) provides a complete audit trail of eve
 - **THEN** the empty state reads "Notifications will appear here as butlers send messages via Telegram, email, and other channels."
 
 ### Requirement: Audit Log
-The Audit Log page (`/audit-log`) provides a tamper-evident record of every operation performed by every butler. It captures triggers, ticks, session lifecycle events, schedule mutations, and state mutations -- the authoritative record of "who did what, when, and what happened."
+The Audit Log page (`/audit-log`) SHALL provide a tamper-evident record of every operation performed by every butler. It captures triggers, ticks, session lifecycle events, schedule mutations, and state mutations -- the authoritative record of "who did what, when, and what happened."
 
 #### Scenario: Audit log filter bar
 - **WHEN** the operator interacts with the audit log filter bar
@@ -280,7 +280,7 @@ The Audit Log page (`/audit-log`) provides a tamper-evident record of every oper
 - **AND** only one entry can be expanded at a time
 
 ### Requirement: Issue Detection and Surfacing
-The Issues page (`/issues`) and `IssuesPanel` component provide automated detection and grouping of errors and warnings across all butlers. Issues are the system's way of proactively alerting operators to problems that need attention.
+The Issues page (`/issues`) and `IssuesPanel` component SHALL provide automated detection and grouping of errors and warnings across all butlers. Issues are the system's way of proactively alerting operators to problems that need attention.
 
 #### Scenario: Issues page layout
 - **WHEN** the operator navigates to `/issues`
@@ -318,7 +318,7 @@ The Issues page (`/issues`) and `IssuesPanel` component provide automated detect
 - **THEN** it uses a 30-second `refetchInterval` to detect new issues without manual refresh
 
 ### Requirement: System Topology Visualization
-The `TopologyGraph` component renders a force-directed graph of butler nodes and their interconnections, providing at-a-glance system architecture visibility and health status.
+The `TopologyGraph` component SHALL render a force-directed graph of butler nodes and their interconnections, providing at-a-glance system architecture visibility and health status.
 
 #### Scenario: Butler node layout
 - **WHEN** the topology graph renders
@@ -354,7 +354,7 @@ The `TopologyGraph` component renders a force-directed graph of butler nodes and
 - **AND** a subtle background grid pattern is rendered
 
 ### Requirement: Overview Dashboard
-The `DashboardPage` (`/`) is the operator's triage cockpit and the system's landing page. It uses an editorial two-column layout to surface the most critical signals at a glance without navigation to individual domain pages.
+The `DashboardPage` (`/`) SHALL be the operator's triage cockpit and the system's landing page. It uses an editorial two-column layout to surface the most critical signals at a glance without navigation to individual domain pages.
 
 #### Scenario: Editorial two-column layout
 - **WHEN** the overview page loads at a viewport width of 1024px or wider
@@ -389,7 +389,7 @@ The `DashboardPage` (`/`) is the operator's triage cockpit and the system's land
 - **AND** both surfaces draw from `useSpendSummary("today")` and `useTopSessions()` respectively
 
 ### Requirement: Real-Time Polling and Auto-Refresh
-All visibility surfaces use TanStack Query (React Query) for data fetching. Bus-covered surfaces poll at a bus-aware cadence (`useBusAwarePollInterval`); others poll at a fixed interval. Neither is user-configurable — the prior manual `AutoRefreshToggle` control retired (bu-01r64.3).
+All visibility surfaces SHALL use TanStack Query (React Query) for data fetching. Bus-covered surfaces poll at a bus-aware cadence (`useBusAwarePollInterval`); others poll at a fixed interval. Neither is user-configurable — the prior manual `AutoRefreshToggle` control retired (bu-01r64.3).
 
 #### Scenario: Default polling intervals per surface
 - **WHEN** the Sessions page is active
@@ -408,7 +408,7 @@ All visibility surfaces use TanStack Query (React Query) for data fetching. Bus-
 - **THEN** the briefing, butler list, cost summary, issues, heartbeats, notification stats, QA summary, approval metrics, top sessions, and timeline data each refresh at their respective default TanStack Query refetch intervals
 
 ### Requirement: Pagination Consistency
-Offset-paginated surfaces share the same offset-based pattern using backend `PaginationMeta` responses. The cross-butler Sessions list (`GET /api/sessions`) is the one exception: it uses keyset (cursor) pagination, to avoid the cross-butler count fan-out.
+Offset-paginated surfaces SHALL share the same offset-based pattern using backend `PaginationMeta` responses. The cross-butler Sessions list (`GET /api/sessions`) is the one exception: it uses keyset (cursor) pagination, to avoid the cross-butler count fan-out.
 
 #### Scenario: Offset-based pagination contract
 - **WHEN** an offset-paginated surface (Notifications, Audit Log, and the per-butler `GET /api/butlers/{name}/sessions` list) renders data
@@ -429,7 +429,7 @@ Offset-paginated surfaces share the same offset-based pattern using backend `Pag
 - **AND** new events are appended to the accumulated event list rather than replacing them
 
 ### Requirement: Cross-Surface Navigation and Linking
-The visibility surfaces are interconnected through contextual links that allow operators to trace a request across multiple views without manually searching.
+The visibility surfaces SHALL be interconnected through contextual links that allow operators to trace a request across multiple views without manually searching.
 
 #### Scenario: Session to trace navigation
 - **WHEN** a session detail drawer displays a `trace_id`
@@ -460,7 +460,7 @@ The visibility surfaces are interconnected through contextual links that allow o
 - **THEN** navigation occurs to `/notifications`
 
 ### Requirement: End-to-End Request Trace Story
-The system supports tracing a request from initial ingestion through final delivery by correlating data across multiple surfaces. This requirement describes the complete traceability journey an operator follows.
+The system SHALL support tracing a request from initial ingestion through final delivery by correlating data across multiple surfaces. This requirement describes the complete traceability journey an operator follows.
 
 #### Scenario: Message ingestion through delivery
 - **GIVEN** a message arrives via an external connector (e.g. Telegram)
@@ -480,7 +480,7 @@ The system supports tracing a request from initial ingestion through final deliv
 - **AND** from any session, open the session detail drawer to inspect tool calls and execution detail
 
 ### Requirement: Loading and Error States
-All visibility surfaces handle loading and error states consistently to prevent operator confusion.
+All visibility surfaces SHALL handle loading and error states consistently to prevent operator confusion.
 
 #### Scenario: Skeleton loading states
 - **WHEN** data is loading for any table (Sessions, Notifications, Audit Log)
@@ -502,7 +502,7 @@ All visibility surfaces handle loading and error states consistently to prevent 
 - **THEN** a destructive-styled message reads "Failed to load notifications. Please try refreshing the page."
 
 ### Requirement: Data Model Contracts for Visibility Surfaces
-The frontend TypeScript interfaces define the data contracts that all visibility surfaces depend on. These contracts must be satisfied by the backend API.
+The frontend TypeScript interfaces SHALL define the data contracts that all visibility surfaces depend on. These contracts MUST be satisfied by the backend API.
 
 #### Scenario: SessionSummary contract (list views)
 - **WHEN** the sessions list API responds
