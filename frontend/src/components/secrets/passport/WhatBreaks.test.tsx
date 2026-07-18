@@ -266,7 +266,7 @@ describe("WhatBreaksRow: ProviderMark (bu-sd0l7.2 reunification)", () => {
 })
 
 describe("WhatBreaksRow: capability probe glyph", () => {
-  it("uses the probe result as an accessible name without a duplicate title", () => {
+  it("retains the probe result for accessible and visual-hover labels", () => {
     render(
       <WhatBreaksRow
         entry={{
@@ -283,6 +283,24 @@ describe("WhatBreaksRow: capability probe glyph", () => {
       />,
     )
     const pip = screen.getByLabelText("calendar: ok")
-    expect(pip.getAttribute("title")).toBeNull()
+    expect(pip.getAttribute("title")).toBe("calendar: ok")
+  })
+
+  it("retains the unprobed capability label for visual hover", () => {
+    render(
+      <WhatBreaksRow
+        entry={{
+          butler: "calendar",
+          feature: "event sync",
+          severity: "medium",
+          required_scopes: [],
+          capability: "calendar",
+        }}
+        capabilities={[{ capability: "calendar", test: null }]}
+      />,
+    )
+
+    const pip = screen.getByLabelText("calendar: not yet probed")
+    expect(pip.getAttribute("title")).toBe("calendar: not yet probed")
   })
 })

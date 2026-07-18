@@ -503,7 +503,7 @@ describe("Sidebar", () => {
         return label.includes("degraded") || label.includes("ok") || label.includes("error");
       });
       expect(footerEl).toBeTruthy();
-      expect(footerEl?.getAttribute("title")).toBeNull();
+      expect(footerEl?.getAttribute("title")).toBe(footerEl?.getAttribute("aria-label"));
     });
 
     it("shows neutral dot and loading aria-label while butlers query is loading", () => {
@@ -521,7 +521,7 @@ describe("Sidebar", () => {
 
       const footerEl = container.querySelector('[aria-label="Loading butlers"]');
       expect(footerEl).toBeTruthy();
-      expect(footerEl?.getAttribute("title")).toBeNull();
+      expect(footerEl?.getAttribute("title")).toBe("Loading butlers");
     });
 
     it("shows neutral dot and error aria-label when butlers query fails", () => {
@@ -539,7 +539,7 @@ describe("Sidebar", () => {
 
       const footerEl = container.querySelector('[aria-label="Butlers query failed"]');
       expect(footerEl).toBeTruthy();
-      expect(footerEl?.getAttribute("title")).toBeNull();
+      expect(footerEl?.getAttribute("title")).toBe("Butlers query failed");
     });
 
     it("shows red dot when any butler has error status (success path)", () => {
@@ -551,13 +551,13 @@ describe("Sidebar", () => {
       });
       render();
 
-      // Footer accessible name shows error count without a duplicate native title.
+      // The collapsed footer keeps its status summary available on hover.
       const footerEl = Array.from(container.querySelectorAll("[aria-label]")).find((el) => {
         const label = el.getAttribute("aria-label") ?? "";
         return label.includes("error");
       });
       expect(footerEl).toBeTruthy();
-      expect(footerEl?.getAttribute("title")).toBeNull();
+      expect(footerEl?.getAttribute("title")).toBe(footerEl?.getAttribute("aria-label"));
     });
   });
 

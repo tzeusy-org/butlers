@@ -41,11 +41,14 @@ describe("LinkedPeopleAvatars", () => {
     expect(screen.getByTestId("linked-people-overflow").textContent).toBe("+1");
     // Initials mark from first + last name part.
     expect(avatars[0].textContent).toBe("AL");
-    // Full list is exposed for assistive technology without a duplicate native tooltip.
+    // The accessible name remains complete and the same full list is available
+    // as supplemental visual hover information.
     expect(cluster.getAttribute("aria-label")).toBe(
       "Linked people: Ada Lovelace, Grace Hopper, Katherine Johnson, Dorothy Vaughan",
     );
-    expect(cluster.getAttribute("title")).toBeNull();
+    expect(cluster.getAttribute("title")).toBe(
+      "Ada Lovelace, Grace Hopper, Katherine Johnson, Dorothy Vaughan",
+    );
   });
 
   it("renders nothing when there are no linked people", () => {

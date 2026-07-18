@@ -40,6 +40,7 @@ export function LinkedPeopleAvatars({
       data-testid="linked-people-avatars"
       className={cn("inline-flex shrink-0 items-center", className)}
       aria-label={`Linked people: ${fullList}`}
+      title={fullList}
     >
       {shown.map((person, idx) => (
         <span

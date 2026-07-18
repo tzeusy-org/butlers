@@ -57,7 +57,7 @@ describe("ProvenanceMarks: src + verified", () => {
     expect(html).toContain("var(--green)")
     expect(html).toContain('data-verified="true"')
     expect(html).toContain('aria-label="Verified"')
-    expect(html).not.toContain('title="Verified"')
+    expect(html).toContain('title="Verified"')
   })
 
   it("renders dim when unverified", () => {
@@ -65,7 +65,7 @@ describe("ProvenanceMarks: src + verified", () => {
     expect(html).toContain("var(--dim)")
     expect(html).toContain('data-verified="false"')
     expect(html).toContain('aria-label="Unverified"')
-    expect(html).not.toContain('title="Unverified"')
+    expect(html).toContain('title="Unverified"')
   })
 
   it("omits the src tag when src is empty", () => {
