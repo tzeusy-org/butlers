@@ -592,7 +592,7 @@ export interface TimelineParams {
   butler?: string[];
   event_type?: string[];
   before?: string;
-  /** Filter session events by OpenTelemetry trace ID. */
+  /** Filter sessions and trace-attributed notifications by OpenTelemetry trace ID. */
   trace?: string;
 }
 

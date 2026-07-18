@@ -648,6 +648,44 @@ class TestDeliverNotificationLogging:
         # Error should be captured
         assert kwargs.get("error") is not None or any("API down" in str(a) for a in args)
 
+    async def test_failed_delivery_persists_active_trace_id(self) -> None:
+        """A trace-scoped timeline must retain a failed delivery from that trace."""
+        from opentelemetry import trace
+
+        from butlers.tools.switchboard import deliver
+
+        pool = _make_mock_pool(
+            fetchrow_side_effect=[
+                None,  # No registered delivery butler -> persisted failed notification.
+                _notif_id_row(),
+            ],
+        )
+        trace_id = "0123456789abcdef0123456789abcdef"
+        active_span = trace.NonRecordingSpan(
+            trace.SpanContext(
+                trace_id=int(trace_id, 16),
+                span_id=1,
+                is_remote=False,
+                trace_flags=trace.TraceFlags(0x01),
+                trace_state=trace.TraceState(),
+            )
+        )
+
+        with patch(
+            "butlers.tools.switchboard.notification.deliver.trace.get_current_span",
+            return_value=active_span,
+        ):
+            result = await deliver(
+                pool,
+                channel="telegram",
+                message="Hello",
+                recipient="123456",
+            )
+
+        assert result["status"] == "failed"
+        _sql, *_args, persisted_trace_id = pool.fetchrow.call_args.args
+        assert persisted_trace_id == trace_id
+
     async def test_no_module_failure_logs_notification(self) -> None:
         """When no butler has the module, deliver() still logs a notification."""
         from butlers.tools.switchboard import deliver

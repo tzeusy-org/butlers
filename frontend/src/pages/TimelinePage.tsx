@@ -94,7 +94,7 @@ export default function TimelinePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedButlers = useMemo(() => parseCsvList(searchParams, "butler"), [searchParams]);
   const selectedTypes = useMemo(() => parseCsvList(searchParams, "type"), [searchParams]);
-  const trace = searchParams.get("trace") || undefined;
+  const trace = searchParams.get("trace")?.trim() || undefined;
   const activeViewId = searchParams.get("view") ?? "all";
 
   const { data: butlersResponse } = useButlers();

@@ -139,6 +139,19 @@ describe("TimelinePage — error vs empty state", () => {
     });
   });
 
+  it("does not present a whitespace trace query as an active scope", () => {
+    setLedger({});
+
+    const html = render("/timeline?trace=%20%20");
+
+    expect(html).not.toContain('data-testid="trace-scope-banner"');
+    expect(useTimelineLedger).toHaveBeenLastCalledWith({
+      butler: undefined,
+      event_type: undefined,
+      trace: undefined,
+    });
+  });
+
   it("names a trace scope, explains notification coverage, and lets the operator clear it", () => {
     setLedger({});
 
