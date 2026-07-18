@@ -233,6 +233,7 @@ class TestApprovalsMigration:
 
         for tbl in [
             "pending_actions",
+            "approval_push_emissions",
             "approval_rules",
             "approval_events",
             "autonomy_approval_history",
@@ -253,6 +254,7 @@ class TestApprovalsMigration:
             "idx_approval_events_event_type",
             "idx_autonomy_history_fingerprint_version",
             "idx_autonomy_suggestions_fingerprint_version",
+            "ix_approval_push_emissions_kind_created",
         ]:
             assert _index_exists(db_url, idx), f"{idx} should exist"
         for table_name in ["autonomy_approval_history", "autonomy_suggestions"]:
@@ -277,7 +279,7 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         with engine.connect() as conn:
             versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
-        assert "approvals_005" in versions
+        assert "approvals_006" in versions
 
         action_id = uuid.uuid4()
         with engine.connect() as conn:
@@ -382,7 +384,7 @@ class TestApprovalsMigration:
 
         assert row["why"] is None
         assert row["evidence"] == "[]"
-        assert "approvals_005" in versions
+        assert "approvals_006" in versions
 
     def test_decision_dossier_migration_converts_legacy_evidence_and_enforces_enums(
         self, postgres_container
@@ -462,7 +464,7 @@ class TestApprovalsMigration:
         ]
         assert row["blast_radius"] is None
         assert row["reversibility"] is None
-        assert "approvals_005" in versions
+        assert "approvals_006" in versions
 
         with pytest.raises(exc.IntegrityError):
             with engine.begin() as conn:
