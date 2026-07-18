@@ -213,8 +213,6 @@ class ConnectorStatsHourly(BaseModel):
     # hourly_filtered_events, bu-scyro). 0 when the connector self-persists no
     # skips or the filtered source degraded.
     messages_filtered: int = 0
-    source_api_calls: int = 0
-    dedupe_accepted: int = 0
     heartbeat_count: int = 0
     healthy_count: int = 0
     degraded_count: int = 0
@@ -234,8 +232,6 @@ class ConnectorStatsDaily(BaseModel):
     messages_failed: int = 0
     # Skip-aware (bu-c48im): connectors.filtered_events volume for this bucket.
     messages_filtered: int = 0
-    source_api_calls: int = 0
-    dedupe_accepted: int = 0
     heartbeat_count: int = 0
     healthy_count: int = 0
     degraded_count: int = 0

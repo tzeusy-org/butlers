@@ -4067,8 +4067,6 @@ interface _BackendStatsRow {
   messages_failed: number;
   /** Skip-routed volume for this bucket (bu-c48im), from connectors.filtered_events. */
   messages_filtered: number;
-  source_api_calls: number;
-  dedupe_accepted: number;
   heartbeat_count: number;
   healthy_count: number;
   degraded_count: number;

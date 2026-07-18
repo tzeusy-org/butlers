@@ -261,6 +261,45 @@ async def test_get_connector_stats_7d_returns_daily_rows():
     assert result.meta.hourly_events_available is True
 
 
+async def test_get_connector_stats_omits_unrendered_legacy_counters():
+    """Both hourly and daily DB buckets omit counters they never populated.
+
+    Lifetime source API and dedupe totals remain available through the connector
+    registry; these time-series rows only report event volume for their bucket.
+    """
+    from datetime import UTC, datetime
+
+    sys.modules.pop("switchboard_api_models", None)
+    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location("_sw_router_legacy_counter_contract", router_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    for period in ("24h", "7d"):
+        result = await mod.get_connector_stats(
+            connector_type="telegram_bot",
+            endpoint_identity="bot@123",
+            period=period,
+            db=_FakeDBWithRows(
+                [
+                    {
+                        "bucket": datetime(2024, 1, 15, 10, 0, tzinfo=UTC),
+                        "messages_ingested": 8,
+                        "messages_failed": 1,
+                        "messages_filtered": 3,
+                    }
+                ]
+            ),
+        )
+
+        payload = result.data[0].model_dump()
+        assert payload["messages_ingested"] == 8
+        assert payload["messages_failed"] == 1
+        assert payload["messages_filtered"] == 3
+        assert "source_api_calls" not in payload
+        assert "dedupe_accepted" not in payload
+
+
 async def test_get_connector_stats_db_failure_degrades_honestly():
     """A genuine DB-query failure returns an empty series with the
     meta.hourly_events_available flag flipped false — never a fabricated
