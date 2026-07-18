@@ -74,7 +74,7 @@ describe("calendar workspace bus-aware polling", () => {
   const calendarBusCoveredViews = [
     {
       name: "workspace",
-      invoke: () =>
+      useHook: () =>
         useCalendarWorkspace({
           view: "user",
           start: "2026-07-01T00:00:00Z",
@@ -83,16 +83,16 @@ describe("calendar workspace bus-aware polling", () => {
     },
     {
       name: "overlays",
-      invoke: () =>
+      useHook: () =>
         useCalendarOverlays({
           start: "2026-07-01T00:00:00Z",
           end: "2026-07-02T00:00:00Z",
         }),
     },
-    { name: "day briefing", invoke: () => useCalendarDayBriefing({ date: "2026-07-02" }) },
+    { name: "day briefing", useHook: () => useCalendarDayBriefing({ date: "2026-07-02" }) },
     {
       name: "proposals",
-      invoke: () =>
+      useHook: () =>
         useCalendarProposals({
           start: "2026-07-01T00:00:00Z",
           end: "2026-07-02T00:00:00Z",
@@ -100,13 +100,13 @@ describe("calendar workspace bus-aware polling", () => {
     },
     {
       name: "search",
-      invoke: () => useCalendarWorkspaceSearch({ q: "planning", view: "user" }),
+      useHook: () => useCalendarWorkspaceSearch({ q: "planning", view: "user" }),
     },
-    { name: "workspace metadata", invoke: () => useCalendarWorkspaceMeta() },
-    { name: "entry", invoke: () => useCalendarWorkspaceEntry("entry-1") },
+    { name: "workspace metadata", useHook: () => useCalendarWorkspaceMeta() },
+    { name: "entry", useHook: () => useCalendarWorkspaceEntry("entry-1") },
     {
       name: "duplicates",
-      invoke: () =>
+      useHook: () =>
         useCalendarDuplicates({
           view: "user",
           start: "2026-07-01T00:00:00Z",
@@ -115,19 +115,19 @@ describe("calendar workspace bus-aware polling", () => {
     },
     {
       name: "conflicts",
-      invoke: () =>
+      useHook: () =>
         useCalendarConflicts({
           start: "2026-07-01T00:00:00Z",
           end: "2026-07-02T00:00:00Z",
         }),
     },
-    { name: "audit", invoke: () => useCalendarWorkspaceAudit() },
+    { name: "audit", useHook: () => useCalendarWorkspaceAudit() },
   ];
 
   it.each(calendarBusCoveredViews)(
     "uses the five-minute reconciliation sweep for bus-covered $name while connected",
-    ({ invoke }) => {
-      invoke();
+    ({ useHook }) => {
+      useHook();
 
       expect(lastRefetchInterval()).toBe(POLL_BUS_RECONCILE_MS);
     },
@@ -135,9 +135,9 @@ describe("calendar workspace bus-aware polling", () => {
 
   it.each(calendarBusCoveredViews)(
     "uses the 30-second fallback for bus-covered $name while disconnected",
-    ({ invoke }) => {
+    ({ useHook }) => {
       status = "closed";
-      invoke();
+      useHook();
 
       expect(lastRefetchInterval()).toBe(POLL_BUS_DOWN_FALLBACK_MS);
     },
