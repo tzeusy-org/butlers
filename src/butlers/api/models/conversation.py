@@ -118,17 +118,9 @@ class ConversationMessage(BaseModel):
     request_id: UUID | None = None
 
 
-class ConversationSearchResult(BaseModel):
+class ConversationSearchResult(ConversationSummary):
     """Conversation search result with matching message snippet."""
 
-    id: UUID
-    butler_name: str
-    title: str
-    status: str
-    created_at: datetime
-    updated_at: datetime
-    message_count: int
-    routed_butler: str | None = None
     snippet: str
 
 

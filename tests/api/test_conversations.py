@@ -31,6 +31,7 @@ from fastapi import FastAPI
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
     conversation_reply_create,
+    conversation_search,
     conversation_set_routed_butler,
     message_create_idempotent,
     message_find_reply_since,
@@ -125,6 +126,56 @@ async def test_list_conversations_200_and_503(app):
     ) as client:
         resp_503 = await client.get(f"/api/butlers/{_BUTLER}/conversations")
     assert resp_503.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Search conversations — summary contract + snippet
+# ---------------------------------------------------------------------------
+
+
+async def test_search_conversations_returns_summary_fields_and_matching_snippet(app):
+    latest_reply_at = _NOW + timedelta(minutes=1)
+    row = _make_conversation_row(
+        routed_butler="relationship",
+        latest_assistant_reply_at=latest_reply_at,
+        snippet="Alice is Bob's sister",
+    )
+    _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/butlers/{_BUTLER}/conversations/search?q=Alice")
+
+    assert resp.status_code == 200
+    result = resp.json()["data"][0]
+    assert set(result) == {
+        "id",
+        "butler_name",
+        "title",
+        "status",
+        "created_at",
+        "updated_at",
+        "message_count",
+        "routed_butler",
+        "latest_assistant_reply_at",
+        "snippet",
+    }
+    assert datetime.fromisoformat(result["latest_assistant_reply_at"]) == latest_reply_at
+    assert result["snippet"] == "Alice is Bob's sister"
+
+
+async def test_conversation_search_paginates_before_latest_reply_aggregate() -> None:
+    """The assistant-reply lookup runs only for the final search page."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+    pool.fetchval = AsyncMock(return_value=0)
+
+    await conversation_search(pool, butler_name=_BUTLER, query="Alice")
+
+    query = pool.fetch.await_args.args[0]
+    assert query.index("MAX(reply.created_at)") < query.index("FROM (")
+    assert "reply.conversation_id = sub.id" in query
 
 
 # ---------------------------------------------------------------------------

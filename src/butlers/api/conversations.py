@@ -282,7 +282,13 @@ async def conversation_search(
         SELECT
             sub.id, sub.butler_name, sub.title, sub.status,
             sub.created_at, sub.updated_at,
-            sub.message_count, sub.routed_butler, sub.snippet, sub.msg_created_at
+            sub.message_count, sub.routed_butler,
+            (
+                SELECT MAX(reply.created_at)
+                FROM public.dashboard_messages reply
+                WHERE reply.conversation_id = sub.id AND reply.role = 'assistant'
+            ) AS latest_assistant_reply_at,
+            sub.snippet, sub.msg_created_at
         FROM (
             SELECT DISTINCT ON (c.id)
                 c.id, c.butler_name, c.title, c.status, c.created_at, c.updated_at,
