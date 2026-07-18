@@ -1381,6 +1381,19 @@ describe("ApprovalsPage — Autonomy panel (bu-86c4c.12)", () => {
     expect(container.textContent).toContain("always ask");
   });
 
+  it("names a degraded rule source even when configured gates remain visible", async () => {
+    vi.mocked(getApprovalGatedTools).mockReturnValue(
+      makeDegradedResponse([makeGatedTool("notify")], ["approval_rules"]) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => container.textContent?.includes("notify") ?? false);
+
+    expect(container.textContent).toContain("approval_rules unavailable");
+    expect(container.textContent).toContain("rule state unavailable");
+    expect(container.textContent).not.toContain("always ask");
+  });
+
   it("revokes a rule inline (no window.confirm) via a two-step confirm", async () => {
     vi.mocked(getApprovalGatedTools).mockReturnValue(
       makeApiResponse([makeGatedTool("notify", [makeRule("r1")])]) as AnyMock,

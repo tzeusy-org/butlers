@@ -130,6 +130,32 @@ def _is_bounded_rule(rule: ApprovalRule) -> bool:
     return rule.expires_at is not None or rule.max_uses is not None
 
 
+def is_rule_effective(
+    rule: ApprovalRule | dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Return whether a standing rule can currently auto-approve an invocation."""
+    now = now or datetime.now(UTC)
+
+    if isinstance(rule, ApprovalRule):
+        active = rule.active
+        expires_at = rule.expires_at
+        max_uses = rule.max_uses
+        use_count = rule.use_count
+    else:
+        active = rule.get("active", True)
+        expires_at = rule.get("expires_at")
+        max_uses = rule.get("max_uses")
+        use_count = rule.get("use_count", 0)
+
+    return (
+        active
+        and (expires_at is None or expires_at >= now)
+        and (max_uses is None or use_count < max_uses)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Rule matching
 # ---------------------------------------------------------------------------
@@ -243,19 +269,7 @@ def match_rules_from_list(
         if rule.get("tool_name") != tool_name:
             continue
 
-        # Check active flag
-        if not rule.get("active", True):
-            continue
-
-        # Check expiry
-        expires_at = rule.get("expires_at")
-        if expires_at is not None and expires_at < now:
-            continue
-
-        # Check max_uses
-        max_uses = rule.get("max_uses")
-        use_count = rule.get("use_count", 0)
-        if max_uses is not None and use_count >= max_uses:
+        if not is_rule_effective(rule, now=now):
             continue
 
         # Parse and check arg constraints

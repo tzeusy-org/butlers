@@ -660,6 +660,56 @@ async def test_gated_tools_lists_configured_tools_even_when_they_have_no_rules(a
     assert tools[("messenger", "telegram_reply_to_message")]["active_rules"] == []
 
 
+async def test_gated_tools_excludes_expired_and_exhausted_rules(app):
+    """The autonomy ledger only counts rules that can still auto-approve."""
+    expired = _make_rule(tool_name="notify")
+    expired["expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
+
+    exhausted = _make_rule(tool_name="notify")
+    exhausted["max_uses"] = 3
+    exhausted["use_count"] = 3
+
+    app, _ = _rules_app_with_capture(
+        app,
+        rows=[expired, exhausted],
+        butler_name="messenger",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/gated-tools")
+
+    assert response.status_code == 200, response.text
+    tools = {(item["butler"], item["tool_name"]): item for item in response.json()["data"]}
+    assert tools[("messenger", "notify")]["active_rules"] == []
+
+
+async def test_rule_suggestions_for_found_action_returns_redacted_scope(app):
+    """A teaching digest can safely preview a found action's suggested rule."""
+    action = _make_action(tool_name="send_email")
+    action["tool_args"] = {
+        "recipient": "private@example.com",
+        "subject": "A sensitive subject stays visible",
+    }
+    app, _ = _app_with_mock_db(app, fetchrow_return=action)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/approvals/rules/suggestions/{action['id']}")
+
+    assert response.status_code == 200, response.text
+    suggestion = response.json()["data"]
+    assert suggestion["action_id"] == str(action["id"])
+    assert suggestion["tool_args"]["recipient"] == "[REDACTED]"
+    assert suggestion["suggested_constraints"]["recipient"] == {
+        "type": "exact",
+        "value": "[REDACTED]",
+    }
+    assert suggestion["suggested_constraints"]["subject"] == {"type": "any"}
+
+
 # ---------------------------------------------------------------------------
 # §8.7 — defer bounds, policy round-trip, audit.append on verbs
 # ---------------------------------------------------------------------------

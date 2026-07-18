@@ -69,6 +69,7 @@ from butlers.modules.approvals.models import (
 from butlers.modules.approvals.models import (
     PendingAction,
 )
+from butlers.modules.approvals.rules import is_rule_effective
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
 from butlers.modules.base import ToolMeta
 
@@ -1377,6 +1378,7 @@ async def list_gated_tools(
         tracker.mark("approval_rules", msg="Could not discover approval rule sources")
         named_pools = []
 
+    now = datetime.now(UTC)
     for butler_name, pool in named_pools:
         if butler_name not in configured:
             continue
@@ -1386,7 +1388,10 @@ async def list_gated_tools(
                     "SELECT * FROM approval_rules WHERE active = true ORDER BY created_at DESC"
                 )
             for row in rows:
-                rule = _approval_rule_to_api(ApprovalRuleModel.from_row(row))
+                rule_model = ApprovalRuleModel.from_row(row)
+                if not is_rule_effective(rule_model, now=now):
+                    continue
+                rule = _approval_rule_to_api(rule_model)
                 key = (butler_name, rule.tool_name)
                 if key in rules_by_gate:
                     rules_by_gate[key].append(rule)
@@ -1510,9 +1515,10 @@ async def get_rule_suggestions(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pool = await _find_action_pool(db_mgr, parsed_id)
-    if target_pool is None:
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+    _action_butler, target_pool = found
 
     async with target_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)

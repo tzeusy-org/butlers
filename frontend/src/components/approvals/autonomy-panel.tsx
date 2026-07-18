@@ -172,6 +172,14 @@ export function AutonomyPanel() {
       </div>
 
       <div className="px-4 py-3 flex-1">
+        {degradedSources.size > 0 && (
+          <SourceDegradedNote
+            label="Approval-gate baseline"
+            detail={`${[...degradedSources].join(", ")} unavailable. Gate inventory may be incomplete.`}
+            onRetry={() => void refetch()}
+            className="mb-3"
+          />
+        )}
         <QueryBoundary
           isLoading={isLoading}
           isError={isError}
@@ -183,17 +191,11 @@ export function AutonomyPanel() {
             <div className="text-xs text-muted-foreground font-mono">loading…</div>
           }
           emptyFallback={
-            degradedSources.size > 0 ? (
-              <SourceDegradedNote
-                label="Approval-gate baseline"
-                detail={`${[...degradedSources].join(", ")} unavailable. Gate inventory may be incomplete.`}
-                onRetry={() => void refetch()}
-              />
-            ) : (
+            degradedSources.size === 0 ? (
               <div className="text-xs text-muted-foreground">
                 No approval-gated tools are configured.
               </div>
-            )
+            ) : null
           }
         >
           {gatedTools.map((tool) => (
