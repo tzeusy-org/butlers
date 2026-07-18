@@ -71,6 +71,54 @@ const WORKSPACE_PAGE_SIZE = 500;
 /** Safety cap on cursor follows so a runaway window can't loop forever. */
 const WORKSPACE_MAX_PAGES = 20;
 
+interface CalendarSourceSyncEnabledSnapshot {
+  queryKey: readonly unknown[];
+  sourceId: string;
+  sourceKey: string;
+  butlerName: string | null;
+  syncEnabled: boolean;
+}
+
+interface CalendarSourceToggleSnapshot {
+  metaSources: CalendarSourceSyncEnabledSnapshot[];
+  workspaceSources: CalendarSourceSyncEnabledSnapshot[];
+}
+
+function calendarSourceMatchesToggle(
+  source: CalendarWorkspaceSourceFreshness,
+  body: CalendarSourceToggleRequest,
+): boolean {
+  return (
+    source.butler_name === body.butler &&
+    ((body.source_key != null && source.source_key === body.source_key) ||
+      (body.source_id != null && source.source_id === body.source_id))
+  );
+}
+
+function sourceSyncEnabledSnapshot(
+  queryKey: readonly unknown[],
+  source: CalendarWorkspaceSourceFreshness,
+): CalendarSourceSyncEnabledSnapshot {
+  return {
+    queryKey,
+    sourceId: source.source_id,
+    sourceKey: source.source_key,
+    butlerName: source.butler_name,
+    syncEnabled: source.sync_enabled,
+  };
+}
+
+function matchesSourceSnapshot(
+  source: CalendarWorkspaceSourceFreshness,
+  snapshot: CalendarSourceSyncEnabledSnapshot,
+): boolean {
+  return (
+    source.source_id === snapshot.sourceId &&
+    source.source_key === snapshot.sourceKey &&
+    source.butler_name === snapshot.butlerName
+  );
+}
+
 /**
  * Fetch the full workspace window by following the keyset `next_cursor` until
  * `has_more` is false, concatenating entries. The calendar grid renders a
@@ -408,7 +456,11 @@ export function useCalendarAccounts(options?: CalendarWorkspaceQueryOptions) {
 
 /** Enable/disable a calendar as a sync source and refresh workspace metadata. */
 export function useToggleCalendarSource() {
-  return useOptimisticMutation<ApiResponse<CalendarSourceToggleResponse>, CalendarSourceToggleRequest, ListSnapshot>({
+  return useOptimisticMutation<
+    ApiResponse<CalendarSourceToggleResponse>,
+    CalendarSourceToggleRequest,
+    CalendarSourceToggleSnapshot
+  >({
     mutationFn: (body: CalendarSourceToggleRequest) => toggleCalendarSource(body),
     cancelQueryKeys: [
       ["calendar-workspace"],
@@ -416,13 +468,31 @@ export function useToggleCalendarSource() {
       ["calendar-accounts"],
     ],
     applyOptimisticUpdate: (body, queryClient) => {
-      const sourceMatches = (source: CalendarWorkspaceSourceFreshness) =>
-        source.butler_name === body.butler &&
-        ((body.source_key != null && source.source_key === body.source_key) ||
-          (body.source_id != null && source.source_id === body.source_id));
-      const metaSnapshot = snapshotAndUpdateQueries<ApiResponse<CalendarWorkspaceMetaResponse>>(
-        queryClient,
-        ["calendar-workspace-meta"],
+      const metaSources = queryClient
+        .getQueriesData<ApiResponse<CalendarWorkspaceMetaResponse>>({
+          queryKey: ["calendar-workspace-meta"],
+        })
+        .flatMap(([queryKey, current]) =>
+          current
+            ? current.data.connected_sources
+                .filter((source) => calendarSourceMatchesToggle(source, body))
+                .map((source) => sourceSyncEnabledSnapshot(queryKey, source))
+            : [],
+        );
+      const workspaceSources = queryClient
+        .getQueriesData<ApiResponse<CalendarWorkspaceReadResponse>>({
+          queryKey: ["calendar-workspace"],
+        })
+        .flatMap(([queryKey, current]) =>
+          current
+            ? current.data.source_freshness
+                .filter((source) => calendarSourceMatchesToggle(source, body))
+                .map((source) => sourceSyncEnabledSnapshot(queryKey, source))
+            : [],
+        );
+
+      queryClient.setQueriesData<ApiResponse<CalendarWorkspaceMetaResponse>>(
+        { queryKey: ["calendar-workspace-meta"] },
         (current) =>
           current
             ? {
@@ -430,15 +500,16 @@ export function useToggleCalendarSource() {
                 data: {
                   ...current.data,
                   connected_sources: current.data.connected_sources.map((source) =>
-                    sourceMatches(source) ? { ...source, sync_enabled: body.enabled } : source,
+                    calendarSourceMatchesToggle(source, body)
+                      ? { ...source, sync_enabled: body.enabled }
+                      : source,
                   ),
                 },
               }
             : current,
       );
-      const workspaceSnapshot = snapshotAndUpdateQueries<ApiResponse<CalendarWorkspaceReadResponse>>(
-        queryClient,
-        ["calendar-workspace"],
+      queryClient.setQueriesData<ApiResponse<CalendarWorkspaceReadResponse>>(
+        { queryKey: ["calendar-workspace"] },
         (current) =>
           current
             ? {
@@ -446,15 +517,56 @@ export function useToggleCalendarSource() {
                 data: {
                   ...current.data,
                   source_freshness: current.data.source_freshness.map((source) =>
-                    sourceMatches(source) ? { ...source, sync_enabled: body.enabled } : source,
+                    calendarSourceMatchesToggle(source, body)
+                      ? { ...source, sync_enabled: body.enabled }
+                      : source,
                   ),
                 },
               }
             : current,
       );
-      return [...metaSnapshot, ...workspaceSnapshot];
+      return { metaSources, workspaceSources };
     },
-    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    rollback: (snapshot, queryClient) => {
+      snapshot.metaSources.forEach((sourceSnapshot) => {
+        queryClient.setQueryData<ApiResponse<CalendarWorkspaceMetaResponse>>(
+          sourceSnapshot.queryKey,
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  data: {
+                    ...current.data,
+                    connected_sources: current.data.connected_sources.map((source) =>
+                      matchesSourceSnapshot(source, sourceSnapshot)
+                        ? { ...source, sync_enabled: sourceSnapshot.syncEnabled }
+                        : source,
+                    ),
+                  },
+                }
+              : current,
+        );
+      });
+      snapshot.workspaceSources.forEach((sourceSnapshot) => {
+        queryClient.setQueryData<ApiResponse<CalendarWorkspaceReadResponse>>(
+          sourceSnapshot.queryKey,
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  data: {
+                    ...current.data,
+                    source_freshness: current.data.source_freshness.map((source) =>
+                      matchesSourceSnapshot(source, sourceSnapshot)
+                        ? { ...source, sync_enabled: sourceSnapshot.syncEnabled }
+                        : source,
+                    ),
+                  },
+                }
+              : current,
+        );
+      });
+    },
     invalidateQueryKeys: [
       ["calendar-workspace"],
       ["calendar-workspace-meta"],

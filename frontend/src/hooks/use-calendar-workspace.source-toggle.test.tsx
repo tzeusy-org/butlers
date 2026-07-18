@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ApiResponse,
   CalendarSourceToggleResponse,
+  CalendarWorkspaceMetaResponse,
   CalendarWorkspaceReadResponse,
   CalendarWorkspaceSourceFreshness,
 } from "@/api/types.ts";
@@ -61,15 +62,35 @@ function makeSource(butlerName: string): CalendarWorkspaceSourceFreshness {
 }
 
 function workspaceResponse(
-  source: CalendarWorkspaceSourceFreshness,
+  sources: CalendarWorkspaceSourceFreshness | CalendarWorkspaceSourceFreshness[],
 ): ApiResponse<CalendarWorkspaceReadResponse> {
   return {
     data: {
       entries: [],
-      source_freshness: [source],
+      source_freshness: Array.isArray(sources) ? sources : [sources],
       lanes: [],
       next_cursor: null,
       has_more: false,
+    },
+    meta: {},
+  };
+}
+
+function metaResponse(
+  connected_sources: CalendarWorkspaceSourceFreshness[],
+): ApiResponse<CalendarWorkspaceMetaResponse> {
+  return {
+    data: {
+      capabilities: {
+        views: ["user", "butler"],
+        filters: {},
+        sync: { global: true, by_source: true },
+      },
+      connected_sources,
+      writable_calendars: [],
+      lane_definitions: [],
+      default_timezone: "UTC",
+      primary_calendar_id: null,
     },
     meta: {},
   };
@@ -158,5 +179,110 @@ describe("useToggleCalendarSource", () => {
       });
       await togglePromise;
     });
+  });
+
+  it("keeps a later successful source toggle when an earlier toggle fails", async () => {
+    const toggleGeneral = deferred<ApiResponse<CalendarSourceToggleResponse>>();
+    const toggleRelationship = deferred<ApiResponse<CalendarSourceToggleResponse>>();
+    vi.mocked(toggleCalendarSource).mockImplementation(({ butler }) =>
+      butler === "general" ? toggleGeneral.promise : toggleRelationship.promise,
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        mutations: { retry: false },
+        queries: { retry: false },
+      },
+    });
+    const metaKey = ["calendar-workspace-meta"] as const;
+    const userKey = [
+      "calendar-workspace",
+      {
+        view: "user",
+        start: "2026-07-18T00:00:00Z",
+        end: "2026-07-19T00:00:00Z",
+        timezone: "UTC",
+      },
+    ] as const;
+    const butlerKey = [
+      "calendar-workspace",
+      {
+        view: "butler",
+        start: "2026-07-18T00:00:00Z",
+        end: "2026-07-19T00:00:00Z",
+        timezone: "UTC",
+      },
+    ] as const;
+    const generalSource = makeSource("general");
+    const relationshipSource = makeSource("relationship");
+    queryClient.setQueryData(metaKey, metaResponse([generalSource, relationshipSource]));
+    queryClient.setQueryData(userKey, workspaceResponse([generalSource, relationshipSource]));
+    queryClient.setQueryData(butlerKey, workspaceResponse([generalSource, relationshipSource]));
+
+    const { result } = renderHook(() => useToggleCalendarSource(), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let generalPromise!: Promise<ApiResponse<CalendarSourceToggleResponse>>;
+    let relationshipPromise!: Promise<ApiResponse<CalendarSourceToggleResponse>>;
+    await act(async () => {
+      generalPromise = result.current.mutateAsync({
+        butler: "general",
+        source_key: SHARED_SOURCE_KEY,
+        enabled: false,
+      });
+    });
+    await waitFor(() => {
+      expect(
+        queryClient
+          .getQueryData<ApiResponse<CalendarWorkspaceMetaResponse>>(metaKey)
+          ?.data.connected_sources.find((source) => source.butler_name === "general")?.sync_enabled,
+      ).toBe(false);
+    });
+
+    await act(async () => {
+      relationshipPromise = result.current.mutateAsync({
+        butler: "relationship",
+        source_key: SHARED_SOURCE_KEY,
+        enabled: false,
+      });
+    });
+    await waitFor(() => {
+      const metaSources = queryClient.getQueryData<ApiResponse<CalendarWorkspaceMetaResponse>>(metaKey)
+        ?.data.connected_sources;
+      expect(metaSources?.every((source) => source.sync_enabled === false)).toBe(true);
+    });
+
+    await act(async () => {
+      toggleRelationship.resolve({
+        data: {
+          butler: "relationship",
+          source_key: SHARED_SOURCE_KEY,
+          source_id: "relationship-source-id",
+          calendar_id: "primary",
+          enabled: false,
+        },
+        meta: {},
+      });
+      await relationshipPromise;
+    });
+
+    await act(async () => {
+      toggleGeneral.reject(new Error("general toggle failed"));
+      await expect(generalPromise).rejects.toThrow("general toggle failed");
+    });
+
+    const metaSources = queryClient.getQueryData<ApiResponse<CalendarWorkspaceMetaResponse>>(metaKey)
+      ?.data.connected_sources;
+    expect(metaSources?.find((source) => source.butler_name === "general")?.sync_enabled).toBe(true);
+    expect(metaSources?.find((source) => source.butler_name === "relationship")?.sync_enabled).toBe(false);
+
+    for (const workspaceKey of [userKey, butlerKey]) {
+      const sources = queryClient
+        .getQueryData<ApiResponse<CalendarWorkspaceReadResponse>>(workspaceKey)
+        ?.data.source_freshness;
+      expect(sources?.find((source) => source.butler_name === "general")?.sync_enabled).toBe(true);
+      expect(sources?.find((source) => source.butler_name === "relationship")?.sync_enabled).toBe(false);
+    }
   });
 });

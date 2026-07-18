@@ -394,17 +394,38 @@ interface ArchivedRelationshipEntityListItem {
   queryKey: readonly unknown[];
   entity: RelationshipEntitySummary;
   index: number;
+  previousId: string | undefined;
+  nextId: string | undefined;
 }
 
 interface ArchivedRelationshipQueueItem {
   queryKey: readonly unknown[];
   entry: RelationshipQueueEntry;
   index: number;
+  previousId: string | undefined;
+  nextId: string | undefined;
 }
 
 interface RelationshipEntityArchiveSnapshot {
   listItems: ArchivedRelationshipEntityListItem[];
   queueItems: ArchivedRelationshipQueueItem[];
+}
+
+function archiveRestoreIndex(
+  currentIds: readonly string[],
+  index: number,
+  previousId: string | undefined,
+  nextId: string | undefined,
+): number {
+  if (nextId !== undefined) {
+    const nextIndex = currentIds.indexOf(nextId);
+    if (nextIndex >= 0) return nextIndex;
+  }
+  if (previousId !== undefined) {
+    const previousIndex = currentIds.indexOf(previousId);
+    if (previousIndex >= 0) return previousIndex + 1;
+  }
+  return Math.min(index, currentIds.length);
 }
 
 /**
@@ -422,7 +443,17 @@ function snapshotRelationshipEntityArchive(
       const index = current?.items.findIndex((entity) => entity.id === entityId);
       if (current == null || index == null || index < 0) return [];
       const entity = current.items[index];
-      return entity ? [{ queryKey, entity, index }] : [];
+      return entity
+        ? [
+            {
+              queryKey,
+              entity,
+              index,
+              previousId: current.items[index - 1]?.id,
+              nextId: current.items[index + 1]?.id,
+            },
+          ]
+        : [];
     });
   const queueItems = queryClient
     .getQueriesData<RelationshipQueueResponse>({ queryKey: ["relationship-entity-queue"] })
@@ -430,7 +461,17 @@ function snapshotRelationshipEntityArchive(
       const index = current?.items.findIndex((entry) => entry.entity_id === entityId);
       if (current == null || index == null || index < 0) return [];
       const entry = current.items[index];
-      return entry ? [{ queryKey, entry, index }] : [];
+      return entry
+        ? [
+            {
+              queryKey,
+              entry,
+              index,
+              previousId: current.items[index - 1]?.entity_id,
+              nextId: current.items[index + 1]?.entity_id,
+            },
+          ]
+        : [];
     });
   return { listItems, queueItems };
 }
@@ -439,21 +480,39 @@ function rollbackRelationshipEntityArchive(
   queryClient: ReturnType<typeof useQueryClient>,
   snapshot: RelationshipEntityArchiveSnapshot,
 ): void {
-  snapshot.listItems.forEach(({ queryKey, entity, index }) => {
+  snapshot.listItems.forEach(({ queryKey, entity, index, previousId, nextId }) => {
     queryClient.setQueryData<RelationshipEntityListResponse>(queryKey, (current) => {
       if (current == null || current.items.some((item) => item.id === entity.id)) return current;
       const items = [...current.items];
-      items.splice(Math.min(index, items.length), 0, entity);
+      items.splice(
+        archiveRestoreIndex(
+          items.map((item) => item.id),
+          index,
+          previousId,
+          nextId,
+        ),
+        0,
+        entity,
+      );
       return { ...current, items, total: current.total + 1 };
     });
   });
-  snapshot.queueItems.forEach(({ queryKey, entry, index }) => {
+  snapshot.queueItems.forEach(({ queryKey, entry, index, previousId, nextId }) => {
     queryClient.setQueryData<RelationshipQueueResponse>(queryKey, (current) => {
       if (current == null || current.items.some((item) => item.entity_id === entry.entity_id)) {
         return current;
       }
       const items = [...current.items];
-      items.splice(Math.min(index, items.length), 0, entry);
+      items.splice(
+        archiveRestoreIndex(
+          items.map((item) => item.entity_id),
+          index,
+          previousId,
+          nextId,
+        ),
+        0,
+        entry,
+      );
       return { ...current, items, total: current.total + 1 };
     });
   });
