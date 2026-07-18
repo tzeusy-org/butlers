@@ -5,7 +5,7 @@ import logging
 import pytest
 from click.testing import CliRunner
 
-from butlers.cli import _configure_logging, _discover_configs, cli
+from butlers.cli import _configure_logging, _discover_configs, _migrate_all, cli
 
 pytestmark = pytest.mark.unit
 
@@ -158,6 +158,47 @@ class TestDiscoverConfigs:
         (bad / "butler.toml").write_text("not valid [[[ toml content")
         configs2 = _discover_configs(base)
         assert configs2 == {"test_butler": base / "test_butler"}
+
+
+class TestMigrateCommand:
+    @pytest.mark.asyncio
+    async def test_migrate_all_routes_memory_schema_override_to_module_chain(
+        self, tmp_path, monkeypatch
+    ):
+        butler_dir = tmp_path / "butlers" / "chronicler"
+        butler_dir.mkdir(parents=True)
+        (butler_dir / "butler.toml").write_text(
+            """
+[butler]
+name = "chronicler"
+port = 41111
+description = "Retrospective time butler"
+
+[butler.db]
+name = "butlers"
+schema = "chronicler"
+
+[modules.memory]
+memory_schema = "chronicler_mem"
+""".lstrip()
+        )
+
+        calls: list[tuple[str, str | None]] = []
+
+        async def record_migration(db_url: str, chain: str = "core", schema: str | None = None):
+            del db_url
+            calls.append((chain, schema))
+
+        monkeypatch.setattr(
+            "butlers.db.db_params_from_env",
+            lambda: {"user": "user", "password": "pw", "host": "localhost", "port": 5432},
+        )
+        monkeypatch.setattr("butlers.migrations.has_butler_chain", lambda name: False)
+        monkeypatch.setattr("butlers.migrations.run_migrations", record_migration)
+
+        await _migrate_all({"chronicler": butler_dir}, dry_run=False)
+
+        assert calls == [("core", "chronicler"), ("memory", "chronicler_mem")]
 
 
 class TestUpCommand:
