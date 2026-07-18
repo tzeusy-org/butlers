@@ -3,7 +3,7 @@
 Verifies:
 - record() accumulates events in buffer
 - flush() clears buffer after writing
-- flush failure is non-fatal (buffer cleared anyway per implementation)
+- flush failure is non-fatal and never publishes a fleet event
 - reason_label helpers return non-empty strings
 
 [bu-35fm7]
@@ -11,7 +11,7 @@ Verifies:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -99,28 +99,101 @@ async def test_flush_clears_buffer() -> None:
     assert len(buf) == 0
 
 
+async def test_flush_publishes_ingestion_event_after_successful_batch_write() -> None:
+    """A committed filtered-event batch invalidates the unified ingestion feed."""
+    buf = _make_buffer()
+    _record_one(buf)
+    _record_one(buf)
+
+    mock_conn = AsyncMock()
+    mock_pool = MagicMock()
+    mock_pool.execute = AsyncMock()
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_pool.acquire.return_value = mock_ctx
+
+    operations: list[str] = []
+
+    async def record_write(*_args: object) -> None:
+        operations.append("write")
+
+    async def record_release(*_args: object) -> None:
+        operations.append("release")
+
+    async def record_publish(*_args: object) -> None:
+        operations.append("publish")
+
+    mock_conn.executemany.side_effect = record_write
+    mock_ctx.__aexit__.side_effect = record_release
+    mock_publish = AsyncMock(side_effect=record_publish)
+
+    with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):
+        await buf.flush(pool=mock_pool)
+
+    assert operations == ["write", "release", "publish"]
+    mock_publish.assert_awaited_once_with(mock_pool, "ingestion", {})
+    assert len(buf) == 0
+
+
+async def test_flush_does_not_retry_committed_rows_when_publication_fails() -> None:
+    """A failed best-effort signal cannot duplicate an already committed batch."""
+    buf = _make_buffer()
+    _record_one(buf)
+
+    mock_conn = AsyncMock()
+    mock_pool = MagicMock()
+    mock_pool.execute = AsyncMock()
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_pool.acquire.return_value = mock_ctx
+    mock_publish = AsyncMock(side_effect=RuntimeError("NOTIFY unavailable"))
+
+    with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):
+        await buf.flush(pool=mock_pool)
+        await buf.flush(pool=mock_pool)
+
+    mock_conn.executemany.assert_awaited_once()
+    mock_publish.assert_awaited_once_with(mock_pool, "ingestion", {})
+    assert len(buf) == 0
+
+
 async def test_flush_empty_buffer_is_noop() -> None:
     """flush() on an empty buffer must not call the pool at all."""
     buf = _make_buffer()
     mock_pool = MagicMock()
     mock_pool.execute = AsyncMock()
-    await buf.flush(pool=mock_pool)
+    mock_publish = AsyncMock()
+
+    with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):
+        await buf.flush(pool=mock_pool)
+
     mock_pool.execute.assert_not_called()
     mock_pool.acquire.assert_not_called()
+    mock_publish.assert_not_awaited()
 
 
 async def test_flush_db_error_is_non_fatal() -> None:
-    """DB error during flush must not raise; unflushed events silently dropped."""
+    """A failed batch INSERT does not publish a fleet event."""
     buf = _make_buffer()
     _record_one(buf)
 
+    mock_conn = AsyncMock()
+    mock_conn.executemany.side_effect = RuntimeError("DB down")
     mock_pool = MagicMock()
-    mock_pool.execute = AsyncMock(side_effect=RuntimeError("DB down"))
+    mock_pool.execute = AsyncMock()
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_pool.acquire.return_value = mock_ctx
+    mock_publish = AsyncMock()
 
-    # Must not raise — filtered events are operational visibility data
-    await buf.flush(pool=mock_pool)
-    # Implementation: flush errors are logged as warnings, buffer is silently dropped
-    # (rows_to_flush was copied before the error; original self._rows may or may not be cleared)
+    with patch("butlers.fleet_events.publish_fleet_event", new=mock_publish):
+        # Must not raise — filtered events are operational visibility data.
+        await buf.flush(pool=mock_pool)
+
+    mock_publish.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

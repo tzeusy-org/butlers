@@ -379,13 +379,6 @@ class FilteredEventBuffer:
 
             async with pool.acquire() as conn:
                 await conn.executemany(_INSERT_SQL, rows_to_flush)
-            self._rows.clear()
-            logger.debug(
-                "Flushed %d filtered events: connector_type=%s, endpoint=%s",
-                len(rows_to_flush),
-                self._connector_type,
-                self._endpoint_identity,
-            )
         except Exception:
             logger.warning(
                 "Failed to flush %d filtered events (connector_type=%s, endpoint=%s); "
@@ -393,6 +386,30 @@ class FilteredEventBuffer:
                 len(rows_to_flush),
                 self._connector_type,
                 self._endpoint_identity,
+                exc_info=True,
+            )
+            return
+
+        self._rows.clear()
+        logger.debug(
+            "Flushed %d filtered events: connector_type=%s, endpoint=%s",
+            len(rows_to_flush),
+            self._connector_type,
+            self._endpoint_identity,
+        )
+
+        # These rows never reach ingest_v1(), so they have no canonical request_id.
+        # The existing ingestion cache patch keys only on the event type; an empty,
+        # bounded payload therefore invalidates the unified feed without inventing
+        # row metadata or exposing filtered content. Publish only after the batch
+        # INSERT has completed successfully, and keep transport failure non-fatal.
+        try:
+            from butlers.fleet_events import publish_fleet_event
+
+            await publish_fleet_event(pool, "ingestion", {})
+        except Exception:
+            logger.debug(
+                "publish_fleet_event('ingestion') failed after filtered-event flush (non-fatal)",
                 exc_info=True,
             )
 
