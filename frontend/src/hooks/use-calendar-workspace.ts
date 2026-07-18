@@ -4,6 +4,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
+
 import {
   acceptCalendarProposal,
   dismissCalendarProposal,
@@ -102,11 +104,12 @@ export function useCalendarWorkspace(
   params: CalendarWorkspaceParams,
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-workspace", params],
     queryFn: () => fetchAllWorkspacePages(params),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 30_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     // Never-blank floor (bu-nhcp5): the query key includes the visible
     // start/end window, so stepping week-to-week/day-to-day is a brand-new
     // cache entry. Keep the outgoing window's entries on screen while the
@@ -128,6 +131,7 @@ export function useCalendarOverlays(
   params: { start: string; end: string; timezone?: string },
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-overlays", params],
     queryFn: () =>
@@ -138,7 +142,7 @@ export function useCalendarOverlays(
         timezone: params.timezone,
     }),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 60_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -153,6 +157,7 @@ export function useCalendarDayBriefing(
   params: { date: string; timezone?: string; butlers?: string[] },
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-day-briefing", params],
     queryFn: () =>
@@ -162,7 +167,7 @@ export function useCalendarDayBriefing(
         butlers: params.butlers,
     }),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 60_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -318,6 +323,7 @@ export function useCalendarProposals(
   params: { start: string; end: string; timezone?: string },
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-proposals", params],
     queryFn: () =>
@@ -328,7 +334,7 @@ export function useCalendarProposals(
         timezone: params.timezone,
       }),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 60_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
   });
 }
 

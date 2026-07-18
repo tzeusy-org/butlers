@@ -2701,6 +2701,62 @@ class TestProjectInternalSourcesNoReminders:
             "_project_reminders_source should have been removed from CalendarModule"
         )
 
+    async def test_project_internal_sources_publishes_calendar_event_after_projection(
+        self, monkeypatch
+    ):
+        """The durable scheduler projection is a live-cache freshness producer."""
+        pool = MagicMock()
+        mod = CalendarModule()
+        mod._db = SimpleNamespace(pool=pool)
+        project_scheduler = AsyncMock(return_value=True)
+        publish_mock = AsyncMock()
+
+        monkeypatch.setattr(mod, "_project_scheduler_source", project_scheduler)
+        monkeypatch.setattr(
+            "butlers.modules.calendar.publish_fleet_event",
+            publish_mock,
+            raising=False,
+        )
+
+        await mod._project_internal_sources()
+
+        publish_mock.assert_awaited_once_with(pool, "calendar", {"kind": "internal_projection"})
+
+
+class TestCalendarFleetEvents:
+    async def test_sync_calendar_publishes_after_provider_projection_commits(self):
+        """A provider delta publishes only after its normalized projection succeeds."""
+        pool = MagicMock()
+        mod = CalendarModule()
+        mod._db = SimpleNamespace(pool=pool)
+        mod._config = CalendarConfig(provider="google")
+        mod._sync_states["calendar-1"] = CalendarSyncState()
+
+        provider = MagicMock()
+        provider.name = "google"
+        provider.get_calendar_summary = AsyncMock(return_value="Work")
+        provider.sync_incremental = AsyncMock(
+            return_value=([MagicMock()], ["cancelled-event"], "next-sync-token")
+        )
+        mod._provider = provider
+        mod._source_sync_enabled = AsyncMock(return_value=True)
+        mod._ensure_calendar_source = AsyncMock(return_value=uuid.uuid4())
+        mod._load_projection_cursor = AsyncMock(return_value=None)
+        mod._project_provider_changes = AsyncMock()
+        mod._upsert_projection_cursor = AsyncMock()
+        mod._record_projection_action = AsyncMock()
+        mod._save_sync_state = AsyncMock()
+        mod._project_internal_sources = AsyncMock(return_value=False)
+        mod._publish_calendar_fleet_event = AsyncMock()
+
+        await mod._sync_calendar("calendar-1")
+
+        mod._project_provider_changes.assert_awaited_once()
+        mod._publish_calendar_fleet_event.assert_awaited_once_with(
+            kind="provider_projection",
+            data={"updated_events": 1, "cancelled_events": 1},
+        )
+
 
 class TestCalendarProjectionSchemaCompatibility:
     """Projection paths fail closed when calendar schema is only partially migrated."""

@@ -43,6 +43,89 @@ async def test_project_sessions_discovers_butler_schemas_and_runs_adapter() -> N
     assert result["rows_projected"] == 2
 
 
+async def test_project_sessions_publishes_live_event_after_material_projection() -> None:
+    """The live scheduled handler publishes only after its adapter returns."""
+    pool = object()
+    adapter = AsyncMock()
+    adapter.run.return_value = AdapterResult(
+        source_name="core.sessions",
+        rows_projected=3,
+        point_events=6,
+        episodes_opened=2,
+        episodes_closed=1,
+    )
+    seed_registry = AsyncMock()
+    publish_event = AsyncMock()
+
+    with (
+        patch("butlers.chronicler.jobs.seed_source_registry", seed_registry),
+        patch("butlers.chronicler.jobs.list_butlers", return_value=[]),
+        patch("butlers.chronicler.jobs.CoreSessionsAdapter", return_value=adapter),
+        patch("butlers.chronicler.jobs.publish_fleet_event", publish_event),
+    ):
+        from butlers.chronicler.jobs import run_project_sessions
+
+        await run_project_sessions(pool, None)
+
+    adapter.run.assert_awaited_once_with(pool=pool, chronicler_pool=pool)
+    publish_event.assert_awaited_once_with(
+        pool,
+        "chronicles",
+        {
+            "kind": "projection",
+            "rows_projected": 3,
+            "point_events": 6,
+            "episodes_opened": 2,
+            "episodes_closed": 1,
+        },
+    )
+
+
+async def test_project_sessions_skips_live_event_when_projection_is_empty() -> None:
+    """An empty scheduled sweep does not churn all Chronicles query caches."""
+    pool = object()
+    adapter = AsyncMock()
+    adapter.run.return_value = AdapterResult(source_name="core.sessions")
+    publish_event = AsyncMock()
+
+    with (
+        patch("butlers.chronicler.jobs.seed_source_registry", new=AsyncMock()),
+        patch("butlers.chronicler.jobs.list_butlers", return_value=[]),
+        patch("butlers.chronicler.jobs.CoreSessionsAdapter", return_value=adapter),
+        patch("butlers.chronicler.jobs.publish_fleet_event", publish_event),
+    ):
+        from butlers.chronicler.jobs import run_project_sessions
+
+        await run_project_sessions(pool, None)
+
+    publish_event.assert_not_awaited()
+
+
+async def test_project_sessions_skips_live_event_when_adapter_is_skipped() -> None:
+    """A skipped source is not a durable projection even if it reports work."""
+    pool = object()
+    adapter = AsyncMock()
+    adapter.run.return_value = AdapterResult(
+        source_name="core.sessions",
+        rows_projected=1,
+        skipped=True,
+        skipped_reason="source unavailable",
+    )
+    publish_event = AsyncMock()
+
+    with (
+        patch("butlers.chronicler.jobs.seed_source_registry", new=AsyncMock()),
+        patch("butlers.chronicler.jobs.list_butlers", return_value=[]),
+        patch("butlers.chronicler.jobs.CoreSessionsAdapter", return_value=adapter),
+        patch("butlers.chronicler.jobs.publish_fleet_event", publish_event),
+    ):
+        from butlers.chronicler.jobs import run_project_sessions
+
+        await run_project_sessions(pool, None)
+
+    publish_event.assert_not_awaited()
+
+
 async def test_project_calendar_filters_to_calendar_enabled_butlers() -> None:
     pool = object()
     adapter = AsyncMock()

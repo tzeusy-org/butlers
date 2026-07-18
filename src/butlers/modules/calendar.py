@@ -39,6 +39,7 @@ from butlers.core.temporal.scheduling import (
     get_scheduling_preferences,
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
+from butlers.fleet_events import publish_fleet_event
 from butlers.modules.base import Module, ToolGroupMixin, group_enabled
 
 logger = logging.getLogger(__name__)
@@ -7542,14 +7543,14 @@ class CalendarModule(Module):
             window_end,
         )
 
-    async def _project_scheduler_source(self) -> None:
+    async def _project_scheduler_source(self) -> bool:
         if not await self._projection_tables_available():
-            return
+            return False
         if not await self._table_exists("scheduled_tasks"):
-            return
+            return False
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
-            return
+            return False
 
         source_id = await self._ensure_calendar_source(
             source_key=f"internal_scheduler:{self._butler_name}",
@@ -7562,7 +7563,7 @@ class CalendarModule(Module):
             metadata={"projection": "scheduler"},
         )
         if source_id is None:
-            return
+            return False
 
         rows = await pool.fetch(
             """
@@ -7695,8 +7696,21 @@ class CalendarModule(Module):
             last_error_at=None,
             last_error=None,
         )
+        return True
 
-    async def _project_internal_sources(self) -> None:
+    async def _publish_calendar_fleet_event(
+        self,
+        *,
+        kind: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Best-effort freshness signal after a durable calendar projection."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        await publish_fleet_event(pool, "calendar", {"kind": kind, **(data or {})})
+
+    async def _project_internal_sources(self, *, emit_event: bool = True) -> bool:
         """Refresh non-provider butler projection sources (scheduled tasks).
 
         Reminders are now native calendar events in ``calendar_events`` and are
@@ -7704,9 +7718,14 @@ class CalendarModule(Module):
         pass is needed.
         """
         try:
-            await self._project_scheduler_source()
+            projected = await self._project_scheduler_source()
         except Exception as exc:
             logger.error("Internal calendar projection refresh failed: %s", exc, exc_info=True)
+            return False
+        else:
+            if projected and emit_event:
+                await self._publish_calendar_fleet_event(kind="internal_projection")
+            return bool(projected)
 
     async def _projection_freshness_metadata(self) -> dict[str, Any]:
         if not await self._projection_tables_available():
@@ -7890,6 +7909,7 @@ class CalendarModule(Module):
             logger.info("Forced full re-sync (cursor recovery) for calendar '%s'", calendar_id)
         effective_sync_token = None if full else sync_state.sync_token
         cursor_checkpoint: dict[str, Any] = {}
+        provider_projection_applied = False
         if source_id is not None:
             try:
                 cursor_row = await self._load_projection_cursor(
@@ -8106,6 +8126,7 @@ class CalendarModule(Module):
                     error=error_message,
                 )
             else:
+                provider_projection_applied = True
                 checkpoint = {
                     "provider": provider.name,
                     "calendar_id": calendar_id,
@@ -8153,7 +8174,17 @@ class CalendarModule(Module):
         )
         self._sync_states[calendar_id] = new_state
         await self._save_sync_state(calendar_id, new_state)
-        await self._project_internal_sources()
+        internal_projection_applied = await self._project_internal_sources(emit_event=False)
+        if provider_projection_applied and pending_count:
+            await self._publish_calendar_fleet_event(
+                kind="provider_projection",
+                data={
+                    "updated_events": len(updated_events),
+                    "cancelled_events": len(cancelled_ids),
+                },
+            )
+        elif internal_projection_applied:
+            await self._publish_calendar_fleet_event(kind="internal_projection")
 
         logger.info(
             "Calendar sync completed (calendar_id=%s, updated=%d, cancelled=%d)",

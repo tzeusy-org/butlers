@@ -25,6 +25,8 @@ describe("EVENT_CACHE_REGISTRY", () => {
         "approval",
         "attention_add",
         "attention_remove",
+        "calendar",
+        "chronicles",
         "header_delta",
         "heartbeat",
         "ingestion",
@@ -146,6 +148,29 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["ingestion", "events-histogram"],
       ]),
     );
+  });
+
+  it("calendar: invalidates the projected workspace and its derived views", () => {
+    const { qc, invalidateQueries } = makeQc();
+    applyFleetEvent(qc, { type: "calendar", ts: 1, data: { kind: "provider_projection" } });
+    expect(keys(invalidateQueries)).toEqual(
+      expect.arrayContaining([
+        ["calendar-workspace"],
+        ["calendar-overlays"],
+        ["calendar-day-briefing"],
+        ["calendar-proposals"],
+        ["calendar-duplicates"],
+        ["calendar-conflicts"],
+        ["calendar-workspace-entry"],
+        ["calendar-workspace-search"],
+      ]),
+    );
+  });
+
+  it("chronicles: invalidates projection-backed chronicler data", () => {
+    const { qc, invalidateQueries } = makeQc();
+    applyFleetEvent(qc, { type: "chronicles", ts: 1, data: { kind: "projection" } });
+    expect(keys(invalidateQueries)).toEqual(expect.arrayContaining([["chronicles"]]));
   });
 
   it("heartbeat: is a no-op (no cache invalidation)", () => {

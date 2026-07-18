@@ -78,6 +78,19 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "ingestion", queryKey: ["ingestion", "events"], source: "use-ingestion-events.ts (ingestionEventKeys.list)" },
   { eventType: "ingestion", queryKey: ["ingestion", "window-rollup"], source: "use-ingestion-events.ts (window rollup)" },
   { eventType: "ingestion", queryKey: ["ingestion", "events-histogram"], source: "use-ingestion-events.ts (histogram)" },
+
+  // calendar — provider and internal scheduler projections
+  { eventType: "calendar", queryKey: ["calendar-workspace"], source: "use-calendar-workspace.ts (useCalendarWorkspace)" },
+  { eventType: "calendar", queryKey: ["calendar-overlays"], source: "use-calendar-workspace.ts (useCalendarOverlays)" },
+  { eventType: "calendar", queryKey: ["calendar-day-briefing"], source: "use-calendar-workspace.ts (useCalendarDayBriefing)" },
+  { eventType: "calendar", queryKey: ["calendar-proposals"], source: "use-calendar-workspace.ts (useCalendarProposals)" },
+  { eventType: "calendar", queryKey: ["calendar-duplicates"], source: "use-calendar-workspace.ts (useCalendarDuplicates)" },
+  { eventType: "calendar", queryKey: ["calendar-conflicts"], source: "use-calendar-workspace.ts (useCalendarConflicts)" },
+  { eventType: "calendar", queryKey: ["calendar-workspace-entry"], source: "use-calendar-workspace.ts (useCalendarWorkspaceEntry)" },
+  { eventType: "calendar", queryKey: ["calendar-workspace-search"], source: "use-calendar-workspace.ts (useCalendarWorkspaceSearch)" },
+
+  // chronicles — deterministic scheduled projections
+  { eventType: "chronicles", queryKey: ["chronicles"], source: "use-chronicles.ts (projection-backed queries)" },
 ];
 
 /** Every event type in EVENT_CACHE_COVERAGE_MANIFEST -- used by the coverage
@@ -90,4 +103,6 @@ export const CACHE_AFFECTING_EVENT_TYPES = [
   "notification",
   "issue",
   "ingestion",
+  "calendar",
+  "chronicles",
 ] as const;

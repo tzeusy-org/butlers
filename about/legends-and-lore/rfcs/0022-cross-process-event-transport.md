@@ -2,11 +2,11 @@
 
 **Status:** Accepted
 **Date:** 2026-07-12
-**Amended:** 2026-07-18 — ingestion producers; see [Amendments](#amendments).
+**Amended:** 2026-07-18 — ingestion, Calendar, and Chronicler projection producers; see [Amendments](#amendments).
 
 ## Summary
 
-Cross-process live events (session lifecycle, per-call spend, `notify()` deliveries, approval gate decisions, accepted Switchboard ingests, and committed connector filtered-event batches) are published from their owning process via `SELECT pg_notify(channel, payload)` on its database pool. The dashboard-api container LISTENs on that same Postgres channel and bridges every NOTIFY back into its existing in-process fleet event bus (`butlers.api.routers.events.emit_event`, `WS /api/events/stream`), so every existing WebSocket consumer keeps working unchanged. The original producers publish additively alongside their pre-existing in-process `emit_event()` / `emit_spend_event()` / `emit_approvals_event()` calls; the later Switchboard `ingestion` producer is bridge-only because its daemon-local `emit_event()` call was known to be inert, and connector batches likewise publish only through the bridge (see the 2026-07-18 amendments).
+Cross-process live events (session lifecycle, per-call spend, `notify()` deliveries, approval gate decisions, accepted Switchboard ingests, committed connector filtered-event batches, Calendar projections, and Chronicler projections) are published from their owning process via `SELECT pg_notify(channel, payload)` on its database pool. The dashboard-api container LISTENs on that same Postgres channel and bridges every NOTIFY back into its existing in-process fleet event bus (`butlers.api.routers.events.emit_event`, `WS /api/events/stream`), so every existing WebSocket consumer keeps working unchanged. The original producers publish additively alongside their pre-existing in-process `emit_event()` / `emit_spend_event()` / `emit_approvals_event()` calls; later producers publish bridge-only because daemon-local `emit_event()` calls are known to be inert (see the 2026-07-18 amendments).
 
 ## Motivation
 
@@ -49,7 +49,7 @@ The alternative considered — an HTTP callback from daemon to dashboard-api —
 {"type": "session", "data": {"phase": "started", "session_id": "...", "butler": "general", "trigger_source": "tick", "model": "..."}}
 ```
 
-`type` is one of the values in `butlers.api.routers.events.EVENT_TYPES` that a daemon process can originate: `session`, `spend`, `notification`, `approval`, or `ingestion`. `data` is whatever dict the original in-process `emit_event(event_type, data)` call would have carried — the bridge does not transform or re-shape it, so a bridged event is indistinguishable on the wire from one emitted natively inside the dashboard-api process (e.g. `header_delta`/`issue`/`attention_*`, which originate in-process and are unaffected by this RFC). An `ingestion` payload from `ingest_v1()` contains only `request_id`, `source_channel`, `triage_decision`, and `triage_target`; it never includes the raw ingest payload. A filtered-event batch has no canonical Switchboard request ID, so it emits an empty `data` object; the dashboard's ingestion patch intentionally keys only on `type`.
+`type` is one of the values in `butlers.api.routers.events.EVENT_TYPES` that a daemon process can originate: `session`, `spend`, `notification`, `approval`, `ingestion`, `calendar`, or `chronicles`. `data` is whatever small metadata dict the producer needs for cache freshness — the bridge does not transform or re-shape it, so a bridged event is indistinguishable on the wire from one emitted natively inside the dashboard-api process (e.g. `header_delta`/`issue`/`attention_*`, which originate in-process and are unaffected by this RFC). An `ingestion` payload from `ingest_v1()` contains only `request_id`, `source_channel`, `triage_decision`, and `triage_target`; it never includes the raw ingest payload. Calendar and Chronicler projections publish only a kind plus aggregate counts, never event, episode, or source content. A filtered-event batch has no canonical Switchboard request ID, so it emits an empty `data` object; the dashboard's ingestion patch intentionally keys only on `type`.
 
 **Timestamp:** intentionally *not* part of the envelope. `emit_event()` stamps `ts` itself at the moment it runs inside the dashboard-api process (arrival time), consistent with how every other event on the bus is stamped — this RFC does not introduce a second, origin-side clock that could drift or arrive out of order relative to it.
 
@@ -114,7 +114,9 @@ None of these failure modes affect the durable record each event describes (the 
 - `src/butlers/core/sessions.py`, `src/butlers/core/spawner.py`, `src/butlers/core_tools/_notifications.py`, `src/butlers/modules/approvals/gate.py`, `src/butlers/modules/approvals/email_guard.py` — original daemon-side `publish_fleet_event()` call sites, added alongside their pre-existing (now cross-process-dead) `emit_event()`/`emit_spend_event()`/`emit_approvals_event()` calls.
 - `roster/switchboard/tools/ingestion/ingest.py` — daemon-side bridge-only `ingestion` publish immediately after its `public.ingestion_events` transaction commits.
 - `src/butlers/connectors/filtered_event_buffer.py` — connector-side bridge-only `ingestion` publish after its `connectors.filtered_events` batch INSERT commits.
-- No frontend changes: `WS /api/events/stream`, its ring-buffer snapshot, and every existing cache-invalidation consumer are unaware the event's origin process changed.
+- `src/butlers/modules/calendar.py` — bridge-only `calendar` publishes after durable provider or internal-scheduler projection writes.
+- `src/butlers/chronicler/jobs.py` — bridge-only `chronicles` publish after a scheduled adapter projects material rows.
+- `frontend/src/hooks/event-cache-registry.ts` maps `calendar` to normalized workspace views and `chronicles` to the Chronicler query prefix. `WS /api/events/stream` and its ring-buffer snapshot remain unchanged.
 - No schema/migration changes: `pg_notify` requires no table.
 
 ## Alternatives Considered

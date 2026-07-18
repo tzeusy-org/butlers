@@ -8,8 +8,9 @@ maintaining a bespoke socket per surface, every surface that wants live
 updates subscribes once here and receives a typed envelope::
 
     {"type": "approval" | "spend" | "session" | "notification" | "issue"
-             | "ingestion" | "header_delta" | "attention_add"
-             | "attention_remove" | "heartbeat", "ts": <unix float>, "data": {...}}
+             | "ingestion" | "calendar" | "chronicles" | "header_delta"
+             | "attention_add" | "attention_remove" | "heartbeat",
+     "ts": <unix float>, "data": {...}}
 
 On connect the server replays a snapshot of recent events (ring buffer) so a
 client is never blank while waiting for the next live event. When no event
@@ -61,6 +62,8 @@ EVENT_TYPES = frozenset(
         "session",  # phase: "started" | "ended"
         "notification",  # notify() delivery attempts
         "ingestion",  # new ingestion_events row (emitted from ingest_v1's insert transaction)
+        "calendar",  # provider or internal calendar projection completed
+        "chronicles",  # chronicler scheduled projection wrote material rows
         "issue",  # a new audit-log error landed (issues feed may have changed)
         "approval",  # approval lifecycle transitions (created/approved/rejected/...)
         "spend",  # per-call cost events

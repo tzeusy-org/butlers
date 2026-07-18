@@ -561,7 +561,7 @@ The frontend SHALL use TanStack Query (`@tanstack/react-query`) via `frontend/sr
 | Switchboard routing/registry | 30s | `useRoutingLog`, `useRegistry` |
 | Backfill jobs | 30s | `useBackfillJobs`, `useBackfillJob` |
 | Connector detail | 30s | `useConnectorDetail` |
-| Calendar workspace | 30s (default, overridable) | `useCalendarWorkspace` |
+| Calendar workspace | 5m while bus-connected / 30s fallback (default, overridable) | `useCalendarWorkspace`, `useCalendarOverlays`, `useCalendarDayBriefing`, `useCalendarProposals` |
 | Spend summary | 60s | `useSpendSummary` |
 | Daily spend | 60s | `useDailySpend` |
 | Top sessions | 60s | `useTopSessions` |
@@ -594,7 +594,7 @@ The frontend SHALL use TanStack Query (`@tanstack/react-query`) via `frontend/sr
 - **THEN** `enabled: !!identifier` prevents the query from executing until the identifier is available
 
 #### Scenario: Bus-aware polling for bus-covered hooks
-- **WHEN** a bus-covered query hook (e.g. sessions, approvals, spend, issues, notifications, messenger, timeline, butlers board — see `event-cache-manifest.ts`) calls `useBusAwarePollInterval`
+- **WHEN** a bus-covered query hook (e.g. sessions, approvals, spend, issues, notifications, messenger, timeline, butlers board, calendar workspace — see `event-cache-manifest.ts`) calls `useBusAwarePollInterval`
 - **THEN** it resolves `refetchInterval` from the shared fleet event bus's connection status: `POLL_BUS_RECONCILE_MS` (5 minutes) while connected, `POLL_BUS_DOWN_FALLBACK_MS` (30 seconds) while the bus is down/reconnecting
 - **AND** there is no user-facing control to change this cadence (the prior `useAutoRefresh`/`AutoRefreshToggle` mechanism retired — bu-01r64.3)
 
