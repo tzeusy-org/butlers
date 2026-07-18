@@ -132,7 +132,7 @@ def _dashboard_events_lifespan(shared_db_url: str):
 
 
 async def _run_external_producer(producer: str, shared_db_url: str) -> int:
-    """Run one real producer path in a fresh OS process and return its PID."""
+    """Run one real producer path and reap it on timeout or cancellation."""
 
     environment = dict(os.environ)
     environment["BUTLERS_FLEET_EVENTS_TEST_DATABASE_URL"] = shared_db_url
@@ -150,15 +150,64 @@ async def _run_external_producer(producer: str, shared_db_url: str) -> int:
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15.0)
     except TimeoutError as exc:
-        process.kill()
-        await process.wait()
         raise AssertionError(f"{producer} child producer did not finish") from exc
+    finally:
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
 
     assert process.returncode == 0, stderr.decode(errors="replace")
     result = json.loads(stdout)
     assert process.pid is not None
     assert result == {"producer": producer, "pid": process.pid}
     return process.pid
+
+
+@pytest.mark.timeout(5)
+async def test_external_producer_reaps_child_on_caller_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation must not leave the helper's child process running."""
+    original_create_subprocess_exec = asyncio.create_subprocess_exec
+    process_started = asyncio.Event()
+    process: asyncio.subprocess.Process | None = None
+
+    async def create_sleeping_process(
+        *_args: object,
+        **_kwargs: object,
+    ) -> asyncio.subprocess.Process:
+        nonlocal process
+        process = await original_create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        process_started.set()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_sleeping_process)
+    producer_task = asyncio.create_task(_run_external_producer("calendar", "unused"))
+    try:
+        await asyncio.wait_for(process_started.wait(), timeout=1.0)
+        producer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await producer_task
+
+        assert process is not None
+        await asyncio.wait_for(process.wait(), timeout=1.0)
+        assert process.returncode is not None
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await producer_task
+        if process is not None and process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
 
 
 async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
