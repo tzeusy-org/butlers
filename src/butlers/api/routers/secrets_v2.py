@@ -980,6 +980,12 @@ def _infer_provider_from_type(entity_type: str) -> str:
         ) and provider_id in PROVIDER_CATALOG:
             return provider_id
 
+    normalized_entity_type = re.sub(r"[^a-z0-9]", "", entity_type.lower())
+    for provider_id in sorted(PROVIDER_CATALOG, key=len, reverse=True):
+        normalized_provider_id = re.sub(r"[^a-z0-9]", "", provider_id.lower())
+        if normalized_entity_type.startswith(normalized_provider_id):
+            return provider_id
+
     idx = entity_type.find("_")
     return entity_type[:idx] if idx > 0 else entity_type
 
