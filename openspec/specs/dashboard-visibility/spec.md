@@ -502,7 +502,7 @@ All visibility surfaces SHALL handle loading and error states consistently to pr
 - **THEN** a destructive-styled message reads "Failed to load notifications. Please try refreshing the page."
 
 ### Requirement: Data Model Contracts for Visibility Surfaces
-The frontend TypeScript interfaces define the data contracts that all visibility surfaces depend on. These contracts MUST be satisfied by the backend API.
+The frontend TypeScript interfaces SHALL define the data contracts that all visibility surfaces depend on. These contracts MUST be satisfied by the backend API.
 
 #### Scenario: SessionSummary contract (list views)
 - **WHEN** the sessions list API responds
