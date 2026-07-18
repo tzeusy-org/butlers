@@ -179,8 +179,8 @@ The Timeline page (`/timeline`) SHALL merge events from all butlers into a singl
 
 #### Scenario: Trace-scoped session drill-down
 - **WHEN** the operator follows a session trace link to `/timeline?trace={trace_id}`
-- **THEN** the Timeline requests matching session events through `GET /api/timeline?trace={trace_id}`
-- **AND** it visibly names the active trace scope and explains that notification rows are omitted because they are not trace-attributed
+- **THEN** the Timeline requests matching session events and trace-attributed notifications through `GET /api/timeline?trace={trace_id}`
+- **AND** it visibly names the active trace scope and explains that matching sessions and trace-attributed notification rows are shown
 - **AND** the operator can clear the trace scope without discarding other URL-backed filters
 
 #### Scenario: Heartbeat event collapsing

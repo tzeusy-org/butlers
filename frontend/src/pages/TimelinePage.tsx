@@ -235,8 +235,8 @@ export default function TimelinePage() {
             data-testid="trace-scope-banner"
           >
             <p className="font-mono text-[11px] text-muted-foreground">
-              Scoped to trace <span className="text-foreground">{trace}</span>. Matching session
-              events only. Notifications are not trace-attributed.
+              Scoped to trace <span className="text-foreground">{trace}</span>. Matching sessions
+              and trace-attributed notifications.
             </p>
             <Button
               type="button"

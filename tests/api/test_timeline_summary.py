@@ -255,20 +255,24 @@ async def test_timeline_endpoint_returns_clean_summary(app):
     assert "REQUEST CONTEXT" not in events[0]["summary"]
 
 
-async def test_timeline_trace_scope_filters_sessions_and_omits_unfilterable_notifications(app):
-    """A trace-scoped timeline is limited to matching session rows.
-
-    Notifications are part of the general timeline, but this read-model slice
-    has no notification trace predicate. Skipping that source is safer than
-    returning unrelated delivery rows alongside a trace-filtered session.
-    """
+async def test_timeline_trace_scope_filters_sessions_and_notifications_by_trace(app):
+    """A trace-scoped timeline includes every source that carries the trace."""
     trace_id = "trace-001"
     row = _make_session_row(prompt="Trace this session", trace_id=trace_id)
+    notification_row = {
+        "id": uuid4(),
+        "source_butler": "atlas",
+        "channel": "telegram",
+        "recipient": "owner",
+        "message": "Trace notification",
+        "status": "sent",
+        "created_at": _NOW,
+    }
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
     mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": [row]}, []))
     mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=[])
+    mock_pool.fetch = AsyncMock(return_value=[notification_row])
     mock_db.pool = MagicMock(return_value=mock_pool)
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
@@ -278,11 +282,16 @@ async def test_timeline_trace_scope_filters_sessions_and_omits_unfilterable_noti
         resp = await client.get("/api/timeline", params={"trace": trace_id})
 
     assert resp.status_code == 200
-    assert [event["summary"] for event in resp.json()["data"]] == ["Trace this session"]
+    assert {event["summary"] for event in resp.json()["data"]} == {
+        "Trace this session",
+        "Trace notification",
+    }
     sql, args = mock_db.fan_out_with_status.call_args.args
     assert "trace_id = $1" in sql
     assert args == (trace_id,)
-    mock_pool.fetch.assert_not_awaited()
+    notification_sql, *notification_args = mock_pool.fetch.call_args.args
+    assert "trace_id = $1" in notification_sql
+    assert tuple(notification_args) == (trace_id,)
 
 
 # ---------------------------------------------------------------------------

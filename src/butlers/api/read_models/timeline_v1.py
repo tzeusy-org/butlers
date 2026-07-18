@@ -18,7 +18,7 @@ Query functions (all async):
         db, before, before_id, limit, butler_names, only_errors, trace_id
     )
         -> tuple[list[TimelineSessionRow], list[str]]  (rows, degraded butler names)
-    query_timeline_notifications_single(pool, before, before_id, limit, butler_names)
+    query_timeline_notifications_single(pool, before, before_id, limit, butler_names, trace_id)
         -> list[TimelineNotificationRow]
 
 Row DTOs:
@@ -291,6 +291,7 @@ async def query_timeline_notifications_single(
     limit: int,
     source_butlers: list[str] | None = None,
     only_failed: bool = False,
+    trace_id: str | None = None,
 ) -> list[TimelineNotificationRow]:
     """Query the notifications table from a single pool (switchboard DB).
 
@@ -317,6 +318,9 @@ async def query_timeline_notifications_single(
         This backs the timeline Errors lens, which surfaces bounced deliveries
         alongside failed sessions — a failed owner alert is an error the owner
         must see, not a calm notification. Defaults to ``False`` (all statuses).
+    trace_id:
+        When set, return only notification deliveries carrying this OpenTelemetry
+        trace ID.
 
     Returns
     -------
@@ -340,6 +344,11 @@ async def query_timeline_notifications_single(
     if source_butlers is not None:
         conditions.append(f"source_butler = ANY(${idx})")
         args.append(source_butlers)
+        idx += 1
+
+    if trace_id is not None:
+        conditions.append(f"trace_id = ${idx}")
+        args.append(trace_id)
         idx += 1
 
     if only_failed:

@@ -278,9 +278,9 @@ async def list_timeline(
     trace: str | None = Query(
         None,
         description=(
-            "Filter to session events carrying this OpenTelemetry trace ID. "
-            "Trace-scoped results omit notifications because this timeline "
-            "read model cannot filter them by trace."
+            "Filter to events carrying this OpenTelemetry trace ID. "
+            "Trace-scoped results include matching sessions and notifications "
+            "that carry the trace."
         ),
     ),
     db: DatabaseManager = Depends(_get_db_manager),
@@ -304,9 +304,9 @@ async def list_timeline(
     ``error`` can reach every error, not just those among the newest
     unfiltered page.
 
-    ``trace`` filters the session fan-out by OpenTelemetry trace ID. The
-    notification source is omitted for a trace-scoped request rather than
-    returning unfiltered notification rows alongside matching sessions.
+    ``trace`` filters both sessions and notifications by OpenTelemetry trace
+    ID, so the trace scope never mixes unrelated timeline rows into the
+    response.
 
     ``meta.degraded_sources`` lists any of ``sessions``/``notifications``
     whose query failed this request — the returned page for that source is
@@ -334,11 +334,6 @@ async def list_timeline(
     # sessions (previously "error" mapped solely to sessions with success=False,
     # leaving a multi-hour bounced-alert outage invisible to the Errors view).
     want_notifications = want_notification_type or want_error_type
-    if trace_id is not None:
-        # Timeline's session read model can filter by trace_id; its
-        # notification counterpart cannot. Returning only the session source
-        # keeps a trace link truthful instead of mixing in unrelated rows.
-        want_notifications = False
     # When notifications are pulled ONLY because of the error lens (not an
     # explicit notification request), restrict them to failed deliveries so the
     # Errors view stays errors-only.
@@ -388,6 +383,7 @@ async def list_timeline(
                 limit=limit + 1,
                 source_butlers=target_butlers,
                 only_failed=only_failed_notifications,
+                trace_id=trace_id,
             )
             for dto in notif_dtos:
                 events.append(_notification_dto_to_event(dto))

@@ -139,7 +139,7 @@ describe("TimelinePage — error vs empty state", () => {
     });
   });
 
-  it("names a trace scope, explains notification omission, and lets the operator clear it", () => {
+  it("names a trace scope, explains notification coverage, and lets the operator clear it", () => {
     setLedger({});
 
     renderDom(
@@ -153,7 +153,7 @@ describe("TimelinePage — error vs empty state", () => {
 
     const banner = screen.getByTestId("trace-scope-banner");
     expect(banner.textContent).toContain("Scoped to trace trace-001");
-    expect(banner.textContent).toContain("Notifications are not trace-attributed.");
+    expect(banner.textContent).toContain("Matching sessions and trace-attributed notifications.");
 
     fireEvent.click(screen.getByRole("button", { name: "Clear trace filter" }));
 
