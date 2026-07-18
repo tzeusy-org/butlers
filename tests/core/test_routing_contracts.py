@@ -357,6 +357,80 @@ def test_notify_contracts():
             }
         )
 
+
+def test_approval_request_contract_requires_actions_and_decision_tokens():
+    """approval_request carries deterministic action affordances, never a bare page."""
+    action_url = "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    approval_request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "message": "Approval needed for relationship_assert_fact.",
+            "recipient": "100200300",
+        },
+        "actions": [
+            {
+                "verb": "approve",
+                "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:a:0123456789abcdef",
+                "dashboard_url": action_url,
+            },
+            {
+                "verb": "reject",
+                "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:r:0123456789abcdef",
+                "dashboard_url": action_url,
+            },
+            {"verb": "open_dashboard", "dashboard_url": action_url},
+        ],
+    }
+
+    parsed = parse_notify_request(approval_request)
+    assert parsed.delivery.intent == "approval_request"
+    assert [action.verb for action in parsed.actions or ()] == [
+        "approve",
+        "reject",
+        "open_dashboard",
+    ]
+
+    missing_actions = dict(approval_request)
+    missing_actions.pop("actions")
+    with pytest.raises(ValidationError, match="actions"):
+        parse_notify_request(missing_actions)
+
+    unsigned_approve = {
+        **approval_request,
+        "actions": [
+            {"verb": "approve", "dashboard_url": action_url},
+            {"verb": "open_dashboard", "dashboard_url": action_url},
+        ],
+    }
+    with pytest.raises(ValidationError, match="callback_token"):
+        parse_notify_request(unsigned_approve)
+
+    duplicate_approve = {
+        **approval_request,
+        "actions": [
+            approval_request["actions"][0],
+            approval_request["actions"][0],
+            approval_request["actions"][2],
+        ],
+    }
+    with pytest.raises(ValidationError, match="at most once"):
+        parse_notify_request(duplicate_approve)
+
+    non_approval_with_actions = {
+        **approval_request,
+        "delivery": {
+            "intent": "send",
+            "channel": "telegram",
+            "message": "Ordinary notification.",
+            "recipient": "100200300",
+        },
+    }
+    with pytest.raises(ValidationError, match="actions"):
+        parse_notify_request(non_approval_with_actions)
+
     # Send without thread: accepted
     result2 = parse_notify_request(
         {

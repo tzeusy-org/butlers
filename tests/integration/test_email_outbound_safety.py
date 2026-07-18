@@ -31,6 +31,7 @@ from butlers.identity import ResolvedContact
 from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.email import EmailConfig, EmailModule
 from butlers.modules.telegram import TelegramModule
+from butlers.modules.whatsapp import WhatsAppModule
 
 pytestmark = pytest.mark.unit
 
@@ -1336,6 +1337,7 @@ def _make_route_envelope(
     origin_butler: str = "relationship",
     source_sender_identity: str = DBS_ALERT_EMAIL,
     decision_dossier: dict[str, Any] | None = None,
+    actions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build a route.v1 envelope with embedded notify.v1 request."""
     from butlers.core.utils import generate_uuid7_string
@@ -1351,10 +1353,12 @@ def _make_route_envelope(
             "message": message,
         },
     }
-    if recipient and intent == "send":
+    if recipient and intent in {"send", "approval_request"}:
         notify_request["delivery"]["recipient"] = recipient
     if decision_dossier is not None:
         notify_request["decision_dossier"] = decision_dossier
+    if actions is not None:
+        notify_request["actions"] = actions
     if intent == "reply":
         notify_request["request_context"] = {
             "request_id": request_id,
@@ -1516,6 +1520,28 @@ def _telegram_messenger_dir(tmp_path: Path) -> Path:
         'name = "health"\ncron = "0 * * * *"\n'
         'prompt = "Check"\n\n'
         "[modules.telegram]\n\n"
+        "[modules.approvals]\nenabled = true\n"
+    )
+    (d / "MANIFESTO.md").write_text("# Messenger")
+    (d / "CLAUDE.md").write_text("Messenger.")
+    return d
+
+
+def _whatsapp_messenger_dir(tmp_path: Path) -> Path:
+    """Create a Messenger butler directory with the WhatsApp adapter enabled."""
+    d = tmp_path / "messenger"
+    d.mkdir()
+    (d / "butler.toml").write_text(
+        '[butler]\nname = "messenger"\nport = 41106\n'
+        'description = "Outbound delivery"\n\n'
+        '[butler.db]\nname = "butlers"\nschema = "messenger"\n\n'
+        "[[butler.schedule]]\n"
+        'name = "health"\ncron = "0 * * * *"\n'
+        'prompt = "Check"\n\n'
+        "[modules.telegram]\n\n"
+        "[modules.whatsapp]\n"
+        "send_tools = true\n"
+        "send_enabled = true\n\n"
         "[modules.approvals]\nenabled = true\n"
     )
     (d / "MANIFESTO.md").write_text("# Messenger")
@@ -1689,6 +1715,179 @@ class TestRouteExecuteTelegramApprovalGate:
         error_message = error_obj.get("message", "") if isinstance(error_obj, dict) else ""
         assert "blocked" in error_message.lower(), f"Error must describe the block: {result}"
         send_spy.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# RFC 0021 approval-request control-plane delivery.
+# ---------------------------------------------------------------------------
+
+
+def _approval_request_actions() -> list[dict[str, str]]:
+    """Return typed affordances representative of a parked action push."""
+    dashboard_url = "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaaa-aaaa-aaaaaaaaaaaa"
+    return [
+        {
+            "verb": "approve",
+            "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:a:0123456789abcdef",
+            "dashboard_url": dashboard_url,
+        },
+        {
+            "verb": "reject",
+            "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:r:0123456789abcdef",
+            "dashboard_url": dashboard_url,
+        },
+        {"verb": "open_dashboard", "dashboard_url": dashboard_url},
+    ]
+
+
+@pytest.mark.asyncio
+class TestApprovalRequestDelivery:
+    """Approval pushes are owner-only and retain channel-specific affordances."""
+
+    async def test_telegram_owner_push_has_decision_keyboard(self, tmp_path: Path) -> None:
+        messenger_dir = _telegram_messenger_dir(tmp_path)
+        _daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+
+        envelope = _make_route_envelope(
+            channel="telegram",
+            intent="approval_request",
+            recipient=OWNER_TELEGRAM,
+            message="Approval needed\nReview: https://dashboard.example.test/approvals/aaaaaaaa",
+            origin_butler="relationship",
+            actions=_approval_request_actions(),
+        )
+        send_spy = AsyncMock(return_value={"status": "sent", "message_id": 1})
+
+        with (
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(_owner_contact(), True)),
+            ),
+            patch.object(TelegramModule, "_send_message", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result.get("status") == "ok", result
+        send_spy.assert_awaited_once()
+        call = send_spy.await_args
+        assert call.args[0] == OWNER_TELEGRAM
+        assert call.kwargs["reply_markup"] == {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "Approve",
+                        "callback_data": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:a:0123456789abcdef",
+                    },
+                    {
+                        "text": "Reject",
+                        "callback_data": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:r:0123456789abcdef",
+                    },
+                ],
+                [
+                    {
+                        "text": "Open dashboard",
+                        "url": "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaaa-aaaa-aaaaaaaaaaaa",
+                    }
+                ],
+            ]
+        }
+
+    async def test_non_owner_approval_target_is_rejected_before_delivery(
+        self, tmp_path: Path
+    ) -> None:
+        messenger_dir = _telegram_messenger_dir(tmp_path)
+        _daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+
+        envelope = _make_route_envelope(
+            channel="telegram",
+            intent="approval_request",
+            recipient=KNOWN_NON_OWNER_TELEGRAM,
+            message="Approval needed",
+            origin_butler="relationship",
+            actions=_approval_request_actions(),
+        )
+        send_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(TelegramModule, "_send_message", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result.get("status") == "error", result
+        assert "verified owner" in result["error"]["message"].lower()
+        send_spy.assert_not_awaited()
+
+    async def test_email_fallback_preserves_summary_and_dashboard_link(
+        self, tmp_path: Path
+    ) -> None:
+        messenger_dir = _messenger_dir(tmp_path)
+        _daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+
+        message = "Approval needed\nReview: https://dashboard.example.test/approvals/aaaaaaaa"
+        envelope = _make_route_envelope(
+            channel="email",
+            intent="approval_request",
+            recipient=OWNER_EMAIL,
+            message=message,
+            origin_butler="relationship",
+            actions=_approval_request_actions(),
+        )
+        send_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(_owner_contact(), True)),
+            ),
+            patch.object(EmailModule, "_send_email", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result.get("status") == "ok", result
+        send_spy.assert_awaited_once()
+        assert send_spy.await_args.args[0] == OWNER_EMAIL
+        assert send_spy.await_args.args[2] == message
+
+    async def test_whatsapp_fallback_preserves_summary_and_dashboard_link(
+        self, tmp_path: Path
+    ) -> None:
+        messenger_dir = _whatsapp_messenger_dir(tmp_path)
+        _daemon, route_execute_fn = await _boot_messenger_with_route_execute(messenger_dir)
+        assert route_execute_fn is not None
+
+        owner_jid = "15551234567@s.whatsapp.net"
+        message = "Approval needed\nReview: https://dashboard.example.test/approvals/aaaaaaaa"
+        envelope = _make_route_envelope(
+            channel="whatsapp",
+            intent="approval_request",
+            recipient=owner_jid,
+            message=message,
+            origin_butler="relationship",
+            actions=_approval_request_actions(),
+        )
+        send_spy = AsyncMock(return_value={"status": "sent"})
+
+        with (
+            patch(
+                "butlers.core_tools._routing.resolve_owner_channel_via_definer",
+                new=AsyncMock(return_value=(_owner_contact(), True)),
+            ),
+            patch.object(WhatsAppModule, "_send_message", new=send_spy),
+        ):
+            result = await route_execute_fn(**envelope)
+
+        assert result.get("status") == "ok", result
+        send_spy.assert_awaited_once_with(
+            recipient=owner_jid,
+            text=f"[relationship] {message}",
+        )
 
 
 # ---------------------------------------------------------------------------

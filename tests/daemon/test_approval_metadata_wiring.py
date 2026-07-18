@@ -78,3 +78,27 @@ async def test_unconfigured_approvals_module_keeps_gate_setup_inactive() -> None
     result = await ButlerDaemon._apply_approval_gates(daemon)
 
     assert result == {}
+
+
+async def test_enabled_gates_receive_the_deterministic_approval_push_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daemon, not an LLM tool, owns park → Switchboard push wiring."""
+    config = load_config(_REPO_ROOT / "roster" / "messenger")
+    approvals = _ApprovalsModuleProbe()
+    apply_gates = AsyncMock(return_value={})
+    push_runtime = object()
+    monkeypatch.setattr("butlers.daemon.apply_approval_gates", apply_gates)
+
+    daemon = SimpleNamespace(
+        config=config,
+        _active_modules=[_MetadataModule(), approvals],
+        mcp=object(),
+        db=SimpleNamespace(pool=object()),
+        _build_approval_push_runtime=lambda: push_runtime,
+    )
+
+    result = await ButlerDaemon._apply_approval_gates(daemon)
+
+    assert result == {}
+    assert apply_gates.await_args.kwargs["approval_push_runtime"] is push_runtime

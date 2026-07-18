@@ -79,11 +79,13 @@ async def messenger_validate_notify(
 
     # Required delivery fields
     intent = delivery.get("intent")
-    if intent not in ("send", "reply", "insight"):
+    if intent not in ("send", "reply", "insight", "approval_request"):
         errors.append(
             {
                 "field": "delivery.intent",
-                "error": f"must be 'send', 'reply', or 'insight', got: {intent}",
+                "error": (
+                    f"must be 'send', 'reply', 'insight', or 'approval_request', got: {intent}"
+                ),
             }
         )
 
@@ -129,6 +131,85 @@ async def messenger_validate_notify(
                     {
                         "field": "request_context.source_sender_identity",
                         "error": "required for reply intent",
+                    }
+                )
+
+    if intent == "approval_request":
+        recipient = delivery.get("recipient")
+        if not recipient or not isinstance(recipient, str):
+            errors.append(
+                {
+                    "field": "delivery.recipient",
+                    "error": "required owner recipient for approval_request intent",
+                }
+            )
+
+        actions = notify_request.get("actions")
+        if not isinstance(actions, list) or not actions:
+            errors.append(
+                {
+                    "field": "actions",
+                    "error": "non-empty decision actions are required for approval_request intent",
+                }
+            )
+        else:
+            action_verbs: set[str] = set()
+            for index, action in enumerate(actions):
+                field_prefix = f"actions[{index}]"
+                if not isinstance(action, dict):
+                    errors.append({"field": field_prefix, "error": "must be an object"})
+                    continue
+
+                verb = action.get("verb")
+                if verb not in {"approve", "reject", "open_dashboard"}:
+                    errors.append(
+                        {
+                            "field": f"{field_prefix}.verb",
+                            "error": "must be approve, reject, or open_dashboard",
+                        }
+                    )
+                    continue
+                if verb in action_verbs:
+                    errors.append(
+                        {
+                            "field": f"{field_prefix}.verb",
+                            "error": "each approval action verb may appear only once",
+                        }
+                    )
+                action_verbs.add(verb)
+
+                dashboard_url = action.get("dashboard_url")
+                if not dashboard_url or not isinstance(dashboard_url, str):
+                    errors.append(
+                        {
+                            "field": f"{field_prefix}.dashboard_url",
+                            "error": "non-empty dashboard deep link is required",
+                        }
+                    )
+
+                callback_token = action.get("callback_token")
+                if verb in {"approve", "reject"} and (
+                    not callback_token or not isinstance(callback_token, str)
+                ):
+                    errors.append(
+                        {
+                            "field": f"{field_prefix}.callback_token",
+                            "error": "decision actions require a signed callback token",
+                        }
+                    )
+                if verb == "open_dashboard" and callback_token is not None:
+                    errors.append(
+                        {
+                            "field": f"{field_prefix}.callback_token",
+                            "error": "open_dashboard action must not carry a callback token",
+                        }
+                    )
+
+            if "open_dashboard" not in action_verbs:
+                errors.append(
+                    {
+                        "field": "actions",
+                        "error": "approval_request requires an open_dashboard action",
                     }
                 )
 
@@ -187,10 +268,10 @@ async def messenger_dry_run(
 
     # Target resolution
     target_identity: str | None = None
-    if intent in ("send", "insight"):
+    if intent in ("send", "insight", "approval_request"):
         # Explicit recipient or policy default (insight behaves like send for delivery mechanics)
         target_identity = delivery.get("recipient")
-        if not target_identity:
+        if not target_identity and intent != "approval_request":
             target_identity = f"<policy-default-for-{channel}>"
     elif intent == "reply":
         # Derive from request_context

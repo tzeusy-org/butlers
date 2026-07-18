@@ -33,7 +33,9 @@ Design:
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,54 @@ def should_suppress_by_policy(
         quiet_start=int(quiet_start),
         quiet_end=int(quiet_end),
     )
+
+
+def approval_push_deliver_at(
+    policy: dict[str, Any] | None,
+    *,
+    now: datetime,
+) -> datetime | None:
+    """Return the first post-quiet delivery instant for an approval push.
+
+    Approval requests are control-plane notifications: during configured quiet
+    hours they are deferred rather than suppressed.  The caller owns persistence
+    of that deferral; this pure helper deliberately has no knowledge of a
+    pending action's expiry, so it cannot change the approval clock.
+
+    Quiet-hour endpoints are inclusive (matching
+    :func:`is_in_policy_quiet_hours`), therefore a window ending at 07:00 first
+    permits delivery at 08:00 local time.
+    """
+    if policy is None:
+        return None
+
+    quiet_start = policy.get("quiet_start_hour")
+    quiet_end = policy.get("quiet_end_hour")
+    if quiet_start is None or quiet_end is None:
+        return None
+
+    tz_name = str(policy.get("timezone") or "UTC")
+    try:
+        timezone = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, KeyError, ValueError):
+        logger.warning(
+            "approvals_policy has invalid timezone %r; approval push will not defer", tz_name
+        )
+        return None
+
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("approval_push_deliver_at requires a timezone-aware now value")
+
+    local_now = now.astimezone(timezone)
+    if not should_suppress_by_policy(policy, current_hour=local_now.hour):
+        return None
+
+    # The quiet end is inclusive, so send at the first following whole hour.
+    active_hour = (int(quiet_end) + 1) % 24
+    candidate = local_now.replace(hour=active_hour, minute=0, second=0, microsecond=0)
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(UTC)
 
 
 # ---------------------------------------------------------------------------

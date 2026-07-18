@@ -60,6 +60,26 @@ class TestIsInPolicyQuietHours:
         assert self.fn(current_hour=0, quiet_start=22, quiet_end=7) is True
 
 
+class TestApprovalPushDeferralTime:
+    """Approval-request quiet hours defer a push; they never alter action expiry."""
+
+    def test_returns_the_first_active_hour_after_an_overnight_window(self):
+        from butlers.core.approvals_policy import approval_push_deliver_at
+
+        now = datetime(2026, 7, 18, 15, 30, tzinfo=UTC)  # 23:30 in Singapore
+        policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "Asia/Singapore"}
+
+        assert approval_push_deliver_at(policy, now=now) == datetime(2026, 7, 19, 0, 0, tzinfo=UTC)
+
+    def test_returns_none_when_the_policy_is_not_quiet(self):
+        from butlers.core.approvals_policy import approval_push_deliver_at
+
+        now = datetime(2026, 7, 18, 3, 30, tzinfo=UTC)  # 11:30 in Singapore
+        policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "Asia/Singapore"}
+
+        assert approval_push_deliver_at(policy, now=now) is None
+
+
 # ---------------------------------------------------------------------------
 # §8.6.2 — should_suppress_by_policy
 # ---------------------------------------------------------------------------

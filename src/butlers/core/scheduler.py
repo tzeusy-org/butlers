@@ -1576,18 +1576,27 @@ def _group_due_deferred_notifications(
 
     A decision dossier is bound to one non-owner delivery decision. Do not
     fold such rows into a rewritten digest envelope: each must retain its own
-    validated context for flush-time recipient-gate revalidation.
+    validated context for flush-time recipient-gate revalidation. The same is
+    true for ``approval_request`` control-plane envelopes: coalescing would
+    discard their per-action callback tokens and inline keyboard payload.
     """
     groups: dict[tuple[str | None, str | None, str | None], list[dict[str, Any]]] = {}
     order: list[tuple[str | None, str | None, str | None]] = []
     for row in rows:
         envelope = row["envelope"] or {}
         delivery = envelope.get("delivery", {}) or {}
-        dossier_row_id = str(row["id"]) if envelope.get("decision_dossier") is not None else None
+        control_plane_row_id = (
+            str(row["id"])
+            if (
+                envelope.get("decision_dossier") is not None
+                or delivery.get("intent") == "approval_request"
+            )
+            else None
+        )
         key = (
             delivery.get("channel") or row["channel"],
             delivery.get("recipient"),
-            dossier_row_id,
+            control_plane_row_id,
         )
         if key not in groups:
             groups[key] = []

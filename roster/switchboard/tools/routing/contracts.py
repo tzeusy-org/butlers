@@ -60,7 +60,7 @@ SourceProvider = Literal[
     "activitywatch",
 ]
 NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
-NotifyIntent = Literal["send", "reply", "react", "insight"]
+NotifyIntent = Literal["send", "reply", "react", "insight", "approval_request"]
 PolicyTier = Literal["default", "interactive", "passive", "high_priority"]
 IngestionTier = Literal["full", "metadata"]
 FanoutMode = Literal["parallel", "ordered", "conditional"]
@@ -576,15 +576,46 @@ class NotifyDeliveryV1(BaseModel):
     @field_validator("message")
     @classmethod
     def _validate_message_required_for_send_reply(cls, value: str, info: ValidationInfo) -> str:
-        """Message must be non-empty for send, reply, and insight intents."""
+        """Message must be non-empty for owner-facing delivery intents."""
         intent = info.data.get("intent")
-        if intent in ("send", "reply", "insight") and (not value or not value.strip()):
+        if intent in ("send", "reply", "insight", "approval_request") and (
+            not value or not value.strip()
+        ):
             raise PydanticCustomError(
                 "message_required",
                 "delivery.message must be non-empty for {intent} intent.",
                 {"intent": intent},
             )
         return value
+
+
+ApprovalActionVerb = Literal["approve", "reject", "open_dashboard"]
+
+
+class ApprovalRequestActionV1(BaseModel):
+    """One deterministic affordance on an owner approval-request notification."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verb: ApprovalActionVerb
+    callback_token: NonEmptyStr | None = None
+    dashboard_url: NonEmptyStr
+
+    @model_validator(mode="after")
+    def _validate_signed_decision_actions(self) -> ApprovalRequestActionV1:
+        if self.verb in ("approve", "reject") and self.callback_token is None:
+            raise PydanticCustomError(
+                "approval_callback_token_required",
+                "approval-request {verb} action requires callback_token.",
+                {"verb": self.verb},
+            )
+        if self.verb == "open_dashboard" and self.callback_token is not None:
+            raise PydanticCustomError(
+                "approval_dashboard_action_token_forbidden",
+                "approval-request open_dashboard action must not include callback_token.",
+                {},
+            )
+        return self
 
 
 class NotifyRequestV1(BaseModel):
@@ -600,6 +631,7 @@ class NotifyRequestV1(BaseModel):
     # envelope only preserves the already-validated context across deferred
     # delivery so Messenger can validate it again against the flush-time target.
     decision_dossier: dict[str, Any] | None = None
+    actions: tuple[ApprovalRequestActionV1, ...] | None = None
 
     @field_validator("schema_version")
     @classmethod
@@ -677,6 +709,51 @@ class NotifyRequestV1(BaseModel):
 
         return self
 
+    @model_validator(mode="after")
+    def _validate_approval_request(self) -> NotifyRequestV1:
+        """Keep approval-request envelopes structurally safe before egress.
+
+        Owner identity itself is an asynchronous database lookup owned by
+        Messenger's delivery boundary.  The versioned contract nevertheless
+        requires an explicit target and action affordances so that a request
+        can never degrade into an unaddressed, non-interactive owner page.
+        """
+        if self.delivery.intent != "approval_request":
+            if self.actions is not None:
+                raise PydanticCustomError(
+                    "approval_actions_unexpected",
+                    "actions are only valid for approval_request intent.",
+                    {},
+                )
+            return self
+
+        if self.delivery.recipient is None:
+            raise PydanticCustomError(
+                "approval_recipient_required",
+                "approval_request intent requires delivery.recipient.",
+                {},
+            )
+        if not self.actions:
+            raise PydanticCustomError(
+                "approval_actions_required",
+                "approval_request intent requires a non-empty actions payload.",
+                {},
+            )
+        verbs = [action.verb for action in self.actions]
+        if len(set(verbs)) != len(verbs):
+            raise PydanticCustomError(
+                "approval_action_verbs_unique",
+                "approval_request actions may contain each verb at most once.",
+                {},
+            )
+        if not any(action.verb == "open_dashboard" for action in self.actions):
+            raise PydanticCustomError(
+                "approval_dashboard_action_required",
+                "approval_request actions must include open_dashboard.",
+                {},
+            )
+        return self
+
 
 def parse_ingest_envelope(payload: Mapping[str, Any]) -> IngestEnvelopeV1:
     """Parse and validate an `ingest.v1` envelope."""
@@ -706,6 +783,7 @@ __all__ = [
     "IngestPayloadV1",
     "IngestSenderV1",
     "IngestSourceV1",
+    "ApprovalRequestActionV1",
     "NotifyDeliveryV1",
     "NotifyRequestContextV1",
     "NotifyRequestV1",

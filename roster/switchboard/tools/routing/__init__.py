@@ -1,6 +1,7 @@
 """Routing tools — message routing, contracts, and telemetry."""
 
 from butlers.tools.switchboard.routing.contracts import (
+    ApprovalRequestActionV1,
     IngestEnvelopeV1,
     NotifyRequestV1,
     RouteEnvelopeV1,
@@ -19,6 +20,7 @@ from butlers.tools.switchboard.routing.telemetry import (
 )
 
 __all__ = [
+    "ApprovalRequestActionV1",
     "IngestEnvelopeV1",
     "NotifyRequestV1",
     "RouteEnvelopeV1",
