@@ -6,6 +6,7 @@
 
 import type {
   ApprovalAction,
+  ApprovalActionsResponse,
   ApprovalActionParams,
   ApprovalApproveRequest,
   ApprovalDeferRequest,
@@ -3301,9 +3302,9 @@ function approvalRuleSearchParams(params?: ApprovalRuleParams): URLSearchParams 
 
 export function getApprovalActions(
   params?: ApprovalActionParams,
-): Promise<PaginatedResponse<ApprovalAction>> {
+): Promise<ApprovalActionsResponse> {
   const qs = approvalActionSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<ApprovalAction>>(
+  return apiFetch<ApprovalActionsResponse>(
     qs ? `/approvals/actions?${qs}` : "/approvals/actions",
   );
 }
@@ -4018,6 +4019,8 @@ import type {
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
+  ConnectorSummariesListResponse,
+  ConnectorSummariesMeta,
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
@@ -4040,6 +4043,8 @@ export type {
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,
+  ConnectorSummariesListResponse,
+  ConnectorSummariesMeta,
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
@@ -4214,8 +4219,11 @@ function _toConnectorStats(
 // ---------------------------------------------------------------------------
 
 /** List all connectors with liveness and today's stats. */
-export async function listConnectorSummaries(): Promise<ApiResponse<ConnectorSummary[]>> {
-  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry[]>>("/switchboard/connectors");
+export async function listConnectorSummaries(): Promise<ConnectorSummariesListResponse> {
+  const resp = await apiFetch<{
+    data: _BackendConnectorEntry[];
+    meta: ConnectorSummariesMeta;
+  }>("/switchboard/connectors");
   return {
     ...resp,
     data: (resp.data ?? []).map(_toConnectorSummary),

@@ -1052,8 +1052,9 @@ async def list_connectors(
     connector cards on the Overview and Connectors tabs, including health
     badge rows.
 
-    Falls back gracefully to an empty list when the connector_registry
-    table does not exist (degraded / partially migrated DB).
+    When the connector registry cannot be read, returns an empty list with
+    ``meta.connector_registry_available = false`` so a caller can distinguish
+    that degraded fallback from a true empty roster.
     """
     pool = _pool(db)
 
@@ -1093,10 +1094,16 @@ async def list_connectors(
         logger.warning(
             "connector_registry table not available; returning empty list", exc_info=True
         )
-        return ApiResponse[list[ConnectorEntry]](data=[])
+        return ApiResponse[list[ConnectorEntry]](
+            data=[],
+            meta=ApiMeta(connector_registry_available=False),
+        )
 
     data = [_row_to_connector_entry(dict(row)) for row in rows]
-    return ApiResponse[list[ConnectorEntry]](data=data)
+    return ApiResponse[list[ConnectorEntry]](
+        data=data,
+        meta=ApiMeta(connector_registry_available=True),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ export interface ButlerVerdictOpenerProps {
   spendToday: number | undefined;
   spendLoading: boolean;
   spendError: boolean;
+  spendSourcesDegraded: string[];
   pendingApprovals: ApprovalAction[];
   pendingTotal: number;
   approvalsLoading: boolean;
@@ -50,6 +51,7 @@ function buildClauses({
   pendingApprovals,
   pendingTotal,
   failedSessions,
+  spendSourcesDegraded,
   approvalSourcesDegraded,
   failureSourcesDegraded,
   butlerName,
@@ -59,12 +61,19 @@ function buildClauses({
   | "pendingApprovals"
   | "pendingTotal"
   | "failedSessions"
+  | "spendSourcesDegraded"
   | "approvalSourcesDegraded"
   | "failureSourcesDegraded"
   | "butlerName"
 >): VerdictClause[] {
   const clauses: VerdictClause[] = [];
 
+  if (spendSourcesDegraded.length > 0) {
+    clauses.push({
+      key: "spend-sources-degraded",
+      text: `${spendSourcesDegraded.join(", ")} unavailable; spend may be incomplete`,
+    });
+  }
   if (approvalSourcesDegraded.length > 0) {
     clauses.push({
       key: "approval-sources-degraded",
@@ -109,6 +118,7 @@ export function ButlerVerdictOpener({
   spendToday,
   spendLoading,
   spendError,
+  spendSourcesDegraded,
   pendingApprovals,
   pendingTotal,
   approvalsLoading,
@@ -140,6 +150,7 @@ export function ButlerVerdictOpener({
         pendingApprovals,
         pendingTotal,
         failedSessions,
+        spendSourcesDegraded,
         approvalSourcesDegraded,
         failureSourcesDegraded,
         butlerName,

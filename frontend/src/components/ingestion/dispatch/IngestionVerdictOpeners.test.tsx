@@ -122,11 +122,37 @@ describe("Ingestion verdict openers", () => {
     expect(html).not.toContain("ingestion-connectors-verdict-all-clear");
   });
 
-  it("makes the filters funnel drop a link back to the pipeline", () => {
+  it("names a registry fallback on the timeline instead of rendering an all-clear", () => {
+    vi.mocked(useConnectorSummaries).mockReturnValue({
+      data: { data: [], meta: { connector_registry_available: false } },
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const html = render(<IngestionTimelineVerdictOpener range="24h" />);
+
+    expect(html).toContain("connector registry unavailable");
+    expect(html).not.toContain("ingestion-timeline-verdict-all-clear");
+  });
+
+  it("names a registry fallback on the connectors roster instead of healthy zero", () => {
+    vi.mocked(useConnectorSummariesWithAggregates).mockReturnValue({
+      data: { data: { connectors: [], connector_registry_available: false } },
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const html = render(<IngestionConnectorsVerdictOpener />);
+
+    expect(html).toContain("connector registry unavailable");
+    expect(html).not.toContain("ingestion-connectors-verdict-all-clear");
+  });
+
+  it("reports the filters funnel drop without linking back to its current page", () => {
     const html = render(<IngestionFiltersVerdictOpener />);
 
     expect(html).toContain("gates filtered 20% of 100 signals");
-    expect(html).toContain('href="/ingestion/filters"');
+    expect(html).not.toContain('href="/ingestion/filters"');
   });
 
   it("suppresses the filters all-clear when metrics are degraded in a 200 response", () => {

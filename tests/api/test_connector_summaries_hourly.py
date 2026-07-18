@@ -381,10 +381,28 @@ async def test_hourly_events_empty_registry_returns_200(app: FastAPI) -> None:
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["connectors"] == []
+    assert data["connector_registry_available"] is True
     # Hourly fetch is skipped when registry is empty (guarded by `if rows:`)
     assert pool.fetch.call_count == 1, (
         f"Expected exactly 1 fetch call (registry only), got {pool.fetch.call_count}"
     )
+
+
+async def test_registry_query_failure_is_explicitly_unavailable(app: FastAPI) -> None:
+    """A 200 fallback must distinguish a broken registry from a true empty roster."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(side_effect=RuntimeError("connector registry unavailable"))
+    _wire_db(app, pool)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/ingestion/connectors/summaries")
+
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["connectors"] == []
+    assert data["connector_registry_available"] is False
 
 
 # ---------------------------------------------------------------------------

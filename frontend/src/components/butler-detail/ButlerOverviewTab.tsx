@@ -266,7 +266,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const navigate = useNavigate()
   const { data: butlerResponse, isLoading: butlerLoading, isError: butlerError } = useButler(butlerName)
   const { rows, aggregates } = useButlerStatusBoard()
-  const costQuery = useSpendSummary("today")
+  const costQuery = useSpendSummary("today", undefined, undefined, butlerName)
   const approvalsQuery = useApprovalActions({ status: "pending", butler: butlerName, limit: 5 })
   const failedSessionsSince = useMemo(last24HoursSince, [])
   const failedSessionsQuery = useSessionAggregate({
@@ -368,10 +368,10 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   // pending approvals -- the KPI previously read "5" when 20 were pending
   // because it counted the preview page instead of the real total.
   const awaitingCount = approvalsQuery.data?.meta?.total ?? visiblePendingActions.length
-  // The legacy, butler-filtered approvals endpoint exposes pagination metadata
-  // only. Its query error is still surfaced below; do not invent a degraded
-  // source envelope that the endpoint cannot name.
-  const approvalSourcesDegraded: string[] = []
+  const spendSourcesDegraded = (costQuery.data?.data?.unavailable_butlers ?? []).filter(
+    (name) => name === butlerName,
+  )
+  const approvalSourcesDegraded = approvalsQuery.data?.meta?.sources_degraded ?? []
   const failureSourcesDegraded =
     (failedSessionsQuery.data?.meta?.sources_degraded as string[] | undefined) ?? []
   const boardSourceError =
@@ -392,6 +392,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       spendToday={costQuery.data?.data?.by_butler?.[butlerName]}
       spendLoading={costQuery.isLoading}
       spendError={costQuery.isError || (!costQuery.isLoading && !costQuery.data)}
+      spendSourcesDegraded={spendSourcesDegraded}
       pendingApprovals={visiblePendingActions}
       pendingTotal={awaitingCount}
       approvalsLoading={approvalsQuery.isLoading}

@@ -18,6 +18,7 @@ function render(overrides: Partial<React.ComponentProps<typeof ButlerVerdictOpen
         spendToday={0.41}
         spendLoading={false}
         spendError={false}
+        spendSourcesDegraded={[]}
         pendingApprovals={[]}
         pendingTotal={0}
         approvalsLoading={false}

@@ -81,7 +81,12 @@ export function IngestionTimelineVerdictOpener({ range }: { range: IngestionRang
       landmarkLabel="Ingestion timeline verdict"
       sources={[
         { label: "ingestion rollup", isLoading: rollup.isLoading, isError: rollup.isError },
-        { label: "connector health", isLoading: connectors.isLoading, isError: connectors.isError },
+        {
+          label: "connector registry",
+          isLoading: connectors.isLoading,
+          isError:
+            connectors.isError || connectors.data?.meta?.connector_registry_available === false,
+        },
       ]}
       clauses={attentionClauses(connectorRows)}
       allClear={timelineAllClear(range, rollup.data)}
@@ -136,9 +141,10 @@ export function IngestionConnectorsVerdictOpener() {
       landmarkLabel="Ingestion connectors verdict"
       sources={[
         {
-          label: "connector summaries",
+          label: "connector registry",
           isLoading: connectors.isLoading,
-          isError: connectors.isError,
+          isError:
+            connectors.isError || response?.connector_registry_available === false,
         },
       ]}
       clauses={connectorHealthClauses(
@@ -164,7 +170,6 @@ function filtersClauses(stats: PipelineStats | undefined): VerdictClause[] {
     {
       key: "signals-filtered",
       text: `gates filtered ${droppedPercent}% of ${total.toLocaleString()} signals`,
-      href: "/ingestion/filters",
     },
   ];
 }
