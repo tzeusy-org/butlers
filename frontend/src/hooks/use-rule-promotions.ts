@@ -43,9 +43,11 @@ export function useConfirmRulePromotion() {
   return useMutation({
     mutationFn: (suggestionId: string) => confirmRulePromotionSuggestion(suggestionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: rulePromotionKeys.all });
       // A minted rule changes the ingestion-rules list.
       queryClient.invalidateQueries({ queryKey: ["ingestion-rules"] });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: rulePromotionKeys.all });
     },
   });
 }
@@ -60,7 +62,7 @@ export function useDismissRulePromotion() {
       suggestionId: string;
       request?: RulePromotionDismissRequest;
     }) => dismissRulePromotionSuggestion(suggestionId, request),
-    onSuccess: () => {
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: rulePromotionKeys.all });
     },
   });
