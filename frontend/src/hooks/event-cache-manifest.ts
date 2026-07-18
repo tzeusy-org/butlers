@@ -88,6 +88,8 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "calendar", queryKey: ["calendar-conflicts"], source: "use-calendar-workspace.ts (useCalendarConflicts)" },
   { eventType: "calendar", queryKey: ["calendar-workspace-entry"], source: "use-calendar-workspace.ts (useCalendarWorkspaceEntry)" },
   { eventType: "calendar", queryKey: ["calendar-workspace-search"], source: "use-calendar-workspace.ts (useCalendarWorkspaceSearch)" },
+  { eventType: "calendar", queryKey: ["calendar-workspace-meta"], source: "use-calendar-workspace.ts (useCalendarWorkspaceMeta)" },
+  { eventType: "calendar", queryKey: ["calendar-workspace-audit"], source: "use-calendar-workspace.ts (useCalendarWorkspaceAudit)" },
 
   // chronicles — deterministic scheduled projections
   { eventType: "chronicles", queryKey: ["chronicles"], source: "use-chronicles.ts (projection-backed queries)" },

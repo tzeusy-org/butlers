@@ -7543,7 +7543,74 @@ class CalendarModule(Module):
             window_end,
         )
 
+    async def _scheduler_projection_fingerprint(
+        self,
+        *,
+        source_id: uuid.UUID,
+    ) -> tuple[str, ...] | None:
+        """Return a stable signature of the scheduler's user-visible projection.
+
+        Scheduler sweeps intentionally update cursors and timestamps even when
+        their visible event/instance rows are unchanged.  Those bookkeeping
+        writes must not manufacture a calendar freshness event, so materiality
+        compares only the fields the workspace can render.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return None
+
+        try:
+            rows = await pool.fetch(
+                """
+                SELECT
+                    e.origin_ref,
+                    e.title,
+                    e.description,
+                    e.body,
+                    e.location,
+                    e.timezone AS event_timezone,
+                    e.starts_at AS event_starts_at,
+                    e.ends_at AS event_ends_at,
+                    e.all_day,
+                    e.status AS event_status,
+                    e.visibility,
+                    e.recurrence_rule,
+                    e.metadata AS event_metadata,
+                    e.source_butler,
+                    e.source_session_id,
+                    i.origin_instance_ref,
+                    i.timezone AS instance_timezone,
+                    i.starts_at AS instance_starts_at,
+                    i.ends_at AS instance_ends_at,
+                    i.status AS instance_status,
+                    i.is_exception,
+                    i.metadata AS instance_metadata
+                FROM calendar_events AS e
+                LEFT JOIN calendar_event_instances AS i ON i.event_id = e.id
+                WHERE e.source_id = $1
+                ORDER BY e.origin_ref, i.origin_instance_ref NULLS FIRST
+                """,
+                source_id,
+            )
+        except Exception as exc:
+            # Publishing without a materiality check would turn a transient
+            # read failure into a false freshness signal.  Keep the durable
+            # projection sweep running, but conservatively suppress its event.
+            logger.debug("Failed to fingerprint scheduler projection: %s", exc, exc_info=True)
+            return None
+
+        return tuple(
+            json.dumps(
+                self._jsonify_for_storage(dict(row)),
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            for row in rows
+        )
+
     async def _project_scheduler_source(self) -> bool:
+        """Project scheduled tasks and report whether the workspace changed."""
         if not await self._projection_tables_available():
             return False
         if not await self._table_exists("scheduled_tasks"):
@@ -7564,6 +7631,8 @@ class CalendarModule(Module):
         )
         if source_id is None:
             return False
+
+        before_projection = await self._scheduler_projection_fingerprint(source_id=source_id)
 
         rows = await pool.fetch(
             """
@@ -7696,7 +7765,12 @@ class CalendarModule(Module):
             last_error_at=None,
             last_error=None,
         )
-        return True
+        after_projection = await self._scheduler_projection_fingerprint(source_id=source_id)
+        return (
+            before_projection is not None
+            and after_projection is not None
+            and before_projection != after_projection
+        )
 
     async def _publish_calendar_fleet_event(
         self,
@@ -7718,14 +7792,14 @@ class CalendarModule(Module):
         pass is needed.
         """
         try:
-            projected = await self._project_scheduler_source()
+            material_projection = await self._project_scheduler_source()
         except Exception as exc:
             logger.error("Internal calendar projection refresh failed: %s", exc, exc_info=True)
             return False
         else:
-            if projected and emit_event:
+            if material_projection and emit_event:
                 await self._publish_calendar_fleet_event(kind="internal_projection")
-            return bool(projected)
+            return bool(material_projection)
 
     async def _projection_freshness_metadata(self) -> dict[str, Any]:
         if not await self._projection_tables_available():
@@ -8174,7 +8248,7 @@ class CalendarModule(Module):
         )
         self._sync_states[calendar_id] = new_state
         await self._save_sync_state(calendar_id, new_state)
-        internal_projection_applied = await self._project_internal_sources(emit_event=False)
+        internal_projection_material = await self._project_internal_sources(emit_event=False)
         if provider_projection_applied and pending_count:
             await self._publish_calendar_fleet_event(
                 kind="provider_projection",
@@ -8183,7 +8257,7 @@ class CalendarModule(Module):
                     "cancelled_events": len(cancelled_ids),
                 },
             )
-        elif internal_projection_applied:
+        elif internal_projection_material:
             await self._publish_calendar_fleet_event(kind="internal_projection")
 
         logger.info(

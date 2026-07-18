@@ -561,7 +561,7 @@ The frontend SHALL use TanStack Query (`@tanstack/react-query`) via `frontend/sr
 | Switchboard routing/registry | 30s | `useRoutingLog`, `useRegistry` |
 | Backfill jobs | 30s | `useBackfillJobs`, `useBackfillJob` |
 | Connector detail | 30s | `useConnectorDetail` |
-| Calendar workspace | 5m while bus-connected / 30s fallback (default, overridable) | `useCalendarWorkspace`, `useCalendarOverlays`, `useCalendarDayBriefing`, `useCalendarProposals` |
+| Calendar workspace | 5m while bus-connected / 30s fallback (default, overridable) | `useCalendarWorkspace`, `useCalendarOverlays`, `useCalendarDayBriefing`, `useCalendarProposals`, `useCalendarWorkspaceSearch`, `useCalendarWorkspaceMeta`, `useCalendarWorkspaceEntry`, `useCalendarDuplicates`, `useCalendarConflicts`, `useCalendarWorkspaceAudit` |
 | Spend summary | 60s | `useSpendSummary` |
 | Daily spend | 60s | `useDailySpend` |
 | Top sessions | 60s | `useTopSessions` |

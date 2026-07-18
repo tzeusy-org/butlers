@@ -163,6 +163,8 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["calendar-conflicts"],
         ["calendar-workspace-entry"],
         ["calendar-workspace-search"],
+        ["calendar-workspace-meta"],
+        ["calendar-workspace-audit"],
       ]),
     );
   });

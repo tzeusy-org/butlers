@@ -31,7 +31,15 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
 
 import { POLL_BUS_DOWN_FALLBACK_MS, POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import {
+  useCalendarConflicts,
   useCalendarDayBriefing,
+  useCalendarDuplicates,
+  useCalendarOverlays,
+  useCalendarProposals,
+  useCalendarWorkspaceAudit,
+  useCalendarWorkspaceEntry,
+  useCalendarWorkspaceMeta,
+  useCalendarWorkspaceSearch,
   useCalendarWorkspace,
 } from "./use-calendar-workspace.ts";
 
@@ -62,4 +70,76 @@ describe("calendar workspace bus-aware polling", () => {
 
     expect(lastRefetchInterval()).toBe(POLL_BUS_DOWN_FALLBACK_MS);
   });
+
+  const calendarBusCoveredViews = [
+    {
+      name: "workspace",
+      invoke: () =>
+        useCalendarWorkspace({
+          view: "user",
+          start: "2026-07-01T00:00:00Z",
+          end: "2026-07-02T00:00:00Z",
+        }),
+    },
+    {
+      name: "overlays",
+      invoke: () =>
+        useCalendarOverlays({
+          start: "2026-07-01T00:00:00Z",
+          end: "2026-07-02T00:00:00Z",
+        }),
+    },
+    { name: "day briefing", invoke: () => useCalendarDayBriefing({ date: "2026-07-02" }) },
+    {
+      name: "proposals",
+      invoke: () =>
+        useCalendarProposals({
+          start: "2026-07-01T00:00:00Z",
+          end: "2026-07-02T00:00:00Z",
+        }),
+    },
+    {
+      name: "search",
+      invoke: () => useCalendarWorkspaceSearch({ q: "planning", view: "user" }),
+    },
+    { name: "workspace metadata", invoke: () => useCalendarWorkspaceMeta() },
+    { name: "entry", invoke: () => useCalendarWorkspaceEntry("entry-1") },
+    {
+      name: "duplicates",
+      invoke: () =>
+        useCalendarDuplicates({
+          view: "user",
+          start: "2026-07-01T00:00:00Z",
+          end: "2026-07-02T00:00:00Z",
+        }),
+    },
+    {
+      name: "conflicts",
+      invoke: () =>
+        useCalendarConflicts({
+          start: "2026-07-01T00:00:00Z",
+          end: "2026-07-02T00:00:00Z",
+        }),
+    },
+    { name: "audit", invoke: () => useCalendarWorkspaceAudit() },
+  ];
+
+  it.each(calendarBusCoveredViews)(
+    "uses the five-minute reconciliation sweep for bus-covered $name while connected",
+    ({ invoke }) => {
+      invoke();
+
+      expect(lastRefetchInterval()).toBe(POLL_BUS_RECONCILE_MS);
+    },
+  );
+
+  it.each(calendarBusCoveredViews)(
+    "uses the 30-second fallback for bus-covered $name while disconnected",
+    ({ invoke }) => {
+      status = "closed";
+      invoke();
+
+      expect(lastRefetchInterval()).toBe(POLL_BUS_DOWN_FALLBACK_MS);
+    },
+  );
 });

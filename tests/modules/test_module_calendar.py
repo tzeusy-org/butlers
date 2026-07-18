@@ -2722,6 +2722,22 @@ class TestProjectInternalSourcesNoReminders:
 
         publish_mock.assert_awaited_once_with(pool, "calendar", {"kind": "internal_projection"})
 
+    async def test_empty_scheduler_sweep_is_non_material_and_emits_no_fleet_event(self):
+        """A successful no-op sweep must not churn the calendar workspace caches."""
+        pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+        pool.fetchval = AsyncMock(return_value=True)
+        pool.fetch = AsyncMock(return_value=[])
+        pool.execute = AsyncMock()
+        mod = _make_module_with_pool(pool)
+        mod._projection_tables_available_cache = True
+        mod._publish_calendar_fleet_event = AsyncMock()
+
+        material = await mod._project_internal_sources()
+
+        assert material is False
+        mod._publish_calendar_fleet_event.assert_not_awaited()
+
 
 class TestCalendarFleetEvents:
     async def test_sync_calendar_publishes_after_provider_projection_commits(self):

@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-07-12
-**Amended:** 2026-07-18 — ingestion, Calendar, and Chronicler projection producers; see [Amendments](#amendments).
+**Amended:** 2026-07-18 — ingestion producers plus Calendar and Chronicler projection producers; see [Amendments](#amendments).
 
 ## Summary
 
@@ -153,3 +153,32 @@ The unified ingestion feed retains its 30-second primary poll despite both live
 signals. `NOTIFY` remains best-effort, and the merged durable rows remain the
 correctness path when the dashboard listener is unavailable or a notification is
 missed.
+
+### 2026-07-18 — Calendar projection freshness bridge (bu-v6uas)
+
+`CalendarModule` publishes a bridge-only `calendar` envelope only after a
+successful provider projection with a non-empty provider delta, or after an
+internal scheduler sweep changes the user-visible event/instance projection.
+Cursor, source-registration, and timestamp-only bookkeeping writes do not make
+an internal sweep material, so a successful no-op emits no freshness event.
+The calendar cache patch invalidates the workspace, its derived views, metadata,
+and audit feed; each of those bus-covered queries reconciles every five minutes
+while the bus is open and falls back to 30-second polling while it is not.
+
+The tests for this amendment exercise the producer and cache-patch seams. They
+do not claim a live cross-container PostgreSQL LISTEN-to-WebSocket end-to-end
+delivery; the durable projection rows and the bus-aware poll fallback remain the
+correctness path when that best-effort signal is unavailable.
+
+### 2026-07-18 — Chronicler projection freshness bridge (bu-v6uas)
+
+The scheduled Chronicler adapter handler publishes a bridge-only `chronicles`
+envelope only after the adapter completes without error and reports a
+non-skipped, material projection (projected rows, point events, opened episodes,
+or closed episodes). The aggregate envelope carries counts rather than source
+content, and it invalidates the existing Chronicles query prefix. Empty and
+skipped adapter runs emit nothing.
+
+This producer is likewise verified at its deterministic job/bridge seam, not by
+an asserted live cross-process WebSocket E2E. Its durable episode, point-event,
+and checkpoint writes remain authoritative when a best-effort NOTIFY is missed.
