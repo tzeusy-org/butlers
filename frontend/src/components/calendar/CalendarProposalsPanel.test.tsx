@@ -74,17 +74,21 @@ function proposalEntry(overrides: Partial<UnifiedCalendarEntry> = {}): UnifiedCa
   };
 }
 
-function makeMutation(impl?: (vars: unknown) => Promise<unknown>) {
+function makeMutation<TMutation>(impl?: (vars: unknown) => Promise<unknown>) {
   return {
     mutateAsync: vi.fn(impl ?? (async () => ({ data: { status: "ok" } }))),
-  } as unknown as Parameters<typeof CalendarProposalsPanel>[0]["acceptMutation"];
+  } as unknown as TMutation;
 }
 
 function renderPanel(
   props: Partial<Parameters<typeof CalendarProposalsPanel>[0]> = {},
 ) {
-  const acceptMutation = props.acceptMutation ?? makeMutation();
-  const dismissMutation = props.dismissMutation ?? makeMutation();
+  const acceptMutation = props.acceptMutation ?? makeMutation<
+    Parameters<typeof CalendarProposalsPanel>[0]["acceptMutation"]
+  >();
+  const dismissMutation = props.dismissMutation ?? makeMutation<
+    Parameters<typeof CalendarProposalsPanel>[0]["dismissMutation"]
+  >();
   render(
     <CalendarProposalsPanel
       entries={props.entries ?? [proposalEntry()]}
@@ -137,7 +141,9 @@ describe("CalendarProposalsPanel", () => {
   });
 
   it("reverts the optimistic removal on a non-terminal error", async () => {
-    const acceptMutation = makeMutation(async () => {
+    const acceptMutation = makeMutation<
+      Parameters<typeof CalendarProposalsPanel>[0]["acceptMutation"]
+    >(async () => {
       throw new Error("network down");
     });
     renderPanel({ acceptMutation });
@@ -150,7 +156,9 @@ describe("CalendarProposalsPanel", () => {
   });
 
   it("keeps the row removed on a 409 lost-race (resolved server-side)", async () => {
-    const dismissMutation = makeMutation(async () => {
+    const dismissMutation = makeMutation<
+      Parameters<typeof CalendarProposalsPanel>[0]["dismissMutation"]
+    >(async () => {
       throw new ApiError("CONFLICT", "already accepted", 409);
     });
     renderPanel({ dismissMutation });

@@ -23,7 +23,12 @@
  * than fighting the bus with a redundant fetch.
  */
 
-import { getApprovalDetail, getSession, getTimeline } from "@/api/index.ts";
+import {
+  getApprovalDetail,
+  getIngestionEvent,
+  getSession,
+  getTimeline,
+} from "@/api/index.ts";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 
 /** Head-page size used by TimelinePage's own query (use-timeline-ledger.ts). */
@@ -74,6 +79,27 @@ function matchTimeline(pathname: string): PrefetchTarget | null {
   };
 }
 
+/**
+ * `/ingestion?event=:id` -- the ingestion ledger's URL-backed EventDrawer.
+ *
+ * The drawer is an inline disclosure rather than a standalone route, but its
+ * URL is still the canonical deep-link shape. Keeping the prefetch mapping on
+ * that real URL lets DisclosureRow use the same intent helper as navigating
+ * rows without inventing a synthetic route just for cache warming.
+ */
+function matchIngestionEventDetail(to: string): PrefetchTarget | null {
+  const [pathname, queryAndHash = ""] = to.split("?", 2);
+  if (pathname !== "/ingestion") return null;
+  const eventId = new URLSearchParams(queryAndHash.split("#", 1)[0]).get("event");
+  if (!eventId) return null;
+  return {
+    // Matches useIngestionEventDetail -> ingestionEventKeys.detail(requestId).
+    queryKey: ["ingestion", "events", eventId, "detail"],
+    queryFn: () => getIngestionEvent(eventId),
+    staleTime: POLL_BUS_RECONCILE_MS,
+  };
+}
+
 const MATCHERS: Matcher[] = [matchSessionDetail, matchApprovalDetail, matchTimeline];
 
 /**
@@ -88,6 +114,8 @@ const MATCHERS: Matcher[] = [matchSessionDetail, matchApprovalDetail, matchTimel
  * the same no-op as an unmapped route instead of throwing.
  */
 export function resolvePrefetchTarget(to: string): PrefetchTarget | null {
+  const ingestionEventTarget = matchIngestionEventDetail(to);
+  if (ingestionEventTarget) return ingestionEventTarget;
   const pathname = to.split("?")[0].split("#")[0];
   try {
     for (const matcher of MATCHERS) {

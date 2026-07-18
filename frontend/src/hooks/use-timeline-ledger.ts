@@ -39,6 +39,8 @@ export interface UseTimelineLedgerResult {
   events: TimelineEvent[];
   /** True only on the very first fetch with no data to show yet. */
   isLoading: boolean;
+  /** A head-page refresh is in flight while the existing ledger stays visible. */
+  isFetching: boolean;
   /** A fetch failure with nothing usable to show — render the error state. */
   isError: boolean;
   /**
@@ -137,6 +139,7 @@ export function useTimelineLedger(filters: TimelineLedgerFilters): UseTimelineLe
   return {
     events,
     isLoading: head.isLoading && events.length === 0,
+    isFetching: head.isFetching && events.length > 0,
     isError: !!head.isError && events.length === 0,
     isLiveFeedDown: !!head.isError,
     refetch: () => void head.refetch(),

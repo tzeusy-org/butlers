@@ -32,7 +32,7 @@ const mockUseMutation = vi.mocked(useMutation);
 
 function capturedMutationOptions(): {
   mutationFn: (...args: unknown[]) => unknown;
-  onSuccess: (...args: unknown[]) => void;
+  onSettled: (...args: unknown[]) => void;
 } {
   const calls = mockUseMutation.mock.calls;
   expect(calls.length).toBeGreaterThan(0);
@@ -45,10 +45,10 @@ describe("useConfirmFact", () => {
     mockInvalidateQueries.mockClear();
   });
 
-  it("onSuccess invalidates the single-fact, facts-list, AND memory-stats caches", () => {
+  it("onSettled invalidates the single-fact, facts-list, AND memory-stats caches", () => {
     useConfirmFact();
-    const { onSuccess } = capturedMutationOptions();
-    onSuccess(undefined, "fact-001", undefined);
+    const { onSettled } = capturedMutationOptions();
+    onSettled(undefined, null, "fact-001", undefined);
 
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["memory-fact", "fact-001"],
@@ -68,10 +68,10 @@ describe("useRetractFact", () => {
     mockInvalidateQueries.mockClear();
   });
 
-  it("onSuccess invalidates the single-fact, facts-list, AND memory-stats caches", () => {
+  it("onSettled invalidates the single-fact, facts-list, AND memory-stats caches", () => {
     useRetractFact();
-    const { onSuccess } = capturedMutationOptions();
-    onSuccess(undefined, "fact-001", undefined);
+    const { onSettled } = capturedMutationOptions();
+    onSettled(undefined, null, "fact-001", undefined);
 
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["memory-fact", "fact-001"],

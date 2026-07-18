@@ -150,6 +150,7 @@ export default function ButlerSessionsTab({
       {/* Session detail drawer — resolves globally by id (bu-tpudw.2). */}
       <SessionDetailDrawer
         sessionId={selectedSessionId}
+        seed={sessions.find((session) => session.id === selectedSessionId)}
         onClose={() => setSelectedSessionId(null)}
       />
     </div>

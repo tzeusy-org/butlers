@@ -44,6 +44,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 });
 
 import {
+  rollbackLists,
+  snapshotAndUpdateQueries,
   useOptimisticListMutation,
   useOptimisticMutation,
 } from "./use-optimistic-mutation";
@@ -117,6 +119,20 @@ describe("useOptimisticMutation", () => {
     expect(rollback).not.toHaveBeenCalled();
   });
 
+  it("keeps an optimistic resolution when the mutation classifies an error as already resolved", () => {
+    const rollback = vi.fn();
+    useOptimisticMutation({
+      mutationFn: (id: string) => Promise.resolve(id),
+      applyOptimisticUpdate: () => "snap",
+      rollback,
+      shouldRollback: () => false,
+    });
+
+    lastOptions().onError(new Error("already resolved"), "abc", { snapshot: "snap" });
+
+    expect(rollback).not.toHaveBeenCalled();
+  });
+
   it("invalidates keys computed from variables and the settled data", () => {
     useOptimisticMutation({
       mutationFn: (id: string) => Promise.resolve({ ok: true, id }),
@@ -143,6 +159,46 @@ describe("useOptimisticMutation", () => {
     lastOptions().onSuccess("result", "abc");
 
     expect(onSuccess).toHaveBeenCalledWith("result", "abc");
+  });
+});
+
+describe("snapshotAndUpdateQueries", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("snapshots every matching structured cache entry before applying an arbitrary update", () => {
+    const snapshot: [readonly unknown[], unknown][] = [
+      [["workspace", { view: "user" }], { data: { entries: [{ id: "proposal-1" }] } }],
+      [["workspace", { view: "butler" }], { data: { entries: [{ id: "proposal-2" }] } }],
+    ];
+    mockGetQueriesData.mockReturnValue(snapshot);
+
+    const captured = snapshotAndUpdateQueries(
+      mockQueryClient as never,
+      ["workspace"],
+      (old: { data: { entries: Array<{ id: string }> } } | undefined) =>
+        old
+          ? { ...old, data: { ...old.data, entries: old.data.entries.filter((entry) => entry.id !== "proposal-1") } }
+          : old,
+    );
+
+    expect(captured).toEqual(snapshot);
+    expect(mockSetQueriesData).toHaveBeenCalledWith(
+      { queryKey: ["workspace"] },
+      expect.any(Function),
+    );
+
+    const updater = mockSetQueriesData.mock.calls[0][1] as (old: unknown) => unknown;
+    expect(updater({ data: { entries: [{ id: "proposal-1" }, { id: "proposal-2" }] } })).toEqual({
+      data: { entries: [{ id: "proposal-2" }] },
+    });
+
+    rollbackLists(mockQueryClient as never, captured);
+    expect(mockSetQueryData).toHaveBeenCalledWith(
+      ["workspace", { view: "user" }],
+      { data: { entries: [{ id: "proposal-1" }] } },
+    );
   });
 });
 

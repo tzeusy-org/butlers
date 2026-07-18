@@ -10,12 +10,14 @@ import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { Page } from "@/components/ui/page";
 import { useAuditLog } from "@/hooks/use-audit-log";
+import { useDebounce } from "@/hooks/use-debounce";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const PAGE_SIZE = 20;
+const FREE_TEXT_DEBOUNCE_MS = 300;
 
 // ---------------------------------------------------------------------------
 // Filter state
@@ -54,6 +56,10 @@ export default function AuditLogPage() {
 
   // Single URL-serialized filter state (bu-qvnce.13) — no local mirror.
   const filters = filtersFromSearchParams(searchParams);
+  // The inputs still reflect the URL immediately; debounce only the request
+  // predicates so a typed actor/action does not continuously re-query.
+  const debouncedActor = useDebounce(filters.actor, FREE_TEXT_DEBOUNCE_MS);
+  const debouncedAction = useDebounce(filters.action, FREE_TEXT_DEBOUNCE_MS);
 
   // `key` and `result` are also URL-only deep-link params (no filter-bar
   // input owns them), forwarded straight through.
@@ -86,8 +92,8 @@ export default function AuditLogPage() {
   const params: AuditLogParams = {
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
-    ...(filters.actor ? { actor: filters.actor } : {}),
-    ...(filters.action ? { action: filters.action } : {}),
+    ...(debouncedActor ? { actor: debouncedActor } : {}),
+    ...(debouncedAction ? { action: debouncedAction } : {}),
     ...(filters.since ? { since: filters.since } : {}),
     ...(keyFilter ? { key: keyFilter } : {}),
     ...(resultFilter ? { result: resultFilter } : {}),

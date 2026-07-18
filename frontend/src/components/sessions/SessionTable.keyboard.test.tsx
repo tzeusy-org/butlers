@@ -2,9 +2,21 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, fireEvent, createEvent, cleanup } from "@testing-library/react";
+import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import type { SessionSummary } from "@/api/types";
+import { PREFETCH_INTENT_DELAY_MS } from "@/hooks/use-prefetch-on-intent";
 import { SessionTable } from "@/components/sessions/SessionTable";
+
+vi.mock("@/api/index.ts", () => ({
+  getApprovalDetail: vi.fn(),
+  getIngestionEvent: vi.fn(),
+  getSession: vi.fn(() => Promise.resolve({ data: {} })),
+  getTimeline: vi.fn(),
+}));
+
+import { getSession } from "@/api/index.ts";
 
 afterEach(cleanup);
 
@@ -66,5 +78,25 @@ describe("SessionTable keyboard accessibility", () => {
       <SessionTable sessions={[makeSession()]} isLoading={false} />,
     );
     expect(queryByRole("button")).toBeNull();
+  });
+
+  it("prefetches the matching global detail query after deliberate row hover", () => {
+    vi.useFakeTimers();
+    const queryClient = new QueryClient();
+    const onSessionClick = vi.fn();
+    const { getByRole, unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <SessionTable sessions={[makeSession()]} isLoading={false} onSessionClick={onSessionClick} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.pointerEnter(getByRole("button"));
+    act(() => {
+      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS);
+    });
+
+    expect(getSession).toHaveBeenCalledWith("sess-abc123");
+    unmount();
+    vi.useRealTimers();
   });
 });

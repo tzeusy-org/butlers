@@ -38,6 +38,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Time } from "@/components/ui/time";
 import { Tip } from "@/components/ui/tip";
 import { useButlers } from "@/hooks/use-butlers";
@@ -506,33 +507,35 @@ function PatrolPulseStrip() {
   if (rows.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-2 overflow-x-auto border-b border-border/60 px-6 py-2">
-      <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-        Recent patrols
-      </span>
-      {rows.map((patrol) => (
-        <Tip
-          key={patrol.id}
-          content={`${patrol.status} · ${patrol.findings_count} findings`}
-        >
-          <Link
-            to={`/qa/patrols/${patrol.id}`}
-            className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/60"
+    <FetchingDim isFetching={patrols.isFetching && !patrols.isLoading}>
+      <div className="flex items-center gap-2 overflow-x-auto border-b border-border/60 px-6 py-2">
+        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+          Recent patrols
+        </span>
+        {rows.map((patrol) => (
+          <Tip
+            key={patrol.id}
+            content={`${patrol.status} · ${patrol.findings_count} findings`}
           >
-            <span
-              aria-hidden="true"
-              className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass(patrol.status)}`}
-            />
-            <Time
-              value={patrol.started_at}
-              mode="relative"
-              className="font-mono text-[10px] text-muted-foreground"
-              showTitle={false}
-            />
-          </Link>
-        </Tip>
-      ))}
-    </div>
+            <Link
+              to={`/qa/patrols/${patrol.id}`}
+              className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/60"
+            >
+              <span
+                aria-hidden="true"
+                className={`inline-block h-1.5 w-1.5 rounded-full ${statusDotClass(patrol.status)}`}
+              />
+              <Time
+                value={patrol.started_at}
+                mode="relative"
+                className="font-mono text-[10px] text-muted-foreground"
+                showTitle={false}
+              />
+            </Link>
+          </Tip>
+        ))}
+      </div>
+    </FetchingDim>
   );
 }
 
@@ -748,7 +751,9 @@ export default function QaOverviewPage() {
 
       {/* KPI strip */}
       <div className="border-b border-border/60 px-6 py-4">
-        <QaKpiStrip kpis={summaryData?.kpis} active={summaryData?.active_breakdown} />
+        <FetchingDim isFetching={summary.isFetching && !summary.isLoading && !summary.isError}>
+          <QaKpiStrip kpis={summaryData?.kpis} active={summaryData?.active_breakdown} />
+        </FetchingDim>
       </div>
 
       <PatrolPulseStrip />
@@ -756,7 +761,10 @@ export default function QaOverviewPage() {
       {/* Two-pane body: case rail + dossier */}
       <div className="flex flex-1 overflow-hidden">
         {/* Case rail */}
-        <div className="shrink-0 overflow-y-auto border-r border-border/60 px-4 py-4">
+        <FetchingDim
+          isFetching={cases.isFetching && !cases.isLoading && !cases.isError}
+          className="shrink-0 overflow-y-auto border-r border-border/60 px-4 py-4"
+        >
           {cases.isLoading ? (
             <p className="font-serif text-sm italic text-muted-foreground">Loading cases…</p>
           ) : cases.isError ? (
@@ -777,7 +785,7 @@ export default function QaOverviewPage() {
               totalCount={cases.data?.meta?.total}
             />
           )}
-        </div>
+        </FetchingDim>
 
         {/* Dossier body */}
         <main className="min-w-0 flex-1 overflow-y-auto px-6 py-6">

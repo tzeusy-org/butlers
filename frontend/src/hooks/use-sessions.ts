@@ -101,12 +101,54 @@ export function useButlerSessions(name: string, params?: SessionParams) {
  * event-cache-registry.ts's sessionPatch invalidates this key on every
  * session start/end bus event; see event-cache-manifest.ts.
  */
-export function useGlobalSessionDetail(id: string | null) {
+/**
+ * Turn a list row into a truthful, explicitly partial detail response while
+ * the full record is in flight. The drawer renders the identifying summary
+ * plus a loading body for this response; it never presents the omitted
+ * transcript/tool-call fields as known-empty data.
+ */
+function detailSeedFromSummary(summary: SessionSummary): ApiResponse<SessionDetail> {
+  return {
+    data: {
+      id: summary.id,
+      butler: summary.butler ?? "Unknown butler",
+      prompt: summary.prompt,
+      trigger_source: summary.trigger_source,
+      result: null,
+      tool_calls: [],
+      duration_ms: summary.duration_ms,
+      trace_id: null,
+      request_id: summary.request_id ?? null,
+      cost: null,
+      started_at: summary.started_at,
+      completed_at: summary.completed_at,
+      success: summary.success,
+      error: null,
+      model: summary.model ?? null,
+      input_tokens: summary.input_tokens,
+      output_tokens: summary.output_tokens,
+      parent_session_id: null,
+      complexity: summary.complexity ?? null,
+      resolution_source: null,
+      process_log: null,
+    },
+    meta: {},
+  };
+}
+
+/**
+ * Fetch a global session detail, optionally showing the selected list summary
+ * immediately while the full dossier is fetched. `placeholderData` keeps the
+ * seed out of the cache, so a partial list row can never become a durable
+ * substitute for the authoritative detail response.
+ */
+export function useGlobalSessionDetail(id: string | null, seed?: SessionSummary) {
   return useQuery({
     queryKey: ["session-detail-global", id],
     queryFn: () => getSession(id!),
     enabled: !!id,
     refetchInterval: sessionDetailRefetchInterval,
+    placeholderData: seed ? () => detailSeedFromSummary(seed) : undefined,
   });
 }
 

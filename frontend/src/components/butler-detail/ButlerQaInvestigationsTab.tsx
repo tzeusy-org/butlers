@@ -18,6 +18,7 @@ import { Link } from "react-router";
 import type { QaInvestigation, QaPatrolSummary } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import {
@@ -574,11 +575,13 @@ export default function ButlerQaInvestigationsTab() {
   const {
     data: investigationsResp,
     isLoading: invLoading,
+    isFetching: invFetching,
     isError: invError,
   } = useQaInvestigations({ limit: 50 });
   const {
     data: patrolsResp,
     isLoading: patrolsLoading,
+    isFetching: patrolsFetching,
     isError: patrolsError,
   } = useQaPatrols({ limit: 24 });
 
@@ -632,15 +635,19 @@ export default function ButlerQaInvestigationsTab() {
       </div>
 
       {/* Row 2: Patrol cadence stripe (recent patrols) */}
-      <PatrolCadenceStripe patrols={patrols} isLoading={patrolsLoading} />
+      <FetchingDim isFetching={patrolsFetching && !patrolsLoading && !patrolsError}>
+        <PatrolCadenceStripe patrols={patrols} isLoading={patrolsLoading} />
+      </FetchingDim>
 
       {/* Row 3: Recent investigations table (5 rows) */}
-      <RecentInvestigationsTable
-        investigations={investigations}
-        isLoading={invLoading}
-        selectedId={selectedId}
-        onSelect={handleSelect}
-      />
+      <FetchingDim isFetching={invFetching && !invLoading && !invError}>
+        <RecentInvestigationsTable
+          investigations={investigations}
+          isLoading={invLoading}
+          selectedId={selectedId}
+          onSelect={handleSelect}
+        />
+      </FetchingDim>
 
       {/* Row 4: Selected investigation inline detail panel */}
       {selectedInvestigation && (

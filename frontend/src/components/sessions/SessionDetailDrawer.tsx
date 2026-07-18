@@ -1,4 +1,5 @@
 import { ApiError } from "@/api/client";
+import type { SessionSummary } from "@/api/types";
 import { useGlobalSessionDetail } from "@/hooks/use-sessions";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -17,6 +18,12 @@ import { SessionDossier } from "./SessionDossier";
 
 export interface SessionDetailDrawerProps {
   sessionId: string | null; // null = closed
+  /**
+   * The selected list row, when one is already available. It seeds the
+   * identity/header while the authoritative detail query loads; deep links
+   * omit it and retain the normal skeleton-only path.
+   */
+  seed?: SessionSummary;
   onClose: () => void;
 }
 
@@ -45,11 +52,15 @@ function DrawerSkeleton() {
 
 export function SessionDetailDrawer({
   sessionId,
+  seed,
   onClose,
 }: SessionDetailDrawerProps) {
   // Global (cross-butler) resolution: session ids are globally unique, so a
   // pinned row or deep link resolves without a ?butler= hint (bu-tpudw.2).
-  const { data, isLoading, isError, error } = useGlobalSessionDetail(sessionId);
+  const { data, isLoading, isError, isPlaceholderData, error } = useGlobalSessionDetail(
+    sessionId,
+    seed,
+  );
   const session = data?.data ?? null;
 
   // The global detail endpoint splits 404 (id genuinely unknown across every
@@ -83,6 +94,24 @@ export function SessionDetailDrawer({
                 unavailable.
               </SheetDescription>
             </SheetHeader>
+          </>
+        ) : isPlaceholderData && session ? (
+          <>
+            <SheetHeader>
+              <SheetTitle className="flex items-center gap-2 text-sm">
+                <span className="font-mono truncate">{session.id}</span>
+                <StatusBadge success={session.success} />
+              </SheetTitle>
+              <SheetDescription>
+                {session.butler} &mdash; {session.trigger_source}
+              </SheetDescription>
+            </SheetHeader>
+            <div className="px-4 pb-6">
+              <p className="mb-3 text-xs text-muted-foreground">
+                Loading full session record…
+              </p>
+              <DrawerSkeleton />
+            </div>
           </>
         ) : isLoading || !session ? (
           <>

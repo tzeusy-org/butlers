@@ -34,21 +34,31 @@ import type {
   CalendarAuditParams,
   CalendarDedupRulesUpdateRequest,
   CalendarDuplicatesParams,
+  CalendarDuplicatesResponse,
   ConflictScanParams,
   CalendarKeepSeparateRequest,
   CalendarProposalAcceptRequest,
   CalendarSourceToggleRequest,
+  CalendarSourceToggleResponse,
   CalendarWorkspaceButlerEventPreviewRequest,
   CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceFindTimeRequest,
   CalendarWorkspaceParams,
   CalendarWorkspaceReadResponse,
+  CalendarWorkspaceMetaResponse,
   CalendarWorkspaceSearchParams,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceUserMutationRequest,
   QuickAddParseRequest,
   SetPrimaryCalendarRequest,
 } from "@/api/types.ts";
+import { ApiError } from "@/api/client.ts";
+import {
+  rollbackLists,
+  snapshotAndUpdateQueries,
+  type ListSnapshot,
+  useOptimisticMutation,
+} from "@/hooks/use-optimistic-mutation";
 
 interface CalendarWorkspaceQueryOptions {
   refetchInterval?: number | false;
@@ -355,10 +365,33 @@ export function useAcceptCalendarProposal() {
 
 /** Dismiss a calendar proposal (no provider write) and refresh proposal caches. */
 export function useDismissCalendarProposal() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation({
     mutationFn: (vars: { proposalId: string }) => dismissCalendarProposal(vars.proposalId),
-    onSettled: () => invalidateWorkspaceAndProposals(queryClient),
+    cancelQueryKeys: [["calendar-proposals"], ["calendar-workspace"], ["calendar-workspace-meta"]],
+    applyOptimisticUpdate: ({ proposalId }, queryClient) =>
+      snapshotAndUpdateQueries<ApiResponse<CalendarWorkspaceReadResponse>>(
+        queryClient,
+        ["calendar-proposals"],
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: {
+                  ...current.data,
+                  entries: current.data.entries.filter((entry) => entry.entry_id !== proposalId),
+                },
+              }
+            : current,
+      ),
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    // The endpoint is idempotent in the user-visible sense: a 404/409 means
+    // another request already resolved the proposal, so do not resurrect it.
+    shouldRollback: (error) => !(error instanceof ApiError && (error.status === 404 || error.status === 409)),
+    invalidateQueryKeys: [
+      ["calendar-proposals"],
+      ["calendar-workspace"],
+      ["calendar-workspace-meta"],
+    ],
   });
 }
 
@@ -374,14 +407,57 @@ export function useCalendarAccounts(options?: CalendarWorkspaceQueryOptions) {
 
 /** Enable/disable a calendar as a sync source and refresh workspace metadata. */
 export function useToggleCalendarSource() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation<ApiResponse<CalendarSourceToggleResponse>, CalendarSourceToggleRequest, ListSnapshot>({
     mutationFn: (body: CalendarSourceToggleRequest) => toggleCalendarSource(body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
-      queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
-      queryClient.invalidateQueries({ queryKey: ["calendar-accounts"] });
+    cancelQueryKeys: [
+      ["calendar-workspace"],
+      ["calendar-workspace-meta"],
+      ["calendar-accounts"],
+    ],
+    applyOptimisticUpdate: (body, queryClient) => {
+      const sourceMatches = (source: { source_key: string; source_id: string }) =>
+        (body.source_key != null && source.source_key === body.source_key) ||
+        (body.source_id != null && source.source_id === body.source_id);
+      const metaSnapshot = snapshotAndUpdateQueries<ApiResponse<CalendarWorkspaceMetaResponse>>(
+        queryClient,
+        ["calendar-workspace-meta"],
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: {
+                  ...current.data,
+                  connected_sources: current.data.connected_sources.map((source) =>
+                    sourceMatches(source) ? { ...source, sync_enabled: body.enabled } : source,
+                  ),
+                },
+              }
+            : current,
+      );
+      const workspaceSnapshot = snapshotAndUpdateQueries<ApiResponse<CalendarWorkspaceReadResponse>>(
+        queryClient,
+        ["calendar-workspace"],
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: {
+                  ...current.data,
+                  source_freshness: current.data.source_freshness.map((source) =>
+                    sourceMatches(source) ? { ...source, sync_enabled: body.enabled } : source,
+                  ),
+                },
+              }
+            : current,
+      );
+      return [...metaSnapshot, ...workspaceSnapshot];
     },
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: [
+      ["calendar-workspace"],
+      ["calendar-workspace-meta"],
+      ["calendar-accounts"],
+    ],
   });
 }
 
@@ -474,10 +550,30 @@ export function usePatchCalendarDedupRules() {
  * no longer collapsed by the workspace read, so both caches are invalidated.
  */
 export function useSetCalendarKeepSeparate() {
-  const queryClient = useQueryClient();
-  return useMutation({
+  return useOptimisticMutation({
     mutationFn: (body: CalendarKeepSeparateRequest) => setCalendarKeepSeparate(body),
-    onSuccess: () => invalidateDuplicatesAndWorkspace(queryClient),
+    cancelQueryKeys: [["calendar-duplicates"], ["calendar-workspace"]],
+    applyOptimisticUpdate: (body, queryClient) =>
+      snapshotAndUpdateQueries<ApiResponse<CalendarDuplicatesResponse>>(
+        queryClient,
+        ["calendar-duplicates"],
+        (current) =>
+          current
+            ? {
+                ...current,
+                data: {
+                  ...current.data,
+                  clusters: current.data.clusters.map((cluster) =>
+                    cluster.cluster_key === body.cluster_key
+                      ? { ...cluster, keep_separate: body.keep_separate }
+                      : cluster,
+                  ),
+                },
+              }
+            : current,
+      ),
+    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+    invalidateQueryKeys: [["calendar-duplicates"], ["calendar-workspace"]],
   });
 }
 

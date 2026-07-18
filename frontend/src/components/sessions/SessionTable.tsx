@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { Time } from "@/components/ui/time";
 
 import type { SessionSummary } from "@/api/types";
@@ -6,6 +8,7 @@ import { ComplexityBadge } from "@/components/general/ComplexityBadge";
 import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
+import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
 import { formatCostUsd } from "@/lib/format-cost";
 import { formatDurationMs } from "@/lib/format-duration";
 import { truncate } from "@/lib/truncate";
@@ -66,6 +69,69 @@ function formatTokens(n: number | null): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
+}
+
+interface SessionTableRowProps {
+  session: SessionSummary;
+  interactive: boolean;
+  selected: boolean;
+  onSessionClick?: (session: SessionSummary) => void;
+  children: ReactNode;
+}
+
+/**
+ * A table row that warms the same global-detail cache slot the drawer reads.
+ * The intent timer makes a deliberate hover or keyboard focus feel instant
+ * without turning a pointer sweep across the session ledger into a fetch fan-out.
+ */
+function SessionTableRow({
+  session,
+  interactive,
+  selected,
+  onSessionClick,
+  children,
+}: SessionTableRowProps) {
+  const prefetch = usePrefetchOnIntent(
+    interactive ? `/sessions/${encodeURIComponent(session.id)}` : null,
+  );
+
+  return (
+    <TableRow
+      data-testid="session-row"
+      data-session-id={session.id}
+      aria-selected={interactive ? selected : undefined}
+      className={cn(
+        session.success === false && "bg-destructive/5",
+        selected && "bg-muted",
+        interactive &&
+          "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+      )}
+      onClick={() => onSessionClick?.(session)}
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={
+        interactive
+          ? `Open session detail for ${session.butler ?? "session"}: ${truncate(session.prompt, 80)}`
+          : undefined
+      }
+      onKeyDown={
+        interactive
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSessionClick?.(session);
+              }
+            }
+          : undefined
+      }
+      onPointerEnter={interactive ? prefetch.onPointerEnter : undefined}
+      onPointerLeave={interactive ? prefetch.onPointerLeave : undefined}
+      onFocus={interactive ? prefetch.onFocus : undefined}
+      onBlur={interactive ? prefetch.onBlur : undefined}
+    >
+      {children}
+    </TableRow>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -172,35 +238,12 @@ export function SessionTable({
             const interactive = Boolean(onSessionClick);
             const selected = selectedId != null && session.id === selectedId;
             return (
-              <TableRow
+              <SessionTableRow
                 key={session.id}
-                data-testid="session-row"
-                data-session-id={session.id}
-                aria-selected={interactive ? selected : undefined}
-                className={cn(
-                  session.success === false && "bg-destructive/5",
-                  selected && "bg-muted",
-                  interactive &&
-                    "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-                )}
-                onClick={() => onSessionClick?.(session)}
-                role={interactive ? "button" : undefined}
-                tabIndex={interactive ? 0 : undefined}
-                aria-label={
-                  interactive
-                    ? `Open session detail for ${session.butler ?? "session"}: ${truncate(session.prompt, 80)}`
-                    : undefined
-                }
-                onKeyDown={
-                  interactive
-                    ? (e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          onSessionClick?.(session);
-                        }
-                      }
-                    : undefined
-                }
+                session={session}
+                interactive={interactive}
+                selected={selected}
+                onSessionClick={onSessionClick}
               >
                 <TableCell className="text-muted-foreground text-xs">
                   <Time value={session.started_at} mode="smart" />
@@ -270,7 +313,7 @@ export function SessionTable({
                 <TableCell className="text-right tabular-nums text-xs text-muted-foreground">
                   {session.cost_usd != null ? formatCostUsd(session.cost_usd) : "\u2014"}
                 </TableCell>
-              </TableRow>
+              </SessionTableRow>
             );
           })
         )}

@@ -29,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { FetchingDim } from "@/components/ui/fetching-dim";
 import { LiveStatusBadge } from "@/components/ui/live-status-badge";
 import { DispatchLayout, DispatchHeader, DispatchSurface } from "@/components/ingestion/dispatch";
 import { NewEventsPill } from "@/components/timeline/NewEventsPill";
@@ -112,6 +113,7 @@ export default function TimelinePage() {
   const {
     events,
     isLoading,
+    isFetching,
     isError,
     refetch,
     hasMore,
@@ -361,15 +363,17 @@ export default function TimelinePage() {
 
         <NewEventsPill count={newCount} onClick={showNewEvents} />
 
-        <TimelineLedger
-          events={events}
-          isLoading={isLoading}
-          isError={isError}
-          onRetry={refetch}
-          hasMore={hasMore}
-          onLoadMore={loadMore}
-          isLoadingMore={isLoadingMore}
-        />
+        <FetchingDim isFetching={isFetching && !isLoading && !isError}>
+          <TimelineLedger
+            events={events}
+            isLoading={isLoading}
+            isError={isError}
+            onRetry={refetch}
+            hasMore={hasMore}
+            onLoadMore={loadMore}
+            isLoadingMore={isLoadingMore}
+          />
+        </FetchingDim>
       </DispatchSurface>
 
       <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>

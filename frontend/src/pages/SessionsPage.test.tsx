@@ -7,6 +7,7 @@
 
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { render, fireEvent, cleanup } from "@testing-library/react";
+import { act } from "react";
 import { MemoryRouter, useLocation } from "react-router";
 
 import type { KeysetResponse, SessionSummary } from "@/api/types";
@@ -160,6 +161,35 @@ describe("SessionsPage — URL state round-trip", () => {
     const search = getByTestId("location-search").textContent ?? "";
     expect(search).toContain("trigger=telegram");
     expect(search).not.toContain("cursor=abc");
+  });
+
+  it("debounces free-text list requests without delaying the URL state", () => {
+    vi.useFakeTimers();
+    try {
+      setSessions({ data: keysetResponse([makeSession()], false, null) });
+      const { getByLabelText, getByTestId } = renderPage();
+      const lastListParams = () => mockUseSessions.mock.calls
+        .map(([params]) => params)
+        .filter((params) => (params as { limit?: number })?.limit === 20)
+        .at(-1) as { trigger_source?: string } | undefined;
+
+      fireEvent.change(getByLabelText("Trigger"), { target: { value: "telegram" } });
+
+      expect(getByTestId("location-search").textContent).toContain("trigger=telegram");
+      expect(lastListParams()?.trigger_source).toBeUndefined();
+
+      act(() => {
+        vi.advanceTimersByTime(299);
+      });
+      expect(lastListParams()?.trigger_source).toBeUndefined();
+
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(lastListParams()?.trigger_source).toBe("telegram");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

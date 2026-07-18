@@ -25,6 +25,7 @@ import {
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Page } from "@/components/ui/page";
 import { useButlers } from "@/hooks/use-butlers";
+import { useDebounce } from "@/hooks/use-debounce";
 import { useSessionAggregate, useSessions } from "@/hooks/use-sessions";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 
@@ -33,6 +34,7 @@ import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-
 // ---------------------------------------------------------------------------
 
 const PAGE_SIZE = 20;
+const FREE_TEXT_DEBOUNCE_MS = 300;
 
 /** Pinned-strip row caps (bu-ptaub) -- both are small, bounded "strip" sizes,
  * not full-flow substitutes; the caller can always find the rest in the
@@ -110,6 +112,13 @@ export default function SessionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = parseFilters(searchParams);
   const cursor = searchParams.get("cursor") ?? undefined;
+  // URL state remains immediate and shareable; only the expensive list query
+  // waits for a pause in free-text typing.
+  const debouncedTriggerSource = useDebounce(
+    filters.trigger_source,
+    FREE_TEXT_DEBOUNCE_MS,
+  );
+  const debouncedRequestId = useDebounce(filters.request_id, FREE_TEXT_DEBOUNCE_MS);
 
   // History of cursors for pages BEFORE the current one (powers "Newer").
   const [prevCursors, setPrevCursors] = useState<(string | undefined)[]>([]);
@@ -127,8 +136,8 @@ export default function SessionsPage() {
   // Filter params shared by the chart and KPI strip (window-true, no cursor).
   const filterParams: SessionParams = {
     ...(filters.butler !== "all" ? { butler: filters.butler } : {}),
-    ...(filters.trigger_source ? { trigger_source: filters.trigger_source } : {}),
-    ...(filters.request_id ? { request_id: filters.request_id } : {}),
+    ...(debouncedTriggerSource ? { trigger_source: debouncedTriggerSource } : {}),
+    ...(debouncedRequestId ? { request_id: debouncedRequestId } : {}),
     ...(filters.status !== "all" ? { status: filters.status } : {}),
     ...(filters.since ? { since: filters.since } : {}),
     ...(filters.until ? { until: filters.until } : {}),
@@ -359,6 +368,17 @@ export default function SessionsPage() {
 
   useRegisterShortcut(shortcutBindings);
 
+  // A selected row is already enough to identify the session in the drawer.
+  // Pass it through as a non-cacheable placeholder so click-through has useful
+  // context even when the detail request was not warmed (for example, touch).
+  const selectedSessionSeed = selectedSessionId
+    ? [
+        ...sessions,
+        ...(runningSessionsResponse?.data ?? []),
+        ...(recentFailuresResponse?.data ?? []),
+      ].find((session) => session.id === selectedSessionId)
+    : undefined;
+
   return (
     <Page
       archetype="list"
@@ -579,6 +599,7 @@ export default function SessionsPage() {
           pinned row, deep link, or paged-away row opens without a butler hint. */}
       <SessionDetailDrawer
         sessionId={selectedSessionId}
+        seed={selectedSessionSeed}
         onClose={() => selectSession(null)}
       />
     </Page>
