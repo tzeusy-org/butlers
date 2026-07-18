@@ -1615,7 +1615,7 @@ async def get_model_pricing(
 
 @dispatch_router.get("/attempts", response_model=PaginatedResponse[DispatchAttemptEntry])
 async def get_dispatch_attempts(
-    session_id: str | None = Query(
+    session_id: UUID | None = Query(
         None,
         description=(
             "Filter by the UUID of the session row. Returns all attempt rows tied to this session."

@@ -124,6 +124,12 @@ together. Operators read it via `GET /api/dispatch/attempts` and
 - **THEN** the endpoint SHALL use session mode and return rows matching either selector
   in `attempt_index ASC` order
 
+#### Scenario: Malformed session identifier is rejected at the API boundary
+- **WHEN** a caller supplies a blank or non-UUID `session_id`, with or without an
+  `outcome` filter
+- **THEN** `GET /api/dispatch/attempts` SHALL return `422` before issuing a database query
+- **AND** it SHALL NOT fall through to fleet-wide outcome mode or pass the value to a SQL UUID cast
+
 ### Requirement: Failover Classification Marker Vocabulary
 The classifier (`butlers.core.failover_classifier.classify_failover_eligibility`) SHALL
 recognize provider/auth, provider-availability, and rate-limit failures via a lowercased

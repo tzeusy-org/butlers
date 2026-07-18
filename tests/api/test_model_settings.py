@@ -656,7 +656,36 @@ async def test_dispatch_attempts_supports_both_session_selectors(app):
     fetch_call = mock_pool.fetch.call_args
     assert "WHERE session_id = $1::uuid" in fetch_call.args[0]
     assert "OR logical_session_id = $2" in fetch_call.args[0]
-    assert fetch_call.args[1:3] == (str(session_id), logical_session_id)
+    assert fetch_call.args[1:3] == (session_id, logical_session_id)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        pytest.param({"session_id": ""}, id="blank-session-id"),
+        pytest.param({"session_id": "not-a-uuid"}, id="invalid-session-id"),
+        pytest.param(
+            {"outcome": "quota_skip", "session_id": ""},
+            id="outcome-with-blank-session-id",
+        ),
+        pytest.param(
+            {"outcome": "quota_skip", "session_id": "not-a-uuid"},
+            id="outcome-with-invalid-session-id",
+        ),
+    ],
+)
+async def test_dispatch_attempts_rejects_invalid_session_id_before_db_lookup(app, params):
+    """Malformed session IDs fail FastAPI validation rather than reaching the SQL UUID cast."""
+    _, mock_pool = _app_with_pool(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/dispatch/attempts", params=params)
+
+    assert resp.status_code == 422
+    mock_pool.fetch.assert_not_awaited()
+    mock_pool.fetchval.assert_not_awaited()
 
 
 async def test_dispatch_attempts_empty_on_missing_table(app):
