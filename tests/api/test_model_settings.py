@@ -613,6 +613,52 @@ async def test_dispatch_attempts_422_when_no_filter(app):
     assert resp.status_code == 422
 
 
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"outcome": "quota_skip", "session_id": str(uuid.uuid4())},
+        {"outcome": "quota_skip", "logical_session_id": "req-mixed-mode"},
+    ],
+)
+async def test_dispatch_attempts_rejects_mixed_fleet_and_session_modes_before_query(app, params):
+    """Fleet outcome mode cannot be combined with either session-mode selector."""
+    _, mock_pool = _app_with_pool(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/dispatch/attempts", params=params)
+
+    assert resp.status_code == 422
+    assert "cannot be combined" in resp.json()["detail"]
+    mock_pool.fetch.assert_not_awaited()
+    mock_pool.fetchval.assert_not_awaited()
+
+
+async def test_dispatch_attempts_supports_both_session_selectors(app):
+    """Session mode intentionally accepts session_id and logical_session_id together."""
+    session_id = uuid.uuid4()
+    logical_session_id = "req-session-and-logical"
+    _, mock_pool = _app_with_pool(app)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/dispatch/attempts",
+            params={
+                "session_id": str(session_id),
+                "logical_session_id": logical_session_id,
+            },
+        )
+
+    assert resp.status_code == 200
+    fetch_call = mock_pool.fetch.call_args
+    assert "WHERE session_id = $1::uuid" in fetch_call.args[0]
+    assert "OR logical_session_id = $2" in fetch_call.args[0]
+    assert fetch_call.args[1:3] == (str(session_id), logical_session_id)
+
+
 async def test_dispatch_attempts_empty_on_missing_table(app):
     """GET /api/dispatch/attempts returns empty list if table absent."""
     import asyncpg.exceptions
