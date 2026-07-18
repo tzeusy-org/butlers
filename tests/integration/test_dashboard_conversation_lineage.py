@@ -59,6 +59,7 @@ from uuid import UUID
 import asyncpg
 import pytest
 
+from alembic import command
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
     conversation_create,
@@ -75,6 +76,7 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.core_tools._conversation_reply import _best_effort_request_id
 from butlers.db import register_jsonb_codec
+from butlers.migrations import _build_alembic_config
 from butlers.modules.pipeline import MessagePipeline
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -103,6 +105,22 @@ _MOCK_BUTLERS = [
 # Patch targets — mirror the paths the shipped code imports from.
 _CLASSIFY_BUTLERS_PATH = "butlers.tools.switchboard.routing.classify._load_available_butlers"
 _ROUTE_PATH = "butlers.tools.switchboard.routing.route.route"
+
+_RETAINED_DASHBOARD_CONVERSATION_COLUMNS = {
+    "id",
+    "butler_name",
+    "title",
+    "status",
+    "created_at",
+    "updated_at",
+    "message_count",
+    "routed_butler",
+}
+_RETIRED_DASHBOARD_CONVERSATION_AGGREGATES = {
+    "total_input_tokens",
+    "total_output_tokens",
+    "total_duration_ms",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +179,57 @@ async def pool(migrated_db_url: str):
         yield p
     finally:
         await p.close()
+
+
+async def test_migrated_dashboard_conversation_schema_omits_dead_aggregates(
+    migrated_db_url: str,
+    pool: asyncpg.Pool,
+) -> None:
+    """core_175 drops only dead aggregates and restores their prior shape on rollback."""
+    table_exists = await pool.fetchval(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'dashboard_conversations'
+        )
+        """
+    )
+    assert table_exists is True
+
+    current_columns = {
+        row["column_name"]
+        for row in await pool.fetch(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'dashboard_conversations'
+            """
+        )
+    }
+    assert _RETAINED_DASHBOARD_CONVERSATION_COLUMNS <= current_columns
+    assert _RETIRED_DASHBOARD_CONVERSATION_AGGREGATES.isdisjoint(current_columns)
+
+    command.downgrade(_build_alembic_config(migrated_db_url, chains=["core"]), "core_174")
+
+    restored_columns = {
+        row["column_name"]: row
+        for row in await pool.fetch(
+            """
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'dashboard_conversations'
+              AND column_name = ANY($1::text[])
+            """,
+            list(_RETIRED_DASHBOARD_CONVERSATION_AGGREGATES),
+        )
+    }
+    assert set(restored_columns) == _RETIRED_DASHBOARD_CONVERSATION_AGGREGATES
+    for column in restored_columns.values():
+        assert column["data_type"] == "bigint"
+        assert column["is_nullable"] == "NO"
+        assert column["column_default"] == "0"
 
 
 # ---------------------------------------------------------------------------

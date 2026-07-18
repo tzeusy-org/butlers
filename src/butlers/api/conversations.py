@@ -85,8 +85,8 @@ async def conversation_create(
         """
         INSERT INTO public.dashboard_conversations
             (id, butler_name, title, status, created_at, updated_at,
-             message_count, total_input_tokens, total_output_tokens, total_duration_ms)
-        VALUES ($1, $2, $3, 'active', $4, $4, 0, 0, 0, 0)
+             message_count)
+        VALUES ($1, $2, $3, 'active', $4, $4, 0)
         """,
         conv_id,
         butler_name,
@@ -102,9 +102,6 @@ async def conversation_create(
         "created_at": now,
         "updated_at": now,
         "message_count": 0,
-        "total_input_tokens": 0,
-        "total_output_tokens": 0,
-        "total_duration_ms": 0,
         "routed_butler": None,
     }
 
@@ -119,8 +116,7 @@ async def conversation_get(
     row = await pool.fetchrow(
         """
         SELECT id, butler_name, title, status, created_at, updated_at,
-               message_count, total_input_tokens, total_output_tokens, total_duration_ms,
-               routed_butler
+               message_count, routed_butler
         FROM public.dashboard_conversations
         WHERE id = $1 AND butler_name = $2
         """,
@@ -144,12 +140,8 @@ async def conversation_list(
 
     Each row also carries ``latest_assistant_reply_at`` (the max ``created_at``
     of that conversation's assistant-role messages, or ``None`` if it has no
-    replies yet). ``total_output_tokens`` is *not* a usable reply signal on
-    its own: ``conversation_reply_create`` persists mid-session replies with
-    ``output_tokens = NULL`` (accounting isn't known until the routed
-    session finishes), so it never increments for a confirm-loop reply. The
-    unread-badge watermark (``use-chat-unread.ts``) keys off
-    ``latest_assistant_reply_at`` instead.
+    replies yet). The unread-badge watermark (``use-chat-unread.ts``) keys off
+    that persisted-message timestamp.
     """
     if status == "all":
         where = "c.butler_name = $1"
@@ -169,8 +161,7 @@ async def conversation_list(
     rows = await pool.fetch(
         f"""
         SELECT c.id, c.butler_name, c.title, c.status, c.created_at, c.updated_at,
-               c.message_count, c.total_input_tokens, c.total_output_tokens, c.total_duration_ms,
-               c.routed_butler,
+               c.message_count, c.routed_butler,
                (
                    SELECT MAX(m.created_at)
                    FROM public.dashboard_messages m
@@ -223,8 +214,7 @@ async def conversation_update(
         SET {", ".join(set_clauses)}
         WHERE id = ${idx} AND butler_name = ${idx + 1}
         RETURNING id, butler_name, title, status, created_at, updated_at,
-                  message_count, total_input_tokens, total_output_tokens, total_duration_ms,
-                  routed_butler
+                  message_count, routed_butler
         """,
         *args,
     )
@@ -292,13 +282,11 @@ async def conversation_search(
         SELECT
             sub.id, sub.butler_name, sub.title, sub.status,
             sub.created_at, sub.updated_at,
-            sub.message_count, sub.total_input_tokens, sub.total_output_tokens,
-            sub.total_duration_ms, sub.routed_butler, sub.snippet, sub.msg_created_at
+            sub.message_count, sub.routed_butler, sub.snippet, sub.msg_created_at
         FROM (
             SELECT DISTINCT ON (c.id)
                 c.id, c.butler_name, c.title, c.status, c.created_at, c.updated_at,
-                c.message_count, c.total_input_tokens, c.total_output_tokens, c.total_duration_ms,
-                c.routed_butler,
+                c.message_count, c.routed_butler,
                 substring(m.content, 1, 200) AS snippet,
                 m.created_at AS msg_created_at
             FROM public.dashboard_conversations c
@@ -351,10 +339,7 @@ async def conversation_summary(
         SELECT
             COUNT(*) AS total_conversations,
             COUNT(*) FILTER (WHERE status = 'active') AS active_conversations,
-            COALESCE(SUM(message_count), 0) AS total_messages,
-            COALESCE(SUM(total_input_tokens), 0) AS total_input_tokens,
-            COALESCE(SUM(total_output_tokens), 0) AS total_output_tokens,
-            COALESCE(SUM(total_duration_ms), 0) AS total_duration_ms
+            COALESCE(SUM(message_count), 0) AS total_messages
         FROM public.dashboard_conversations
         WHERE butler_name = $1
         """,
@@ -367,9 +352,6 @@ async def conversation_summary(
             "total_conversations": 0,
             "active_conversations": 0,
             "total_messages": 0,
-            "total_input_tokens": 0,
-            "total_output_tokens": 0,
-            "total_duration_ms": 0,
         }
     )
 

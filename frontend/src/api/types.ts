@@ -4883,9 +4883,6 @@ export interface ConversationSummary {
   created_at: string;
   updated_at: string;
   message_count: number;
-  total_input_tokens: number;
-  total_output_tokens: number;
-  total_duration_ms: number;
   /**
    * Butler this Switchboard-classification-routed conversation stuck to
    * after its first successful route (sticky follow-ups). `null`/absent for
@@ -4895,9 +4892,8 @@ export interface ConversationSummary {
   /**
    * Timestamp of the most recent assistant-role message in this
    * conversation, or `null` if none has arrived yet. This is the
-   * unread-badge watermark signal (see `use-chat-unread.ts`) —
-   * `total_output_tokens` does not move for confirm-loop replies (they
-   * persist with `output_tokens` NULL) so it cannot detect a new reply.
+   * unread-badge watermark signal (see `use-chat-unread.ts`) because it
+   * changes whenever a confirm-loop reply is persisted.
    */
   latest_assistant_reply_at?: string | null;
 }

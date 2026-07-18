@@ -176,10 +176,7 @@ async def test_message_find_reply_since_ignores_stale_reply_and_finds_fresh_one(
 async def test_conversation_list_exposes_latest_assistant_reply_at(
     migrated_core_postgres_pool,
 ) -> None:
-    """conversation_list's latest_assistant_reply_at must reflect the newest
-    assistant message even though total_output_tokens stays at 0 — the
-    dead-signal bug (bu-qesw0) was total_output_tokens never incrementing
-    for a conversation_reply-persisted assistant message."""
+    """conversation_list's latest_assistant_reply_at follows assistant replies."""
     async with migrated_core_postgres_pool() as pool:
         conv = await conversation_create(pool, butler_name="switchboard", first_message="hi")
         conv_id = conv["id"]
@@ -188,7 +185,7 @@ async def test_conversation_list_exposes_latest_assistant_reply_at(
         rows, _ = await conversation_list(pool, butler_name="switchboard")
         assert len(rows) == 1
         assert rows[0]["latest_assistant_reply_at"] is None
-        assert rows[0]["total_output_tokens"] == 0
+        assert "total_output_tokens" not in rows[0]
 
         first_reply = await conversation_reply_create(
             pool, conv_id, message="Recorded: Alice child-of Bob — correct?"
@@ -197,8 +194,7 @@ async def test_conversation_list_exposes_latest_assistant_reply_at(
 
         rows, _ = await conversation_list(pool, butler_name="switchboard")
         assert rows[0]["latest_assistant_reply_at"] == first_reply["created_at"]
-        # The dead signal: still 0 even though a reply was just persisted.
-        assert rows[0]["total_output_tokens"] == 0
+        assert "total_output_tokens" not in rows[0]
 
         # A stale user message must not move latest_assistant_reply_at.
         await pool.execute(
