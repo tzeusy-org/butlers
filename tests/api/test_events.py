@@ -203,6 +203,13 @@ def test_emit_event_drops_slow_subscriber_queue():
     assert q not in _events_subscribers
 
 
+def test_event_types_include_calendar_and_chronicles_producers():
+    """Cross-process projection producers remain part of the documented wire contract."""
+    from butlers.api.routers.events import EVENT_TYPES
+
+    assert {"calendar", "chronicles"}.issubset(EVENT_TYPES)
+
+
 # ---------------------------------------------------------------------------
 # API-initiated approval lifecycle events fan onto the bus
 # ---------------------------------------------------------------------------

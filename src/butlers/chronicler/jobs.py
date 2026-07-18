@@ -39,6 +39,7 @@ from butlers.chronicler.adapters.owntracks_ssid import SSID_PLACE_STATE_KEY, par
 from butlers.chronicler.contracts import seed_source_registry
 from butlers.config import list_butlers
 from butlers.core.state import state_get
+from butlers.fleet_events import publish_fleet_event
 
 if TYPE_CHECKING:
     from butlers.chronicler.adapters import ProjectionAdapter
@@ -143,6 +144,28 @@ async def _run_adapter(
     result = await adapter.run(pool=db_pool, chronicler_pool=db_pool)
     if result.error is not None:
         raise RuntimeError(f"{result.source_name} projection failed: {result.error}")
+    if not result.skipped and any(
+        (
+            result.rows_projected,
+            result.point_events,
+            result.episodes_opened,
+            result.episodes_closed,
+        )
+    ):
+        # ``adapter.run`` has completed its durable episode, point-event, and
+        # checkpoint writes by this point. Publish aggregate freshness only;
+        # raw projection evidence never leaves Chronicler on the event bus.
+        await publish_fleet_event(
+            db_pool,
+            "chronicles",
+            {
+                "kind": "projection",
+                "rows_projected": result.rows_projected,
+                "point_events": result.point_events,
+                "episodes_opened": result.episodes_opened,
+                "episodes_closed": result.episodes_closed,
+            },
+        )
     return _adapter_result_to_dict(result)
 
 

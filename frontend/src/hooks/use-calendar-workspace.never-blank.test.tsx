@@ -34,6 +34,10 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/event-bus", () => ({
+  useEventBus: () => ({ status: "open", lastEventAt: null, subscribe: vi.fn() }),
+}));
+
 import { useQuery } from "@tanstack/react-query";
 import {
   useCalendarConflicts,

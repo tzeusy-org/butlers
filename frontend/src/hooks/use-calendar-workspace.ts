@@ -4,6 +4,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
+
 import {
   acceptCalendarProposal,
   dismissCalendarProposal,
@@ -167,11 +169,12 @@ export function useCalendarWorkspace(
   params: CalendarWorkspaceParams,
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-workspace", params],
     queryFn: () => fetchAllWorkspacePages(params),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 30_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     // Never-blank floor (bu-nhcp5): the query key includes the visible
     // start/end window, so stepping week-to-week/day-to-day is a brand-new
     // cache entry. Keep the outgoing window's entries on screen while the
@@ -193,6 +196,7 @@ export function useCalendarOverlays(
   params: { start: string; end: string; timezone?: string },
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-overlays", params],
     queryFn: () =>
@@ -203,7 +207,7 @@ export function useCalendarOverlays(
         timezone: params.timezone,
     }),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 60_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -218,6 +222,7 @@ export function useCalendarDayBriefing(
   params: { date: string; timezone?: string; butlers?: string[] },
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-day-briefing", params],
     queryFn: () =>
@@ -227,7 +232,7 @@ export function useCalendarDayBriefing(
         butlers: params.butlers,
     }),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 60_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -258,11 +263,13 @@ export function useCalendarWorkspaceSearch(
   params: CalendarWorkspaceSearchParams,
   options?: { enabled?: boolean },
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   const trimmed = params.q.trim();
   return useQuery({
     queryKey: ["calendar-workspace-search", { ...params, q: trimmed }],
     queryFn: () => searchCalendarWorkspace({ ...params, q: trimmed }),
     enabled: (options?.enabled ?? true) && trimmed.length > 0,
+    refetchInterval: busAwareInterval,
     staleTime: 10_000,
     placeholderData: (previousData) => previousData,
   });
@@ -270,11 +277,12 @@ export function useCalendarWorkspaceSearch(
 
 /** Fetch calendar workspace metadata (sources, lanes, writable calendars). */
 export function useCalendarWorkspaceMeta(options?: CalendarWorkspaceQueryOptions) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-workspace-meta"],
     queryFn: () => getCalendarWorkspaceMeta(),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 60_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
   });
 }
 
@@ -383,6 +391,7 @@ export function useCalendarProposals(
   params: { start: string; end: string; timezone?: string },
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-proposals", params],
     queryFn: () =>
@@ -393,7 +402,7 @@ export function useCalendarProposals(
         timezone: params.timezone,
       }),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 60_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
   });
 }
 
@@ -602,10 +611,12 @@ export function useCalendarWorkspaceEntry(
   entryId: string | null,
   options?: { enabled?: boolean; timezone?: string },
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-workspace-entry", entryId],
     queryFn: () => getCalendarWorkspaceEntry(entryId!, options?.timezone),
     enabled: options?.enabled ?? !!entryId,
+    refetchInterval: busAwareInterval,
   });
 }
 
@@ -618,11 +629,12 @@ export function useCalendarDuplicates(
   params: CalendarDuplicatesParams,
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-duplicates", params],
     queryFn: () => getCalendarWorkspaceDuplicates(params),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? false,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -637,11 +649,12 @@ export function useCalendarConflicts(
   params: ConflictScanParams,
   options?: CalendarWorkspaceQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-conflicts", params],
     queryFn: () => getCalendarWorkspaceConflicts(params),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? false,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
   });
 }
@@ -743,11 +756,12 @@ export function useCalendarWorkspaceAudit(
   params?: CalendarAuditParams,
   options?: CalendarAuditQueryOptions,
 ) {
+  const busAwareInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["calendar-workspace-audit", params],
     queryFn: () => getCalendarWorkspaceAudit(params),
     enabled: options?.enabled ?? true,
-    refetchInterval: options?.refetchInterval ?? 30_000,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
   });
 }

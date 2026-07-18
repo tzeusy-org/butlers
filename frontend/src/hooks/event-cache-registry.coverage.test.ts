@@ -73,4 +73,17 @@ describe("event-cache-registry <-> hook coverage manifest", () => {
       );
     }
   });
+
+  it("calendar manifest declares the workspace metadata and audit views", () => {
+    const calendarKeys = EVENT_CACHE_COVERAGE_MANIFEST.filter(
+      (entry) => entry.eventType === "calendar",
+    ).map((entry) => entry.queryKey);
+
+    expect(calendarKeys).toEqual(
+      expect.arrayContaining([
+        ["calendar-workspace-meta"],
+        ["calendar-workspace-audit"],
+      ]),
+    );
+  });
 });

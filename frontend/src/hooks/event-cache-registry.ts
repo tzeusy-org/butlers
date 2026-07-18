@@ -6,8 +6,9 @@
  * every dashboard-relevant event type in one envelope:
  *
  *   {"type": "session" | "notification" | "ingestion" | "issue"
- *           | "approval" | "spend" | "header_delta" | "attention_add"
- *           | "attention_remove" | "heartbeat", "ts": <unix float>, "data": {...}}
+ *           | "approval" | "spend" | "calendar" | "chronicles"
+ *           | "header_delta" | "attention_add" | "attention_remove"
+ *           | "heartbeat", "ts": <unix float>, "data": {...}}
  *
  * Rather than each consumer hand-rolling its own invalidation logic (the
  * pattern that was built three times for approvals/spend/settings-console —
@@ -181,6 +182,35 @@ const ingestionPatch: CachePatch = (qc) => {
 };
 
 /**
+ * calendar — provider and internal scheduler projections update the normalized
+ * workspace read model. Each key is a view of that same projection; cache
+ * invalidation keeps no visible calendar region waiting for its own timer.
+ * Source/account health stays on its independent poll because failed provider
+ * syncs do not emit a successful-projection event.
+ */
+const calendarPatch: CachePatch = (qc) => {
+  qc.invalidateQueries({ queryKey: ["calendar-workspace"] });
+  qc.invalidateQueries({ queryKey: ["calendar-overlays"] });
+  qc.invalidateQueries({ queryKey: ["calendar-day-briefing"] });
+  qc.invalidateQueries({ queryKey: ["calendar-proposals"] });
+  qc.invalidateQueries({ queryKey: ["calendar-duplicates"] });
+  qc.invalidateQueries({ queryKey: ["calendar-conflicts"] });
+  qc.invalidateQueries({ queryKey: ["calendar-workspace-entry"] });
+  qc.invalidateQueries({ queryKey: ["calendar-workspace-search"] });
+  qc.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
+  qc.invalidateQueries({ queryKey: ["calendar-workspace-audit"] });
+};
+
+/**
+ * chronicles — deterministic adapters commit episodes and point events before
+ * publishing, so every projection-backed Chronicler view can share one narrow
+ * cache prefix without carrying any episode content on the event bus.
+ */
+const chroniclesPatch: CachePatch = (qc) => {
+  qc.invalidateQueries({ queryKey: ["chronicles"] });
+};
+
+/**
  * heartbeat — no cache effect. Consumed by useEventStream purely for
  * connection-health tracking (lastEventAt), not cache patching.
  */
@@ -218,6 +248,8 @@ export const EVENT_CACHE_REGISTRY: Record<string, CachePatch> = {
   notification: notificationPatch,
   issue: issuePatch,
   ingestion: ingestionPatch,
+  calendar: calendarPatch,
+  chronicles: chroniclesPatch,
   header_delta: settingsConsoleDeltaPatch,
   attention_add: settingsConsoleDeltaPatch,
   attention_remove: settingsConsoleDeltaPatch,
