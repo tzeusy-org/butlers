@@ -276,6 +276,47 @@ def should_retry_with_ssl_disable(exc: Exception, configured_ssl: str | None) ->
     )
 
 
+def is_db_unreachable(exc: BaseException) -> bool:
+    """Return whether *exc* is a transient database-connect failure.
+
+    Walk the cause/context chain so asyncpg-wrapped socket failures are
+    recognized. Configuration, authentication, and unrelated startup errors
+    deliberately remain fatal instead of becoming an unbounded retry loop.
+    """
+    import errno
+    import socket
+
+    transient_errnos = {
+        errno.ECONNREFUSED,
+        errno.ENETUNREACH,
+        errno.EHOSTUNREACH,
+        errno.ETIMEDOUT,
+        errno.ECONNRESET,
+        errno.EPIPE,
+    }
+    try:
+        from butlers.storage import BlobStorageStartupError
+    except ImportError:
+        blob_startup_error: tuple[type[BaseException], ...] = ()
+    else:
+        blob_startup_error = (BlobStorageStartupError,)
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if blob_startup_error and isinstance(current, blob_startup_error):
+            return False
+        if isinstance(current, ConnectionRefusedError | ConnectionResetError | socket.gaierror):
+            return True
+        if isinstance(current, TimeoutError):
+            return True
+        if isinstance(current, OSError) and getattr(current, "errno", None) in transient_errnos:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def db_params_from_env() -> dict[str, str | int | None]:
     """Read DB connection params from environment variables."""
     database_url = os.environ.get("DATABASE_URL")

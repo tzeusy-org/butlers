@@ -136,6 +136,14 @@ Because this connector reads a user's personal Telegram messages, strict privacy
 - **AND** successful verification MUST persist a versioned non-secret consent grant in the connector control plane before persisting the owner credentials
 - **AND** the connector MUST reject a missing, malformed, or superseded grant before creating a Telegram client or starting ingestion
 
+#### Scenario: Missing or invalid consent remains visibly disabled
+- **WHEN** the connector cannot validate the current account-wide ingestion consent grant
+- **THEN** it MUST remain running in a non-ingesting `error` health state with the synthetic identity `telegram:user:pending-consent` and an actionable acknowledgement-required message
+- **AND** it MUST NOT resolve Telegram user credentials, create a Telegram client, emit connector heartbeats, or submit ingestion events
+- **AND** it MUST periodically recheck the control-plane consent grant and continue normal startup only after a valid versioned grant is present
+- **AND** a transient shared-control database connectivity failure before the grant can be read MUST retain that disabled state and retry on the same cadence
+- **AND** a non-connectivity shared-control-pool failure MUST surface instead of being retried indefinitely
+
 #### Scenario: [TARGET-STATE] Scope controls
 - **WHEN** the user client connector is configured
 - **THEN** optional chat/sender allow/deny lists are available to limit ingestion scope
