@@ -236,16 +236,16 @@ test("oauth roundtrip: delayed callback response cannot complete the flow early"
     roundtripComplete = true;
   });
 
-  await reauthorizeBtn.click();
-  await callbackStarted;
+  const reauthorizeClick = reauthorizeBtn.click();
 
   try {
-    await page.waitForTimeout(250);
+    await callbackStarted;
     expect(roundtripComplete).toBe(false);
   } finally {
     releaseCallback();
   }
 
+  await reauthorizeClick;
   await roundtrip;
 });
 
