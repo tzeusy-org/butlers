@@ -712,23 +712,52 @@ export interface DispatchAttemptEntry {
   logical_session_id: string | null;
 }
 
-/**
- * Params for GET /api/dispatch/attempts. Exactly one of `session_id`,
- * `logical_session_id`, or `outcome` is required (mirrors the backend's
- * validation, bu-7o89u.3). The `outcome` mode is fleet-wide (no session id
- * needed) -- optionally narrowed by `reason_prefix`/`since` -- and powers the
- * /spend fleet-halt state and its Overview attention row.
- */
-export interface DispatchAttemptsParams {
-  session_id?: string;
-  logical_session_id?: string;
-  outcome?: string;
-  reason_prefix?: string;
-  /** ISO datetime; restricts to rows with ts >= since. Only valid with `outcome`. */
-  since?: string;
-  order?: "asc" | "desc";
+/** Identifies one logical dispatch cycle by either or both session selectors. */
+type DispatchAttemptsSessionSelector =
+  | {
+      session_id: string;
+      logical_session_id?: string;
+    }
+  | {
+      session_id?: never;
+      logical_session_id: string;
+    };
+
+/** Shared pagination control for both dispatch-attempt query modes. */
+interface DispatchAttemptsPaginationParams {
   limit?: number;
 }
+
+/**
+ * Params for GET /api/dispatch/attempts.
+ *
+ * Callers select one mutually exclusive mode, mirroring backend validation:
+ *
+ * - session mode accepts `session_id`, `logical_session_id`, or both, and
+ *   returns rows in `attempt_index` order;
+ * - fleet mode requires `outcome`, has no session selector, and may narrow by
+ *   `reason_prefix`, `since`, or `order`.
+ *
+ * The `never` fields make a fleet/session mixture a TypeScript error. The
+ * backend repeats this validation for untyped callers.
+ */
+export type DispatchAttemptsParams =
+  | (DispatchAttemptsPaginationParams &
+      DispatchAttemptsSessionSelector & {
+        outcome?: never;
+        reason_prefix?: never;
+        since?: never;
+        order?: never;
+      })
+  | (DispatchAttemptsPaginationParams & {
+      session_id?: never;
+      logical_session_id?: never;
+      outcome: string;
+      reason_prefix?: string;
+      /** ISO datetime; restricts fleet rows to ts >= since. */
+      since?: string;
+      order?: "asc" | "desc";
+    });
 
 // ---------------------------------------------------------------------------
 // Schedules

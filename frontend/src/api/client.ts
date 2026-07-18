@@ -1011,10 +1011,14 @@ export function getCostsBySchedule(from?: string, to?: string): Promise<Schedule
 
 /**
  * GET /api/dispatch/attempts — failover/quota-skip provenance rows
- * (bu-7o89u.3). Exactly one of `session_id`/`logical_session_id`/`outcome`
- * must be set (mirrors the backend's validation); the `outcome` mode is
- * fleet-wide and powers the /spend fleet-halt state, which needs "recent
- * denied dispatches" without a session id in hand.
+ *
+ * `DispatchAttemptsParams` selects one query mode: session mode accepts
+ * `session_id`, `logical_session_id`, or both and returns the matching
+ * provenance sequence; fleet mode requires `outcome`, permits no session
+ * selector, and powers the /spend fleet-halt state. Fleet filters
+ * (`reason_prefix`, `since`, and `order`) are valid only with `outcome`.
+ * The type prevents mode mixtures, and the backend repeats the validation for
+ * untyped callers.
  */
 export function getDispatchAttempts(
   params: DispatchAttemptsParams,
