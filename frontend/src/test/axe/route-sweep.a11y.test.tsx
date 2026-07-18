@@ -40,6 +40,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ALL_ROUTES } from "@/lib/route-registry";
+import { ROUTE_AXE_PATHS } from "./route-page-cases";
 import { AXE_SKIP_MANIFEST } from "./skip-manifest";
 
 // ---------------------------------------------------------------------------
@@ -65,10 +66,23 @@ const COVERED_ELSEWHERE: Record<string, string> = {
 describe("route registry axe coverage completeness (bu-qvnce.10)", () => {
   it("every ALL_ROUTES path is covered elsewhere or explicitly skipped with a reason", () => {
     const skipPaths = new Set(AXE_SKIP_MANIFEST.map((entry) => entry.path));
+    const coveredByRealRouteCase = new Set<string>(ROUTE_AXE_PATHS);
     const uncovered = ALL_ROUTES.map((route) => route.path).filter(
-      (path) => !(path in COVERED_ELSEWHERE) && !skipPaths.has(path),
+      (path) => !coveredByRealRouteCase.has(path) && !(path in COVERED_ELSEWHERE) && !skipPaths.has(path),
     );
     expect(uncovered).toEqual([]);
+  });
+
+  it("derives exact registry coverage from rendered route cases and independent axe suites", () => {
+    const routePaths = ALL_ROUTES.map((route) => route.path);
+    const skipPaths = AXE_SKIP_MANIFEST.map((entry) => entry.path);
+    const claimedPaths = new Set([
+      ...ROUTE_AXE_PATHS,
+      ...Object.keys(COVERED_ELSEWHERE),
+      ...skipPaths,
+    ]);
+
+    expect([...claimedPaths].sort()).toEqual([...routePaths].sort());
   });
 
   it("every skip-manifest entry names a real, specific reason (not a placeholder)", () => {

@@ -9,9 +9,10 @@
  * onClick handler.
  */
 
+import { cleanup, render as renderDom, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { ButlerIndex } from "./ButlerIndex";
 import type { OverviewButlerIndexRow } from "./model";
@@ -39,6 +40,8 @@ function render(butlers: OverviewButlerIndexRow[], butlersError = false): string
   );
 }
 
+afterEach(cleanup);
+
 describe("ButlerIndex", () => {
   it("renders each butler row as a real <a> to /butlers/:name (not a div-onClick)", () => {
     const html = render([row({ name: "finance" })]);
@@ -57,9 +60,19 @@ describe("ButlerIndex", () => {
     expect(html).toContain('href="/butlers/qa%2Fpatrol"');
   });
 
-  it("keeps role=listitem on the anchor so the ARIA list contract still holds", () => {
-    const html = render([row({ name: "finance" })]);
-    expect(html).toContain('role="listitem"');
+  it("keeps each row both a list item and a native link", () => {
+    renderDom(
+      <MemoryRouter>
+        <ButlerIndex butlers={[row({ name: "finance" })]} />
+      </MemoryRouter>,
+    );
+
+    const list = screen.getByRole("list", { name: "Operations" });
+    const item = screen.getByRole("listitem");
+    const link = screen.getByRole("link", { name: "View finance" });
+
+    expect(item.parentElement).toBe(list);
+    expect(item.contains(link)).toBe(true);
   });
 
   it("gives every row an accessible name via aria-label", () => {

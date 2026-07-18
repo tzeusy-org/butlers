@@ -13,6 +13,8 @@ interface TableSkeletonProps {
   rows?: number;
   /** Column definitions: each entry is a width class (e.g. "w-24"). */
   columns: { width: string; alignRight?: boolean }[];
+  /** Accessible column names retained while visual headers are loading. */
+  headers?: string[];
 }
 
 /**
@@ -21,13 +23,14 @@ interface TableSkeletonProps {
  * Renders a table with skeleton placeholders for each cell, matching
  * the layout of the real table it will replace once data loads.
  */
-export function TableSkeleton({ rows = 5, columns }: TableSkeletonProps) {
+export function TableSkeleton({ rows = 5, columns, headers }: TableSkeletonProps) {
   return (
     <Table>
       <TableHeader>
         <TableRow>
           {columns.map((col, i) => (
             <TableHead key={i} className={col.alignRight ? "text-right" : ""}>
+              {headers?.[i] ? <span className="sr-only">{headers[i]}</span> : null}
               <Skeleton className="h-4 w-16" />
             </TableHead>
           ))}
@@ -54,17 +57,33 @@ export function TableSkeleton({ rows = 5, columns }: TableSkeletonProps) {
 }
 
 /** Pre-configured skeleton matching the notification feed table layout. */
-export function NotificationTableSkeleton({ rows = 5 }: { rows?: number }) {
+export function NotificationTableSkeleton({
+  rows = 5,
+  hasTriageControls = false,
+}: {
+  rows?: number;
+  hasTriageControls?: boolean;
+}) {
+  const columns = [
+    { width: "w-14" },
+    { width: "w-24" },
+    { width: "w-24" },
+    { width: "w-16" },
+    { width: "w-48" },
+    { width: "w-20", alignRight: true },
+  ];
+  const headers = ["Status", "Butler", "Recipient", "Channel", "Message", "Time"];
+
+  if (hasTriageControls) {
+    columns.push({ width: "w-20", alignRight: true });
+    headers.push("Actions");
+  }
+
   return (
     <TableSkeleton
       rows={rows}
-      columns={[
-        { width: "w-14" },
-        { width: "w-24" },
-        { width: "w-16" },
-        { width: "w-48" },
-        { width: "w-20", alignRight: true },
-      ]}
+      columns={columns}
+      headers={headers}
     />
   );
 }

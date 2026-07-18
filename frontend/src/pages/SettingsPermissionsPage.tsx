@@ -516,8 +516,8 @@ function DataOpsSection() {
             value={exportScope}
             onValueChange={(v) => setExportScope(v as ExportScope)}
           >
-            <SelectTrigger className="w-36">
-              <SelectValue />
+            <SelectTrigger className="w-36" aria-label="Export scope">
+              <SelectValue placeholder="Export scope" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All data</SelectItem>

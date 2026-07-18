@@ -1275,7 +1275,7 @@ function AttentionRail({
 }) {
   return (
     <>
-      <aside
+      <div
         data-plex-overlay
         className="pointer-events-auto absolute left-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
         aria-label="Worth attention"
@@ -1333,9 +1333,9 @@ function AttentionRail({
             </ul>
           )}
         </section>
-      </aside>
+      </div>
 
-      <aside
+      <div
         data-plex-overlay
         className="pointer-events-auto absolute right-0 top-1/2 z-10 w-56 -translate-y-1/2 space-y-6"
         aria-label="Capacity"
@@ -1403,7 +1403,7 @@ function AttentionRail({
             Curation and full index
           </Link>
         </section>
-      </aside>
+      </div>
     </>
   );
 }
