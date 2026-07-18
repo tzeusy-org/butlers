@@ -236,7 +236,7 @@ const POLL_POLICY_SELECTORS = [
     // Descendant (not direct-child) combinator: also catches a numeric
     // literal nested inside `options?.refetchInterval ?? 30_000` or
     // `5 * 60_000`, not just a bare `refetchInterval: 30_000`.
-    selector: 'Property[key.name="refetchInterval"] Literal[value=/^[0-9]/]',
+    selector: 'Property[key.name="refetchInterval"] Literal[value=type(number)][value>=0]',
     message:
       'refetchInterval must use a named poll-policy token (POLL_BUS_RECONCILE_MS from ' +
       'src/lib/poll-policy.ts, or an equally-named local constant), not a raw numeric ' +

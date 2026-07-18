@@ -131,11 +131,20 @@ async def test_multiple_events_across_types_all_arrive_in_order(shared_db_url):
         await publish_fleet_event(daemon_pool, "spend", {"cost_usd": 0.01})
         await publish_fleet_event(daemon_pool, "approval", {"kind": "created"})
         await publish_fleet_event(daemon_pool, "notification", {"channel": "telegram"})
+        await publish_fleet_event(
+            daemon_pool,
+            "ingestion",
+            {"request_id": "ingestion-two-pool-test", "source_channel": "telegram_bot"},
+        )
 
-        await _wait_until(lambda: len(_events_ring) >= 4)
+        await _wait_until(lambda: len(_events_ring) >= 5)
 
         types = [e["type"] for e in _events_ring]
-        assert types == ["session", "spend", "approval", "notification"]
+        assert types == ["session", "spend", "approval", "notification", "ingestion"]
+        assert _events_ring[-1]["data"] == {
+            "request_id": "ingestion-two-pool-test",
+            "source_channel": "telegram_bot",
+        }
     finally:
         listener_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

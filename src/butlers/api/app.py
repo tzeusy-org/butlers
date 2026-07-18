@@ -324,7 +324,7 @@ async def lifespan(app: FastAPI):
         model_verify_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
         # Fleet-events NOTIFY bridge (bu-01r64.1): daemon processes publish
-        # session/spend/notification/approval events via Postgres NOTIFY
+        # session/spend/notification/approval/ingestion events via Postgres NOTIFY
         # (butlers.fleet_events.publish_fleet_event) because they run in a
         # separate container from this process and the in-process event bus
         # below is otherwise invisible to them (see RFC 0022). This bridges
@@ -341,7 +341,8 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning(
                 "Failed to start fleet-events NOTIFY bridge; daemon-originated live events "
-                "(session/spend/notification/approval) will not reach WS /api/events/stream",
+                "(session/spend/notification/approval/ingestion) will not reach "
+                "WS /api/events/stream",
                 exc_info=True,
             )
 
