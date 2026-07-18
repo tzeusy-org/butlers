@@ -1,31 +1,37 @@
-"""Two-pool integration test: Postgres NOTIFY publisher -> API LISTEN bridge.
+"""Postgres NOTIFY publisher -> dashboard LISTEN bridge integration coverage.
 
-Proves the actual cross-process delivery mechanism introduced by bu-01r64.1
-(RFC 0022, about/legends-and-lore/rfcs/0022-cross-process-event-transport.md):
-an event published via ``publish_fleet_event()`` on one asyncpg ``Pool``
-(mimicking the daemon's own DB pool, running in the ``butlers-up``
-container) is observed by ``run_fleet_events_listener()`` LISTENing via a
-*separate* asyncpg ``Pool`` (mimicking the dashboard-api process's LISTEN
-connection) and bridged onto the real in-process fleet event bus — the
-exact same ``emit_event()``/``_events_ring`` that ``WS /api/events/stream``
-serves. The two pools share nothing but the same physical Postgres
-database, matching the real daemon-container vs dashboard-api-container
-topology (docker-compose.yml) that made the bug possible in the first
-place: same DB, different processes.
+The two-pool tests keep their publisher and listener in one Python process.
+They prove PostgreSQL delivery between independent connections and the bridge's
+in-process event-bus handoff, but deliberately do *not* claim an OS-process or
+WebSocket end-to-end proof.
+
+``test_calendar_and_chronicler_child_processes_reach_websocket`` closes that
+specific coverage gap without a shared Compose stack: Calendar and Chronicler
+run in separate child Python processes against an isolated testcontainer
+database; the dashboard side runs the real LISTEN bridge and
+``WS /api/events/stream`` route. It therefore proves the production transport
+boundary and WebSocket frame delivery, while leaving full Compose/container
+wiring outside this focused harness's claim.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import os
 import shutil
+import sys
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
 
 import asyncpg
 import pytest
 
 from butlers.api.fleet_events_bridge import run_fleet_events_listener
 from butlers.fleet_events import publish_fleet_event
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -37,15 +43,20 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def shared_db_url(postgres_container) -> str:
-    """One real Postgres database shared by both pools below.
+    """One migrated Postgres database shared by all producer/listener tests.
 
     LISTEN/NOTIFY is database-scoped (not schema/table-scoped), so both the
-    "daemon" pool and the "api" pool must point at the same database for
-    this test to prove anything — exactly like production, where every
-    butler schema and the dashboard-api both live in one ``butlers``
-    database (RFC 0006).
+    child-process producers and dashboard listener must point at the same
+    database for this test to prove anything — exactly like production, where
+    every butler schema and the dashboard-api both live in one ``butlers``
+    database (RFC 0006). The Chronicler chain is migrated so its child-process
+    fixture adapter writes a real projection row before it publishes.
     """
-    return create_migration_db(postgres_container, migration_db_name())
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["chronicler"],
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -64,6 +75,139 @@ async def _wait_until(predicate, *, timeout_s: float = 10.0, interval_s: float =
             raise AssertionError(f"condition not met within {timeout_s}s")
         await asyncio.sleep(interval_s)
         elapsed += interval_s
+
+
+class _ReadyListenerConnection:
+    """Connection wrapper that exposes a deterministic LISTEN-ready signal."""
+
+    def __init__(self, connection: asyncpg.Connection, ready: asyncio.Event) -> None:
+        self._connection = connection
+        self._ready = ready
+
+    async def add_listener(self, channel: str, callback: Any) -> None:
+        await self._connection.add_listener(channel, callback)
+        self._ready.set()
+
+    def is_closed(self) -> bool:
+        return self._connection.is_closed()
+
+    async def close(self) -> None:
+        await self._connection.close()
+
+
+def _dashboard_events_lifespan(shared_db_url: str):
+    """Run the production listener alongside only the production events route."""
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Any) -> AsyncIterator[None]:
+        listener_ready = asyncio.Event()
+
+        async def connect() -> _ReadyListenerConnection:
+            connection = await asyncpg.connect(shared_db_url)
+            return _ReadyListenerConnection(connection, listener_ready)
+
+        listener_task = asyncio.create_task(
+            run_fleet_events_listener(
+                connect,
+                health_poll_interval_s=0.02,
+                reconnect_backoff_s=0.02,
+            )
+        )
+        try:
+            await asyncio.wait_for(listener_ready.wait(), timeout=5.0)
+        except BaseException:
+            listener_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await listener_task
+            raise
+
+        try:
+            yield
+        finally:
+            listener_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await listener_task
+
+    return lifespan
+
+
+async def _run_external_producer(producer: str, shared_db_url: str) -> int:
+    """Run one real producer path and reap it on timeout or cancellation."""
+
+    environment = dict(os.environ)
+    environment["BUTLERS_FLEET_EVENTS_TEST_DATABASE_URL"] = shared_db_url
+    repository_root = Path(__file__).resolve().parents[2]
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "tests.integration.fleet_events_external_producer",
+        producer,
+        cwd=repository_root,
+        env=environment,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15.0)
+    except TimeoutError as exc:
+        raise AssertionError(f"{producer} child producer did not finish") from exc
+    finally:
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+
+    assert process.returncode == 0, stderr.decode(errors="replace")
+    result = json.loads(stdout)
+    assert process.pid is not None
+    assert result == {"producer": producer, "pid": process.pid}
+    return process.pid
+
+
+@pytest.mark.timeout(5)
+async def test_external_producer_reaps_child_on_caller_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation must not leave the helper's child process running."""
+    original_create_subprocess_exec = asyncio.create_subprocess_exec
+    process_started = asyncio.Event()
+    process: asyncio.subprocess.Process | None = None
+
+    async def create_sleeping_process(
+        *_args: object,
+        **_kwargs: object,
+    ) -> asyncio.subprocess.Process:
+        nonlocal process
+        process = await original_create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(60)",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        process_started.set()
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_sleeping_process)
+    producer_task = asyncio.create_task(_run_external_producer("calendar", "unused"))
+    try:
+        await asyncio.wait_for(process_started.wait(), timeout=1.0)
+        producer_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await producer_task
+
+        assert process is not None
+        await asyncio.wait_for(process.wait(), timeout=1.0)
+        assert process.returncode is not None
+    finally:
+        if not producer_task.done():
+            producer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await producer_task
+        if process is not None and process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
 
 
 async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
@@ -110,6 +254,72 @@ async def test_event_published_on_one_pool_arrives_via_the_other(shared_db_url):
             await listener_task
         await daemon_pool.close()
         await api_pool.close()
+
+
+@pytest.mark.timeout(30)
+async def test_calendar_and_chronicler_child_processes_reach_websocket(
+    shared_db_url, monkeypatch: pytest.MonkeyPatch
+):
+    """Prove both production producers cross an OS-process boundary to WS.
+
+    This intentionally starts neither ``scripts/compose.sh`` nor a dashboard
+    container. The testcontainer database is isolated, each producer is a
+    fresh child Python process, and the dashboard side uses the real LISTEN
+    bridge plus the real WebSocket route. Frontend cache invalidation remains
+    covered separately by ``event-cache-registry.test.ts``; this test proves
+    the preceding transport and WebSocket frame boundary.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from butlers.api.routers.events import router
+
+    dashboard_app = FastAPI(lifespan=_dashboard_events_lifespan(shared_db_url))
+    dashboard_app.include_router(router)
+    dashboard_process_id = os.getpid()
+    dashboard_api_key = "fleet-events-test-api-key"
+    monkeypatch.setenv("DASHBOARD_API_KEY", dashboard_api_key)
+
+    with TestClient(dashboard_app) as client:
+        with client.websocket_connect(
+            f"/api/events/stream?api_key={dashboard_api_key}"
+        ) as websocket:
+            snapshot = json.loads(websocket.receive_text())
+            assert snapshot["type"] == "snapshot"
+            assert snapshot["events"] == []
+
+            calendar_process_id = await _run_external_producer("calendar", shared_db_url)
+            chronicler_process_id = await _run_external_producer("chronicler", shared_db_url)
+
+            inspection_connection = await asyncpg.connect(shared_db_url)
+            try:
+                durable_rows = await inspection_connection.fetchval(
+                    "SELECT count(*) FROM point_events WHERE source_ref = $1",
+                    f"fleet-event-transport-proof:{chronicler_process_id}",
+                )
+            finally:
+                await inspection_connection.close()
+            assert durable_rows == 1
+
+            received = [json.loads(websocket.receive_text()) for _ in range(2)]
+
+    assert calendar_process_id != dashboard_process_id
+    assert chronicler_process_id != dashboard_process_id
+
+    events_by_type = {event["type"]: event for event in received}
+    assert set(events_by_type) == {"calendar", "chronicles"}
+    assert events_by_type["calendar"]["data"] == {
+        "kind": "provider_projection",
+        "updated_events": 1,
+        "cancelled_events": 0,
+    }
+    assert events_by_type["chronicles"]["data"] == {
+        "kind": "projection",
+        "rows_projected": 1,
+        "point_events": 1,
+        "episodes_opened": 0,
+        "episodes_closed": 0,
+    }
 
 
 async def test_multiple_events_across_types_all_arrive_in_order(shared_db_url):
