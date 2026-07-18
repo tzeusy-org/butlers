@@ -540,6 +540,28 @@ describe("FloatingChatWidget — unread badge", () => {
 // ---------------------------------------------------------------------------
 
 describe("FloatingChatWidget — send-error classification", () => {
+  it("uses doctrine-compliant copy for a generic transport failure", async () => {
+    mockHooksEmpty();
+    createConversationMock.mockRejectedValue(new Error("network unavailable"));
+
+    renderWidget();
+    fireEvent.click(screen.getByTestId("floating-chat-trigger"));
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "hello" } });
+    fireEvent.click(screen.getByTitle("Send message"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-widget-error-banner").textContent).toContain(
+        "Failed to send message.",
+      );
+    });
+
+    const banner = screen.getByTestId("chat-widget-error-banner");
+    expect(banner.textContent).not.toContain("Please try again.");
+    expect(within(banner).getByRole("button", { name: "Retry" })).toBeDefined();
+  });
+
   it("keeps a failed optimistic message visible and retryable through an empty server sync", async () => {
     mockHooksEmpty();
     sendMessageMock.mockResolvedValue({ ok: true } as Response);

@@ -407,6 +407,26 @@ describe("ChatContent — conversation_created SSE handling", () => {
 // ---------------------------------------------------------------------------
 
 describe("ChatContent — send-error classification", () => {
+  it("uses doctrine-compliant copy for a generic transport failure", async () => {
+    createConversationMock.mockRejectedValue(new Error("network unavailable"));
+
+    renderChatContent();
+
+    const input = screen.getByPlaceholderText("Type a message...");
+    fireEvent.change(input, { target: { value: "hello" } });
+    fireEvent.click(screen.getByTitle("Send message"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-widget-error-banner").textContent).toContain(
+        "Failed to send message.",
+      );
+    });
+
+    const banner = screen.getByTestId("chat-widget-error-banner");
+    expect(banner.textContent).not.toContain("Please try again.");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
+  });
+
   it("keeps a failed optimistic message visible and retryable through an empty server sync", async () => {
     sendMessageMock.mockResolvedValue({ ok: true } as Response);
     createConversationMock.mockResolvedValue({ ok: true } as Response);

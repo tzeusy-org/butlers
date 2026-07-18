@@ -323,7 +323,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           setStreaming(null);
           setSendError({
             kind: "generic",
-            message: "There was a problem sending your message. Please try again.",
+            message: "Failed to send message.",
             failedText: trimmed,
             messageId,
           });
