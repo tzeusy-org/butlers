@@ -23,7 +23,7 @@ Row DTOs:
 Query functions (all async):
     query_activity_sessions(pool, limit) -> list[ActivitySessionRow]
     query_activity_actions(pool, limit) -> list[ActivityActionRow]
-    query_activity_episodes(pool, limit) -> list[ActivityEpisodeRow]
+    query_activity_episodes(pool, limit, ...) -> list[ActivityEpisodeRow]
 
 Row-to-DTO converters:
     row_to_session(row) -> ActivitySessionRow
@@ -236,12 +236,16 @@ async def query_activity_actions(
 async def query_activity_episodes(
     pool: asyncpg.Pool,
     limit: int,
+    *,
+    episodes_relation: str = "episodes",
+    suppress_undefined_table: bool = True,
 ) -> list[ActivityEpisodeRow]:
     """Fetch memory episode rows from a single butler's pool.
 
-    Returns rows ordered by ``created_at DESC``.  Missing tables are silently
-    skipped so the endpoint degrades gracefully when the butler does not have
-    the memory module enabled.
+    Returns rows ordered by ``created_at DESC``.  The caller may pass its
+    explicitly owned relation to prevent a dropped private table from falling
+    through to ``public`` via ``search_path``. Missing tables are silently
+    skipped only when ``suppress_undefined_table`` is true.
 
     Parameters
     ----------
@@ -249,6 +253,12 @@ async def query_activity_episodes(
         The asyncpg pool for a specific butler.
     limit:
         Maximum rows to fetch.
+    episodes_relation:
+        Trusted SQL relation identifier owned by the caller's butler schema.
+    suppress_undefined_table:
+        Whether a missing relation should be converted to an empty result.
+        Lifecycle-aware callers set this false and classify the error against
+        the startup relation-presence snapshot.
 
     Returns
     -------
@@ -257,10 +267,12 @@ async def query_activity_episodes(
     """
     try:
         rows = await pool.fetch(
-            f"SELECT {EPISODE_COLUMNS} FROM episodes ORDER BY created_at DESC LIMIT $1",
+            f"SELECT {EPISODE_COLUMNS} FROM {episodes_relation} ORDER BY created_at DESC LIMIT $1",
             limit,
         )
         return [row_to_episode(r) for r in rows]
     except UndefinedTableError:
+        if not suppress_undefined_table:
+            raise
         logger.debug("episodes table not found; skipping")
         return []

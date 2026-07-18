@@ -24,6 +24,7 @@ from fastapi import HTTPException
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.models.memory import ReembedRunRequest
+from butlers.api.routers.activity_feed import get_activity_feed
 from butlers.api.routers.memory import (
     _fan_out_memory_queries,
     confirm_fact,
@@ -37,6 +38,7 @@ from butlers.api.routers.memory import (
     retract_fact,
     run_reembed,
 )
+from butlers.api.routers.preferences import get_preferences
 from butlers.api.routers.secrets_v2 import (
     SystemSetRequest,
     _fetch_system_secrets,
@@ -163,6 +165,70 @@ async def _shadow_fact_in_public(
     )
 
 
+async def _seed_owner(pool: object) -> object:
+    """Ensure the public owner entity exists and return its id."""
+    owner_id = await pool.fetchval(  # type: ignore[attr-defined]
+        "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+    )
+    if owner_id is None:
+        owner_id = await pool.fetchval(  # type: ignore[attr-defined]
+            """
+            INSERT INTO public.entities (canonical_name, entity_type, roles)
+            VALUES ('Lifecycle Test Owner', 'person', ARRAY['owner'])
+            RETURNING id
+            """
+        )
+    assert owner_id is not None
+    return owner_id
+
+
+async def _shadow_preference_in_public(
+    pool: object,
+    fact_id: object,
+    owner_id: object,
+) -> None:
+    """Copy an owner preference to a same-named public facts shadow."""
+    await pool.execute(  # type: ignore[attr-defined]
+        """
+        INSERT INTO lifecycle.facts (
+            id, subject, predicate, content, importance, source_butler,
+            entity_id, scope, permanence
+        )
+        VALUES (
+            $1, 'owner', 'preferences:general_timezone', 'public-shadow', 8.0,
+            'lifecycle', $2, 'global', 'stable'
+        )
+        """,
+        fact_id,
+        owner_id,
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "CREATE TABLE public.facts AS TABLE lifecycle.facts WITH NO DATA"
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "INSERT INTO public.facts SELECT * FROM lifecycle.facts WHERE id = $1",
+        fact_id,
+    )
+
+
+async def _shadow_episode_in_public(pool: object, episode_id: object) -> None:
+    """Copy an episode to a same-named public episodes shadow."""
+    await pool.execute(  # type: ignore[attr-defined]
+        """
+        INSERT INTO lifecycle.episodes (id, butler, content, importance)
+        VALUES ($1, 'lifecycle', 'must-not-leak', 5.0)
+        """,
+        episode_id,
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "CREATE TABLE public.episodes AS TABLE lifecycle.episodes WITH NO DATA"
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "INSERT INTO public.episodes SELECT * FROM lifecycle.episodes WHERE id = $1",
+        episode_id,
+    )
+
+
 async def test_absent_at_startup_is_an_expected_optional_schema(
     migrated_db_url: str,
 ) -> None:
@@ -255,6 +321,167 @@ async def test_dropped_after_startup_is_a_degraded_source(
         assert secrets_tracker.names == ["lifecycle"]
         assert memory_rows == []
         assert memory_tracker.names == ["lifecycle"]
+    finally:
+        await manager.close()
+
+
+async def test_preferences_skip_public_fact_shadow_when_memory_absent_at_startup(
+    migrated_db_url: str,
+) -> None:
+    """A never-installed memory schema must not read public preference facts."""
+    bootstrap = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    manager: DatabaseManager | None = None
+    try:
+        pool = bootstrap.pool("lifecycle")
+        await pool.execute("CREATE SCHEMA never_installed")
+        owner_id = await _seed_owner(pool)
+        await _shadow_preference_in_public(pool, uuid4(), owner_id)
+
+        manager = await _manager_for_schema(
+            migrated_db_url,
+            butler_name="never_installed",
+            schema="never_installed",
+        )
+        await manager.snapshot_relation_presence("never_installed", _TRACKED_RELATIONS)
+        assert manager.relation_observed_since_start("never_installed", "facts") is False
+
+        preferences = await get_preferences(predicate=None, db=manager)
+
+        assert preferences.data == []
+    finally:
+        if manager is not None:
+            await manager.close()
+        await bootstrap.close()
+
+
+async def test_activity_feed_skips_public_episode_shadow_when_memory_absent_at_startup(
+    migrated_db_url: str,
+) -> None:
+    """A never-installed memory schema must not read public activity episodes."""
+    bootstrap = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    manager: DatabaseManager | None = None
+    try:
+        pool = bootstrap.pool("lifecycle")
+        await pool.execute("CREATE SCHEMA never_installed")
+        await _shadow_episode_in_public(pool, uuid4())
+
+        manager = await _manager_for_schema(
+            migrated_db_url,
+            butler_name="never_installed",
+            schema="never_installed",
+        )
+        await manager.snapshot_relation_presence("never_installed", _TRACKED_RELATIONS)
+        assert manager.relation_observed_since_start("never_installed", "episodes") is False
+
+        activity = await get_activity_feed("never_installed", limit=50, db=manager)
+
+        assert activity.events == []
+    finally:
+        if manager is not None:
+            await manager.close()
+        await bootstrap.close()
+
+
+async def test_post_boot_preferences_memory_loss_blocks_public_fact_shadow(
+    migrated_db_url: str,
+) -> None:
+    """A lost private facts table makes preferences unavailable, never public-backed."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        assert manager.relation_observed_since_start("lifecycle", "facts") is True
+        pool = manager.pool("lifecycle")
+        owner_id = await _seed_owner(pool)
+        await _shadow_preference_in_public(pool, uuid4(), owner_id)
+        await pool.execute("DROP TABLE lifecycle.facts")
+
+        with pytest.raises(HTTPException) as error:
+            await get_preferences(predicate=None, db=manager)
+
+        assert error.value.status_code == 503
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_activity_memory_loss_blocks_public_episode_shadow(
+    migrated_db_url: str,
+) -> None:
+    """A lost private episodes table makes the raw activity feed unavailable."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        assert manager.relation_observed_since_start("lifecycle", "episodes") is True
+        pool = manager.pool("lifecycle")
+        await _shadow_episode_in_public(pool, uuid4())
+        await pool.execute("DROP TABLE lifecycle.episodes CASCADE")
+
+        with pytest.raises(HTTPException) as error:
+            await get_activity_feed("lifecycle", limit=50, db=manager)
+
+        assert error.value.status_code == 503
+    finally:
+        await manager.close()
+
+
+async def test_unknown_preferences_memory_loss_blocks_public_fact_shadow(
+    migrated_db_url: str,
+) -> None:
+    """An unsnapshotted facts loss must fail closed instead of reading public.facts."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    try:
+        pool = manager.pool("lifecycle")
+        owner_id = await _seed_owner(pool)
+        await _shadow_preference_in_public(pool, uuid4(), owner_id)
+        await pool.execute("DROP TABLE lifecycle.facts")
+        assert manager.relation_observed_since_start("lifecycle", "facts") is None
+
+        with pytest.raises(HTTPException) as error:
+            await get_preferences(predicate=None, db=manager)
+
+        assert error.value.status_code == 503
+    finally:
+        await manager.close()
+
+
+async def test_unknown_activity_memory_loss_blocks_public_episode_shadow(
+    migrated_db_url: str,
+) -> None:
+    """An unsnapshotted episodes loss must fail closed instead of reading public.episodes."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    try:
+        pool = manager.pool("lifecycle")
+        await _shadow_episode_in_public(pool, uuid4())
+        await pool.execute("DROP TABLE lifecycle.episodes CASCADE")
+        assert manager.relation_observed_since_start("lifecycle", "episodes") is None
+
+        with pytest.raises(HTTPException) as error:
+            await get_activity_feed("lifecycle", limit=50, db=manager)
+
+        assert error.value.status_code == 503
     finally:
         await manager.close()
 

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.preferences import _get_db_manager
@@ -80,6 +81,8 @@ def _app_with_pool(
     owner_row: dict | None = _OWNER_ROW,
     pref_rows: list[dict] | None = None,
     pool_raises: Exception | None = None,
+    facts_raise: bool = False,
+    facts_present_at_start: bool = False,
 ):
     """Wire app with a mock pool that returns owner resolution + fact rows.
 
@@ -111,10 +114,17 @@ def _app_with_pool(
 
     # fetch is called to retrieve preference facts
     fetch_records = [_make_asyncpg_record(r) for r in pref_rows]
-    mock_pool.fetch = AsyncMock(return_value=fetch_records)
+    if facts_raise:
+        mock_pool.fetch = AsyncMock(side_effect=UndefinedTableError("facts"))
+    else:
+        mock_pool.fetch = AsyncMock(return_value=fetch_records)
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["general"]
+    mock_db.schema_for_butler.return_value = None
+    mock_db.relation_observed_since_start.side_effect = lambda _name, relation: (
+        facts_present_at_start if relation == "facts" else False
+    )
 
     if pool_raises is not None:
         mock_db.pool.side_effect = pool_raises
@@ -238,6 +248,29 @@ class TestGetPreferences:
 
         assert resp.status_code == 200
         assert resp.json()["data"] == []
+
+    async def test_boot_absent_facts_table_returns_empty_list(self, app):
+        """A deliberately absent memory schema remains an optional source."""
+        _app_with_pool(app, facts_raise=True)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/preferences")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
+
+    async def test_post_start_facts_loss_returns_503(self, app):
+        """A formerly present facts table is unavailable rather than optional."""
+        _app_with_pool(app, facts_raise=True, facts_present_at_start=True)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/preferences")
+
+        assert resp.status_code == 503
 
     async def test_no_pool_available_returns_503(self, app):
         """When pool lookup raises KeyError (no pools), returns 503."""

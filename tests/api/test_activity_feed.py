@@ -115,6 +115,7 @@ def _make_app(
     sessions_raise: bool = False,
     actions_raise: bool = False,
     episodes_raise: bool = False,
+    episodes_present_at_start: bool = False,
 ):
     """Build a test app with a mocked pool for the given butler.
 
@@ -145,6 +146,10 @@ def _make_app(
     mock_pool.fetch = AsyncMock(side_effect=_fetch)
 
     mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.schema_for_butler.return_value = None
+    mock_db.relation_observed_since_start.side_effect = lambda _name, relation: (
+        episodes_present_at_start if relation == "episodes" else False
+    )
     if pool_missing:
         mock_db.pool.side_effect = KeyError(f"No pool for butler: {butler_name}")
     else:
@@ -420,6 +425,21 @@ class TestActivityFeedNoActivity:
 
         assert resp.status_code == 200
         assert resp.json()["events"] == []
+
+    async def test_post_start_memory_table_loss_returns_503(self):
+        """A formerly present memory table cannot be treated as optional absence."""
+        app = _make_app(
+            session_rows=[_session_row()],
+            episodes_raise=True,
+            episodes_present_at_start=True,
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/atlas/activity-feed")
+
+        assert resp.status_code == 503
 
 
 class TestActivityFeed503:

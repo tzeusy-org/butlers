@@ -22,6 +22,11 @@ from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse
+from butlers.api.routers.memory import (
+    _is_missing_memory_schema_error,
+    _memory_relation,
+    _memory_schema_absent_at_start,
+)
 from butlers.core.owner import resolve_owner_entity_id_two_step as _resolve_owner_entity_id_two_step
 
 logger = logging.getLogger(__name__)
@@ -56,15 +61,15 @@ class PreferenceEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _all_pools(db: DatabaseManager) -> list[Any]:
+def _all_pools(db: DatabaseManager) -> list[tuple[str, Any]]:
     """Return all available butler pools, skipping missing ones.
 
     Raises HTTPException(503) when no pool is available at all.
     """
-    pools = []
+    pools: list[tuple[str, Any]] = []
     for name in sorted(db.butler_names):
         try:
-            pools.append(db.pool(name))
+            pools.append((name, db.pool(name)))
         except KeyError:
             continue
     if not pools:
@@ -81,10 +86,7 @@ async def _resolve_owner_entity_id(pool: Any) -> uuid.UUID | None:
     """Resolve the owner entity_id from a single pool.
 
     Delegates to the shared ``butlers.core.owner.resolve_owner_entity_id_two_step``
-    helper which implements the canonical two-step fallback:
-    1. ``public.contacts JOIN public.entities`` (primary path).
-    2. ``public.entities`` directly (fallback for installs where the owner
-       entity exists without a contact row, e.g. early bootstrap states).
+    helper, which reads the canonical owner role from ``public.entities``.
 
     Returns the entity UUID, or ``None`` when the owner cannot be found.
     """
@@ -103,9 +105,12 @@ async def _fetch_preferences(
 ) -> list[dict[str, Any]]:
     """Query active preference facts for the owner entity.
 
-    Tries each available pool in turn, skipping pools that lack the memory
-    ``facts`` table (matching the fan-out behaviour of the memory router).
-    Owner resolution uses the same two-step fallback as the MCP tool.
+    Tries each available pool in turn. A missing ``facts`` relation is an
+    optional absence only when the entire memory schema was absent at API
+    startup; a source that disappeared later (or whose lifecycle is unknown)
+    makes the preferences surface unavailable rather than falling through to
+    a same-named public relation. Owner resolution uses the shared owner
+    helper.
 
     Args:
         db: DatabaseManager providing access to all butler pools.
@@ -116,49 +121,18 @@ async def _fetch_preferences(
         List of preference dicts ordered by ``predicate ASC``.
         Returns empty list when no owner entity or no matching preferences are
         found across all available pools.
+
+    Raises:
+        HTTPException: 503 when a non-optional memory facts source cannot be
+            queried.
     """
     pools = _all_pools(db)
 
     predicate_pattern = predicate if predicate is not None else "preferences:%"
 
-    if predicate is not None:
-        sql = """
-            SELECT
-                f.predicate,
-                f.content        AS value,
-                f.scope,
-                f.importance,
-                f.permanence,
-                f.created_at     AS updated_at,
-                f.confidence,
-                f.decay_rate,
-                f.last_confirmed_at
-            FROM facts f
-            WHERE f.entity_id = $1
-              AND f.validity = 'active'
-              AND f.predicate = $2
-            ORDER BY f.predicate ASC
-        """
-    else:
-        sql = """
-            SELECT
-                f.predicate,
-                f.content        AS value,
-                f.scope,
-                f.importance,
-                f.permanence,
-                f.created_at     AS updated_at,
-                f.confidence,
-                f.decay_rate,
-                f.last_confirmed_at
-            FROM facts f
-            WHERE f.entity_id = $1
-              AND f.validity = 'active'
-              AND f.predicate LIKE $2
-            ORDER BY f.predicate ASC
-        """
+    predicate_operator = "=" if predicate is not None else "LIKE"
 
-    for pool in pools:
+    for name, pool in pools:
         # Resolve owner from this pool's shared public schema.
         try:
             owner_entity_id = await _resolve_owner_entity_id(pool)
@@ -169,18 +143,54 @@ async def _fetch_preferences(
         if owner_entity_id is None:
             return []
 
-        # Query facts from this pool's per-butler schema.
+        # Query facts from this pool's explicitly owned memory schema.  The
+        # relation helper intentionally preserves legacy unqualified behavior
+        # for pools without a configured schema.
+        facts_relation = _memory_relation(db, name, "facts")
+        sql = f"""
+            SELECT
+                f.predicate,
+                f.content        AS value,
+                f.scope,
+                f.importance,
+                f.permanence,
+                f.created_at     AS updated_at,
+                f.confidence,
+                f.decay_rate,
+                f.last_confirmed_at
+            FROM {facts_relation} f
+            WHERE f.entity_id = $1
+              AND f.validity = 'active'
+              AND f.predicate {predicate_operator} $2
+            ORDER BY f.predicate ASC
+        """
         try:
             if predicate is not None:
                 rows = await pool.fetch(sql, owner_entity_id, predicate)
             else:
                 rows = await pool.fetch(sql, owner_entity_id, predicate_pattern)
-        except Exception:
-            logger.debug(
-                "Skipping pool for preferences query (pool may lack facts table)",
+        except Exception as exc:
+            if _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
+            ):
+                logger.debug(
+                    "Skipping preferences source for %s; memory schema was absent at startup",
+                    name,
+                    exc_info=True,
+                )
+                continue
+            logger.warning(
+                "Preferences facts source for %s is unavailable",
+                name,
                 exc_info=True,
             )
-            continue
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Preferences are unavailable because a memory facts source could not be queried"
+                ),
+            ) from exc
 
         now = datetime.now(UTC)
         results: list[dict[str, Any]] = []
@@ -241,11 +251,13 @@ async def get_preferences(
 
     Queries the memory module's ``facts`` table for rows where
     ``predicate LIKE 'preferences:%'`` and ``validity = 'active'``, scoped
-    to the owner entity resolved from ``public.contacts`` (or
-    ``public.entities`` directly as a fallback). Skips pools that lack the
-    memory schema, matching the fan-out behaviour of the memory router.
+    to the owner entity resolved from ``public.entities``. A memory schema
+    that was absent at startup is skipped; source loss after startup is
+    surfaced as unavailable rather than falling through to a public shadow
+    relation.
 
-    Returns 503 when no database pool is available.
+    Returns 503 when no database pool is available or a required memory
+    source cannot be queried.
     Returns an empty list when the owner has no recorded preferences.
     """
     rows = await _fetch_preferences(db, predicate=predicate)
