@@ -103,6 +103,11 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HEALTH_PORT = 40080
+_CONSENT_RECHECK_S = 60.0
+_CONSENT_PENDING_ENDPOINT_IDENTITY = "telegram:user:pending-consent"
+_CONSENT_PENDING_MESSAGE = (
+    "Account-wide ingestion is disabled until the Telegram setup acknowledgement is complete."
+)
 
 # ---------------------------------------------------------------------------
 # Addressed-mention detection for passive connectors
@@ -2336,9 +2341,37 @@ async def _resolve_endpoint_identity(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _ConsentPendingHealth:
+    """Expose a non-ingesting consent block without constructing a Telegram client."""
+
+    _config: TelegramUserClientConnectorConfig
+    _discretion_dispatcher: None = None
+
+    def _get_health_state(self) -> tuple[str, str]:
+        return "error", _CONSENT_PENDING_MESSAGE
+
+
+async def _wait_for_account_wide_ingestion_consent() -> None:
+    """Wait in a visible disabled state until a valid consent grant is present."""
+    control_pool = await _create_shared_control_pool()
+    try:
+        while not await _has_account_wide_ingestion_consent(control_pool):
+            logger.warning(
+                "Telegram user-client account-wide ingestion is disabled pending explicit "
+                "informed consent; complete the Telegram setup acknowledgement before "
+                "ingestion can start (rechecking in %.0fs)",
+                _CONSENT_RECHECK_S,
+                extra={"connector_state": "disabled_pending_consent"},
+            )
+            await asyncio.sleep(_CONSENT_RECHECK_S)
+    finally:
+        await control_pool.close()
+
+
 async def _run_health_server(
     port: int,
-    connector: TelegramUserClientConnector,
+    connector: TelegramUserClientConnector | _ConsentPendingHealth,
 ) -> None:
     """Run the loopback-only operational health and metrics endpoints."""
     from prometheus_client import generate_latest
@@ -2432,7 +2465,24 @@ async def run_telegram_user_client_connector() -> None:
     # Step 1: Load non-credential config from env vars.
     config = TelegramUserClientConnectorConfig.from_env()
 
-    # Step 2: Resolve credentials from owner entity_info (DB-only).
+    # Step 2: Await consent before reading credentials or creating any Telegram
+    # client. The pending health reporter keeps the process observable without
+    # resolving an account identity or emitting connector heartbeats.
+    pending_config = replace(config, endpoint_identity=_CONSENT_PENDING_ENDPOINT_IDENTITY)
+    pending_health_task = asyncio.create_task(
+        _run_health_server(config.health_port, _ConsentPendingHealth(pending_config)),
+        name="tg-user-consent-pending-health-server",
+    )
+    try:
+        await _wait_for_account_wide_ingestion_consent()
+    finally:
+        pending_health_task.cancel()
+        try:
+            await pending_health_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    # Step 3: Resolve credentials from owner entity_info (DB-only).
     # Always attempt — db_params_from_env() has sensible defaults (localhost).
     db_creds = await _resolve_telegram_user_credentials_from_db()
 
@@ -2442,22 +2492,6 @@ async def run_telegram_user_client_connector() -> None:
             "owner entity_info. Configure telegram_api_id, telegram_api_hash, "
             "and telegram_user_session on the owner entity via the dashboard."
         )
-
-    # Consent lives with shared owner credentials, not checkpoint cursors. Read
-    # it before creating any Telegram client or runtime connector.
-    control_pool = await _create_shared_control_pool()
-    try:
-        if not await _has_account_wide_ingestion_consent(control_pool):
-            logger.warning(
-                "Telegram user-client connector not started: explicit informed consent for "
-                "account-wide ingestion is missing or invalid"
-            )
-            raise RuntimeError(
-                "Telegram user-client connector requires explicit informed consent for "
-                "account-wide ingestion. Complete the Telegram setup acknowledgement first."
-            )
-    finally:
-        await control_pool.close()
 
     # Checkpoint cursors remain on the connector-local pool, which can target a
     # different database from the shared credential/control-state database.
@@ -2476,7 +2510,7 @@ async def run_telegram_user_client_connector() -> None:
         api_hash = db_creds["TELEGRAM_API_HASH"]
         session_string = db_creds["TELEGRAM_USER_SESSION"]
 
-        # Step 3: Resolve endpoint identity from get_me().
+        # Step 4: Resolve endpoint identity from get_me().
         endpoint_identity = await _resolve_endpoint_identity(api_id, api_hash, session_string)
 
         config = replace(

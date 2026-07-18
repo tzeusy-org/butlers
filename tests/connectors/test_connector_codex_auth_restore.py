@@ -225,10 +225,13 @@ async def test_telegram_control_pool_targets_shared_db_not_checkpoint_db(
     assert create_pool.await_args.kwargs["server_settings"] == {"search_path": "public"}
 
 
-async def test_telegram_user_entrypoint_fails_closed_without_account_wide_scope_consent() -> None:
-    """Credentials alone must never start account-wide Telegram ingestion."""
+async def test_telegram_user_entrypoint_waits_for_missing_account_wide_scope_consent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing consent keeps the process observable but never starts ingestion."""
     import butlers.connectors.telegram_user_client as tg
 
+    monkeypatch.setattr(tg, "_CONSENT_RECHECK_S", 0, raising=False)
     cfg = tg.TelegramUserClientConnectorConfig(
         switchboard_mcp_url="http://localhost:41100/sse",
         provider="telegram",
@@ -237,48 +240,97 @@ async def test_telegram_user_entrypoint_fails_closed_without_account_wide_scope_
     )
     control_pool = MagicMock()
     control_pool.close = AsyncMock()
+    cursor_pool = MagicMock()
+    cursor_pool.close = AsyncMock()
     conn = MagicMock()
+    conn.start = AsyncMock()
+    conn.stop = AsyncMock()
+    startup_order: list[str] = []
     creds = {
         "TELEGRAM_API_ID": "123",
         "TELEGRAM_API_HASH": "hash",
         "TELEGRAM_USER_SESSION": "session",
     }
+    consent_values = iter(
+        [
+            None,
+            {
+                "account_wide_ingestion_consent": {
+                    "version": "telegram-user-client-account-wide-v1",
+                    "granted_at": "2026-07-17T00:00:00+00:00",
+                }
+            },
+        ]
+    )
+
+    async def load_consent(*_args: object) -> dict[str, object] | None:
+        consent = next(consent_values)
+        startup_order.append("consent-missing" if consent is None else "consent-valid")
+        return consent
+
+    async def resolve_credentials() -> dict[str, str]:
+        startup_order.append("credentials")
+        return creds
+
+    async def resolve_identity(*_args: object) -> str:
+        startup_order.append("identity")
+        return "telegram:me"
 
     with (
         patch.object(tg.TelegramUserClientConnectorConfig, "from_env", return_value=cfg),
         patch.object(
             tg,
             "_resolve_telegram_user_credentials_from_db",
-            new=AsyncMock(return_value=creds),
-        ),
+            new=AsyncMock(side_effect=resolve_credentials),
+        ) as resolve_credentials_mock,
         patch.object(tg, "_create_shared_control_pool", new=AsyncMock(return_value=control_pool)),
-        patch.object(tg, "_resolve_endpoint_identity", new=AsyncMock()) as resolve_identity,
+        patch.object(
+            tg,
+            "_resolve_endpoint_identity",
+            new=AsyncMock(side_effect=resolve_identity),
+        ) as resolve_identity_mock,
         patch(
             "butlers.connectors.cursor_store.create_cursor_pool_from_env",
-            new=AsyncMock(),
+            new=AsyncMock(return_value=cursor_pool),
         ) as create_cursor_pool,
-        patch.object(tg, "load_account_wide_ingestion_consent", new=AsyncMock(return_value=None)),
+        patch.object(
+            tg,
+            "load_account_wide_ingestion_consent",
+            new=AsyncMock(side_effect=load_consent),
+        ) as load_consent_mock,
         patch.object(tg, "TelegramUserClientConnector", return_value=conn) as connector,
+        patch.object(tg, "_run_health_server", new=AsyncMock()) as run_health_server,
         patch(
             "butlers.cli_auth.persistence.restore_connector_cli_auth",
             new=AsyncMock(return_value={"codex": True}),
         ),
     ):
-        with pytest.raises(RuntimeError, match="explicit informed consent"):
-            await tg.run_telegram_user_client_connector()
+        await tg.run_telegram_user_client_connector()
 
-    resolve_identity.assert_not_awaited()
-    connector.assert_not_called()
-    create_cursor_pool.assert_not_awaited()
+    assert load_consent_mock.await_count == 2
+    assert startup_order == ["consent-missing", "consent-valid", "credentials", "identity"]
+    resolve_credentials_mock.assert_awaited_once()
+    resolve_identity_mock.assert_awaited_once()
+    connector.assert_called_once()
+    create_cursor_pool.assert_awaited_once()
+    conn.start.assert_awaited_once()
     control_pool.close.assert_awaited_once()
+    assert run_health_server.call_count == 2
+    pending_health = run_health_server.call_args_list[0].args[1]
+    state, error = pending_health._get_health_state()
+    assert state == "error"
+    assert error is not None
+    assert "account-wide ingestion is disabled" in error.lower()
+    assert pending_health._config.endpoint_identity == "telegram:user:pending-consent"
 
 
-async def test_telegram_user_entrypoint_rejects_malformed_scope_grant_before_client_startup() -> (
-    None
-):
-    """A non-empty but malformed grant must not reach Telegram identity lookup."""
+async def test_telegram_user_entrypoint_waits_for_malformed_scope_grant_before_client_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed grant is never accepted and is rechecked without a restart loop."""
     import butlers.connectors.telegram_user_client as tg
 
+    monkeypatch.setattr(tg, "_CONSENT_RECHECK_S", 0, raising=False)
     cfg = tg.TelegramUserClientConnectorConfig(
         switchboard_mcp_url="http://localhost:41100/sse",
         provider="telegram",
@@ -301,6 +353,13 @@ async def test_telegram_user_entrypoint_rejects_malformed_scope_grant_before_cli
             "granted_at": "not-a-timestamp",
         }
     }
+    valid_grant = {
+        "account_wide_ingestion_consent": {
+            "version": "telegram-user-client-account-wide-v1",
+            "granted_at": "2026-07-17T00:00:00+00:00",
+        }
+    }
+    load_consent = AsyncMock(side_effect=[malformed_grant, valid_grant])
 
     with (
         patch.object(tg.TelegramUserClientConnectorConfig, "from_env", return_value=cfg),
@@ -313,25 +372,23 @@ async def test_telegram_user_entrypoint_rejects_malformed_scope_grant_before_cli
         patch.object(tg, "_resolve_endpoint_identity", new=AsyncMock()) as resolve_identity,
         patch(
             "butlers.connectors.cursor_store.create_cursor_pool_from_env",
-            new=AsyncMock(),
+            new=AsyncMock(return_value=MagicMock(close=AsyncMock())),
         ) as create_cursor_pool,
-        patch.object(
-            tg,
-            "load_account_wide_ingestion_consent",
-            new=AsyncMock(return_value=malformed_grant),
-        ),
+        patch.object(tg, "load_account_wide_ingestion_consent", new=load_consent),
         patch.object(tg, "TelegramUserClientConnector", return_value=conn) as connector,
+        patch.object(tg, "_run_health_server", new=AsyncMock()),
         patch(
             "butlers.cli_auth.persistence.restore_connector_cli_auth",
             new=AsyncMock(return_value={"codex": True}),
         ),
     ):
-        with pytest.raises(RuntimeError, match="explicit informed consent"):
-            await tg.run_telegram_user_client_connector()
+        await tg.run_telegram_user_client_connector()
 
-    resolve_identity.assert_not_awaited()
-    connector.assert_not_called()
-    create_cursor_pool.assert_not_awaited()
+    assert load_consent.await_count == 2
+    resolve_identity.assert_awaited_once()
+    connector.assert_called_once()
+    create_cursor_pool.assert_awaited_once()
+    conn.start.assert_awaited_once()
     control_pool.close.assert_awaited_once()
 
 

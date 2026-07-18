@@ -195,6 +195,17 @@ Because this connector ingests personal account traffic, strict safeguards apply
 - **Retention limits** aligned with memory and ingestion policy.
 - **Audit trail** of connector start/stop/config changes.
 
+### Missing or invalid consent
+
+If the current account-wide consent grant is missing, malformed, or superseded,
+the process remains running but **disabled**: it does not resolve owner Telegram
+credentials, create a Telegram client, send heartbeats, or submit messages. Its
+loopback health endpoint reports `status: "error"` with the synthetic identity
+`telegram:user:pending-consent` and an acknowledgement-required error. The
+connector rechecks consent every 60 seconds and automatically starts normal
+ingestion after a valid versioned grant is persisted; no manual restart is
+needed.
+
 ### Credential Rotation
 
 - **Session strings:** Every 90 days (production) or immediately after suspected compromise.
@@ -211,6 +222,12 @@ connector state and identity; when discretion is configured it includes the
 dispatcher’s raw `discretion_auth` snapshot so missing or failed runtime auth
 is directly visible without exposing any credential material.
 
+While consent is pending, `/health` remains available but reports
+`status: "error"`, `endpoint_identity: "telegram:user:pending-consent"`, and
+the action required to complete the Telegram setup acknowledgement. That state
+does not create a connector-registry heartbeat because no account identity or
+Telegram client has been initialized.
+
 Key metrics to monitor:
 
 | Metric | Description |
@@ -225,6 +242,9 @@ Key metrics to monitor:
 
 - **Telethon not found:** Install with `uv pip install telethon>=1.36.0`
 - **Session expired:** Generate new session string, update owner entity_info, restart connector.
+- **Consent pending:** Complete the account-wide Telegram setup acknowledgement.
+  The disabled connector rechecks the grant automatically; do not bypass the
+  acknowledgement or restart it to start ingestion.
 - **Duplicate messages:** Normal during restarts (checkpoint replay), backfill, and retries. Switchboard handles deduplication.
 
 ## Verification
