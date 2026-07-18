@@ -38,6 +38,11 @@ vi.mock("@/components/ui/time", () => ({
 
 vi.mock("@/hooks/use-sessions", () => ({
   useGlobalSessionDetail: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  useSessionAggregate: vi.fn(() => ({
+    data: { data: { failed_count: 0 }, meta: {} },
+    isLoading: false,
+    isError: false,
+  })),
 }))
 
 import { useButler } from "@/hooks/use-butlers"
@@ -255,6 +260,12 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe("ButlerOverviewTab target overview grid", () => {
+  it("opens the overview with a labeled butler verdict region", () => {
+    const html = renderOverview()
+
+    expect(html).toContain('aria-label="Butler general verdict"')
+  })
+
   it("renders the redesigned panel set", () => {
     const html = renderOverview()
     for (const testId of [
@@ -304,6 +315,54 @@ describe("ButlerOverviewTab target overview grid", () => {
 
     const html = renderOverview()
     expect(html).toContain('data-testid="overview-skeleton"')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// bu-vyjoi correction — HTTP-200 partial sources must suppress Nominal
+// ---------------------------------------------------------------------------
+
+describe("ButlerOverviewTab -- partial-source verdicts", () => {
+  it("scopes spend to the current butler and names its unavailable spend source", () => {
+    vi.mocked(useSpendSummary).mockReturnValue({
+      data: {
+        data: {
+          by_butler: { general: 0 },
+          unavailable_butlers: ["general"],
+        },
+        meta: {},
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useSpendSummary>)
+
+    const html = renderOverview()
+
+    expect(useSpendSummary).toHaveBeenCalledWith("today", undefined, undefined, "general")
+    expect(html).toContain("general unavailable; spend may be incomplete")
+    expect(html).not.toContain("butler-detail-verdict-all-clear")
+  })
+
+  it("names a partial approval source returned with HTTP 200", () => {
+    vi.mocked(useApprovalActions).mockReturnValue({
+      data: {
+        data: [],
+        meta: {
+          total: 0,
+          offset: 0,
+          limit: 5,
+          has_more: false,
+          sources_degraded: ["general"],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useApprovalActions>)
+
+    const html = renderOverview()
+
+    expect(html).toContain("general unavailable; approvals may be incomplete")
+    expect(html).not.toContain("butler-detail-verdict-all-clear")
   })
 })
 

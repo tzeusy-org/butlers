@@ -744,6 +744,23 @@ async def test_connectors_list_200(app):
     ) as client:
         resp = await client.get("/api/switchboard/connectors")
     assert resp.status_code == 200
+    assert resp.json()["meta"]["connector_registry_available"] is True
+
+
+async def test_connectors_list_registry_failure_names_unavailable_source(app):
+    """The legacy summary endpoint must not turn a failed registry read into an honest empty."""
+    _, pool = _app_with_mock(app)
+    pool.fetch.side_effect = RuntimeError("connector registry unavailable")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/switchboard/connectors")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["connector_registry_available"] is False
 
 
 async def test_connector_detail_200(app):

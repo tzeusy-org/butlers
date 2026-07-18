@@ -101,6 +101,16 @@ function renderPage(initialPath = "/issues"): { container: HTMLElement; root: Ro
 }
 
 describe("IssuesPage — ?q= deep-link filter", () => {
+  it("opens the issue inbox with a labeled verdict region", () => {
+    setupDefaults([makeIssue({ severity: "critical" })]);
+    const { container, root } = renderPage("/issues");
+
+    expect(container.querySelector('[aria-label="Issues verdict"]')).not.toBeNull();
+
+    act(() => root.unmount());
+    container.remove();
+  });
+
   it("shows all issues when ?q= is absent", () => {
     setupDefaults([makeIssue(), makeIssue({ issue_key: "k2", description: "unrelated (health)" })]);
     const { container, root } = renderPage("/issues");

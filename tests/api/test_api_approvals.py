@@ -329,6 +329,21 @@ async def test_list_approvals_flat_reports_sources_degraded_on_pool_failure(app)
     assert body["meta"]["sources_degraded"] == ["home"]
 
 
+async def test_list_actions_reports_sources_degraded_on_pool_failure(app):
+    """The butler-scoped preview cannot silently turn a dropped pool into zero actions."""
+    app = _app_with_one_healthy_one_raising_butler(app, healthy_rows=[_make_action()])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/actions?butler=home")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["sources_degraded"] == ["home"]
+
+
 async def test_list_approvals_history_reports_sources_degraded_on_pool_failure(app):
     """Same contract for the decided-approvals history endpoint."""
     row = _make_action(tool_name="notify", status="approved")

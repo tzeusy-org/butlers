@@ -275,7 +275,9 @@ async def list_connector_summaries_with_aggregates(
     dashboard surfaces candidates as a review queue with a one-click archive
     that reuses the existing audit-logged archive endpoint — never auto-archived.
 
-    Always returns HTTP 200 — connector registry errors fall back to an empty list.
+    Always returns HTTP 200. Connector registry errors fall back to an empty list
+    with ``connector_registry_available: false`` so callers do not mistake the
+    fallback for a true empty roster.
     Hourly timeseries errors fall back to all-zero ``hourly_events`` arrays per connector.
     Per-device liveness query errors fall back to ``devices: null`` for every connector
     and ``device_liveness_available: false``.
@@ -306,7 +308,7 @@ async def list_connector_summaries_with_aggregates(
         )
     except Exception:
         logger.warning("connector summaries: failed to fetch from registry", exc_info=True)
-        return ApiResponse[dict](data={"connectors": []})
+        return ApiResponse[dict](data={"connectors": [], "connector_registry_available": False})
 
     # Count registry rows per connector_type. The `devices` badge list (below)
     # exists specifically for connector_types where connector_registry cannot
@@ -636,6 +638,10 @@ async def list_connector_summaries_with_aggregates(
     return ApiResponse[dict](
         data={
             "connectors": connectors,
+            # The registry is the primary roster source. This explicit true
+            # distinguishes an actually empty registry from the HTTP-200
+            # fallback above when its query failed.
+            "connector_registry_available": True,
             "device_liveness_available": device_liveness_available,
             # False only if the combined ingested+filtered hourly query itself
             # raised — mirrors device_liveness_available

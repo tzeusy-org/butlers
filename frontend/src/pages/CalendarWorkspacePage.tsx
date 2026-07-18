@@ -79,6 +79,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { CalendarAgendaView } from "@/components/calendar/CalendarAgendaView";
+import { CalendarVerdictOpener } from "@/components/calendar/CalendarVerdictOpener";
 import { ConflictRadarBanner } from "@/components/calendar/ConflictRadarBanner";
 import { CalendarPortabilityDialog } from "@/components/calendar/CalendarPortabilityDialog";
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
@@ -4758,6 +4759,22 @@ export default function CalendarWorkspacePage() {
           )}
         </div>
       </header>
+
+      <CalendarVerdictOpener
+        entriesCount={entries.length}
+        sourceCount={connectedSources.length}
+        rangeLabel={range}
+        workspaceLoading={workspaceQuery.isLoading}
+        workspaceError={workspaceQuery.isError || !entriesSourceAvailable}
+        sourceFreshnessLoading={metaQuery.isPending}
+        sourceFreshnessError={metaQuery.isError || metaQuery.data?.data.sources_available === false}
+        freshnessDetail={freshnessPlaque?.detail ?? null}
+        conflictScanEnabled={radarEnabled}
+        conflictLoading={conflictsQuery.isLoading}
+        conflictError={conflictsQuery.isError}
+        conflictsAvailable={conflictsAvailable}
+        conflicts={conflictIssues}
+      />
 
       {freshnessPlaque ? (
         <SourceDegradedNote

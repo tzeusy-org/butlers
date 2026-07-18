@@ -629,6 +629,7 @@ async def list_actions(
     # Aggregate across target pools, tracking butler name per row
     all_rows: list[tuple[str, asyncpg.Record]] = []
     total = 0
+    tracker = DegradedSources(logger)
     for butler_name, pool in named_target_pools:
         try:
             async with pool.acquire() as conn:
@@ -642,7 +643,7 @@ async def list_actions(
                 )
                 all_rows.extend((butler_name, row) for row in rows)
         except Exception:
-            logger.warning("Failed to query pending_actions from a pool", exc_info=True)
+            tracker.mark(butler_name, msg="Failed to query pending_actions for action list")
 
     # Sort combined results and apply pagination in Python
     all_rows.sort(key=lambda pair: pair[1]["requested_at"], reverse=True)
@@ -654,10 +655,17 @@ async def list_actions(
         tc = await _resolve_target_contact(db_mgr, pa)
         actions.append(_pending_action_to_api(pa, butler_name, tc))
 
-    return PaginatedResponse(
-        data=actions,
-        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    meta = (
+        PaginationMeta(
+            total=total,
+            offset=offset,
+            limit=limit,
+            sources_degraded=tracker.names,
+        )
+        if tracker.failed
+        else PaginationMeta(total=total, offset=offset, limit=limit)
     )
+    return PaginatedResponse(data=actions, meta=meta)
 
 
 @router.get("/actions/executed")

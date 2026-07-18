@@ -32,6 +32,7 @@
 import { useCallback, useState } from 'react'
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/ingestion/dispatch'
+import { IngestionTimelineVerdictOpener } from '@/components/ingestion/dispatch/IngestionVerdictOpeners'
 import { TimelineTab, type IngestionRange } from '@/components/ingestion/TimelineTab'
 import { LiveStatusBadge } from '@/components/ui/live-status-badge'
 
@@ -83,6 +84,7 @@ export default function IngestionTimelinePage() {
         description="Every external signal the house received, with end-to-end pipeline detail behind each row."
         aside={<LiveStatusBadge latestReceivedAt={latestReceivedAt} isDown={isLiveFeedDown} />}
       />
+      <IngestionTimelineVerdictOpener range={activeRange} />
       <IngestionSubNav />
       <DispatchSurface>
         <TimelineTab

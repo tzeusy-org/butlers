@@ -38,6 +38,15 @@ vi.mock('@/components/ingestion/TimelineTab', () => ({
   },
 }))
 
+// This page test focuses on the LiveStatusBadge wiring. The opener's query
+// composition is covered directly in IngestionVerdictOpeners.test.tsx; keeping
+// it shallow here preserves the test's intentionally provider-free harness.
+vi.mock('@/components/ingestion/dispatch/IngestionVerdictOpeners', () => ({
+  IngestionTimelineVerdictOpener: () => (
+    <div role="region" aria-label="Ingestion timeline verdict" />
+  ),
+}))
+
 // Mock dispatch primitives to avoid layout complexity in tests
 vi.mock('@/components/ingestion/dispatch', () => ({
   DispatchLayout: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -223,5 +232,11 @@ describe('IngestionTimelinePage — LiveStatusBadge', () => {
     // back to its own default ("24h") — matching TimelineTab's own default range.
     await renderPage()
     expect(container.querySelector('h1')?.textContent).toBe('Last 24 hours, newest first.')
+  })
+
+  it('opens the ingestion surface with a labeled verdict region', async () => {
+    await renderPage()
+
+    expect(container.querySelector('[aria-label="Ingestion timeline verdict"]')).not.toBeNull()
   })
 })

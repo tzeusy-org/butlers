@@ -14,6 +14,7 @@
 
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/ingestion/dispatch'
+import { IngestionFiltersVerdictOpener } from '@/components/ingestion/dispatch/IngestionVerdictOpeners'
 import { FiltersPipeline } from '@/components/ingestion/filters'
 import { getAvailablePipelineBacklog } from '@/components/ingestion/filters/backlog-state'
 import { usePipelineStats } from '@/hooks/use-ingestion'
@@ -99,6 +100,7 @@ export default function IngestionFiltersPage() {
         description="Five gates between arriving and acting. Rules at each gate decide whether the system stores, drops, tiers, routes, or replays."
         aside={<FiltersHeaderAside />}
       />
+      <IngestionFiltersVerdictOpener />
       <IngestionSubNav />
       <DispatchSurface>
         <FiltersPipeline />

@@ -34,6 +34,21 @@ vi.mock('@/pages/IngestionTimelinePage', () => ({
 vi.mock('@/components/ingestion/TimelineTab', () => ({
   TimelineTab: () => <div data-testid="timeline-tab-stub">Timeline tab</div>,
 }))
+// Verdict-openers own live query composition; their direct tests cover that
+// behavior. These sub-route smoke tests deliberately mount without a
+// QueryClientProvider, so keep their page shells provider-free like the other
+// page-content stubs below.
+vi.mock('@/components/ingestion/dispatch/IngestionVerdictOpeners', () => ({
+  IngestionTimelineVerdictOpener: () => (
+    <div role="region" aria-label="Ingestion timeline verdict" />
+  ),
+  IngestionConnectorsVerdictOpener: () => (
+    <div role="region" aria-label="Ingestion connectors verdict" />
+  ),
+  IngestionFiltersVerdictOpener: () => (
+    <div role="region" aria-label="Ingestion filters verdict" />
+  ),
+}))
 vi.mock('@/components/ingestion/connectors/ConnectorsRoster', () => ({
   ConnectorsRoster: () => <div data-testid="connectors-tab-stub">Connectors roster</div>,
 }))

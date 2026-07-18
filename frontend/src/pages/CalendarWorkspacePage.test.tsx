@@ -817,6 +817,12 @@ describe("CalendarWorkspacePage", () => {
     expect(getSearchText()).toContain("range=list");
   });
 
+  it("opens the calendar workspace with a labeled verdict region", () => {
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
+
+    expect(container.querySelector('[aria-label="Calendar verdict"]')).not.toBeNull();
+  });
+
   it("disables conflict proposal actions while accepting a fix", async () => {
     vi.mocked(useAcceptCalendarProposal).mockReturnValue({
       mutate: vi.fn(),

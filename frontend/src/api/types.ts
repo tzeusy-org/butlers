@@ -2991,6 +2991,21 @@ export interface ApprovalAction {
   dispatched?: boolean;
 }
 
+/**
+ * Metadata for GET /api/approvals/actions. A non-empty degraded-source list
+ * means a butler pool did not answer, so the action preview must not read as a
+ * complete zero or all-clear.
+ */
+export interface ApprovalActionsMeta extends PaginationMeta {
+  sources_degraded?: string[];
+}
+
+/** GET /api/approvals/actions response: action preview + degraded-pool meta. */
+export interface ApprovalActionsResponse {
+  data: ApprovalAction[];
+  meta: ApprovalActionsMeta;
+}
+
 /** Compact summary for GET /api/approvals flat-list endpoint. */
 export interface ApprovalSummary {
   id: string;
@@ -3467,6 +3482,18 @@ export interface ConnectorSummary {
   operational_warnings?: string[];
 }
 
+/** Metadata for the legacy GET /api/switchboard/connectors roster endpoint. */
+export interface ConnectorSummariesMeta extends ApiMeta {
+  /** False only when the connector registry query failed; absent means available. */
+  connector_registry_available?: boolean;
+}
+
+/** Legacy connector roster response with explicit registry availability. */
+export interface ConnectorSummariesListResponse {
+  data: ConnectorSummary[];
+  meta: ConnectorSummariesMeta;
+}
+
 /** One OAuth scope entry from connector-oauth-scope-surface backend. */
 export interface ConnectorScopeEntry {
   name: string;
@@ -3610,12 +3637,19 @@ export interface PipelineStats {
  *
  * Every field on this response is DB-sourced — this endpoint has no Prometheus
  * dependency and therefore carries no `aggregates_available` flag. Its only
- * degraded-mode flags gate the DB queries that can independently fail
- * (`hourly_events_available`, `device_liveness_available`, and
- * `owntracks_cadence_available`).
+ * degraded-mode flags gate the DB queries that can independently fail. A
+ * failed primary registry query returns an empty connector list with
+ * `connector_registry_available=false`; the other flags cover the secondary
+ * hourly, device-liveness, and OwnTracks-cadence queries.
  */
 export interface ConnectorSummariesResponse {
   connectors: ConnectorSummary[];
+  /**
+   * False only if the primary connector registry query failed and the
+   * connector list is its HTTP-200 fallback. Optional/additive; absent on
+   * older cached responses is treated as available.
+   */
+  connector_registry_available?: boolean;
   /**
    * False only if the backend's per-device liveness query itself failed
    * (genuine-failure-only degraded flag — every connector's `devices` falls

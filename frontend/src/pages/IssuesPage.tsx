@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import IssuesPanel from "@/components/issues/IssuesPanel";
+import { IssuesVerdictOpener } from "@/components/issues/IssuesVerdictOpener";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Page } from "@/components/ui/page";
@@ -348,6 +349,16 @@ export default function IssuesPage() {
         </Button>
       }
     >
+      <IssuesVerdictOpener
+        issues={issues}
+        isLoading={isLoading}
+        isError={isError}
+        activeWindow={activeWindow}
+        showDismissed={showDismissed}
+        sourcesDegraded={sourcesDegraded}
+        auditGroupsTruncated={auditGroupsTruncated}
+      />
+
       {/* Window + severity/butler pills (bu-qvnce.13): URL-backed, shareable.
           Window defaults to 7d server-side (capped CTE); "All time" opts out
           of the time bound but the row cap still applies. */}
