@@ -184,9 +184,6 @@ test("floating chat widget: badges the trigger for a reply that arrived while cl
               created_at: NOW_ISO,
               updated_at: NOW_ISO,
               message_count: 2,
-              total_input_tokens: 10,
-              total_output_tokens: 0, // dead signal (bu-qesw0) — confirm-loop replies never bump this
-              total_duration_ms: 500,
               routed_butler: "relationship",
               latest_assistant_reply_at: NOW_ISO, // > the seeded watermark -> badges
             },

@@ -88,18 +88,14 @@ class ConversationSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     message_count: int
-    total_input_tokens: int
-    total_output_tokens: int
-    total_duration_ms: int
     routed_butler: str | None = None
     latest_assistant_reply_at: datetime | None = Field(
         None,
         description=(
             "Timestamp of the most recent assistant-role message in this "
             "conversation, or null if none has arrived yet. This is the "
-            "unread-badge watermark signal — total_output_tokens does not "
-            "move for confirm-loop replies (they persist with output_tokens "
-            "NULL) so it cannot be used to detect a new reply."
+            "unread-badge watermark signal because it moves when a "
+            "confirm-loop reply is persisted."
         ),
     )
 
@@ -132,9 +128,6 @@ class ConversationSearchResult(BaseModel):
     created_at: datetime
     updated_at: datetime
     message_count: int
-    total_input_tokens: int
-    total_output_tokens: int
-    total_duration_ms: int
     routed_butler: str | None = None
     snippet: str
 
@@ -145,6 +138,3 @@ class ConversationStats(BaseModel):
     total_conversations: int
     active_conversations: int
     total_messages: int
-    total_input_tokens: int
-    total_output_tokens: int
-    total_duration_ms: int

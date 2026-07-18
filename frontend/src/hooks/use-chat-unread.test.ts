@@ -6,14 +6,8 @@
  * list directly, standing in for what a real ~60s poll would eventually
  * return.
  *
- * bu-qesw0: rewritten to feed realistic `latest_assistant_reply_at`
- * timestamps instead of synthetic, monotonically-increasing
- * `total_output_tokens` counts. The prior version of this suite passed
- * while the badge was dead in production, because `total_output_tokens`
- * never actually moves for a confirm-loop reply
- * (`conversation_reply_create` persists it with `output_tokens = NULL`) —
- * feeding it directly encoded the wrong contract. `latest_assistant_reply_at`
- * is what actually changes when a reply is persisted.
+ * The fixture feeds realistic `latest_assistant_reply_at` timestamps because
+ * that is what changes when a confirm-loop reply is persisted.
  *
  * Covers:
  *  - no badge while the panel is open, even as replies land
@@ -59,9 +53,6 @@ function conv(
     created_at: "2026-07-05T00:00:00.000Z",
     updated_at: "2026-07-05T00:00:00.000Z",
     message_count: 1,
-    total_input_tokens: 0,
-    total_output_tokens: 0,
-    total_duration_ms: 0,
     routed_butler: null,
     latest_assistant_reply_at: latestAssistantReplyAt,
     ...overrides,

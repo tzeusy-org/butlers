@@ -21,9 +21,6 @@ The `public.dashboard_conversations` table SHALL store conversation thread metad
   - `created_at` (TIMESTAMPTZ, NOT NULL, default `now()`) — when the conversation was started
   - `updated_at` (TIMESTAMPTZ, NOT NULL, default `now()`) — when the last message was added
   - `message_count` (INTEGER, NOT NULL, default `0`) — denormalized count of messages
-  - `total_input_tokens` (BIGINT, NOT NULL, default `0`): aggregate input tokens across all assistant responses
-  - `total_output_tokens` (BIGINT, NOT NULL, default `0`): aggregate output tokens across all assistant responses
-  - `total_duration_ms` (BIGINT, NOT NULL, default `0`): aggregate response duration across all assistant responses
   - `routed_butler` (TEXT, nullable): the butler this conversation's first message was routed to by Switchboard classification; NULL for pinned per-butler conversations (already deterministic) and for classification-routed conversations that haven't routed yet (e.g. a bug-lane report, which never targets a domain butler)
 
 #### Scenario: Conversation table indexes
@@ -73,13 +70,13 @@ The dashboard API SHALL provide an endpoint to list conversations for a butler w
 
 - **WHEN** `GET /api/butlers/{name}/conversations?status=active&limit=20&offset=0` is called
 - **THEN** conversations are returned ordered by `updated_at DESC` with pagination metadata
-- **AND** each conversation includes `id`, `title`, `status`, `created_at`, `updated_at`, `message_count`, `total_input_tokens`, `total_output_tokens`, `total_duration_ms`, `latest_assistant_reply_at`
+- **AND** each conversation includes `id`, `title`, `status`, `created_at`, `updated_at`, `message_count`, `latest_assistant_reply_at`
 
 #### Scenario: latest_assistant_reply_at reflects the most recent assistant message
 
 - **WHEN** a conversation list entry is built
 - **THEN** `latest_assistant_reply_at` is the `MAX(created_at)` of that conversation's `public.dashboard_messages` rows where `role = 'assistant'`, or `null` if it has none
-- **AND** this field, not `total_output_tokens`, is the correct freshness signal for detecting a new reply: `conversation_reply_create` (the confirm-loop write path) always persists its message with `output_tokens = NULL` — mid-session, before the routed session's own accounting is known — so `total_output_tokens` never increments for a confirm-loop reply and cannot be used to badge unread replies
+- **AND** this field is the freshness signal for detecting a new reply because `conversation_reply_create` persists a new assistant message before the routed session's accounting is known
 
 #### Scenario: List all conversations
 
@@ -288,14 +285,14 @@ Dashboard conversations SHALL construct `ingest.v1` envelopes that flow through 
 - **THEN** the envelope's `payload.raw.page_context` SHALL carry that object unchanged, grounding the statement for the routed butler
 - **AND** when no `page_context` is provided, `payload.raw` SHALL NOT contain a `page_context` key
 
-### Requirement: Conversation Aggregate Queries
+### Requirement: Conversation Summary Queries
 
-Provide aggregate statistics for conversation usage.
+Provide conversation-count summary statistics.
 
 #### Scenario: Conversation summary per butler
 
 - **WHEN** `GET /api/butlers/{name}/conversations/summary` is called
-- **THEN** the response includes: `total_conversations`, `active_conversations`, `total_messages`, `total_input_tokens`, `total_output_tokens`, `total_duration_ms`
+- **THEN** the response includes: `total_conversations`, `active_conversations`, `total_messages`
 
 ### Requirement: Conversation Pydantic Response Models
 
@@ -304,7 +301,7 @@ API response models for conversation endpoints.
 #### Scenario: ConversationSummary model
 
 - **WHEN** a conversation list response is serialized
-- **THEN** each entry includes: `id`, `butler_name`, `title`, `status`, `created_at`, `updated_at`, `message_count`, `total_input_tokens`, `total_output_tokens`, `total_duration_ms`, `routed_butler`, `latest_assistant_reply_at`
+- **THEN** each entry includes: `id`, `butler_name`, `title`, `status`, `created_at`, `updated_at`, `message_count`, `routed_butler`, `latest_assistant_reply_at`
 
 #### Scenario: ConversationMessage model
 
@@ -342,4 +339,3 @@ SSE Response Streaming requirement).
 
 - **WHEN** any butler's MCP server registers its core tools
 - **THEN** `conversation_reply` SHALL be registered regardless of `core_groups` configuration — any butler can be the classification or pinned-target destination of a dashboard conversation, so the tool cannot be scoped to a subset of butlers
-
