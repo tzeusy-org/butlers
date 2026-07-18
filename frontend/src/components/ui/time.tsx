@@ -432,9 +432,12 @@ export function Time({
   // Expose the full absolute time as an aria-label (no new tab stop, no
   // app-wide tooltip fan-out) while keeping `title` for sighted hover. Only
   // when the timestamp is the load-bearing content (showTitle) and the visible
-  // text is not already the absolute form.
+  // text is not already the absolute form. The live clock is excluded because
+  // its `value` remains the original input while its rendered time advances.
   const absoluteAria =
-    showTitle && mode !== "absolute" ? formatAbsolute(date, precision, tz, false) : undefined
+    showTitle && mode !== "absolute" && mode !== "clock-24h-mono"
+      ? formatAbsolute(date, precision, tz, false)
+      : undefined
 
   // clock-24h-mono: live ticking 24-hour clock in the owner timezone.
   // Text is derived from tz at render time (not from stale state) so it is

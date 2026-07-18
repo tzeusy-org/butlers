@@ -56,12 +56,16 @@ describe("ProvenanceMarks: src + verified", () => {
     const html = renderToStaticMarkup(<ProvenanceMarks src="relationship" verified />)
     expect(html).toContain("var(--green)")
     expect(html).toContain('data-verified="true"')
+    expect(html).toContain('aria-label="Verified"')
+    expect(html).toContain('title="Verified"')
   })
 
   it("renders dim when unverified", () => {
     const html = renderToStaticMarkup(<ProvenanceMarks src="relationship" verified={false} />)
     expect(html).toContain("var(--dim)")
     expect(html).toContain('data-verified="false"')
+    expect(html).toContain('aria-label="Unverified"')
+    expect(html).toContain('title="Unverified"')
   })
 
   it("omits the src tag when src is empty", () => {

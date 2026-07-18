@@ -306,7 +306,6 @@ export function ToolCallTimeline({
             <span
               role="img"
               aria-label={`Tool call outcome: ${outcomeStyle.label}`}
-              title={`Tool call outcome: ${outcomeStyle.label}`}
               data-tool-call-outcome={tc.outcome}
               className={cn(
                 "absolute -left-1.5 mt-1 size-3 rounded-full border border-background",

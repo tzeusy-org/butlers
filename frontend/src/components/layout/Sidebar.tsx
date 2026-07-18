@@ -397,7 +397,7 @@ function SidebarFooter({
   if (isLoading || isError) {
     const titleText = isLoading ? 'Loading butlers' : 'Butlers query failed'
     return (
-      <div className={containerClass} title={titleText} aria-label={titleText}>
+      <div className={containerClass} aria-label={titleText} title={expanded ? undefined : titleText}>
         <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/40" aria-hidden="true" />
         {expanded && <span className="truncate font-mono text-[11px] tracking-[0.06em] text-muted-foreground">{titleText}</span>}
       </div>
@@ -424,7 +424,7 @@ function SidebarFooter({
   const titleText = allParts.length > 0 ? allParts.join(' · ') : 'All systems ok'
 
   return (
-    <div className={containerClass} title={titleText} aria-label={titleText}>
+    <div className={containerClass} aria-label={titleText} title={expanded ? undefined : titleText}>
       <span className={`h-2 w-2 shrink-0 rounded-full ${dotColor}`} aria-hidden="true" />
       {expanded && <span className="truncate font-mono text-[11px] tracking-[0.06em] text-muted-foreground">{titleText}</span>}
     </div>

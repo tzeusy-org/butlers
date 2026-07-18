@@ -6,7 +6,8 @@
  * (`UnifiedCalendarEntry.linked_people`), so linked-people avatars persist for
  * existing events, not only at creation time in the dialog. Covers:
  *  - Avatars render one mark per person (initials), collapsing the overflow
- *    into a "+N" chip and exposing the full name list via the container title.
+ *    into a "+N" chip and exposing the full name list through the container's
+ *    accessible name.
  *  - Empty input renders nothing (never an empty box).
  *  - The detail-panel chips render each person's resolved display label.
  */
@@ -40,7 +41,11 @@ describe("LinkedPeopleAvatars", () => {
     expect(screen.getByTestId("linked-people-overflow").textContent).toBe("+1");
     // Initials mark from first + last name part.
     expect(avatars[0].textContent).toBe("AL");
-    // Full list is exposed for hover/AT so no name is silently hidden.
+    // The accessible name remains complete and the same full list is available
+    // as supplemental visual hover information.
+    expect(cluster.getAttribute("aria-label")).toBe(
+      "Linked people: Ada Lovelace, Grace Hopper, Katherine Johnson, Dorothy Vaughan",
+    );
     expect(cluster.getAttribute("title")).toBe(
       "Ada Lovelace, Grace Hopper, Katherine Johnson, Dorothy Vaughan",
     );

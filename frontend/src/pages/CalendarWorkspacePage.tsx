@@ -947,6 +947,8 @@ const PillButton = forwardRef<
   );
 });
 
+PillButton.displayName = "PillButton";
+
 /** Commit button (§4c) — fg background, bg text. At most one per surface. */
 function CommitButton({
   className,

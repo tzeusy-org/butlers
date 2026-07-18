@@ -264,11 +264,13 @@ describe("ButlersPage — grid render", () => {
     expect(html).not.toContain("Tracks your wellness goals");
   });
 
-  it("renders the ButlerMark glyph (title attribute) per cell", () => {
+  it("does not duplicate the visible butler name with a native glyph title per cell", () => {
     const rows = [makeRow({ name: "health" })];
     setHookState(rows, makeAggregates({ total: 1, butlerCount: 1 }));
     const html = renderPage();
-    expect(html).toContain('title="health"');
+    expect(html).toContain("health");
+    expect(html).toContain('aria-label="health"');
+    expect(html).not.toContain('title="health"');
   });
 
   it("renders sessions24h KPI value", () => {

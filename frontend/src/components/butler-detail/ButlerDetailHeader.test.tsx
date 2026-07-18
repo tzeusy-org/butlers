@@ -226,7 +226,7 @@ describe("Scenario B: Butler identity", () => {
 
   it("B3: ButlerMark is present (identity wrapper contains hue element)", () => {
     const { container } = renderHeader("relationship")
-    // ButlerMark renders as a <span> with title and aria-label equal to butler name.
+    // ButlerMark renders as a <span> with an aria-label equal to the butler name.
     // We rely on the aria-label to identify it without coupling to internal classes.
     const mark = container.querySelector("span[aria-label='relationship']")
     expect(mark).not.toBeNull()
