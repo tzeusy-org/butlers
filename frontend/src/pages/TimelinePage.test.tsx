@@ -1,6 +1,8 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { cleanup, fireEvent, render as renderDom, screen } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router";
 
 import TimelinePage from "@/pages/TimelinePage";
 import { useTimelineLedger } from "@/hooks/use-timeline-ledger";
@@ -47,15 +49,24 @@ function setLedger(partial: Partial<UseTimelineLedgerResult>): void {
   } as unknown as UseTimelineLedgerResult);
 }
 
-function render(): string {
+function render(initialEntry = "/timeline"): string {
   return renderToStaticMarkup(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <TimelinePage />
     </MemoryRouter>,
   );
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="timeline-location">{location.search}</output>;
+}
+
 describe("TimelinePage — error vs empty state", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   beforeEach(() => {
     vi.mocked(useButlers).mockReturnValue({
       data: { data: [] },
@@ -114,6 +125,62 @@ describe("TimelinePage — error vs empty state", () => {
     expect(html).toContain('data-testid="facet-session"');
     expect(html).toContain('data-testid="facet-error"');
     expect(html).toContain('data-testid="facet-notification"');
+  });
+
+  it("forwards a trace URL scope to the timeline ledger", () => {
+    setLedger({});
+
+    render("/timeline?trace=trace-001");
+
+    expect(useTimelineLedger).toHaveBeenLastCalledWith({
+      butler: undefined,
+      event_type: undefined,
+      trace: "trace-001",
+    });
+  });
+
+  it("does not present a whitespace trace query as an active scope", () => {
+    setLedger({});
+
+    const html = render("/timeline?trace=%20%20");
+
+    expect(html).not.toContain('data-testid="trace-scope-banner"');
+    expect(useTimelineLedger).toHaveBeenLastCalledWith({
+      butler: undefined,
+      event_type: undefined,
+      trace: undefined,
+    });
+  });
+
+  it("names a trace scope, explains notification coverage, and lets the operator clear it", () => {
+    setLedger({});
+
+    renderDom(
+      <MemoryRouter
+        initialEntries={["/timeline?trace=trace-001&butler=home,general&type=session&view=errors"]}
+      >
+        <TimelinePage />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    const banner = screen.getByTestId("trace-scope-banner");
+    expect(banner.textContent).toContain("Scoped to trace trace-001");
+    expect(banner.textContent).toContain("Matching sessions and trace-attributed notifications.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear trace filter" }));
+
+    expect(screen.queryByTestId("trace-scope-banner")).toBeNull();
+    const params = new URLSearchParams(screen.getByTestId("timeline-location").textContent ?? "");
+    expect(params.get("trace")).toBeNull();
+    expect(params.get("butler")).toBe("home,general");
+    expect(params.get("type")).toBe("session");
+    expect(params.get("view")).toBe("errors");
+    expect(useTimelineLedger).toHaveBeenLastCalledWith({
+      butler: ["home", "general"],
+      event_type: ["session"],
+      trace: undefined,
+    });
   });
 
   it("renders the new-events pill only when newCount is positive", () => {

@@ -63,6 +63,8 @@ Required query support:
 - repeated `butler`
 - repeated `event_type`
 - `before` (cursor token)
+- `trace` (OpenTelemetry trace scope; matching sessions and trace-attributed
+  notifications only)
 
 ## Notifications Contract
 

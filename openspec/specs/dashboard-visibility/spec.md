@@ -124,7 +124,7 @@ The `SessionDetailDrawer` is a slide-over sheet that provides full session conte
 
 #### Scenario: Trace ID link
 - **WHEN** the session has a `trace_id`
-- **THEN** the drawer displays the trace ID as a clickable link navigating to `/ingestion?tab=timeline`
+- **THEN** the drawer displays the trace ID as a clickable link navigating to `/timeline?trace={trace_id}`
 - **AND** a copy-to-clipboard button is adjacent to the link (using `navigator.clipboard.writeText`)
 
 #### Scenario: Copyable text feedback
@@ -176,6 +176,12 @@ The Timeline page (`/timeline`) SHALL merge events from all butlers into a singl
 - **THEN** two filter sections are available: "Filter by butler" (toggle badges for each butler name, multi-select) and "Filter by event type" (toggle badges for Session / Notification / Error, multi-select)
 - **AND** toggling any filter resets cursor pagination and accumulated events
 - **AND** selected filters are visually distinguished with `bg-primary text-primary-foreground`
+
+#### Scenario: Trace-scoped session drill-down
+- **WHEN** the operator follows a session trace link to `/timeline?trace={trace_id}`
+- **THEN** the Timeline requests matching session events and trace-attributed notifications through `GET /api/timeline?trace={trace_id}`
+- **AND** it visibly names the active trace scope and explains that matching sessions and trace-attributed notification rows are shown
+- **AND** the operator can clear the trace scope without discarding other URL-backed filters
 
 #### Scenario: Heartbeat event collapsing
 - **WHEN** consecutive heartbeat events (identified by "heartbeat" or "tick" in the summary or `trigger_source`) occur within 10 minutes of each other
@@ -427,7 +433,7 @@ The visibility surfaces are interconnected through contextual links that allow o
 
 #### Scenario: Session to trace navigation
 - **WHEN** a session detail drawer displays a `trace_id`
-- **THEN** it is a clickable link to `/ingestion?tab=timeline`
+- **THEN** it is a clickable link to `/timeline?trace={trace_id}`
 
 #### Scenario: Notification to session navigation
 - **WHEN** a notification row has a `session_id`

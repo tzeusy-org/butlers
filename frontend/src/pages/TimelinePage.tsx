@@ -94,6 +94,7 @@ export default function TimelinePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedButlers = useMemo(() => parseCsvList(searchParams, "butler"), [searchParams]);
   const selectedTypes = useMemo(() => parseCsvList(searchParams, "type"), [searchParams]);
+  const trace = searchParams.get("trace")?.trim() || undefined;
   const activeViewId = searchParams.get("view") ?? "all";
 
   const { data: butlersResponse } = useButlers();
@@ -103,8 +104,9 @@ export default function TimelinePage() {
     () => ({
       butler: selectedButlers.length > 0 ? selectedButlers : undefined,
       event_type: selectedTypes.length > 0 ? selectedTypes : undefined,
+      trace,
     }),
-    [selectedButlers, selectedTypes],
+    [selectedButlers, selectedTypes, trace],
   );
 
   const {
@@ -202,6 +204,14 @@ export default function TimelinePage() {
     });
   }
 
+  function clearTraceScope() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("trace");
+      return next;
+    });
+  }
+
   // Live status: driven by the newest loaded event when pinned to now — the
   // same freshness convention as the ingestion ledger's LiveStatusBadge.
   const latestReceivedAt = isLoading ? undefined : (events[0]?.timestamp ?? null);
@@ -218,6 +228,28 @@ export default function TimelinePage() {
       />
 
       <DispatchSurface className="space-y-4">
+        {trace && (
+          <section
+            className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border border-border rounded bg-muted/10 px-3 py-2"
+            aria-label="Trace scope"
+            data-testid="trace-scope-banner"
+          >
+            <p className="font-mono text-[11px] text-muted-foreground">
+              Scoped to trace <span className="text-foreground">{trace}</span>. Matching sessions
+              and trace-attributed notifications.
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={clearTraceScope}
+              className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
+            >
+              Clear trace filter
+            </Button>
+          </section>
+        )}
+
         {hasDegradedSource && (
           <p
             className="font-mono text-[11px] text-[var(--amber-text)] border border-[var(--amber)]/30 bg-[var(--amber)]/5 rounded px-3 py-1.5"

@@ -275,6 +275,14 @@ async def list_timeline(
     limit: int = Query(50, ge=1, le=200, description="Max events to return"),
     butler: list[str] | None = Query(None, description="Filter by butler name(s)"),
     event_type: list[str] | None = Query(None, description="Filter by event type(s)"),
+    trace: str | None = Query(
+        None,
+        description=(
+            "Filter to events carrying this OpenTelemetry trace ID. "
+            "Trace-scoped results include matching sessions and notifications "
+            "that carry the trace."
+        ),
+    ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> TimelineResponse:
     """Return a cursor-paginated cross-butler event stream.
@@ -296,6 +304,10 @@ async def list_timeline(
     ``error`` can reach every error, not just those among the newest
     unfiltered page.
 
+    ``trace`` filters both sessions and notifications by OpenTelemetry trace
+    ID, so the trace scope never mixes unrelated timeline rows into the
+    response.
+
     ``meta.degraded_sources`` lists any of ``sessions``/``notifications``
     whose query failed this request — the returned page for that source is
     then a partial, not a truthful empty, result (mirrors the
@@ -308,6 +320,8 @@ async def list_timeline(
             before_ts, before_id = decode_cursor(before)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid 'before' cursor: {exc}") from exc
+
+    trace_id = trace.strip() if trace is not None and trace.strip() else None
 
     # Determine which event sources/types to query.
     want_session_type = event_type is None or "session" in event_type
@@ -349,6 +363,7 @@ async def list_timeline(
             limit=limit + 1,
             butler_names=target_butlers,
             only_errors=only_errors,
+            trace_id=trace_id,
         )
         if degraded_butlers:
             logger.warning("Timeline session fan-out degraded for butlers: %s", degraded_butlers)
@@ -368,6 +383,7 @@ async def list_timeline(
                 limit=limit + 1,
                 source_butlers=target_butlers,
                 only_failed=only_failed_notifications,
+                trace_id=trace_id,
             )
             for dto in notif_dtos:
                 events.append(_notification_dto_to_event(dto))

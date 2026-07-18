@@ -72,6 +72,14 @@ def _uuid7_string() -> str:
     return str(uuid.UUID(int=value))
 
 
+def _current_trace_id() -> str | None:
+    """Return the active OpenTelemetry trace ID in the persisted text format."""
+    current_span = trace.get_current_span()
+    if current_span and current_span.get_span_context().trace_id:
+        return format(current_span.get_span_context().trace_id, "032x")
+    return None
+
+
 def _default_notify_request_context(source_butler: str) -> RouteRequestContextV1:
     return RouteRequestContextV1.model_validate(
         {
@@ -269,6 +277,7 @@ async def _deliver_via_notify_request(
             status="failed",
             error=error_msg,
             session_id=session_id,
+            trace_id=_current_trace_id(),
         )
         result: dict[str, Any] = {
             "notification_id": notification_id,
@@ -300,6 +309,7 @@ async def _deliver_via_notify_request(
             status="failed",
             error=error_msg,
             session_id=session_id,
+            trace_id=_current_trace_id(),
         )
         return {
             "notification_id": notification_id,
@@ -308,11 +318,6 @@ async def _deliver_via_notify_request(
             "error_class": error_class,
             "retryable": retryable,
         }
-
-    current_trace_id = None
-    current_span = trace.get_current_span()
-    if current_span and current_span.get_span_context().trace_id:
-        current_trace_id = format(current_span.get_span_context().trace_id, "032x")
 
     notification_id = await log_notification(
         pool,
@@ -323,7 +328,7 @@ async def _deliver_via_notify_request(
         metadata=log_metadata,
         status="sent",
         session_id=session_id,
-        trace_id=current_trace_id,
+        trace_id=_current_trace_id(),
     )
 
     # Write outbound row to message_inbox so it appears in conversation history.
@@ -477,6 +482,7 @@ async def deliver(
                 status="failed",
                 error=error_msg,
                 session_id=session_id,
+                trace_id=_current_trace_id(),
             )
             return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
@@ -496,6 +502,7 @@ async def deliver(
                 status="failed",
                 error=error_msg,
                 session_id=session_id,
+                trace_id=_current_trace_id(),
             )
             return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
@@ -536,18 +543,13 @@ async def deliver(
                 status="failed",
                 error=error_msg,
                 session_id=session_id,
+                trace_id=_current_trace_id(),
             )
             return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
         span.set_attribute("target_butler", target_butler)
 
         # 5. Determine success and log
-        # Extract trace_id from current span context if available
-        current_trace_id = None
-        current_span = trace.get_current_span()
-        if current_span and current_span.get_span_context().trace_id:
-            current_trace_id = format(current_span.get_span_context().trace_id, "032x")
-
         notification_id = await log_notification(
             pool,
             source_butler=source_butler,
@@ -557,7 +559,7 @@ async def deliver(
             metadata=metadata,
             status="sent",
             session_id=session_id,
-            trace_id=current_trace_id,
+            trace_id=_current_trace_id(),
         )
 
         return {

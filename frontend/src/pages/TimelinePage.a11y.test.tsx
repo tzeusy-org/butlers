@@ -90,12 +90,15 @@ function setSupportingHookMocks(): void {
   } as unknown as ReturnType<typeof useDeleteTimelineSavedView>);
 }
 
-async function checkA11y(partial: Partial<UseTimelineLedgerResult>): Promise<void> {
+async function checkA11y(
+  partial: Partial<UseTimelineLedgerResult>,
+  initialEntry = "/timeline",
+): Promise<void> {
   setLedger(partial);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const { container } = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/timeline"]}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <TimelinePage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -136,5 +139,11 @@ describe("a11y (real page): Timeline empty state", () => {
 describe("a11y (real page): Timeline populated state", () => {
   it("has zero axe violations", { timeout: CONTENDED_AXE_TIMEOUT_MS }, async () => {
     await checkA11y({ events: [makeEvent()] });
+  });
+});
+
+describe("a11y (real page): Timeline trace scope", () => {
+  it("has zero axe violations", { timeout: CONTENDED_AXE_TIMEOUT_MS }, async () => {
+    await checkA11y({}, "/timeline?trace=trace-001");
   });
 });

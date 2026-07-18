@@ -20,14 +20,11 @@ import { formatDurationMs } from "@/lib/format-duration";
 // process_log despite the store carrying all of them (SessionDetailPage.tsx:
 // 134-263 vs types.ts:221-268).
 //
-// Evidence links: trace_id -> the ingestion timeline pre-filtered to that
-// trace (the trace drill-down spine, bu-86c4c.3 — genuinely backend-filtered,
-// unlike a `/timeline` deep link, which has no trace_id predicate on
-// GET /api/timeline today); request_id -> /sessions?request=, the existing
-// SessionsPage request-id filter; parent_session_id -> the parent's own
-// dossier. process_log.stderr/exit_code are surfaced as the named root
-// evidence for failures instead of being dropped entirely (the drawer used to
-// show only process_log.runtime_type).
+// Evidence links: trace_id -> the fleet timeline pre-filtered to that trace;
+// request_id -> /sessions?request=, the existing SessionsPage request-id
+// filter; parent_session_id -> the parent's own dossier. process_log.stderr/
+// exit_code are surfaced as the named root evidence for failures instead of
+// being dropped entirely (the drawer used to show only process_log.runtime_type).
 // ---------------------------------------------------------------------------
 
 export interface SessionDossierProps {
@@ -321,11 +318,8 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
         </section>
       )}
 
-      {/* Trace ID — the trace drill-down spine (bu-86c4c.3). Links to the
-          ingestion timeline pre-filtered by trace_id, which is genuinely
-          backend-filtered; GET /api/timeline (the fleet chronicle) has no
-          trace_id predicate today, so this intentionally does not link
-          there — see the bu-qvnce.5 worker report for the follow-up. */}
+      {/* Trace ID — the trace drill-down spine. The fleet timeline is
+          backend-filtered before this link points to it. */}
       {session.trace_id != null && (
         <section>
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
@@ -333,7 +327,7 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
           </h3>
           <div className="flex items-center gap-2">
             <Link
-              to={`/ingestion?trace=${encodeURIComponent(session.trace_id)}`}
+              to={`/timeline?trace=${encodeURIComponent(session.trace_id)}`}
               className="text-xs font-mono text-primary underline underline-offset-2 hover:text-primary/80 transition-colors truncate max-w-[200px]"
             >
               {session.trace_id}
