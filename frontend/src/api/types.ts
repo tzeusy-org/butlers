@@ -3090,6 +3090,22 @@ export interface ApprovalRule {
   active: boolean;
 }
 
+/** A configured approval gate, including the rules that narrow it. */
+export interface ApprovalGatedTool {
+  butler: string;
+  tool_name: string;
+  risk_tier: "low" | "medium" | "high" | "critical";
+  expiry_hours: number;
+  active_rules: ApprovalRule[];
+}
+
+export interface RuleConstraintSuggestion {
+  action_id: string;
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+  suggested_constraints: Record<string, unknown>;
+}
+
 export interface ApprovalMetrics {
   total_pending: number;
   total_approved_today: number;
@@ -3127,6 +3143,11 @@ export interface ApprovalRuleCreateRequest {
   max_uses?: number | null;
 }
 
+export interface ApprovalRuleFromActionRequest {
+  action_id: string;
+  constraint_overrides?: Record<string, unknown> | null;
+}
+
 export interface AutonomySuggestionVelocity {
   avg_seconds?: number | null;
   sample_count: number;
@@ -3136,6 +3157,7 @@ export interface AutonomySuggestionVelocity {
 
 export interface AutonomySuggestion {
   id: string;
+  action_id?: string | null;
   suggestion_type: "promotion" | "demotion";
   pattern_fingerprint: string;
   fingerprint_version: number;

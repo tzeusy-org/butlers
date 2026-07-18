@@ -11,15 +11,18 @@ import type {
   ApprovalDeferRequest,
   ApprovalDenyRequest,
   ApprovalDetail,
+  ApprovalGatedTool,
   ApprovalMetrics,
   ApprovalRule,
   ApprovalRuleCreateRequest,
+  ApprovalRuleFromActionRequest,
   ApprovalRuleParams,
   ApprovalsListResponse,
   ApprovalsPolicy,
   AutonomySuggestion,
   AutonomySuggestionDismissRequest,
   AutonomySuggestionParams,
+  RuleConstraintSuggestion,
   ApiResponse,
   AuditLogEntry,
   AuditLogParams,
@@ -3314,10 +3317,32 @@ export function getApprovalRules(
   );
 }
 
+export function getApprovalGatedTools(): Promise<ApiResponse<ApprovalGatedTool[]>> {
+  return apiFetch<ApiResponse<ApprovalGatedTool[]>>("/approvals/gated-tools");
+}
+
 export function createApprovalRule(
   request: ApprovalRuleCreateRequest,
 ): Promise<ApiResponse<ApprovalRule>> {
   return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export function getApprovalRuleSuggestions(
+  actionId: string,
+): Promise<ApiResponse<RuleConstraintSuggestion>> {
+  return apiFetch<ApiResponse<RuleConstraintSuggestion>>(
+    `/approvals/rules/suggestions/${encodeURIComponent(actionId)}`,
+  );
+}
+
+export function createApprovalRuleFromAction(
+  request: ApprovalRuleFromActionRequest,
+): Promise<ApiResponse<ApprovalRule>> {
+  return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules/from-action", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),

@@ -279,7 +279,7 @@ class TestApprovalsMigration:
         engine = create_engine(db_url)
         with engine.connect() as conn:
             versions = [r[0] for r in conn.execute(text("SELECT version_num FROM alembic_version"))]
-        assert "approvals_006" in versions
+        assert "approvals_007" in versions
 
         action_id = uuid.uuid4()
         with engine.connect() as conn:
@@ -384,7 +384,7 @@ class TestApprovalsMigration:
 
         assert row["why"] is None
         assert row["evidence"] == "[]"
-        assert "approvals_006" in versions
+        assert "approvals_007" in versions
 
     def test_decision_dossier_migration_converts_legacy_evidence_and_enforces_enums(
         self, postgres_container
@@ -464,7 +464,7 @@ class TestApprovalsMigration:
         ]
         assert row["blast_radius"] is None
         assert row["reversibility"] is None
-        assert "approvals_006" in versions
+        assert "approvals_007" in versions
 
         with pytest.raises(exc.IntegrityError):
             with engine.begin() as conn:

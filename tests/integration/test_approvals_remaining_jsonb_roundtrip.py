@@ -172,6 +172,7 @@ async def approvals_full_pool(provisioned_postgres_pool):
         await pool.execute("""
             CREATE TABLE IF NOT EXISTS autonomy_suggestions (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                action_id UUID REFERENCES pending_actions(id) ON DELETE SET NULL,
                 suggestion_type VARCHAR NOT NULL DEFAULT 'promotion',
                 pattern_fingerprint VARCHAR(64) NOT NULL,
                 tool_name TEXT NOT NULL,
@@ -469,17 +470,24 @@ class TestRepresentativeArgsAndAutonomyHistoryRoundtrip:
     async def test_create_promotion_suggestion_roundtrips_as_dict(
         self, approvals_full_pool
     ) -> None:
+        action_id = await _insert_pending_action(
+            approvals_full_pool,
+            tool_name="email_send",
+            tool_args={"to": "alice@example.com", "nested": {"a": 1}},
+        )
         result = await create_promotion_suggestion(
             approvals_full_pool,
             pattern_fingerprint="fp-1",
             tool_name="email_send",
             representative_args={"to": "alice@example.com", "nested": {"a": 1}},
             approval_count=3,
+            action_id=action_id,
         )
         assert result["id"]
+        assert result["action_id"] == str(action_id)
 
         row = await approvals_full_pool.fetchrow(
-            "SELECT representative_args FROM autonomy_suggestions WHERE tool_name = 'email_send'"
+            "SELECT representative_args, action_id FROM autonomy_suggestions WHERE tool_name = 'email_send'"
         )
         assert row is not None
         stored = row["representative_args"]
@@ -488,6 +496,7 @@ class TestRepresentativeArgsAndAutonomyHistoryRoundtrip:
             "the jsonb column was double-encoded into a string."
         )
         assert stored == {"to": "alice@example.com", "nested": {"a": 1}}
+        assert row["action_id"] == action_id
 
     async def test_create_demotion_suggestion_roundtrips_as_dict(self, approvals_full_pool) -> None:
         action_id = await _insert_pending_action(
@@ -516,7 +525,7 @@ class TestRepresentativeArgsAndAutonomyHistoryRoundtrip:
         assert result["id"]
 
         db_row = await approvals_full_pool.fetchrow(
-            "SELECT representative_args FROM autonomy_suggestions WHERE tool_name = 'telegram_send'"
+            "SELECT representative_args, action_id FROM autonomy_suggestions WHERE tool_name = 'telegram_send'"
         )
         assert db_row is not None
         stored = db_row["representative_args"]
@@ -525,6 +534,7 @@ class TestRepresentativeArgsAndAutonomyHistoryRoundtrip:
             "the jsonb column was double-encoded into a string."
         )
         assert stored == {"chat_id": "999", "text": "hi"}
+        assert db_row["action_id"] == action_id
 
     async def test_record_approval_roundtrips_tool_args_as_dict(self, approvals_full_pool) -> None:
         action_id = await _insert_pending_action(

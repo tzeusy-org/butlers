@@ -208,6 +208,7 @@ async def approve_action(
                 tool_name=action.tool_name,
                 tool_args=action.tool_args,
                 config=_default_config,
+                action_id=updated_action.id,
             )
     except Exception:
         logger.exception(

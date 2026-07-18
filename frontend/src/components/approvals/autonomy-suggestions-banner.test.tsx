@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 
 import type { AutonomySuggestion } from "@/api/types";
 import { AutonomySuggestionsBanner } from "@/components/approvals/autonomy-suggestions-banner.tsx";
@@ -13,6 +14,7 @@ const V2_PROMOTION: AutonomySuggestion = {
   suggestion_type: "promotion",
   pattern_fingerprint: "fingerprint",
   fingerprint_version: 2,
+  action_id: "approval-42",
   tool_name: "send_telegram",
   representative_args: { chat_id: "mom_123" },
   status: "pending",
@@ -25,11 +27,13 @@ const V2_PROMOTION: AutonomySuggestion = {
 describe("AutonomySuggestionsBanner", () => {
   it("explains that a v2 promotion constrains only its safety-critical basis", () => {
     render(
-      <AutonomySuggestionsBanner
-        suggestions={[V2_PROMOTION]}
-        onConfirm={() => {}}
-        onDismiss={() => {}}
-      />,
+      <MemoryRouter>
+        <AutonomySuggestionsBanner
+          suggestions={[V2_PROMOTION]}
+          onConfirm={() => {}}
+          onDismiss={() => {}}
+        />
+      </MemoryRouter>,
     );
 
     expect(
@@ -37,5 +41,21 @@ describe("AutonomySuggestionsBanner", () => {
         "This scope pins only the shown arguments; omitted arguments may vary.",
       ),
     ).toBeTruthy();
+  });
+
+  it("links an evidence-backed suggestion to its originating approval", () => {
+    render(
+      <MemoryRouter>
+        <AutonomySuggestionsBanner
+          suggestions={[V2_PROMOTION]}
+          onConfirm={() => {}}
+          onDismiss={() => {}}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: "Review approval" }).getAttribute("href")).toBe(
+      "/approvals/approval-42",
+    );
   });
 });

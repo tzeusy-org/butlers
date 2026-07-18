@@ -1,39 +1,23 @@
 /**
- * AutonomyPanel — the always-visible ledger of standing autonomy grants.
+ * AutonomyPanel — the always-visible approval-gate baseline.
  *
- * Move 9 of the 2026-07-03 JARVIS audit: `/approvals/rules` was an orphaned
- * CRUD page with zero inbound links anywhere in the product — the owner
- * could not see, audit, or revoke what the fleet may already do without
- * asking. This panel merges that record into `/approvals` itself so trust
- * is never invisible: every active standing rule, its live use count, and a
- * one-keystroke revoke live next to the decision queue they govern.
- *
- * Trust tiers (derived client-side from `arg_constraints`, since the backend
- * does not yet expose an explicit tier):
- *   - "scoped"         — arg_constraints narrows the match (specific values)
- *   - "full autonomy"  — arg_constraints is empty / `{type: "any"}` wildcard
- *
- * NOTE: this panel only lists tools that already HAVE a standing rule. A
- * full "always ask" baseline (every gated tool with zero rules) requires a
- * new backend endpoint enumerating all gated tool types — tracked as a
- * follow-up, not implemented here.
- *
- * bu-86c4c.12
+ * The dashboard must show both standing grants and configured tools that
+ * still require a decision.  A rule-only ledger hides the latter and can
+ * misleadingly imply that an absent tool is ungated.
  */
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getApprovalRules } from "@/api/index.ts";
-import type { ApprovalRule } from "@/api/index.ts";
+import { getApprovalGatedTools } from "@/api/index.ts";
+import type { ApprovalGatedTool, ApprovalRule } from "@/api/index.ts";
 import { approvalKeys, useRevokeRule } from "@/hooks/use-approvals.ts";
-import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
+import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { CreateRuleDialog } from "@/components/approvals/create-rule-dialog.tsx";
 
-const RULES_LIMIT = 100;
-// Live use counts: poll on a short interval so a revoke or a fresh
-// auto-approval elsewhere shows up here without a manual refresh.
-const RULES_REFETCH_MS = 20_000;
+// Live use counts: reconcile periodically so grants created or revoked
+// elsewhere appear without requiring a page reload.
+const GATED_TOOLS_REFETCH_MS = 20_000;
 
 function fmtTs(iso: string | null | undefined): string {
   if (!iso) return "—";
@@ -62,10 +46,6 @@ function tierClass(tier: "full autonomy" | "scoped"): string {
     : "text-blue-600 dark:text-blue-400";
 }
 
-// ---------------------------------------------------------------------------
-// RuleRow — one standing grant, with inline (non-window.confirm) revoke.
-// ---------------------------------------------------------------------------
-
 function RuleRow({ rule }: { rule: ApprovalRule }) {
   const [confirming, setConfirming] = useState(false);
   const revokeMut = useRevokeRule();
@@ -73,26 +53,11 @@ function RuleRow({ rule }: { rule: ApprovalRule }) {
   const nearMaxUses = rule.max_uses != null && rule.use_count >= rule.max_uses;
 
   return (
-    <div className="py-2.5 border-b border-border/50 last:border-b-0">
+    <div className="mt-2 border-t border-border/50 pt-2">
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-xs text-foreground truncate">
-          {rule.tool_name}
-        </span>
-        <span className={`font-mono text-[10px] uppercase tracking-wider shrink-0 ${tierClass(tier)}`}>
+        <span className={`font-mono text-[10px] uppercase tracking-wider ${tierClass(tier)}`}>
           {tier}
         </span>
-      </div>
-      <div className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
-        {rule.description}
-      </div>
-      <div className="mt-1.5 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
-          <span className={nearMaxUses ? "text-[var(--amber-text)] font-medium" : undefined}>
-            {rule.use_count} use{rule.use_count === 1 ? "" : "s"}
-            {rule.max_uses != null ? ` / ${rule.max_uses}` : ""}
-          </span>
-          {rule.expires_at && <span>· expires {fmtTs(rule.expires_at)}</span>}
-        </div>
         {!confirming ? (
           <button
             onClick={() => setConfirming(true)}
@@ -121,36 +86,68 @@ function RuleRow({ rule }: { rule: ApprovalRule }) {
           </div>
         )}
       </div>
+      <div className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
+        {rule.description}
+      </div>
+      <div className="mt-1 font-mono text-[10px] text-muted-foreground">
+        <span className={nearMaxUses ? "text-[var(--amber-text)] font-medium" : undefined}>
+          {rule.use_count} use{rule.use_count === 1 ? "" : "s"}
+          {rule.max_uses != null ? ` / ${rule.max_uses}` : ""}
+        </span>
+        {rule.expires_at && <span> · expires {fmtTs(rule.expires_at)}</span>}
+      </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// AutonomyPanel — grouped by butler, always visible.
-// ---------------------------------------------------------------------------
+function ToolRow({
+  tool,
+  ruleStateUnavailable,
+}: {
+  tool: ApprovalGatedTool;
+  ruleStateUnavailable: boolean;
+}) {
+  const ruleCount = tool.active_rules.length;
+  const status = ruleStateUnavailable
+    ? "rule state unavailable"
+    : ruleCount === 0
+      ? "always ask"
+      : `${ruleCount} standing rule${ruleCount === 1 ? "" : "s"}`;
+
+  return (
+    <div className="py-2.5 border-b border-border/50 last:border-b-0">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-xs text-foreground truncate">
+          {tool.butler} · {tool.tool_name}
+        </span>
+        <span className="font-mono text-[10px] uppercase tracking-wider shrink-0 text-muted-foreground">
+          {tool.risk_tier}
+        </span>
+      </div>
+      <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] font-mono text-muted-foreground">
+        <span className={status === "always ask" ? "text-[var(--amber-text)]" : undefined}>
+          {status}
+        </span>
+        <span>expires in {tool.expiry_hours}h</span>
+      </div>
+      {!ruleStateUnavailable && tool.active_rules.map((rule) => <RuleRow key={rule.id} rule={rule} />)}
+    </div>
+  );
+}
 
 export function AutonomyPanel() {
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
-  const params = { active: true, limit: RULES_LIMIT };
-
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: approvalKeys.rules(params),
-    queryFn: () => getApprovalRules(params),
-    refetchInterval: RULES_REFETCH_MS,
+    queryKey: approvalKeys.gatedTools(),
+    queryFn: getApprovalGatedTools,
+    refetchInterval: GATED_TOOLS_REFETCH_MS,
   });
 
-  const rules = data?.data ?? [];
-  const byButler = new Map<string, ApprovalRule[]>();
-  for (const rule of rules) {
-    // ApprovalRule has no butler field today (rules are tool-scoped, not
-    // butler-scoped) — group under a single "standing rules" bucket rather
-    // than fabricate a per-butler split the data does not support.
-    const key = "standing rules";
-    const list = byButler.get(key) ?? [];
-    list.push(rule);
-    byButler.set(key, list);
-  }
+  const gatedTools = data?.data ?? [];
+  const degradedSources = new Set(
+    (data?.meta?.sources_degraded as string[] | undefined) ?? [],
+  );
 
   return (
     <div
@@ -175,31 +172,40 @@ export function AutonomyPanel() {
       </div>
 
       <div className="px-4 py-3 flex-1">
+        {degradedSources.size > 0 && (
+          <SourceDegradedNote
+            label="Approval-gate baseline"
+            detail={`${[...degradedSources].join(", ")} unavailable. Gate inventory may be incomplete.`}
+            onRetry={() => void refetch()}
+            className="mb-3"
+          />
+        )}
         <QueryBoundary
           isLoading={isLoading}
           isError={isError}
           error={error}
-          isEmpty={rules.length === 0}
+          isEmpty={gatedTools.length === 0}
           onRetry={() => void refetch()}
-          sourceLabel="standing autonomy rules"
+          sourceLabel="approval-gate baseline"
           loadingFallback={
             <div className="text-xs text-muted-foreground font-mono">loading…</div>
           }
           emptyFallback={
-            <div className="text-xs text-muted-foreground">
-              No standing rules. Every action requires manual approval.
-            </div>
+            degradedSources.size === 0 ? (
+              <div className="text-xs text-muted-foreground">
+                No approval-gated tools are configured.
+              </div>
+            ) : null
           }
         >
-          {[...byButler.entries()].map(([group, groupRules]) => (
-            <div key={group}>
-              <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
-                {group} ({groupRules.length})
-              </div>
-              {groupRules.map((rule) => (
-                <RuleRow key={rule.id} rule={rule} />
-              ))}
-            </div>
+          {gatedTools.map((tool) => (
+            <ToolRow
+              key={`${tool.butler}:${tool.tool_name}`}
+              tool={tool}
+              ruleStateUnavailable={
+                degradedSources.has(tool.butler) || degradedSources.has("approval_rules")
+              }
+            />
           ))}
         </QueryBoundary>
       </div>
@@ -208,7 +214,10 @@ export function AutonomyPanel() {
         open={createOpen}
         onOpenChange={(open) => {
           setCreateOpen(open);
-          if (!open) qc.invalidateQueries({ queryKey: approvalKeys.rules() });
+          if (!open) {
+            void qc.invalidateQueries({ queryKey: approvalKeys.rules() });
+            void qc.invalidateQueries({ queryKey: approvalKeys.gatedTools() });
+          }
         }}
       />
     </div>

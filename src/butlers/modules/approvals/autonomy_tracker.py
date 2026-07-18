@@ -189,6 +189,7 @@ async def check_promotion_threshold(
     tool_args: dict[str, Any],
     config: Any,
     *,
+    action_id: uuid.UUID | None = None,
     tool_meta: ToolMeta | None = None,
     fingerprint_version: int = FINGERPRINT_VERSION,
 ) -> None:
@@ -288,6 +289,7 @@ async def check_promotion_threshold(
         tool_name=tool_name,
         representative_args=pattern_args,
         approval_count=count,
+        action_id=action_id,
         fingerprint_version=fingerprint_version,
     )
 

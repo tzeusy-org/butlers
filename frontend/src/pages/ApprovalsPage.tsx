@@ -71,6 +71,7 @@ import {
   useSetRulePromotionRuleEnabled,
 } from "@/hooks/use-rule-promotions.ts";
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
+import { ApprovalTeachingDigest } from "@/components/approvals/approval-teaching-digest.tsx";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
@@ -1321,6 +1322,7 @@ export default function ApprovalsPage() {
   const { id: routeId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [pendingLimit, setPendingLimit] = useState<number>(PENDING_PAGE_SIZE);
+  const [teachingActionId, setTeachingActionId] = useState<string | null>(null);
 
   // Live updates come from the shared fleet event bus (bu-86c4c.8, wired
   // app-wide via RootLayout's EventBusProvider, bu-qvnce.14) — its
@@ -1432,7 +1434,14 @@ export default function ApprovalsPage() {
     onDecided: advanceSelectionPast,
     undoWindow: true,
   });
-  const approve = approveMut.mutate;
+  const approve = useCallback(
+    (actionId: string) => {
+      approveMut.mutate(actionId, {
+        onSuccess: () => setTeachingActionId(actionId),
+      });
+    },
+    [approveMut],
+  );
   const deny = denyMut.mutate;
   const defer = deferMut.mutate;
 
@@ -1571,11 +1580,11 @@ export default function ApprovalsPage() {
         id: "approve-next",
         label: "Approve next",
         keywords: ["approval", "queue"],
-        perform: () => approveMut.mutate(effectiveSelected),
+        perform: () => approve(effectiveSelected),
         binding: ["a"],
       },
     ];
-  }, [effectiveSelected, approveMut]);
+  }, [approve, effectiveSelected]);
   useRegisterCommands(commandMenuCommands);
 
   return (
@@ -1608,6 +1617,12 @@ export default function ApprovalsPage() {
       <AutonomySuggestionsSection />
       <RulePromotionSection />
       <RulePromotionStatsSection />
+      {teachingActionId && (
+        <ApprovalTeachingDigest
+          actionId={teachingActionId}
+          onDismiss={() => setTeachingActionId(null)}
+        />
+      )}
 
       {/* Two-pane body */}
       <div
@@ -1687,7 +1702,7 @@ export default function ApprovalsPage() {
           <Dossier
             key={effectiveSelected}
             actionId={effectiveSelected}
-            onApprove={() => approveMut.mutate(effectiveSelected)}
+            onApprove={() => approve(effectiveSelected)}
             onDeny={(reason) => denyMut.mutate({ id: effectiveSelected, reason })}
             onDefer={(hours) => deferMut.mutate({ id: effectiveSelected, hours })}
             // Scoped to THIS approval's id, not just "some mutation of this

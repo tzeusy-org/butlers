@@ -43,6 +43,7 @@ from butlers.api.models.approval import (
     ApprovalDeferRequest,
     ApprovalDenyRequest,
     ApprovalDetail,
+    ApprovalGatedTool,
     ApprovalMetrics,
     ApprovalRule,
     ApprovalRuleCreateRequest,
@@ -68,6 +69,7 @@ from butlers.modules.approvals.models import (
 from butlers.modules.approvals.models import (
     PendingAction,
 )
+from butlers.modules.approvals.rules import is_rule_effective
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
 from butlers.modules.base import ToolMeta
 
@@ -517,6 +519,31 @@ def _approval_rule_to_api(rule: ApprovalRuleModel) -> ApprovalRule:
         use_count=rule.use_count,
         active=rule.active,
     )
+
+
+def _configured_gated_tools_for(butler_name: str) -> list[tuple[str, str, int]]:
+    """Return the configured approval-gate baseline for one butler.
+
+    The roster, rather than the ``approval_rules`` table, owns the complete
+    inventory of tools that must ask.  Rules only narrow that baseline, so a
+    tool with no matching row remains visible to callers.
+    """
+    from butlers.api.deps import _DEFAULT_ROSTER_DIR
+    from butlers.config import load_config, parse_approval_config
+
+    config = load_config(_DEFAULT_ROSTER_DIR / butler_name)
+    approval_config = parse_approval_config(config.modules.get("approvals"))
+    if approval_config is None or not approval_config.enabled:
+        return []
+
+    return [
+        (
+            tool_name,
+            approval_config.get_effective_risk_tier(tool_name).value,
+            approval_config.get_effective_expiry(tool_name),
+        )
+        for tool_name in sorted(approval_config.gated_tools)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1316,6 +1343,77 @@ async def list_rules(
     )
 
 
+@router.get("/gated-tools")
+async def list_gated_tools(
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ApprovalGatedTool]]:
+    """List every configured approval gate with its active narrowing rules.
+
+    The response intentionally includes configured tools with no active rule:
+    those are the owner's concrete "always ask" baseline.  A source that
+    cannot be read is named in ``meta.sources_degraded`` instead of being
+    presented as a trustworthy empty rule set.
+    """
+    tracker = DegradedSources(logger)
+    configured: dict[str, list[tuple[str, str, int]]] = {}
+
+    for butler_name in sorted(db_mgr.butler_names):
+        try:
+            gates = _configured_gated_tools_for(butler_name)
+        except Exception:  # noqa: BLE001 -- surface config failure in the envelope
+            tracker.mark(butler_name, msg="Could not load approval gate configuration")
+            continue
+        if gates:
+            configured[butler_name] = gates
+
+    rules_by_gate: dict[tuple[str, str], list[ApprovalRule]] = {
+        (butler_name, tool_name): []
+        for butler_name, gates in configured.items()
+        for tool_name, _risk_tier, _expiry_hours in gates
+    }
+
+    try:
+        named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
+    except Exception:  # noqa: BLE001 -- preserve baseline and name the failure
+        tracker.mark("approval_rules", msg="Could not discover approval rule sources")
+        named_pools = []
+
+    now = datetime.now(UTC)
+    for butler_name, pool in named_pools:
+        if butler_name not in configured:
+            continue
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT * FROM approval_rules WHERE active = true ORDER BY created_at DESC"
+                )
+            for row in rows:
+                rule_model = ApprovalRuleModel.from_row(row)
+                if not is_rule_effective(rule_model, now=now):
+                    continue
+                rule = _approval_rule_to_api(rule_model)
+                key = (butler_name, rule.tool_name)
+                if key in rules_by_gate:
+                    rules_by_gate[key].append(rule)
+        except Exception:  # noqa: BLE001 -- partial fan-out is explicit to the caller
+            tracker.mark(butler_name, msg="Could not load approval rules")
+
+    gated_tools = [
+        ApprovalGatedTool(
+            butler=butler_name,
+            tool_name=tool_name,
+            risk_tier=risk_tier,
+            expiry_hours=expiry_hours,
+            active_rules=rules_by_gate[(butler_name, tool_name)],
+        )
+        for butler_name, gates in configured.items()
+        for tool_name, risk_tier, expiry_hours in gates
+    ]
+
+    meta = ApiMeta(sources_degraded=tracker.names) if tracker.failed else ApiMeta()
+    return ApiResponse(data=gated_tools, meta=meta)
+
+
 @router.get("/rules/{rule_id}")
 async def get_rule(
     rule_id: str,
@@ -1417,9 +1515,10 @@ async def get_rule_suggestions(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
 
-    target_pool = await _find_action_pool(db_mgr, parsed_id)
-    if target_pool is None:
+    found = await _find_action_pool(db_mgr, parsed_id)
+    if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+    _action_butler, target_pool = found
 
     async with target_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
@@ -1840,6 +1939,7 @@ def _row_to_autonomy_suggestion(row: dict) -> AutonomySuggestion:
 
     return AutonomySuggestion(
         id=str(row["id"]),
+        action_id=str(row["action_id"]) if row.get("action_id") else None,
         suggestion_type=row.get("suggestion_type") or "promotion",
         pattern_fingerprint=row["pattern_fingerprint"],
         fingerprint_version=fingerprint_version,

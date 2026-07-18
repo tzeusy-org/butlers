@@ -177,9 +177,11 @@ def _app_with_two_butlers(app, *, home_rows=None, general_rows=None, fetchval_re
 
 
 def test_v2_suggestion_api_explains_its_safety_critical_scope():
+    action_id = uuid4()
     suggestion = _row_to_autonomy_suggestion(
         {
             "id": uuid4(),
+            "action_id": action_id,
             "suggestion_type": "promotion",
             "pattern_fingerprint": "fingerprint",
             "fingerprint_version": 2,
@@ -192,6 +194,7 @@ def test_v2_suggestion_api_explains_its_safety_critical_scope():
     )
 
     assert suggestion.fingerprint_version == 2
+    assert suggestion.action_id == str(action_id)
     assert suggestion.representative_args == {"chat_id": "mom_123"}
     assert "shown arguments are exactly pinned" in suggestion.scope_description
     assert "omitted arguments may vary" in suggestion.scope_description
@@ -450,7 +453,7 @@ def _make_rule(*, tool_name="send_email", active=True):
     }
 
 
-def _rules_app_with_capture(app, *, rows):
+def _rules_app_with_capture(app, *, rows, butler_name="general"):
     """Mock DB for /rules that records the SQL + args passed to fetch/fetchval."""
     captured: dict[str, object] = {}
     mock_conn = AsyncMock()
@@ -485,7 +488,7 @@ def _rules_app_with_capture(app, *, rows):
     mock_pool.acquire = MagicMock(return_value=_MockAcquire())
 
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.butler_names = ["general"]
+    mock_db.butler_names = [butler_name]
     mock_db.pool.return_value = mock_pool
 
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -629,6 +632,82 @@ async def test_list_rules_unknown_butler_returns_empty(app):
     body = resp.json()
     assert body["data"] == []
     assert body["meta"]["total"] == 0
+
+
+async def test_gated_tools_lists_configured_tools_even_when_they_have_no_rules(app):
+    """The autonomy baseline must show every configured gate, not only grants."""
+    active_notify_rule = _make_rule(tool_name="notify")
+    app, _ = _rules_app_with_capture(
+        app,
+        rows=[active_notify_rule],
+        butler_name="messenger",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/gated-tools")
+
+    assert response.status_code == 200, response.text
+    tools = {(item["butler"], item["tool_name"]): item for item in response.json()["data"]}
+
+    # Messenger's real roster config is the authoritative gate inventory.
+    assert ("messenger", "notify") in tools
+    assert ("messenger", "telegram_reply_to_message") in tools
+    assert tools[("messenger", "notify")]["risk_tier"] == "medium"
+    assert tools[("messenger", "notify")]["active_rules"][0]["id"] == str(active_notify_rule["id"])
+    # A zero-rule tool is still visible as an always-ask boundary.
+    assert tools[("messenger", "telegram_reply_to_message")]["active_rules"] == []
+
+
+async def test_gated_tools_excludes_expired_and_exhausted_rules(app):
+    """The autonomy ledger only counts rules that can still auto-approve."""
+    expired = _make_rule(tool_name="notify")
+    expired["expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
+
+    exhausted = _make_rule(tool_name="notify")
+    exhausted["max_uses"] = 3
+    exhausted["use_count"] = 3
+
+    app, _ = _rules_app_with_capture(
+        app,
+        rows=[expired, exhausted],
+        butler_name="messenger",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/gated-tools")
+
+    assert response.status_code == 200, response.text
+    tools = {(item["butler"], item["tool_name"]): item for item in response.json()["data"]}
+    assert tools[("messenger", "notify")]["active_rules"] == []
+
+
+async def test_rule_suggestions_for_found_action_returns_redacted_scope(app):
+    """A teaching digest can safely preview a found action's suggested rule."""
+    action = _make_action(tool_name="send_email")
+    action["tool_args"] = {
+        "recipient": "private@example.com",
+        "subject": "A sensitive subject stays visible",
+    }
+    app, _ = _app_with_mock_db(app, fetchrow_return=action)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/approvals/rules/suggestions/{action['id']}")
+
+    assert response.status_code == 200, response.text
+    suggestion = response.json()["data"]
+    assert suggestion["action_id"] == str(action["id"])
+    assert suggestion["tool_args"]["recipient"] == "[REDACTED]"
+    assert suggestion["suggested_constraints"]["recipient"] == {
+        "type": "exact",
+        "value": "[REDACTED]",
+    }
+    assert suggestion["suggested_constraints"]["subject"] == {"type": "any"}
 
 
 # ---------------------------------------------------------------------------
