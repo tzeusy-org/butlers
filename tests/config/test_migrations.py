@@ -13,7 +13,12 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from alembic import command
-from butlers.testing.migration import create_migration_db, migration_db_name, table_exists
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    create_migration_db,
+    migration_db_name,
+    table_exists,
+)
 
 # Skip all tests if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -211,6 +216,39 @@ def test_core_migrations_tables_schemas_and_idempotency(postgres_container):
     expected_owner = _current_user(db_url)
     for schema in REQUIRED_SCHEMAS:
         assert _schema_owner(db_url, schema) == expected_owner
+
+
+def test_core_only_migrations_keep_session_stubs_in_sync(postgres_container):
+    """Core-only test provisioning keeps every QA sessions stub schema-compatible.
+
+    ``core_055`` creates these schema-qualified tables for the QA UNION view
+    during a default ``core`` run.  Later per-schema migrations can use bare
+    ``ALTER TABLE sessions`` statements, which resolve only to
+    ``public.sessions`` in this provisioning mode.  Column parity makes that
+    drift visible instead of leaving a partial test database behind.
+    """
+    db_url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+    table_columns = _get_table_columns_sql(db_url)
+    public_columns = table_columns["public.sessions"]
+
+    assert {"cached_input_tokens", "cache_creation_tokens"} <= public_columns
+
+    session_stubs = {
+        table_name: columns
+        for table_name, columns in table_columns.items()
+        if table_name != "public.sessions" and table_name.endswith(".sessions")
+    }
+    assert session_stubs, "core-only provisioning must create QA sessions stubs"
+
+    drift = {}
+    for table_name, stub_columns in session_stubs.items():
+        if stub_columns != public_columns:
+            drift[table_name.removesuffix(".sessions")] = {
+                "missing": sorted(public_columns - stub_columns),
+                "unexpected": sorted(stub_columns - public_columns),
+            }
+
+    assert drift == {}, f"core-only sessions stub drift: {drift}"
 
 
 def test_core_migrations_seed_permissions_vocabulary(postgres_container):

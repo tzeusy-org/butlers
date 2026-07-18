@@ -244,6 +244,10 @@ def upgrade() -> None:
     #     IF NOT EXISTS makes this a no-op once the real table is present.
     # ----------------------------------------------------------------------- #
     for schema in _SESSION_SCHEMAS:
+        # Keep this compatibility shape in sync with later bare
+        # ``ALTER TABLE sessions`` revisions.  A default core-only test run
+        # applies those revisions to public.sessions, so the stubs need the
+        # same columns for schema-faithful provisioning.
         op.execute(f"""
             CREATE TABLE IF NOT EXISTS {schema}.sessions (
                 id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -260,6 +264,8 @@ def upgrade() -> None:
                 cost                JSONB,
                 input_tokens        INTEGER,
                 output_tokens       INTEGER,
+                cached_input_tokens INTEGER,
+                cache_creation_tokens INTEGER,
                 parent_session_id   UUID,
                 ingestion_event_id  UUID,
                 complexity          TEXT DEFAULT 'medium',
