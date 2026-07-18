@@ -70,10 +70,12 @@ Bounded scan windows
 The candidate scan is bounded to ``routing_verdict_log`` rows with
 ``verdict_source='llm'`` within a lookback window (default 30 days, via the
 ``ix_routing_verdict_log_llm_only`` partial index), not the full table
-history. Per-candidate evidence lookups are ``LIMIT``-bounded to the
-configured threshold and use the ``(sender_key, source_channel,
-decided_at DESC)`` index. Nothing in this module does an unbounded table
-scan on every run.
+history. Pending promotion suggestions form a separate, indexed lifecycle
+worklist so they can still be reconciled if their original evidence ages out
+of that lookback. Per-candidate evidence lookups are ``LIMIT``-bounded to the
+configured threshold and use the ``(sender_key, source_channel, decided_at
+DESC)`` index. Nothing in this module scans the full verdict history on every
+run.
 """
 
 from __future__ import annotations
@@ -306,16 +308,22 @@ class PromotionTriggerResult:
 
 
 async def _fetch_candidates(pool: asyncpg.Pool, *, since: datetime) -> list[asyncpg.Record]:
-    """Distinct (sender_key, source_channel) pairs with recent LLM verdicts.
+    """Distinct (sender_key, source_channel) pairs that need reconciliation.
 
-    Bounded by the lookback window and the ``verdict_source='llm'`` partial
-    index — not a full-table scan.
+    Recent LLM verdicts drive new promotions and evidence bumps, bounded by
+    the lookback window and the ``verdict_source='llm'`` partial index. The
+    pending-promotion worklist uses its own partial unique index so an older
+    still-actionable suggestion remains eligible for a coverage recheck.
     """
     return await pool.fetch(
         """
-        SELECT DISTINCT sender_key, source_channel
+        SELECT sender_key, source_channel
         FROM switchboard.routing_verdict_log
         WHERE verdict_source = 'llm' AND decided_at >= $1
+        UNION
+        SELECT sender_key, source_channel
+        FROM switchboard.rule_promotion_suggestions
+        WHERE status = 'pending_review' AND suggestion_kind = 'promotion'
         """,
         since,
     )
