@@ -26,7 +26,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 
-import { DEFAULT_TZ, formatScrubberLabel } from "@/components/chronicles/tz-format"
+import { DEFAULT_TZ, formatScrubberLabel } from "@/lib/tz-format"
 import { snapToNearest } from "./scrubber-utils"
 
 // ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ import {
   useChroniclesTrends,
   useChroniclesWhoYouWereWith,
 } from "@/hooks/use-chronicles";
-import { dayWindowInTz } from "@/components/chronicles/tz-format";
+import { dayWindowInTz } from "@/lib/tz-format";
 import { Section } from "@/components/overview/Section";
 import { Scrubber } from "@/components/workspace/Scrubber";
 import { MapPanContext, useMapPanContextValue } from "@/components/workspace/map-pan-store";

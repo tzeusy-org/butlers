@@ -58,7 +58,7 @@ import {
   endOfDayInTz,
   formatTimeInTz,
   formatInTimeZone,
-} from "@/components/chronicles/tz-format";
+} from "@/lib/tz-format";
 
 // ---------------------------------------------------------------------------
 // Date helpers

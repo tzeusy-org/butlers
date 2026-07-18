@@ -44,7 +44,7 @@ import { categoryForSource, LANE_TAXONOMY } from "./lane-taxonomy"
 import { parseLatLng } from "./location-utils"
 import { useMapPanTo } from "@/components/workspace/map-pan-store"
 import { useChroniclesTimezone } from "./use-chronicles-timezone"
-import { formatTimeInTz, formatGanttTickLabel } from "./tz-format"
+import { formatTimeInTz, formatGanttTickLabel } from "@/lib/tz-format"
 import { formatDurationCompact } from "@/lib/format-duration"
 
 // ---------------------------------------------------------------------------

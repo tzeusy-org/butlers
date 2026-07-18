@@ -63,7 +63,7 @@ import {
   useSubmitEpisodeCorrection,
 } from "@/hooks/use-chronicles"
 import { useChroniclesTimezone } from "./use-chronicles-timezone"
-import { formatDateTimeInTz } from "./tz-format"
+import { formatDateTimeInTz } from "@/lib/tz-format"
 import { extractRoutineProvenance } from "./episode-routine-evidence"
 import { formatDurationCompact } from "@/lib/format-duration"
 

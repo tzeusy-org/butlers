@@ -22,7 +22,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { LANE_TAXONOMY, type Category } from "./lane-taxonomy";
 import { useChroniclesTimezone } from "./use-chronicles-timezone";
-import { formatTimeInTz } from "./tz-format";
+import { formatTimeInTz } from "@/lib/tz-format";
 
 export interface CorrectionPromptsPanelProps {
   data: ChroniclerCorrectionPrompts | undefined;

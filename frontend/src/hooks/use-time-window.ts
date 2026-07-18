@@ -14,7 +14,7 @@
 import { useCallback, useMemo } from "react"
 import { useSearchParams } from "react-router"
 import { format, isValid, parseISO, subDays } from "date-fns"
-import { startOfDayInTz, endOfDayInTz } from "@/components/chronicles/tz-format"
+import { startOfDayInTz, endOfDayInTz } from "@/lib/tz-format"
 
 /** Default owner timezone — matches the briefing.py SGT constant. */
 export const OWNER_TZ_DEFAULT = "Asia/Singapore"

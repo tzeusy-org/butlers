@@ -32,7 +32,7 @@ vi.mock("@/hooks/use-time-window", () => ({
   OWNER_TZ_DEFAULT: "UTC",
 }));
 
-vi.mock("@/components/chronicles/tz-format", () => ({
+vi.mock("@/lib/tz-format", () => ({
   startOfDayInTz: (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()),
   endOfDayInTz: (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999),
 }));

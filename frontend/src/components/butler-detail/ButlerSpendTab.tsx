@@ -24,7 +24,7 @@ import { useState, useMemo } from "react";
 import { subDays } from "date-fns";
 
 import { useSpendSummary, useDailySpend } from "@/hooks/use-spend";
-import { startOfDayInTz, endOfDayInTz } from "@/components/chronicles/tz-format";
+import { startOfDayInTz, endOfDayInTz } from "@/lib/tz-format";
 import { OWNER_TZ_DEFAULT } from "@/hooks/use-time-window";
 import { DayBars } from "@/components/butlers/DayBars";
 import { RangeToggle } from "@/components/ui/range-toggle";

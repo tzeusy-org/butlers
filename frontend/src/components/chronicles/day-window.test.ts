@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dayWindowInTz } from "./tz-format";
+import { dayWindowInTz } from "@/lib/tz-format";
 
 /**
  * dayWindowInTz must match the backend editorial.day_window_utc

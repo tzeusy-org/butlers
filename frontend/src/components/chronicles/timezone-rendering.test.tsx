@@ -192,7 +192,7 @@ import {
   formatGanttTickLabel,
   startOfDayInTz,
   endOfDayInTz,
-} from "./tz-format"
+} from "@/lib/tz-format"
 
 describe("tz-format utility functions (bu-k18cm)", () => {
   const SGT = "Asia/Singapore"

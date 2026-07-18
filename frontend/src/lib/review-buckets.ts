@@ -21,7 +21,7 @@
 // boundaries are tz-sensitive here.
 // ---------------------------------------------------------------------------
 
-import { endOfDayInTz } from "@/components/chronicles/tz-format";
+import { endOfDayInTz } from "@/lib/tz-format";
 
 /** A review-timeline bucket, in chronological order. */
 export type ReviewBucket = "overdue" | "today" | "this-week" | "later";

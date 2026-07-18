@@ -15,7 +15,7 @@ import { MemoryRouter, Route, Routes } from "react-router"
 import { subDays, subHours } from "date-fns"
 import { formatInTimeZone } from "date-fns-tz"
 
-import { startOfDayInTz, endOfDayInTz } from "@/components/chronicles/tz-format"
+import { startOfDayInTz, endOfDayInTz } from "@/lib/tz-format"
 import { isPollingDisabled, useTimeWindow, OWNER_TZ_DEFAULT } from "@/hooks/use-time-window"
 import { TimeWindowPicker } from "./TimeWindowPicker"
 
