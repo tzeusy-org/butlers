@@ -5459,6 +5459,10 @@ export default function CalendarWorkspacePage() {
                   acceptProposalMutation.mutate(
                     { proposalId },
                     {
+                      onSuccess: () =>
+                        toast.success(
+                          "Proposal accepted. Event added to the Butlers calendar.",
+                        ),
                       onError: (error) =>
                         toast.error(
                           error instanceof Error
@@ -5474,6 +5478,13 @@ export default function CalendarWorkspacePage() {
                   dismissProposalMutation.mutate(
                     { proposalId },
                     {
+                      onSuccess: () => toast.success("Proposal dismissed."),
+                      onError: (error) =>
+                        toast.error(
+                          error instanceof Error
+                            ? error.message
+                            : "Failed to dismiss the proposed fix.",
+                        ),
                       onSettled: () =>
                         queryClient.invalidateQueries({ queryKey: ["calendar-conflicts"] }),
                     },
