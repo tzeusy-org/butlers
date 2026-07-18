@@ -11,7 +11,7 @@
 // the prototype rhythm while using container-boundary-safe process facts.
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate } from "react-router"
 
 import {
@@ -33,8 +33,10 @@ import { useButler } from "@/hooks/use-butlers"
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics"
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board"
 import { useSpendSummary } from "@/hooks/use-spend"
+import { useSessionAggregate } from "@/hooks/use-sessions"
 import { formatCostUsd } from "@/lib/format-cost"
 import type { ActivityEventType, ApprovalAction, ButlerActivityEvent } from "@/api/types"
+import { ButlerVerdictOpener } from "@/components/butler-detail/ButlerVerdictOpener"
 
 interface ButlerOverviewTabProps {
   butlerName: string
@@ -85,6 +87,10 @@ function stripeSlotWindow(index: number): { since: string; until: string } {
     since: new Date(now - hoursAgoSince * 3_600_000).toISOString(),
     until: new Date(now - hoursAgoUntil * 3_600_000).toISOString(),
   }
+}
+
+function last24HoursSince(): string {
+  return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 }
 
 function HourAxis() {
@@ -258,10 +264,15 @@ function OverviewSkeleton() {
 
 export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps) {
   const navigate = useNavigate()
-  const { data: butlerResponse, isLoading: butlerLoading } = useButler(butlerName)
-  const { rows } = useButlerStatusBoard()
+  const { data: butlerResponse, isLoading: butlerLoading, isError: butlerError } = useButler(butlerName)
+  const { rows, aggregates } = useButlerStatusBoard()
   const costQuery = useSpendSummary("today")
   const approvalsQuery = useApprovalActions({ status: "pending", butler: butlerName, limit: 5 })
+  const failedSessionsSince = useMemo(last24HoursSince, [])
+  const failedSessionsQuery = useSessionAggregate({
+    butler: butlerName,
+    since: failedSessionsSince,
+  })
   const {
     data: activityFeedData,
     isLoading: activityFeedLoading,
@@ -357,9 +368,40 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   // pending approvals -- the KPI previously read "5" when 20 were pending
   // because it counted the preview page instead of the real total.
   const awaitingCount = approvalsQuery.data?.meta?.total ?? visiblePendingActions.length
+  // The legacy, butler-filtered approvals endpoint exposes pagination metadata
+  // only. Its query error is still surfaced below; do not invent a degraded
+  // source envelope that the endpoint cannot name.
+  const approvalSourcesDegraded: string[] = []
+  const failureSourcesDegraded =
+    (failedSessionsQuery.data?.meta?.sources_degraded as string[] | undefined) ?? []
+  const boardSourceError =
+    aggregates.isError ||
+    !row ||
+    row.schemaUnreachable ||
+    row.heartbeatUnavailable ||
+    row.hourlyStripeError
 
   return (
     <>
+    <ButlerVerdictOpener
+      butlerName={butlerName}
+      activity={row?.activity}
+      sessions24h={sessions24h}
+      boardLoading={aggregates.isLoading}
+      boardError={butlerError || boardSourceError}
+      spendToday={costQuery.data?.data?.by_butler?.[butlerName]}
+      spendLoading={costQuery.isLoading}
+      spendError={costQuery.isError || (!costQuery.isLoading && !costQuery.data)}
+      pendingApprovals={visiblePendingActions}
+      pendingTotal={awaitingCount}
+      approvalsLoading={approvalsQuery.isLoading}
+      approvalsError={approvalsQuery.isError}
+      failedSessions={failedSessionsQuery.data?.data.failed_count}
+      failedSessionsLoading={failedSessionsQuery.isLoading}
+      failedSessionsError={failedSessionsQuery.isError}
+      approvalSourcesDegraded={approvalSourcesDegraded}
+      failureSourcesDegraded={failureSourcesDegraded}
+    />
     <ButlerPanelGrid
       className="sm:grid-cols-2 md:grid-cols-4"
       data-testid="overview-panel-grid"

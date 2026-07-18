@@ -38,6 +38,11 @@ vi.mock("@/components/ui/time", () => ({
 
 vi.mock("@/hooks/use-sessions", () => ({
   useGlobalSessionDetail: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  useSessionAggregate: vi.fn(() => ({
+    data: { data: { failed_count: 0 }, meta: {} },
+    isLoading: false,
+    isError: false,
+  })),
 }))
 
 import { useButler } from "@/hooks/use-butlers"
@@ -255,6 +260,12 @@ beforeEach(() => {
 afterEach(() => cleanup())
 
 describe("ButlerOverviewTab target overview grid", () => {
+  it("opens the overview with a labeled butler verdict region", () => {
+    const html = renderOverview()
+
+    expect(html).toContain('aria-label="Butler general verdict"')
+  })
+
   it("renders the redesigned panel set", () => {
     const html = renderOverview()
     for (const testId of [

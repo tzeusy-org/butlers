@@ -24,6 +24,7 @@ import { useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { IngestionSubNav } from '@/components/ingestion/IngestionSubNav'
 import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/ingestion/dispatch'
+import { IngestionConnectorsVerdictOpener } from '@/components/ingestion/dispatch/IngestionVerdictOpeners'
 import { ConnectorsRoster } from '@/components/ingestion/connectors/ConnectorsRoster'
 
 export default function IngestionConnectorsPage() {
@@ -57,6 +58,7 @@ export default function IngestionConnectorsPage() {
         headline="Where signals come from."
         description="Every channel the house listens on: status, health, and credential state."
       />
+      <IngestionConnectorsVerdictOpener />
       <IngestionSubNav />
       <DispatchSurface>
         <ConnectorsRoster />

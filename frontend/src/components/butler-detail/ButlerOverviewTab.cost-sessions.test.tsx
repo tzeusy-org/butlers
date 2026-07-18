@@ -64,6 +64,11 @@ vi.mock("@/hooks/use-notifications", () => ({
 vi.mock("@/hooks/use-sessions", () => ({
   useButlerSessions: vi.fn(),
   useGlobalSessionDetail: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
+  useSessionAggregate: vi.fn(() => ({
+    data: { data: { failed_count: 0 }, meta: {} },
+    isLoading: false,
+    isError: false,
+  })),
 }));
 
 vi.mock("@/hooks/use-butler-analytics", () => ({
