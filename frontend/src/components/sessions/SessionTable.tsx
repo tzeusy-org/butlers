@@ -103,27 +103,9 @@ function SessionTableRow({
       className={cn(
         session.success === false && "bg-destructive/5",
         selected && "bg-muted",
-        interactive &&
-          "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+        interactive && "cursor-pointer",
       )}
       onClick={() => onSessionClick?.(session)}
-      role={interactive ? "button" : undefined}
-      tabIndex={interactive ? 0 : undefined}
-      aria-label={
-        interactive
-          ? `Open session detail for ${session.butler ?? "session"}: ${truncate(session.prompt, 80)}`
-          : undefined
-      }
-      onKeyDown={
-        interactive
-          ? (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onSessionClick?.(session);
-              }
-            }
-          : undefined
-      }
       onPointerEnter={interactive ? prefetch.onPointerEnter : undefined}
       onPointerLeave={interactive ? prefetch.onPointerLeave : undefined}
       onFocus={interactive ? prefetch.onFocus : undefined}
@@ -246,7 +228,21 @@ export function SessionTable({
                 onSessionClick={onSessionClick}
               >
                 <TableCell className="text-muted-foreground text-xs">
-                  <Time value={session.started_at} mode="smart" />
+                  {interactive ? (
+                    <button
+                      type="button"
+                      className="rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                      aria-label={`Open session detail for ${session.butler ?? "session"}: ${truncate(session.prompt, 80)}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSessionClick?.(session);
+                      }}
+                    >
+                      <Time value={session.started_at} mode="smart" />
+                    </button>
+                  ) : (
+                    <Time value={session.started_at} mode="smart" />
+                  )}
                 </TableCell>
                 {showButlerColumn && (
                   <TableCell>
@@ -267,17 +263,20 @@ export function SessionTable({
                   className="font-mono text-xs text-muted-foreground"
                   title={session.request_id ?? undefined}
                 >
-                  {session.request_id ? (
+                  {session.request_id && onRequestIdClick ? (
                     <button
                       type="button"
                       className="hover:text-foreground transition-colors underline decoration-dotted"
+                      aria-label={`Filter sessions by request ID ${session.request_id}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        onRequestIdClick?.(session.request_id!);
+                        if (session.request_id) onRequestIdClick?.(session.request_id);
                       }}
                     >
                       {truncateUuid(session.request_id)}
                     </button>
+                  ) : session.request_id ? (
+                    truncateUuid(session.request_id)
                   ) : (
                     "\u2014"
                   )}

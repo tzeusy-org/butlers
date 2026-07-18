@@ -136,21 +136,31 @@ export default function SessionsPage() {
   const butlers = butlersResponse?.data ?? [];
   const butlerNames = butlers.map((b) => b.name);
 
-  // Filter params shared by the chart and KPI strip (window-true, no cursor).
-  const filterParams: SessionParams = {
+  // Window-wide data must always reflect the visible URL filters. Only the
+  // paginated list waits for free-text input to settle; otherwise the KPI and
+  // chart can present an old query as the current filter state.
+  const sharedFilterParams: SessionParams = {
     ...(filters.butler !== "all" ? { butler: filters.butler } : {}),
-    ...(debouncedTriggerSource ? { trigger_source: debouncedTriggerSource } : {}),
-    ...(debouncedRequestId ? { request_id: debouncedRequestId } : {}),
     ...(filters.status !== "all" ? { status: filters.status } : {}),
     ...(filters.since ? { since: filters.since } : {}),
     ...(filters.until ? { until: filters.until } : {}),
+  };
+  const filterParams: SessionParams = {
+    ...sharedFilterParams,
+    ...(filters.trigger_source ? { trigger_source: filters.trigger_source } : {}),
+    ...(filters.request_id ? { request_id: filters.request_id } : {}),
+  };
+  const listFilterParams: SessionParams = {
+    ...sharedFilterParams,
+    ...(debouncedTriggerSource ? { trigger_source: debouncedTriggerSource } : {}),
+    ...(debouncedRequestId ? { request_id: debouncedRequestId } : {}),
   };
 
   // List params add pagination (cursor + limit) on top of the filters.
   const params: SessionParams = {
     limit: PAGE_SIZE,
     ...(cursor ? { cursor } : {}),
-    ...filterParams,
+    ...listFilterParams,
   };
 
   const {

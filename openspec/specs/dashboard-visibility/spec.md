@@ -33,21 +33,21 @@ The Sessions page (`/sessions`) SHALL provide a paginated, filterable table of s
 - **AND** the click event does not propagate to the row click handler (uses `e.stopPropagation()`)
 
 #### Scenario: Session row click opens detail drawer
-- **WHEN** the operator clicks a session row, OR focuses it and presses Enter or Space
+- **WHEN** the operator clicks a session row, OR focuses its session-detail control and presses Enter or Space
 - **THEN** a `SessionDetailDrawer` (right-side sheet) opens for the clicked session
 - **AND** the drawer receives the session's `id` and `butler` name
-- **AND** interactive rows are keyboard-accessible (`role="button"`, `tabIndex=0`, visible focus ring); Space suppresses native page scroll
+- **AND** the keyboard-accessible detail control is a native button in a static table cell with a visible focus ring, while the parent remains a semantic table row so the Request ID control is a separate real button
 
 #### Scenario: Session volume visualization
 - **WHEN** the Sessions page renders
 - **THEN** a session-volume-over-time chart (`SessionStripeChart`, stacked per-butler bars) is shown as the page's primary visualization above the filter bar
-- **AND** the chart is scoped to the active filter window (it observes the same filter params as the list, not the page cursor)
+- **AND** the chart is scoped to the visible active filter window (not the page cursor); if the paginated list debounces free-text input, the chart still refetches for the visible Trigger Source and Request ID so prior-query data is never presented as current
 - **AND** its data polls via `useBusAwarePollInterval` (bu-01r64.4): the chart's `["session-stripe"]` query key is invalidated by "session" bus events (same as the list below it — see `event-cache-manifest.ts`), so both surfaces update within the same beat rather than the list going live while the chart lags on its own fixed poll
 
 #### Scenario: Window-true KPI strip
 - **WHEN** the Sessions page renders
 - **THEN** a KPI strip (`SessionsKpiStrip`) shows window-true aggregates from `GET /api/sessions/aggregate` (sessions count, success rate, tokens in/out, top butler), scoped to the active filters across all butlers and labeled "Matching filters"
-- **AND** the aggregate recomputes when filters change but NOT when the operator pages (it is never derived from the fetched page)
+- **AND** the aggregate recomputes when visible filters change but NOT when the operator pages (it is never derived from the fetched page)
 - **AND** when there are no completed sessions, the success rate renders a dash rather than a fabricated number
 
 #### Scenario: Session list error state
@@ -427,6 +427,7 @@ Offset-paginated surfaces SHALL share the same offset-based pattern using backen
 - **WHEN** the Timeline page loads more events
 - **THEN** it uses cursor-based pagination (sending `before` parameter from `response.meta.cursor`)
 - **AND** new events are appended to the accumulated event list rather than replacing them
+- **AND** while the operator is viewing that committed history, a background live-head refresh neither replaces nor visually dims the historical snapshot; newly arrived head events are surfaced through the new-events path instead
 
 ### Requirement: Cross-Surface Navigation and Linking
 The visibility surfaces SHALL be interconnected through contextual links that allow operators to trace a request across multiple views without manually searching.

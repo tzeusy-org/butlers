@@ -119,6 +119,7 @@ export default function TimelinePage() {
     hasMore,
     loadMore,
     isLoadingMore,
+    pinned,
     newCount,
     showNewEvents,
     degradedSources,
@@ -219,6 +220,7 @@ export default function TimelinePage() {
   const latestReceivedAt = isLoading ? undefined : (events[0]?.timestamp ?? null);
 
   const hasDegradedSource = degradedSources.length > 0;
+  const isLiveHeadRefreshing = pinned && isFetching && !isLoading && !isError;
 
   return (
     <DispatchLayout>
@@ -363,7 +365,7 @@ export default function TimelinePage() {
 
         <NewEventsPill count={newCount} onClick={showNewEvents} />
 
-        <FetchingDim isFetching={isFetching && !isLoading && !isError}>
+        <FetchingDim isFetching={isLiveHeadRefreshing}>
           <TimelineLedger
             events={events}
             isLoading={isLoading}

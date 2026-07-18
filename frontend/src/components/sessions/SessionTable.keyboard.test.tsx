@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, fireEvent, createEvent, cleanup } from "@testing-library/react";
+import { render, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { axe, toHaveNoViolations } from "jest-axe";
 
 import type { SessionSummary } from "@/api/types";
 import { PREFETCH_INTENT_DELAY_MS } from "@/hooks/use-prefetch-on-intent";
@@ -18,6 +20,8 @@ vi.mock("@/api/index.ts", () => ({
 
 import { getSession } from "@/api/index.ts";
 
+expect.extend(toHaveNoViolations);
+
 afterEach(cleanup);
 
 function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
@@ -26,8 +30,7 @@ function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
     butler: "health",
     prompt: "Summarize today's routing failures",
     trigger_source: "telegram",
-    // null so the only role=button in the row is the row itself.
-    request_id: null,
+    request_id: "req-12345678-1234-1234-1234-123456789abc",
     success: true,
     started_at: "2026-03-12T00:00:00Z",
     completed_at: "2026-03-12T00:00:02Z",
@@ -41,56 +44,105 @@ function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
 }
 
 describe("SessionTable keyboard accessibility", () => {
-  it("exposes interactive rows as focusable role=button", () => {
-    const { getByRole } = render(
-      <SessionTable sessions={[makeSession()]} isLoading={false} onSessionClick={vi.fn()} />,
+  it("uses separate native controls for session detail and request-ID filtering", async () => {
+    const session = makeSession();
+    const { container, getByRole } = render(
+      <SessionTable
+        sessions={[session]}
+        isLoading={false}
+        onSessionClick={vi.fn()}
+        onRequestIdClick={vi.fn()}
+      />,
     );
-    const row = getByRole("button");
-    expect(row.getAttribute("tabindex")).toBe("0");
-    expect(row.getAttribute("aria-label")).toContain("health");
+    const row = container.querySelector<HTMLTableRowElement>('[data-testid="session-row"]');
+    const detailButton = getByRole("button", {
+      name: "Open session detail for health: Summarize today's routing failures",
+    });
+    const requestIdButton = getByRole("button", {
+      name: `Filter sessions by request ID ${session.request_id}`,
+    });
+
+    expect(row).not.toBeNull();
+    expect(row?.getAttribute("role")).toBeNull();
+    expect(row?.getAttribute("tabindex")).toBeNull();
+    expect(detailButton.tagName).toBe("BUTTON");
+    expect(requestIdButton.tagName).toBe("BUTTON");
+    expect(detailButton.closest("tr")).toBe(row);
+    expect(requestIdButton.closest("tr")).toBe(row);
+    expect(detailButton.contains(requestIdButton)).toBe(false);
+    expect(
+      await axe(container, { rules: { "color-contrast": { enabled: false } } }),
+    ).toHaveNoViolations();
   });
 
-  it("opens the drawer when Enter is pressed on a row", () => {
+  it("opens the drawer through its native detail button with Enter and Space", async () => {
     const onSessionClick = vi.fn();
     const { getByRole } = render(
       <SessionTable sessions={[makeSession()]} isLoading={false} onSessionClick={onSessionClick} />,
     );
-    fireEvent.keyDown(getByRole("button"), { key: "Enter" });
+    const detailButton = getByRole("button", { name: /Open session detail for health/i });
+    const user = userEvent.setup();
+
+    detailButton.focus();
+    await user.keyboard("{Enter}");
     expect(onSessionClick).toHaveBeenCalledTimes(1);
+
+    detailButton.focus();
+    await user.keyboard(" ");
+    expect(onSessionClick).toHaveBeenCalledTimes(2);
   });
 
-  it("opens the drawer and suppresses page scroll when Space is pressed on a row", () => {
+  it("filters by request ID without also opening the session detail", () => {
     const onSessionClick = vi.fn();
+    const onRequestIdClick = vi.fn();
+    const session = makeSession();
     const { getByRole } = render(
-      <SessionTable sessions={[makeSession()]} isLoading={false} onSessionClick={onSessionClick} />,
+      <SessionTable
+        sessions={[session]}
+        isLoading={false}
+        onSessionClick={onSessionClick}
+        onRequestIdClick={onRequestIdClick}
+      />,
     );
-    const row = getByRole("button");
-    // Space must call preventDefault (suppress native page scroll) — the
-    // load-bearing difference from the Enter branch.
-    const ev = createEvent.keyDown(row, { key: " " });
-    fireEvent(row, ev);
-    expect(onSessionClick).toHaveBeenCalledTimes(1);
-    expect(ev.defaultPrevented).toBe(true);
+
+    fireEvent.click(
+      getByRole("button", { name: `Filter sessions by request ID ${session.request_id}` }),
+    );
+
+    expect(onRequestIdClick).toHaveBeenCalledWith(session.request_id);
+    expect(onSessionClick).not.toHaveBeenCalled();
+  });
+
+  it("keeps a request ID static when filtering is unavailable, so its cell opens the detail", () => {
+    const onSessionClick = vi.fn();
+    const session = makeSession();
+    const { getByText, queryByRole } = render(
+      <SessionTable sessions={[session]} isLoading={false} onSessionClick={onSessionClick} />,
+    );
+
+    expect(queryByRole("button", { name: /Filter sessions by request ID/i })).toBeNull();
+    fireEvent.click(getByText("req-1234"));
+    expect(onSessionClick).toHaveBeenCalledWith(session);
   });
 
   it("does not make rows interactive when no click handler is supplied", () => {
     const { queryByRole } = render(
       <SessionTable sessions={[makeSession()]} isLoading={false} />,
     );
-    expect(queryByRole("button")).toBeNull();
+    expect(queryByRole("button", { name: /Open session detail/i })).toBeNull();
   });
 
   it("prefetches the matching global detail query after deliberate row hover", () => {
     vi.useFakeTimers();
     const queryClient = new QueryClient();
     const onSessionClick = vi.fn();
-    const { getByRole, unmount } = render(
+    const { getByTestId, unmount } = render(
       <QueryClientProvider client={queryClient}>
         <SessionTable sessions={[makeSession()]} isLoading={false} onSessionClick={onSessionClick} />
       </QueryClientProvider>,
     );
 
-    fireEvent.pointerEnter(getByRole("button"));
+    fireEvent.pointerEnter(getByTestId("session-row"));
     act(() => {
       vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS);
     });
