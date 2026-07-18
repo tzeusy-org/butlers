@@ -62,21 +62,34 @@ class TestSerializationContract:
         ],
     )
     async def test_uuid_and_datetime_serialized(
-        self, pool: AsyncMock, engine: MagicMock, tool: str, dt_field: str
+        self,
+        pool: AsyncMock,
+        engine: MagicMock,
+        tool: str,
+        dt_field: str,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         dt = datetime(2025, 3, 1, tzinfo=UTC)
         row = {"id": SAMPLE_UUID, dt_field: dt}
         if tool == "search":
-            _helpers._search.search = AsyncMock(return_value=[row])
+            monkeypatch.setattr(_helpers._search, "search", AsyncMock(return_value=[row]))
             result = (await memory_search(pool, engine, "query"))[0]
         elif tool == "recall":
-            _helpers._search.recall = AsyncMock(return_value=[row])
+            monkeypatch.setattr(_helpers._search, "recall", AsyncMock(return_value=[row]))
             result = (await memory_recall(pool, engine, "topic"))[0]
         elif tool == "get":
-            _helpers._storage.get_memory = AsyncMock(return_value={**row, "content": "hello"})
+            monkeypatch.setattr(
+                _helpers._storage,
+                "get_memory",
+                AsyncMock(return_value={**row, "content": "hello"}),
+            )
             result = await memory_get(pool, "fact", SAMPLE_STR)
         else:  # mark_helpful
-            _helpers._storage.mark_helpful = AsyncMock(return_value={**row, "success_count": 3})
+            monkeypatch.setattr(
+                _helpers._storage,
+                "mark_helpful",
+                AsyncMock(return_value={**row, "success_count": 3}),
+            )
             result = await memory_mark_helpful(pool, SAMPLE_STR)
 
         assert result["id"] == SAMPLE_STR
@@ -89,8 +102,10 @@ class TestSerializationContract:
 
 
 class TestMemoryGet:
-    async def test_returns_none_when_not_found(self, pool: AsyncMock) -> None:
-        _helpers._storage.get_memory = AsyncMock(return_value=None)
+    async def test_returns_none_when_not_found(
+        self, pool: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_helpers._storage, "get_memory", AsyncMock(return_value=None))
         assert await memory_get(pool, "fact", SAMPLE_STR) is None
 
 
@@ -100,8 +115,8 @@ class TestMemoryGet:
 
 
 class TestMemoryConfirm:
-    async def test_confirmed_true(self, pool: AsyncMock) -> None:
-        _helpers._storage.confirm_memory = AsyncMock(return_value=True)
+    async def test_confirmed_true(self, pool: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_helpers._storage, "confirm_memory", AsyncMock(return_value=True))
         assert await memory_confirm(pool, "fact", SAMPLE_STR) == {"confirmed": True}
 
 
@@ -111,13 +126,19 @@ class TestMemoryConfirm:
 
 
 class TestMemoryFeedback:
-    async def test_mark_helpful_returns_error_when_not_found(self, pool: AsyncMock) -> None:
-        _helpers._storage.mark_helpful = AsyncMock(return_value=None)
+    async def test_mark_helpful_returns_error_when_not_found(
+        self, pool: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_helpers._storage, "mark_helpful", AsyncMock(return_value=None))
         result = await memory_mark_helpful(pool, SAMPLE_STR)
         assert "error" in result
 
-    async def test_mark_harmful_serializes(self, pool: AsyncMock) -> None:
-        _helpers._storage.mark_harmful = AsyncMock(return_value={"id": SAMPLE_UUID})
+    async def test_mark_harmful_serializes(
+        self, pool: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            _helpers._storage, "mark_harmful", AsyncMock(return_value={"id": SAMPLE_UUID})
+        )
         assert (await memory_mark_harmful(pool, SAMPLE_STR))["id"] == SAMPLE_STR
 
 
@@ -127,12 +148,16 @@ class TestMemoryFeedback:
 
 
 class TestMemoryForget:
-    async def test_returns_forgotten_true(self, pool: AsyncMock) -> None:
-        _helpers._storage.forget_memory = AsyncMock(return_value=True)
+    async def test_returns_forgotten_true(
+        self, pool: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_helpers._storage, "forget_memory", AsyncMock(return_value=True))
         assert await memory_forget(pool, "fact", SAMPLE_STR) == {"forgotten": True}
 
-    async def test_correction_guard_returns_structured_error(self, pool: AsyncMock) -> None:
+    async def test_correction_guard_returns_structured_error(
+        self, pool: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         err = CorrectionGuardError("already_retracted", "already retracted")
-        _helpers._storage.forget_memory = AsyncMock(side_effect=err)
+        monkeypatch.setattr(_helpers._storage, "forget_memory", AsyncMock(side_effect=err))
         result = await memory_forget(pool, "fact", SAMPLE_STR)
         assert result["forgotten"] is False and "error" in result
