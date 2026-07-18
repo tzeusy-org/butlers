@@ -2597,6 +2597,11 @@ def test_infer_provider_from_type_normalizes_catalog_prefixes():
     assert _infer_provider_from_type("telegrambot_oauth_refresh") == "telegram_bot"
 
 
+def test_infer_provider_from_type_normalized_prefix_requires_type_boundary():
+    """An unrelated compact prefix must not be classified as Telegram Bot."""
+    assert _infer_provider_from_type("telegrambotanical_token") == "telegrambotanical"
+
+
 def test_infer_provider_from_type_prefers_longest_normalized_provider_prefix():
     """Normalized fallback is independent of catalog insertion order."""
     with patch(

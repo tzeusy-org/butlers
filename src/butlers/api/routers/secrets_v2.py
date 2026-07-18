@@ -957,6 +957,11 @@ _USER_TYPE_PREFIX_ALIASES: dict[str, str] = {
 _GUIDED_ROTATE_ONLY_USER_TYPES = frozenset({"telegram_api_hash"})
 
 
+def _compact_provider_id(provider_id: str) -> str:
+    """Return the separator-free provider spelling used in compact credential types."""
+    return re.sub(r"[^a-z0-9]", "", provider_id.lower())
+
+
 def _infer_provider_from_type(entity_type: str) -> str:
     """Best-effort mapping from entity_info.type to a display provider slug.
 
@@ -980,10 +985,9 @@ def _infer_provider_from_type(entity_type: str) -> str:
         ) and provider_id in PROVIDER_CATALOG:
             return provider_id
 
-    normalized_entity_type = re.sub(r"[^a-z0-9]", "", entity_type.lower())
     for provider_id in sorted(PROVIDER_CATALOG, key=len, reverse=True):
-        normalized_provider_id = re.sub(r"[^a-z0-9]", "", provider_id.lower())
-        if normalized_entity_type.startswith(normalized_provider_id):
+        compact_provider_id = _compact_provider_id(provider_id)
+        if entity_type.startswith(f"{compact_provider_id}_"):
             return provider_id
 
     idx = entity_type.find("_")
@@ -1005,6 +1009,10 @@ def _provider_like_patterns(provider: str) -> list[str]:
     for prefix, slug in _USER_TYPE_PREFIX_ALIASES.items():
         if slug == provider and prefix not in prefixes:
             prefixes.append(prefix)
+    if provider in PROVIDER_CATALOG:
+        compact_provider_id = _compact_provider_id(provider)
+        if compact_provider_id not in prefixes:
+            prefixes.append(compact_provider_id)
     return [f"{escape_like_pattern(p)}\\_%" for p in prefixes]
 
 
