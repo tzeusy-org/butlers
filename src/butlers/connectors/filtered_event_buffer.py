@@ -388,6 +388,7 @@ class FilteredEventBuffer:
                 self._endpoint_identity,
                 exc_info=True,
             )
+            self._rows.clear()
             return
 
         self._rows.clear()

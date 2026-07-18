@@ -194,6 +194,7 @@ async def test_flush_db_error_is_non_fatal() -> None:
         await buf.flush(pool=mock_pool)
 
     mock_publish.assert_not_awaited()
+    assert len(buf) == 0
 
 
 @pytest.mark.parametrize(
