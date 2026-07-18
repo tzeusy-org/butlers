@@ -141,7 +141,7 @@ function ActivityRow({
         {time}
       </Mono>
       <span className="flex items-center">
-        <ButlerMark name={butler ?? "general"} tone="neutral" />
+        <ButlerMark name={butler ?? "general"} tone="neutral" showNameOnHover />
       </span>
       <span className="min-w-0 truncate text-[13px] leading-snug text-fg">
         {summary}

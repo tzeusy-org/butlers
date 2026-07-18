@@ -140,6 +140,8 @@ export interface ButlerMarkProps {
   size?: number
   /** Optional className forwarded to the root element. */
   className?: string
+  /** Render the full butler name as a native hover label for initial-only callers. */
+  showNameOnHover?: boolean
   /**
    * Agent type. "staffer" renders as a full circle (50% border-radius) to visually
    * distinguish infrastructure roles from user-facing butlers (squircle). Defaults to "butler".
@@ -155,9 +157,17 @@ export interface ButlerMarkProps {
  *   <ButlerMark name="health" tone="fill" />
  *   <ButlerMark name="qa" tone="neutral" />
  */
-export function ButlerMark({ name, tone = "neutral", size = 16, className, type = "butler" }: ButlerMarkProps) {
+export function ButlerMark({
+  name,
+  tone = "neutral",
+  size = 16,
+  className,
+  showNameOnHover = false,
+  type = "butler",
+}: ButlerMarkProps) {
   const hue = butlerHueVar(name)
   const initial = (name[0] ?? "?").toUpperCase()
+  const fullName = type === "staffer" ? `${name} (staffer)` : name
 
   const baseStyle: React.CSSProperties = {
     width: size,
@@ -190,8 +200,8 @@ export function ButlerMark({ name, tone = "neutral", size = 16, className, type 
     <span
       style={{ ...baseStyle, ...toneStyle }}
       className={className}
-      title={type === "staffer" ? `${name} (staffer)` : name}
-      aria-label={type === "staffer" ? `${name} (staffer)` : name}
+      title={showNameOnHover ? fullName : undefined}
+      aria-label={fullName}
     >
       {initial}
     </span>

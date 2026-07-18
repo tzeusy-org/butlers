@@ -171,7 +171,7 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
 
       {/* ButlerMark — the sole carrier of butler hue on the page. */}
       <span className="flex items-center">
-        <ButlerMark name={episode.butler} tone="neutral" />
+        <ButlerMark name={episode.butler} tone="neutral" showNameOnHover />
       </span>
 
       {/* Content — sans 13px. Collapsed: clamp 2 lines. Expanded: full content

@@ -107,8 +107,14 @@ describe("ButlerMark: initial glyph", () => {
     expect(html).toContain("?")
   })
 
-  it("uses the full butler name for matching visual-hover and accessible labels", () => {
+  it("keeps its accessible name without a duplicate native title by default", () => {
     const html = renderToStaticMarkup(<ButlerMark name="qa" />)
+    expect(html).toContain('aria-label="qa"')
+    expect(html).not.toContain('title="qa"')
+  })
+
+  it("uses the full butler name for visual hover only when requested", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="qa" showNameOnHover />)
     expect(html).toContain('aria-label="qa"')
     expect(html).toContain('title="qa"')
   })
@@ -150,14 +156,28 @@ describe("ButlerMark: type=staffer vs type=butler", () => {
     expect(html).toContain("border-radius:4px")
   })
 
-  it("exposes type=staffer in matching visual-hover and accessible labels", () => {
+  it("exposes type=staffer in its accessible label without a default native title", () => {
     const html = renderToStaticMarkup(<ButlerMark name="switchboard" type="staffer" />)
+    expect(html).toContain('aria-label="switchboard (staffer)"')
+    expect(html).not.toContain('title="switchboard (staffer)"')
+  })
+
+  it("formats the butler name for hover only when requested", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="general" type="butler" />)
+    expect(html).toContain('aria-label="general"')
+    expect(html).not.toContain('title="general"')
+  })
+
+  it("formats the staffer name for hover only when requested", () => {
+    const html = renderToStaticMarkup(
+      <ButlerMark name="switchboard" type="staffer" showNameOnHover />,
+    )
     expect(html).toContain('aria-label="switchboard (staffer)"')
     expect(html).toContain('title="switchboard (staffer)"')
   })
 
-  it("does not append type qualifier for butler visual or accessible labels", () => {
-    const html = renderToStaticMarkup(<ButlerMark name="general" type="butler" />)
+  it("does not append the type qualifier for butler hover labels", () => {
+    const html = renderToStaticMarkup(<ButlerMark name="general" showNameOnHover />)
     expect(html).toContain('aria-label="general"')
     expect(html).toContain('title="general"')
   })
