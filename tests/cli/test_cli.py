@@ -1,11 +1,12 @@
 """Tests for the CLI commands."""
 
+import asyncio
 import logging
 
 import pytest
 from click.testing import CliRunner
 
-from butlers.cli import _configure_logging, _discover_configs, cli
+from butlers.cli import _configure_logging, _discover_configs, _migrate_all, cli
 
 pytestmark = pytest.mark.unit
 
@@ -205,6 +206,45 @@ class TestRunCommand:
         result2 = runner.invoke(cli, ["run", "--config", config_path])
         assert result2.exit_code == 0
         assert "Starting butler from" in result2.output
+
+
+class TestMigrateCommand:
+    def test_migrate_all_routes_memory_schema_override_to_module_chain(self, tmp_path, monkeypatch):
+        roster_dir = tmp_path / "roster"
+        chronicler_dir = roster_dir / "chronicler"
+        chronicler_dir.mkdir(parents=True)
+        (chronicler_dir / "butler.toml").write_text(
+            "[butler]\n"
+            'name = "chronicler"\n'
+            "port = 41111\n"
+            'description = "Chronicler"\n\n'
+            "[butler.db]\n"
+            'name = "butlers"\n'
+            'schema = "chronicler"\n\n'
+            "[modules.memory]\n"
+            'memory_schema = "chronicler_mem"\n'
+        )
+
+        monkeypatch.setenv("POSTGRES_HOST", "db.example")
+        monkeypatch.setenv("POSTGRES_PORT", "5432")
+        monkeypatch.setenv("POSTGRES_USER", "butlers")
+        monkeypatch.setenv("POSTGRES_PASSWORD", "test-password")
+
+        import butlers.migrations as migrations
+
+        calls: list[tuple[str, str | None]] = []
+
+        async def fake_run_migrations(db_url, *, chain, schema=None):
+            calls.append((chain, schema))
+
+        monkeypatch.setattr(migrations, "get_all_chains", lambda: ["core", "memory"])
+        monkeypatch.setattr(migrations, "has_butler_chain", lambda _name: False)
+        monkeypatch.setattr(migrations, "_resolve_chain_dir", lambda chain: object())
+        monkeypatch.setattr(migrations, "run_migrations", fake_run_migrations)
+
+        asyncio.run(_migrate_all({"chronicler": chronicler_dir}))
+
+        assert calls == [("core", "chronicler"), ("memory", "chronicler_mem")]
 
 
 class TestListCommandStatus:
