@@ -37,6 +37,7 @@ import type {
   CalendarDuplicatesResponse,
   ConflictScanParams,
   CalendarKeepSeparateRequest,
+  CalendarKeepSeparateResponse,
   CalendarProposalAcceptRequest,
   CalendarSourceToggleRequest,
   CalendarSourceToggleResponse,
@@ -57,7 +58,6 @@ import { ApiError } from "@/api/client.ts";
 import {
   rollbackLists,
   snapshotAndUpdateQueries,
-  type ListSnapshot,
   useOptimisticMutation,
 } from "@/hooks/use-optimistic-mutation";
 
@@ -82,6 +82,12 @@ interface CalendarSourceSyncEnabledSnapshot {
 interface CalendarSourceToggleSnapshot {
   metaSources: CalendarSourceSyncEnabledSnapshot[];
   workspaceSources: CalendarSourceSyncEnabledSnapshot[];
+}
+
+interface CalendarDuplicateKeepSeparateSnapshot {
+  queryKey: readonly unknown[];
+  clusterKey: string;
+  keepSeparate: boolean;
 }
 
 function calendarSourceMatchesToggle(
@@ -664,13 +670,32 @@ export function usePatchCalendarDedupRules() {
  * no longer collapsed by the workspace read, so both caches are invalidated.
  */
 export function useSetCalendarKeepSeparate() {
-  return useOptimisticMutation({
+  return useOptimisticMutation<
+    ApiResponse<CalendarKeepSeparateResponse>,
+    CalendarKeepSeparateRequest,
+    CalendarDuplicateKeepSeparateSnapshot[]
+  >({
     mutationFn: (body: CalendarKeepSeparateRequest) => setCalendarKeepSeparate(body),
     cancelQueryKeys: [["calendar-duplicates"], ["calendar-workspace"]],
-    applyOptimisticUpdate: (body, queryClient) =>
-      snapshotAndUpdateQueries<ApiResponse<CalendarDuplicatesResponse>>(
-        queryClient,
-        ["calendar-duplicates"],
+    applyOptimisticUpdate: (body, queryClient) => {
+      const snapshot = queryClient
+        .getQueriesData<ApiResponse<CalendarDuplicatesResponse>>({
+          queryKey: ["calendar-duplicates"],
+        })
+        .flatMap(([queryKey, current]) =>
+          current
+            ? current.data.clusters
+                .filter((cluster) => cluster.cluster_key === body.cluster_key)
+                .map((cluster) => ({
+                  queryKey,
+                  clusterKey: cluster.cluster_key,
+                  keepSeparate: cluster.keep_separate,
+                }))
+            : [],
+        );
+
+      queryClient.setQueriesData<ApiResponse<CalendarDuplicatesResponse>>(
+        { queryKey: ["calendar-duplicates"] },
         (current) =>
           current
             ? {
@@ -685,8 +710,30 @@ export function useSetCalendarKeepSeparate() {
                 },
               }
             : current,
-      ),
-    rollback: (snapshot, queryClient) => rollbackLists(queryClient, snapshot),
+      );
+      return snapshot;
+    },
+    rollback: (snapshot, queryClient) => {
+      snapshot.forEach((clusterSnapshot) => {
+        queryClient.setQueryData<ApiResponse<CalendarDuplicatesResponse>>(
+          clusterSnapshot.queryKey,
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  data: {
+                    ...current.data,
+                    clusters: current.data.clusters.map((cluster) =>
+                      cluster.cluster_key === clusterSnapshot.clusterKey
+                        ? { ...cluster, keep_separate: clusterSnapshot.keepSeparate }
+                        : cluster,
+                    ),
+                  },
+                }
+              : current,
+        );
+      });
+    },
     invalidateQueryKeys: [["calendar-duplicates"], ["calendar-workspace"]],
   });
 }
