@@ -998,6 +998,79 @@ async def test_run_secrets_lifecycle_check_deferred_enqueues_envelope_not_delive
     }
 
 
+async def test_run_secrets_lifecycle_check_defer_queue_failure_records_retryable_failed():
+    """A quiet-hours hold is deferred only after its envelope is persisted.
+
+    If the switchboard queue cannot accept that envelope after recipient
+    resolution, the lifecycle scan must expose a retryable failure instead of
+    fabricating a benign deferred hold. No marker is written, so the next scan
+    remains eligible to retry.
+    """
+    shared_pool = object()
+    switchboard_pool = object()
+    db = _FakeDatabaseManager(
+        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
+    )
+    snapshot = CredentialSnapshot(key="u:google", family="user", label="Google", state="expiring")
+
+    with (
+        patch(
+            "butlers.jobs.secrets_lifecycle._collect_snapshots",
+            new=AsyncMock(return_value=[snapshot]),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._last_notified_state", new=AsyncMock(return_value=None)
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle._delivery_preferences_deferral",
+            new=AsyncMock(return_value=_DELIVER_AT),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.resolve_owner_telegram_recipient",
+            new=AsyncMock(return_value="12345"),
+        ) as recipient_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle._supersede_pending_retries",
+            new=AsyncMock(return_value=0),
+        ),
+        patch(
+            "butlers.jobs.secrets_lifecycle.insert_deferred_notification",
+            new=AsyncMock(side_effect=RuntimeError("deferred queue unavailable")),
+        ) as insert_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle._check_suppression", new=AsyncMock()
+        ) as suppression_mock,
+        patch("butlers.tools.switchboard.notification.deliver.deliver") as deliver_mock,
+        patch(
+            "butlers.jobs.secrets_lifecycle.record_attention_event",
+            new=AsyncMock(return_value="r-1"),
+        ) as ledger_mock,
+        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+    ):
+        summary = await run_secrets_lifecycle_check(db)
+
+    insert_mock.assert_awaited_once()
+    recipient_mock.assert_awaited_once_with(shared_pool)
+    assert insert_mock.await_args.kwargs["envelope"]["delivery"]["recipient"] == "12345"
+    # No direct dispatch or later gate may run inside the quiet-hours window.
+    deliver_mock.assert_not_called()
+    suppression_mock.assert_not_called()
+    ledger_mock.assert_awaited_once()
+    assert ledger_mock.await_args.kwargs["outcome"] == "failed"
+    assert ledger_mock.await_args.kwargs["reason"] == "delivery_preferences_queue_failure_retryable"
+    assert ledger_mock.await_args.kwargs["notification_ref"] is None
+    # Only a confirmed direct delivery can write the debounce marker.
+    audit_append.assert_not_called()
+    assert summary == {
+        "scanned": 1,
+        "attention": 1,
+        "delivered": 0,
+        "deferred": 0,
+        "suppressed": 0,
+        "errors": 1,
+    }
+
+
 async def test_run_secrets_lifecycle_check_delivers_when_delivery_preferences_pass():
     """Gate 1 returns None (no prefs row / outside quiet hours) -> the credential
     is delivered directly through the normal path."""

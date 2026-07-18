@@ -454,6 +454,12 @@ For a failed transport delivery, or an unexpected error after a complete message
 - **AND** the attention ledger records `outcome="deferred"` with reason `delivery_preferences_quiet_hours`
 - **AND** no lifecycle-state marker is appended before a confirmed direct delivery
 
+#### Scenario: Quiet-hours queue failure is failed and retryable
+- **WHEN** Switchboard delivery preferences require a medium-priority lifecycle notification to defer, the owner recipient resolves, and the deferred-notifications queue cannot persist its `notify.v1` envelope
+- **THEN** the attention ledger records `outcome="failed"`, reason `delivery_preferences_queue_failure_retryable`, and a null `notification_ref`
+- **AND** the scan does not deliver directly inside quiet hours, increment its deferred count, or append a lifecycle-state marker
+- **AND** a later lifecycle scan remains eligible to retry the transition
+
 #### Scenario: A suppression is visible and retriable
 - **WHEN** owner quiet hours or an active `dnd` or `sleeping` context signal suppresses the lifecycle notification
 - **THEN** the attention ledger records `outcome="suppressed"` with the applicable machine-readable reason

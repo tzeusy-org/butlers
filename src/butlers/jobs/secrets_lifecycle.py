@@ -473,10 +473,11 @@ async def _enqueue_deferred_envelope(
     (``extra="forbid"``) when the flusher redelivers it, so it is matched on the
     already-present deep-link fragment in ``message`` instead.
 
-    Best-effort: a failure to enqueue is logged and swallowed (mirrors
-    ``record_attention_event``'s own degraded-honesty contract) — the
-    original delivery attempt has already failed and been recorded regardless
-    of whether the retry envelope could be queued. Returns the deferred
+    Best-effort: a failure to enqueue is logged and returns ``None``. A caller
+    MUST record that as an honest ``failed`` attention outcome rather than
+    claiming a deferred hold without an envelope reference. For a transport
+    retry, the original delivery has already failed; for a quiet-hours hold,
+    the next lifecycle scan remains eligible to retry. Returns the deferred
     notification's id (for the ledger row's ``notification_ref``) or ``None``
     if enqueuing was skipped/failed.
     """
@@ -485,7 +486,7 @@ async def _enqueue_deferred_envelope(
     except KeyError:
         logger.warning(
             "secrets_lifecycle_check: switchboard pool unavailable; "
-            "cannot enqueue delivery retry for recipient=%s",
+            "cannot enqueue deferred envelope for recipient=%s",
             recipient,
         )
         return None
@@ -717,6 +718,25 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                     dedup_marker=dedup_marker,
                     deliver_at=deferred_at,
                 )
+                if envelope_ref is None:
+                    # A quiet-hours defer is truthful only when the envelope
+                    # was actually persisted. Do not deliver inside the quiet
+                    # window or advance the debounce marker; a later scan can
+                    # retry this transition after the queue recovers.
+                    errors += 1
+                    await record_attention_event(
+                        shared_pool,
+                        origin_butler=_LIFECYCLE_ACTOR,
+                        source="notify",
+                        outcome="failed",
+                        channel="telegram",
+                        intent="send",
+                        priority="medium",
+                        reason="delivery_preferences_queue_failure_retryable",
+                        dedup_key=snapshot.key,
+                        notification_ref=None,
+                    )
+                    continue
                 deferred += 1
                 await record_attention_event(
                     shared_pool,
