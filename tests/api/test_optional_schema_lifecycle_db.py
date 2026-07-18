@@ -16,13 +16,21 @@ from __future__ import annotations
 import logging
 import shutil
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
-from butlers.api.routers.memory import _fan_out_memory_queries
+from butlers.api.routers.memory import (
+    _fan_out_memory_queries,
+    get_butler_memory_stats,
+    get_episode,
+    inspect_memory,
+    list_activity,
+    list_episodes,
+)
 from butlers.api.routers.secrets_v2 import (
     SystemSetRequest,
     _fetch_system_secrets,
@@ -200,6 +208,134 @@ async def test_dropped_after_startup_is_a_degraded_source(
         assert secrets_tracker.names == ["lifecycle"]
         assert memory_rows == []
         assert memory_tracker.names == ["lifecycle"]
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_butler_memory_stats_never_reads_public_facts(
+    migrated_db_url: str,
+) -> None:
+    """A dropped private facts table must not become a healthy public-table count."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        assert manager.relation_observed_since_start("lifecycle", "facts") is True
+
+        pool = manager.pool("lifecycle")
+        await pool.execute(
+            "CREATE TABLE public.facts (created_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+        )
+        await pool.execute("INSERT INTO public.facts DEFAULT VALUES")
+        await pool.execute("DROP TABLE lifecycle.facts")
+
+        with pytest.raises(HTTPException) as error:
+            await get_butler_memory_stats("lifecycle", db=manager)
+
+        assert error.value.status_code == 503
+    finally:
+        await manager.close()
+
+
+async def test_unknown_butler_memory_stats_schema_loss_is_unavailable(
+    migrated_db_url: str,
+) -> None:
+    """No startup marker must fail closed rather than return invented zero stats."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    try:
+        await manager.pool("lifecycle").execute("DROP TABLE lifecycle.facts")
+        assert manager.relation_observed_since_start("lifecycle", "facts") is None
+
+        with pytest.raises(HTTPException) as error:
+            await get_butler_memory_stats("lifecycle", db=manager)
+
+        assert error.value.status_code == 503
+    finally:
+        await manager.close()
+
+
+async def test_memory_list_detail_and_inspect_do_not_read_public_episodes(
+    migrated_db_url: str,
+) -> None:
+    """Memory fan-out must retain private ownership after a table drops."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    episode_id = uuid4()
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        assert manager.relation_observed_since_start("lifecycle", "episodes") is True
+
+        pool = manager.pool("lifecycle")
+        await pool.execute(
+            """
+            CREATE TABLE public.episodes (
+                id UUID PRIMARY KEY,
+                butler TEXT NOT NULL,
+                session_id UUID,
+                content TEXT,
+                importance DOUBLE PRECISION NOT NULL,
+                reference_count INTEGER NOT NULL,
+                consolidated BOOLEAN NOT NULL,
+                consolidation_status TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL,
+                last_referenced_at TIMESTAMPTZ,
+                expires_at TIMESTAMPTZ,
+                metadata JSONB NOT NULL
+            )
+            """
+        )
+        await pool.execute(
+            """
+            INSERT INTO public.episodes (
+                id, butler, content, importance, reference_count, consolidated,
+                consolidation_status, created_at, metadata
+            )
+            VALUES ($1, 'public', 'must-not-leak', 0.5, 0, false, 'pending', now(), '{}'::jsonb)
+            """,
+            episode_id,
+        )
+        await pool.execute("DROP TABLE lifecycle.episodes CASCADE")
+
+        listed = await list_episodes(
+            butler=None,
+            consolidated=None,
+            status=None,
+            since=None,
+            until=None,
+            offset=0,
+            limit=50,
+            db=manager,
+        )
+        assert listed.data == []
+        assert listed.meta.pools_failed == ["lifecycle"]
+
+        activity = await list_activity(limit=50, db=manager)
+        assert activity.data == []
+        assert activity.meta.pools_failed == ["lifecycle"]
+
+        with pytest.raises(HTTPException) as detail_error:
+            await get_episode(str(episode_id), db=manager)
+        assert detail_error.value.status_code == 503
+
+        inspected = await inspect_memory(
+            q=None,
+            kind="episode",
+            offset=0,
+            limit=50,
+            db=manager,
+        )
+        assert inspected.data == []
+        assert inspected.meta.pools_failed == ["lifecycle"]
     finally:
         await manager.close()
 
