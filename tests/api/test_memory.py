@@ -469,14 +469,25 @@ class _StatsPool:
 class _StatsDB:
     """DatabaseManager stand-in returning a distinct _StatsPool per butler."""
 
-    def __init__(self, pools: dict[str, _StatsPool]) -> None:
+    def __init__(
+        self,
+        pools: dict[str, _StatsPool],
+        *,
+        memory_schema_absent: set[str] | None = None,
+    ) -> None:
         self._pools = pools
+        self._memory_schema_absent = memory_schema_absent or set()
         self.butler_names = list(pools)
 
     def pool(self, name: str) -> _StatsPool:
         if name not in self._pools:
             raise KeyError(f"No pool for butler: {name}")
         return self._pools[name]
+
+    def relation_observed_since_start(self, name: str, relation: str) -> bool | None:
+        if name in self._memory_schema_absent:
+            return False
+        return None
 
 
 async def test_stats_consolidation_fields_aggregate_across_pools(app):
@@ -549,8 +560,14 @@ class _RaisingMemoryPool:
 class _MemoryFanOutDB:
     """Minimal two-pool database fixture for degraded memory list contracts."""
 
-    def __init__(self, pools: dict[str, object]) -> None:
+    def __init__(
+        self,
+        pools: dict[str, object],
+        *,
+        memory_schema_absent: set[str] | None = None,
+    ) -> None:
         self._pools = pools
+        self._memory_schema_absent = memory_schema_absent or set()
         self.butler_names = list(pools)
 
     def pool(self, name: str) -> object:
@@ -558,6 +575,11 @@ class _MemoryFanOutDB:
             return self._pools[name]
         except KeyError:
             raise KeyError(f"No pool for butler: {name}") from None
+
+    def relation_observed_since_start(self, name: str, relation: str) -> bool | None:
+        if name in self._memory_schema_absent:
+            return False
+        return None
 
 
 @pytest.mark.parametrize(
@@ -677,7 +699,8 @@ async def test_stats_does_not_flag_pools_failed_for_missing_memory_schema(app):
         {
             "atlas": _StatsPool(counts={"consolidation_status = 'dead_letter'": 3}),
             "switchboard": _RaisingStatsPool(UndefinedTableError("relation does not exist")),
-        }
+        },
+        memory_schema_absent={"switchboard"},
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 
@@ -894,7 +917,8 @@ async def test_stats_catalog_drift_not_flagged_for_missing_memory_schema(app):
             "switchboard": _CatalogQueryRaisingPool(
                 schema="switchboard", exc=UndefinedTableError("relation does not exist")
             ),
-        }
+        },
+        memory_schema_absent={"switchboard"},
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 
@@ -953,7 +977,7 @@ async def test_reembed_pending_returns_counts_for_all_tiers(app, monkeypatch):
 
     expected_counts = {"episodes": 3, "facts": 7, "rules": 1}
 
-    async def _fake_count_pending(pool, current_model, tier=None):
+    async def _fake_count_pending(pool, current_model, tier=None, *, memory_schema=None):
         return dict(expected_counts)
 
     monkeypatch.setattr(_reembedding, "count_pending", _fake_count_pending)
@@ -982,7 +1006,7 @@ async def test_reembed_pending_uses_default_model_when_omitted(app, monkeypatch)
     _make_reembed_db(app)
     captured: list[str] = []
 
-    async def _fake_count_pending(pool, current_model, tier=None):
+    async def _fake_count_pending(pool, current_model, tier=None, *, memory_schema=None):
         captured.append(current_model)
         return {"episodes": 0, "facts": 0, "rules": 0}
 
@@ -1014,7 +1038,7 @@ async def test_reembed_pending_without_butler_skips_non_memory_pools(app, monkey
     db_mock.pool = MagicMock(side_effect=lambda name: pools[name])
     app.dependency_overrides[_get_db_manager] = lambda: db_mock
 
-    async def _fake_count_pending(pool, current_model, tier=None):
+    async def _fake_count_pending(pool, current_model, tier=None, *, memory_schema=None):
         if pool is chronicler_pool:
             raise RuntimeError('column "embedding" does not exist')
         if pool is general_pool:
@@ -1046,7 +1070,7 @@ async def test_reembed_pending_reports_genuine_failed_pool(app, monkeypatch):
     db = _MemoryFanOutDB({"general": healthy_pool, "health": failed_pool})
     app.dependency_overrides[_get_db_manager] = lambda: db
 
-    async def _fake_count_pending(pool, current_model, tier=None):
+    async def _fake_count_pending(pool, current_model, tier=None, *, memory_schema=None):
         if pool is failed_pool:
             raise RuntimeError("connection reset by peer")
         return {"episodes": 0, "facts": 0, "rules": 0}
@@ -1082,7 +1106,7 @@ async def test_reembed_pending_400_on_bad_tier(app, monkeypatch):
 
     _make_reembed_db(app)
 
-    async def _fake_count_pending(pool, current_model, tier=None):
+    async def _fake_count_pending(pool, current_model, tier=None, *, memory_schema=None):
         raise ValueError("Unknown tier 'bogus'. Must be one of: ['episodes', 'facts', 'rules']")
 
     monkeypatch.setattr(_reembedding, "count_pending", _fake_count_pending)
@@ -1121,7 +1145,7 @@ async def test_reembed_post_dry_run_returns_result(app, monkeypatch):
         errors=[],
     )
 
-    async def _fake_run(pool, engine, *, dry_run, tiers, batch_size):
+    async def _fake_run(pool, engine, *, dry_run, tiers, batch_size, memory_schema=None):
         return dry_run_result
 
     monkeypatch.setattr(_reembedding, "run", _fake_run)
@@ -1154,7 +1178,7 @@ async def test_reembed_post_live_run_passes_correct_args(app, monkeypatch):
 
     captured: list[dict] = []
 
-    async def _fake_run(pool, engine, *, dry_run, tiers, batch_size):
+    async def _fake_run(pool, engine, *, dry_run, tiers, batch_size, memory_schema=None):
         captured.append({"dry_run": dry_run, "tiers": tiers, "batch_size": batch_size})
         return _reembedding.ReembedResult(
             dry_run=False,
@@ -1196,7 +1220,7 @@ async def test_reembed_post_400_on_invalid_tier(app, monkeypatch):
     # _fake_embedding_engine autouse fixture (root conftest.py) prevents real
     # model loads; no extra engine stub needed here.
 
-    async def _fake_run(pool, engine, *, dry_run, tiers, batch_size):
+    async def _fake_run(pool, engine, *, dry_run, tiers, batch_size, memory_schema=None):
         raise ValueError("Unknown tiers: ['bogus']")
 
     monkeypatch.setattr(_reembedding, "run", _fake_run)
@@ -1673,7 +1697,8 @@ async def test_memory_detail_missing_schema_stays_a_truthful_404(kind: str, app)
         {
             "atlas": _MemoryDetailPool(),
             "switchboard": _MemoryDetailPool(error=UndefinedTableError("relation does not exist")),
-        }
+        },
+        memory_schema_absent={"switchboard"},
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 
@@ -1683,6 +1708,26 @@ async def test_memory_detail_missing_schema_stays_a_truthful_404(kind: str, app)
         resp = await client.get(path)
 
     assert resp.status_code == 404
+
+
+async def test_memory_detail_unknown_schema_state_is_degraded(app) -> None:
+    """An unrecorded missing schema is never silently treated as optional."""
+    path, _ = _detail_fixture("fact")
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _MemoryDetailPool(),
+            "switchboard": _MemoryDetailPool(error=UndefinedTableError("relation does not exist")),
+        }
+    )
+    app.dependency_overrides[_get_db_manager] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(path)
+
+    assert resp.status_code == 503
+    assert "switchboard" in resp.json()["detail"]
 
 
 def _make_entity_row(entity_id: uuid.UUID) -> dict:
@@ -1776,7 +1821,8 @@ async def test_entity_detail_skips_absent_fact_schema_without_degraded_flag(app)
             "switchboard": _EntityMemoryPool(
                 fact_error=UndefinedTableError("relation does not exist")
             ),
-        }
+        },
+        memory_schema_absent={"switchboard"},
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 
@@ -1806,7 +1852,8 @@ async def test_migrate_contact_facts_does_not_claim_success_after_failed_source(
         {
             "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
             "finance": _EntityMemoryPool(fact_update_error=error),
-        }
+        },
+        memory_schema_absent={"finance"} if isinstance(error, UndefinedTableError) else None,
     )
     app.dependency_overrides[_get_db_manager] = lambda: db
 

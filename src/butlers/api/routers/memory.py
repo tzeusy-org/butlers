@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC
@@ -52,6 +53,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
+_MEMORY_SCHEMA_RELATIONS = ("episodes", "facts", "rules")
+_SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
@@ -88,24 +92,67 @@ def _any_pool(db: DatabaseManager) -> object:
     raise HTTPException(status_code=503, detail="No database pools available")
 
 
+def _memory_schema_absent_at_start(db: DatabaseManager, butler_name: str) -> bool:
+    """Return whether every required memory relation was absent at startup."""
+    relation_marker = getattr(db, "relation_observed_since_start", None)
+    if not callable(relation_marker):
+        return False
+    return all(
+        relation_marker(butler_name, relation) is False for relation in _MEMORY_SCHEMA_RELATIONS
+    )
+
+
+def _memory_source_schema(db: DatabaseManager, butler_name: str) -> str | None:
+    """Return a validated configured schema for a memory-owning pool."""
+    schema_for_butler = getattr(db, "schema_for_butler", None)
+    if not callable(schema_for_butler):
+        return None
+    try:
+        schema = schema_for_butler(butler_name)
+    except KeyError:
+        return None
+    if not isinstance(schema, str):
+        return None
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(schema):
+        raise ValueError(f"Unsafe schema identifier: {schema!r}")
+    return schema
+
+
+def _memory_relation(db: DatabaseManager, butler_name: str, relation: str) -> str:
+    """Return the explicitly owned memory relation when a schema is configured.
+
+    Per-butler API pools intentionally include ``public`` in their search path
+    for shared data. Memory queries own their local tables, though, so a dropped
+    private relation must not resolve to a same-named public table. Legacy pools
+    without a configured schema keep their existing unqualified semantics.
+    """
+    schema = _memory_source_schema(db, butler_name)
+    if schema is None:
+        return relation
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(relation):
+        raise ValueError(f"Unsafe relation identifier: {relation!r}")
+    return f'"{schema}"."{relation}"'
+
+
 def _is_missing_memory_schema_error(
     exc: Exception,
     *,
+    schema_absent_at_start: bool,
     expected_absent_columns: tuple[str, ...] = (),
 ) -> bool:
     """Return whether *exc* indicates the pool simply lacks memory tables.
 
-    This is the expected, common case for a butler that has not opted into
-    the memory module -- NOT a degraded source. Any other exception (a
-    dropped connection, a permission error, a malformed query) is a genuine
-    failure and must be tracked via *tracker* in ``_fan_out_memory_queries``,
-    never silently folded into the same "no memory tables" skip.
+    This is the expected, common case only when every required memory table
+    was absent when the dashboard started.  An ``UndefinedTableError`` after
+    a table was present at startup is schema loss and must be tracked via
+    *tracker* in ``_fan_out_memory_queries`` rather than folded into the same
+    graceful skip.
     """
     if isinstance(exc, UndefinedTableError):
-        return True
+        return schema_absent_at_start
     msg = str(exc).lower()
     if "does not exist" in msg and ("relation" in msg or "table" in msg):
-        return True
+        return schema_absent_at_start
     # Re-embedding probes columns that only memory-enabled schemas own.  Keep
     # this exemption opt-in per query so a missing column elsewhere remains a
     # genuine query fault rather than silently looking like an absent schema.
@@ -161,6 +208,7 @@ async def _fan_out_memory_queries(
         except Exception as exc:
             if not _is_missing_memory_schema_error(
                 exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
                 expected_absent_columns=expected_absent_columns,
             ):
                 tracker.mark(name, msg=f"memory query {query_name!r} failed")
@@ -258,33 +306,47 @@ async def get_memory_stats(
         # schema — resolved the same way the backfill job infers it (see
         # ``scheduled_jobs._infer_current_schema``) — to avoid every pool
         # double-counting the whole shared catalog table.
-        try:
-            schema = await pool.fetchval("SELECT current_schema()")
-        except Exception as exc:
-            if _is_missing_memory_schema_error(exc):
-                logger.debug(
-                    "Skipping catalog-drift gauge for butler %s (no memory schema)",
+        memory_schema = _memory_source_schema(db, butler_name)
+        if memory_schema is not None:
+            schema = memory_schema
+        else:
+            try:
+                schema = await pool.fetchval("SELECT current_schema()")
+            except Exception as exc:
+                if _is_missing_memory_schema_error(
+                    exc,
+                    schema_absent_at_start=_memory_schema_absent_at_start(db, butler_name),
+                ):
+                    logger.debug(
+                        "Skipping catalog-drift gauge for butler %s (no memory schema)",
+                        butler_name,
+                        exc_info=True,
+                    )
+                    return {"live": 0, "stale": 0, "drifted": 0}
+                logger.warning(
+                    "Failed to resolve current_schema() for butler %s; omitting "
+                    "catalog-drift gauge for this pool",
                     butler_name,
                     exc_info=True,
                 )
+                catalog_tracker.mark(butler_name, msg="catalog-drift current_schema() failed")
                 return {"live": 0, "stale": 0, "drifted": 0}
-            logger.warning(
-                "Failed to resolve current_schema() for butler %s; omitting "
-                "catalog-drift gauge for this pool",
-                butler_name,
-                exc_info=True,
-            )
-            catalog_tracker.mark(butler_name, msg="catalog-drift current_schema() failed")
-            return {"live": 0, "stale": 0, "drifted": 0}
         if not schema or schema == "public":
             # No real butler schema resolved (e.g. memory tables living
             # directly in public in a test topology) — legitimately absent,
             # not a degraded source.
             return {"live": 0, "stale": 0, "drifted": 0}
         try:
-            return await _storage.get_catalog_drift_counts(pool, source_schema=schema)
+            return await _storage.get_catalog_drift_counts(
+                pool,
+                source_schema=schema,
+                memory_schema=memory_schema,
+            )
         except Exception as exc:
-            if _is_missing_memory_schema_error(exc):
+            if _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, butler_name),
+            ):
                 # This butler has no facts/rules tables (memory module not
                 # enabled) — legitimately absent, not a degraded source.
                 logger.debug(
@@ -321,48 +383,52 @@ async def get_memory_stats(
                 exc_info=True,
             )
             last_run = None
+        episodes_relation = _memory_relation(db, butler_name, "episodes")
+        facts_relation = _memory_relation(db, butler_name, "facts")
+        rules_relation = _memory_relation(db, butler_name, "rules")
         return {
-            "total_episodes": await pool.fetchval("SELECT count(*) FROM episodes") or 0,
+            "total_episodes": await pool.fetchval(f"SELECT count(*) FROM {episodes_relation}") or 0,
             "unconsolidated_episodes": await pool.fetchval(
-                "SELECT count(*) FROM episodes WHERE consolidated = false"
+                f"SELECT count(*) FROM {episodes_relation} WHERE consolidated = false"
             )
             or 0,
             "dead_letter_episodes": await pool.fetchval(
-                "SELECT count(*) FROM episodes WHERE consolidation_status = 'dead_letter'"
+                f"SELECT count(*) FROM {episodes_relation} "
+                "WHERE consolidation_status = 'dead_letter'"
             )
             or 0,
-            "total_facts": await pool.fetchval("SELECT count(*) FROM facts") or 0,
+            "total_facts": await pool.fetchval(f"SELECT count(*) FROM {facts_relation}") or 0,
             "active_facts": await pool.fetchval(
-                "SELECT count(*) FROM facts WHERE validity = 'active'"
+                f"SELECT count(*) FROM {facts_relation} WHERE validity = 'active'"
             )
             or 0,
             "fading_facts": await pool.fetchval(
-                "SELECT count(*) FROM facts WHERE validity = 'fading'"
+                f"SELECT count(*) FROM {facts_relation} WHERE validity = 'fading'"
             )
             or 0,
-            "total_rules": await pool.fetchval("SELECT count(*) FROM rules") or 0,
+            "total_rules": await pool.fetchval(f"SELECT count(*) FROM {rules_relation}") or 0,
             # Maturity buckets exclude forgotten rules (metadata->>'forgotten' —
             # rules have no validity column, so this JSONB flag is the sole
             # soft-delete signal; see forget_memory/run_decay_sweep in storage.py).
             # A forgotten rule is not a live belief and must not inflate any
             # maturity count, matching the memory_stats MCP tool's convention.
             "candidate_rules": await pool.fetchval(
-                "SELECT count(*) FROM rules WHERE maturity = 'candidate'"
+                f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'candidate'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
             )
             or 0,
             "established_rules": await pool.fetchval(
-                "SELECT count(*) FROM rules WHERE maturity = 'established'"
+                f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'established'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
             )
             or 0,
             "proven_rules": await pool.fetchval(
-                "SELECT count(*) FROM rules WHERE maturity = 'proven'"
+                f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'proven'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
             )
             or 0,
             "anti_pattern_rules": await pool.fetchval(
-                "SELECT count(*) FROM rules WHERE maturity = 'anti_pattern'"
+                f"SELECT count(*) FROM {rules_relation} WHERE maturity = 'anti_pattern'"
                 " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
             )
             or 0,
@@ -492,13 +558,14 @@ async def list_episodes(
 
     row_limit = offset + limit
 
-    async def _query_pool(_: str, pool: object) -> tuple[int, list[object]]:
-        total = await pool.fetchval(f"SELECT count(*) FROM episodes{where}", *args) or 0
+    async def _query_pool(butler_name: str, pool: object) -> tuple[int, list[object]]:
+        relation = _memory_relation(db, butler_name, "episodes")
+        total = await pool.fetchval(f"SELECT count(*) FROM {relation}{where}", *args) or 0
         rows = await pool.fetch(
             f"SELECT id, butler, session_id, content, importance, reference_count,"
             f" consolidated, consolidation_status, created_at, last_referenced_at,"
             f" expires_at, metadata"
-            f" FROM episodes{where}"
+            f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}",
             *args,
@@ -542,12 +609,13 @@ async def get_episode(
 ) -> ApiResponse[Episode]:
     """Return a single episode by ID."""
 
-    async def _query_pool(_: str, pool: object):
+    async def _query_pool(butler_name: str, pool: object):
+        relation = _memory_relation(db, butler_name, "episodes")
         return await pool.fetchrow(
             "SELECT id, butler, session_id, content, importance, reference_count,"
             " consolidated, consolidation_status, created_at, last_referenced_at,"
             " expires_at, metadata"
-            " FROM episodes WHERE id = $1",
+            f" FROM {relation} WHERE id = $1",
             episode_id,
         )
 
@@ -630,15 +698,16 @@ async def list_facts(
 
     row_limit = offset + limit
 
-    async def _query_pool(_: str, pool: object) -> tuple[int, list[object]]:
-        total = await pool.fetchval(f"SELECT count(*) FROM facts{where}", *args) or 0
+    async def _query_pool(butler_name: str, pool: object) -> tuple[int, list[object]]:
+        relation = _memory_relation(db, butler_name, "facts")
+        total = await pool.fetchval(f"SELECT count(*) FROM {relation}{where}", *args) or 0
         rows = await pool.fetch(
             f"SELECT id, subject, predicate, content, importance, confidence,"
             f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
             f" entity_id, object_entity_id, validity, scope, reference_count,"
             f" created_at, last_referenced_at,"
             f" last_confirmed_at, tags, metadata"
-            f" FROM facts{where}"
+            f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}",
             *args,
@@ -682,14 +751,15 @@ async def get_fact(
 ) -> ApiResponse[Fact]:
     """Return a single fact by ID."""
 
-    async def _query_pool(_: str, pool: object):
+    async def _query_pool(butler_name: str, pool: object):
+        relation = _memory_relation(db, butler_name, "facts")
         row = await pool.fetchrow(
             "SELECT id, subject, predicate, content, importance, confidence,"
             " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
             " entity_id, object_entity_id, validity, scope, reference_count,"
             " created_at, last_referenced_at,"
             " last_confirmed_at, tags, metadata"
-            " FROM facts WHERE id = $1",
+            f" FROM {relation} WHERE id = $1",
             fact_id,
         )
         if row is None:
@@ -697,7 +767,7 @@ async def get_fact(
         # Reverse-lookup the fact that supersedes THIS one (if any).  Runs on the
         # same pool that owns the fact, so we never cross butler schemas.
         superseder = await pool.fetchrow(
-            "SELECT id FROM facts WHERE supersedes_id = $1 LIMIT 1",
+            f"SELECT id FROM {relation} WHERE supersedes_id = $1 LIMIT 1",
             fact_id,
         )
         return (row, superseder)
@@ -730,8 +800,12 @@ _FACT_SELECT_COLUMNS = (
     " entity_id, object_entity_id, validity, scope, reference_count,"
     " created_at, last_referenced_at,"
     " last_confirmed_at, tags, metadata"
-    " FROM facts WHERE id = $1"
 )
+
+
+def _fact_select_query(relation: str) -> str:
+    """Return the fact detail query pinned to its local memory relation."""
+    return f"{_FACT_SELECT_COLUMNS} FROM {relation} WHERE id = $1"
 
 
 @router.post("/facts/{fact_id}/confirm", response_model=ApiResponse[Fact])
@@ -763,29 +837,43 @@ async def confirm_fact(
         raise HTTPException(status_code=503, detail="No database pools available")
 
     # Locate the pool that owns this fact, confirm it there, and re-fetch the
-    # updated row.  Each pool probe is guarded so a pool lacking memory tables is
-    # skipped rather than failing the whole request.
-    for _name, pool in pools:
+    # updated row. A relation that was present at startup but later disappeared
+    # is an unavailable source, not a reason to search_path-fall through to
+    # public or report a misleading 404.
+    tracker = DegradedSources(logger)
+    for name, pool in pools:
         try:
-            confirmed = await _storage.confirm_memory(pool, "fact", fact_uuid)
-        except Exception:
+            memory_schema = _memory_source_schema(db, name)
+            relation = _memory_relation(db, name, "facts")
+            confirmed = await _storage.confirm_memory(
+                pool,
+                "fact",
+                fact_uuid,
+                memory_schema=memory_schema,
+            )
+            if not confirmed:
+                continue
+            row = await pool.fetchrow(_fact_select_query(relation), fact_uuid)
+        except Exception as exc:
+            if not _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
+            ):
+                tracker.mark(name, msg="fact confirmation source unavailable")
             logger.debug(
                 "Skipping pool %s while confirming fact %s (pool lacks memory tables or failed)",
-                _name,
+                name,
                 fact_id,
                 exc_info=True,
             )
             continue
-        if not confirmed:
-            continue
-        row = await pool.fetchrow(_FACT_SELECT_COLUMNS, fact_uuid)
         if row is None:
             continue
         fact = _row_to_fact(row)
         await _resolve_entity_names(db, [fact])
         return ApiResponse[Fact](data=fact)
 
-    raise HTTPException(status_code=404, detail="Fact not found")
+    _raise_memory_detail_miss(resource="Fact", tracker=tracker)
 
 
 # ---------------------------------------------------------------------------
@@ -823,29 +911,41 @@ async def retract_fact(
         raise HTTPException(status_code=503, detail="No database pools available")
 
     # Locate the pool that owns this fact, retract it there, and re-fetch the
-    # updated row.  Each pool probe is guarded so a pool lacking memory tables is
-    # skipped rather than failing the whole request.
-    for _name, pool in pools:
+    # updated row. See confirm_fact for the schema-loss classification rule.
+    tracker = DegradedSources(logger)
+    for name, pool in pools:
         try:
-            retracted = await _storage.forget_memory(pool, "fact", fact_uuid)
-        except Exception:
+            memory_schema = _memory_source_schema(db, name)
+            relation = _memory_relation(db, name, "facts")
+            retracted = await _storage.forget_memory(
+                pool,
+                "fact",
+                fact_uuid,
+                memory_schema=memory_schema,
+            )
+            if not retracted:
+                continue
+            row = await pool.fetchrow(_fact_select_query(relation), fact_uuid)
+        except Exception as exc:
+            if not _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
+            ):
+                tracker.mark(name, msg="fact retraction source unavailable")
             logger.debug(
                 "Skipping pool %s while retracting fact %s (pool lacks memory tables or failed)",
-                _name,
+                name,
                 fact_id,
                 exc_info=True,
             )
             continue
-        if not retracted:
-            continue
-        row = await pool.fetchrow(_FACT_SELECT_COLUMNS, fact_uuid)
         if row is None:
             continue
         fact = _row_to_fact(row)
         await _resolve_entity_names(db, [fact])
         return ApiResponse[Fact](data=fact)
 
-    raise HTTPException(status_code=404, detail="Fact not found")
+    _raise_memory_detail_miss(resource="Fact", tracker=tracker)
 
 
 # ---------------------------------------------------------------------------
@@ -907,14 +1007,15 @@ async def list_rules(
 
     row_limit = offset + limit
 
-    async def _query_pool(_: str, pool: object) -> tuple[int, list[object]]:
-        total = await pool.fetchval(f"SELECT count(*) FROM rules{where}", *args) or 0
+    async def _query_pool(butler_name: str, pool: object) -> tuple[int, list[object]]:
+        relation = _memory_relation(db, butler_name, "rules")
+        total = await pool.fetchval(f"SELECT count(*) FROM {relation}{where}", *args) or 0
         rows = await pool.fetch(
             f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
             f" effectiveness_score, applied_count, success_count, harmful_count,"
             f" source_episode_id, source_butler, created_at, last_applied_at,"
             f" last_evaluated_at, tags, metadata"
-            f" FROM rules{where}"
+            f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}",
             *args,
@@ -957,13 +1058,14 @@ async def get_rule(
 ) -> ApiResponse[Rule]:
     """Return a single rule by ID."""
 
-    async def _query_pool(_: str, pool: object):
+    async def _query_pool(butler_name: str, pool: object):
+        relation = _memory_relation(db, butler_name, "rules")
         return await pool.fetchrow(
             "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
             " effectiveness_score, applied_count, success_count, harmful_count,"
             " source_episode_id, source_butler, created_at, last_applied_at,"
             " last_evaluated_at, tags, metadata"
-            " FROM rules WHERE id = $1",
+            f" FROM {relation} WHERE id = $1",
             rule_id,
         )
 
@@ -1091,20 +1193,25 @@ async def list_activity(
 ) -> ApiResponse[list[MemoryActivity]]:
     """Return recent memory activity interleaved from all three tables."""
 
-    async def _query_pool(_: str, pool: object) -> tuple[list[object], list[object], list[object]]:
+    async def _query_pool(
+        butler_name: str, pool: object
+    ) -> tuple[list[object], list[object], list[object]]:
+        episodes_relation = _memory_relation(db, butler_name, "episodes")
+        facts_relation = _memory_relation(db, butler_name, "facts")
+        rules_relation = _memory_relation(db, butler_name, "rules")
         episode_rows = await pool.fetch(
             "SELECT id, butler, content, created_at"
-            " FROM episodes ORDER BY created_at DESC LIMIT $1",
+            f" FROM {episodes_relation} ORDER BY created_at DESC LIMIT $1",
             limit,
         )
         fact_rows = await pool.fetch(
             "SELECT id, subject, predicate, source_butler, created_at"
-            " FROM facts ORDER BY created_at DESC LIMIT $1",
+            f" FROM {facts_relation} ORDER BY created_at DESC LIMIT $1",
             limit,
         )
         rule_rows = await pool.fetch(
             "SELECT id, content, source_butler, created_at"
-            " FROM rules ORDER BY created_at DESC LIMIT $1",
+            f" FROM {rules_relation} ORDER BY created_at DESC LIMIT $1",
             limit,
         )
         return list(episode_rows), list(fact_rows), list(rule_rows)
@@ -1346,9 +1453,10 @@ async def list_entities(
     tracker = DegradedSources(logger)
     if entity_ids:
 
-        async def _count_facts(_: str, fpool: object) -> dict[str, int]:
+        async def _count_facts(butler_name: str, fpool: object) -> dict[str, int]:
+            relation = _memory_relation(db, butler_name, "facts")
             fc_rows = await fpool.fetch(
-                "SELECT entity_id, count(*) AS cnt FROM facts"
+                f"SELECT entity_id, count(*) AS cnt FROM {relation}"
                 " WHERE entity_id = ANY($1) AND validity IN ('active', 'fading')"
                 " GROUP BY entity_id",
                 entity_ids,
@@ -1439,10 +1547,12 @@ async def get_entity(
     # Facts live in per-butler schemas — fan out across all memory pools.
     row_limit = facts_offset + facts_limit
 
-    async def _query_entity_facts(_: str, fpool: object) -> tuple[int, list[object]]:
+    async def _query_entity_facts(butler_name: str, fpool: object) -> tuple[int, list[object]]:
+        facts_relation = _memory_relation(db, butler_name, "facts")
+        episodes_relation = _memory_relation(db, butler_name, "episodes")
         count = (
             await fpool.fetchval(
-                "SELECT count(*) FROM facts"
+                f"SELECT count(*) FROM {facts_relation}"
                 " WHERE (entity_id = $1 OR object_entity_id = $1)"
                 " AND validity IN ('active', 'fading')",
                 eid,
@@ -1456,8 +1566,8 @@ async def get_entity(
             " f.entity_id, f.object_entity_id, f.validity, f.scope, f.reference_count,"
             " f.created_at, f.last_referenced_at,"
             " f.last_confirmed_at, f.tags, f.metadata"
-            " FROM facts f"
-            " LEFT JOIN episodes ep ON ep.id = f.source_episode_id"
+            f" FROM {facts_relation} f"
+            f" LEFT JOIN {episodes_relation} ep ON ep.id = f.source_episode_id"
             " WHERE (f.entity_id = $1 OR f.object_entity_id = $1)"
             " AND f.validity IN ('active', 'fading')"
             " ORDER BY f.created_at DESC"
@@ -1673,9 +1783,10 @@ async def set_linked_contact(
     cid_str = str(cid)
     prefixed_subject = f"contact:{cid_str}"
 
-    async def _migrate_facts(_name: str, fpool: object) -> int:
+    async def _migrate_facts(butler_name: str, fpool: object) -> int:
+        relation = _memory_relation(db, butler_name, "facts")
         result = await fpool.execute(
-            "UPDATE facts SET entity_id = $1"
+            f"UPDATE {relation} SET entity_id = $1"
             " WHERE (subject = $2 OR subject = $3)"
             " AND entity_id IS NULL"
             " AND validity IN ('active', 'fading')",
@@ -1757,10 +1868,11 @@ async def delete_entity(
     # 'fading' facts are still live (not yet superseded/expired/retracted) and
     # must block/retire the same as 'active' ones, or deleting an entity that
     # only has fading facts would silently orphan them.
-    async def _count_active_facts(_: str, fpool: object) -> int:
+    async def _count_active_facts(butler_name: str, fpool: object) -> int:
+        relation = _memory_relation(db, butler_name, "facts")
         return (
             await fpool.fetchval(
-                "SELECT count(*) FROM facts"
+                f"SELECT count(*) FROM {relation}"
                 " WHERE entity_id = $1 AND validity IN ('active', 'fading')",
                 eid,
             )
@@ -1795,9 +1907,10 @@ async def delete_entity(
             )
 
         # Retire all active facts for this entity across every memory pool.
-        async def _retire_facts(_: str, fpool: object) -> int:
+        async def _retire_facts(butler_name: str, fpool: object) -> int:
+            relation = _memory_relation(db, butler_name, "facts")
             await fpool.execute(
-                "UPDATE facts SET validity = 'retracted'"
+                f"UPDATE {relation} SET validity = 'retracted'"
                 " WHERE entity_id = $1 AND validity IN ('active', 'fading')",
                 eid,
             )
@@ -2084,7 +2197,8 @@ async def get_butler_memory_stats(
     Errors:
     - 404: Butler is not registered in the DatabaseManager.
     - 200 with zeros: Butler exists but memory tables are absent.
-    - 500: Unexpected database error.
+    - 503: A memory table that was present at startup is unavailable, or its
+      startup presence is unknown.
     """
     if name not in db.butler_names:
         raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
@@ -2096,35 +2210,38 @@ async def get_butler_memory_stats(
 
     # Run one batched query per table concurrently: each fetchrow returns (total, count_24h)
     # using COUNT(*) FILTER (...) to fetch both counts in a single round-trip.
-    # Individual failures are caught per-table so a missing table returns zeros, not 500.
+    # A table is only an expected zero when every memory relation was absent at
+    # startup. A post-start drop or unknown startup state fails closed instead
+    # of turning a broken private source into a calm all-zero response.
 
     _INTERVAL = "NOW() - INTERVAL '1 day'"
 
-    async def _count_episodes() -> tuple[int, int]:
-        try:
-            row = await pool.fetchrow(
-                f"SELECT"
-                f"  count(*) AS total,"
-                f"  count(*) FILTER (WHERE created_at > {_INTERVAL}) AS recent"
-                f" FROM episodes"
-            )
-            return (row["total"] or 0, row["recent"] or 0) if row else (0, 0)
-        except Exception:
-            logger.debug("episodes table not available for butler '%s'; returning zeros", name)
-            return (0, 0)
+    schema_absent_at_start = _memory_schema_absent_at_start(db, name)
 
-    async def _count_facts() -> tuple[int, int]:
+    async def _count_memory_table(table: str) -> tuple[int, int]:
+        relation = _memory_relation(db, name, table)
         try:
             row = await pool.fetchrow(
                 f"SELECT"
                 f"  count(*) AS total,"
                 f"  count(*) FILTER (WHERE created_at > {_INTERVAL}) AS recent"
-                f" FROM facts"
+                f" FROM {relation}"
             )
             return (row["total"] or 0, row["recent"] or 0) if row else (0, 0)
-        except Exception:
-            logger.debug("facts table not available for butler '%s'; returning zeros", name)
-            return (0, 0)
+        except Exception as exc:
+            if _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=schema_absent_at_start,
+            ):
+                logger.debug("%s table not available for butler '%s'; returning zeros", table, name)
+                return (0, 0)
+            logger.warning("%s table unavailable for butler '%s'", table, name, exc_info=True)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Memory stats unavailable for butler '{name}': {table} table is unavailable"
+                ),
+            ) from exc
 
     async def _count_entities() -> tuple[int, int]:
         try:
@@ -2141,29 +2258,16 @@ async def get_butler_memory_stats(
             logger.debug("public.entities not available for butler '%s'; returning zeros", name)
             return (0, 0)
 
-    async def _count_rules() -> tuple[int, int]:
-        try:
-            row = await pool.fetchrow(
-                f"SELECT"
-                f"  count(*) AS total,"
-                f"  count(*) FILTER (WHERE created_at > {_INTERVAL}) AS recent"
-                f" FROM rules"
-            )
-            return (row["total"] or 0, row["recent"] or 0) if row else (0, 0)
-        except Exception:
-            logger.debug("rules table not available for butler '%s'; returning zeros", name)
-            return (0, 0)
-
     (
         (total_episodes, episodes_24h),
         (total_facts, facts_24h),
         (total_entities, entities_24h),
         (total_rules, rules_24h),
     ) = await asyncio.gather(
-        _count_episodes(),
-        _count_facts(),
+        _count_memory_table("episodes"),
+        _count_memory_table("facts"),
         _count_entities(),
-        _count_rules(),
+        _count_memory_table("rules"),
     )
 
     stats = ButlerMemoryStats(
@@ -2363,8 +2467,11 @@ async def inspect_memory(
     # importance data as browse mode.  We SELECT the same column sets the list
     # endpoints use and reuse their serialization helpers (_row_to_fact /
     # _row_to_rule / _row_to_episode) to keep the row shapes identical.
-    async def _query_pool(_: str, pool: object) -> list[dict]:
+    async def _query_pool(butler_name: str, pool: object) -> list[dict]:
         results: list[dict] = []
+        episodes_relation = _memory_relation(db, butler_name, "episodes")
+        facts_relation = _memory_relation(db, butler_name, "facts")
+        rules_relation = _memory_relation(db, butler_name, "rules")
 
         if "episode" in target_kinds:
             ep_cond = ""
@@ -2378,7 +2485,7 @@ async def inspect_memory(
                 f"SELECT id, butler, session_id, content, importance, reference_count,"
                 f" consolidated, consolidation_status, created_at, last_referenced_at,"
                 f" expires_at, metadata"
-                f" FROM episodes{ep_cond}"
+                f" FROM {episodes_relation}{ep_cond}"
                 f" ORDER BY created_at DESC"
                 f" LIMIT ${idx}",
                 *ep_args,
@@ -2412,7 +2519,7 @@ async def inspect_memory(
                 f" entity_id, object_entity_id, validity, scope, reference_count,"
                 f" created_at, last_referenced_at,"
                 f" last_confirmed_at, tags, metadata"
-                f" FROM facts{fact_cond}"
+                f" FROM {facts_relation}{fact_cond}"
                 f" ORDER BY created_at DESC"
                 f" LIMIT ${idx}",
                 *fact_args,
@@ -2454,7 +2561,7 @@ async def inspect_memory(
                 f" effectiveness_score, applied_count, success_count, harmful_count,"
                 f" source_episode_id, source_butler, created_at, last_applied_at,"
                 f" last_evaluated_at, tags, metadata"
-                f" FROM rules{rule_cond}"
+                f" FROM {rules_relation}{rule_cond}"
                 f" ORDER BY created_at DESC"
                 f" LIMIT ${idx}",
                 *rule_args,
@@ -2557,15 +2664,44 @@ async def get_reembed_pending(
             pool = db.pool(butler)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"No pool available for butler '{butler}'")
-        try:
-            counts = await _reembedding.count_pending(pool, current_model)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        memory_schema = _memory_source_schema(db, butler)
+        if _memory_schema_absent_at_start(db, butler):
+            counts = dict.fromkeys(_reembedding.ALL_TIERS, 0)
+        else:
+            try:
+                counts = await _reembedding.count_pending(
+                    pool,
+                    current_model,
+                    memory_schema=memory_schema,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                if _is_missing_memory_schema_error(
+                    exc,
+                    schema_absent_at_start=_memory_schema_absent_at_start(db, butler),
+                    expected_absent_columns=("embedding", "embedding_model_version"),
+                ):
+                    counts = dict.fromkeys(_reembedding.ALL_TIERS, 0)
+                else:
+                    logger.warning(
+                        "Re-embedding pending counts unavailable for butler %s",
+                        butler,
+                        exc_info=True,
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Re-embedding source unavailable for butler '{butler}'",
+                    ) from exc
     else:
         results = await _fan_out_memory_queries(
             db,
             query_name="reembed_pending",
-            query_fn=lambda _name, pool: _reembedding.count_pending(pool, current_model),
+            query_fn=lambda name, pool: _reembedding.count_pending(
+                pool,
+                current_model,
+                memory_schema=_memory_source_schema(db, name),
+            ),
             tracker=tracker,
             expected_absent_columns=("embedding", "embedding_model_version"),
         )
@@ -2620,6 +2756,28 @@ async def run_reembed(
     except KeyError:
         raise HTTPException(status_code=404, detail=f"No pool available for butler '{body.butler}'")
 
+    if _memory_schema_absent_at_start(db, body.butler):
+        tier_names = list(_reembedding.ALL_TIERS) if body.tiers is None else list(body.tiers)
+        unknown_tiers = [tier for tier in tier_names if tier not in _reembedding.ALL_TIERS]
+        if unknown_tiers:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unknown tiers: {unknown_tiers}. Must be from: "
+                    f"{sorted(_reembedding.ALL_TIERS)}"
+                ),
+            )
+        return ApiResponse[ReembedRunResult](
+            data=ReembedRunResult(
+                dry_run=body.dry_run,
+                current_model=body.current_model,
+                tiers_processed=tier_names,
+                counts=dict.fromkeys(tier_names, 0),
+                total=0,
+                errors=[],
+            )
+        )
+
     try:
         engine = get_embedding_engine(body.current_model)
     except Exception as exc:
@@ -2635,9 +2793,20 @@ async def run_reembed(
             dry_run=body.dry_run,
             tiers=body.tiers,
             batch_size=body.batch_size,
+            memory_schema=_memory_source_schema(db, body.butler),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning(
+            "Re-embedding source unavailable for butler %s",
+            body.butler,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Re-embedding source unavailable for butler '{body.butler}'",
+        ) from exc
 
     return ApiResponse[ReembedRunResult](
         data=ReembedRunResult(

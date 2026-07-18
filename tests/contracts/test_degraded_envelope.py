@@ -522,7 +522,7 @@ def _case_memory_reembed_pending() -> DegradedCase:
         app = create_app()
         app.dependency_overrides[_memory_get_db] = lambda: db
 
-        async def _count_pending(pool: object, *_args: object) -> dict[str, int]:
+        async def _count_pending(pool: object, *_args: object, **_kwargs: object) -> dict[str, int]:
             if pool is failed_pool:
                 raise RuntimeError("connection reset by peer")
             return {"episodes": 0, "facts": 0, "rules": 0}

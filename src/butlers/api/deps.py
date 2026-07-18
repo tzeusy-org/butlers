@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 # Default roster location relative to the repository root.
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
 
+# These optional relation families drive the dashboard's graceful fan-out
+# surfaces.  Capture their presence once startup has finished wiring each
+# schema so a later UndefinedTableError is never mistaken for a deliberately
+# uninstalled module.
+_OPTIONAL_RELATIONS_TO_SNAPSHOT = ("butler_secrets", "episodes", "facts", "rules")
+
 
 @dataclass(frozen=True)
 class ButlerConnectionInfo:
@@ -465,6 +471,10 @@ async def init_db_manager(
                 db_schema=cfg.db_schema,
                 modules=cfg.modules,
             )
+            await mgr.snapshot_relation_presence(
+                cfg.name,
+                _OPTIONAL_RELATIONS_TO_SNAPSHOT,
+            )
         except Exception:
             logger.warning(
                 "Failed to add DB pool for butler %r (db=%s, schema=%s)",
@@ -485,6 +495,11 @@ async def init_db_manager(
         await shared_db.provision()
         await mgr.set_credential_shared_pool(shared_db.db_name, db_schema=shared_db_schema)
         await ensure_secrets_schema(mgr.credential_shared_pool())
+        await mgr.snapshot_relation_presence(
+            "shared-public",
+            ("butler_secrets",),
+            pool=mgr.credential_shared_pool(),
+        )
     except Exception:
         logger.warning(
             "Failed to initialize shared credential DB pool (db=%s, schema=%s)",

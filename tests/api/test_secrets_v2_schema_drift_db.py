@@ -119,7 +119,12 @@ async def test_missing_table_raises_real_undefined_table_error_and_is_not_tracke
     """A butler schema with no butler_secrets table at all (never migrated) is
     a legitimate absence, not a degraded source."""
     tracker = DegradedSources(_logger)
-    rows = await _fetch_system_secrets(empty_schema_pool, "neverbutler", tracker=tracker)
+    rows = await _fetch_system_secrets(
+        empty_schema_pool,
+        "neverbutler",
+        schema_absent_at_start=True,
+        tracker=tracker,
+    )
 
     assert rows == []
     assert tracker.failed is False

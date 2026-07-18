@@ -190,6 +190,7 @@ import json
 import logging
 import math
 import os
+import re
 import secrets as _secrets_mod
 import time
 from collections.abc import Callable
@@ -1122,21 +1123,66 @@ async def _fetch_google_test_mode_expiry(
 # ---------------------------------------------------------------------------
 
 
-def _is_missing_secrets_schema_error(exc: Exception) -> bool:
+_SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _qualified_relation(schema: str | None, relation: str) -> str:
+    """Return a safely quoted relation, explicit when *schema* is configured."""
+    if schema is None:
+        return relation
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(schema):
+        raise ValueError(f"Unsafe schema identifier: {schema!r}")
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(relation):
+        raise ValueError(f"Unsafe relation identifier: {relation!r}")
+    return f'"{schema}"."{relation}"'
+
+
+def _secrets_source_schema(db: DatabaseManager, butler_name: str) -> str | None:
+    """Return a butler's explicit local schema when the manager exposes one."""
+    schema_for_butler = getattr(db, "schema_for_butler", None)
+    if not callable(schema_for_butler):
+        return None
+    try:
+        schema = schema_for_butler(butler_name)
+    except KeyError:
+        return None
+    return schema if isinstance(schema, str) else None
+
+
+def _secrets_schema_absent_at_start(db: DatabaseManager, butler_name: str) -> bool:
+    """Return whether ``butler_secrets`` was absent when the API started."""
+    relation_marker = getattr(db, "relation_observed_since_start", None)
+    if not callable(relation_marker):
+        return False
+    return relation_marker(butler_name, "butler_secrets") is False
+
+
+def _is_missing_secrets_schema_error(
+    exc: Exception,
+    *,
+    schema_absent_at_start: bool,
+) -> bool:
     """Return whether *exc* indicates the butler simply has no secrets table yet.
 
-    Mirrors ``memory.py::_is_missing_memory_schema_error``. A butler that has
-    never had ``butler_secrets`` created (no table yet) is the expected,
-    common case — NOT a degraded source. Any other failure (an unexpected
-    COLUMN error from schema drift, e.g. bu-urcwx; a dropped connection; a
-    permission error) is genuine and must be tracked via ``tracker`` in
-    ``_fetch_system_secrets`` so a real per-butler failure is never mistaken
-    for a truthful empty result (bu-38ae1).
+    Mirrors ``memory.py::_is_missing_memory_schema_error``. A butler that did
+    not have ``butler_secrets`` when the dashboard started is an expected,
+    common absence — NOT a degraded source. If the table existed at startup,
+    an ``UndefinedTableError`` is schema loss and must be tracked alongside
+    other genuine failures (column drift, dropped connection, permission
+    errors) so a real per-butler failure is never mistaken for a truthful
+    empty result (bu-38ae1).
     """
-    if isinstance(exc, UndefinedTableError):
-        return True
-    msg = str(exc).lower()
-    return "does not exist" in msg and ("relation" in msg or "table" in msg)
+    if not schema_absent_at_start:
+        return False
+    return isinstance(exc, UndefinedTableError)
+
+
+class _SystemSecretSourceUnavailableError(RuntimeError):
+    """A schema-qualified system-secret source failed after startup evidence."""
+
+
+class _CliSecretSourceUnavailableError(RuntimeError):
+    """The shared CLI-secret source failed after (or without) startup evidence."""
 
 
 # ---------------------------------------------------------------------------
@@ -1202,15 +1248,30 @@ async def _fetch_system_secrets(
     butler_name: str,
     *,
     read_only: bool = False,
+    source_schema: str | None = None,
+    schema_absent_at_start: bool = False,
     tracker: DegradedSources | None = None,
 ) -> list[SystemSecret]:
     """Fetch all butler_secrets rows from a single butler's schema pool.
 
-    Returns an empty list when the table doesn't exist or the pool errors.
+    Returns an empty list when the query fails.  A missing table is treated as
+    an expected empty result only when ``schema_absent_at_start`` records that
+    this optional schema was absent at dashboard startup; otherwise its
+    failure is available to ``tracker`` as a degraded source.
 
     ``read_only`` marks the returned rows as managed in the shared credential
     pool (see :class:`SystemSecret.read_only`); set it when scanning the shared
     pool rather than a per-butler schema.
+
+    ``source_schema`` targets the owning per-butler table explicitly when the
+    dashboard is running in a schema-scoped one-database topology.  This
+    prevents a dropped local table from resolving to ``public.butler_secrets``
+    through the pool's ``search_path``.
+
+    ``schema_absent_at_start`` is the lifecycle marker captured by
+    :class:`DatabaseManager` after the schema pool was created.  Its default
+    is deliberately fail-closed for direct callers that do not have that
+    startup evidence.
 
     ``tracker``, when provided, is marked with ``butler_name`` for any failure
     that is NOT classified as "no secrets table yet" by
@@ -1218,9 +1279,10 @@ async def _fetch_system_secrets(
     the classification rule. Callers should surface ``tracker.names`` in the
     response envelope (e.g. ``ApiMeta(sources_degraded=...)``).
     """
+    relation = _qualified_relation(source_schema, "butler_secrets")
     try:
         rows = await pool.fetch(
-            """
+            f"""
             SELECT
                 secret_key,
                 secret_value,
@@ -1234,12 +1296,15 @@ async def _fetch_system_secrets(
                 last_test_ok,
                 last_test_code,
                 last_test_message
-            FROM butler_secrets
+            FROM {relation}
             ORDER BY category, secret_key
             """
         )
     except Exception as exc:  # noqa: BLE001
-        if _is_missing_secrets_schema_error(exc):
+        if _is_missing_secrets_schema_error(
+            exc,
+            schema_absent_at_start=schema_absent_at_start,
+        ):
             logger.debug("butler_secrets not found for butler %s", butler_name)
         else:
             # A missing COLUMN (schema drift, e.g. test-state columns absent) or
@@ -1856,7 +1921,13 @@ async def get_inventory(
             pool = db.pool(butler_name)
         except KeyError:
             continue
-        butler_rows = await _fetch_system_secrets(pool, butler_name, tracker=tracker)
+        butler_rows = await _fetch_system_secrets(
+            pool,
+            butler_name,
+            source_schema=_secrets_source_schema(db, butler_name),
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
+            tracker=tracker,
+        )
         system_secrets.extend(butler_rows)
 
     # Shared application config (Google OAuth app credentials, butler email /
@@ -1874,7 +1945,11 @@ async def get_inventory(
     # read_only=False: these rows are now editable via target="shared-public".
     if shared_pool is not None:
         shared_system = await _fetch_system_secrets(
-            shared_pool, "shared-public", read_only=False, tracker=tracker
+            shared_pool,
+            "shared-public",
+            read_only=False,
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+            tracker=tracker,
         )
         system_secrets.extend(s for s in shared_system if s.category not in ("cli", "cli-auth"))
 
@@ -2079,14 +2154,21 @@ async def _fetch_single_system_secret(
     pool: Any,
     butler_name: str,
     key: str,
+    *,
+    source_schema: str | None = None,
+    schema_absent_at_start: bool = False,
 ) -> SystemSecretDetail | None:
     """Fetch a single butler_secrets row matching the given key.
 
-    Returns None when no matching row exists or when the table doesn't exist.
+    Returns ``None`` when no matching row exists, or when a schema-qualified
+    table was known to be absent at dashboard startup. A schema-qualified query
+    failure without that startup marker is raised so callers cannot silently
+    turn schema loss into an absent credential.
     """
+    relation = _qualified_relation(source_schema, "butler_secrets")
     try:
         row = await pool.fetchrow(
-            """
+            f"""
             SELECT
                 secret_key,
                 secret_value,
@@ -2098,14 +2180,23 @@ async def _fetch_single_system_secret(
                 last_test_code,
                 last_test_message,
                 created_at
-            FROM butler_secrets
+            FROM {relation}
             WHERE secret_key = $1
             """,
             key,
         )
     except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "does not exist" in msg or "undefined" in msg.lower():
+        if source_schema is not None and _is_missing_secrets_schema_error(
+            exc,
+            schema_absent_at_start=schema_absent_at_start,
+        ):
+            logger.debug("butler_secrets not found for butler %s", butler_name)
+            return None
+        if source_schema is not None:
+            raise _SystemSecretSourceUnavailableError(
+                f"System credential source unavailable for butler {butler_name!r}"
+            ) from exc
+        if isinstance(exc, UndefinedTableError):
             logger.debug("butler_secrets not found for butler %s", butler_name)
             return None
         logger.warning("Failed to fetch system secret key=%s butler=%s: %s", key, butler_name, exc)
@@ -2148,12 +2239,16 @@ async def _fetch_single_system_secret(
 async def _fetch_single_cli_secret(
     pool: Any,
     credential_id: str,
+    *,
+    schema_absent_at_start: bool | None = None,
 ) -> CliRuntimeDetail | None:
     """Fetch a single CLI runtime token by key (id).
 
     CLI tokens are stored in butler_secrets with category='cli' or
     'cli-auth' (see _fetch_cli_secrets for why both spellings are one
-    family).  Returns None when no matching row exists.
+    family). Returns None when no matching row exists. When a caller supplies
+    a lifecycle marker, an unavailable shared table is only an expected absence
+    if it was absent at startup; otherwise the source failure is raised.
     """
     try:
         row = await pool.fetchrow(
@@ -2176,6 +2271,16 @@ async def _fetch_single_cli_secret(
             credential_id,
         )
     except Exception as exc:  # noqa: BLE001
+        if schema_absent_at_start is not None:
+            if _is_missing_secrets_schema_error(
+                exc,
+                schema_absent_at_start=schema_absent_at_start,
+            ):
+                logger.debug("butler_secrets (cli) not found in shared pool")
+                return None
+            raise _CliSecretSourceUnavailableError(
+                "CLI credential source unavailable for shared-public"
+            ) from exc
         msg = str(exc).lower()
         if "does not exist" in msg or "undefined" in msg.lower():
             logger.debug("butler_secrets (cli) not found in shared pool")
@@ -2282,18 +2387,45 @@ async def get_system_credential(
         except KeyError:
             continue
 
-        detail = await _fetch_single_system_secret(pool, butler_name, key)
+        try:
+            detail = await _fetch_single_system_secret(
+                pool,
+                butler_name,
+                key,
+                source_schema=_secrets_source_schema(db, butler_name),
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
+            )
+        except _SystemSecretSourceUnavailableError as exc:
+            logger.warning("System credential source unavailable for butler %s", butler_name)
+            raise HTTPException(
+                status_code=503,
+                detail=f"System credential source unavailable for butler {butler_name!r}",
+            ) from exc
         if detail is not None:
             return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
 
     # Also search the shared credential pool (public.butler_secrets).
     try:
         shared_pool = db.credential_shared_pool()
-        detail = await _fetch_single_system_secret(shared_pool, "shared-public", key)
-        if detail is not None:
-            return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
     except KeyError:
         pass
+    else:
+        try:
+            detail = await _fetch_single_system_secret(
+                shared_pool,
+                "shared-public",
+                key,
+                source_schema="public",
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+            )
+        except _SystemSecretSourceUnavailableError as exc:
+            logger.warning("System credential source unavailable for shared-public")
+            raise HTTPException(
+                status_code=503,
+                detail="System credential source unavailable for shared-public",
+            ) from exc
+        if detail is not None:
+            return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
 
     raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -2326,7 +2458,18 @@ async def get_cli_credential(
     if shared_pool is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    detail = await _fetch_single_cli_secret(shared_pool, credential_id)
+    try:
+        detail = await _fetch_single_cli_secret(
+            shared_pool,
+            credential_id,
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+        )
+    except _CliSecretSourceUnavailableError as exc:
+        logger.warning("CLI credential source unavailable for shared-public")
+        raise HTTPException(
+            status_code=503,
+            detail="CLI credential source unavailable for shared-public",
+        ) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
@@ -4676,15 +4819,19 @@ async def set_system_credential(
                 status_code=503,
                 detail="Switchboard pool is not available",
             ) from exc
+        relation = _qualified_relation(_secrets_source_schema(db, "switchboard"), "butler_secrets")
 
         # Check if an existing shared row exists.
         try:
             existing = await pool.fetchrow(
-                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                f"SELECT secret_key FROM {relation} WHERE secret_key = $1",
                 key,
             )
-        except UndefinedTableError:
-            existing = None
+        except UndefinedTableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="butler_secrets table not available — migration may not have run",
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             logger.warning("set_system_credential: fetchrow failed key=%s: %s", key, exc)
             raise HTTPException(status_code=503, detail="Credential lookup failed") from exc
@@ -4693,8 +4840,8 @@ async def set_system_credential(
             # First-time create.
             try:
                 await pool.execute(
-                    """
-                    INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
+                    f"""
+                    INSERT INTO {relation} (secret_key, secret_value, category, updated_at)
                     VALUES ($1, $2, $3, now())
                     """,
                     key,
@@ -4710,8 +4857,8 @@ async def set_system_credential(
             # Row exists — rotate the value.
             try:
                 await pool.execute(
-                    """
-                    UPDATE butler_secrets
+                    f"""
+                    UPDATE {relation}
                     SET secret_value = $1, updated_at = now()
                     WHERE secret_key = $2
                     """,
@@ -4727,7 +4874,12 @@ async def set_system_credential(
         await _write_system_audit(pool, action=audit_action, key=key, note=audit_note)
 
         # Re-fetch to return updated state.
-        detail = await _fetch_single_system_secret(pool, "switchboard", key)
+        detail = await _fetch_single_system_secret(
+            pool,
+            "switchboard",
+            key,
+            source_schema=_secrets_source_schema(db, "switchboard"),
+        )
         if detail is None:
             raise HTTPException(status_code=503, detail="Credential not found after write")
         return ApiResponse[SystemSecretDetail](data=detail, meta=ApiMeta())
@@ -4829,14 +4981,18 @@ async def set_system_credential(
                 status_code=404,
                 detail=f"Butler {butler_name!r} is not registered",
             ) from exc
+        relation = _qualified_relation(
+            _secrets_source_schema(db, butler_name),
+            "butler_secrets",
+        )
 
         # Override row: UPSERT into the butler's butler_secrets table.
         # We always treat this as "overrode" regardless of whether a prior
         # override existed, per spec §System credential mutations.
         try:
             await pool.execute(
-                """
-                INSERT INTO butler_secrets (secret_key, secret_value, category, updated_at)
+                f"""
+                INSERT INTO {relation} (secret_key, secret_value, category, updated_at)
                 VALUES ($1, $2, $3, now())
                 ON CONFLICT (secret_key) DO UPDATE
                     SET secret_value = EXCLUDED.secret_value,
@@ -4867,7 +5023,12 @@ async def set_system_credential(
             note=f"Per-butler override created for {butler_name!r}",
         )
 
-        detail = await _fetch_single_system_secret(pool, butler_name, key)
+        detail = await _fetch_single_system_secret(
+            pool,
+            butler_name,
+            key,
+            source_schema=_secrets_source_schema(db, butler_name),
+        )
         if detail is None:
             raise HTTPException(status_code=503, detail="Credential not found after override write")
         # Mark the returned detail as a local (per-butler) override.
@@ -4923,16 +5084,32 @@ async def probe_system_credential(
     # Locate the credential across all registered butler schemas.
     found_pool: Any = None
     found_butler: str | None = None
+    found_schema: str | None = None
     detail: SystemSecretDetail | None = None
     for butler_name in db.butler_names:
         try:
             pool = db.pool(butler_name)
         except KeyError:
             continue
-        detail = await _fetch_single_system_secret(pool, butler_name, key)
+        source_schema = _secrets_source_schema(db, butler_name)
+        try:
+            detail = await _fetch_single_system_secret(
+                pool,
+                butler_name,
+                key,
+                source_schema=source_schema,
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, butler_name),
+            )
+        except _SystemSecretSourceUnavailableError as exc:
+            logger.warning("System credential source unavailable for butler %s", butler_name)
+            raise HTTPException(
+                status_code=503,
+                detail=f"System credential source unavailable for butler {butler_name!r}",
+            ) from exc
         if detail is not None:
             found_pool = pool
             found_butler = butler_name
+            found_schema = source_schema
             break
 
     # Also search the shared credential pool (public.butler_secrets) when
@@ -4944,10 +5121,24 @@ async def probe_system_credential(
         pass
 
     if found_pool is None and shared_pool is not None:
-        detail = await _fetch_single_system_secret(shared_pool, "shared-public", key)
+        try:
+            detail = await _fetch_single_system_secret(
+                shared_pool,
+                "shared-public",
+                key,
+                source_schema="public",
+                schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+            )
+        except _SystemSecretSourceUnavailableError as exc:
+            logger.warning("System credential source unavailable for shared-public")
+            raise HTTPException(
+                status_code=503,
+                detail="System credential source unavailable for shared-public",
+            ) from exc
         if detail is not None:
             found_pool = shared_pool
             found_butler = "shared-public"
+            found_schema = "public"
 
     if found_pool is None or found_butler is None or detail is None:
         raise HTTPException(status_code=404, detail="Credential not found")
@@ -4971,9 +5162,10 @@ async def probe_system_credential(
 
     if key == _OWNTRACKS_SYSTEM_KEY:
         raw_value: str | None = None
+        found_relation = _qualified_relation(found_schema, "butler_secrets")
         try:
             _raw_row = await found_pool.fetchrow(
-                "SELECT secret_value FROM butler_secrets WHERE secret_key = $1",
+                f"SELECT secret_value FROM {found_relation} WHERE secret_key = $1",
                 key,
             )
             if _raw_row is not None:
@@ -5043,9 +5235,10 @@ async def probe_system_credential(
     # Update test-state cache columns on butler_secrets (best-effort, non-transactional
     # relative to the probe_log write since it's a different pool).
     try:
+        found_relation = _qualified_relation(found_schema, "butler_secrets")
         await found_pool.execute(
-            """
-            UPDATE butler_secrets
+            f"""
+            UPDATE {found_relation}
             SET
                 last_test_ok = $1,
                 last_test_code = $2,
@@ -5134,11 +5327,12 @@ async def delete_system_credential(
                 status_code=503,
                 detail="Switchboard pool is not available",
             ) from exc
+        relation = _qualified_relation(_secrets_source_schema(db, "switchboard"), "butler_secrets")
 
         # Verify the row exists before deleting.
         try:
             existing = await pool.fetchrow(
-                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                f"SELECT secret_key FROM {relation} WHERE secret_key = $1",
                 key,
             )
         except UndefinedTableError as exc:
@@ -5154,7 +5348,7 @@ async def delete_system_credential(
 
         try:
             await pool.execute(
-                "DELETE FROM butler_secrets WHERE secret_key = $1",
+                f"DELETE FROM {relation} WHERE secret_key = $1",
                 key,
             )
         except Exception as exc:
@@ -5233,11 +5427,15 @@ async def delete_system_credential(
                 status_code=404,
                 detail=f"Butler {butler_name!r} is not registered",
             ) from exc
+        relation = _qualified_relation(
+            _secrets_source_schema(db, butler_name),
+            "butler_secrets",
+        )
 
         # Verify the override row exists.
         try:
             existing = await pool.fetchrow(
-                "SELECT secret_key FROM butler_secrets WHERE secret_key = $1",
+                f"SELECT secret_key FROM {relation} WHERE secret_key = $1",
                 key,
             )
         except UndefinedTableError as exc:
@@ -5253,7 +5451,7 @@ async def delete_system_credential(
 
         try:
             await pool.execute(
-                "DELETE FROM butler_secrets WHERE secret_key = $1",
+                f"DELETE FROM {relation} WHERE secret_key = $1",
                 key,
             )
         except Exception as exc:
@@ -5419,7 +5617,18 @@ async def rotate_cli_credential(
     supplied = (body.value or "").strip() if body is not None else ""
     user_supplied = bool(supplied)
 
-    existing = await _fetch_single_cli_secret(shared_pool, credential_id)
+    try:
+        existing = await _fetch_single_cli_secret(
+            shared_pool,
+            credential_id,
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+        )
+    except _CliSecretSourceUnavailableError as exc:
+        logger.warning("CLI credential source unavailable for shared-public")
+        raise HTTPException(
+            status_code=503,
+            detail="CLI credential source unavailable for shared-public",
+        ) from exc
 
     if not user_supplied:
         # Auto-generate path: a fresh value only makes sense for an existing
@@ -5529,7 +5738,18 @@ async def revoke_cli_credential(
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
     # Confirm the CLI token exists before deleting.
-    existing = await _fetch_single_cli_secret(shared_pool, credential_id)
+    try:
+        existing = await _fetch_single_cli_secret(
+            shared_pool,
+            credential_id,
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+        )
+    except _CliSecretSourceUnavailableError as exc:
+        logger.warning("CLI credential source unavailable for shared-public")
+        raise HTTPException(
+            status_code=503,
+            detail="CLI credential source unavailable for shared-public",
+        ) from exc
     if existing is None:
         raise HTTPException(status_code=404, detail="CLI credential not found")
 

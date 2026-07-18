@@ -60,6 +60,14 @@ class DatabaseManager:
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
         self._butler_modules: dict[str, frozenset[str]] = {}
+        # The explicit target schema for each butler pool.  Query paths that
+        # own per-butler tables must use this rather than falling through to
+        # ``public`` via the pool's search_path after local schema loss.
+        self._butler_schemas: dict[str, str | None] = {}
+        # Relation presence captured when the dashboard pool becomes available.
+        # Optional-schema readers use this lifecycle marker to distinguish a
+        # deliberately uninstalled table from one that disappears later.
+        self._relation_presence_at_start: dict[str, dict[str, bool]] = {}
         # role_enforcement_disabled: True when SET ROLE schema-isolation is NOT
         # active for any butler database managed by this instance.  Starts True
         # (conservative default — enforcement not yet confirmed) and may be
@@ -129,12 +137,19 @@ class DatabaseManager:
             return
 
         effective_db = db_name or butler_name
+        # ``schema_search_path`` validates and normalizes the configured
+        # schema.  Retain its first component as the explicit local target for
+        # table-owning dashboard queries; ``search_path`` itself intentionally
+        # keeps ``public`` available for cross-butler reads.
+        search_path = schema_search_path(db_schema)
+        local_schema = search_path.split(",", maxsplit=1)[0] if search_path is not None else None
         pool = await self._create_pool(
             database=effective_db,
             log_name=f"butler {butler_name}",
             schema=db_schema,
         )
         self._pools[butler_name] = pool
+        self._butler_schemas[butler_name] = local_schema
         if modules is not None:
             self._butler_modules[butler_name] = modules
         logger.info(
@@ -170,6 +185,74 @@ class DatabaseManager:
         if butler_name not in self._pools:
             raise KeyError(f"No pool for butler: {butler_name}")
         return self._pools[butler_name]
+
+    def schema_for_butler(self, butler_name: str) -> str | None:
+        """Return the explicit schema configured for a butler's pool.
+
+        ``None`` denotes a legacy database without a schema-scoped pool.  The
+        caller must then preserve the database's unqualified-table semantics.
+        """
+        if butler_name not in self._pools:
+            raise KeyError(f"No pool for butler: {butler_name}")
+        return self._butler_schemas.get(butler_name)
+
+    async def snapshot_relation_presence(
+        self,
+        source_name: str,
+        relation_names: tuple[str, ...],
+        *,
+        pool: asyncpg.Pool | None = None,
+    ) -> None:
+        """Record whether unqualified relations exist when API startup completes.
+
+        ``to_regclass`` respects the pool's schema-scoped ``search_path``.  A
+        later ``UndefinedTableError`` is a normal optional-schema absence only
+        when this snapshot explicitly recorded the relation as absent.  A
+        failed snapshot intentionally leaves the value unknown so callers
+        fail closed rather than hiding a potentially dropped table.
+        """
+        if not relation_names:
+            return
+        try:
+            target_pool = pool if pool is not None else self.pool(source_name)
+            source_schema = self._butler_schemas.get(source_name)
+            if source_schema is None:
+                rows = await target_pool.fetch(
+                    "SELECT requested.relation_name, "
+                    "to_regclass(requested.relation_name) IS NOT NULL AS present "
+                    "FROM unnest($1::text[]) AS requested(relation_name)",
+                    list(relation_names),
+                )
+            else:
+                rows = await target_pool.fetch(
+                    "SELECT requested.relation_name, "
+                    "to_regclass(format('%I.%I', $2::text, requested.relation_name)) "
+                    "IS NOT NULL AS present "
+                    "FROM unnest($1::text[]) AS requested(relation_name)",
+                    list(relation_names),
+                    source_schema,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to snapshot optional relation presence for %s",
+                source_name,
+                exc_info=True,
+            )
+            return
+
+        observed = {str(row["relation_name"]): bool(row["present"]) for row in rows}
+        self._relation_presence_at_start[source_name] = {
+            relation: observed[relation] for relation in relation_names if relation in observed
+        }
+
+    def relation_observed_since_start(self, source_name: str, relation_name: str) -> bool | None:
+        """Return the startup-presence marker for a relation, if it was recorded.
+
+        ``True`` means the relation existed when this dashboard process
+        started; ``False`` means the schema was deliberately absent then;
+        ``None`` is unknown and must not be treated as a graceful absence.
+        """
+        return self._relation_presence_at_start.get(source_name, {}).get(relation_name)
 
     @property
     def butler_names(self) -> list[str]:
@@ -276,3 +359,5 @@ class DatabaseManager:
             except Exception:
                 logger.warning("Error closing pool for butler: %s", name, exc_info=True)
         self._pools.clear()
+        self._butler_schemas.clear()
+        self._relation_presence_at_start.clear()

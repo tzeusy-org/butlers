@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
@@ -92,6 +92,39 @@ class TestDatabaseAndDeps:
         assert any("ghost" in msg for msg in warning_messages), (
             f"Expected pool-failure warning naming the butler. Got: {warning_messages}"
         )
+
+    async def test_init_db_manager_snapshots_optional_relation_presence(self, monkeypatch):
+        """Startup records the optional-relation lifecycle boundary for every pool."""
+        import butlers.api.deps as _deps_module
+
+        monkeypatch.setattr(_deps_module, "_db_manager", None)
+        cfg = ButlerConnectionInfo(
+            name="general",
+            port=41101,
+            db_name="butlers",
+            db_schema="general",
+        )
+        db = MagicMock()
+        db.provision = AsyncMock()
+        manager = MagicMock()
+        manager.add_butler = AsyncMock()
+        manager.set_credential_shared_pool = AsyncMock()
+        manager.snapshot_relation_presence = AsyncMock()
+        shared_pool = MagicMock()
+        manager.credential_shared_pool.return_value = shared_pool
+
+        with (
+            patch("butlers.api.deps.Database.from_env", return_value=db),
+            patch("butlers.api.deps.DatabaseManager", return_value=manager),
+            patch("butlers.api.deps.shared_db_name_from_env", return_value="butlers"),
+            patch("butlers.api.deps.ensure_secrets_schema", new_callable=AsyncMock),
+        ):
+            await init_db_manager([cfg])
+
+        assert manager.snapshot_relation_presence.await_args_list == [
+            call("general", ("butler_secrets", "episodes", "facts", "rules")),
+            call("shared-public", ("butler_secrets",), pool=shared_pool),
+        ]
 
     def test_database_manager_uses_api_pool_size_overrides(self, monkeypatch):
         """Dashboard pools can be capped independently from daemon pools."""

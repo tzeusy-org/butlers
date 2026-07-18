@@ -94,6 +94,7 @@ def _make_app_no_memory_tables(butler_name: str) -> object:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = [butler_name]
     mock_db.pool.return_value = pool
+    mock_db.relation_observed_since_start.return_value = False
 
     app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
