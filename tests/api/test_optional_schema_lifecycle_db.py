@@ -23,13 +23,19 @@ from fastapi import HTTPException
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
+from butlers.api.models.memory import ReembedRunRequest
 from butlers.api.routers.memory import (
     _fan_out_memory_queries,
+    confirm_fact,
     get_butler_memory_stats,
     get_episode,
+    get_memory_stats,
+    get_reembed_pending,
     inspect_memory,
     list_activity,
     list_episodes,
+    retract_fact,
+    run_reembed,
 )
 from butlers.api.routers.secrets_v2 import (
     SystemSetRequest,
@@ -39,6 +45,8 @@ from butlers.api.routers.secrets_v2 import (
     get_cli_credential,
     get_system_credential,
     probe_system_credential,
+    revoke_cli_credential,
+    rotate_cli_credential,
     set_system_credential,
 )
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
@@ -114,6 +122,44 @@ async def _seed_public_secret(
         """,
         key,
         value,
+    )
+
+
+async def _shadow_fact_in_public(
+    pool: object,
+    fact_id,
+    *,
+    stale_embedding: bool = False,
+) -> None:
+    """Copy one private fact into a same-named public shadow relation."""
+    if stale_embedding:
+        await pool.execute(  # type: ignore[attr-defined]
+            """
+            INSERT INTO lifecycle.facts (
+                id, subject, predicate, content, source_butler,
+                embedding, embedding_model_version
+            )
+            VALUES (
+                $1, 'owner', 'prefers', 'tea', 'lifecycle',
+                array_fill(0::real, ARRAY[384])::vector, 'old-model'
+            )
+            """,
+            fact_id,
+        )
+    else:
+        await pool.execute(  # type: ignore[attr-defined]
+            """
+            INSERT INTO lifecycle.facts (id, subject, predicate, content, source_butler)
+            VALUES ($1, 'owner', 'prefers', 'tea', 'lifecycle')
+            """,
+            fact_id,
+        )
+    await pool.execute(  # type: ignore[attr-defined]
+        "CREATE TABLE public.facts AS TABLE lifecycle.facts WITH NO DATA"
+    )
+    await pool.execute(  # type: ignore[attr-defined]
+        "INSERT INTO public.facts SELECT * FROM lifecycle.facts WHERE id = $1",
+        fact_id,
     )
 
 
@@ -612,5 +658,273 @@ async def test_post_boot_private_loss_cannot_set_or_delete_public_secret(
             )
             == "must-survive"
         )
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_memory_shadow_is_degraded_for_stats_and_catalog(
+    migrated_db_url: str,
+) -> None:
+    """Local memory loss must not make a same-named public table look healthy."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    fact_id = uuid4()
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        pool = manager.pool("lifecycle")
+        await _shadow_fact_in_public(pool, fact_id)
+        await pool.execute("DROP TABLE lifecycle.facts")
+
+        response = await get_memory_stats(db=manager)
+        meta = response.meta.model_dump()
+
+        assert response.data.total_facts == 0
+        assert meta["pools_failed"] == ["lifecycle"]
+        assert meta["catalog_pools_failed"] == ["lifecycle"]
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_memory_shadow_cannot_confirm_public_fact(
+    migrated_db_url: str,
+) -> None:
+    """A dashboard confirmation must never mutate public.facts after local loss."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    fact_id = uuid4()
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        pool = manager.pool("lifecycle")
+        await _shadow_fact_in_public(pool, fact_id)
+        await pool.execute("DROP TABLE lifecycle.facts")
+
+        with pytest.raises(HTTPException) as error:
+            await confirm_fact(str(fact_id), db=manager)
+
+        assert error.value.status_code == 503
+        assert (
+            await pool.fetchval(
+                "SELECT last_confirmed_at IS NULL FROM public.facts WHERE id = $1",
+                fact_id,
+            )
+            is True
+        )
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_memory_shadow_cannot_retract_public_fact(
+    migrated_db_url: str,
+) -> None:
+    """A dashboard retraction must never mutate public.facts after local loss."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    fact_id = uuid4()
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        pool = manager.pool("lifecycle")
+        await _shadow_fact_in_public(pool, fact_id)
+        await pool.execute("DROP TABLE lifecycle.facts")
+
+        with pytest.raises(HTTPException) as error:
+            await retract_fact(str(fact_id), db=manager)
+
+        assert error.value.status_code == 503
+        assert (
+            await pool.fetchval("SELECT validity FROM public.facts WHERE id = $1", fact_id)
+            == "active"
+        )
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_memory_shadow_cannot_report_reembed_pending(
+    migrated_db_url: str,
+) -> None:
+    """A private facts drop cannot become a public stale-embedding count."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    fact_id = uuid4()
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        pool = manager.pool("lifecycle")
+        await _shadow_fact_in_public(pool, fact_id, stale_embedding=True)
+        await pool.execute("DROP TABLE lifecycle.facts")
+
+        with pytest.raises(HTTPException) as error:
+            await get_reembed_pending(
+                butler="lifecycle",
+                current_model="new-model",
+                db=manager,
+            )
+
+        assert error.value.status_code == 503
+        assert (
+            await pool.fetchval(
+                "SELECT embedding_model_version FROM public.facts WHERE id = $1",
+                fact_id,
+            )
+            == "old-model"
+        )
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_memory_shadow_cannot_reembed_public_fact(
+    migrated_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-embedding run must fail closed before it can update public.facts."""
+    from butlers.modules.memory import tools as memory_tools
+
+    class _Engine:
+        model_name = "new-model"
+
+        @staticmethod
+        def embed_batch(texts: list[str]) -> list[list[float]]:
+            return [[0.0] * 384 for _ in texts]
+
+    monkeypatch.setattr(memory_tools, "get_embedding_engine", lambda _: _Engine())
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+    )
+    fact_id = uuid4()
+    try:
+        await manager.snapshot_relation_presence("lifecycle", _TRACKED_RELATIONS)
+        pool = manager.pool("lifecycle")
+        await _shadow_fact_in_public(pool, fact_id, stale_embedding=True)
+        await pool.execute("DROP TABLE lifecycle.facts")
+
+        with pytest.raises(HTTPException) as error:
+            await run_reembed(
+                ReembedRunRequest(
+                    butler="lifecycle",
+                    current_model="new-model",
+                    dry_run=False,
+                    tiers=["facts"],
+                    batch_size=1,
+                ),
+                db=manager,
+            )
+
+        assert error.value.status_code == 503
+        assert (
+            await pool.fetchval(
+                "SELECT embedding_model_version FROM public.facts WHERE id = $1",
+                fact_id,
+            )
+            == "old-model"
+        )
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_shared_public_loss_blocks_cli_rotation(
+    migrated_db_url: str,
+) -> None:
+    """CLI rotation must surface a dropped shared credential table as unavailable."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+        with_shared_pool=True,
+    )
+    try:
+        shared_pool = manager.credential_shared_pool()
+        await manager.snapshot_relation_presence(
+            "shared-public",
+            ("butler_secrets",),
+            pool=shared_pool,
+        )
+        await shared_pool.execute(
+            """
+            INSERT INTO public.butler_secrets (secret_key, secret_value, category, updated_at)
+            VALUES ('CLI_ROTATE_AFTER_DROP', 'old-value', 'cli', now())
+            """
+        )
+        await shared_pool.execute("DROP TABLE public.butler_secrets")
+
+        with pytest.raises(HTTPException) as error:
+            await rotate_cli_credential("CLI_ROTATE_AFTER_DROP", db=manager)
+
+        assert error.value.status_code == 503
+    finally:
+        await manager.close()
+
+
+async def test_post_boot_shared_public_loss_blocks_cli_revocation(
+    migrated_db_url: str,
+) -> None:
+    """CLI revocation must surface a dropped shared credential table as unavailable."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+        with_shared_pool=True,
+    )
+    try:
+        shared_pool = manager.credential_shared_pool()
+        await manager.snapshot_relation_presence(
+            "shared-public",
+            ("butler_secrets",),
+            pool=shared_pool,
+        )
+        await shared_pool.execute(
+            """
+            INSERT INTO public.butler_secrets (secret_key, secret_value, category, updated_at)
+            VALUES ('CLI_REVOKE_AFTER_DROP', 'old-value', 'cli', now())
+            """
+        )
+        await shared_pool.execute("DROP TABLE public.butler_secrets")
+
+        with pytest.raises(HTTPException) as error:
+            await revoke_cli_credential("CLI_REVOKE_AFTER_DROP", db=manager)
+
+        assert error.value.status_code == 503
+    finally:
+        await manager.close()
+
+
+async def test_absent_at_boot_shared_public_cli_source_remains_not_found(
+    migrated_db_url: str,
+) -> None:
+    """A shared CLI table deliberately absent at startup still follows 404 semantics."""
+    manager = await _manager_for_schema(
+        migrated_db_url,
+        butler_name="lifecycle",
+        schema="lifecycle",
+        with_shared_pool=True,
+    )
+    try:
+        shared_pool = manager.credential_shared_pool()
+        await shared_pool.execute("DROP TABLE public.butler_secrets")
+        await manager.snapshot_relation_presence(
+            "shared-public",
+            ("butler_secrets",),
+            pool=shared_pool,
+        )
+        assert manager.relation_observed_since_start("shared-public", "butler_secrets") is False
+
+        with pytest.raises(HTTPException) as rotate_error:
+            await rotate_cli_credential("CLI_ABSENT_AT_BOOT", db=manager)
+        assert rotate_error.value.status_code == 404
+
+        with pytest.raises(HTTPException) as revoke_error:
+            await revoke_cli_credential("CLI_ABSENT_AT_BOOT", db=manager)
+        assert revoke_error.value.status_code == 404
     finally:
         await manager.close()

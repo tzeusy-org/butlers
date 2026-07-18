@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +41,22 @@ _TIERS: dict[str, tuple[str, str]] = {
 }
 
 ALL_TIERS: tuple[str, ...] = tuple(_TIERS.keys())
+_SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _tier_relation(tier_name: str, memory_schema: str | None = None) -> str:
+    """Return a tier relation, optionally pinned to a dashboard-owned schema.
+
+    MCP and daemon callers omit ``memory_schema`` and keep their established
+    search-path behavior. Dashboard callers pass an explicit schema so a
+    dropped local table cannot fall through to a same-named public relation.
+    """
+    table, _ = _TIERS[tier_name]
+    if memory_schema is None:
+        return table
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(memory_schema):
+        raise ValueError(f"Unsafe memory schema identifier: {memory_schema!r}")
+    return f'"{memory_schema}"."{table}"'
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +100,8 @@ async def count_pending(
     pool: Pool,
     current_model: str,
     tier: str | None = None,
+    *,
+    memory_schema: str | None = None,
 ) -> dict[str, int]:
     """Count rows per tier whose embedding was produced by a different model.
 
@@ -93,7 +112,9 @@ async def count_pending(
         pool: asyncpg connection pool.
         current_model: The model name currently configured.
         tier: If given, restrict to this tier only (one of ``ALL_TIERS``).
-              If None, all tiers are checked.
+            If None, all tiers are checked.
+        memory_schema: Explicit owning schema for dashboard callers. Normal
+            daemon and MCP callers omit it and retain search-path behavior.
 
     Returns:
         Dict mapping tier name → stale row count.
@@ -105,11 +126,11 @@ async def count_pending(
     result: dict[str, int] = {}
     async with pool.acquire() as conn:
         for tier_name in tiers:
-            table, _ = _TIERS[tier_name]
+            relation = _tier_relation(tier_name, memory_schema)
             row = await conn.fetchrow(
                 f"""
                 SELECT COUNT(*) AS cnt
-                FROM {table}
+                FROM {relation}
                 WHERE embedding IS NOT NULL
                   AND (
                       embedding_model_version IS NULL
@@ -134,6 +155,7 @@ async def run(
     dry_run: bool = True,
     tiers: list[str] | None = None,
     batch_size: int = 50,
+    memory_schema: str | None = None,
 ) -> ReembedResult:
     """Re-embed all stale rows and update embedding_model_version.
 
@@ -146,6 +168,8 @@ async def run(
         dry_run: If True, count and log only — make no DB changes.
         tiers: Optional list of tier names to process.  Defaults to all tiers.
         batch_size: Number of rows to fetch and embed per DB round-trip.
+        memory_schema: Explicit owning schema for dashboard callers. Normal
+            daemon and MCP callers omit it and retain search-path behavior.
 
     Returns:
         ReembedResult summarising the run.
@@ -163,11 +187,12 @@ async def run(
     )
 
     for tier_name in tier_names:
-        table, content_col = _TIERS[tier_name]
+        _, content_col = _TIERS[tier_name]
+        relation = _tier_relation(tier_name, memory_schema)
         processed = await _process_tier(
             pool=pool,
             engine=engine,
-            table=table,
+            table=relation,
             content_col=content_col,
             current_model=current_model,
             dry_run=dry_run,

@@ -5617,7 +5617,18 @@ async def rotate_cli_credential(
     supplied = (body.value or "").strip() if body is not None else ""
     user_supplied = bool(supplied)
 
-    existing = await _fetch_single_cli_secret(shared_pool, credential_id)
+    try:
+        existing = await _fetch_single_cli_secret(
+            shared_pool,
+            credential_id,
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+        )
+    except _CliSecretSourceUnavailableError as exc:
+        logger.warning("CLI credential source unavailable for shared-public")
+        raise HTTPException(
+            status_code=503,
+            detail="CLI credential source unavailable for shared-public",
+        ) from exc
 
     if not user_supplied:
         # Auto-generate path: a fresh value only makes sense for an existing
@@ -5727,7 +5738,18 @@ async def revoke_cli_credential(
         raise HTTPException(status_code=503, detail="Shared credential database unavailable")
 
     # Confirm the CLI token exists before deleting.
-    existing = await _fetch_single_cli_secret(shared_pool, credential_id)
+    try:
+        existing = await _fetch_single_cli_secret(
+            shared_pool,
+            credential_id,
+            schema_absent_at_start=_secrets_schema_absent_at_start(db, "shared-public"),
+        )
+    except _CliSecretSourceUnavailableError as exc:
+        logger.warning("CLI credential source unavailable for shared-public")
+        raise HTTPException(
+            status_code=503,
+            detail="CLI credential source unavailable for shared-public",
+        ) from exc
     if existing is None:
         raise HTTPException(status_code=404, detail="CLI credential not found")
 

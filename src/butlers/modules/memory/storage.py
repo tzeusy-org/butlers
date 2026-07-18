@@ -106,6 +106,24 @@ _TYPE_TABLE: dict[str, str] = {
     "fact": "facts",
     "rule": "rules",
 }
+_SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _memory_relation(memory_type: str, memory_schema: str | None = None) -> str:
+    """Return a memory table relation, optionally pinned to its owning schema.
+
+    Normal daemon and MCP callers rely on their pool's search path and retain
+    that unqualified behavior by omitting ``memory_schema``. Dashboard callers
+    that fan out across schema-scoped pools pass the explicit owner schema so a
+    dropped local table cannot resolve to a same-named ``public`` relation.
+    """
+    table = _TYPE_TABLE[memory_type]
+    if memory_schema is None:
+        return table
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(memory_schema):
+        raise ValueError(f"Unsafe memory schema identifier: {memory_schema!r}")
+    return f'"{memory_schema}"."{table}"'
+
 
 # ---------------------------------------------------------------------------
 # Fuzzy predicate matching helpers
@@ -714,6 +732,7 @@ async def get_catalog_drift_counts(
     pool: Pool,
     *,
     source_schema: str,
+    memory_schema: str | None = None,
 ) -> dict[str, int]:
     """Return catalog health counts for one butler's ``source_schema`` rows.
 
@@ -738,9 +757,15 @@ async def get_catalog_drift_counts(
     This endpoint fans out across every butler pool (``GET
     /api/memory/stats``), so a single combined query (via ``FILTER``) keeps
     the round-trip count per pool at one instead of four.
+
+    ``memory_schema`` is supplied by dashboard callers with schema-scoped
+    pools so the canonical local fact/rule tables cannot fall through to
+    same-named public relations after lifecycle loss.
     """
+    facts_relation = _memory_relation("fact", memory_schema)
+    rules_relation = _memory_relation("rule", memory_schema)
     row = await pool.fetchrow(
-        """
+        f"""
         SELECT
             count(*) FILTER (WHERE mc.invalid_at IS NULL) AS live,
             count(*) FILTER (WHERE mc.invalid_at IS NOT NULL) AS stale,
@@ -755,8 +780,8 @@ async def get_catalog_drift_counts(
                   AND (r.id IS NULL OR COALESCE(r.metadata ->> 'forgotten', 'false') = 'true')
             ) AS rules_drifted
         FROM public.memory_catalog mc
-        LEFT JOIN facts f ON mc.source_table = 'facts' AND f.id = mc.source_id
-        LEFT JOIN rules r ON mc.source_table = 'rules' AND r.id = mc.source_id
+        LEFT JOIN {facts_relation} f ON mc.source_table = 'facts' AND f.id = mc.source_id
+        LEFT JOIN {rules_relation} r ON mc.source_table = 'rules' AND r.id = mc.source_id
         WHERE mc.source_schema = $1
         """,
         source_schema,
@@ -2169,6 +2194,7 @@ async def forget_memory(
     *,
     correction_id: str | None = None,
     correction_reason: str | None = None,
+    memory_schema: str | None = None,
 ) -> bool:
     """Soft-delete a memory by marking it as forgotten.
 
@@ -2201,6 +2227,8 @@ async def forget_memory(
         correction_reason: Optional human-readable description of why the
             memory is being retracted via correction.  Stored in the memory's
             metadata alongside *correction_id*.
+        memory_schema: Explicit owning schema for dashboard callers. Normal
+            daemon and MCP callers omit it and retain search-path behavior.
 
     Returns:
         ``True`` if the memory was found and updated, ``False`` if not found.
@@ -2219,7 +2247,12 @@ async def forget_memory(
     # Pre-flight guard: only relevant when a correction is being applied.
     # ------------------------------------------------------------------
     if correction_id is not None:
-        await _check_correction_preconditions(pool, memory_type, memory_id)
+        await _check_correction_preconditions(
+            pool,
+            memory_type,
+            memory_id,
+            memory_schema=memory_schema,
+        )
 
     # ------------------------------------------------------------------
     # Core retraction (same logic as before, but now wrapped in a
@@ -2232,9 +2265,15 @@ async def forget_memory(
             memory_id,
             correction_id=correction_id,
             correction_reason=correction_reason,
+            memory_schema=memory_schema,
         )
     else:
-        result = await _forget_plain(pool, memory_type, memory_id)
+        result = await _forget_plain(
+            pool,
+            memory_type,
+            memory_id,
+            memory_schema=memory_schema,
+        )
 
     return result
 
@@ -2243,6 +2282,8 @@ async def _check_correction_preconditions(
     pool: Pool,
     memory_type: str,
     memory_id: uuid.UUID,
+    *,
+    memory_schema: str | None = None,
 ) -> None:
     """Raise CorrectionGuardError if the memory cannot be retracted via correction.
 
@@ -2255,9 +2296,10 @@ async def _check_correction_preconditions(
     Raises:
         CorrectionGuardError: If the guard condition is met.
     """
+    table = _memory_relation(memory_type, memory_schema)
     if memory_type == "fact":
         row = await pool.fetchrow(
-            "SELECT validity FROM facts WHERE id = $1",
+            f"SELECT validity FROM {table} WHERE id = $1",
             memory_id,
         )
         if row is not None:
@@ -2281,7 +2323,7 @@ async def _check_correction_preconditions(
                 )
     elif memory_type == "rule":
         row = await pool.fetchrow(
-            "SELECT metadata FROM rules WHERE id = $1",
+            f"SELECT metadata FROM {table} WHERE id = $1",
             memory_id,
         )
         if row is not None:
@@ -2305,6 +2347,8 @@ async def _forget_plain(
     pool: Pool,
     memory_type: str,
     memory_id: uuid.UUID,
+    *,
+    memory_schema: str | None = None,
 ) -> bool:
     """Execute the original forget logic without correction provenance.
 
@@ -2314,21 +2358,22 @@ async def _forget_plain(
     never leave the catalog serving a memory the canonical store has already
     retracted/forgotten.
     """
+    table = _memory_relation(memory_type, memory_schema)
     async with pool.acquire() as conn:
         async with conn.transaction():
             if memory_type == "fact":
                 result = await conn.execute(
-                    "UPDATE facts SET validity = 'retracted' WHERE id = $1",
+                    f"UPDATE {table} SET validity = 'retracted' WHERE id = $1",
                     memory_id,
                 )
             elif memory_type == "episode":
                 result = await conn.execute(
-                    "UPDATE episodes SET expires_at = now() WHERE id = $1",
+                    f"UPDATE {table} SET expires_at = now() WHERE id = $1",
                     memory_id,
                 )
             else:  # rule
                 result = await conn.execute(
-                    "UPDATE rules SET metadata = metadata || "
+                    f"UPDATE {table} SET metadata = metadata || "
                     "'{\"forgotten\": true}'::jsonb WHERE id = $1",
                     memory_id,
                 )
@@ -2345,6 +2390,7 @@ async def _forget_with_correction_provenance(
     *,
     correction_id: str,
     correction_reason: str | None,
+    memory_schema: str | None = None,
 ) -> bool:
     """Retract a memory and record correction provenance atomically.
 
@@ -2359,11 +2405,12 @@ async def _forget_with_correction_provenance(
     if correction_reason is not None:
         provenance_patch["correction_reason"] = correction_reason
 
+    table = _memory_relation(memory_type, memory_schema)
     async with pool.acquire() as conn:
         async with conn.transaction():
             if memory_type == "fact":
                 result = await conn.execute(
-                    "UPDATE facts "
+                    f"UPDATE {table} "
                     "SET validity = 'retracted', "
                     "    metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
                     "WHERE id = $1",
@@ -2372,7 +2419,7 @@ async def _forget_with_correction_provenance(
                 )
             elif memory_type == "episode":
                 result = await conn.execute(
-                    "UPDATE episodes "
+                    f"UPDATE {table} "
                     "SET expires_at = now(), "
                     "    metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
                     "WHERE id = $1",
@@ -2381,7 +2428,7 @@ async def _forget_with_correction_provenance(
                 )
             else:  # rule
                 result = await conn.execute(
-                    "UPDATE rules "
+                    f"UPDATE {table} "
                     "SET metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
                     "WHERE id = $1",
                     memory_id,
@@ -2428,6 +2475,8 @@ async def confirm_memory(
     pool: Pool,
     memory_type: str,
     memory_id: uuid.UUID,
+    *,
+    memory_schema: str | None = None,
 ) -> bool:
     """Confirm a fact or rule is still accurate, resetting confidence decay.
 
@@ -2441,6 +2490,8 @@ async def confirm_memory(
         pool: asyncpg connection pool.
         memory_type: One of 'fact' or 'rule'.
         memory_id: UUID of the memory to confirm.
+        memory_schema: Explicit owning schema for dashboard callers. Normal
+            daemon and MCP callers omit it and retain search-path behavior.
 
     Returns:
         True if the memory was found and updated, False if not found.
@@ -2455,7 +2506,7 @@ async def confirm_memory(
     if memory_type == "episode":
         raise ValueError("Episodes cannot be confirmed — they don't have confidence decay")
 
-    table = _TYPE_TABLE[memory_type]
+    table = _memory_relation(memory_type, memory_schema)
     result = await pool.execute(
         f"UPDATE {table} SET last_confirmed_at = now() WHERE id = $1",
         memory_id,
