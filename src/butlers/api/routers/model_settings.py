@@ -562,6 +562,7 @@ async def update_catalog_entry(
         "model.update",
         target=str(entry_id),
         note=changed_fields,
+        result="success",
     )
 
     return ApiResponse[ModelCatalogEntry](data=_row_to_catalog_entry(row))
@@ -632,6 +633,7 @@ async def update_model_priority(
         "model.priority",
         target=str(entry_id),
         note=str(body.delta),
+        result="success",
     )
 
     return ApiResponse[ModelCatalogEntry](data=_row_to_catalog_entry(row))
@@ -677,7 +679,7 @@ async def run_verify_all_models(
     )
 
     if not rows:
-        await audit.append(pool, audit_actor, "models.verify_all")
+        await audit.append(pool, audit_actor, "models.verify_all", result="success")
         return VerifyAllResult(accepted=True, total=0, ok=0, failed=0)
 
     sem = asyncio.Semaphore(_VERIFY_ALL_CONCURRENCY)
@@ -748,7 +750,17 @@ async def run_verify_all_models(
     ok_count = sum(1 for r in results if r is True)
     failed_count = len(results) - ok_count
 
-    await audit.append(pool, audit_actor, "models.verify_all")
+    audit_result = "error" if failed_count else "success"
+    audit_error = (
+        f"{failed_count} of {len(results)} model verifications failed" if failed_count else None
+    )
+    await audit.append(
+        pool,
+        audit_actor,
+        "models.verify_all",
+        result=audit_result,
+        error=audit_error,
+    )
 
     return VerifyAllResult(
         accepted=True,

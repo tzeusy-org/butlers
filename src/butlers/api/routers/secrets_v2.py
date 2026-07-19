@@ -4000,6 +4000,7 @@ async def _write_credential_audit(
     action: str,
     provider: str,
     note: str | None = None,
+    error: str | None = None,
 ) -> None:
     """Append one row to public.audit_log for a user-credential mutation.
 
@@ -4007,6 +4008,7 @@ async def _write_credential_audit(
     operation (fire-and-forget pattern consistent with audit_emit.py).
     """
     target = normalize_credential_key("user", provider)
+    result, audit_error = audit_router.credential_lifecycle_outcome(action, error or note)
     try:
         await audit_router.append(
             pool,
@@ -4014,6 +4016,8 @@ async def _write_credential_audit(
             action,
             target=target,
             note=note,
+            result=result,
+            error=audit_error,
         )
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -4537,7 +4541,13 @@ async def probe_user_credential(
         note = f"Probe ok; probe_status={probe_status}"
     else:
         note = f"Probe failed: {probe_fail_msg}; probe_status={probe_status}"
-    await _write_credential_audit(shared_pool, action=audit_action, provider=provider, note=note)
+    await _write_credential_audit(
+        shared_pool,
+        action=audit_action,
+        provider=provider,
+        note=note,
+        error=None if probe_ok else probe_fail_msg,
+    )
 
     result = TestResult(
         ok=probe_ok,
@@ -4756,6 +4766,7 @@ async def _write_system_audit(
     action: str,
     key: str,
     note: str | None = None,
+    error: str | None = None,
 ) -> None:
     """Append one row to public.audit_log for a system-credential mutation.
 
@@ -4763,6 +4774,7 @@ async def _write_system_audit(
     Silently swallows errors (fire-and-forget, consistent with user audit helper).
     """
     target = normalize_credential_key("system", key)
+    result, audit_error = audit_router.credential_lifecycle_outcome(action, error or note)
     try:
         await audit_router.append(
             pool,
@@ -4770,6 +4782,8 @@ async def _write_system_audit(
             action,
             target=target,
             note=note,
+            result=result,
+            error=audit_error,
         )
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -5278,7 +5292,13 @@ async def probe_system_credential(
     else:
         _fail_msg = probe_message or "unknown error"
         note = f"Probe failed: {_fail_msg}; probe_status={probe_status_system}"
-    await _write_system_audit(found_pool, action=audit_action, key=key, note=note)
+    await _write_system_audit(
+        found_pool,
+        action=audit_action,
+        key=key,
+        note=note,
+        error=None if probe_ok else _fail_msg,
+    )
 
     result = TestResult(
         ok=probe_ok,
@@ -5502,6 +5522,7 @@ async def _write_cli_audit(
     action: str,
     credential_id: str,
     note: str | None = None,
+    error: str | None = None,
 ) -> None:
     """Append one row to public.audit_log for a CLI-credential mutation.
 
@@ -5509,6 +5530,7 @@ async def _write_cli_audit(
     operation (fire-and-forget pattern consistent with audit_emit.py).
     """
     target = normalize_credential_key("cli", credential_id)
+    result, audit_error = audit_router.credential_lifecycle_outcome(action, error or note)
     try:
         await audit_router.append(
             pool,
@@ -5516,6 +5538,8 @@ async def _write_cli_audit(
             action,
             target=target,
             note=note,
+            result=result,
+            error=audit_error,
         )
     except Exception:  # noqa: BLE001
         logger.warning(

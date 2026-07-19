@@ -2613,6 +2613,7 @@ async def _emit_oauth_audit(
     if shared_pool is None:
         return
     target = normalize_credential_key("user", provider)
+    result, audit_error = _audit.credential_lifecycle_outcome(action, note)
     try:
         await _audit.append(
             shared_pool,
@@ -2620,6 +2621,8 @@ async def _emit_oauth_audit(
             action,
             target=target,
             note=note,
+            result=result,
+            error=audit_error,
         )
     except _audit.AuditTableNotAvailableError:
         raise

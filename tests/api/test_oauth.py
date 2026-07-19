@@ -475,6 +475,30 @@ async def test_callback_provider_error_redirects_with_state_context(app, monkeyp
     assert _validate_and_consume_state(state) is None
 
 
+async def test_callback_provider_error_persists_observable_audit_outcome(app, monkeypatch):
+    """A callback failure must remain visible to the audit-derived Issues feed."""
+    monkeypatch.delenv("OAUTH_DASHBOARD_URL", raising=False)
+    _make_app(app)
+    state = _generate_state()
+    _store_state(state, provider="spotify", page_of_origin="secrets")
+    append = AsyncMock(return_value=1)
+    monkeypatch.setattr(oauth_module._audit, "append", append)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/oauth/spotify/callback", params={"error": "access_denied", "state": state}
+        )
+
+    assert resp.status_code == 302
+    append.assert_awaited_once()
+    call = append.await_args
+    assert call.args[2] == "failed"
+    assert call.kwargs["result"] == "error"
+    assert call.kwargs["error"] == call.kwargs["note"]
+
+
 async def test_callback_provider_error_without_state_uses_dashboard_base(app, monkeypatch):
     """Provider error without state still redirects when OAUTH_DASHBOARD_URL is set."""
     monkeypatch.setenv("OAUTH_DASHBOARD_URL", "https://example.test/butlers-dev")

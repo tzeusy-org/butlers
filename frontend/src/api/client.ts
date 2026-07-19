@@ -1269,6 +1269,8 @@ export function getAuditLog(
   if (params?.actor) sp.set("actor", params.actor);
   if (params?.action) sp.set("action", params.action);
   if (params?.since) sp.set("since", params.since);
+  if (params?.from_date) sp.set("from_date", params.from_date);
+  if (params?.to_date) sp.set("to_date", params.to_date);
   if (params?.key) sp.set("key", params.key);
   if (params?.result) sp.set("result", params.result);
   if (params?.kind) sp.set("kind", params.kind);

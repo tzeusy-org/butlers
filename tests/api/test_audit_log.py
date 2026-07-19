@@ -18,6 +18,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from asyncpg.exceptions import UndefinedTableError
@@ -26,6 +27,7 @@ from fastapi.testclient import TestClient
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.models.audit import AuditLogEntry
+from butlers.api.routers import audit as audit_module
 from butlers.api.routers.audit import (
     AuditTableNotAvailableError,
     _get_db_manager,
@@ -581,6 +583,68 @@ def test_list_audit_log_filter_by_since():
     assert "ts >= " in sql
 
 
+def test_list_audit_log_owner_timezone_day_bounds(monkeypatch):
+    """Bare audit From/To date keys span a full owner-local calendar day.
+
+    The values are intentionally fixed rather than derived from `now()`: this
+    remains deterministic under the repository's libfaketime matrix.
+    """
+    owner_tz = ZoneInfo("Asia/Singapore")
+    monkeypatch.setattr(
+        audit_module,
+        "owner_zoneinfo",
+        AsyncMock(return_value=owner_tz),
+        raising=False,
+    )
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+
+    resp = client.get("/api/audit-log?from_date=2026-07-11&to_date=2026-07-11")
+
+    assert resp.status_code == 200
+    fetch_call = mock_pool.fetch.call_args[0]
+    sql = fetch_call[0]
+    args = fetch_call[1:]
+    assert "ts >= " in sql
+    assert "ts <= " in sql
+    assert args[0] == datetime(2026, 7, 11, 0, 0, 0, tzinfo=owner_tz)
+    assert args[1] == datetime(2026, 7, 11, 23, 59, 59, 999999, tzinfo=owner_tz)
+
+
+def test_list_audit_log_iso_date_bounds_pass_through_unchanged(monkeypatch):
+    """Full ISO bounds remain timestamps rather than being rebucketed by timezone."""
+    monkeypatch.setattr(
+        audit_module,
+        "owner_zoneinfo",
+        AsyncMock(return_value=ZoneInfo("Asia/Singapore")),
+        raising=False,
+    )
+    app, mock_pool, _ = _make_audit_app([])
+    client = TestClient(app)
+
+    resp = client.get("/api/audit-log?from_date=2026-07-11T06:30:00&to_date=2026-07-11T08:45:00")
+
+    assert resp.status_code == 200
+    args = mock_pool.fetch.call_args[0][1:]
+    assert args[0] == datetime(2026, 7, 11, 6, 30, 0)
+    assert args[1] == datetime(2026, 7, 11, 8, 45, 0)
+
+
+def test_list_audit_log_invalid_owner_day_bound_returns_422(monkeypatch):
+    monkeypatch.setattr(
+        audit_module,
+        "owner_zoneinfo",
+        AsyncMock(return_value=ZoneInfo("Asia/Singapore")),
+        raising=False,
+    )
+    app, _, _ = _make_audit_app([])
+    client = TestClient(app)
+
+    resp = client.get("/api/audit-log?from_date=2026-13-40")
+
+    assert resp.status_code == 422
+
+
 def test_list_audit_log_order_ts_desc():
     """SQL contains ORDER BY ts DESC."""
     app, mock_pool, _ = _make_audit_app([])
@@ -898,31 +962,32 @@ def test_non_normalised_target_not_returned_for_canonical_key_filter():
 
 
 # ---------------------------------------------------------------------------
-# GET /api/audit-log?kind=privileged — operational-noise filter (bu-9q1dx.5)
+# GET /api/audit-log?kind=privileged — consequence allowlist
 # ---------------------------------------------------------------------------
-# kind=privileged excludes *_heartbeat and GET /... action patterns so that
-# the permissions-page audit reel surfaces only mutation/security rows.
+# kind=privileged is an explicit consequence allowlist, rather than an
+# ever-growing denylist of known machine-cadence shapes. All explicit errors
+# remain visible even if their action family is new.
 # ---------------------------------------------------------------------------
 
 
-def test_kind_privileged_sql_excludes_heartbeat_pattern():
-    """SQL for kind=privileged contains NOT LIKE '%_heartbeat'."""
+def test_kind_privileged_sql_is_consequence_allowlist():
+    """The privileged predicate explicitly selects the allowed action families."""
     app, mock_pool, _ = _make_audit_app([])
     client = TestClient(app)
     client.get("/api/audit-log?kind=privileged")
     fetch_call = mock_pool.fetch.call_args[0]
     sql = fetch_call[0]
-    assert "NOT LIKE '%_heartbeat'" in sql
-
-
-def test_kind_privileged_sql_excludes_get_path_pattern():
-    """SQL for kind=privileged contains NOT LIKE 'GET /%' to strip routine GET noise."""
-    app, mock_pool, _ = _make_audit_app([])
-    client = TestClient(app)
-    client.get("/api/audit-log?kind=privileged")
-    fetch_call = mock_pool.fetch.call_args[0]
-    sql = fetch_call[0]
-    assert "NOT LIKE 'GET /%'" in sql
+    for action_family in (
+        "approval.%",
+        "approvals.policy",
+        "model.%",
+        "permission.%",
+        "data.%",
+        "webhook.%",
+    ):
+        assert action_family in sql
+    assert "result = 'error'" in sql
+    assert "NOT LIKE" not in sql
 
 
 def test_kind_privileged_returns_200():
@@ -942,14 +1007,14 @@ def test_kind_unknown_returns_422():
 
 
 def test_kind_absent_does_not_add_noise_filters():
-    """Without ?kind=, the SQL must NOT contain the privileged-filter clauses."""
+    """Without ?kind=, the full-history request has no allowlist predicate."""
     app, mock_pool, _ = _make_audit_app([])
     client = TestClient(app)
     client.get("/api/audit-log")
     fetch_call = mock_pool.fetch.call_args[0]
     sql = fetch_call[0]
-    assert "NOT LIKE '%_heartbeat'" not in sql
-    assert "NOT LIKE 'GET /%'" not in sql
+    assert "approval.%" not in sql
+    assert "result = 'error'" not in sql
 
 
 def test_kind_privileged_combined_with_limit():
@@ -959,7 +1024,7 @@ def test_kind_privileged_combined_with_limit():
     client.get("/api/audit-log?kind=privileged&limit=15")
     fetch_call = mock_pool.fetch.call_args[0]
     sql = fetch_call[0]
-    assert "NOT LIKE '%_heartbeat'" in sql
+    assert "approval.%" in sql
     args = fetch_call[1:]
     assert args[-2] == 15  # limit
     assert args[-1] == 0  # offset

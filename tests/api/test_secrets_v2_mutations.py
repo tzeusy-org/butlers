@@ -484,7 +484,9 @@ def test_probe_verified_action_when_ok(monkeypatch):
     client = _build_app(mock_db)
 
     client.post("/api/secrets/user/google/probe")
-    assert any(c["action"] == "verified" for c in audit_calls)
+    verified = next(call for call in audit_calls if call["action"] == "verified")
+    assert verified["result"] == "success"
+    assert verified["error"] is None
 
 
 def test_probe_failed_action_when_not_ok(monkeypatch):
@@ -509,7 +511,9 @@ def test_probe_failed_action_when_not_ok(monkeypatch):
     client = _build_app(mock_db)
 
     client.post("/api/secrets/user/google/probe")
-    assert any(c["action"] == "failed" for c in audit_calls)
+    failed = next(call for call in audit_calls if call["action"] == "failed")
+    assert failed["result"] == "error"
+    assert failed["error"] == "Token revoked"
 
 
 def test_probe_404_on_missing_credential():

@@ -262,6 +262,7 @@ async def test_priority_stepper_200_and_clamp_at_zero(app, audit_append_spy):
         f"got call list: {audit_append_spy.call_args_list}"
     )
     assert route_calls[0].kwargs["note"] == "5"
+    assert route_calls[0].kwargs["result"] == "success"
 
 
 async def test_priority_stepper_404_on_missing(app, audit_append_spy):
@@ -316,6 +317,7 @@ async def test_verify_all_rate_limit(app, audit_append_spy, monkeypatch):
         f"expected exactly one route audit.append with action 'models.verify_all', "
         f"got call list: {audit_append_spy.call_args_list}"
     )
+    assert route_calls[0].kwargs["result"] == "success"
 
 
 async def test_verify_all_accepted_after_interval(app, audit_append_spy, monkeypatch):
@@ -335,6 +337,50 @@ async def test_verify_all_accepted_after_interval(app, audit_append_spy, monkeyp
 
     assert resp.status_code == 200
     assert resp.json()["data"]["accepted"] is True
+
+
+async def test_run_verify_all_marks_partial_failure_as_audit_error(monkeypatch):
+    """A failed model sweep must enter the audit error spine, not Outcome=Unknown."""
+    import butlers.api.routers.model_settings as model_settings
+
+    entry_id = uuid.uuid4()
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            _mock_record(
+                {
+                    "id": entry_id,
+                    "runtime_type": "codex",
+                    "model_id": "test-model",
+                    "extra_args": [],
+                }
+            )
+        ]
+    )
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+
+    class _EmptyResponseAdapter:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def invoke(self, **_kwargs):
+            return "", [], {}
+
+    append = AsyncMock(return_value=1)
+    monkeypatch.setattr(model_settings, "get_adapter", lambda _runtime: _EmptyResponseAdapter)
+    monkeypatch.setattr(model_settings, "resolve_provider_config", AsyncMock(return_value={}))
+    monkeypatch.setattr(model_settings.audit, "append", append)
+
+    result = await model_settings.run_verify_all_models(pool)
+
+    assert result.total == 1
+    assert result.ok == 0
+    assert result.failed == 1
+    append.assert_awaited_once()
+    call = append.await_args
+    assert call.args[:3] == (pool, "owner", "models.verify_all")
+    assert call.kwargs["result"] == "error"
+    assert call.kwargs["error"] == "1 of 1 model verifications failed"
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +430,7 @@ async def test_update_catalog_entry_200_writes_audit(app, audit_append_spy):
         f"got call list: {audit_append_spy.call_args_list}"
     )
     assert route_calls[0].kwargs["target"] == str(entry_id)
+    assert route_calls[0].kwargs["result"] == "success"
 
 
 async def test_update_catalog_entry_422_invalid_tier(app, audit_append_spy):

@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import asyncpg
 import httpx
@@ -45,6 +47,7 @@ from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers import audit as audit_module
 from butlers.api.routers.audit import log_audit_entry
+from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -278,3 +281,88 @@ async def test_append_metadata_roundtrips_as_object_not_double_encoded_string(
         "nested": {"nums": [1, 2, 3]},
     }
     assert entry["result"] == "success"
+
+
+async def test_privileged_filter_is_a_consequence_allowlist(
+    pool: asyncpg.Pool, audit_app: FastAPI
+) -> None:
+    """The real SQL path selects consequential rows and every explicit error.
+
+    This covers the semantic distinction a mocked SQL-shape assertion cannot:
+    successful machine cadence is absent, while an error from an otherwise
+    unknown action family remains an operator-visible failure.
+    """
+    rows = [
+        ("approval.approve", "success"),
+        ("approvals.policy", "success"),
+        ("model.update", "success"),
+        ("permission.grant", "success"),
+        ("data.export", "success"),
+        ("webhook.create", "success"),
+        ("rotated", "success"),
+        ("GET /api/health", "success"),
+        ("butler_heartbeat", "success"),
+        ("models.verify_all", "success"),
+        ("runtime.heartbeat", "error"),
+    ]
+    await pool.executemany(
+        "INSERT INTO public.audit_log (actor, action, result) VALUES ('owner', $1, $2)",
+        rows,
+    )
+
+    resp = await _get(audit_app, f"{AUDIT_PATH}?kind=privileged&limit=100")
+
+    assert resp.status_code == 200
+    actions = {entry["action"] for entry in resp.json()["data"]}
+    assert {
+        "approval.approve",
+        "approvals.policy",
+        "model.update",
+        "permission.grant",
+        "data.export",
+        "webhook.create",
+        "rotated",
+        "runtime.heartbeat",
+    } <= actions
+    assert "GET /api/health" not in actions
+    assert "butler_heartbeat" not in actions
+    assert "models.verify_all" not in actions
+
+
+async def test_audit_owner_timezone_day_bounds_include_the_entire_owner_day(
+    pool: asyncpg.Pool, audit_app: FastAPI
+) -> None:
+    """From=To is an inclusive owner-local day, independent of server UTC."""
+    owner_tz = ZoneInfo("Asia/Singapore")
+    await state_set(pool, "settings.general", {"timezone": owner_tz.key})
+    same_day_early = await pool.fetchval(
+        """
+        INSERT INTO public.audit_log (ts, actor, action, result)
+        VALUES ($1, 'owner', 'model.update', 'success') RETURNING id
+        """,
+        datetime(2026, 7, 10, 16, 15, tzinfo=UTC),  # 00:15 on 2026-07-11 SGT
+    )
+    same_day_late = await pool.fetchval(
+        """
+        INSERT INTO public.audit_log (ts, actor, action, result)
+        VALUES ($1, 'owner', 'model.update', 'success') RETURNING id
+        """,
+        datetime(2026, 7, 11, 15, 45, tzinfo=UTC),  # 23:45 on 2026-07-11 SGT
+    )
+    next_day = await pool.fetchval(
+        """
+        INSERT INTO public.audit_log (ts, actor, action, result)
+        VALUES ($1, 'owner', 'model.update', 'success') RETURNING id
+        """,
+        datetime(2026, 7, 11, 16, 0, tzinfo=UTC),  # midnight on 2026-07-12 SGT
+    )
+
+    resp = await _get(
+        audit_app,
+        f"{AUDIT_PATH}?from_date=2026-07-11&to_date=2026-07-11&limit=100",
+    )
+
+    assert resp.status_code == 200
+    ids = {entry["id"] for entry in resp.json()["data"]}
+    assert {same_day_early, same_day_late} <= ids
+    assert next_day not in ids

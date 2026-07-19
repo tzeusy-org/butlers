@@ -1817,11 +1817,15 @@ export interface AuditLogParams {
   action?: string;
   /** ISO 8601 lower bound on ts. */
   since?: string;
+  /** Owner-timezone calendar-day or ISO 8601 lower bound on ts. */
+  from_date?: string;
+  /** Owner-timezone calendar-day or ISO 8601 inclusive upper bound on ts. */
+  to_date?: string;
   /** Filter by canonical credential key (e.g. "u:google"). Forwarded as ?key= to GET /api/audit-log. */
   key?: string;
   /** Filter by outcome (exact match), e.g. "success" | "error". */
   result?: string;
-  /** Filter preset. "privileged" excludes heartbeat/GET noise, surfaces mutation/security rows only. */
+  /** Filter preset. "privileged" selects consequence-bearing actions and explicit errors. */
   kind?: string;
 }
 
