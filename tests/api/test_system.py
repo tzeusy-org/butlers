@@ -229,6 +229,9 @@ async def test_deployments_happy_path(monkeypatch):
         "started_at": _NOW,
         "finished_at": _NOW,
         "result": "success",
+        "source": "boot",
+        "serving_mode": "hotreload-worktree",
+        "serving_worktree": ".worktrees/frozen-checkout",
     }
     _mock_commits_behind(monkeypatch, 3)
     mock_db = _make_deployments_mock(current_row=row, recent_rows=[row])
@@ -241,6 +244,9 @@ async def test_deployments_happy_path(monkeypatch):
     assert data["current"]["git_sha"] == "abc1234"
     assert data["current"]["migration_head"] == "core_163"
     assert data["current"]["result"] == "success"
+    assert data["current"]["source"] == "boot"
+    assert data["current"]["serving_mode"] == "hotreload-worktree"
+    assert data["current"]["serving_worktree"] == ".worktrees/frozen-checkout"
     assert len(data["recent"]) == 1
     assert data["commits_behind_main"] == 3
     assert data["commits_behind_available"] is True
@@ -293,6 +299,33 @@ async def test_deployments_allows_null_migration_head(monkeypatch):
     assert data["current"]["result"] == "failed"
     assert data["commits_behind_main"] is None
     assert data["commits_behind_available"] is False
+
+
+async def test_deployments_exposes_legacy_provenance_as_unknown(monkeypatch):
+    """Old rows predate the provenance migration, so the API must not invent it."""
+    row = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "git_sha": "abc1234",
+        "migration_head": "core_163",
+        "started_at": _NOW,
+        "finished_at": _NOW,
+        "result": "success",
+        "source": None,
+        "serving_mode": None,
+        "serving_worktree": None,
+    }
+    _mock_commits_behind(monkeypatch, 0)
+    mock_db = _make_deployments_mock(current_row=row, recent_rows=[row])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/deployments")
+
+    assert resp.status_code == 200
+    current = resp.json()["data"]["current"]
+    assert current["source"] is None
+    assert current["serving_mode"] is None
+    assert current["serving_worktree"] is None
 
 
 async def test_deployments_degrades_when_github_unreachable(monkeypatch):

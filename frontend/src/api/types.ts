@@ -6693,7 +6693,7 @@ export interface DriftFacts {
   drift_check_available: boolean;
 }
 
-/** Single row from public.deployments (one per `butlers up` process boot). */
+/** Single row from public.deployments (a boot or deploy execution). */
 export interface DeploymentRecord {
   id: string;
   git_sha: string;
@@ -6702,6 +6702,12 @@ export interface DeploymentRecord {
   finished_at: string | null;
   /** "success" | "failed" */
   result: string;
+  /** "boot" | "deploy"; null for rows written before provenance tracking. */
+  source: string | null;
+  /** "image" | "hotreload-worktree"; null when runtime detection is unknown. */
+  serving_mode: string | null;
+  /** Stable linked-worktree label, e.g. `.worktrees/fix-queue`, when available. */
+  serving_worktree: string | null;
 }
 
 /**

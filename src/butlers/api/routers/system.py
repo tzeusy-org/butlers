@@ -17,8 +17,9 @@ are gated only by the standard dashboard session boundary (v1 simplification).
 
 All endpoints are read-only against existing tables, except /api/system/deployments,
 which reads public.deployments (core_163) -- the one new table this module
-introduces. It is written elsewhere (butlers.cli._start_all records one row per
-process boot; see src/butlers/core/deployments.py), never by this router.
+introduces. It is written elsewhere (butlers.cli._start_all records process
+boots and butlers deploy records deploy executions; see
+src/butlers/core/deployments.py), never by this router.
 /api/system/deployments also makes one outbound call per request (cached
 briefly per git_sha): an anonymous GitHub compare against the current
 deployment's git_sha to compute "N commits behind origin/main" for the
@@ -146,7 +147,7 @@ class InstanceFacts(BaseModel):
 
 
 class DeploymentRecord(BaseModel):
-    """Single row from public.deployments (one per `butlers up` process boot)."""
+    """Single row from public.deployments (a boot or deploy execution)."""
 
     id: str
     git_sha: str
@@ -154,6 +155,9 @@ class DeploymentRecord(BaseModel):
     started_at: str
     finished_at: str | None
     result: str  # "success" or "failed"
+    source: str | None  # "boot" or "deploy"; null for pre-provenance rows
+    serving_mode: str | None  # "image" or "hotreload-worktree"
+    serving_worktree: str | None  # ".worktrees/<name>" when detected at boot
 
 
 class DeploymentFacts(BaseModel):
@@ -464,6 +468,9 @@ def _deployment_row_to_record(row: dict) -> DeploymentRecord:
         started_at=row["started_at"].isoformat(),
         finished_at=row["finished_at"].isoformat() if row["finished_at"] else None,
         result=row["result"],
+        source=row.get("source"),
+        serving_mode=row.get("serving_mode"),
+        serving_worktree=row.get("serving_worktree"),
     )
 
 

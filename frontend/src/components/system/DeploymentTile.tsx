@@ -2,7 +2,8 @@
 // DeploymentTile -- deploy spine's last mile (bu-9r3hd.3 / bu-hmdqz.1)
 //
 // Data source: useDeploymentFacts -> GET /api/system/deployments
-// Fields used: current (git_sha, migration_head, result), recent,
+// Fields used: current (git_sha, migration_head, result, source,
+//              serving_mode, serving_worktree), recent,
 //              commits_behind_main, commits_behind_available
 //
 // Red clause: "serving <sha>, N commits behind origin/main" whenever the
@@ -25,6 +26,31 @@ import { useDeploymentFacts } from "@/hooks/use-system"
 
 function shortSha(sha: string): string {
   return sha === "unknown" ? sha : sha.slice(0, 7)
+}
+
+function bindMountedWorktreeTruth(current: {
+  source: string | null
+  serving_mode: string | null
+  serving_worktree: string | null
+}): string | null {
+  if (current.serving_mode !== "hotreload-worktree") return null
+
+  const actor = current.source === "boot" ? "boot" : "serving"
+  const worktree = current.serving_worktree ? ` ${current.serving_worktree}` : ""
+  return `${actor} from bind-mounted worktree${worktree} (hotreload)`
+}
+
+function servingModeText(current: {
+  serving_mode: string | null
+  serving_worktree: string | null
+}): string {
+  if (current.serving_mode === "image") return "image"
+  if (current.serving_mode === "hotreload-worktree") {
+    return current.serving_worktree
+      ? `bind-mounted worktree ${current.serving_worktree} (hotreload)`
+      : "bind-mounted worktree (hotreload)"
+  }
+  return "unknown"
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +100,9 @@ function TileError() {
  *
  * States:
  *   - No deployment recorded yet (current=null): neutral "never recorded".
- *   - Last deploy attempt failed: red badge regardless of commits-behind.
+ *   - A boot from a bind-mounted linked worktree: red truth clause regardless
+ *     of image SHA or commits-behind.
+ *   - Last deploy attempt failed: red clause regardless of commits-behind.
  *   - commits_behind_available=false: "unknown" -- never a fabricated
  *     all-clear.
  *   - commits_behind_main > 0: red clause "serving <sha>, N commits behind
@@ -107,7 +135,17 @@ export function DeploymentTile() {
   const lastDeployFailed = current.result === "failed"
   const behind = facts.commits_behind_main
   const behindKnown = facts.commits_behind_available
-  const isRed = lastDeployFailed || (behindKnown && (behind ?? 0) > 0)
+  const worktreeTruth = bindMountedWorktreeTruth(current)
+  const recordedVerb =
+    current.source === "boot" ? "Boot recorded" : current.source === "deploy" ? "Deployed" : "Recorded"
+  const redClauses = [
+    worktreeTruth,
+    lastDeployFailed ? "last deploy failed" : null,
+    behindKnown && (behind ?? 0) > 0
+      ? `serving ${shortSha(current.git_sha)}, ${behind} commit${behind === 1 ? "" : "s"} behind origin/main`
+      : null,
+  ].filter((clause): clause is string => clause !== null)
+  const isRed = redClauses.length > 0
 
   return (
     <Card className={isRed ? "border-[var(--red)]/40" : undefined}>
@@ -117,14 +155,17 @@ export function DeploymentTile() {
       </CardHeader>
       <CardContent data-testid="deployment-tile-content">
         {isRed ? (
-          <span
-            data-testid="deployment-tile-red-badge"
-            className="bg-[var(--red)] text-white mb-3 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
-          >
-            {lastDeployFailed
-              ? "last deploy failed"
-              : `serving ${shortSha(current.git_sha)}, ${behind} commit${behind === 1 ? "" : "s"} behind origin/main`}
-          </span>
+          <div data-testid="deployment-tile-red-badge" className="mb-3 flex flex-col gap-1">
+            {redClauses.map((clause) => (
+              <p
+                key={clause}
+                data-testid={clause === worktreeTruth ? "deployment-tile-red-clause" : undefined}
+                className="border-[var(--red)]/40 text-[var(--red-text)] w-fit rounded border px-2 py-0.5 text-xs font-medium"
+              >
+                {clause}
+              </p>
+            ))}
+          </div>
         ) : behindKnown ? (
           <span
             data-testid="deployment-tile-clean-badge"
@@ -146,6 +187,20 @@ export function DeploymentTile() {
             <dd className="inline">{shortSha(current.git_sha)}</dd>
           </div>
           <div>
+            <dt className="text-muted-foreground inline">source: </dt>
+            <dd className="inline">{current.source ?? "unknown"}</dd>
+          </div>
+          <div>
+            <dt className="text-muted-foreground inline">serving mode: </dt>
+            <dd
+              className={
+                worktreeTruth ? "text-[var(--red-text)] inline font-medium" : "inline"
+              }
+            >
+              {servingModeText(current)}
+            </dd>
+          </div>
+          <div>
             <dt className="text-muted-foreground inline">migration head: </dt>
             {current.migration_head ? (
               <dd className="inline">{current.migration_head}</dd>
@@ -163,7 +218,7 @@ export function DeploymentTile() {
           </div>
         </dl>
         <p className="text-muted-foreground mt-3 text-xs">
-          Deployed <Time value={current.started_at} mode="relative" />
+          {recordedVerb} <Time value={current.started_at} mode="relative" />
         </p>
       </CardContent>
     </Card>

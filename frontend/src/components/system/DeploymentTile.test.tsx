@@ -45,6 +45,9 @@ function makeFacts(overrides: Partial<DeploymentFacts> = {}): ApiResponse<Deploy
         started_at: "2026-07-12T00:00:00Z",
         finished_at: "2026-07-12T00:00:00Z",
         result: "success",
+        source: "deploy",
+        serving_mode: "image",
+        serving_worktree: null,
       },
       recent: [],
       commits_behind_main: 0,
@@ -103,6 +106,9 @@ describe("DeploymentTile -- last deploy failed", () => {
           started_at: "2026-07-12T00:00:00Z",
           finished_at: "2026-07-12T00:00:00Z",
           result: "failed",
+          source: "boot",
+          serving_mode: "image",
+          serving_worktree: null,
         },
         commits_behind_main: 0,
         commits_behind_available: true,
@@ -169,6 +175,35 @@ describe("DeploymentTile -- up to date", () => {
   })
 })
 
+describe("DeploymentTile -- bind-mounted worktree truth", () => {
+  it("renders the boot and worktree clause in red even when the image SHA is current", () => {
+    mockResult = {
+      isPending: false,
+      data: makeFacts({
+        current: {
+          id: "1",
+          git_sha: "abc1234def",
+          migration_head: "core_163",
+          started_at: "2026-07-12T00:00:00Z",
+          finished_at: "2026-07-12T00:00:00Z",
+          result: "success",
+          source: "boot",
+          serving_mode: "hotreload-worktree",
+          serving_worktree: ".worktrees/frozen-checkout",
+        },
+      }),
+    }
+
+    const html = render()
+    expect(html).toContain("deployment-tile-red-clause")
+    expect(html).toContain(
+      "boot from bind-mounted worktree .worktrees/frozen-checkout (hotreload)",
+    )
+    expect(html).toContain("--red-text")
+    expect(html).not.toContain("deployment-tile-clean-badge")
+  })
+})
+
 describe("DeploymentTile -- migration head unknown (bu-l94um)", () => {
   it("renders migration_head=null as an explicit unknown, never a calm value", () => {
     mockResult = {
@@ -181,6 +216,9 @@ describe("DeploymentTile -- migration head unknown (bu-l94um)", () => {
           started_at: "2026-07-12T00:00:00Z",
           finished_at: "2026-07-12T00:00:00Z",
           result: "success",
+          source: "boot",
+          serving_mode: null,
+          serving_worktree: null,
         },
       }),
     }

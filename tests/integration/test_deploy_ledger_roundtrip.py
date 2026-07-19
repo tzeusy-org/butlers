@@ -72,9 +72,17 @@ async def test_successful_deploy_writes_success_row(monkeypatch, pool: asyncpg.P
 
     assert result.result == "success"
     row = await pool.fetchrow(
-        "SELECT git_sha, result FROM public.deployments WHERE git_sha = $1", "sha-success"
+        """
+        SELECT git_sha, result, source, serving_mode, serving_worktree
+        FROM public.deployments
+        WHERE git_sha = $1
+        """,
+        "sha-success",
     )
     assert row["result"] == "success"
+    assert row["source"] == "deploy"
+    assert row["serving_mode"] == "image"
+    assert row["serving_worktree"] is None
 
 
 @pytest.mark.parametrize("fail_at", ["build", "migrate", "recreate", "health-check"])
@@ -89,10 +97,18 @@ async def test_failed_deploy_writes_failed_row_not_silent(
         await run_deploy(DeployConfig(repo_root=Path("/repo")), pool=pool)
 
     row = await pool.fetchrow(
-        "SELECT git_sha, result FROM public.deployments WHERE git_sha = $1", git_sha
+        """
+        SELECT git_sha, result, source, serving_mode, serving_worktree
+        FROM public.deployments
+        WHERE git_sha = $1
+        """,
+        git_sha,
     )
     assert row is not None
     assert row["result"] == "failed"
+    assert row["source"] == "deploy"
+    assert row["serving_mode"] == "image"
+    assert row["serving_worktree"] is None
 
 
 async def test_migration_head_is_read_from_the_real_public_schema(
