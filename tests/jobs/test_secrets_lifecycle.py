@@ -289,6 +289,7 @@ async def test_check_suppression_quiet_hours():
             "butlers.core.attention_ledger.get_suppressing_context_signal",
             new=AsyncMock(return_value=None),
         ),
+        patch("butlers.core.attention_ledger.is_policy_quiet_now", return_value=True),
     ):
         reason = await _check_suppression(pool)
     assert reason == "quiet_hours"

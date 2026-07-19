@@ -74,13 +74,12 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
-from zoneinfo import ZoneInfo
 
 import asyncpg
 
 from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
-    should_suppress_by_policy,
+    is_policy_quiet_now,
 )
 
 logger = logging.getLogger(__name__)
@@ -413,7 +412,7 @@ async def check_owner_notify_suppression(
 
     Mirrors ``notify()``'s owner-default gate (``core_tools/_notifications.py``
     lines ~588-690): quiet hours via ``public.approvals_policy``
-    (:func:`get_approvals_policy_quiet_hours` + :func:`should_suppress_by_policy`),
+    (:func:`get_approvals_policy_quiet_hours` + :func:`is_policy_quiet_now`),
     then the context-bus dnd/sleeping signal
     (:func:`get_suppressing_context_signal`). Returns a machine-readable reason
     string (``"quiet_hours"`` or ``"context_bus:<signal>"``) when suppressed, else
@@ -431,15 +430,8 @@ async def check_owner_notify_suppression(
         logger.debug("%s: quiet-hours policy lookup failed", log_context, exc_info=True)
         policy = None
 
-    if policy is not None:
-        tz_name = policy.get("timezone", "UTC")
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            tz = ZoneInfo("UTC")
-        now_local = datetime.now(UTC).astimezone(tz)
-        if should_suppress_by_policy(policy, current_hour=now_local.hour):
-            return "quiet_hours"
+    if is_policy_quiet_now(policy, now=datetime.now(UTC)):
+        return "quiet_hours"
 
     context_signal = await get_suppressing_context_signal(pool)
     if context_signal is not None:

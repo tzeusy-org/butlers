@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TargetContact(BaseModel):
@@ -138,11 +139,26 @@ class ApprovalSummary(BaseModel):
 
 
 class ApprovalsPolicy(BaseModel):
-    """Quiet-hours policy singleton — GET/PUT /api/approvals/policy."""
+    """Owner Attention Policy singleton — GET/PUT /api/approvals/policy."""
 
     quiet_start_hour: int | None = Field(default=None, ge=0, le=23)
     quiet_end_hour: int | None = Field(default=None, ge=0, le=23)
     timezone: str = "UTC"
+
+
+class ApprovalsPolicyUpdate(ApprovalsPolicy):
+    """Write-boundary validation for the stable Owner Attention Policy payload."""
+
+    @model_validator(mode="after")
+    def validate_owner_attention_policy(self) -> ApprovalsPolicyUpdate:
+        """Reject partial windows and timezone values that runtime cannot honor."""
+        if (self.quiet_start_hour is None) != (self.quiet_end_hour is None):
+            raise ValueError("quiet_start_hour and quiet_end_hour must be supplied together")
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("timezone must be a recognized IANA timezone") from exc
+        return self
 
 
 class ApprovalApproveRequest(BaseModel):

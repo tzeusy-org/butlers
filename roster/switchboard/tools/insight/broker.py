@@ -7,7 +7,7 @@ Implements:
 
 Database tables used (all in the ``public`` schema):
 - ``public.insight_candidates`` — staging table for proposed insights
-- ``public.insight_settings``   — user verbosity/quiet-hours settings
+- ``public.insight_settings``   — user verbosity/budget settings
 - ``public.insight_cooldowns``  — cooldown entries by dedup_key
 - ``public.insight_engagement`` — engagement tracking per delivered insight
 """
@@ -17,12 +17,15 @@ from __future__ import annotations
 import json
 import logging
 import re
-import zoneinfo
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
 
+from butlers.core.approvals_policy import (
+    get_approvals_policy_quiet_hours,
+    is_policy_quiet_now,
+)
 from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
     get_suppressing_context_signal,
@@ -74,9 +77,6 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             id INTEGER PRIMARY KEY DEFAULT 1,
             verbosity TEXT NOT NULL DEFAULT 'minimal',
             custom_budget INTEGER,
-            quiet_start INTEGER,
-            quiet_end INTEGER,
-            quiet_timezone TEXT,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
@@ -438,41 +438,6 @@ async def compute_effective_budget(
         return max(1, configured - 1)
     else:
         return 1
-
-
-def _is_quiet_hours(settings: dict[str, Any], *, now: datetime | None = None) -> bool:
-    """Return True if the current time falls within configured quiet hours."""
-    quiet_start = settings.get("quiet_start")
-    quiet_end = settings.get("quiet_end")
-    quiet_timezone = settings.get("quiet_timezone")
-
-    if quiet_start is None or quiet_end is None:
-        return False
-
-    if now is None:
-        now = datetime.now(UTC)
-
-    # Convert to user's timezone
-    if quiet_timezone:
-        try:
-            tz = zoneinfo.ZoneInfo(quiet_timezone)
-            local_now = now.astimezone(tz)
-        except zoneinfo.ZoneInfoNotFoundError:
-            logger.warning(
-                "Timezone %r not found for quiet hours, falling back to UTC.", quiet_timezone
-            )
-            local_now = now
-    else:
-        local_now = now
-
-    current_hour = local_now.hour
-
-    if quiet_start <= quiet_end:
-        # Same-day range, e.g. 22-23 or 9-17
-        return quiet_start <= current_hour < quiet_end
-    else:
-        # Wraps midnight, e.g. 22-6
-        return current_hour >= quiet_start or current_hour < quiet_end
 
 
 async def record_cooldowns(
@@ -894,7 +859,7 @@ async def delivery_cycle(
 
     settings = await get_insight_settings(pool)
 
-    # Step 1: Check quiet hours + context bus (bu-qvnce.8 slices 1-2). Both are
+    # Step 1: Check Owner Attention Policy + context bus (bu-qvnce.8 slices 1-2). Both are
     # deterministic, non-LLM reads. Neither suppresses a candidate at or above
     # URGENT_PRIORITY_THRESHOLD (RFC 0011 Amendment 1: fail-open for urgent,
     # budgeted for routine) — that check happens below, once pending
@@ -905,7 +870,8 @@ async def delivery_cycle(
     # then ignored.
     _suppression_reason: str | None = None
     if not urgent_only:
-        _quiet_hours_active = _is_quiet_hours(settings, now=now)
+        policy = await get_approvals_policy_quiet_hours(pool)
+        _quiet_hours_active = is_policy_quiet_now(policy, now=now)
         _context_signal = await get_suppressing_context_signal(pool)
         if _quiet_hours_active:
             _suppression_reason = "quiet_hours"

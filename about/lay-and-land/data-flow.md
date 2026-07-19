@@ -143,9 +143,9 @@ sequenceDiagram
     CLI->>Butler: notify(channel, intent, message, request_context)
     Butler->>Butler: Resolve notify.v1 envelope and delivery policy
 
-    alt routine implicit-owner send/insight held by policy or DND/sleeping
+    alt routine implicit-owner send/insight held by Owner Attention Policy [start,end) or DND/sleeping
         Butler->>Queue: INSERT full notify.v1 envelope with deliver_at
-        Note over Queue: Existing scheduler flushes stored envelope; no re-gate
+        Note over Queue: Policy uses exact configured end; existing scheduler flushes stored envelope with no re-gate
         Queue->>SW: MCP call: notify(...)
     else immediate or existing non-owner delivery path
         Butler->>SW: MCP call: notify(...)

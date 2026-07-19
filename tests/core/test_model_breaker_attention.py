@@ -96,10 +96,7 @@ async def test_check_suppression_quiet_hours():
             "butlers.core.model_breaker_attention.get_approvals_policy_quiet_hours",
             new=AsyncMock(return_value={"timezone": "UTC", "quiet_hours": "22:00-08:00"}),
         ),
-        patch(
-            "butlers.core.model_breaker_attention.should_suppress_by_policy",
-            return_value=True,
-        ),
+        patch("butlers.core.model_breaker_attention.is_policy_quiet_now", return_value=True),
     ):
         assert await _check_suppression(pool) == "quiet_hours"
 

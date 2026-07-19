@@ -42,7 +42,6 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -53,7 +52,7 @@ from butlers.context_bus import (
 )
 from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
-    is_in_policy_quiet_hours,
+    policy_quiet_hours_deliver_at,
 )
 
 logger = logging.getLogger(__name__)
@@ -275,25 +274,6 @@ async def run_travel_context_producer(
 # ---------------------------------------------------------------------------
 
 
-def sleep_window_expiry(
-    *,
-    now_local: datetime,
-    quiet_end: int,
-) -> datetime:
-    """Return the wake-time (quiet-window end) as a tz-aware datetime.
-
-    Quiet hours are inclusive by hour (``quiet_start <= h <= quiet_end`` per
-    :func:`is_in_policy_quiet_hours`), so the window ends at the top of the hour
-    *after* ``quiet_end``. Returns the next such instant strictly after
-    ``now_local``, preserving ``now_local``'s timezone.
-    """
-    end_hour = (int(quiet_end) + 1) % 24
-    candidate = now_local.replace(hour=end_hour, minute=0, second=0, microsecond=0)
-    if candidate <= now_local:
-        candidate = candidate + timedelta(days=1)
-    return candidate
-
-
 async def run_sleep_window_context_producer(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None = None,
@@ -307,37 +287,29 @@ async def run_sleep_window_context_producer(
     ``sleeping`` outside the window.
     """
     del job_args
-    policy = await get_approvals_policy_quiet_hours(pool)
-    quiet_start = policy.get("quiet_start_hour") if policy else None
-    quiet_end = policy.get("quiet_end_hour") if policy else None
-    if policy is None or quiet_start is None or quiet_end is None:
-        await clear_context(pool, "health", ContextSignal.sleeping.value)
-        return {"signal": None, "reason": "no_quiet_window", "cleared": ["sleeping"]}
-
-    tz_name = policy.get("timezone") or "UTC"
     try:
-        tz = ZoneInfo(tz_name)
+        policy = await get_approvals_policy_quiet_hours(pool)
     except Exception:
-        logger.warning("sleep producer: unknown timezone %r; defaulting to UTC", tz_name)
-        tz = UTC
-    now_local = datetime.now(tz)
+        logger.warning(
+            "sleep producer: approvals_policy unavailable; clearing sleep signal",
+            exc_info=True,
+        )
+        policy = None
 
-    if not is_in_policy_quiet_hours(
-        current_hour=now_local.hour,
-        quiet_start=int(quiet_start),
-        quiet_end=int(quiet_end),
-    ):
+    now = datetime.now(UTC)
+    expires_at = policy_quiet_hours_deliver_at(policy, now=now)
+    if expires_at is None:
         await clear_context(pool, "health", ContextSignal.sleeping.value)
-        return {"signal": None, "reason": "awake", "cleared": ["sleeping"]}
+        return {"signal": None, "reason": "not_quiet", "cleared": ["sleeping"]}
 
-    expires_at = sleep_window_expiry(now_local=now_local, quiet_end=int(quiet_end))
+    assert policy is not None
     await set_context(
         pool,
         butler_name="health",
         signal_type=ContextSignal.sleeping.value,
         expires_at=expires_at,
         confidence=1.0,
-        metadata={"source": "quiet_hours", "timezone": tz_name},
+        metadata={"source": "quiet_hours", "timezone": policy["timezone"]},
     )
     return {"signal": "sleeping", "expires_at": expires_at.isoformat()}
 
@@ -349,5 +321,4 @@ __all__ = [
     "run_home_presence_context_producer",
     "run_sleep_window_context_producer",
     "run_travel_context_producer",
-    "sleep_window_expiry",
 ]

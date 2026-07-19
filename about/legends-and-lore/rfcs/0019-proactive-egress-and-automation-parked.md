@@ -24,6 +24,11 @@ and the reasons they were held back — survive in the durable RFC record.
 Nothing else in this RFC is accepted. The parked item is blocked on an explicit
 doctrine decision by the owner before any work begins.
 
+**Scope guard — Owner Attention Policy consolidation.** Consolidating the
+existing owner-attention quiet-window authority is policy-data repair only. It
+does not un-park automated egress, add broker catch-up/wake/cron/digest
+behavior, or create a new delivery authority.
+
 ### Why these items are parked
 
 The Butlers doctrine draws a hard line around autonomous action with real-world

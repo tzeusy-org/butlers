@@ -556,7 +556,7 @@ async def test_check_suppression_quiet_hours():
             "butlers.jobs.decision_review.get_suppressing_context_signal",
             new=AsyncMock(return_value=None),
         ),
-        patch("butlers.jobs.decision_review.should_suppress_by_policy", return_value=True),
+        patch("butlers.jobs.decision_review.is_policy_quiet_now", return_value=True),
     ):
         assert await _check_suppression(pool) == "quiet_hours"
 

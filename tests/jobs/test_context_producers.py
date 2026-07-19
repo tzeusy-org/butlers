@@ -1,8 +1,8 @@
 """Tests for the situational context-bus producers (RFC 0009, bu-hmdqz.15).
 
 Two layers:
-- Pure-logic unit tests for the deterministic classifiers/helpers
-  (``classify_calendar_signal``, ``resolve_presence``, ``sleep_window_expiry``).
+- Pure-logic unit tests for deterministic classifiers and the shared Owner
+  Attention Policy expiry anchor.
 - Docker-gated integration tests that run each producer against a real,
   migration-accurate Postgres and assert it writes/clears ``public.user_context``
   correctly — including the closed-loop verification that the notify gate's
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -27,7 +28,6 @@ from butlers.jobs.context_producers import (
     run_home_presence_context_producer,
     run_sleep_window_context_producer,
     run_travel_context_producer,
-    sleep_window_expiry,
 )
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -109,20 +109,31 @@ def test_resolve_presence():
     )
 
 
-def test_sleep_window_expiry():
-    # Overnight window 22..07 -> wake at 08:00; from 23:30 the next 08:00
+async def test_sleep_producer_uses_shared_exact_policy_anchor():
+    """Sleep expiry is the shared end-exclusive policy anchor, never end + 1h."""
     now = datetime(2026, 1, 1, 23, 30, tzinfo=UTC)
-    assert sleep_window_expiry(now_local=now, quiet_end=7) == datetime(2026, 1, 2, 8, 0, tzinfo=UTC)
-    # Same-day window ending at 12 -> wake at 13:00 same day
-    now2 = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
-    assert sleep_window_expiry(now_local=now2, quiet_end=12) == datetime(
-        2026, 1, 1, 13, 0, tzinfo=UTC
-    )
-    # quiet_end=23 -> wake at next midnight (hour wraps to 0)
-    now3 = datetime(2026, 1, 1, 23, 45, tzinfo=UTC)
-    assert sleep_window_expiry(now_local=now3, quiet_end=23) == datetime(
-        2026, 1, 2, 0, 0, tzinfo=UTC
-    )
+    policy = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
+    set_context_mock = AsyncMock()
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is UTC
+            return now
+
+    with (
+        patch(
+            "butlers.jobs.context_producers.get_approvals_policy_quiet_hours",
+            new=AsyncMock(return_value=policy),
+        ),
+        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.datetime", FrozenDatetime),
+    ):
+        result = await run_sleep_window_context_producer(AsyncMock())
+
+    expected = datetime(2026, 1, 2, 7, 0, tzinfo=UTC)
+    assert result == {"signal": "sleeping", "expires_at": expected.isoformat()}
+    assert set_context_mock.await_args.kwargs["expires_at"] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -310,12 +321,20 @@ class TestContextProducersIntegration:
 
         pool = await _pool(core_db_url)
         try:
-            # Whole-day quiet window in UTC -> 'now' is always inside it.
+            # A two-hour UTC window centred on now keeps the live producer
+            # inside the end-exclusive interval without relying on the removed
+            # inclusive/full-day shorthand.
+            current_hour = datetime.now(UTC).hour
+            quiet_start = (current_hour - 1) % 24
+            quiet_end = (current_hour + 1) % 24
             await pool.execute(
                 "INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone) "
-                "VALUES (1, 0, 23, 'UTC') "
+                "VALUES (1, $1, $2, 'UTC') "
                 "ON CONFLICT (id) DO UPDATE SET "
-                "quiet_start_hour = 0, quiet_end_hour = 23, timezone = 'UTC'"
+                "quiet_start_hour = EXCLUDED.quiet_start_hour, "
+                "quiet_end_hour = EXCLUDED.quiet_end_hour, timezone = 'UTC'",
+                quiet_start,
+                quiet_end,
             )
             # Before the producer runs, nothing suppresses.
             await pool.execute("TRUNCATE public.user_context CASCADE")

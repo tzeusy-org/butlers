@@ -19,7 +19,7 @@ The following producers SHALL exist:
 - **travel → traveling** (writer `travel`): derived from a currently-underway
   trip in `travel.trips`.
 - **health → sleeping** (writer `health`): derived from the owner-declared
-  quiet-hours window in `public.approvals_policy`.
+  end-exclusive Owner Attention Policy window in `public.approvals_policy`.
 
 #### Scenario: Calendar producer publishes meeting for a live event
 - **WHEN** the general butler's `calendar_events` contains a confirmed,
@@ -51,9 +51,10 @@ The following producers SHALL exist:
 
 #### Scenario: Sleep producer publishes sleeping inside the quiet window
 - **WHEN** the current time in `public.approvals_policy.timezone` falls within
-  the owner-declared quiet-hours window
+  the owner-declared end-exclusive quiet-hours window
 - **THEN** the health producer sets a `sleeping` signal with
-  `set_by_butler = "health"` and the wake time (window end) as `expires_at`
+  `set_by_butler = "health"` and the exact configured window end as
+  `expires_at`
 
 #### Scenario: Sleep producer activates the notify deferred-delivery gate
 - **WHEN** the sleep producer has set an active `sleeping` signal

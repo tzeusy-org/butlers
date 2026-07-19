@@ -26,7 +26,7 @@ async def test_quiet_hours_active_returns_quiet_hours() -> None:
             "butlers.core.attention_ledger.get_approvals_policy_quiet_hours",
             new=AsyncMock(return_value=_QUIET_POLICY),
         ),
-        patch("butlers.core.attention_ledger.should_suppress_by_policy", return_value=True),
+        patch("butlers.core.attention_ledger.is_policy_quiet_now", return_value=True),
         patch(
             "butlers.core.attention_ledger.get_suppressing_context_signal",
             new=AsyncMock(return_value=None),
@@ -72,7 +72,7 @@ async def test_both_active_quiet_hours_takes_precedence() -> None:
             "butlers.core.attention_ledger.get_approvals_policy_quiet_hours",
             new=AsyncMock(return_value=_QUIET_POLICY),
         ),
-        patch("butlers.core.attention_ledger.should_suppress_by_policy", return_value=True),
+        patch("butlers.core.attention_ledger.is_policy_quiet_now", return_value=True),
         patch(
             "butlers.core.attention_ledger.get_suppressing_context_signal",
             new=context_lookup,

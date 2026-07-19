@@ -64,6 +64,33 @@ async def insight_pool(provisioned_postgres_pool):
         yield pool
 
 
+async def _set_owner_attention_policy(
+    pool, *, quiet_start_hour: int | None, quiet_end_hour: int | None, timezone: str = "UTC"
+) -> None:
+    """Create the canonical test authority and set its complete/disabled window."""
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS public.approvals_policy (
+            id INTEGER PRIMARY KEY DEFAULT 1,
+            quiet_start_hour INTEGER,
+            quiet_end_hour INTEGER,
+            timezone TEXT NOT NULL DEFAULT 'UTC'
+        )
+    """)
+    await pool.execute(
+        """
+        INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)
+        VALUES (1, $1, $2, $3)
+        ON CONFLICT (id) DO UPDATE
+            SET quiet_start_hour = EXCLUDED.quiet_start_hour,
+                quiet_end_hour = EXCLUDED.quiet_end_hour,
+                timezone = EXCLUDED.timezone
+        """,
+        quiet_start_hour,
+        quiet_end_hour,
+        timezone,
+    )
+
+
 # ===========================================================================
 # Category 1: InsightCandidate dataclass (unit, no Docker)
 # ===========================================================================
@@ -816,31 +843,38 @@ class TestAdaptiveDelivery:
 
 
 class TestQuietHours:
-    """Quiet hours: delivery is skipped during configured quiet hours."""
+    """Routine delivery reads the canonical end-exclusive Owner Attention Policy."""
 
     @pytest.mark.parametrize(
         "start,end,hour,expected",
         [
             (22, 8, 23, True),  # midnight wrap, inside
             (22, 8, 12, False),  # midnight wrap, outside
+            (22, 8, 8, False),  # exact end is active
             (9, 17, 12, True),  # same-day, inside
             (9, 17, 8, False),  # same-day, before
             (9, 17, 18, False),  # same-day, after
         ],
-        ids=["wrap-inside", "wrap-outside", "same-inside", "same-before", "same-after"],
+        ids=[
+            "wrap-inside",
+            "wrap-outside",
+            "wrap-exact-end",
+            "same-inside",
+            "same-before",
+            "same-after",
+        ],
     )
     def test_is_quiet_hours_ranges(self, start, end, hour, expected):
-        from butlers.tools.switchboard.insight.broker import _is_quiet_hours
+        from butlers.core.approvals_policy import is_policy_quiet_now
 
-        settings = {"quiet_start": start, "quiet_end": end, "quiet_timezone": None}
+        policy = {"quiet_start_hour": start, "quiet_end_hour": end, "timezone": "UTC"}
         now = datetime(2026, 1, 15, hour, 0, tzinfo=UTC)
-        assert _is_quiet_hours(settings, now=now) is expected
+        assert is_policy_quiet_now(policy, now=now) is expected
 
     def test_no_quiet_hours_configured(self):
-        from butlers.tools.switchboard.insight.broker import _is_quiet_hours
+        from butlers.core.approvals_policy import is_policy_quiet_now
 
-        settings = {"quiet_start": None, "quiet_end": None, "quiet_timezone": None}
-        assert _is_quiet_hours(settings) is False
+        assert is_policy_quiet_now(None, now=datetime(2026, 1, 15, 12, 0, tzinfo=UTC)) is False
 
     @pytest.mark.skipif(not _docker_available, reason="Docker not available")
     @pytest.mark.integration
@@ -848,10 +882,11 @@ class TestQuietHours:
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
         await insight_pool.execute("""
-            INSERT INTO insight_settings (id, verbosity, quiet_start, quiet_end)
-            VALUES (1, 'normal', 0, 23)
-            ON CONFLICT (id) DO UPDATE SET verbosity='normal', quiet_start=0, quiet_end=23
+            INSERT INTO insight_settings (id, verbosity)
+            VALUES (1, 'normal')
+            ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
+        await _set_owner_attention_policy(insight_pool, quiet_start_hour=0, quiet_end_hour=23)
         await insight_pool.execute(
             """
             INSERT INTO insight_candidates
@@ -1799,9 +1834,6 @@ class TestProposeInsightCandidateUnit:
             "id": 1,
             "verbosity": verbosity,
             "custom_budget": custom_budget,
-            "quiet_start": None,
-            "quiet_end": None,
-            "quiet_timezone": None,
             "updated_at": datetime.now(UTC),
         }
         pool.execute.return_value = "INSERT 0 1"

@@ -146,7 +146,12 @@ Admission-control decisions that did not launch a runtime session (for example c
 
 **Memory:** Stats, episodes, facts, rules, activity timeline.
 
-**Approvals:** Pending/decided actions, approve/reject/expire operations, standing rules CRUD, rule suggestions, metrics.
+**Approvals:** Pending/decided actions, approve/reject/expire operations,
+standing rules CRUD, rule suggestions, metrics, and the global Owner Attention
+Policy. The stable `GET/PUT /api/approvals/policy` payload retains
+`quiet_start_hour`, `quiet_end_hour`, and IANA `timezone`; writes reject a
+partial hour pair or invalid IANA timezone, and the dashboard labels the
+control as Owner Attention Policy.
 
 **Connectors:** Connector list, detail, stats (with timeseries), cross-connector summary, fanout distribution matrix.
 

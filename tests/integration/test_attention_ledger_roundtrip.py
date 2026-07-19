@@ -1,16 +1,17 @@
-"""Real-Postgres regression: the attention ledger + seeded owner quiet hours.
+"""Real-Postgres regression: the attention ledger + Owner Attention Policy.
 
 Exercises core_160 (bu-qvnce.8, move 8 slice 1) against a fully migrated
 Postgres instance (testcontainers) — not just mocked-pool unit tests:
 
 - ``public.attention_ledger`` is created with the expected columns and CHECK
   constraints (source/outcome vocabulary, priority_score range).
-- A fresh, never-configured install gets sane owner-level quiet-hours
-  defaults seeded into both ``public.approvals_policy`` (the notify() owner-page
-  gate) and ``public.insight_settings`` (the insight-delivery-cycle gate) —
-  23:00-08:00 Asia/Singapore — without any owner action.
-- The seed is idempotent/non-destructive: an owner who already configured
-  either policy before this migration ran keeps their own configuration.
+- A fresh, never-configured install gets sane Owner Attention Policy defaults
+  in ``public.approvals_policy`` — 23:00-08:00 Asia/Singapore — without any
+  owner action.
+- The canonical seed is idempotent/non-destructive: an owner who already
+  configured the policy before the seed ran keeps their configuration.
+- A fully migrated database has no legacy quiet-hour columns on
+  ``public.insight_settings``.
 - ``record_attention_event`` round-trips through the real table via the
   actual production writer in ``butlers.core.attention_ledger``.
 """
@@ -109,7 +110,7 @@ async def test_priority_score_out_of_range_rejected(pool: asyncpg.Pool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Seeded owner-level quiet hours (fresh, never-configured install)
+# Seeded Owner Attention Policy (fresh, never-configured install)
 # ---------------------------------------------------------------------------
 
 
@@ -123,24 +124,26 @@ async def test_approvals_policy_seeded_to_asia_singapore_defaults(pool: asyncpg.
     assert row["timezone"] == "Asia/Singapore"
 
 
-async def test_insight_settings_seeded_to_asia_singapore_defaults(pool: asyncpg.Pool) -> None:
-    row = await pool.fetchrow(
-        "SELECT quiet_start, quiet_end, quiet_timezone FROM public.insight_settings WHERE id = 1"
+async def test_insight_settings_has_no_legacy_quiet_hour_columns(pool: asyncpg.Pool) -> None:
+    rows = await pool.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'insight_settings'
+          AND column_name IN ('quiet_start', 'quiet_end', 'quiet_timezone')
+        """
     )
-    assert row is not None
-    assert row["quiet_start"] == 23
-    assert row["quiet_end"] == 8
-    assert row["quiet_timezone"] == "Asia/Singapore"
+    assert rows == []
 
 
 # ---------------------------------------------------------------------------
 # Idempotency: a pre-existing owner configuration is never clobbered.
 #
-# These re-run core_160's exact guarded seed SQL (WHERE ... IS NULL) directly
-# against rows that already carry a custom (non-default) configuration —
-# simulating an owner who configured either policy before this migration
-# shipped. If core_160's guard clause changes, update both the migration and
-# this test together.
+# This re-runs core_160's exact canonical guarded seed SQL (WHERE ... IS NULL)
+# directly against a row that already carries a custom (non-default)
+# configuration. If core_160's guard clause changes, update both the migration
+# and this test together.
 # ---------------------------------------------------------------------------
 
 
@@ -170,34 +173,6 @@ async def test_seed_does_not_clobber_existing_approvals_policy(pool: asyncpg.Poo
     await pool.execute("""
         UPDATE public.approvals_policy
         SET quiet_start_hour = 23, quiet_end_hour = 8, timezone = 'Asia/Singapore'
-        WHERE id = 1
-    """)
-
-
-async def test_seed_does_not_clobber_existing_insight_settings(pool: asyncpg.Pool) -> None:
-    await pool.execute(
-        """
-        UPDATE public.insight_settings
-        SET quiet_start = 1, quiet_end = 5, quiet_timezone = 'UTC'
-        WHERE id = 1
-        """
-    )
-    await pool.execute("""
-        UPDATE public.insight_settings
-        SET quiet_start = 23, quiet_end = 8, quiet_timezone = 'Asia/Singapore'
-        WHERE id = 1 AND quiet_start IS NULL AND quiet_end IS NULL AND quiet_timezone IS NULL
-    """)
-    row = await pool.fetchrow(
-        "SELECT quiet_start, quiet_end, quiet_timezone FROM public.insight_settings WHERE id = 1"
-    )
-    assert row["quiet_start"] == 1
-    assert row["quiet_end"] == 5
-    assert row["quiet_timezone"] == "UTC"
-
-    # Restore seeded state — see comment in the approvals_policy counterpart above.
-    await pool.execute("""
-        UPDATE public.insight_settings
-        SET quiet_start = 23, quiet_end = 8, quiet_timezone = 'Asia/Singapore'
         WHERE id = 1
     """)
 

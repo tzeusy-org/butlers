@@ -17,7 +17,7 @@
  *   - Right pane: Autonomy panel — always-visible ledger of standing
  *     autonomy rules (formerly the orphaned /approvals/rules CRUD page),
  *     with live use counts and inline revoke.
- *   - Policy section: quiet-hours editor
+ *   - Policy section: Owner Attention Policy editor
  *   - History section: last 30 decided approvals — each row opens its
  *     (read-only) dossier via /approvals/:id.
  *   - Attention Ledger section: delivery-vs-suppression per source, with any
@@ -907,6 +907,34 @@ function Dossier({
 // Policy section
 // ---------------------------------------------------------------------------
 
+function policyDraftValidationError(draft: ApprovalsPolicy): string | null {
+  const hasStart = draft.quiet_start_hour != null;
+  const hasEnd = draft.quiet_end_hour != null;
+  if (hasStart !== hasEnd) {
+    return "Set both start and end hours, or leave both blank.";
+  }
+
+  const configuredHours = [draft.quiet_start_hour, draft.quiet_end_hour].filter(
+    (hour): hour is number => hour != null,
+  );
+  if (
+    configuredHours.some(
+      (hour) => !Number.isInteger(hour) || hour < 0 || hour > 23,
+    )
+  ) {
+    return "Hours must be whole numbers from 0 through 23.";
+  }
+
+  try {
+    // The API remains authoritative, but this catches ordinary typos before a
+    // failed request. Intl implements the browser's IANA timezone registry.
+    new Intl.DateTimeFormat(undefined, { timeZone: draft.timezone });
+  } catch {
+    return "Enter a valid IANA timezone, such as Asia/Singapore or UTC.";
+  }
+  return null;
+}
+
 function PolicySection() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -944,15 +972,24 @@ function PolicySection() {
     setEditing(true);
   }
 
+  function save() {
+    const validationError = policyDraftValidationError(draft);
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
+    saveMut.mutate();
+  }
+
   return (
     <div className="border-t border-border mt-8 pt-6">
       <div className="flex items-center justify-between mb-4">
         <div>
           <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-            Quiet Hours Policy
+            Owner Attention Policy
           </div>
           <div className="text-sm text-muted-foreground mt-0.5">
-            Suppress approval paging during these hours
+            Suppress routine owner attention during these hours
           </div>
         </div>
         {!editing && (
@@ -972,7 +1009,7 @@ function PolicySection() {
           error={error}
           isEmpty={!policy}
           onRetry={() => void refetch()}
-          sourceLabel="the quiet-hours policy"
+          sourceLabel="the Owner Attention Policy"
           loadingFallback={
             <div className="font-mono text-sm text-muted-foreground">loading…</div>
           }
@@ -1071,7 +1108,7 @@ function PolicySection() {
           </div>
           <div className="flex gap-2">
             <button
-              onClick={() => saveMut.mutate()}
+              onClick={save}
               disabled={saveMut.isPending}
               className="px-3 py-1.5 text-sm bg-foreground text-background rounded hover:opacity-90 disabled:opacity-50 transition-opacity"
             >
