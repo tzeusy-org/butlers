@@ -17,7 +17,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -34,6 +34,8 @@ _UNKNOWN_GIT_SHA = "unknown"
 _DEFAULT_SOURCE_ROOT = Path("/app/src")
 _DEFAULT_MOUNTINFO_PATH = Path("/proc/self/mountinfo")
 _MOUNTINFO_ESCAPE = re.compile(r"\\([0-7]{3})")
+_WORKTREE_LABEL = re.compile(r"\.worktrees/[^/]+")
+_PATH_NAVIGATION_SEGMENTS = frozenset({".", ".."})
 
 
 @dataclass(frozen=True)
@@ -56,13 +58,25 @@ def _decode_mountinfo_path(value: str) -> str:
     return _MOUNTINFO_ESCAPE.sub(lambda match: chr(int(match.group(1), 8)), value)
 
 
+def _is_canonical_worktree_label(value: str) -> bool:
+    """Return whether *value* identifies one linked checkout without navigation."""
+
+    return bool(
+        _WORKTREE_LABEL.fullmatch(value)
+        and value.rsplit("/", maxsplit=1)[-1] not in _PATH_NAVIGATION_SEGMENTS
+    )
+
+
 def _worktree_label(mount_root: str) -> str | None:
     """Extract ``.worktrees/<name>`` from a bind-mount source path."""
 
-    parts = PurePosixPath(mount_root).parts
+    # Do not use PurePosixPath here: it normalizes ``.`` segments, which can
+    # turn ``.worktrees/./src`` into the false label ``.worktrees/src``.
+    parts = mount_root.split("/")
     for index, part in enumerate(parts[:-1]):
         if part == ".worktrees":
-            return f".worktrees/{parts[index + 1]}"
+            label = f".worktrees/{parts[index + 1]}"
+            return label if _is_canonical_worktree_label(label) else None
     return None
 
 
@@ -298,12 +312,11 @@ async def record_deployment(
         raise ValueError(
             "record_deployment: serving_worktree requires serving_mode='hotreload-worktree'"
         )
-    if serving_worktree is not None:
-        if not re.fullmatch(r"\.worktrees/[^/]+", serving_worktree):
-            raise ValueError(
-                "record_deployment: serving_worktree must be '.worktrees/<name>', "
-                f"got {serving_worktree!r}"
-            )
+    if serving_worktree is not None and not _is_canonical_worktree_label(serving_worktree):
+        raise ValueError(
+            "record_deployment: serving_worktree must be '.worktrees/<name>', "
+            f"got {serving_worktree!r}"
+        )
     if source == "deploy" and (serving_mode != "image" or serving_worktree is not None):
         raise ValueError(
             "record_deployment: deploy source must record image serving with no worktree"

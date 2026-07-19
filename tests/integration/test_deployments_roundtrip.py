@@ -138,6 +138,51 @@ async def test_hotreload_provenance_requires_boot_source_and_worktree_label(
         )
 
 
+@pytest.mark.parametrize(
+    ("source", "serving_mode", "serving_worktree"),
+    [
+        (None, "image", None),
+        (None, None, ".worktrees/frozen-checkout"),
+    ],
+)
+async def test_provenance_constraints_reject_partial_legacy_tuples(
+    pool: asyncpg.Pool,
+    source: str | None,
+    serving_mode: str | None,
+    serving_worktree: str | None,
+) -> None:
+    """Only the all-null provenance tuple is a legitimate pre-core_176 row."""
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            """
+            INSERT INTO public.deployments (
+                git_sha, result, source, serving_mode, serving_worktree
+            )
+            VALUES ('abc1234', 'success', $1, $2, $3)
+            """,
+            source,
+            serving_mode,
+            serving_worktree,
+        )
+
+
+@pytest.mark.parametrize("serving_worktree", [".worktrees/.", ".worktrees/.."])
+async def test_provenance_constraints_reject_dot_segment_worktree_labels(
+    pool: asyncpg.Pool, serving_worktree: str
+) -> None:
+    """A stored worktree label must name a checkout, not a path-navigation segment."""
+    with pytest.raises(asyncpg.CheckViolationError):
+        await pool.execute(
+            """
+            INSERT INTO public.deployments (
+                git_sha, result, source, serving_mode, serving_worktree
+            )
+            VALUES ('abc1234', 'success', 'boot', 'hotreload-worktree', $1)
+            """,
+            serving_worktree,
+        )
+
+
 async def test_git_sha_is_required(pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.NotNullViolationError):
         await pool.execute("INSERT INTO public.deployments (result) VALUES ('success')")

@@ -86,6 +86,20 @@ class TestDetectBootServingProvenance:
 
         assert provenance == ServingProvenance(serving_mode=None, serving_worktree=None)
 
+    @pytest.mark.parametrize("name", [".", ".."])
+    def test_does_not_treat_dot_segments_as_linked_worktrees(self, tmp_path, name: str):
+        mountinfo = tmp_path / "mountinfo"
+        mountinfo.write_text(
+            f"421 319 0:45 /home/tze/gt/butlers/.worktrees/{name}/src "
+            "/app/src rw,relatime - ext4 /dev/sda rw\n"
+        )
+
+        provenance = detect_boot_serving_provenance(
+            source_root=Path("/app/src"), mountinfo_path=mountinfo
+        )
+
+        assert provenance == ServingProvenance(serving_mode=None, serving_worktree=None)
+
     def test_reports_unknown_when_runtime_source_root_is_absent(self, tmp_path):
         mountinfo = tmp_path / "mountinfo"
         mountinfo.write_text("")
@@ -318,6 +332,22 @@ class TestRecordDeployment:
                 source="boot",
                 serving_mode="hotreload-worktree",
                 serving_worktree=None,
+            )
+        pool.fetchval.assert_not_awaited()
+
+    @pytest.mark.parametrize("serving_worktree", [".worktrees/.", ".worktrees/.."])
+    async def test_rejects_dot_segment_worktree_labels(self, serving_worktree: str):
+        """A provenance label must name a checkout, not a path-navigation segment."""
+        pool = AsyncMock()
+        with pytest.raises(ValueError, match="serving_worktree"):
+            await record_deployment(
+                pool,
+                git_sha="abc1234",
+                migration_head="core_176",
+                result="success",
+                source="boot",
+                serving_mode="hotreload-worktree",
+                serving_worktree=serving_worktree,
             )
         pool.fetchval.assert_not_awaited()
 
