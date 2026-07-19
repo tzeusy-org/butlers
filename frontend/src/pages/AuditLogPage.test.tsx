@@ -218,6 +218,29 @@ describe("AuditLogPage — new-schema URL filter params", () => {
     expect(params.since).toBe("2026-01-01");
   });
 
+  it("forwards owner-day From and To filters without replacing a legacy since link", () => {
+    setupDefaults();
+    renderPage(
+      "/audit-log?since=2026-01-01T00%3A00%3A00&from_date=2026-07-11&to_date=2026-07-12",
+    );
+
+    const calls = vi.mocked(useAuditLog).mock.calls;
+    const params: AuditLogParams = calls[calls.length - 1][0] ?? {};
+    expect(params.since).toBe("2026-01-01T00:00:00");
+    expect(params.from_date).toBe("2026-07-11");
+    expect(params.to_date).toBe("2026-07-12");
+  });
+
+  it("hydrates distinct From and To date inputs from URL-backed filter state", () => {
+    setupDefaults();
+    const html = renderPage("/audit-log?from_date=2026-07-11&to_date=2026-07-12");
+
+    expect(html).toContain('id="filter-from-date"');
+    expect(html).toContain('value="2026-07-11"');
+    expect(html).toContain('id="filter-to-date"');
+    expect(html).toContain('value="2026-07-12"');
+  });
+
   it("does not include action in params when absent", () => {
     setupDefaults();
     renderPage("/audit-log");

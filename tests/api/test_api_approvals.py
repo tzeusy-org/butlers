@@ -773,7 +773,7 @@ def _make_pending_row(*, tool_name="send_email", status="pending"):
     ],
     ids=["hours-1-ok", "hours-168-ok", "hours-0-422", "hours-169-422"],
 )
-async def test_defer_hours_bounds(app, hours, expected_status):
+async def test_defer_hours_bounds(app, hours, expected_status, monkeypatch):
     """POST /api/approvals/{id}/defer validates 1 ≤ hours ≤ 168."""
     from butlers.api.routers.approvals import _get_db_manager
 
@@ -825,6 +825,16 @@ async def test_defer_hours_bounds(app, hours, expected_status):
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
 
+    import butlers.api.routers.audit as audit_router
+
+    audit_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def fake_append(*args: object, **kwargs: object) -> int:
+        audit_calls.append((args, kwargs))
+        return 1
+
+    monkeypatch.setattr(audit_router, "append", fake_append)
+
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
 
@@ -837,6 +847,12 @@ async def test_defer_hours_bounds(app, hours, expected_status):
         )
 
     assert resp.status_code == expected_status, f"hours={hours}: {resp.text}"
+    defer_audits = [call for call in audit_calls if call[0][2] == "approval.defer"]
+    if expected_status == 200:
+        assert len(defer_audits) == 1
+        assert defer_audits[0][1]["result"] == "success"
+    else:
+        assert defer_audits == []
 
 
 async def test_defer_expired_pending_action_expires_instead_of_extending(app):
@@ -910,7 +926,7 @@ async def test_defer_expired_pending_action_expires_instead_of_extending(app):
     )
 
 
-async def test_policy_round_trip(app):
+async def test_policy_round_trip(app, monkeypatch):
     """GET /api/approvals/policy returns 200; PUT persists and returns updated policy."""
     from butlers.api.routers.approvals import _get_db_manager
 
@@ -952,6 +968,16 @@ async def test_policy_round_trip(app):
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = []
 
+    import butlers.api.routers.audit as audit_router
+
+    audit_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def fake_append(*args: object, **kwargs: object) -> int:
+        audit_calls.append((args, kwargs))
+        return 1
+
+    monkeypatch.setattr(audit_router, "append", fake_append)
+
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
 
@@ -990,6 +1016,10 @@ async def test_policy_round_trip(app):
             json={"quiet_start_hour": 23, "quiet_end_hour": 8, "timezone": "Mars/Olympus"},
         )
         assert invalid_zone_resp.status_code == 422
+
+    policy_audits = [call for call in audit_calls if call[0][2] == "approvals.policy"]
+    assert len(policy_audits) == 1
+    assert policy_audits[0][1]["result"] == "success"
 
 
 async def test_approve_audits_action(app):
@@ -1056,7 +1086,7 @@ async def test_approve_audits_action(app):
     audit_calls = []
 
     async def fake_append(pool, actor, action, *, target=None, note=None, **kw):
-        audit_calls.append({"actor": actor, "action": action, "target": target, "note": note})
+        audit_calls.append({"actor": actor, "action": action, "target": target, "note": note, **kw})
         return 1
 
     with patch.object(audit_router, "append", fake_append):
@@ -1074,6 +1104,7 @@ async def test_approve_audits_action(app):
     approve_audits = [c for c in audit_calls if c["action"] == "approval.approve"]
     assert len(approve_audits) >= 1
     assert approve_audits[0]["target"] == str(action_id)
+    assert approve_audits[0]["result"] == "success"
 
 
 async def test_approve_no_daemon_reachable_reports_not_dispatched(app):
@@ -1329,7 +1360,7 @@ async def test_deny_audits_action(app):
     audit_calls = []
 
     async def fake_append(pool, actor, action, *, target=None, note=None, **kw):
-        audit_calls.append({"actor": actor, "action": action, "target": target, "note": note})
+        audit_calls.append({"actor": actor, "action": action, "target": target, "note": note, **kw})
         return 1
 
     with patch.object(audit_router, "append", fake_append):
@@ -1350,6 +1381,7 @@ async def test_deny_audits_action(app):
     assert len(deny_audits) >= 1
     assert deny_audits[0]["target"] == str(action_id)
     assert deny_audits[0]["note"] == "Not authorized"
+    assert deny_audits[0]["result"] == "success"
 
 
 async def test_decision_dossier_returned_on_actions_list(app):

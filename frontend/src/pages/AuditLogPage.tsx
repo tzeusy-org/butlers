@@ -27,11 +27,13 @@ interface FilterState {
   actor: string;
   action: string;
   since: string;
+  from_date: string;
+  to_date: string;
 }
 
 /**
  * Read filter-bar state directly out of the URL (bu-qvnce.13) — actor/
- * action/since have exactly ONE source of truth, the querystring. Previously
+ * action/date filters have exactly ONE source of truth, the querystring. Previously
  * `actor` also lived in a component-state mirror that a `?actor=` deep-link
  * silently overrode without updating (the bug: the visible input and the
  * request params could disagree). Collapsing to a single URL-serialized
@@ -43,6 +45,8 @@ function filtersFromSearchParams(searchParams: URLSearchParams): FilterState {
     actor: searchParams.get("actor") ?? "",
     action: searchParams.get("action") ?? "",
     since: searchParams.get("since") ?? "",
+    from_date: searchParams.get("from_date") ?? "",
+    to_date: searchParams.get("to_date") ?? "",
   };
 }
 
@@ -97,6 +101,8 @@ export default function AuditLogPage() {
     ...(debouncedActor ? { actor: debouncedActor } : {}),
     ...(debouncedAction ? { action: debouncedAction } : {}),
     ...(filters.since ? { since: filters.since } : {}),
+    ...(filters.from_date ? { from_date: filters.from_date } : {}),
+    ...(filters.to_date ? { to_date: filters.to_date } : {}),
     ...(keyFilter ? { key: keyFilter } : {}),
     ...(resultFilter ? { result: resultFilter } : {}),
     ...(showAllNoise ? {} : { kind: "privileged" }),
@@ -135,6 +141,8 @@ export default function AuditLogPage() {
       next.delete("actor");
       next.delete("action");
       next.delete("since");
+      next.delete("from_date");
+      next.delete("to_date");
       return next;
     });
     setPage(0);
@@ -158,7 +166,9 @@ export default function AuditLogPage() {
   const hasActiveFilters =
     filters.actor !== "" ||
     filters.action !== "" ||
-    filters.since !== "";
+    filters.since !== "" ||
+    filters.from_date !== "" ||
+    filters.to_date !== "";
 
   return (
     <Page
@@ -246,19 +256,35 @@ export default function AuditLogPage() {
               />
             </div>
 
-            {/* Since date */}
+            {/* Owner-timezone day bounds */}
             <div className="space-y-1">
               <label
-                htmlFor="filter-since"
+                htmlFor="filter-from-date"
                 className="text-muted-foreground text-xs font-medium"
               >
                 From
               </label>
               <Input
-                id="filter-since"
+                id="filter-from-date"
                 type="date"
-                value={filters.since}
-                onChange={(e) => handleFilterChange("since", e.target.value)}
+                value={filters.from_date}
+                onChange={(e) => handleFilterChange("from_date", e.target.value)}
+                className="w-40"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label
+                htmlFor="filter-to-date"
+                className="text-muted-foreground text-xs font-medium"
+              >
+                To
+              </label>
+              <Input
+                id="filter-to-date"
+                type="date"
+                value={filters.to_date}
+                onChange={(e) => handleFilterChange("to_date", e.target.value)}
                 className="w-40"
               />
             </div>

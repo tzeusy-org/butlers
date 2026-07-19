@@ -31,6 +31,9 @@ from butlers.api.routers.secrets_v2 import (
     _VALID_SCOPES,
     AuditEvent,
     _get_db_manager,
+    _write_cli_audit,
+    _write_credential_audit,
+    _write_system_audit,
 )
 
 pytestmark = pytest.mark.unit
@@ -108,6 +111,75 @@ def _build_app(mock_db: MagicMock) -> TestClient:
 def test_valid_scopes_contains_expected_values():
     """_VALID_SCOPES must include exactly user, system, cli."""
     assert _VALID_SCOPES == frozenset({"user", "system", "cli"})
+
+
+@pytest.mark.parametrize(
+    ("writer", "writer_kwargs"),
+    [
+        (_write_credential_audit, {"provider": "spotify"}),
+        (_write_system_audit, {"key": "SPOTIFY_ACCESS_TOKEN"}),
+        (_write_cli_audit, {"credential_id": "codex"}),
+    ],
+)
+async def test_credential_failure_audit_writers_persist_error_outcome(
+    monkeypatch,
+    writer,
+    writer_kwargs,
+) -> None:
+    """Every credential audit helper must make probe-style failures visible to /issues.
+
+    This is deliberately an append-boundary contract rather than a source-text
+    assertion: a new helper must carry the same durable `result="error"` /
+    diagnostic pair before it can claim to have written a failed credential
+    event.
+    """
+    from butlers.api.routers import secrets_v2
+
+    append = AsyncMock(return_value=1)
+    monkeypatch.setattr(secrets_v2.audit_router, "append", append)
+
+    await writer(
+        AsyncMock(),
+        action="failed",
+        note="Probe failed: invalid token; probe_status=401",
+        error="invalid token",
+        **writer_kwargs,
+    )
+
+    append.assert_awaited_once()
+    call = append.await_args
+    assert call.args[2] == "failed"
+    assert call.kwargs["result"] == "error"
+    assert call.kwargs["error"] == "invalid token"
+
+
+@pytest.mark.parametrize(
+    ("writer", "writer_kwargs", "action"),
+    [
+        (_write_credential_audit, {"provider": "spotify"}, "verified"),
+        (_write_system_audit, {"key": "SPOTIFY_ACCESS_TOKEN"}, "rotated"),
+        (_write_cli_audit, {"credential_id": "codex"}, "attempted"),
+    ],
+)
+async def test_credential_success_audit_writers_persist_success_outcome(
+    monkeypatch,
+    writer,
+    writer_kwargs,
+    action,
+) -> None:
+    """Credential lifecycle success events must not masquerade as unknown."""
+    from butlers.api.routers import secrets_v2
+
+    append = AsyncMock(return_value=1)
+    monkeypatch.setattr(secrets_v2.audit_router, "append", append)
+
+    await writer(AsyncMock(), action=action, note="completed", **writer_kwargs)
+
+    append.assert_awaited_once()
+    call = append.await_args
+    assert call.args[2] == action
+    assert call.kwargs["result"] == "success"
+    assert call.kwargs["error"] is None
 
 
 # ---------------------------------------------------------------------------

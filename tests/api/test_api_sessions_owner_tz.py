@@ -28,9 +28,9 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
+from butlers.api import owner_time_bounds
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers import sessions as sessions_router
 from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
 
 pytestmark = pytest.mark.unit
@@ -57,7 +57,7 @@ def _make_agg_record(values: dict):
 def _make_app_capturing_args(monkeypatch: pytest.MonkeyPatch) -> tuple[object, MagicMock]:
     """Wire an app whose fan-out records the args tuple it was called with.
 
-    Patches ``resolve_general_timezone`` so the owner timezone is a known,
+    Patches the shared timezone resolver so the owner timezone is a known,
     non-UTC value (Asia/Singapore) regardless of DB state.
     """
     fan_out_return = ({"atlas": [_make_agg_record({"total": 1})]}, [])
@@ -68,7 +68,7 @@ def _make_app_capturing_args(monkeypatch: pytest.MonkeyPatch) -> tuple[object, M
     async def _fake_resolve(_pool) -> str:
         return OWNER_TZ
 
-    monkeypatch.setattr(sessions_router, "resolve_general_timezone", _fake_resolve)
+    monkeypatch.setattr(owner_time_bounds, "resolve_general_timezone", _fake_resolve)
 
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db

@@ -1904,7 +1904,12 @@ async def update_approvals_policy(
                 request.quiet_end_hour,
                 request.timezone,
             )
-            await audit_router.append(conn, _ACTOR_DASHBOARD, "approvals.policy")
+            await audit_router.append(
+                conn,
+                _ACTOR_DASHBOARD,
+                "approvals.policy",
+                result="success",
+            )
     except HTTPException:
         raise
     except audit_router.AuditTableNotAvailableError:
@@ -2371,6 +2376,7 @@ async def approve_approval(
                 "approval.approve",
                 target=action_id,
                 note=edits_note,
+                result="success",
             )
 
     if "error" in result:
@@ -2473,6 +2479,7 @@ async def deny_approval(
                 "approval.deny",
                 target=action_id,
                 note=request.reason,
+                result="success",
             )
 
     if "error" in result:
@@ -2562,7 +2569,12 @@ async def defer_approval(
                 parsed_id,
             )
             await audit_router.append(
-                conn, _ACTOR_DASHBOARD, "approval.defer", target=action_id, note=str(request.hours)
+                conn,
+                _ACTOR_DASHBOARD,
+                "approval.defer",
+                target=action_id,
+                note=str(request.hours),
+                result="success",
             )
 
     if expired_error is not None:

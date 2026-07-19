@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.audit import AuditEntry, AuditLogEntry
+from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bound
 from butlers.core.credential_keys import normalize_key_param
 from butlers.metrics_registry import get_or_create_counter
 
@@ -46,6 +47,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/audit-log", tags=["audit"])
+
+_CREDENTIAL_LIFECYCLE_ACTIONS_SQL = """
+    'attempted', 'connected', 'disconnected', 'failed', 'overrode',
+    'revoked', 'rotated', 'set', 'verified', 'warned'
+"""
+
+_PRIVILEGED_CONSEQUENCE_SQL = f"""
+(
+    action LIKE 'approval.%'
+    OR action = 'approvals.policy'
+    OR action LIKE 'model.%'
+    OR action LIKE 'permission.%'
+    OR action LIKE 'data.%'
+    OR action LIKE 'webhook.%'
+    OR action IN ({_CREDENTIAL_LIFECYCLE_ACTIONS_SQL})
+    OR result = 'error'
+)
+"""
 
 # ---------------------------------------------------------------------------
 # Custom exception — raised by append() when the table is not yet migrated
@@ -306,6 +325,14 @@ async def list_audit_log(
         100, ge=1, le=1000, description="Max records to return (default 100, max 1000)"
     ),
     since: datetime | None = Query(None, description="ISO 8601 timestamp lower bound"),
+    from_date: str | None = Query(
+        None,
+        description="Owner-timezone calendar-day or ISO 8601 lower bound on ts",
+    ),
+    to_date: str | None = Query(
+        None,
+        description="Owner-timezone calendar-day or ISO 8601 inclusive upper bound on ts",
+    ),
     actor: str | None = Query(None, description="Filter by actor (exact match)"),
     action: str | None = Query(None, description="Filter by action (exact match)"),
     key: str | None = Query(
@@ -329,18 +356,17 @@ async def list_audit_log(
     kind: str | None = Query(
         None,
         description=(
-            "Filter preset. 'privileged' excludes high-frequency operational noise "
-            "(*_heartbeat actions and routine GET-path traffic), surfacing only "
-            "mutation/security rows (permission.set, data.*, webhook.*, etc.)."
+            "Filter preset. 'privileged' selects consequence-bearing action families "
+            "and rows with an explicit error outcome."
         ),
     ),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[AuditLogEntry]:
     """Return paginated audit log entries from ``public.audit_log``.
 
-    Supports filtering by actor, action, a lower-bound timestamp, outcome
-    (``?result=``), and credential key (``?key=``).  Results are ordered by
-    ``ts DESC`` (newest first).
+    Supports filtering by actor, action, ISO ``since``, owner-timezone
+    ``from_date``/``to_date`` bounds, outcome (``?result=``), and credential
+    key (``?key=``). Results are ordered by ``ts DESC`` (newest first).
 
     The ``?key=`` parameter filters rows whose ``target`` column equals the
     normalised credential key, using the ``ix_audit_log_target_ts`` index
@@ -378,6 +404,18 @@ async def list_audit_log(
         args.append(since)
         idx += 1
 
+    if from_date or to_date:
+        owner_tz = await owner_zoneinfo(pool)
+        if from_date:
+            conditions.append(f"ts >= ${idx}")
+            args.append(resolve_owner_time_bound(from_date, owner_tz, upper=False))
+            idx += 1
+
+        if to_date:
+            conditions.append(f"ts <= ${idx}")
+            args.append(resolve_owner_time_bound(to_date, owner_tz, upper=True))
+            idx += 1
+
     if actor is not None:
         conditions.append(f"actor = ${idx}")
         args.append(actor)
@@ -399,12 +437,12 @@ async def list_audit_log(
         args.append(result)
         idx += 1
 
-    # kind=privileged: exclude high-frequency operational noise.
-    # Filters out actions ending in _heartbeat (butler/switchboard heartbeats)
-    # and actions starting with "GET /" (routine HTTP-GET audit entries).
+    # kind=privileged selects a fixed consequence allowlist rather than trying
+    # to keep a denylist ahead of newly introduced machine-cadence events.
+    # The existing legacy ``approvals.policy`` mutation is included alongside
+    # the singular ``approval.*`` decision family.
     if kind == "privileged":
-        conditions.append("action NOT LIKE '%_heartbeat'")
-        conditions.append("action NOT LIKE 'GET /%'")
+        conditions.append(_PRIVILEGED_CONSEQUENCE_SQL)
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 

@@ -24,7 +24,6 @@ inline.
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -57,6 +56,7 @@ from butlers.api.models.session import (
     SessionKindBreakdown,
     SessionKindItem,
 )
+from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bound
 from butlers.api.pricing import PricingConfig, estimate_session_cost
 from butlers.api.read_models.sessions_v1 import (
     SUMMARY_COLUMNS,
@@ -69,7 +69,6 @@ from butlers.api.read_models.sessions_v1 import (
     query_session_trigger_breakdown_fan_out,
     row_to_summary,
 )
-from butlers.core.general_settings import resolve_general_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -110,23 +109,6 @@ def _get_pricing_optional() -> PricingConfig | None:
 # unchanged.
 # ---------------------------------------------------------------------------
 
-_DAY_KEY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-async def _owner_zoneinfo(pool: Any) -> ZoneInfo:
-    """Resolve the owner's configured timezone as a ZoneInfo (UTC on failure).
-
-    ``pool`` may be ``None`` (no registered butlers) — ``resolve_general_timezone``
-    fails open to UTC in that case. Any butler pool can read the shared
-    ``public`` general settings, so the caller passes whichever pool is handy.
-    """
-    tz_name = await resolve_general_timezone(pool)
-    try:
-        return ZoneInfo(tz_name)
-    except Exception:
-        logger.warning("Could not build ZoneInfo for owner timezone %r; using UTC", tz_name)
-        return ZoneInfo("UTC")
-
 
 async def _owner_zoneinfo_from_db(db: DatabaseManager) -> ZoneInfo:
     """Resolve the owner timezone via any registered butler pool (public schema)."""
@@ -137,43 +119,7 @@ async def _owner_zoneinfo_from_db(db: DatabaseManager) -> ZoneInfo:
             pool = db.pool(names[0])
         except KeyError:
             pool = None
-    return await _owner_zoneinfo(pool)
-
-
-def _resolve_session_time_bound(value: str, owner_tz: ZoneInfo, *, upper: bool) -> datetime:
-    """Resolve a ``from_date``/``to_date`` filter value to a ``started_at`` bound.
-
-    Bare ``YYYY-MM-DD`` day keys are interpreted as owner-timezone calendar-day
-    boundaries: ``upper=False`` yields owner-tz start-of-day (00:00:00.000000),
-    ``upper=True`` yields owner-tz end-of-day (23:59:59.999999) so a same-day
-    session is not truncated by the inclusive ``started_at <=`` comparison.
-
-    Any other value is parsed as a full ISO-8601 timestamp and returned as-is
-    (a naive timestamp stays naive → asyncpg encodes it as UTC, matching prior
-    behavior). Raises HTTP 422 on an unparseable value — including a
-    day-key-shaped value with an out-of-range calendar component (e.g.
-    ``2026-13-40``), which would otherwise reach ``datetime(...)`` and raise a
-    bare ``ValueError`` that only the app-wide handler catches (as a 400, not
-    the documented 422).
-    """
-    if _DAY_KEY_RE.match(value):
-        year, month, day = (int(part) for part in value.split("-"))
-        try:
-            if upper:
-                return datetime(year, month, day, 23, 59, 59, 999999, tzinfo=owner_tz)
-            return datetime(year, month, day, tzinfo=owner_tz)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid date or timestamp: {value!r}",
-            ) from exc
-    try:
-        return datetime.fromisoformat(value)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid date or timestamp: {value!r}",
-        ) from exc
+    return await owner_zoneinfo(pool)
 
 
 # ---------------------------------------------------------------------------
@@ -443,11 +389,15 @@ async def list_sessions(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
 
-    # Map bare day keys onto owner-timezone day boundaries (see
-    # _resolve_session_time_bound); full ISO timestamps pass through unchanged.
-    owner_tz = await _owner_zoneinfo_from_db(db) if (from_date or to_date) else None
-    from_dt = _resolve_session_time_bound(from_date, owner_tz, upper=False) if from_date else None
-    to_dt = _resolve_session_time_bound(to_date, owner_tz, upper=True) if to_date else None
+    # Map bare day keys onto owner-timezone day boundaries; full ISO timestamps
+    # pass through unchanged (shared with audit filters).
+    if from_date or to_date:
+        owner_tz = await _owner_zoneinfo_from_db(db)
+        from_dt = resolve_owner_time_bound(from_date, owner_tz, upper=False) if from_date else None
+        to_dt = resolve_owner_time_bound(to_date, owner_tz, upper=True) if to_date else None
+    else:
+        from_dt = None
+        to_dt = None
 
     # Keyset path indexes cursor params inside the read-model; the param index is unused here.
     where_clause, args, _ = _build_where(
@@ -551,9 +501,13 @@ async def get_session_aggregate(
     """
     # Map bare day keys onto owner-timezone day boundaries so the KPI strip
     # counts the same set the list shows (identical filter semantics).
-    owner_tz = await _owner_zoneinfo_from_db(db) if (from_date or to_date) else None
-    from_dt = _resolve_session_time_bound(from_date, owner_tz, upper=False) if from_date else None
-    to_dt = _resolve_session_time_bound(to_date, owner_tz, upper=True) if to_date else None
+    if from_date or to_date:
+        owner_tz = await _owner_zoneinfo_from_db(db)
+        from_dt = resolve_owner_time_bound(from_date, owner_tz, upper=False) if from_date else None
+        to_dt = resolve_owner_time_bound(to_date, owner_tz, upper=True) if to_date else None
+    else:
+        from_dt = None
+        to_dt = None
 
     # Aggregate path binds no extra params beyond the WHERE clause; param index is unused here.
     where_clause, args, _ = _build_where(
@@ -716,9 +670,13 @@ async def list_butler_sessions(
 
     # Map bare day keys onto owner-timezone day boundaries (reuse this butler's
     # own pool to read the shared public general settings).
-    owner_tz = await _owner_zoneinfo(pool) if (from_date or to_date) else None
-    from_dt = _resolve_session_time_bound(from_date, owner_tz, upper=False) if from_date else None
-    to_dt = _resolve_session_time_bound(to_date, owner_tz, upper=True) if to_date else None
+    if from_date or to_date:
+        owner_tz = await owner_zoneinfo(pool)
+        from_dt = resolve_owner_time_bound(from_date, owner_tz, upper=False) if from_date else None
+        to_dt = resolve_owner_time_bound(to_date, owner_tz, upper=True) if to_date else None
+    else:
+        from_dt = None
+        to_dt = None
 
     where_clause, args, idx = _build_where(
         trigger_source=trigger_source,
