@@ -506,8 +506,10 @@ async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> No
                 click.echo(" done")
 
             for module_name in module_chains:
+                module_cfg = config.modules.get(module_name) or {}
+                module_migration_schema = module_cfg.get("memory_schema") or schema
                 click.echo(f"  {name}/{module_name}: module chain...", nl=False)
-                await run_migrations(db_url, chain=module_name, schema=schema)
+                await run_migrations(db_url, chain=module_name, schema=module_migration_schema)
                 click.echo(" done")
 
         except Exception as exc:

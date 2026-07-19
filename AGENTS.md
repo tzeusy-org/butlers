@@ -1215,6 +1215,14 @@ bd close <id>         # Complete work
 
 ## Notes to self
 
+### Module migration schema overrides
+CLI migration entrypoints (`butlers db migrate`, including compose's `migrations`
+service) must route each module chain through the same schema override logic as
+daemon startup. For memory modules, honor `[modules.memory].memory_schema` (for
+example chronicler's `chronicler_mem`) instead of blindly using the owning
+butler schema, or memory-chain migrations can hit domain tables with incompatible
+columns.
+
 ### Google Health API (health.googleapis.com/v4) token + scope contract
 Two non-obvious rules, both verified live 2026-07-08 (root cause of the "granted health but probe says 403 scope-not-granted" secrets-page bug):
 1. **The Health API rejects full-scope access tokens** with `403 DISALLOWED_OAUTH_SCOPES` — any access token carrying non-health scopes (the unified refresh token covers calendar/gmail/drive/contacts/…) fails EVERY v4 call regardless of granted scopes. Callers must mint a health-only token by passing `scope=<the three googlehealth .readonly URLs>` in the refresh-token exchange (the connector does this in `google_health.py`; the secrets probe does it in `secrets_v2.py::_mint_health_access_token`). A 403 from v4 therefore does NOT mean "scope not granted" unless the token was down-scoped first.
