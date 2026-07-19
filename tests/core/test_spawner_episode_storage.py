@@ -202,6 +202,40 @@ class TestSpawnerEpisodeStorageIntegration:
             session_id=None,
         )
 
+    async def test_consolidation_prefix_schedule_stores_episode(self, tmp_path: Path) -> None:
+        """Only the exact consolidation trigger skips automatic episode storage."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        with (
+            patch(
+                "butlers.core.spawner.fetch_memory_context",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.spawner.store_session_episode",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_store,
+        ):
+            result = await Spawner(
+                config=_make_config(modules={"memory": {}}),
+                config_dir=config_dir,
+                runtime=_MockAdapter(result_text="Consolidation retry completed"),
+            ).trigger(
+                prompt="retry consolidation",
+                trigger_source="schedule:consolidation:retry",
+            )
+
+        assert result.success is True
+        mock_store.assert_awaited_once_with(
+            None,
+            "test-butler",
+            "Consolidation retry completed",
+            session_id=None,
+        )
+
     async def test_episode_stored_when_memory_enabled_and_success_only(self, tmp_path: Path):
         """Episode stored on success with memory enabled; not stored when disabled or on failure."""
         config_dir = tmp_path / "config"
