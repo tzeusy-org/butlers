@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -130,6 +131,77 @@ class _MockAdapter:
 
 
 class TestSpawnerEpisodeStorageIntegration:
+    async def test_consolidation_schedule_keeps_session_record_without_episode(
+        self, tmp_path: Path
+    ) -> None:
+        """The consolidation runtime session is logged but not fed back into Eden."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        session_id = uuid.uuid4()
+        pool = AsyncMock()
+
+        with (
+            patch(
+                "butlers.core.spawner.fetch_memory_context",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.spawner.session_create",
+                new_callable=AsyncMock,
+                return_value=session_id,
+            ) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+            patch(
+                "butlers.core.spawner.store_session_episode",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_store,
+        ):
+            result = await Spawner(
+                config=_make_config(modules={"memory": {}}),
+                config_dir=config_dir,
+                pool=pool,
+                runtime=_MockAdapter(result_text="Consolidation completed"),
+            ).trigger(prompt="consolidate", trigger_source="schedule:consolidation")
+
+        assert result.success is True
+        assert result.session_id == session_id
+        mock_create.assert_awaited_once()
+        mock_complete.assert_awaited_once()
+        mock_store.assert_not_awaited()
+
+    async def test_other_scheduled_session_stores_episode(self, tmp_path: Path) -> None:
+        """Ordinary scheduled work remains eligible for automatic episode storage."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        with (
+            patch(
+                "butlers.core.spawner.fetch_memory_context",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "butlers.core.spawner.store_session_episode",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_store,
+        ):
+            result = await Spawner(
+                config=_make_config(modules={"memory": {}}),
+                config_dir=config_dir,
+                runtime=_MockAdapter(result_text="Daily digest completed"),
+            ).trigger(prompt="write digest", trigger_source="schedule:daily_digest")
+
+        assert result.success is True
+        mock_store.assert_awaited_once_with(
+            None,
+            "test-butler",
+            "Daily digest completed",
+            session_id=None,
+        )
+
     async def test_episode_stored_when_memory_enabled_and_success_only(self, tmp_path: Path):
         """Episode stored on success with memory enabled; not stored when disabled or on failure."""
         config_dir = tmp_path / "config"

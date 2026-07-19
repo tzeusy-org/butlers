@@ -2013,7 +2013,12 @@ class Spawner:
             )
 
             # Store episode via module-local memory tools (failure doesn't block)
-            if memory_enabled and spawner_result.success and spawner_result.output:
+            if (
+                memory_enabled
+                and spawner_result.success
+                and spawner_result.output
+                and trigger_source != "schedule:consolidation"
+            ):
                 await store_session_episode(
                     self._pool,
                     self._config.name,
