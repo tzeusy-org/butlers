@@ -81,26 +81,28 @@ _STATUS_TIMEOUT_S = 5.0
 _SESSIONS_SUMMARY_TOOL = "sessions_summary"
 
 
-def _is_tool_absent_error(exc: Exception) -> bool:
-    """Return whether *exc* means the remote butler never registered this tool.
+def _is_tool_absent_error(exc: Exception, info: ButlerConnectionInfo) -> bool:
+    """Return whether *exc* is a known structural absence for *info*.
 
     ``fastmcp.Client.call_tool`` raises ``ToolError`` (message ``"Unknown tool:
     '<name>'"``) when the server-side ``FastMCP`` instance has no tool
-    matching the requested name -- see ``fastmcp/server/server.py``'s
-    ``NotFoundError`` on the dispatch path. For this router that is the
-    expected, common case for a **staffer** butler: ``sessions_summary`` /
+    matching the requested name. FastMCP intentionally uses the same error for
+    a per-tool authorization denial, so that error text alone cannot establish
+    absence. For this router, the known structural case is a **staffer**
+    butler: ``sessions_summary`` /
     ``sessions_daily`` / ``top_sessions`` / ``schedule_costs`` are all
     registered only for non-STAFFER butlers (``core_tools/_sessions.py``,
     ``core_tools/_scheduling.py``), so every staffer (switchboard, messenger,
     qa) structurally lacks them regardless of its ``core_groups`` config. That
-    is NOT a degraded source -- it must not land in ``unavailable_butlers`` --
-    mirrors the classify-before-flagging rule in
-    ``memory.py::_is_missing_memory_schema_error`` for the MCP-tool-absence
-    case instead of the DB-schema-absence case. Any other failure (unreachable
-    butler, timeout, malformed JSON, or a ``ToolError`` raised by the tool's
-    own body for a different reason) is genuine and must still be tracked.
+    is NOT a degraded source -- it must not land in ``unavailable_butlers``.
+    A normal butler returning this error may instead have a denied registered
+    tool, so it remains a genuine failure and must be tracked.
     """
-    return isinstance(exc, ToolError) and str(exc).startswith("Unknown tool:")
+    return (
+        info.type == "staffer"
+        and isinstance(exc, ToolError)
+        and str(exc).startswith("Unknown tool:")
+    )
 
 
 def _get_db_manager() -> DatabaseManager | None:
@@ -313,10 +315,10 @@ async def _get_butler_session_stats(
         if tracker is not None:
             tracker.mark(info.name, msg="Cost summary returned invalid JSON")
     except Exception as exc:
-        if _is_tool_absent_error(exc):
+        if _is_tool_absent_error(exc, info):
             logger.debug(
-                "Butler %s has no %s tool registered (staffer or module not "
-                "enabled) -- legitimately absent, not a degraded source",
+                "Staffer %s has no %s tool registered -- legitimately absent, "
+                "not a degraded source",
                 info.name,
                 _SESSIONS_SUMMARY_TOOL,
             )
@@ -406,11 +408,10 @@ async def _get_butler_session_stats_for_range(
         if tracker is not None:
             tracker.mark(info.name, msg="Cost summary (date range) returned invalid JSON")
     except Exception as exc:
-        if _is_tool_absent_error(exc):
+        if _is_tool_absent_error(exc, info):
             logger.debug(
-                "Butler %s has no sessions_daily tool registered (staffer or "
-                "module not enabled) -- legitimately absent, not a degraded "
-                "source",
+                "Staffer %s has no sessions_daily tool registered -- "
+                "legitimately absent, not a degraded source",
                 info.name,
             )
             return (info.name, 0.0, 0, 0, 0, {})
@@ -588,11 +589,10 @@ async def _get_butler_daily_stats(
                     )
                 return days
     except (ButlerUnreachableError, TimeoutError, Exception) as exc:
-        if _is_tool_absent_error(exc):
+        if _is_tool_absent_error(exc, info):
             logger.debug(
-                "Butler %s has no sessions_daily tool registered (staffer or "
-                "module not enabled) -- legitimately absent, not a degraded "
-                "source",
+                "Staffer %s has no sessions_daily tool registered -- "
+                "legitimately absent, not a degraded source",
                 info.name,
             )
             return []
@@ -850,11 +850,10 @@ async def _get_butler_top_sessions(
                 data = json.loads(text)
                 return _top_sessions_from_data(info.name, data, pricing)
     except (ButlerUnreachableError, TimeoutError, Exception) as exc:
-        if _is_tool_absent_error(exc):
+        if _is_tool_absent_error(exc, info):
             logger.debug(
-                "Butler %s has no top_sessions tool registered (staffer or "
-                "module not enabled) -- legitimately absent, not a degraded "
-                "source",
+                "Staffer %s has no top_sessions tool registered -- "
+                "legitimately absent, not a degraded source",
                 info.name,
             )
             return []
@@ -1084,11 +1083,10 @@ async def _get_butler_schedule_costs(
                 data = json.loads(text)
                 return _schedule_costs_from_data(info.name, data, pricing)
     except (ButlerUnreachableError, TimeoutError, Exception) as exc:
-        if _is_tool_absent_error(exc):
+        if _is_tool_absent_error(exc, info):
             logger.debug(
-                "Butler %s has no schedule_costs tool registered (staffer or "
-                "module not enabled) -- legitimately absent, not a degraded "
-                "source",
+                "Staffer %s has no schedule_costs tool registered -- "
+                "legitimately absent, not a degraded source",
                 info.name,
             )
             return []

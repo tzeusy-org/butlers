@@ -321,6 +321,27 @@ async def test_cost_summary_unreachable_butler_skipped(app):
     assert data["unavailable_butlers"] == ["broken"]
 
 
+async def test_cost_summary_denied_registered_tool_marked_unavailable(app):
+    """A FastMCP per-tool denial must not be silently treated as absence.
+
+    FastMCP intentionally reports a per-tool authorization denial as the same
+    ``ToolError("Unknown tool: ...")`` emitted for a missing tool.  Finance is
+    a normal butler whose ``sessions_summary`` tool is registered, so its
+    contribution is a partial result and it must remain visible in
+    ``unavailable_butlers``.
+    """
+    configs = [ButlerConnectionInfo(name="finance", port=41100)]
+    mgr = _mock_mgr({"finance": ToolError("Unknown tool: 'sessions_summary'")})
+    _wire(app, mgr, configs, _flat_pricing())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/spend")
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["unavailable_butlers"] == ["finance"]
+
+
 async def test_cost_summary_tool_absent_not_marked_unavailable(app):
     """A staffer butler with no ``sessions_summary`` tool registered raises
     ``ToolError('Unknown tool: ...')`` -- that is a legitimately-absent MCP
@@ -332,7 +353,7 @@ async def test_cost_summary_tool_absent_not_marked_unavailable(app):
     case)."""
     configs = [
         ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="switchboard", port=41101),
+        ButlerConnectionInfo(name="switchboard", port=41101, type="staffer"),
     ]
     sw_data = {
         "total_sessions": 2,
@@ -694,7 +715,7 @@ async def test_daily_costs_tool_absent_not_marked_unavailable(app):
     lives (the DB-first path is bypassed)."""
     configs = [
         ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="switchboard", port=41101),
+        ButlerConnectionInfo(name="switchboard", port=41101, type="staffer"),
     ]
     sw_daily = {
         "days": [
@@ -905,21 +926,19 @@ async def test_cost_summary_date_range_invalid_returns_422(app, params):
 # ---------------------------------------------------------------------------
 
 
-def test_is_tool_absent_error_true_for_unknown_tool():
-    """The exact shape fastmcp.Client.call_tool raises when the remote
-    FastMCP server has no matching tool registered (see
-    fastmcp/server/server.py's NotFoundError -> "Unknown tool: '<name>'")."""
-    assert _is_tool_absent_error(ToolError("Unknown tool: 'sessions_summary'")) is True
+def test_is_tool_absent_error_true_for_staffer_unknown_tool():
+    """A staffer structurally lacks each spend fan-out tool."""
+    info = ButlerConnectionInfo(name="switchboard", port=41100, type="staffer")
+    assert _is_tool_absent_error(ToolError("Unknown tool: 'sessions_summary'"), info) is True
 
 
-def test_is_tool_absent_error_false_for_other_failures():
-    """A ToolError raised by the tool's own body for a different reason, or
-    any non-ToolError failure, is a genuine failure and must still be
-    tracked -- only the exact "Unknown tool: ..." shape is legitimately
-    absent."""
-    assert _is_tool_absent_error(ToolError("division by zero")) is False
-    assert _is_tool_absent_error(ButlerUnreachableError("broken")) is False
-    assert _is_tool_absent_error(TimeoutError()) is False
+def test_is_tool_absent_error_false_for_registered_butler_or_other_failure():
+    """A registered butler's authorization denial stays a degraded source."""
+    info = ButlerConnectionInfo(name="finance", port=41100)
+    assert _is_tool_absent_error(ToolError("Unknown tool: 'sessions_summary'"), info) is False
+    assert _is_tool_absent_error(ToolError("division by zero"), info) is False
+    assert _is_tool_absent_error(ButlerUnreachableError("broken"), info) is False
+    assert _is_tool_absent_error(TimeoutError(), info) is False
 
 
 # ---------------------------------------------------------------------------
@@ -1013,7 +1032,7 @@ async def test_by_schedule_tool_absent_not_marked_unavailable(app):
     ``meta.unavailable_butlers`` (bu-hmdqz.7)."""
     configs = [
         ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="switchboard", port=41101),
+        ButlerConnectionInfo(name="switchboard", port=41101, type="staffer"),
     ]
     sched = {
         "name": "daily-report",
@@ -1514,7 +1533,7 @@ async def test_top_sessions_tool_absent_not_marked_unavailable(app):
     lives (the DB-first path added in bu-h1i8k is bypassed)."""
     configs = [
         ButlerConnectionInfo(name="sw", port=41100),
-        ButlerConnectionInfo(name="switchboard", port=41101),
+        ButlerConnectionInfo(name="switchboard", port=41101, type="staffer"),
     ]
     sw_sessions = {
         "sessions": [
