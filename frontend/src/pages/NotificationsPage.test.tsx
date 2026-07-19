@@ -267,6 +267,64 @@ describe("NotificationsPage", () => {
     }
   });
 
+  it("keeps a non-minute verdict link and its destination filters at minute precision", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-19T00:37:45.678Z"));
+    try {
+      const window = {
+        since: "2026-07-18T00:37:00.000Z",
+        until: "2026-07-19T00:37:00.000Z",
+      };
+      setStatsState({
+        data: {
+          data: {
+            total: 1,
+            sent: 0,
+            failed: 1,
+            by_channel: {},
+            by_butler: {},
+          },
+          meta: {},
+        },
+      });
+      setNotificationsState({ data: undefined });
+
+      const openerHtml = renderPage();
+      const verdictArgs = vi
+        .mocked(useNotificationStats)
+        .mock.calls.find(([params]) => params !== undefined)?.[0];
+      expect(verdictArgs).toEqual(window);
+
+      const destination = `/notifications?status=terminal_failed&since=${encodeURIComponent(window.since)}&until=${encodeURIComponent(window.until)}`;
+      expect(openerHtml).toContain(
+        'href="/notifications?status=terminal_failed&amp;since=2026-07-18T00%3A37%3A00.000Z&amp;until=2026-07-19T00%3A37%3A00.000Z"',
+      );
+
+      vi.mocked(useNotifications).mockClear();
+      const destinationHtml = renderPage(destination);
+      const destinationArgs = vi.mocked(useNotifications).mock.calls[0][0];
+      const localDateTime = (timestamp: string) =>
+        new Date(
+          new Date(timestamp).getTime() -
+            new Date(timestamp).getTimezoneOffset() * 60_000,
+        )
+          .toISOString()
+          .slice(0, 16);
+
+      expect(destinationArgs?.status).toBe("terminal_failed");
+      expect(destinationArgs?.since).toBe(window.since);
+      expect(destinationArgs?.until).toBe(window.until);
+      expect(destinationHtml).toContain(
+        `value="${localDateTime(window.since)}"`,
+      );
+      expect(destinationHtml).toContain(
+        `value="${localDateTime(window.until)}"`,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("renders loading skeleton when notifications are loading", () => {
     setStatsState({ isLoading: false, data: undefined });
     setNotificationsState({ isLoading: true });

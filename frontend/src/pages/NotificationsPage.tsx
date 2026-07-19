@@ -42,9 +42,13 @@ const FREE_TEXT_DEBOUNCE_MS = 300;
  * react-hooks/purity ESLint rule flags impure calls inline in a component/
  * hook body, even inside a useMemo factory). */
 function closedWindowForHours(hours: number): { since: string; until: string } {
-  const until = new Date(Date.now());
+  // The verdict door lands in datetime-local controls, which deliberately
+  // represent minutes. Capture both ends at that same precision so the query,
+  // link, and visible filters all describe one closed interval.
+  const untilMs = Math.floor(Date.now() / 60_000) * 60_000;
+  const until = new Date(untilMs);
   return {
-    since: new Date(until.getTime() - hours * 3_600_000).toISOString(),
+    since: new Date(untilMs - hours * 3_600_000).toISOString(),
     until: until.toISOString(),
   };
 }
