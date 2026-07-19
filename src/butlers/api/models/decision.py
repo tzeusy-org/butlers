@@ -2,9 +2,9 @@
 
 Maps ``butlers.jobs.decision_review``'s ``DecisionBead``/``EscalationHit``
 dataclasses (bu-ckkpz.4) onto a dashboard-consumable wire shape. See that
-module's docstring for the title-marker detection heuristic and the
-beads-export read path this endpoint reuses -- both are intentionally NOT
-reimplemented here.
+module's docstring for label-only decision classification and the beads-export
+read path this endpoint reuses -- both are intentionally NOT reimplemented
+here.
 """
 
 from __future__ import annotations

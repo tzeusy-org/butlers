@@ -5,9 +5,9 @@ Desk").
 Switchboard schedule jobs already compute
 (:func:`butlers.jobs.decision_review.compute_decision_digest`) as a
 dashboard-consumable list, so the frontend Decisions lane never re-implements
-the title-marker heuristic or the beads-export read path -- both stay owned
-by ``decision_review.py`` (see its module docstring for why the export is a
-read-only bind-mounted JSONL file rather than a live bd query).
+the label-only decision classifier or the beads-export read path -- both stay
+owned by ``decision_review.py`` (see its module docstring for why the export
+is a read-only bind-mounted JSONL file rather than a live bd query).
 
 Never fabricates an all-clear: when the beads export is missing, stale, or
 unreadable, ``compute_decision_digest()`` returns ``available=False`` and
@@ -17,10 +17,11 @@ Conventions -- Degraded-Mode Response Envelope"). A genuine zero (export
 readable, zero decision-marked beads currently open) is a real all-clear and
 is NOT flagged.
 
-Decision-bead detection is a heuristic today (title markers), not yet the
-structured options/default/deadline convention bu-ckkpz.1 is adding -- see
-``decision_review.py``'s own "Decision-bead detection is a heuristic, not yet
-a convention" docstring section and the tracked follow-up bu-97qrw.
+Decision-bead detection is label-only: an open, non-epic bead must carry the
+``decision`` label to enter the digest. Title text alone never creates a
+decision result; the separate strict lint path identifies legacy-shaped
+unlabeled beads for migration. This read-only summary intentionally exposes no
+per-decision options, defaults, deadlines, or mutations.
 
 ``meta.export_as_of`` (bu-hmdqz.6) carries the beads export file's own
 mtime, whenever known, so the frontend can render an honest "as of" plaque

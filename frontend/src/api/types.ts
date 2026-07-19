@@ -8676,11 +8676,10 @@ export interface InsightCandidatesParams {
  * One open, decision-marked bead, oldest-first (mirrors
  * `butlers.jobs.decision_review.DecisionBead` / `EscalationHit`).
  *
- * Detection is a title-marker heuristic today ("DECISION REQUIRED",
- * "OWNER-GATED", "OWNER DECISION") -- bu-ckkpz.1's structured
- * options/default/deadline convention has not shipped yet, so there is no
- * per-bead "options" payload beyond what is listed here (tracked follow-up:
- * bu-97qrw).
+ * Detection is resolved server-side: only open, non-epic beads carrying the
+ * `decision` label appear. Title text never classifies a decision. This
+ * read-only summary intentionally omits per-bead options, defaults,
+ * deadlines, and mutation controls.
  */
 export interface DecisionBeadSummary {
   id: string;

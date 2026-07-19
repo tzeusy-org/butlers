@@ -3,7 +3,7 @@
  *
  * Owner-facing view of the open decision-bead digest GET /api/decisions
  * already computes server-side (butlers.jobs.decision_review, bu-ckkpz.4's
- * title-marker heuristic -- see that module's docstring). Before this page,
+ * label-only classifier -- see that module's docstring). Before this page,
  * `grep OWNER|DECISION frontend/src/pages` returned zero hits: the 14+
  * owner-decision beads sitting open since 07-04/05 were invisible anywhere
  * in the dashboard.
@@ -16,13 +16,10 @@
  * it (age, priority, and escalation detail when it is blocking a P1 bug or
  * a deploy for >48h).
  *
- * There are no approve/deny/close actions here yet -- the structured
- * options/default/deadline convention (bu-ckkpz.1) and the attention-ledger
- * + Telegram one-tap close routing (bu-ckkpz.3) have not shipped, so a
- * decision is detected by title marker only and has no machine-actionable
- * "options" payload. This page is deliberately read-only until those land;
- * see bu-97qrw for the tracked follow-up (switch detection off the title
- * heuristic once bu-ckkpz.1 ships real fields).
+ * There are no approve/deny/close actions here yet. This deliberately
+ * read-only digest exposes summary and escalation data only: it lists
+ * decision-labeled beads, but carries no per-bead options/defaults or mutation
+ * controls.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -164,9 +161,8 @@ function DecisionRow({
             </div>
           ) : (
             <div className="italic">
-              No structured options yet. The decision-bead convention
-              (options/default/deadline, bu-ckkpz.1) hasn't shipped. This
-              decision is detected by title marker only.
+              No actions are available in this read-only digest. It lists decisions marked with the
+              {" "}decision label; options and close controls are not included here.
             </div>
           )}
         </div>
@@ -191,10 +187,9 @@ export default function DecisionsPage() {
 
   const ids = useMemo(() => decisions.map((d) => d.id), [decisions]);
 
-  // Pure j/k roving selection -- no act-verbs yet (there is nothing
-  // machine-actionable to do to a decision until bu-ckkpz.1/.3 ship; see
-  // useListTriage's own doc comment: "Omit or return [] for a list that is
-  // j/k-navigable but has no keyboard act.").
+  // Pure j/k roving selection -- this read-only summary has no action payload
+  // or mutation endpoint. See useListTriage's own doc comment: "Omit or
+  // return [] for a list that is j/k-navigable but has no keyboard act."
   const { hints } = useListTriage({
     ids,
     selectedId,

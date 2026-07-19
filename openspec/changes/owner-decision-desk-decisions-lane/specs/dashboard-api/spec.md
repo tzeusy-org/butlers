@@ -8,9 +8,12 @@ The dashboard API SHALL expose `GET /api/decisions`, a read-only endpoint
 returning the open decision-bead digest as an `ApiResponse<DecisionBeadSummary[]>`.
 The endpoint SHALL be a thin wrapper around
 `butlers.jobs.decision_review.compute_decision_digest()` (bu-ckkpz.4) -- it
-MUST NOT re-implement the title-marker decision-detection heuristic, the
-escalation (P1-bug / deploy `blocks`-edge, >48h) computation, or the
-beads-export JSONL read path; those stay owned by `decision_review.py`.
+MUST NOT re-implement label-only decision classification, the escalation
+(P1-bug / deploy `blocks`-edge, >48h) computation, or the beads-export JSONL
+read path; those stay owned by `decision_review.py`. An open decision is a
+non-epic bead carrying the `decision` label; title text alone MUST NOT cause
+the endpoint to include a bead. The separate strict lint path identifies
+legacy-shaped unlabeled beads for migration.
 
 Each `DecisionBeadSummary` object SHALL contain:
 - `id` -- string bead id

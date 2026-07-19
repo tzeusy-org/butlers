@@ -241,8 +241,8 @@ describe("DecisionsPage -- j/k roving selection expands the door", () => {
     const detailPanels = container!.querySelectorAll('[data-testid="decision-detail"]');
     expect(detailPanels.length).toBe(1);
     expect(secondRow.textContent).toContain("Pick B");
-    expect(secondRow.textContent).toContain(
-      "No structured options yet",
-    );
+    expect(secondRow.textContent).toContain("No actions are available in this read-only digest.");
+    expect(secondRow.textContent).toContain("decision label");
+    expect(secondRow.textContent).not.toContain("title marker");
   });
 });

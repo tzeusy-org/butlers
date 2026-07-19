@@ -6,8 +6,9 @@ server-side. Before this capability existed, the owner-decision queue was
 invisible anywhere in the dashboard (`grep OWNER|DECISION frontend/src/pages`
 returned zero hits) -- an owner had to already know to check Telegram or `bd`
 directly. This is slice 2 of epic bu-ckkpz ("Owner Decision Desk"); it is
-deliberately read-only until bu-ckkpz.1 (structured decision-bead convention)
-and bu-ckkpz.3 (attention-ledger routing + one-tap close) ship.
+deliberately read-only because its summary API does not expose per-decision
+options/defaults or mutations, even though decision classification is already
+label-based.
 
 ## ADDED Requirements
 
@@ -71,9 +72,9 @@ help sheet.
 The currently-selected row SHALL be a door: it expands inline to show every
 field the digest carries about that decision (created-at timestamp, and,
 when escalated, the blocked bead's id/title/kind/duration). A non-escalated
-row's expanded detail SHALL state plainly that no structured options exist
-yet, naming the pending decision-bead convention (bu-ckkpz.1) rather than
-fabricating action affordances that do not yet exist.
+row's expanded detail SHALL state plainly that this read-only summary does not
+expose structured options or actions, rather than fabricating action
+affordances that do not yet exist.
 
 A degraded digest (`meta.decisions_available: false`) SHALL render a named
 degraded note instead of the calm "No decisions waiting." empty state.
@@ -92,7 +93,8 @@ degraded note instead of the calm "No decisions waiting." empty state.
 #### Scenario: No fabricated action affordances
 
 - **WHEN** the selected row is not escalated (or in general, on any row)
-- **THEN** the page renders no approve/deny/close button, since bu-ckkpz.1's structured options/default/deadline convention and bu-ckkpz.3's one-tap close routing have not shipped
+- **THEN** the page renders no approve/deny/close button, because this lane is a
+  read-only summary with no option payload or close mutation
 
 #### Scenario: Degraded digest names itself instead of a calm empty state
 

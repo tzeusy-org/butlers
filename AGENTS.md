@@ -815,16 +815,17 @@ make test-qg
 - For `bug` issues created with `--validate`, include `## Acceptance Criteria` in `description` (the separate `--acceptance` flag alone is not sufficient).
 
 ### Decision-bead convention (bu-ckkpz.1, epic bu-ckkpz "Owner Decision Desk")
-Today, owner-attention decisions are marked only by title text ("DECISION
-REQUIRED (owner)", "[OWNER-GATED]", "OWNER:", "ARCHITECTURAL DECISION"), which
-is invisible to tooling and easy to miss. Any bead that asks the owner to
-choose among options (not just "do this task") should instead follow this
-machine-checkable convention, built entirely on native `bd` fields — no new
-issue type and no bespoke deadline format:
+Owner-attention decisions are marked by the `decision` label. Legacy title
+text ("DECISION REQUIRED (owner)", "[OWNER-GATED]", "OWNER:",
+"ARCHITECTURAL DECISION") is readable context, not a runtime classifier; the
+strict linter flags an open, non-epic legacy-shaped bead that lacks the label.
+Any bead that asks the owner to choose among options (not just "do this task")
+should follow this machine-checkable convention, built entirely on native `bd`
+fields — no new issue type and no bespoke deadline format:
 
 1. **Label** — add the `decision` label: `bd create ... --label decision` /
-   `bd update <id> --labels decision`. This is the marker a linter or
-   dashboard query filters on (`bd list --label decision`).
+   `bd update <id> --labels decision`. This is the marker the decision-review
+   runtime, linter, and dashboard query use (`bd list --label decision`).
 2. **Structured options** — set `metadata.decision.options` (a non-empty list
    of distinct, non-blank strings) and `metadata.decision.default` (one
    string that exactly matches an entry in `options` — the fallback applied
@@ -870,9 +871,10 @@ against the mounted `issues.export.jsonl`, delivering a low-priority
 attention-ledger-recorded nudge when it finds unmigrated beads.
 
 **Known consumer:** `src/butlers/jobs/decision_review.py` (the weekly
-decision-review digest + P1/deploy escalation cron) detects decision beads
-by checking the `decision` label first (bu-97qrw), falling back to the
-legacy title-marker regex only for beads that predate this convention.
+decision-review digest + P1/deploy escalation cron) classifies open, non-epic
+decision beads solely by the `decision` label. It never falls back to title
+text; its strict lint path separately nudges legacy-shaped unlabeled beads to
+migrate.
 
 ### Relationship `important_dates` column contract
 - Relationship schema stores date kind in `important_dates.label` (not `important_dates.date_type`).

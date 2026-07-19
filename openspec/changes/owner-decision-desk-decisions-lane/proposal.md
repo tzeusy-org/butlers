@@ -36,11 +36,11 @@ pattern already established by `dashboard-approvals`.
     `dashboard-approvals`/`dashboard-domain-pages`); the selected row is a
     door -- it expands inline to show everything the digest knows about that
     decision (age, priority, escalation detail).
-  - No approve/deny/close actions yet: bu-ckkpz.1 (structured
-    options/default/deadline convention) and bu-ckkpz.3 (attention-ledger +
-    Telegram one-tap close) have not shipped, so a decision is detected by
-    title marker only and carries no machine-actionable payload. The page
-    says so explicitly rather than fabricating action affordances.
+  - No approve/deny/close actions yet: the digest classifies open, non-epic
+    beads by the `decision` label and carries summary/escalation data only. It
+    intentionally does not serialize per-bead options, defaults, deadlines,
+    or mutations, so the page says so explicitly rather than fabricating
+    action affordances.
 
 ### Why a dedicated page, not an Overview lane
 
@@ -66,6 +66,7 @@ future `notify()` deep links (bu-ckkpz.3), at the cost of one extra nav entry.
   nav/router registration.
 - No database migration; no change to `decision_review.py`'s existing
   digest/escalation/notify behavior (bu-ckkpz.4 is untouched).
-- Follow-ups tracked separately: bu-97qrw (switch detection off the title
-  heuristic once bu-ckkpz.1 ships real fields), bu-ckkpz.3 (attention-ledger
-  routing + one-tap close, which will add real actions to this page).
+- Follow-ups tracked separately: bu-ckkpz.3 (attention-ledger routing +
+  one-tap close, which will add real actions to this page). Legacy-shaped
+  unlabeled beads are handled by the decision-review strict lint path, not by
+  title-based runtime classification.
