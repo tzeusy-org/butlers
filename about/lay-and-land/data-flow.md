@@ -135,12 +135,21 @@ MCP tool.
 sequenceDiagram
     participant CLI as LLM CLI Session
     participant Butler as Butler MCP
+    participant Queue as Originating Butler Queue
     participant SW as Switchboard
     participant Module as Output Module
     participant Ext as External API
 
     CLI->>Butler: notify(channel, intent, message, request_context)
-    Butler->>SW: MCP call: notify(...)
+    Butler->>Butler: Resolve notify.v1 envelope and delivery policy
+
+    alt routine implicit-owner send/insight held by policy or DND/sleeping
+        Butler->>Queue: INSERT full notify.v1 envelope with deliver_at
+        Note over Queue: Existing scheduler flushes stored envelope; no re-gate
+        Queue->>SW: MCP call: notify(...)
+    else immediate or existing non-owner delivery path
+        Butler->>SW: MCP call: notify(...)
+    end
 
     alt channel = "telegram"
         SW->>Module: Telegram module: send/reply/react
@@ -156,6 +165,7 @@ sequenceDiagram
 | Intent | Behavior |
 |---|---|
 | `send` | Proactive outbound message (scheduled tasks, no request_context needed) |
+| `insight` | Proactive insight delivery (same transport mechanics as `send`) |
 | `reply` | Contextual response to an ingested message (requires request_context) |
 | `react` | Emoji reaction on the source message (Telegram only, requires request_context) |
 
@@ -398,7 +408,7 @@ INSERT ... ON CONFLICT DO NOTHING -> read back effective row.
 |---|---|---|---|---|
 | Ingestion | Connector poll/webhook | route_inbox INSERT | ingest.v1 -> route.v1 (MCP) | Yes (durable buffer + route_inbox) |
 | Scheduled | Scheduler tick | Session log INSERT | Internal (asyncio) | Yes (schedule DB) |
-| Response | LLM session notify() | External API call | MCP -> module-specific | No (fire-and-forget) |
+| Response | LLM session notify() | External API call | MCP -> module-specific | Conditional: eligible routine owner-default holds are durable in the originating butler queue; other direct paths are fire-and-forget |
 | Identity | Channel identifier | Resolved contact | SQL (public schema) | N/A (read-only) |
 | Memory | Session observation | Tiered storage | SQL + pgvector | Yes |
 | Heartbeat | Connector loop | Registry update | MCP | No (ephemeral liveness) |

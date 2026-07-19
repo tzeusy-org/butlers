@@ -107,17 +107,17 @@ def should_suppress_by_policy(
     )
 
 
-def approval_push_deliver_at(
+def policy_quiet_hours_deliver_at(
     policy: dict[str, Any] | None,
     *,
     now: datetime,
 ) -> datetime | None:
-    """Return the first post-quiet delivery instant for an approval push.
+    """Return the first post-quiet delivery instant for a policy-held message.
 
-    Approval requests are control-plane notifications: during configured quiet
-    hours they are deferred rather than suppressed.  The caller owns persistence
-    of that deferral; this pure helper deliberately has no knowledge of a
-    pending action's expiry, so it cannot change the approval clock.
+    The caller owns persistence and any domain-specific expiry semantics.  This
+    helper only turns the inclusive configured quiet window into a UTC delivery
+    instant, so routine owner-default notifications and approval requests keep
+    the same timing boundary.
 
     Quiet-hour endpoints are inclusive (matching
     :func:`is_in_policy_quiet_hours`), therefore a window ending at 07:00 first
@@ -136,12 +136,12 @@ def approval_push_deliver_at(
         timezone = ZoneInfo(tz_name)
     except (ZoneInfoNotFoundError, KeyError, ValueError):
         logger.warning(
-            "approvals_policy has invalid timezone %r; approval push will not defer", tz_name
+            "approvals_policy has invalid timezone %r; policy hold will not defer", tz_name
         )
         return None
 
     if now.tzinfo is None or now.utcoffset() is None:
-        raise ValueError("approval_push_deliver_at requires a timezone-aware now value")
+        raise ValueError("policy_quiet_hours_deliver_at requires a timezone-aware now value")
 
     local_now = now.astimezone(timezone)
     if not should_suppress_by_policy(policy, current_hour=local_now.hour):
@@ -153,6 +153,20 @@ def approval_push_deliver_at(
     if candidate <= local_now:
         candidate += timedelta(days=1)
     return candidate.astimezone(UTC)
+
+
+def approval_push_deliver_at(
+    policy: dict[str, Any] | None,
+    *,
+    now: datetime,
+) -> datetime | None:
+    """Return the first post-quiet delivery instant for an approval push.
+
+    Approval requests remain control-plane notifications whose persistence and
+    pending-action expiry are owned by their caller.  This compatibility wrapper
+    deliberately delegates only the shared inclusive quiet-hours calculation.
+    """
+    return policy_quiet_hours_deliver_at(policy, now=now)
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ tests at the notify()/delivery_cycle() boundaries.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,6 +16,7 @@ import pytest
 from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
     count_attention_events_since,
+    get_suppressing_context,
     get_suppressing_context_signal,
     is_priority_urgent,
     normalize_priority,
@@ -270,6 +271,42 @@ class TestGetSuppressingContextSignal:
 
         monkeypatch.setattr("butlers.context_bus.get_active_context", _raising)
         assert await get_suppressing_context_signal(AsyncMock()) is None
+
+    async def test_context_detail_uses_latest_suppressor_expiry(self, monkeypatch):
+        """A DND plus sleeping hold cannot flush while either signal remains active."""
+        from butlers.context_bus import ContextEntry
+
+        now = datetime.now(UTC)
+        dnd_expires_at = now + timedelta(minutes=20)
+        sleeping_expires_at = now + timedelta(hours=2)
+
+        async def _fake_get_active_context(pool):
+            return [
+                ContextEntry(
+                    signal_type="sleeping",
+                    value=None,
+                    set_by_butler="health",
+                    set_at=now,
+                    expires_at=sleeping_expires_at,
+                    confidence=1.0,
+                ),
+                ContextEntry(
+                    signal_type="dnd",
+                    value=None,
+                    set_by_butler="general",
+                    set_at=now,
+                    expires_at=dnd_expires_at,
+                    confidence=1.0,
+                ),
+            ]
+
+        monkeypatch.setattr("butlers.context_bus.get_active_context", _fake_get_active_context)
+
+        suppression = await get_suppressing_context(AsyncMock())
+
+        assert suppression is not None
+        assert suppression.signal_type == "dnd"
+        assert suppression.expires_at == sleeping_expires_at
 
 
 class TestRecordOwnerIngressRollup:

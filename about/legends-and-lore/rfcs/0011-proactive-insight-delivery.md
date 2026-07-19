@@ -379,7 +379,7 @@ The engagement signal is intentionally rough — "any message within 60 minutes"
 - **RFC 0002:** `propose_insight_candidate` is registered as a module tool on the Switchboard via the `Module.register_tools()` interface. The `notify` core tool is extended with `intent='insight'`. The insight broker implements the `Module` abstract base class.
 - **RFC 0003:** Candidate submission flows through the Switchboard as an MCP tool call, consistent with the Switchboard's role as the single coordination point. The broker module runs within the Switchboard daemon alongside routing infrastructure.
 - **RFC 0006:** `public.insight_candidates`, `public.insight_cooldowns`, `public.insight_engagement`, and `public.insight_settings` are created in the `public` schema via an Alembic migration, following the existing shared-schema pattern. All butlers can read these tables via their `search_path`; only the Switchboard's broker module writes to them.
-- **RFC 0009:** The delivery cycle checks the situational context bus for `dnd` or `sleeping` signals as an additional suppression layer, complementing quiet hours. (Originally optional/deferred; landed live in Amendment 1.)
+- **RFC 0009:** The delivery cycle checks the situational context bus for `dnd` or `sleeping` signals as an additional suppression layer, complementing quiet hours. Eligible routine owner-default `notify()` calls instead durably defer their full envelope until the policy/context hold clears (Amendment 5). (Originally optional/deferred; landed live in Amendment 1.)
 
 ## Alternatives Considered
 
@@ -407,7 +407,7 @@ Applied per bu-qvnce.8 (2026-07-04 JARVIS pursuit, move 8, slices 1-2) via `open
 
 - **New `public.attention_ledger` table** (migration `core_160`) — one durable row per proactive-egress decision at either choke point (`notify()` and `delivery_cycle()`). Columns: `id`, `occurred_at`, `origin_butler`, `source` (`notify` | `insight`), `channel`, `intent`, `priority_label`, `priority_score` (1-100, normalized — see below), `dedup_key`, `outcome`, `reason`, `notification_ref`, `metadata`. `outcome` is a closed vocabulary: `delivered`, `coalesced` (folded into a digest — see the Digest requirement below), `deferred`, `suppressed`. This is the "ledger" a future dashboard panel (slice 5, not yet built) will read; `count_attention_events_since()` in `src/butlers/core/attention_ledger.py` already provides the outcome-grouped counting query for that surface.
 - **Seeded owner-level quiet hours.** `core_160` seeds both `public.approvals_policy` and `public.insight_settings` to 23:00-08:00 Asia/Singapore, guarded by `WHERE quiet_start_hour IS NULL AND quiet_end_hour IS NULL` (and the `insight_settings` equivalent) — applies only to a never-configured install; an owner's own configuration, however it was set, is never overwritten. Two separate singleton tables are seeded (not consolidated into one) because they remain sibling mechanisms per this RFC's original design note ("this module deliberately avoids importing the delivery_preferences temporal system... sibling subsystems") — `approvals_policy` governs `notify()`'s owner-default path, `insight_settings` governs this RFC's own delivery cycle. A future slice may consolidate them; this amendment does not.
-- **Context-bus gating, now live (closes the March 2026 "deferred to a follow-up" note).** Both `notify()`'s owner-default gate and `delivery_cycle()`'s quiet-hours check now call `get_suppressing_context_signal()` (`src/butlers/core/attention_ledger.py`), a deterministic, non-LLM read of `public.user_context` for an active `dnd` or `sleeping` signal. This is additive to the existing hour-based gates — either can suppress independently; whichever fires first is recorded as the ledger `reason` (`quiet_hours` or `context_bus:<signal_type>`).
+- **Context-bus gating, now live (closes the March 2026 "deferred to a follow-up" note).** Both `notify()`'s owner-default gate and `delivery_cycle()`'s quiet-hours check call a deterministic, non-LLM read of `public.user_context` for an active `dnd` or `sleeping` signal. This is additive to the existing hour-based gates. The historical direct `notify()` destructive result described here is superseded for eligible routine owner-default sends by Amendment 5; the delivery cycle retains its existing suppression behavior.
 - **Priority-urgent bypass (fail-open for urgent, budgeted for routine).** Neither quiet hours nor the context bus suppresses a candidate/notification at or above `URGENT_PRIORITY_THRESHOLD` (90 — this RFC's existing "time-critical" floor from the Priority Scoring Convention table). In `delivery_cycle()`, when a would-be-suppressed cycle has at least one pending candidate at/above the threshold, the cycle narrows its working set to urgent candidates only for that cycle — sub-threshold candidates stay `status='pending'` untouched, eligible again on a later non-suppressed cycle. They are never delivered early (no budget bypass — the daily budget computation is unchanged) and never silently dropped (still `pending`, not `filtered`/`expired`). `notify()`'s existing `priority="high"` bypass is unchanged; this amendment adds the same bypass to the new context-bus check and normalizes `high`/`medium`/`low` onto the same 1-100 scale (`high` → 90, `medium` → 50, `low` → 20) via `normalize_priority()`, so ledger rows from both boundaries are comparable on one scale.
 - **Digest candidates recorded as `coalesced`, not `delivered`.** When `deliver_count > 1` (a digest), each of the N candidates gets its own ledger row with `outcome="coalesced"` rather than `delivered` — the ledger distinguishes "sent alone" from "folded into a composed batch" per candidate, without changing the digest formatting or delivery mechanics this RFC already specifies.
 
@@ -467,3 +467,43 @@ Applied per bu-tdd4k.5 (2026-07-10 JARVIS pursuit, move 1, proactivity-spine epi
 - **`check_total_disengagement_auto_off()` reads a merged view**: raw `insight_engagement` for days still present, falling back to `attention_daily_rollup` for any day in the 14-day window already purged from the raw table. In practice the 14-day window sits comfortably inside the default 30-day retention, so this fallback is a correctness backstop (a shortened `retention_days` config, or any future reordering) rather than something the default configuration exercises today — but the ratchet's window is no longer silently truncatable by the purge.
 
 **Backward compatibility:** Additive. Owner-authored ingress observes identical behavior to before (engagement still marked within the 60-minute window). The merged disengagement query degrades gracefully to the original raw-only read (`asyncpg.UndefinedTableError` fallback) if `attention_daily_rollup` is ever queried against a pre-`core_165` database. No change to `insight_engagement`'s schema, the adaptive-budget table above, or the digest/standalone delivery format.
+
+### Amendment 5 (2026-07-19) — Durable Routine Owner-Default Notify Holds
+
+Applied per `bu-kqnum.3.1` via
+`openspec/changes/park-owner-default-notifications`.
+
+**Summary:** Amendment 1 made direct owner-default quiet-hours/context choices
+observable, but its eligible `notify()` branches still returned a transient
+suppression result after composing a full owner-facing envelope. This amendment
+reuses the existing originating-schema deferred-notification queue so routine
+content is held durably rather than discarded. It does not alter the insight
+delivery-cycle suppression policy described elsewhere in this RFC.
+
+**Changes made:**
+
+- **Narrow admission scope.** Only direct `notify()` calls with no `entity_id`,
+  no explicit `recipient`, intent `send` or `insight`, and priority other than
+  `high` may enter this hold. The earlier per-butler `delivery_preferences`
+  branch remains first and unchanged. High-priority, explicit-target, other
+  intent, and approval-request paths retain their existing behavior.
+- **Durable full-envelope queue.** The eligible path inserts the already
+  resolved `notify.v1` envelope into the calling butler schema's existing
+  `deferred_notifications` table. Policy quiet hours choose the first whole
+  local hour after the inclusive quiet end; DND/sleeping chooses the latest
+  active suppressor expiry. If both holds apply, the later anchor wins. The
+  existing scheduler flush is the sole later delivery engine: it supplies the
+  stored envelope without re-gating and retains its established retry and
+  coalescing behavior.
+- **Honest decision records.** A successful enqueue records
+  `outcome="deferred"` with the row id in `notification_ref` and a
+  machine-readable policy/context reason. An enqueue failure records a
+  best-effort `failed` outcome and returns a retryable error; it never falls
+  through to immediate delivery or a destructive suppression result. A ledger
+  failure after the queue write cannot change the deferred result.
+
+**Backward compatibility:** No schema, ACL, cross-schema content store,
+producer, cron, wake/catch-up, morning digest, or scheduler redesign is added.
+Policy/context lookup failures remain fail-open. Existing approval-request
+quiet-hours behavior, including `approval_push_deliver_at` and pending-action
+expiry semantics, is unchanged.

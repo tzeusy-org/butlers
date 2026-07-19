@@ -78,7 +78,7 @@ Additionally, `tick()` SHALL perform three new evaluation passes:
 
 1. **Deadline evaluation**: For each enabled task with `task_type='deadline'`, compute `days_remaining` and evaluate alert thresholds. Dispatch deadline tasks whose thresholds are newly satisfied.
 2. **Event chain trigger detection**: Query calendar projection for events whose `end_at` has passed since last tick. Check for deadline status transitions. Fire matching event chains by materializing their actions as one-shot scheduled tasks.
-3. **Deferred notification flush**: Query `deferred_notifications` where `status='pending' AND deliver_at <= now()` and deliver each via the standard notify pipeline.
+3. **Deferred notification flush**: Query `deferred_notifications` where `status='pending' AND deliver_at <= now()`, pass a solo row's stored envelope verbatim to the standard notify pipeline, and update a row to delivered only after successful delivery. The flush SHALL NOT re-evaluate approvals-policy quiet hours or context for a stored envelope; `deliver_at` is the durable admission decision. Existing same-target coalescing and pending-row retry behavior remain unchanged.
 
 The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, and `deferred_flushed` in addition to the existing `tasks_due` and `tasks_run`.
 
@@ -105,6 +105,12 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 #### Scenario: Deferred notification flush runs each tick
 - **WHEN** `tick()` is called
 - **THEN** pending deferred notifications with `deliver_at <= now()` are delivered
+
+#### Scenario: Stored owner-default envelope flushes without re-gating
+- **WHEN** a due row was parked by an owner-default policy or context hold
+- **THEN** the scheduler supplies its stored full envelope to the notifier
+  without a second policy/context lookup
+- **AND** a transport failure leaves the row pending for the next tick
 
 #### Scenario: Seasonal context injected during dispatch
 - **WHEN** `tick()` dispatches any task (cron or deadline)

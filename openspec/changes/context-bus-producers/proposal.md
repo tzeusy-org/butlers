@@ -3,7 +3,7 @@
 ## Why
 
 For 3.5 months `public.user_context` held **zero rows** while three hardened
-consumers read it every day: the notify dnd/sleeping suppression gate
+consumers read it every day: the notify dnd/sleeping deferred-delivery gate
 (`core_tools/_notifications.py`), every spawned session's situational preamble
 (`core/spawner_context.py`), and the attention-ledger context reasons
 (`core/attention_ledger.py`). The read side was fully wired; nothing ever wrote a
@@ -13,7 +13,7 @@ The context-bus spec (RFC 0009) named the *writers* in its permission matrix but
 defined **no producer requirements** — which is exactly how the empty table went
 unnoticed. The vision-level "shared situational awareness" claim existed only as
 consumer plumbing: health check-ins still fired during meetings, and the shipped
-sleeping-gate never triggered.
+sleeping deferred-delivery gate never triggered.
 
 Producers are pure infrastructure at zero LLM spend — the highest
 leverage-per-token move in the collaboration fabric, and the step that makes
@@ -30,7 +30,7 @@ already-shipped honesty machinery real.
 - **travel → traveling** (writer `travel`): from a currently-underway trip.
 - **health → sleeping** (writer `health`): from the owner-declared quiet-hours
   window (`public.approvals_policy`), activating the shipped notify
-  sleeping-gate.
+  sleeping deferred-delivery gate.
 - **Explicit `dnd`/`sick`** via new `check_context`/`set_context`/`clear_context`
   MCP tools on the general module (user-initiated context no producer can
   infer).

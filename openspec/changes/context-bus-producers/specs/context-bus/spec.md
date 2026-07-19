@@ -55,11 +55,12 @@ The following producers SHALL exist:
 - **THEN** the health producer sets a `sleeping` signal with
   `set_by_butler = "health"` and the wake time (window end) as `expires_at`
 
-#### Scenario: Sleep producer activates the notify suppression gate
+#### Scenario: Sleep producer activates the notify deferred-delivery gate
 - **WHEN** the sleep producer has set an active `sleeping` signal
 - **THEN** the notify owner-page gate's context consult observes a suppressing
-  signal and suppresses a routine notification with status
-  `suppressed_context_bus`
+  signal and durably defers a routine notification with status `deferred`
+- **AND** the stored envelope's `deliver_at` is the latest active suppressing
+  signal expiry
 
 ### Requirement: Explicit Context MCP Tools
 The system SHALL expose `check_context`, `set_context`, and `clear_context` MCP

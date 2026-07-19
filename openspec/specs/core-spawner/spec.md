@@ -533,7 +533,7 @@ This is a **third session outcome**, distinct from the two in the Spawner Sessio
 
 The in-memory `SpawnerResult.success` SHALL remain `True` for this outcome so that downstream memory extraction and the route reply flow are unaffected; only the persisted session record reflects the undelivered delivery.
 
-**Delivered-status set.** A `notify()` tool-call counts as delivered only when its captured result is a dict whose `status` is in the delivered set `{ok, deferred}`. Every other outcome is undelivered, including `suppressed_quiet_hours`, `pending_approval`, `pending_missing_identifier`, `error`, a record whose `outcome` is `error`, and a record with no result dict at all (the schema-rejection / null-result incident shape). `deferred` is delivered because the notification is persisted to the deferred queue with a concrete `deliver_at` and WILL be delivered later; `suppressed_quiet_hours` is undelivered because the message is dropped with no queue entry and no later delivery.
+**Delivered-status set.** A `notify()` tool-call counts as delivered only when its captured result is a dict whose `status` is in the delivered set `{ok, deferred}`. Every other outcome is undelivered, including legacy suppression results, `pending_approval`, `pending_missing_identifier`, `error`, a record whose `outcome` is `error`, and a record with no result dict at all (the schema-rejection / null-result incident shape). `deferred` is delivered because the notification is persisted to the deferred queue with a concrete `deliver_at` and will be attempted later.
 
 **Scope guards** (deliberately conservative, to avoid false positives):
 - only sessions whose `trigger_source` is `route` are considered;
@@ -553,10 +553,11 @@ The in-memory `SpawnerResult.success` SHALL remain `True` for this outcome so th
 - **THEN** delivery accounting does not flag the session
 - **AND** `session_complete()` is called with `success=True`
 
-#### Scenario: suppressed_quiet_hours counts as undelivered
-- **WHEN** a `route`-triggered interactive session's only `notify()` attempt returned `status="suppressed_quiet_hours"`
-- **THEN** the attempt is treated as undelivered (the message was dropped with no later delivery)
-- **AND** the session is recorded with `success=False`
+#### Scenario: Deferred owner-default reply remains delivered
+- **WHEN** a `route`-triggered interactive session's eligible owner-default
+  notify call returns `status="deferred"` with a queued notification id and
+  `deliver_at`
+- **THEN** delivery accounting leaves the session successful
 
 #### Scenario: Null-result notify attempt counts as undelivered
 - **WHEN** a `route`-triggered interactive session's `notify()` tool-call record has no result dict (a schema rejection left an unexecuted parser-side record) or an `outcome` of `error`
@@ -571,4 +572,3 @@ The in-memory `SpawnerResult.success` SHALL remain `True` for this outcome so th
 #### Scenario: Non-route or non-interactive sessions are exempt
 - **WHEN** a session's `trigger_source` is not `route`, or its source channel is not in the interactive set (`telegram_bot`, `whatsapp`)
 - **THEN** delivery accounting does not run and the session outcome is unchanged from the ordinary success path
-
