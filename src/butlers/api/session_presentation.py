@@ -40,7 +40,7 @@ _EXACT_TRIGGER_LABELS = {
     "trigger": "Manual trigger",
 }
 
-_SAFE_TASK_NAME_RE = re.compile(r"^[A-Za-z0-9]+(?:[A-Za-z0-9:_-]*[A-Za-z0-9])?$")
+_SAFE_TASK_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9:_-]*[A-Za-z0-9])?$")
 
 
 def _truncate(text: str) -> str:
