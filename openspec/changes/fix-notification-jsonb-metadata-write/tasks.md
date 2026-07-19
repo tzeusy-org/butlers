@@ -19,5 +19,5 @@
 
 - [x] 3.1 Validate the OpenSpec change strictly and run the required lint,
   format, and test gates.
-- [ ] 3.2 Review the final diff for the write-only slice boundary, then commit,
+- [x] 3.2 Review the final diff for the write-only slice boundary, then commit,
   rebase if needed, push the branch, and open a PR for exact-head review.
